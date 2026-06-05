@@ -166,6 +166,9 @@ On **`dev`** — subject is a `type: summary` prefix. Allowed types:
 - `feat:` — a new feature
 - `fix:` — a bug fix
 - `hotfix:` — an urgent fix that may also be cherry-picked to `main`
+- `docs:` — documentation only (README, CHANGELOG, CLAUDE.md, *_KR.md, etc.)
+- `chore:` — build/packaging, dependencies, or tooling that isn't a feature or bug fix
+  (e.g. `build.spec`, `installer.iss`, `requirements*.txt`, `.gitignore`)
 
 ```
 feat: <one-line summary>
