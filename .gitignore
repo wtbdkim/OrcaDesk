@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# ORCAdesk .gitignore
+# Python (PyQt6) desktop app + FastAPI sync server, packaged with PyInstaller.
+# ---------------------------------------------------------------------------
+
+# --- Python bytecode / caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# --- PyInstaller build artifacts ---
+# build.spec is kept (it is source); the generated output dirs are not.
+build/
+dist/
+*.manifest
+*.spec.bak
+
+# --- Inno Setup installer output (make_installer.bat / installer.iss) ---
+Output/
+*.exe.tmp
+Setup.exe
+
+# --- Test / coverage / type-checker caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# --- Logs & local runtime data ---
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*~
+
+# --- OS cruft ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# --- Local environment secrets ---
+.env
+.env.local

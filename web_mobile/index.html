@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#09090b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>ORCAdesk</title>
+<style>
+:root{
+  --background:#09090b; --foreground:#fafafa; --card:#18181b; --border:#27272a;
+  --input:#27272a; --input-bg:#0e0e10; --muted:#18181b; --muted-foreground:#a1a1aa; --accent:#27272a;
+  --primary:#fafafa; --primary-foreground:#18181b; --ring:#d4d4d8;
+  --ok:#4ade80; --warn:#fbbf24; --err:#f87171; --info:#a1a1aa; --orca:#71717a;
+  --raw:#c084fc;
+  --radius:10px; --radius-sm:7px;
+  --font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"JetBrains Mono","Cascadia Code",Consolas,ui-monospace,monospace;
+  --tabbar-h:64px; --topbar-h:54px;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{height:100%;background:var(--background);color:var(--foreground);
+  font-family:var(--font-sans);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;}
+::-webkit-scrollbar{width:0;height:0;}
+
+.app{display:flex;flex-direction:column;height:100vh;height:100dvh;}
+
+/* top bar */
+.topbar{height:var(--topbar-h);flex:0 0 auto;display:flex;align-items:center;
+  justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--border);
+  padding-top:env(safe-area-inset-top);background:var(--background);}
+.topbar .brand{display:flex;align-items:center;gap:9px;}
+.logo{border-radius:7px;overflow:hidden;background:#000;border:1px solid var(--border);
+  display:grid;place-items:center;}
+.logo img{width:100%;height:100%;object-fit:cover;display:block;}
+.topbar .logo{width:26px;height:26px;}
+.topbar h1{font-size:16px;font-weight:600;letter-spacing:-.01em;}
+.conn{display:inline-flex;align-items:center;gap:6px;font-size:12px;
+  padding:5px 10px;border-radius:999px;border:1px solid var(--border);
+  background:var(--card);color:var(--muted-foreground);}
+.conn .dot{width:7px;height:7px;border-radius:50%;background:var(--warn);}
+.conn.ok .dot{background:var(--ok);}
+
+/* screens */
+.screens{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  padding:16px 16px calc(var(--tabbar-h) + 16px + env(safe-area-inset-bottom));}
+.screen{display:none;animation:fade .15s ease;}
+.screen.active{display:block;}
+@keyframes fade{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:none;}}
+
+.screen-title{font-size:20px;font-weight:700;letter-spacing:-.02em;margin-bottom:4px;}
+.screen-sub{font-size:13px;color:var(--muted-foreground);margin-bottom:16px;}
+
+/* cards */
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+  padding:14px;margin-bottom:12px;}
+
+/* queue item */
+.qitem{display:flex;align-items:center;gap:12px;padding:14px;border:1px solid var(--border);
+  border-radius:var(--radius);margin-bottom:10px;background:var(--card);}
+.qitem .qmain{flex:1;min-width:0;}
+.qitem .qname{font-weight:600;font-size:15px;display:flex;align-items:center;gap:7px;}
+.qitem .qmeta{font-size:12px;color:var(--muted-foreground);font-family:var(--font-mono);
+  margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.qstate{font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;
+  text-transform:uppercase;letter-spacing:.04em;flex:0 0 auto;}
+.qstate.pending{background:var(--accent);color:var(--muted-foreground);}
+.qstate.running{background:rgba(251,191,36,.15);color:var(--warn);}
+.qstate.done{background:rgba(74,222,128,.15);color:var(--ok);}
+.qstate.failed{background:rgba(248,113,113,.15);color:var(--err);}
+.qstate.blocked{background:var(--accent);color:var(--muted-foreground);}
+.qmsg{font-size:11px;color:var(--muted-foreground);margin-top:4px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.qdel{flex:0 0 auto;width:30px;height:30px;border-radius:7px;border:1px solid var(--border);
+  background:transparent;color:var(--err);font-size:18px;line-height:1;cursor:pointer;}
+.qdel:active{opacity:.6;}
+.qhandle{flex:0 0 auto;width:34px;height:34px;display:grid;place-items:center;
+  color:var(--muted-foreground);font-size:18px;cursor:grab;touch-action:none;user-select:none;}
+.qitem.dragging{opacity:.5;}
+.qitem.drop-target{border-color:var(--ring);box-shadow:0 -2px 0 var(--ring) inset;}
+
+/* SCF live graph */
+.log-mode-toggle{display:flex;gap:6px;margin-bottom:10px;}
+.log-mode-toggle button{font-family:inherit;font-size:12px;font-weight:600;padding:7px 14px;
+  border:1px solid var(--border);background:var(--card);color:var(--muted-foreground);
+  border-radius:var(--radius-sm);cursor:pointer;}
+.log-mode-toggle button.active{background:var(--accent);color:var(--foreground);}
+.scf-panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;}
+.graph-summary{margin-bottom:4px;}
+.graph-divider{height:1px;background:var(--border);margin:12px 0;}
+.graph-plot{margin-top:2px;}
+.scf-prog-label{font-size:13px;font-weight:600;margin-bottom:6px;}
+.scf-prog-bar{height:8px;background:var(--accent);border-radius:4px;overflow:hidden;}
+.scf-prog-bar > span{display:block;height:100%;background:var(--ok);border-radius:4px;transition:width .3s;}
+.scf-prog-meta{font-size:11px;color:var(--muted-foreground);font-family:var(--font-mono);margin-top:6px;}
+.scf-svg{width:100%;height:auto;margin-top:12px;display:block;}
+.scf-grid{stroke:var(--border);stroke-width:.5;}
+.scf-goal{stroke:var(--ok);stroke-width:1;stroke-dasharray:4 3;opacity:.7;}
+.scf-line{stroke:var(--warn);stroke-width:1.8;}
+.scf-start{fill:var(--muted-foreground);}
+.scf-cur{fill:var(--warn);}
+.scf-axis{fill:var(--muted-foreground);font-size:9px;font-family:var(--font-mono);}
+.scf-axis-title{fill:var(--fg);font-size:10px;font-weight:600;opacity:.85;}
+.scf-empty-text{fill:var(--muted-foreground);font-size:11px;}
+.graph-subtoggle{display:flex;gap:6px;margin-bottom:12px;}
+.graph-subtoggle button{font-family:inherit;font-size:11px;font-weight:600;padding:6px 12px;
+  border:1px solid var(--border);background:var(--background);color:var(--muted-foreground);
+  border-radius:var(--radius-sm);cursor:pointer;}
+.graph-subtoggle button.active{background:var(--accent);color:var(--foreground);}
+.combo{position:relative;}
+.combo-input{width:100%;}
+.combo-list{position:absolute;top:100%;left:0;right:0;z-index:50;margin-top:4px;
+  max-height:240px;overflow-y:auto;background:var(--card);border:1px solid var(--border);
+  border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.5);-webkit-overflow-scrolling:touch;}
+.combo-item{padding:10px 12px;font-size:14px;cursor:pointer;font-family:var(--font-mono);color:var(--fg);}
+.combo-item:active,.combo-item.active{background:var(--accent);}
+.combo-none{padding:10px 12px;font-size:13px;color:var(--muted);font-style:italic;}
+.badge-raw{font-size:9px;font-weight:700;padding:2px 6px;border-radius:999px;
+  background:rgba(192,132,252,.15);color:var(--raw);text-transform:uppercase;}
+
+/* running progress shimmer */
+.running-bar{height:3px;border-radius:2px;background:var(--accent);overflow:hidden;margin-top:10px;}
+.running-bar > span{display:block;height:100%;width:40%;background:var(--warn);
+  border-radius:2px;animation:slide 1.4s ease-in-out infinite;}
+@keyframes slide{0%{margin-left:-40%;}100%{margin-left:100%;}}
+
+/* buttons */
+.btn{appearance:none;cursor:pointer;font-family:inherit;font-size:15px;font-weight:600;
+  padding:13px;border-radius:var(--radius-sm);border:1px solid var(--border);
+  background:var(--card);color:var(--foreground);width:100%;display:flex;
+  align-items:center;justify-content:center;gap:8px;}
+.btn:active{opacity:.7;}
+.btn-primary{background:var(--primary);color:var(--primary-foreground);border-color:var(--primary);}
+.btn-danger{color:var(--err);border-color:rgba(248,113,113,.4);}
+.btn-row{display:flex;gap:10px;margin-top:6px;}
+.btn-row .btn{flex:1;}
+
+/* form */
+.field{margin-bottom:13px;}
+.field:last-child{margin-bottom:0;}
+.field label{display:block;font-size:12px;font-weight:600;color:var(--muted-foreground);
+  margin-bottom:6px;}
+.field input,.field select{width:100%;background:var(--input-bg);border:1px solid var(--input);
+  border-radius:var(--radius-sm);color:var(--foreground);font-family:inherit;font-size:15px;
+  padding:12px;appearance:none;}
+.field input.mono,.field select.mono{font-family:var(--font-mono);}
+.field input:focus,.field select:focus{outline:none;border-color:var(--ring);}
+.field select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23a1a1aa' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 12px center;padding-right:34px;}
+.frow{display:flex;gap:10px;}
+.frow .field{flex:1;}
+.chk{display:flex;align-items:center;gap:10px;font-size:15px;padding:4px 0;}
+.chk input{width:20px;height:20px;accent-color:var(--foreground);}
+
+/* segmented control (geometry source, etc) */
+.seg{display:flex;background:var(--background);border:1px solid var(--input);
+  border-radius:var(--radius-sm);padding:3px;gap:3px;}
+.seg button{flex:1;border:none;background:transparent;color:var(--muted-foreground);
+  font-family:inherit;font-size:13px;font-weight:600;padding:9px;border-radius:5px;cursor:pointer;}
+.seg button.active{background:var(--accent);color:var(--foreground);}
+
+/* accordion */
+.acc{border:1px solid var(--border);border-radius:var(--radius);margin-bottom:10px;overflow:hidden;}
+.acc-head{display:flex;align-items:center;justify-content:space-between;padding:14px;
+  background:var(--card);cursor:pointer;font-size:14px;font-weight:600;}
+.acc-head .chev{transition:transform .2s;color:var(--muted-foreground);font-size:13px;}
+.acc.open .acc-head .chev{transform:rotate(180deg);}
+.acc-body{display:none;padding:14px;border-top:1px solid var(--border);background:var(--background);}
+.acc.open .acc-body{display:block;}
+
+/* advanced toggle */
+.adv-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;
+  padding:13px 14px;background:transparent;border:1px dashed var(--border);
+  border-radius:var(--radius-sm);color:var(--muted-foreground);font-family:inherit;
+  font-size:14px;font-weight:600;cursor:pointer;margin-bottom:12px;}
+.adv-toggle .chev{transition:transform .2s;}
+.adv-toggle.open .chev{transform:rotate(180deg);}
+#adv-wrap{display:none;}
+#adv-wrap.open{display:block;}
+
+/* log */
+.logbox{font-family:var(--font-mono);font-size:11.5px;background:#050506;
+  border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;
+  height:calc(100vh - var(--topbar-h) - var(--tabbar-h) - 150px);
+  min-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;}
+.log-line{padding:1px 0;}
+.log-info{color:var(--info);} .log-ok{color:var(--ok);} .log-err{color:var(--err);}
+.log-warn{color:var(--warn);} .log-orca{color:var(--orca);}
+
+/* results */
+.kv{display:grid;grid-template-columns:130px 1fr;gap:7px 12px;font-size:13px;}
+.kv .k{color:var(--muted-foreground);}
+.kv .v{font-family:var(--font-mono);}
+.kv .v.ok{color:var(--ok);} .kv .v.warn{color:var(--warn);} .kv .v.err{color:var(--err);}
+.result-pick{margin-bottom:14px;}
+
+.empty{text-align:center;color:var(--muted-foreground);font-size:14px;padding:50px 20px;}
+
+.hint{font-size:12px;color:var(--muted-foreground);margin-top:8px;}
+.divider{height:1px;background:var(--border);margin:14px 0;}
+
+/* bottom tab bar */
+.tabbar{position:fixed;bottom:0;left:0;right:0;height:calc(var(--tabbar-h) + env(safe-area-inset-bottom));
+  padding-bottom:env(safe-area-inset-bottom);
+  display:flex;background:rgba(9,9,11,.92);backdrop-filter:blur(12px);
+  border-top:1px solid var(--border);z-index:50;}
+.tab{flex:1;border:none;background:transparent;color:var(--muted-foreground);
+  font-family:inherit;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:3px;cursor:pointer;font-size:11px;font-weight:600;}
+.tab.active{color:var(--foreground);}
+.tab .ico{width:22px;height:22px;}
+.tab.fab .ico-wrap{width:42px;height:42px;border-radius:50%;background:var(--primary);
+  color:var(--primary-foreground);display:grid;place-items:center;margin-top:-2px;}
+
+/* PIN gate */
+.pin-gate{position:fixed;inset:0;z-index:200;background:var(--background);
+  display:none;align-items:center;justify-content:center;padding:24px;
+  padding-top:calc(env(safe-area-inset-top) + 24px);}
+.pin-card{width:100%;max-width:340px;text-align:center;}
+.pin-title{font-size:20px;font-weight:700;letter-spacing:-.02em;margin-bottom:6px;}
+.pin-sub{font-size:13px;color:var(--muted-foreground);margin-bottom:20px;line-height:1.5;}
+.pin-input{width:100%;background:var(--card);border:1px solid var(--input);
+  border-radius:var(--radius);color:var(--foreground);font-family:var(--font-mono);
+  font-size:32px;letter-spacing:10px;text-align:center;padding:16px;}
+.pin-input:focus{outline:none;border-color:var(--ring);}
+.toast{position:fixed;bottom:calc(var(--tabbar-h) + 20px + env(safe-area-inset-bottom));
+  left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--border);
+  color:var(--foreground);font-size:13px;padding:10px 16px;border-radius:999px;
+  opacity:0;pointer-events:none;transition:opacity .2s;z-index:100;white-space:nowrap;}
+.toast.show{opacity:1;}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo"><img src="orcadesk_logo.png" alt="ORCAdesk" /></div>
+      <h1>ORCAdesk</h1>
+    </div>
+    <div id="conn" class="conn ok"><span class="dot"></span><span id="conn-text">demo</span></div>
+  </header>
+
+  <div class="screens">
+
+    <!-- ===== QUEUE ===== -->
+    <section class="screen active" data-screen="queue">
+      <div class="screen-title">Queue</div>
+      <div class="screen-sub">Calculations run in order on your PC.</div>
+      <div id="queue-list"></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="run-btn" onclick="onRun()">Run queue</button>
+        <button class="btn btn-danger" id="cancel-btn" onclick="onCancel()" disabled>Cancel</button>
+      </div>
+    </section>
+
+    <!-- ===== LOG ===== -->
+    <section class="screen" data-screen="log">
+      <div class="screen-title">Log</div>
+      <div class="screen-sub">Live ORCA output.</div>
+      <div class="log-mode-toggle">
+        <button id="logmode-raw" class="active" onclick="setLogMode('raw')">Raw</button>
+        <button id="logmode-graph" onclick="setLogMode('graph')">SCF graph</button>
+      </div>
+      <div id="logbox" class="logbox"></div>
+      <div id="scf-panel" class="scf-panel" style="display:none"></div>
+      <div class="btn-row"><button class="btn" onclick="clearLog()">Clear</button></div>
+    </section>
+
+    <!-- ===== RESULTS ===== -->
+    <section class="screen" data-screen="results">
+      <div class="screen-title">Results</div>
+      <div class="screen-sub">Summary of completed calculations.</div>
+      <div class="field result-pick">
+        <select id="result-select" onchange="showResult()"></select>
+      </div>
+      <div class="card" id="result-body"><div class="hint">No result selected.</div></div>
+    </section>
+
+    <!-- ===== NEW ===== -->
+    <section class="screen" data-screen="new">
+      <div class="screen-title">New calculation</div>
+      <div class="screen-sub">Basics up top; tap Advanced for the rest.</div>
+
+      <!-- basic (always shown) -->
+      <div class="card">
+        <div class="field"><label>Name</label><input id="n-name" type="text" placeholder="e.g. Ltyr-MV-opt"></div>
+        <div class="frow">
+          <div class="field"><label>Type</label>
+            <select id="n-kind" onchange="onKindChange()">
+              <option value="opt">Opt</option><option value="ts_opt">TS Opt</option>
+              <option value="freq">Freq</option><option value="ts_freq">TS Freq</option>
+              <option value="tddft">TDDFT</option><option value="nmr">NMR</option>
+              <option value="sp">SP</option><option value="general">General</option>
+            </select>
+          </div>
+          <div class="field" style="flex:0 0 80px"><label>Charge</label><input id="n-charge" type="number" value="0"></div>
+          <div class="field" style="flex:0 0 80px"><label>Mult</label><input id="n-mult" type="number" value="1"></div>
+        </div>
+        <div class="field">
+          <label>Geometry source</label>
+          <div class="seg" id="geom-seg">
+            <button class="active" data-v="direct" onclick="setGeom('direct')">.xyz on PC</button>
+            <button data-v="reference" onclick="setGeom('reference')">Reference</button>
+          </div>
+        </div>
+        <div class="field" id="geom-direct-field">
+          <select id="n-xyz"><option value="">(select an uploaded .xyz on PC)</option></select>
+        </div>
+        <div class="field" id="geom-ref-field" style="display:none">
+          <label>Take geometry from</label>
+          <select id="n-ref"></select>
+        </div>
+        <div class="frow">
+          <div class="field"><label>Functional</label>
+            <div class="combo" id="ncombo-func"><input type="text" class="mono combo-input" autocomplete="off" placeholder="search or enter your own"><div class="combo-list" style="display:none"></div></div>
+          </div>
+          <div class="field"><label>Basis set</label>
+            <div class="combo" id="ncombo-basis"><input type="text" class="mono combo-input" autocomplete="off" placeholder="search or enter your own"><div class="combo-list" style="display:none"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- advanced toggle -->
+      <button class="adv-toggle" id="adv-toggle" onclick="toggleAdv()">
+        <span>Advanced settings</span><span class="chev">▾</span>
+      </button>
+      <div id="adv-wrap">
+
+        <!-- method -->
+        <div class="acc" data-acc>
+          <div class="acc-head" onclick="toggleAcc(this)">Method <span class="chev">▾</span></div>
+          <div class="acc-body">
+            <div class="frow">
+              <div class="field"><label>SCF conv.</label><select id="n-scf" class="mono"></select></div>
+              <div class="field"><label>RI approx.</label><select id="n-ri" class="mono"></select></div>
+            </div>
+            <div class="field"><label>Extra options</label><input id="n-options" class="mono" type="text" value="" placeholder="(optional, e.g. AutoAux)"></div>
+            <div class="frow">
+              <div class="field"><label>maxcore (MB)</label><input id="n-maxcore" type="number" value="2400"></div>
+              <div class="field"><label>nprocs</label><input id="n-nprocs" type="number" value="6"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- solvent -->
+        <div class="acc" data-acc>
+          <div class="acc-head" onclick="toggleAcc(this)">Solvation <span class="chev">▾</span></div>
+          <div class="acc-body">
+            <div class="frow">
+              <div class="field"><label>Model</label>
+                <select id="n-solvmodel" onchange="onSolvChange()">
+                  <option value="">Gas phase</option><option value="CPCM">CPCM</option><option value="SMD">SMD</option>
+                </select>
+              </div>
+              <div class="field" id="n-solvent-field" style="display:none"><label>Solvent</label>
+                <div class="combo" id="ncombo-solvent"><input type="text" class="mono combo-input" autocomplete="off" placeholder="search or enter your own"><div class="combo-list" style="display:none"></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- type-specific -->
+        <div class="acc" data-acc id="acc-typeopts">
+          <div class="acc-head" onclick="toggleAcc(this)">Type options <span class="chev">▾</span></div>
+          <div class="acc-body" id="typeopts-body">
+            <div class="hint">No extra options for this type.</div>
+          </div>
+        </div>
+
+        <!-- per-element basis -->
+        <div class="acc" data-acc>
+          <div class="acc-head" onclick="toggleAcc(this)">Per-element basis / ECP <span class="chev">▾</span></div>
+          <div class="acc-body">
+            <div id="basis-rows"></div>
+            <button class="btn" style="margin-top:4px" onclick="addBasisRow()">+ Element</button>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn btn-primary" onclick="addCalc()">Add to queue</button>
+      </div>
+      <div class="hint" style="text-align:center">Raw .inp editing is available on the desktop app.</div>
+    </section>
+
+  </div>
+
+  <!-- bottom tab bar -->
+  <nav class="tabbar">
+    <button class="tab active" data-tab="queue" onclick="go('queue')">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="16" width="18" height="4" rx="1"/></svg>
+      Queue
+    </button>
+    <button class="tab" data-tab="log" onclick="go('log')">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
+      Log
+    </button>
+    <button class="tab fab" data-tab="new" onclick="go('new')">
+      <div class="ico-wrap"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg></div>
+    </button>
+    <button class="tab" data-tab="results" onclick="go('results')">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 5-6"/></svg>
+      Results
+    </button>
+    <button class="tab" data-tab="settings" onclick="toast('Settings live on the desktop app')">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      More
+    </button>
+  </nav>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<!-- PIN gate overlay -->
+<div id="pin-gate" class="pin-gate">
+  <div class="pin-card">
+    <div class="logo" style="width:48px;height:48px;border-radius:12px;margin:0 auto 14px"><img src="orcadesk_logo.png" alt="ORCAdesk" /></div>
+    <div class="pin-title">Enter access PIN</div>
+    <div class="pin-sub">Open ORCAdesk on your PC and type the 6-digit PIN shown in Settings.</div>
+    <input id="pin-input" type="tel" inputmode="numeric" maxlength="6" pattern="\d{6}"
+           placeholder="------" class="pin-input" autocomplete="off">
+    <button class="btn btn-primary" style="margin-top:14px" onclick="submitPin()">Connect</button>
+  </div>
+</div>
+
+<script src="/scf_graph.js"></script>
+<script>
+/* ============================================================
+   ORCAdesk mobile (PWA) — connected to the real server.
+   The page is served BY the server, so API calls use relative
+   paths (/api/...) and automatically hit the same origin.
+   ============================================================ */
+
+const API = "";                 // same origin (served by the server)
+let pollTimer = null;
+let logTimer = null;
+let logSince = 0;
+let lastVersion = -1;
+let geomSource = "direct";
+let advOpen = false;
+let serverRunning = false;
+let choices = null;
+let authToken = "";
+
+// load any saved PIN
+try { authToken = localStorage.getItem("orcadesk_pin") || ""; } catch(e){ authToken = ""; }
+
+// if opened via QR (?pin=123456), use that and clean the URL
+(function(){
+  try{
+    const p = new URLSearchParams(location.search).get("pin");
+    if(p && /^\d{6}$/.test(p)){
+      authToken = p;
+      try{ localStorage.setItem("orcadesk_pin", p); }catch(e){}
+      // strip the pin from the address bar so it isn't left visible/bookmarked
+      history.replaceState(null, "", location.pathname);
+    }
+  }catch(e){}
+})();
+
+// a stable id for this phone (for connection counting)
+let clientId = "";
+try{
+  clientId = localStorage.getItem("orcadesk_cid") || "";
+  if(!clientId){ clientId = "ph-" + Math.random().toString(36).slice(2,10); localStorage.setItem("orcadesk_cid", clientId); }
+}catch(e){ clientId = "ph-" + Math.random().toString(36).slice(2,10); }
+
+// ---- tiny helpers ----
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+async function api(path, opts){
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers || {});
+  if(authToken) opts.headers["X-ORCAdesk-Token"] = authToken;
+  const r = await fetch(API + path, opts);
+  if(r.status === 401){
+    // PIN missing/wrong -> show the gate and abort this call
+    showPinGate(true);
+    throw new Error("PIN required");
+  }
+  if(!r.ok){
+    let detail = r.status + "";
+    try{ const j = await r.json(); if(j.detail) detail = j.detail; }catch(e){}
+    throw new Error(detail);
+  }
+  return r.status === 204 ? null : r.json();
+}
+
+// ---- PIN gate ----
+function showPinGate(show){
+  const g = document.getElementById("pin-gate");
+  if(g) g.style.display = show ? "flex" : "none";
+}
+async function submitPin(){
+  const v = (document.getElementById("pin-input").value || "").trim();
+  if(!/^\d{6}$/.test(v)){ toast("Enter the 6-digit PIN"); return; }
+  // verify against server via the open /api/ping
+  try{
+    const r = await fetch(API + "/api/ping?token=" + encodeURIComponent(v));
+    const j = await r.json();
+    if(j.authorized){
+      authToken = v;
+      try{ localStorage.setItem("orcadesk_pin", v); }catch(e){}
+      showPinGate(false);
+      toast("Connected");
+      startQueuePolling();
+    }else{
+      toast("Wrong PIN");
+    }
+  }catch(e){ toast("Can't reach server"); }
+}
+function forgetPin(){
+  authToken = "";
+  try{ localStorage.removeItem("orcadesk_pin"); }catch(e){}
+  showPinGate(true);
+}
+
+// ---- nav ----
+function go(tab){
+  document.querySelectorAll(".screen").forEach(s=>s.classList.toggle("active",s.dataset.screen===tab));
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.tab===tab));
+  document.querySelector(".screens").scrollTop=0;
+  if(tab==="log") startLogPolling(); else stopLogPolling();
+}
+
+// ---- toast ----
+let toastTimer=null;
+function toast(msg){
+  const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("show"),2200);
+}
+
+// ---- connection indicator ----
+function setConn(state){ // "ok" | "offline"
+  const el=document.getElementById("conn");
+  const txt=document.getElementById("conn-text");
+  if(state==="ok"){ el.classList.add("ok"); txt.textContent="connected"; }
+  else { el.classList.remove("ok"); txt.textContent="offline"; }
+}
+
+// ---- select fill ----
+function fill(id,arr,def){
+  const s=document.getElementById(id); if(!s) return;
+  s.innerHTML="";
+  arr.forEach(v=>{const o=document.createElement("option");o.value=v;o.textContent=v;s.appendChild(o);});
+  if(def && arr.includes(def)) s.value=def;
+}
+// editable searchable combobox (mobile; flat list, no group headers)
+const _ncombos={};
+function setupCombo(containerId, arr, def){
+  const root=document.getElementById(containerId); if(!root) return;
+  const input=root.querySelector(".combo-input");
+  const list=root.querySelector(".combo-list");
+  const items=(arr||[]).slice();
+  let activeIdx=-1, rendered=[];
+  function setActive(i){
+    if(activeIdx>=0 && rendered[activeIdx]) rendered[activeIdx].el.classList.remove("active");
+    activeIdx=i;
+    if(activeIdx>=0 && rendered[activeIdx]){ rendered[activeIdx].el.classList.add("active"); rendered[activeIdx].el.scrollIntoView({block:"nearest"}); }
+  }
+  function render(filter){
+    const q=(filter||"").trim().toLowerCase();
+    list.innerHTML=""; rendered=[]; let count=0;
+    for(const v of items){
+      if(q && !v.toLowerCase().includes(q)) continue;
+      const row=document.createElement("div");
+      row.className="combo-item"; row.textContent=v;
+      row.addEventListener("mousedown",(e)=>{e.preventDefault();choose(v);});
+      row.addEventListener("touchstart",(e)=>{e.preventDefault();choose(v);},{passive:false});
+      list.appendChild(row); rendered.push({value:v,el:row}); count++;
+    }
+    if(count===0){const n=document.createElement("div");n.className="combo-none";
+      n.textContent=q?`No match — "${filter}" will be used`:"No options";list.appendChild(n);}
+    activeIdx=-1;
+  }
+  function open(){render("");list.style.display="block";const i=rendered.findIndex(r=>r.value===input.value);if(i>=0)setActive(i);}
+  function close(){list.style.display="none";activeIdx=-1;}
+  function isOpen(){return list.style.display!=="none";}
+  function choose(v){input.value=v;close();}
+  input.addEventListener("focus",open);
+  input.addEventListener("input",()=>{render(input.value);list.style.display="block";if(rendered.length)setActive(0);});
+  input.addEventListener("keydown",(ev)=>{
+    if(ev.key==="ArrowDown"){ev.preventDefault();if(!isOpen()){open();if(rendered.length)setActive(0);return;}setActive(Math.min(activeIdx+1,rendered.length-1));}
+    else if(ev.key==="ArrowUp"){ev.preventDefault();if(!isOpen())return;setActive(Math.max(activeIdx-1,0));}
+    else if(ev.key==="Enter"){if(isOpen()&&rendered.length){ev.preventDefault();choose(rendered[activeIdx>=0?activeIdx:0].value);}}
+    else if(ev.key==="Escape"||ev.key==="Tab"){close();}
+  });
+  input.addEventListener("blur",()=>setTimeout(close,150));
+  if(def!=null) input.value=def;
+  _ncombos[containerId]={get:()=>input.value,set:(v)=>{input.value=v==null?"":v;}};
+  render(""); close();
+}
+function comboValue(id){const c=_ncombos[id];return c?c.get():"";}
+
+// ---- choices from server ----
+async function loadChoices(){
+  try{
+    choices = await api("/api/choices");
+    setupCombo("ncombo-func", choices.functionals||[], "wB97X-D4");
+    setupCombo("ncombo-basis", choices.basis_sets||[], "def2-TZVP");
+    fill("n-scf", choices.scf_convergences||[], "TightSCF");
+    fill("n-ri", choices.ri_approximations||[], "RIJCOSX");
+    setupCombo("ncombo-solvent", choices.solvents||[], "Water");
+    // apply the desktop's opt-ETA mode so the phone graph matches
+    if(choices._settings && choices._settings.eta_mode && window.SCFGraph && SCFGraph.setEtaMode)
+      SCFGraph.setEtaMode(choices._settings.eta_mode);
+  }catch(e){
+    setupCombo("ncombo-func",["wB97X-D4","M06-2X","B3LYP","PBE0"],"wB97X-D4");
+    setupCombo("ncombo-basis",["def2-TZVP","def2-SVP","6-311++G**"],"def2-TZVP");
+    fill("n-scf",["TightSCF","VeryTightSCF","NormalSCF"],"TightSCF");
+    fill("n-ri",["RIJCOSX","RIJDX","NoRI"],"RIJCOSX");
+    setupCombo("ncombo-solvent",["Water","Acetonitrile","Methanol","THF"],"Water");
+  }
+}
+
+// ---- queue polling ----
+async function refreshQueue(force){
+  try{
+    const snap = await api("/api/queue");
+    setConn("ok");
+    serverRunning = snap.running;
+    // only re-render when something changed (cheap version check)
+    if(force || snap.version !== lastVersion){
+      lastVersion = snap.version;
+      renderQueue(snap.calculations);
+    }
+    updateRunButtons();
+    fillRefSelect(snap.calculations);
+  }catch(e){
+    setConn("offline");
+  }
+}
+function startQueuePolling(){
+  refreshQueue(true);
+  clearInterval(pollTimer);
+  pollTimer = setInterval(refreshQueue, 1500);
+  // heartbeat so the PC can show this phone as connected
+  sendHeartbeat();
+  clearInterval(hbTimer);
+  hbTimer = setInterval(sendHeartbeat, 5000);
+}
+let hbTimer = null;
+async function sendHeartbeat(){
+  try{
+    await api("/api/heartbeat",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({client_id:clientId})});
+  }catch(e){ /* offline handled elsewhere */ }
+}
+
+let mobileCalcs = [];   // last rendered list (for index lookups)
+function renderQueue(calcs){
+  mobileCalcs = calcs || [];
+  const el=document.getElementById("queue-list");
+  if(!calcs || !calcs.length){
+    el.innerHTML='<div class="empty">No calculations queued.<br>Tap + to add one.</div>';
+    return;
+  }
+  el.innerHTML="";
+  calcs.forEach((c,idx)=>{
+    const div=document.createElement("div");
+    div.className="qitem";
+    div.dataset.index=idx;
+    const editable = c.state==="pending";   // pending: drag + delete
+    const rawBadge=c.is_raw?'<span class="badge-raw">raw</span>':'';
+    const bar=c.state==="running"?'<div class="running-bar"><span></span></div>':'';
+    const delBtn = editable
+      ? `<button class="qdel" onclick="delCalc('${esc(c.name)}')" title="Remove">×</button>` : '';
+    const handle = editable
+      ? `<span class="qhandle" data-index="${idx}" title="Drag to reorder">≡</span>` : '';
+    div.innerHTML=`<div class="qmain">
+        <div class="qname">${esc(c.name)} ${rawBadge}</div>
+        <div class="qmeta">${esc(c.meta||"")}</div>${bar}
+        ${c.message?('<div class="qmsg">'+esc(c.message)+'</div>'):''}
+      </div>
+      <span class="qstate ${c.state}">${c.state}</span>
+      ${delBtn}
+      ${handle}`;
+    el.appendChild(div);
+  });
+  attachTouchDrag();
+}
+
+// ---- touch drag-to-reorder via the ≡ handle (pending only) ----
+function attachTouchDrag(){
+  const handles = document.querySelectorAll("#queue-list .qhandle");
+  handles.forEach(h=>{
+    h.addEventListener("touchstart", onHandleDown, {passive:false});
+    h.addEventListener("mousedown", onHandleDown);   // also works on desktop browser
+  });
+}
+let _drag = null;
+function onHandleDown(e){
+  e.preventDefault();
+  const startIdx = parseInt(e.currentTarget.dataset.index,10);
+  const item = e.currentTarget.closest(".qitem");
+  _drag = {startIdx, item, fromY: pointY(e)};
+  item.classList.add("dragging");
+  document.addEventListener("touchmove", onDragMove, {passive:false});
+  document.addEventListener("mousemove", onDragMove);
+  document.addEventListener("touchend", onDragEnd);
+  document.addEventListener("mouseend", onDragEnd);
+  document.addEventListener("mouseup", onDragEnd);
+}
+function pointY(e){ return e.touches ? e.touches[0].clientY : e.clientY; }
+function onDragMove(e){
+  if(!_drag) return;
+  e.preventDefault();
+  const y = pointY(e);
+  const items = [...document.querySelectorAll("#queue-list .qitem")];
+  // find which item we're hovering over
+  for(const it of items){
+    const r = it.getBoundingClientRect();
+    if(y >= r.top && y <= r.bottom){
+      const overIdx = parseInt(it.dataset.index,10);
+      const c = mobileCalcs[overIdx];
+      if(c && c.state==="pending"){
+        items.forEach(x=>x.classList.remove("drop-target"));
+        if(overIdx !== _drag.startIdx) it.classList.add("drop-target");
+        _drag.overIdx = overIdx;
+      }
+      break;
+    }
+  }
+}
+async function onDragEnd(){
+  document.removeEventListener("touchmove", onDragMove);
+  document.removeEventListener("mousemove", onDragMove);
+  document.removeEventListener("touchend", onDragEnd);
+  document.removeEventListener("mouseup", onDragEnd);
+  if(!_drag){ return; }
+  const {startIdx, item, overIdx} = _drag;
+  item.classList.remove("dragging");
+  document.querySelectorAll("#queue-list .qitem").forEach(x=>x.classList.remove("drop-target"));
+  _drag = null;
+  if(overIdx==null || overIdx===startIdx) return;
+  try{
+    await api("/api/queue/reorder",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({from:startIdx, to:overIdx})});
+    refreshQueue(true);
+  }catch(e){ toast(e.message); }
+}
+
+function updateRunButtons(){
+  const runBtn=document.getElementById("run-btn");
+  const cancelBtn=document.getElementById("cancel-btn");
+  runBtn.disabled = serverRunning;
+  runBtn.textContent = serverRunning ? "Running..." : "Run queue";
+  cancelBtn.disabled = !serverRunning;
+}
+
+// ---- run / cancel (real) ----
+async function onRun(){
+  try{
+    await api("/api/run",{method:"POST"});
+    toast("Queue started");
+    serverRunning=true; updateRunButtons();
+  }catch(e){ toast(e.message); }
+}
+async function onCancel(){
+  try{
+    await api("/api/cancel",{method:"POST"});
+    toast("Cancellation requested");
+  }catch(e){ toast(e.message); }
+}
+
+// ---- delete ----
+async function delCalc(name){
+  if(!confirm('Remove "'+name+'" from the queue?')) return;
+  try{
+    await api("/api/queue/"+encodeURIComponent(name),{method:"DELETE"});
+    toast("Removed "+name);
+    refreshQueue(true);
+  }catch(e){ toast(e.message); }
+}
+
+// ---- log polling (real, via /api/log?since=) ----
+let _scfTracker = (window.SCFGraph) ? new SCFGraph.SCFTracker() : null;
+let _geoTracker = (window.SCFGraph) ? new SCFGraph.GeoTracker() : null;
+let _logMode = "raw";
+let _graphKind = "auto";
+function currentRunningScf(){
+  const r = (mobileCalcs||[]).find(c=>c.state==="running");
+  return r ? (r.scf_convergence || "TightSCF") : "TightSCF";
+}
+function runningIsOpt(){
+  const r = (mobileCalcs||[]).find(c=>c.state==="running");
+  return r ? (r.kind==="opt"||r.kind==="ts_opt") : false;
+}
+function effectiveGraphKind(){
+  if(_graphKind==="scf") return "scf";
+  if(_graphKind==="geo") return "geo";
+  if(_geoTracker && _geoTracker.hasData() && runningIsOpt()) return "geo";
+  return "scf";
+}
+const _LOG_MAX_LINES = 1500;
+let _scfDirty = false;
+function setLogMode(mode){
+  _logMode = mode;
+  document.getElementById("logmode-raw").classList.toggle("active", mode==="raw");
+  document.getElementById("logmode-graph").classList.toggle("active", mode==="graph");
+  document.getElementById("logbox").style.display = mode==="raw" ? "block" : "none";
+  document.getElementById("scf-panel").style.display = mode==="graph" ? "block" : "none";
+  if(mode==="graph") renderSCFPanel();
+}
+function setGraphKind(k){ _graphKind=k; renderSCFPanel(); }
+function renderSCFPanel(){
+  if(!window.SCFGraph) return;
+  const panel=document.getElementById("scf-panel");
+  const kind=effectiveGraphKind();
+  const showToggle = (_geoTracker && _geoTracker.hasData());
+  let head="";
+  if(showToggle){
+    head=`<div class="graph-subtoggle">
+      <button class="${kind==='geo'?'active':''}" onclick="setGraphKind('geo')">Optimization</button>
+      <button class="${kind==='scf'?'active':''}" onclick="setGraphKind('scf')">Current SCF</button>
+    </div>`;
+  }
+  let body;
+  if(kind==="geo" && _geoTracker && _geoTracker.hasData()){
+    body = `<div class="graph-summary">${SCFGraph.renderGeoProgress(_geoTracker)}</div>`+
+           `<div class="graph-divider"></div>`+
+           `<div class="graph-plot">${SCFGraph.renderGeoGraph(_geoTracker, {width:300, height:190})}</div>`;
+  }else{
+    const scf=currentRunningScf();
+    body = `<div class="graph-summary">${SCFGraph.renderSCFProgress(_scfTracker, scf)}</div>`+
+           `<div class="graph-divider"></div>`+
+           `<div class="graph-plot">${SCFGraph.renderSCFGraph(_scfTracker, scf, {width:300, height:190})}</div>`;
+  }
+  panel.innerHTML = head + body;
+  _scfDirty=false;
+}
+const _CALC_START_RE=/^\[.+\]\s*\(.+\)\s*running ORCA/i;
+function appendLog(msg,level){
+  if(_CALC_START_RE.test(msg) && window.SCFGraph){
+    _scfTracker=new SCFGraph.SCFTracker();
+    _geoTracker=new SCFGraph.GeoTracker();
+    _graphKind="auto"; _scfDirty=true;
+  }
+  const box=document.getElementById("logbox");
+  const d=document.createElement("div");
+  d.className="log-line log-"+(level||"info"); d.textContent=msg;
+  box.appendChild(d);
+  while(box.childElementCount > _LOG_MAX_LINES) box.removeChild(box.firstChild);
+  box.scrollTop=box.scrollHeight;
+  let changed=false;
+  if(_scfTracker && _scfTracker.push(msg)) changed=true;
+  if(_geoTracker && _geoTracker.push(msg)) changed=true;
+  if(changed) _scfDirty=true;
+}
+function clearLog(){
+  document.getElementById("logbox").innerHTML="";
+  if(window.SCFGraph){
+    _scfTracker=new SCFGraph.SCFTracker();
+    _geoTracker=new SCFGraph.GeoTracker();
+    if(_logMode==="graph") renderSCFPanel();
+  }
+}
+async function pollLog(){
+  try{
+    const r = await api("/api/log?since="+logSince);
+    (r.lines||[]).forEach(l=>{ appendLog(l.msg, l.level); logSince = l.seq; });
+    if(_logMode==="graph" && _scfDirty) renderSCFPanel();
+  }catch(e){ /* offline; queue poll handles indicator */ }
+}
+function startLogPolling(){
+  pollLog();
+  clearInterval(logTimer);
+  logTimer = setInterval(pollLog, 1000);
+}
+function stopLogPolling(){ clearInterval(logTimer); }
+
+// ---- results (placeholder until a results API exists) ----
+function showResult(){}
+// Results parsing isn't exposed over the API yet; guide the user to the desktop.
+(function initResultsNotice(){
+  try{
+    const body=document.getElementById("result-body");
+    const sel=document.getElementById("result-select");
+    if(sel) sel.style.display="none";
+    if(body) body.innerHTML='<div class="hint">Result summaries are available in the desktop app for now. '+
+      'The queue, log and SCF graph here stay live.</div>';
+  }catch(e){}
+})();
+
+// ---- new calc form ----
+function setGeom(v){
+  geomSource=v;
+  document.querySelectorAll("#geom-seg button").forEach(b=>b.classList.toggle("active",b.dataset.v===v));
+  document.getElementById("geom-direct-field").style.display=v==="direct"?"block":"none";
+  document.getElementById("geom-ref-field").style.display=v==="reference"?"block":"none";
+}
+function fillRefSelect(calcs){
+  const s=document.getElementById("n-ref"); if(!s) return;
+  const cur=s.value;
+  const names=(calcs||[]).map(c=>c.name);
+  s.innerHTML="";
+  if(!names.length){ s.innerHTML='<option value="">(no calculations yet)</option>'; return; }
+  names.forEach(n=>{const o=document.createElement("option");o.value=n;o.textContent=n;s.appendChild(o);});
+  if(names.includes(cur)) s.value=cur;
+}
+function toggleAdv(){
+  advOpen=!advOpen;
+  document.getElementById("adv-toggle").classList.toggle("open",advOpen);
+  document.getElementById("adv-wrap").classList.toggle("open",advOpen);
+}
+function toggleAcc(head){ head.parentElement.classList.toggle("open"); }
+function onSolvChange(){
+  const m=document.getElementById("n-solvmodel").value;
+  document.getElementById("n-solvent-field").style.display=m?"block":"none";
+}
+function onKindChange(){
+  const kind=document.getElementById("n-kind").value;
+  const body=document.getElementById("typeopts-body");
+  if(kind==="freq"||kind==="ts_freq"){
+    body.innerHTML=`<div class="frow">
+      <div class="field"><label>Temp (K)</label><input id="n-temp" type="number" value="298.15" step="0.01"></div>
+      <div class="field"><label>Pressure (atm)</label><input id="n-pressure" type="number" value="1.0" step="0.1"></div>
+    </div><div class="hint">Defaults omit the %freq block.</div>`;
+  }else if(kind==="tddft"){
+    body.innerHTML=`<div class="frow">
+      <div class="field"><label>nroots</label><input id="n-nroots" type="number" value="40"></div>
+      <div class="field"><label>maxdim</label><input id="n-maxdim" type="number" value="10"></div>
+    </div>
+    <label class="chk"><input id="n-tda" type="checkbox"> TDA</label>
+    <label class="chk"><input id="n-triplets" type="checkbox"> triplets</label>`;
+  }else if(kind==="nmr"){
+    body.innerHTML=`<label class="chk"><input id="n-jcoupling" type="checkbox"> Also compute J-couplings</label>
+    <div class="hint">Shielding is always computed.</div>`;
+  }else if(kind==="general"){
+    body.innerHTML=`<div class="field"><label>Run type keyword</label><input id="n-gentype" class="mono" type="text" placeholder="e.g. IRC, NEB-TS"></div>`;
+  }else{
+    body.innerHTML='<div class="hint">No extra options for this type.</div>';
+  }
+}
+function addBasisRow(el,bs,ecp){
+  const host=document.getElementById("basis-rows");
+  const row=document.createElement("div");
+  row.className="frow"; row.style.marginBottom="8px";
+  row.innerHTML=`<input class="mono be-el" type="text" placeholder="I" value="${el||''}" style="flex:0 0 70px">
+    <input class="mono be-basis" type="text" placeholder="def2-TZVP" value="${bs||''}">
+    <input class="mono be-ecp" type="text" placeholder="def2-ECP" value="${ecp||''}">
+    <button class="btn" style="flex:0 0 44px;padding:0;color:var(--err)" onclick="this.parentElement.remove()">×</button>`;
+  host.appendChild(row);
+}
+
+// build the payload the server expects (mirrors desktop config)
+function collectConfig(kind){
+  const val=id=>{const e=document.getElementById(id);return e?e.value:"";};
+  const numv=(id,d)=>{const e=document.getElementById(id);return e?(parseInt(e.value,10)||d):d;};
+  const fnum=(id,d)=>{const e=document.getElementById(id);return e?(parseFloat(e.value)||d):d;};
+  const chk=id=>{const e=document.getElementById(id);return e?e.checked:false;};
+
+  // per-element basis rows
+  const basis=[];
+  document.querySelectorAll("#basis-rows .frow").forEach(r=>{
+    const el=r.querySelector(".be-el"); if(!el) return;
+    const e=el.value.trim(), b=r.querySelector(".be-basis").value.trim(), c=r.querySelector(".be-ecp").value.trim();
+    if(e && (b||c)) basis.push({element:e,basis:b,ecp:c});
+  });
+
+  // calc type per kind
+  let calcType="";
+  if(kind==="opt")calcType="TightOpt";
+  else if(kind==="ts_opt")calcType="OptTS";
+  else if(kind==="freq"||kind==="ts_freq")calcType="Freq";
+  else if(kind==="nmr")calcType="NMR";
+  else if(kind==="sp")calcType="SP";
+  else if(kind==="general")calcType=val("n-gentype");
+
+  const cfg={
+    kind,
+    functional:comboValue("ncombo-func"),
+    basis_set:comboValue("ncombo-basis"),
+    scf_convergence:val("n-scf"),
+    ri_approximation:val("n-ri"),
+    calculation_type:calcType,
+    options:val("n-options"),
+    maxcore_mb:numv("n-maxcore",2400),
+    nprocs:numv("n-nprocs",6),
+    solvation:{model:val("n-solvmodel"),solvent:comboValue("ncombo-solvent")},
+    basis_assignments:basis,
+    freq_temp_k:fnum("n-temp",298.15),
+    freq_pressure_atm:fnum("n-pressure",1.0),
+    nmr_jcoupling:chk("n-jcoupling"),
+    tddft_nroots:numv("n-nroots",40),
+    tddft_maxdim:numv("n-maxdim",10),
+    tddft_tda:chk("n-tda"),
+    tddft_triplets:chk("n-triplets"),
+  };
+  return cfg;
+}
+
+async function addCalc(){
+  const name=document.getElementById("n-name").value.trim();
+  if(!name){toast("Name is required");return;}
+  const kind=document.getElementById("n-kind").value;
+  const payload={
+    name, kind,
+    charge:parseInt(document.getElementById("n-charge").value,10)||0,
+    multiplicity:parseInt(document.getElementById("n-mult").value,10)||1,
+    geometry_source:geomSource,
+    xyz: geomSource==="direct" ? "" : "",   // .xyz upload handled on PC; phone references existing
+    ref_name: geomSource==="reference" ? document.getElementById("n-ref").value : "",
+    config: collectConfig(kind),
+  };
+  try{
+    await api("/api/queue",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    toast("Added to queue");
+    document.getElementById("n-name").value="";
+    refreshQueue(true);
+    go("queue");
+  }catch(e){ toast(e.message); }
+}
+
+// ---- init ----
+loadChoices();
+onKindChange();
+if(authToken){
+  // we have a saved PIN; verify it quietly, else show the gate
+  fetch(API + "/api/ping?token=" + encodeURIComponent(authToken))
+    .then(r=>r.json())
+    .then(j=>{ if(j.authorized){ showPinGate(false); startQueuePolling(); } else { showPinGate(true); } })
+    .catch(()=>{ showPinGate(true); });
+}else{
+  showPinGate(true);
+}
+
+</script>
+</body>
+</html>

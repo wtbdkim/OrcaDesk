@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ORCAdesk</title>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- top bar -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo"><img src="orcadesk_logo.png" alt="ORCAdesk" /></div>
+      <div>
+        <h1>ORCAdesk <span class="ver-badge">0.1 beta</span></h1>
+        <div class="sub">computational chemistry job runner</div>
+      </div>
+    </div>
+    <div class="status-group">
+      <div id="orca-status" class="status-pill">
+        <span class="dot"></span><span id="orca-status-text">ORCA not set</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- tabs -->
+  <nav class="tabs">
+    <button class="tab active" data-tab="build" onclick="switchTab('build')">Build</button>
+    <button class="tab" data-tab="queue" onclick="switchTab('queue')">Queue</button>
+    <button class="tab" data-tab="log" onclick="switchTab('log')">Log</button>
+    <button class="tab" data-tab="results" onclick="switchTab('results')">Results</button>
+    <button class="tab" data-tab="settings" onclick="switchTab('settings')">Settings</button>
+  </nav>
+
+  <div class="tab-content">
+
+    <!-- ============ BUILD ============ -->
+    <section class="panel active" data-panel="build">
+      <div class="card">
+        <div class="card-title">Calculation</div>
+        <div class="card-desc">One calculation = one ORCA run. Give it a unique name (used as its folder).</div>
+        <div class="field-row">
+          <div class="field"><label>Name</label><input id="calc-name" type="text" placeholder="e.g. Ltyr-MV-opt"></div>
+          <div class="field" style="flex:0 0 130px"><label>Type</label>
+            <select id="calc-kind" onchange="onKindChange()">
+              <option value="opt">Opt</option>
+              <option value="ts_opt">TS Opt</option>
+              <option value="freq">Freq</option>
+              <option value="ts_freq">TS Freq</option>
+              <option value="neb_ts">NEB-TS (find TS)</option>
+              <option value="irc">IRC (verify TS)</option>
+              <option value="tddft">TDDFT</option>
+              <option value="nmr">NMR</option>
+              <option value="sp">SP</option>
+              <option value="general">General (any)</option>
+            </select>
+          </div>
+          <div class="field" style="flex:0 0 100px"><label>Charge</label><input id="calc-charge" type="number" value="0"></div>
+          <div class="field" style="flex:0 0 110px"><label>Mult.</label><input id="calc-mult" type="number" value="1" min="1"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Geometry source</div>
+        <div class="card-desc">Use coordinates from an .xyz file, or take the optimized geometry of another queued calculation.</div>
+        <div class="field-row" style="margin-bottom:12px">
+          <label class="checkbox"><input type="radio" name="geomsrc" value="direct" checked onchange="onGeomSourceChange()"> From .xyz file</label>
+          <label class="checkbox"><input type="radio" name="geomsrc" value="reference" onchange="onGeomSourceChange()"> Reference another calculation</label>
+        </div>
+        <div id="geom-direct">
+          <div class="btn-group" style="margin-bottom:4px">
+            <button class="btn btn-sm" onclick="loadXyz()">Load .xyz</button>
+            <span id="xyz-status" class="hint" style="margin:0;align-self:center"></span>
+          </div>
+        </div>
+        <div id="geom-reference" style="display:none">
+          <div class="field">
+            <label>Take optimized geometry from</label>
+            <select id="ref-select"></select>
+          </div>
+          <div class="hint">The referenced calculation runs first; its final geometry is injected here at run time.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Method &amp; options</div>
+        <div class="card-desc">Settings for this calculation.</div>
+        <div id="calc-config"></div>
+        <div class="divider"></div>
+        <div class="atoms-head">
+          <div>
+            <label style="margin:0">Per-element basis / ECP</label>
+            <div class="card-desc" style="margin:2px 0 0">Override basis/ECP for specific elements (e.g. heavy atoms). Leave empty for none.</div>
+          </div>
+          <button class="btn btn-sm" onclick="addBasisRow()">+ Element</button>
+        </div>
+        <div id="basis-rows"></div>
+      </div>
+
+      <div class="card" id="raw-card" style="display:none">
+        <div class="card-title">Raw .inp <span class="qstate raw" style="margin-left:6px">raw</span></div>
+        <div class="card-desc">Edit the ORCA input directly. To reuse another calculation's optimized geometry, set <b>Geometry source → reference</b> (in the form above), pick the opt job, and put <span class="mono">{{GEOMETRY}}</span> where the coordinates go — it's filled in automatically when the job runs.</div>
+        <div class="btn-group" style="flex-wrap:wrap;margin-bottom:8px">
+          <span class="hint" style="margin:0;align-self:center">Insert block:</span>
+          <button class="btn btn-sm btn-ghost" onclick="insertSnippet('geometry')" title="Placeholder for a referenced calculation's optimized geometry">{{GEOMETRY}}</button>
+          <button class="btn btn-sm btn-ghost" onclick="insertSnippet('scf')">%scf</button>
+          <button class="btn btn-sm btn-ghost" onclick="insertSnippet('basis')">%basis (newgto/ecp)</button>
+          <button class="btn btn-sm btn-ghost" onclick="insertSnippet('geom')">%geom (constraints/scan)</button>
+          <button class="btn btn-sm btn-ghost" onclick="insertSnippet('plots')">%plots (orbitals)</button>
+          <button class="btn btn-sm btn-ghost" onclick="insertSnippet('eprnmr')">%eprnmr</button>
+          <button class="btn btn-sm btn-ghost" onclick="insertSnippet('tddft')">%tddft</button>
+          <button class="btn btn-sm btn-ghost" onclick="insertSnippet('cpcm')">%cpcm</button>
+          <button class="btn btn-sm btn-ghost" onclick="insertSnippet('irc')">%irc</button>
+        </div>
+        <textarea id="raw-text" class="mono raw-editor" spellcheck="false"></textarea>
+      </div>
+
+      <div id="edit-banner" class="hint" style="display:none;margin-bottom:8px"></div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="add-btn" onclick="addCalcToQueue()">Add to queue →</button>
+        <button class="btn" id="raw-btn" onclick="enterRawMode()">Edit raw .inp</button>
+        <button class="btn btn-ghost" onclick="resetBuild()">Reset</button>
+      </div>
+    </section>
+
+    <!-- ============ QUEUE ============ -->
+    <section class="panel" data-panel="queue">
+      <div class="card">
+        <div class="card-title">Job queue</div>
+        <div class="card-desc">Jobs run sequentially. A failed job is skipped; the rest continue.</div>
+        <div id="queue-list"><div class="queue-empty">No jobs queued. Build one in the Build tab.</div></div>
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="run-btn" onclick="runQueue()">Run queue</button>
+        <button class="btn btn-danger" id="cancel-btn" onclick="cancelQueue()" disabled>Cancel</button>
+        <button class="btn btn-ghost" onclick="clearQueue()">Clear all</button>
+      </div>
+    </section>
+
+    <!-- ============ LOG ============ -->
+    <section class="panel" data-panel="log">
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div class="card-title">Live output</div>
+            <div class="card-desc" style="margin:0">Streaming ORCA stdout and pipeline events.</div>
+          </div>
+          <button class="btn btn-sm btn-ghost" onclick="clearLog()">Clear</button>
+        </div>
+      </div>
+      <div class="log-mode-toggle">
+        <button id="logmode-raw" class="active" onclick="setLogMode('raw')">Raw</button>
+        <button id="logmode-graph" onclick="setLogMode('graph')">SCF graph</button>
+      </div>
+      <div id="log" class="log-box"></div>
+      <div id="scf-panel" class="scf-panel" style="display:none"></div>
+    </section>
+
+    <!-- ============ RESULTS ============ -->
+    <section class="panel" data-panel="results">
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div>
+            <div class="card-title">Results</div>
+            <div class="card-desc" style="margin:0">Pick a completed job, or open any .out file.</div>
+          </div>
+          <div class="btn-group">
+            <select id="result-select" style="width:auto" onchange="showSelectedResult()"></select>
+            <button class="btn btn-sm" onclick="openOutFile()">Open .out</button>
+          </div>
+        </div>
+        <div id="result-body"><div class="hint">No result selected.</div></div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div>
+            <div class="card-title">Free energy profile</div>
+            <div class="card-desc" style="margin:0">Relative Gibbs free energy across finished frequency calculations, in queue order.</div>
+          </div>
+          <div class="btn-group">
+            <select id="fep-units" style="width:auto" onchange="renderFreeEnergyProfile()">
+              <option value="kcal">kcal/mol</option>
+              <option value="kj">kJ/mol</option>
+            </select>
+            <select id="fep-ref" style="width:auto" onchange="renderFreeEnergyProfile()"></select>
+            <button class="btn btn-sm" onclick="renderFreeEnergyProfile()">Refresh</button>
+          </div>
+        </div>
+        <div id="fep-body"><div class="hint">No finished frequency calculations yet. Run jobs with FREQ to build a profile.</div></div>
+      </div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section class="panel" data-panel="settings">
+      <div class="card">
+        <div class="card-title">ORCA executable</div>
+        <div class="card-desc">Path to orca.exe. Required to run jobs. Auto-detected on first launch.</div>
+        <div class="field-row">
+          <div class="field"><input id="set-orca" type="text" class="mono" placeholder="C:\ORCA_6.1.1\orca.exe"></div>
+          <button class="btn" onclick="pickOrca()">Browse</button>
+          <button class="btn btn-ghost" onclick="autodetectOrca()">Auto-detect</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Workspace</div>
+        <div class="card-desc">Where calculation folders are written.</div>
+        <div class="field-row">
+          <div class="field"><input id="set-ws" type="text" class="mono"></div>
+          <button class="btn" onclick="pickWorkspace()">Browse</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Defaults</div>
+        <div class="card-desc">Seed values for new pipeline steps.</div>
+        <div class="field-row">
+          <div class="field"><label>nprocs</label><input id="set-nprocs" type="number" min="1" value="6"></div>
+          <div class="field"><label>maxcore (MB / core)</label><input id="set-maxcore" type="number" min="100" step="100" value="2400"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Optimization time estimate</div>
+        <div class="card-desc">How the live graph predicts remaining time during a geometry optimization.</div>
+        <label class="radio-row">
+          <input type="radio" name="eta-mode" value="conservative" checked>
+          <span><strong>Conservative</strong> — only show an estimate when the trend is clear. Fewer estimates, but more reliable. Shows "estimating…" otherwise.</span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="eta-mode" value="eager">
+          <span><strong>Eager</strong> — show an estimate earlier and keep it on screen. More responsive, but the number can be rougher.</span>
+        </label>
+      </div>
+      <button class="btn btn-primary" onclick="saveSettings()">Save settings</button>
+      <span id="set-saved" class="hint" style="margin-left:10px"></span>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-title">About</div>
+        <div id="about-body" class="kv" style="margin-top:8px"></div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<!-- generic modal (used e.g. for overwrite-conflict choices) -->
+<div id="modal-overlay" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <div class="modal-title" id="modal-title"></div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-actions" id="modal-actions"></div>
+  </div>
+</div>
+
+<script src="scf_graph.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

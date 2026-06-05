@@ -1,0 +1,164 @@
+{
+  "_source": "ORCA 6.1.1 Manual section 2.13 (Implicit Solvation), Table 2.56 (SMD library, 179 solvents)",
+  "_note": "Both CPCM(solvent) and SMD(solvent) accept these solvent names. Names are case-insensitive in ORCA but conventionally lowercase or first-cap.",
+  "_full_smd_list_size": 179,
+  "_full_smd_list_reference": "ORCA 6.1.1 Manual Table 2.56 — https://orca-manual.mpi-muelheim.mpg.de/contents/essentialelements/solvationmodels.html",
+
+  "common_aqueous_protic": [
+    "Water",
+    "Methanol",
+    "Ethanol",
+    "1-Propanol",
+    "2-Propanol",
+    "1-Butanol",
+    "2-Butanol",
+    "1-Pentanol",
+    "1-Hexanol",
+    "1-Heptanol",
+    "1-Octanol",
+    "1-Decanol",
+    "tert-Butanol",
+    "Glycerol",
+    "Ethylene Glycol"
+  ],
+
+  "common_aprotic_polar": [
+    "Acetonitrile",
+    "Acetone",
+    "DMSO",
+    "DMF",
+    "DMA",
+    "NMP",
+    "Sulfolane",
+    "Pyridine",
+    "Hexamethylphosphoramide"
+  ],
+
+  "common_ethers": [
+    "THF",
+    "1,4-Dioxane",
+    "Diethyl Ether",
+    "Diisopropyl Ether",
+    "Methyl tert-Butyl Ether",
+    "Anisole",
+    "Tetrahydrofuran",
+    "1,2-Dimethoxyethane"
+  ],
+
+  "common_halogenated": [
+    "Chloroform",
+    "Carbon Tetrachloride",
+    "Dichloromethane",
+    "1,2-Dichloroethane",
+    "1,1-Dichloroethane",
+    "Tetrachloroethene",
+    "Trichloroethene",
+    "Bromobenzene",
+    "Chlorobenzene",
+    "Iodobenzene",
+    "1,2-Dichlorobenzene"
+  ],
+
+  "common_aromatic": [
+    "Benzene",
+    "Toluene",
+    "Xylene",
+    "o-Xylene",
+    "m-Xylene",
+    "p-Xylene",
+    "Mesitylene",
+    "Pyridine",
+    "Aniline",
+    "Nitrobenzene",
+    "Phenol"
+  ],
+
+  "common_alkanes": [
+    "n-Pentane",
+    "n-Hexane",
+    "n-Heptane",
+    "n-Octane",
+    "n-Nonane",
+    "n-Decane",
+    "n-Dodecane",
+    "n-Hexadecane",
+    "Cyclohexane",
+    "Methylcyclohexane",
+    "Cyclopentane",
+    "Decalin",
+    "Isooctane"
+  ],
+
+  "common_esters_carboxylic": [
+    "Ethyl Acetate",
+    "Methyl Acetate",
+    "Butyl Acetate",
+    "Ethyl Benzoate",
+    "Methyl Formate",
+    "Acetic Acid",
+    "Formic Acid",
+    "Propanoic Acid",
+    "Butanoic Acid"
+  ],
+
+  "common_amines_amides": [
+    "Triethylamine",
+    "Pyridine",
+    "Aniline",
+    "Pyrrole",
+    "DMF",
+    "DMA",
+    "Formamide",
+    "N-Methylformamide",
+    "N,N-Dimethylformamide",
+    "Acetamide"
+  ],
+
+  "common_nitriles": [
+    "Acetonitrile",
+    "Propanenitrile",
+    "Butanenitrile",
+    "Benzonitrile"
+  ],
+
+  "common_other_polar": [
+    "Carbon Disulfide",
+    "Hydrazine",
+    "Ammonia",
+    "Hydrogen Fluoride",
+    "Liquid Ammonia"
+  ],
+
+  "common_aldehydes_ketones": [
+    "Acetone",
+    "2-Butanone",
+    "Cyclohexanone",
+    "Acetaldehyde",
+    "Benzaldehyde",
+    "Methyl Ethyl Ketone"
+  ],
+
+  "common_short_aliases_used_by_orca": {
+    "_note": "Common short names accepted by ORCA. Case-insensitive.",
+    "aliases": [
+      "WATER",
+      "METHANOL",
+      "ETHANOL",
+      "ACETONE",
+      "ACETONITRILE",
+      "DMSO",
+      "DMF",
+      "CHLOROFORM",
+      "CCL4",
+      "CH2CL2",
+      "DCM",
+      "THF",
+      "BENZENE",
+      "TOLUENE",
+      "PYRIDINE",
+      "HEXANE",
+      "CYCLOHEXANE",
+      "OCTANOL"
+    ]
+  }
+}

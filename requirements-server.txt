@@ -1,0 +1,9 @@
+# Server (phone-sync) dependencies — only needed for the v2 remote/mobile
+# feature. The desktop app alone does NOT need these.
+#
+#   pip install -r requirements-server.txt
+#
+fastapi>=0.110
+uvicorn>=0.27
+qrcode>=7.4          # connection QR code
+pillow>=9.0          # qrcode PNG rendering

@@ -1,0 +1,17 @@
+{
+  "_source": "ORCA 6.1.1 Manual sections 2.6 (SCF), 2.8 (RI), 3.4 (Dispersion), 4.1 (Optimizations), 6 (Calculations)",
+
+  "scf_convergence": {
+    "_note": "SCF convergence tightness. Default is between Medium and Strong for SP, TightSCF for Opt.",
+    "keywords": [
+      "SloppySCF",
+      "LooseSCF",
+      "MediumSCF",
+      "NormalSCF",
+      "StrongSCF",
+      "TightSCF",
+      "VeryTightSCF",
+      "ExtremeSCF"
+    ]
+  }
+}

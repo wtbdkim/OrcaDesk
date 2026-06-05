@@ -1,0 +1,19 @@
+{
+  "_source": "ORCA 6.1.1 Manual sections 2.6 (SCF), 2.8 (RI), 3.4 (Dispersion), 4.1 (Optimizations), 6 (Calculations)",
+
+
+  "ri_approximation": {
+    "_note": "Resolution-of-Identity for SCF acceleration. RI default for GGA, RIJCOSX default for hybrid DFT.",
+    "keywords": [
+      "RI",
+      "RIJ",
+      "RIJONX",
+      "RI-JK",
+      "RIJK",
+      "RIJDX",
+      "RIJCOSX",
+      "NoRI",
+      "AutoAux"
+    ]
+  }
+}

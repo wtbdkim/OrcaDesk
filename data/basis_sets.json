@@ -1,0 +1,180 @@
+{
+  "_source": "ORCA 6.1.1 Manual section 2.7 (Basis Sets)",
+  "_note": "Names are case-insensitive. ORCA uses pure d/f functions (5D/7F). For heavy elements (Rb-Rn), Karlsruhe def2 sets auto-attach def2-ECP.",
+
+  "pople_minimal": [
+    "STO-3G",
+    "STO-6G",
+    "MINI"
+  ],
+
+  "pople_split_valence": [
+    "3-21G",
+    "3-21++G",
+    "3-21G*",
+    "4-22GSP"
+  ],
+
+  "pople_polarized": [
+    "6-31G",
+    "6-31G*",
+    "6-31G(d)",
+    "6-31G**",
+    "6-31G(d,p)",
+    "6-31+G(d)",
+    "6-31+G(d,p)",
+    "6-31++G(d,p)",
+    "6-311G",
+    "6-311G*",
+    "6-311G(d)",
+    "6-311G**",
+    "6-311G(d,p)",
+    "6-311+G(d,p)",
+    "6-311++G(d,p)",
+    "6-311++G(2d,2p)",
+    "6-311++G(2df,2pd)",
+    "6-311++G(3df,3pd)"
+  ],
+
+  "karlsruhe_def2": [
+    "def2-SVP",
+    "def2-SV(P)",
+    "def2-TZVP",
+    "def2-TZVP(-f)",
+    "def2-TZVPP",
+    "def2-QZVP",
+    "def2-QZVPP",
+    "def2-mTZVPP"
+  ],
+
+  "karlsruhe_def2_diffuse": [
+    "ma-def2-SVP",
+    "ma-def2-TZVP",
+    "ma-def2-TZVP(-f)",
+    "ma-def2-TZVPP",
+    "ma-def2-QZVP",
+    "ma-def2-QZVPP"
+  ],
+
+  "karlsruhe_relativistic_zora": [
+    "ZORA-def2-SVP",
+    "ZORA-def2-TZVP",
+    "ZORA-def2-TZVP(-f)",
+    "ZORA-def2-TZVPP",
+    "ZORA-def2-QZVPP",
+    "ma-ZORA-def2-SVP",
+    "ma-ZORA-def2-TZVP",
+    "SARC-ZORA-TZVP",
+    "SARC-ZORA-SVP"
+  ],
+
+  "karlsruhe_relativistic_dkh": [
+    "DKH-def2-SVP",
+    "DKH-def2-TZVP",
+    "DKH-def2-TZVPP",
+    "DKH-def2-QZVPP",
+    "ma-DKH-def2-SVP",
+    "ma-DKH-def2-TZVP",
+    "SARC-DKH-TZVP",
+    "SARC-DKH-SVP"
+  ],
+
+  "correlation_consistent_dunning": [
+    "cc-pVDZ",
+    "cc-pVTZ",
+    "cc-pVQZ",
+    "cc-pV5Z",
+    "cc-pV6Z",
+    "aug-cc-pVDZ",
+    "aug-cc-pVTZ",
+    "aug-cc-pVQZ",
+    "aug-cc-pV5Z",
+    "aug-cc-pV6Z"
+  ],
+
+  "correlation_consistent_core_valence": [
+    "cc-pCVDZ",
+    "cc-pCVTZ",
+    "cc-pCVQZ",
+    "cc-pCV5Z",
+    "aug-cc-pCVDZ",
+    "aug-cc-pCVTZ",
+    "aug-cc-pCVQZ",
+    "aug-cc-pCV5Z"
+  ],
+
+  "correlation_consistent_relativistic": [
+    "cc-pVDZ-DK",
+    "cc-pVTZ-DK",
+    "cc-pVQZ-DK",
+    "aug-cc-pVDZ-DK",
+    "aug-cc-pVTZ-DK"
+  ],
+
+  "f12_basis": [
+    "cc-pVDZ-F12",
+    "cc-pVTZ-F12",
+    "cc-pVQZ-F12",
+    "cc-pCVDZ-F12",
+    "cc-pCVTZ-F12"
+  ],
+
+  "ano_basis": [
+    "ANO-pVDZ",
+    "ANO-pVTZ",
+    "ANO-pVQZ",
+    "saug-ANO-pVDZ",
+    "saug-ANO-pVTZ"
+  ],
+
+  "jensen_pcseg": [
+    "pcseg-0",
+    "pcseg-1",
+    "pcseg-2",
+    "pcseg-3",
+    "pcseg-4",
+    "aug-pcseg-1",
+    "aug-pcseg-2",
+    "aug-pcseg-3"
+  ],
+
+  "composite_method_internal": [
+    "vDZP",
+    "def2-mSVP",
+    "mTZVPP"
+  ],
+
+  "auxiliary_coulomb_J": [
+    "def2/J",
+    "SARC/J",
+    "AutoAux"
+  ],
+
+  "auxiliary_coulomb_exchange_JK": [
+    "def2/JK",
+    "cc-pVDZ/JK",
+    "cc-pVTZ/JK",
+    "cc-pVQZ/JK"
+  ],
+
+  "auxiliary_correlation_C": [
+    "def2-SVP/C",
+    "def2-TZVP/C",
+    "def2-TZVPP/C",
+    "def2-QZVPP/C",
+    "cc-pVDZ/C",
+    "cc-pVTZ/C",
+    "cc-pVQZ/C",
+    "aug-cc-pVDZ/C",
+    "aug-cc-pVTZ/C",
+    "aug-cc-pVQZ/C"
+  ],
+
+  "f12_cabs": [
+    "cc-pVDZ-F12-CABS",
+    "cc-pVTZ-F12-CABS",
+    "cc-pVQZ-F12-CABS",
+    "cc-pVDZ-F12-OptRI",
+    "cc-pVTZ-F12-OptRI"
+  ]
+}

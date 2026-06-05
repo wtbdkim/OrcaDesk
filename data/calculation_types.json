@@ -1,0 +1,108 @@
+{
+    "_source": "ORCA 6.1.1 Manual sections 2.6 (SCF), 2.8 (RI), 3.4 (Dispersion), 4.1 (Optimizations), 6 (Calculations)",
+
+    "calculation_types_geometry": {
+    "_note": "Geometry-related calculation types.",
+    "keywords": [
+      "Opt",
+      "LooseOpt",
+      "NormalOpt",
+      "TightOpt",
+      "VeryTightOpt",
+      "OptH",
+      "L-Opt",
+      "L-OptH",
+      "OptTS",
+      "ScanTS",
+      "IRC",
+      "NEB",
+      "NEB-CI",
+      "NEB-TS",
+      "FAST-NEB-TS",
+      "LOOSE-NEB-TS",
+      "ZOOM-NEB-TS",
+      "MECP-Opt",
+      "MECPOpt",
+      "ConicalIntersection",
+      "GOAT",
+      "DOCKER",
+      "SOLVATOR"
+    ]
+  },
+
+  "calculation_types_frequency": {
+    "_note": "Vibrational frequency calculation types.",
+    "keywords": [
+      "Freq",
+      "AnFreq",
+      "NumFreq",
+      "NearIR",
+      "OvertonesFreq",
+      "VPT2",
+      "QuasiRRHO"
+    ]
+  },
+
+  "calculation_types_energy": {
+    "_note": "Single-point energy calculation. SP is default if no other run type specified.",
+    "keywords": [
+      "SP",
+      "Energy",
+      "EnGrad",
+      "Gradient"
+    ]
+  },
+
+  "calculation_types_excited_states": {
+    "_note": "Excited state methods.",
+    "keywords": [
+      "TDDFT",
+      "TDA",
+      "CIS",
+      "RPA",
+      "sTDA",
+      "sTDDFT",
+      "ROCIS",
+      "DFT/ROCIS",
+      "EOM-CCSD",
+      "STEOM-CCSD",
+      "DLPNO-STEOM-CCSD",
+      "ADC2"
+    ]
+  },
+
+  "calculation_types_properties": {
+    "_note": "Property calculations.",
+    "keywords": [
+      "NMR",
+      "EPRNMR",
+      "EPR",
+      "MOSSBAUER",
+      "POL",
+      "Polarizability",
+      "HFC",
+      "HFC_NMR",
+      "PNMR",
+      "ROCIS"
+    ]
+  },
+
+  "calculation_types_md_dynamics": {
+    "_note": "Molecular dynamics and trajectory.",
+    "keywords": [
+      "MD",
+      "MTD"
+    ]
+  },
+
+  "calculation_types_combined": {
+    "_note": "Common combinations (treated as compound keywords).",
+    "keywords": [
+      "OptFreq",
+      "Opt Freq",
+      "Opt Freq IRC",
+      "OptTS Freq",
+      "NEB-TS Freq"
+    ]
+  }
+}

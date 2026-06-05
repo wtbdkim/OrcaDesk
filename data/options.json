@@ -1,0 +1,110 @@
+{
+  "_source": "ORCA 6.1.1 Manual sections 2.6 (SCF), 2.8 (RI), 3.4 (Dispersion), 4.1 (Optimizations), 6 (Calculations)",
+
+  "integration_grid": {
+    "_note": "Grid for DFT numerical integration. defGrid2 is default.",
+    "keywords_modern": [
+      "DefGrid1",
+      "DefGrid2",
+      "DefGrid3"
+    ],
+    "keywords_legacy": [
+      "Grid3",
+      "Grid4",
+      "Grid5",
+      "Grid6",
+      "Grid7",
+      "FinalGrid4",
+      "FinalGrid5",
+      "FinalGrid6"
+    ]
+  },
+
+  "scf_algorithm": {
+    "_note": "Algorithm choices for SCF iteration.",
+    "keywords": [
+      "DIIS",
+      "KDIIS",
+      "SOSCF",
+      "TRAH",
+      "AutoTRAH",
+      "NoTRAH",
+      "DAMP",
+      "NoDAMP",
+      "LeanSCF",
+      "FullLshift",
+      "SlowConv",
+      "VerySlowConv"
+    ]
+  },
+
+  "wavefunction_options": {
+    "_note": "Wavefunction type selection.",
+    "keywords": [
+      "RKS",
+      "UKS",
+      "ROKS",
+      "RHF",
+      "UHF",
+      "ROHF",
+      "AllowRHF",
+      "FlipSpin"
+    ]
+  },
+
+  "relativistic_options": {
+    "_note": "Relativistic Hamiltonians (require matching basis set).",
+    "keywords": [
+      "ZORA",
+      "DKH",
+      "DKH2",
+      "X2C",
+      "NoZORA",
+      "NoDKH"
+    ]
+  },
+
+  "frozen_core_options": {
+    "_note": "Frozen core for post-HF methods.",
+    "keywords": [
+      "FrozenCore",
+      "NoFrozenCore",
+      "FC_ELECTRONS",
+      "FC_NONE",
+      "FC_EWIN"
+    ]
+  },
+
+  "guess_options": {
+    "_note": "Initial orbital guess.",
+    "keywords": [
+      "PMODEL",
+      "HCORE",
+      "HUECKEL",
+      "PAtom",
+      "AutoStart",
+      "NoAutoStart",
+      "ReadGuess",
+      "MOREAD"
+    ]
+  },
+
+  "symmetry_options": {
+    "_note": "Symmetry usage.",
+    "keywords": [
+      "UseSym",
+      "NoUseSym"
+    ]
+  },
+
+
+  "external_methods": {
+    "_note": "External program / interface keywords.",
+    "keywords": [
+      "ExtOpt",
+      "QM/MM",
+      "QMMM",
+      "ONIOM"
+    ]
+  }
+}

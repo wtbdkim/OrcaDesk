@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ORCAdesk — design preview</title>
+<style>
+  :root{
+    --background:#09090b; --foreground:#fafafa; --card:#18181b; --border:#27272a;
+    --input:#27272a; --muted:#18181b; --muted-foreground:#a1a1aa; --accent:#27272a;
+    --primary:#fafafa; --primary-foreground:#18181b; --secondary:#27272a;
+    --secondary-foreground:#fafafa; --err:#f87171; --ok:#4ade80; --warn:#fbbf24;
+    --radius:8px; --radius-sm:6px; --radius-lg:12px;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --ring:#d4d4d8;
+  }
+  *{box-sizing:border-box;}
+  body{background:var(--background);color:var(--foreground);font-family:var(--font-sans);
+    margin:0;padding:32px;line-height:1.5;}
+  h1{font-size:18px;margin:0 0 4px;}
+  .sub{color:var(--muted-foreground);font-size:13px;margin-bottom:28px;}
+  .section{margin-bottom:36px;}
+  .section > h2{font-size:13px;font-weight:600;color:var(--muted-foreground);
+    text-transform:uppercase;letter-spacing:.05em;margin:0 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px;}
+  .row{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;}
+  .col{flex:1;min-width:280px;}
+  .col .lbl{font-size:11px;color:var(--muted-foreground);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em;}
+  .frame{background:var(--background);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;}
+
+  /* ---------- existing button ---------- */
+  .btn{appearance:none;cursor:pointer;font-family:inherit;font-size:13px;font-weight:500;
+    padding:8px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);
+    background:var(--secondary);color:var(--secondary-foreground);
+    transition:background .12s,opacity .12s,border-color .12s;
+    display:inline-flex;align-items:center;gap:6px;}
+  .btn:hover{background:#3f3f46;}
+  .btn-primary{background:var(--primary);color:var(--primary-foreground);border-color:var(--primary);}
+  .btn-primary:hover{background:#e4e4e7;}
+
+  /* ---------- NEW button: adds lift on hover ---------- */
+  .btn.lift{transition:background .12s,opacity .12s,border-color .12s,transform .12s,box-shadow .12s;}
+  .btn.lift:hover{background:#3f3f46;transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.35);}
+  .btn-primary.lift:hover{background:#e4e4e7;transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.35);}
+
+  /* ---------- tabs ---------- */
+  .tabs{display:flex;gap:4px;padding:8px 16px 0;border-bottom:1px solid var(--border);margin-bottom:0;}
+  .tab{appearance:none;border:none;cursor:pointer;background:transparent;color:var(--muted-foreground);
+    font-family:inherit;font-size:13px;font-weight:500;padding:9px 16px;
+    border-radius:var(--radius-sm) var(--radius-sm) 0 0;border-bottom:2px solid transparent;
+    transition:color .12s,background .12s;}
+  .tab:hover{color:var(--foreground);background:var(--accent);}
+  /* OLD active: white underline */
+  .tab.active-old{color:var(--foreground);border-bottom-color:var(--foreground);}
+  /* NEW active: brighter, thicker accent underline + subtle glow */
+  .tab.active-new{color:var(--foreground);border-bottom:2px solid #e4e4e7;
+    box-shadow:0 1px 0 #e4e4e7;}
+
+  /* ---------- empty state ---------- */
+  .queue-empty-old{text-align:center;color:var(--muted-foreground);padding:40px;font-size:13px;}
+  .queue-empty-new{display:flex;flex-direction:column;align-items:center;gap:14px;
+    text-align:center;padding:44px 20px;}
+  .queue-empty-new .ico{width:48px;height:48px;border-radius:var(--radius-lg);
+    display:flex;align-items:center;justify-content:center;
+    background:var(--card);border:1px solid var(--border);}
+  .queue-empty-new .ico svg{width:24px;height:24px;stroke:var(--muted-foreground);}
+  .queue-empty-new .t{font-size:15px;font-weight:600;color:var(--foreground);}
+  .queue-empty-new .d{font-size:13px;color:var(--muted-foreground);max-width:280px;}
+</style>
+</head>
+<body>
+  <h1>ORCAdesk — design preview</h1>
+  <div class="sub">제안한 3가지 변경의 before / after. 실제 앱 테마(zinc dark) 그대로 사용.</div>
+
+  <!-- 4. Button lift -->
+  <div class="section">
+    <h2>4 · 버튼 hover lift (마우스 올려보세요)</h2>
+    <div class="row">
+      <div class="col">
+        <div class="lbl">Before — 색만 변함</div>
+        <div class="frame">
+          <button class="btn btn-primary" style="margin-right:8px">Add to queue →</button>
+          <button class="btn">Edit raw .inp</button>
+        </div>
+      </div>
+      <div class="col">
+        <div class="lbl">After — 살짝 떠오름 + 그림자</div>
+        <div class="frame">
+          <button class="btn btn-primary lift" style="margin-right:8px">Add to queue →</button>
+          <button class="btn lift">Edit raw .inp</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 6. Tab underline -->
+  <div class="section">
+    <h2>6 · 탭 active 인디케이터</h2>
+    <div class="row">
+      <div class="col">
+        <div class="lbl">Before — 흰 밑줄 (얇고 밋밋)</div>
+        <div class="frame" style="padding:0">
+          <div class="tabs">
+            <button class="tab active-old">Build</button>
+            <button class="tab">Queue</button>
+            <button class="tab">Log</button>
+            <button class="tab">Results</button>
+            <button class="tab">Settings</button>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="lbl">After — 또렷한 밑줄 + 미세 글로우</div>
+        <div class="frame" style="padding:0">
+          <div class="tabs">
+            <button class="tab active-new">Build</button>
+            <button class="tab">Queue</button>
+            <button class="tab">Log</button>
+            <button class="tab">Results</button>
+            <button class="tab">Settings</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5. Empty state -->
+  <div class="section">
+    <h2>5 · 빈 상태 (Queue 탭이 비었을 때)</h2>
+    <div class="row">
+      <div class="col">
+        <div class="lbl">Before — 텍스트 한 줄</div>
+        <div class="frame">
+          <div class="queue-empty-old">No calculations queued. Build one in the Build tab.</div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="lbl">After — 아이콘 + 안내 + 액션 버튼</div>
+        <div class="frame">
+          <div class="queue-empty-new">
+            <div class="ico">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 11H3v10h6V11Z"/><path d="M21 3h-6v18h6V3Z"/><path d="M15 7H9v14h6V7Z"/>
+              </svg>
+            </div>
+            <div class="t">No calculations yet</div>
+            <div class="d">Build your first ORCA calculation and it will show up here, ready to run.</div>
+            <button class="btn btn-primary lift">+ Build a calculation</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
