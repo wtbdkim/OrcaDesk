@@ -117,7 +117,7 @@
   // per-criterion tolerances are read live from each table, so NormalOpt vs
   // TightOpt (different tolerances) are handled automatically.
   function GeoTracker() {
-    this.steps = [];          // [{step, maxGrad, tol}]
+    this.steps = [];          // [{step, maxGrad, tol}] — one entry per unique opt cycle
     this.tol = 1e-4;          // MAX gradient tolerance (read from the table)
     this.startGrad = null;    // first step's MAX gradient (for progress)
     this._inTable = false;    // currently inside a convergence table
@@ -127,8 +127,16 @@
     this.worst = [];          // worst-ratio per step: log10(max(val/tol)); 0=at-threshold
     this.stepTimes = [];      // wall-clock ms at which each step's table completed
     this._etaPred = null;     // temporally-smoothed predicted total steps
+    this.curCycle = 0;        // latest "GEOMETRY OPTIMIZATION CYCLE N" (0 = none seen yet)
+    this._byCycle = {};       // cycle number -> index into this.steps
+    this._worstByCycle = {};  // cycle number -> index into this.worst / this.stepTimes
   }
   GeoTracker.prototype.push = function (line) {
+    // Track the real ORCA optimization cycle number. Steps are keyed by this
+    // number so the same cycle's table being seen (or fed) more than once can
+    // never inflate the step count — it overwrites instead of appending.
+    const gc = line.match(GEO_RE);
+    if (gc) { this.curCycle = parseInt(gc[1], 10); return false; }
     if (GEO_TABLE_RE.test(line)) {
       this._inTable = true;
       this._sawItem = false;
@@ -148,7 +156,17 @@
         if (isFinite(val) && isFinite(tol) && tol > 0) this._pendingVals[name] = { val: Math.abs(val), tol: tol };
         if (/MAX gradient/i.test(name) && isFinite(val)) {
           this.tol = tol;
-          this.steps.push({ step: this.steps.length + 1, maxGrad: val, tol: tol });
+          // key by real cycle number; fall back to a fresh sequential key only
+          // if ORCA hasn't printed a cycle header yet (defensive)
+          const key = this.curCycle > 0 ? this.curCycle : (this.steps.length + 1);
+          const idx = this._byCycle[key];
+          if (idx == null) {
+            this._byCycle[key] = this.steps.length;
+            this.steps.push({ step: key, maxGrad: val, tol: tol });
+          } else {
+            this.steps[idx].maxGrad = val;   // same cycle re-emitted: overwrite
+            this.steps[idx].tol = tol;
+          }
           if (this.startGrad === null) this.startGrad = val;
         }
         return true;
@@ -163,8 +181,17 @@
             if (r > worstLog) worstLog = r;
           }
           if (worstLog > -90) {
-            this.worst.push(worstLog);
-            this.stepTimes.push(Date.now());
+            // keep the worst/time series one-per-cycle too, so the ETA estimator
+            // isn't fed duplicate points when a cycle's table is re-emitted
+            const ckey = this.curCycle > 0 ? this.curCycle : ("seq" + this.worst.length);
+            const wi = this._worstByCycle[ckey];
+            if (wi == null) {
+              this._worstByCycle[ckey] = this.worst.length;
+              this.worst.push(worstLog);
+              this.stepTimes.push(Date.now());
+            } else {
+              this.worst[wi] = worstLog;   // overwrite; keep the original stepTime
+            }
           }
         }
         this._inTable = false;
@@ -420,7 +447,9 @@
     const p = geo.progress();
     const pct = Math.round(p * 100);
     const cs = geo.criteriaSummary();
-    const stepN = geo.steps.length;
+    // show the real ORCA cycle number of the latest table, not the array length
+    const nPts = geo.steps.length;
+    const stepN = nPts ? geo.steps[nPts - 1].step : 0;
     const critLabel = cs.total ? ` · criteria ${cs.met}/${cs.total} met` : "";
     // ETA line (only when the estimator is confident enough)
     let etaLine = "";
@@ -431,7 +460,7 @@
       const qual = eta.conf === "high" ? "" : " (rough)";
       if (t) etaLine = `<div class="scf-prog-meta">~${t} remaining · about ${rem} more step${rem === 1 ? "" : "s"}${qual}</div>`;
       else etaLine = `<div class="scf-prog-meta">about ${rem} more step${rem === 1 ? "" : "s"}${qual}</div>`;
-    } else if (stepN >= 4) {
+    } else if (nPts >= 4) {
       etaLine = `<div class="scf-prog-meta">estimating…</div>`;
     }
     return (
@@ -481,14 +510,14 @@
     const li = pts.length - 1;
     const curC = `<circle cx="${X(li).toFixed(1)}" cy="${Y(pts[li].maxGrad).toFixed(1)}" r="4" class="scf-cur"/>`;
 
-    // x-axis tick numbers (optimization step indices) — thinned when many
+    // x-axis tick numbers (real ORCA cycle numbers) — thinned when many
     const baseY = padT + (H - padT - padB);
     const stepEvery = Math.max(1, Math.ceil(xN / 8));
     let xticks = "";
     for (let i = 0; i < pts.length; i += stepEvery) {
       const xx = X(i);
       xticks += `<line x1="${xx.toFixed(1)}" y1="${baseY}" x2="${xx.toFixed(1)}" y2="${(baseY + 4).toFixed(1)}" class="scf-grid"/>`;
-      xticks += `<text x="${xx.toFixed(1)}" y="${(baseY + 15).toFixed(1)}" text-anchor="middle" class="scf-axis">${i + 1}</text>`;
+      xticks += `<text x="${xx.toFixed(1)}" y="${(baseY + 15).toFixed(1)}" text-anchor="middle" class="scf-axis">${pts[i].step}</text>`;
     }
 
     // axis titles: y = MAX gradient (what we plot), x = optimization step
