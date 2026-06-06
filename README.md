@@ -78,13 +78,6 @@ Notes:
 - Settings and workspaces are stored per-user in `%APPDATA%\ORCAdesk`,
   not inside the app folder, so they survive updates.
 
-### Making an installer (setup.exe)
-
-After building, you can wrap the app in a Windows install wizard using the
-included `installer.iss` (Inno Setup script). See `INSTALLER_GUIDE_KR.md` for
-step-by-step instructions. The result is a single `ORCAdesk-Setup.exe` you
-can hand to others.
-
 ## Project layout
 
 ```
