@@ -125,6 +125,8 @@ class QueueEngine:
                 raise OrcaRunError("No coordinates provided (direct source is empty).")
             return calc.xyz
         # REFERENCE
+        if calc.ref_name == calc.name:
+            raise OrcaRunError("A calculation can't reference its own geometry.")
         ref = self._by_name.get(calc.ref_name)
         if ref is None:
             raise OrcaRunError(f"Referenced calculation '{calc.ref_name}' not found in queue.")

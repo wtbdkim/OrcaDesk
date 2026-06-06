@@ -391,7 +391,15 @@ function refreshRefSelect() {
     sel.innerHTML = `<option value="">(no calculations in queue yet)</option>`;
     return;
   }
-  for (const c of queue) {
+  // a calc must not reference its own geometry (it would depend on itself), so
+  // when editing, exclude the calc being edited from the candidate list
+  const selfName = editIndex !== -1 && queue[editIndex] ? queue[editIndex].name : null;
+  const candidates = queue.filter(c => c.name !== selfName);
+  if (!candidates.length) {
+    sel.innerHTML = `<option value="">(no other calculation to reference)</option>`;
+    return;
+  }
+  for (const c of candidates) {
     const o = document.createElement("option");
     o.value = c.name; o.textContent = `${c.name}  (${c.kind})`;
     sel.appendChild(o);
@@ -725,6 +733,7 @@ function collectCalcFromForm() {
   } else {
     ref_name = document.getElementById("ref-select").value;
     if (!ref_name) throw new Error("Select a calculation to reference.");
+    if (ref_name === name) throw new Error("A calculation can't reference its own geometry.");
   }
 
   // raw integrity: reference mode requires the placeholder
