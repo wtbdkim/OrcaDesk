@@ -170,9 +170,10 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
         plus a few desktop settings the phone needs (e.g. the opt-ETA mode)."""
         data = load_all_choices()
         try:
-            data["_settings"] = {"eta_mode": Settings.load().eta_mode}
+            s = Settings.load()
+            data["_settings"] = {"eta_mode": s.eta_mode, "geo_graph_mode": s.geo_graph_mode}
         except Exception:
-            data["_settings"] = {"eta_mode": "conservative"}
+            data["_settings"] = {"eta_mode": "conservative", "geo_graph_mode": "all5"}
         return data
 
     # --- serve the mobile PWA at the site root ---

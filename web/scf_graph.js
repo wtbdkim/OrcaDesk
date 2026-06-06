@@ -16,6 +16,12 @@
   let _etaMode = "conservative";
   function setEtaMode(m) { if (m === "eager" || m === "conservative") _etaMode = m; }
 
+  // optimization-graph mode: "all5" (all five convergence criteria as
+  // value/tolerance ratios sharing one goal line at 1) or "maxgrad" (just MAX
+  // gradient on an absolute axis — the original view). Set from the app Settings.
+  let _geoMode = "all5";
+  function setGeoMode(m) { if (m === "all5" || m === "maxgrad") _geoMode = m; }
+
   // SCF convergence setting -> approximate Delta-E target (Eh).
   // Used to place the "goal" line and compute progress.
   const SCF_TARGETS = {
@@ -487,9 +493,66 @@
     );
   }
 
-  // x = optimization step, y = each convergence criterion (|value|, log scale).
-  // One thin coloured line per criterion + its dashed goal line at the tolerance.
+  // dispatcher: the optimization-graph style follows the Settings toggle.
   function renderGeoGraph(geo, opts) {
+    return _geoMode === "maxgrad" ? _renderGeoMaxGrad(geo, opts) : _renderGeoAll5(geo, opts);
+  }
+
+  // "maxgrad" mode (the original view): only MAX gradient on an absolute log
+  // axis, with its tolerance as the single dashed goal line.
+  function _renderGeoMaxGrad(geo, opts) {
+    opts = opts || {};
+    const W = opts.width || 320;
+    const H = opts.height || 180;
+    const padL = 58, padR = 14, padT = 14, padB = 40;
+    const pts = (geo.steps || []).filter(function (s) { return s.maxGrad != null && s.maxGrad > 0; });
+    if (!pts.length) {
+      return `<svg viewBox="0 0 ${W} ${H}" class="scf-svg" xmlns="http://www.w3.org/2000/svg">
+        <text x="${W / 2}" y="${H / 2}" text-anchor="middle" class="scf-empty-text">
+          waiting for optimization steps…</text></svg>`;
+    }
+    const tol = geo.tol;
+    const gs = pts.map(function (s) { return s.maxGrad; });
+    const yMaxLog = Math.ceil(Math.log10(Math.max.apply(null, gs)));
+    const yMinLog = Math.floor(Math.log10(Math.min(tol, Math.min.apply(null, gs))));
+    const xN = Math.max(pts.length, 2);
+    function X(i) { return padL + (i / (xN - 1)) * (W - padL - padR); }
+    function Y(v) {
+      const l = Math.log10(v);
+      const t = (yMaxLog - l) / (yMaxLog - yMinLog || 1);
+      return padT + t * (H - padT - padB);
+    }
+    let grid = "";
+    for (let e = yMinLog; e <= yMaxLog; e++) {
+      const yy = padT + ((yMaxLog - e) / (yMaxLog - yMinLog || 1)) * (H - padT - padB);
+      grid += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" class="scf-grid"/>`;
+      grid += `<text x="${padL - 6}" y="${yy + 3}" text-anchor="end" class="scf-axis">1e${e}</text>`;
+    }
+    const goalY = Y(tol);
+    const goal = `<line x1="${padL}" y1="${goalY}" x2="${W - padR}" y2="${goalY}" class="scf-goal"/>`;
+    let d = "";
+    pts.forEach(function (s, i) { d += (i === 0 ? "M" : "L") + X(i).toFixed(1) + "," + Y(s.maxGrad).toFixed(1) + " "; });
+    const line = `<path d="${d.trim()}" class="scf-line" fill="none"/>`;
+    const startC = `<circle cx="${X(0).toFixed(1)}" cy="${Y(pts[0].maxGrad).toFixed(1)}" r="3.5" class="scf-start"/>`;
+    const li = pts.length - 1;
+    const curC = `<circle cx="${X(li).toFixed(1)}" cy="${Y(pts[li].maxGrad).toFixed(1)}" r="4" class="scf-cur"/>`;
+    const baseY = padT + (H - padT - padB);
+    const stepEvery = Math.max(1, Math.ceil(xN / 8));
+    let xticks = "";
+    for (let i = 0; i < pts.length; i += stepEvery) {
+      const xx = X(i);
+      xticks += `<line x1="${xx.toFixed(1)}" y1="${baseY}" x2="${xx.toFixed(1)}" y2="${(baseY + 4).toFixed(1)}" class="scf-grid"/>`;
+      xticks += `<text x="${xx.toFixed(1)}" y="${(baseY + 15).toFixed(1)}" text-anchor="middle" class="scf-axis">${pts[i].step}</text>`;
+    }
+    const midY = (padT + (H - padT - padB) / 2).toFixed(1);
+    const yTitle = `<text x="14" y="${midY}" text-anchor="middle" class="scf-axis-title" transform="rotate(-90 14 ${midY})">MAX gradient</text>`;
+    const xTitle = `<text x="${((padL + W - padR) / 2).toFixed(1)}" y="${H - 4}" text-anchor="middle" class="scf-axis-title">optimization step</text>`;
+    return `<svg viewBox="0 0 ${W} ${H}" class="scf-svg" xmlns="http://www.w3.org/2000/svg">
+      ${grid}${goal}${line}${startC}${curC}${xticks}${yTitle}${xTitle}</svg>`;
+  }
+
+  // "all5" mode: every criterion as value/tolerance, one shared goal line at 1.
+  function _renderGeoAll5(geo, opts) {
     opts = opts || {};
     const W = opts.width || 320;
     const H = opts.height || 180;
@@ -500,61 +563,68 @@
           waiting for optimization steps…</text></svg>`;
     if (!steps.length) return empty;
 
-    // build one series per criterion (only those actually present) + value range
-    let vmin = Infinity, vmax = -Infinity;
+    // Each criterion is plotted as value / its OWN tolerance, so all five share
+    // a single goal line at ratio = 1: a criterion is met when its line is at or
+    // below 1 (this is why the criteria N/5 count maps directly to the graph).
+    let rmin = Infinity, rmax = -Infinity;
     const series = [];
     GEO_CRITERIA.forEach(function (crit) {
       const sp = [];
       steps.forEach(function (s, i) {
         const v = s.vals ? s.vals[crit.key] : (crit.key === "MAX gradient" ? s.maxGrad : null);
-        if (v != null && v > 0 && isFinite(v)) {
-          sp.push({ i: i, v: v });
-          if (v < vmin) vmin = v;
-          if (v > vmax) vmax = v;
+        const tol = s.tols ? s.tols[crit.key] : null;
+        if (v != null && v > 0 && isFinite(v) && tol != null && tol > 0) {
+          const r = v / tol;
+          sp.push({ i: i, r: r });
+          if (r < rmin) rmin = r;
+          if (r > rmax) rmax = r;
         }
       });
-      let tol = null;
-      for (let j = steps.length - 1; j >= 0; j--) {
-        if (steps[j].tols && steps[j].tols[crit.key] != null) { tol = steps[j].tols[crit.key]; break; }
-      }
-      if (tol != null && tol > 0 && tol < vmin) vmin = tol;
-      if (sp.length) series.push({ crit: crit, pts: sp, tol: tol });
+      if (sp.length) series.push({ crit: crit, pts: sp });
     });
-    if (!series.length || !isFinite(vmin) || !isFinite(vmax)) return empty;
+    if (!series.length || !isFinite(rmin) || !isFinite(rmax)) return empty;
 
-    const yMaxLog = Math.ceil(Math.log10(vmax));
-    const yMinLog = Math.floor(Math.log10(vmin));
+    // keep the goal (ratio = 1, i.e. log 0) inside the range with a little margin
+    const yMaxLog = Math.max(Math.ceil(Math.log10(rmax)), 1);
+    const yMinLog = Math.min(Math.floor(Math.log10(rmin)), -1);
     const xN = Math.max(steps.length, 2);
+    const baseY = padT + (H - padT - padB);
     function X(i) { return padL + (i / (xN - 1)) * (W - padL - padR); }
-    function Y(v) {
-      const l = Math.log10(v);
+    function Y(r) {
+      const l = Math.log10(r);
       const t = (yMaxLog - l) / (yMaxLog - yMinLog || 1);
       return padT + t * (H - padT - padB);
     }
 
+    // gridlines + y labels at each ratio decade (the ratio=1 decade is drawn
+    // separately as the goal line below)
     let grid = "";
     for (let e = yMinLog; e <= yMaxLog; e++) {
+      if (e === 0) continue;
       const yy = padT + ((yMaxLog - e) / (yMaxLog - yMinLog || 1)) * (H - padT - padB);
       grid += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" class="scf-grid"/>`;
       grid += `<text x="${padL - 6}" y="${yy + 3}" text-anchor="end" class="scf-axis">1e${e}</text>`;
     }
 
-    let goals = "", lines = "", dots = "";
+    // converged zone (ratio < 1) shaded faintly, plus the single dashed goal line
+    const goalY = Y(1);
+    const zone = `<rect x="${padL}" y="${goalY.toFixed(1)}" width="${(W - padR - padL).toFixed(1)}" height="${(baseY - goalY).toFixed(1)}" fill="#52b788" opacity="0.07"/>`;
+    const goal =
+      `<line x1="${padL}" y1="${goalY.toFixed(1)}" x2="${W - padR}" y2="${goalY.toFixed(1)}" stroke="#e5e7eb" stroke-width="1.1" stroke-dasharray="5 3" opacity="0.8"/>` +
+      `<text x="${padL - 6}" y="${(goalY + 3).toFixed(1)}" text-anchor="end" class="scf-axis" fill="#e5e7eb">1</text>` +
+      `<text x="${(W - padR - 3).toFixed(1)}" y="${(goalY - 4).toFixed(1)}" text-anchor="end" class="scf-axis" fill="#9aa3b2">converged ≤ 1</text>`;
+
+    let lines = "", dots = "";
     series.forEach(function (s) {
       const col = s.crit.color;
-      if (s.tol != null && s.tol > 0) {
-        const gy = Y(s.tol).toFixed(1);
-        goals += `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="${col}" stroke-width="0.7" stroke-dasharray="2 3" opacity="0.35"/>`;
-      }
       let d = "";
-      s.pts.forEach(function (p, k) { d += (k === 0 ? "M" : "L") + X(p.i).toFixed(1) + "," + Y(p.v).toFixed(1) + " "; });
+      s.pts.forEach(function (p, k) { d += (k === 0 ? "M" : "L") + X(p.i).toFixed(1) + "," + Y(p.r).toFixed(1) + " "; });
       lines += `<path d="${d.trim()}" fill="none" stroke="${col}" stroke-width="1.1" stroke-linejoin="round"/>`;
       const last = s.pts[s.pts.length - 1];
-      dots += `<circle cx="${X(last.i).toFixed(1)}" cy="${Y(last.v).toFixed(1)}" r="2.2" fill="${col}"/>`;
+      dots += `<circle cx="${X(last.i).toFixed(1)}" cy="${Y(last.r).toFixed(1)}" r="2.2" fill="${col}"/>`;
     });
 
     // x-axis tick numbers (real ORCA cycle numbers) — thinned when many
-    const baseY = padT + (H - padT - padB);
     const stepEvery = Math.max(1, Math.ceil(xN / 8));
     let xticks = "";
     for (let i = 0; i < steps.length; i += stepEvery) {
@@ -573,11 +643,11 @@
     });
 
     const midY = (padT + (H - padT - padB) / 2).toFixed(1);
-    const yTitle = `<text x="12" y="${midY}" text-anchor="middle" class="scf-axis-title" transform="rotate(-90 12 ${midY})">|value| (a.u.)</text>`;
+    const yTitle = `<text x="12" y="${midY}" text-anchor="middle" class="scf-axis-title" transform="rotate(-90 12 ${midY})">value / tolerance</text>`;
     const xTitle = `<text x="${((padL + W - padR) / 2).toFixed(1)}" y="${H - 4}" text-anchor="middle" class="scf-axis-title">optimization step</text>`;
 
     return `<svg viewBox="0 0 ${W} ${H}" class="scf-svg" xmlns="http://www.w3.org/2000/svg">
-      ${grid}${goals}${lines}${dots}${xticks}${legend}${yTitle}${xTitle}</svg>`;
+      ${grid}${zone}${goal}${lines}${dots}${xticks}${legend}${yTitle}${xTitle}</svg>`;
   }
 
   const api = {
@@ -589,6 +659,7 @@
     renderGeoProgress: renderGeoProgress,
     renderGeoGraph: renderGeoGraph,
     setEtaMode: setEtaMode,
+    setGeoMode: setGeoMode,
     SCF_TARGETS: SCF_TARGETS,
   };
 

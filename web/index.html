@@ -15,7 +15,7 @@
     <div class="brand">
       <div class="logo"><img src="orcadesk_logo.png" alt="ORCAdesk" /></div>
       <div>
-        <h1>ORCAdesk <span class="ver-badge">0.1 beta</span></h1>
+        <h1>ORCAdesk <span class="ver-badge">0.1.1 beta</span></h1>
         <div class="sub">computational chemistry job runner</div>
       </div>
     </div>
@@ -233,6 +233,18 @@
         <label class="radio-row">
           <input type="radio" name="eta-mode" value="eager">
           <span><strong>Eager</strong> — show an estimate earlier and keep it on screen. More responsive, but the number can be rougher.</span>
+        </label>
+      </div>
+      <div class="card">
+        <div class="card-title">Optimization graph</div>
+        <div class="card-desc">What the live "Optimization" graph plots during a geometry optimization.</div>
+        <label class="radio-row">
+          <input type="radio" name="geo-mode" value="all5" checked>
+          <span><strong>All 5 criteria</strong> — every convergence criterion as value ÷ its tolerance, sharing one goal line at 1 (below the line = met).</span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="geo-mode" value="maxgrad">
+          <span><strong>MAX gradient only</strong> — just the MAX gradient on an absolute axis with its tolerance as the goal line (the original view).</span>
         </label>
       </div>
       <button class="btn btn-primary" onclick="saveSettings()">Save settings</button>

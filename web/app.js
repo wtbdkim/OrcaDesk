@@ -49,6 +49,7 @@ new QWebChannel(qt.webChannelTransport, async function(channel) {
   await loadSettings();
   await loadAbout();
   if (SCFGraph && SCFGraph.setEtaMode && settings.eta_mode) SCFGraph.setEtaMode(settings.eta_mode);
+  if (SCFGraph && SCFGraph.setGeoMode && settings.geo_graph_mode) SCFGraph.setGeoMode(settings.geo_graph_mode);
   renderConfigForm("opt");
 
   // The queue + log now live in a shared store (also used by the phone). We
@@ -340,6 +341,10 @@ async function loadSettings() {
   const mode = settings.eta_mode || "conservative";
   const radio = document.querySelector(`input[name="eta-mode"][value="${mode}"]`);
   if (radio) radio.checked = true;
+  // optimization-graph mode radio
+  const gmode = settings.geo_graph_mode || "all5";
+  const grad = document.querySelector(`input[name="geo-mode"][value="${gmode}"]`);
+  if (grad) grad.checked = true;
   updateOrcaStatus(settings.orca_valid);
 }
 function updateOrcaStatus(valid) {
@@ -349,17 +354,21 @@ function updateOrcaStatus(valid) {
 }
 async function saveSettings() {
   const etaEl = document.querySelector('input[name="eta-mode"]:checked');
+  const geoEl = document.querySelector('input[name="geo-mode"]:checked');
   const payload = {
     orca_path: document.getElementById("set-orca").value.trim(),
     workspace_root: document.getElementById("set-ws").value.trim(),
     default_nprocs: parseInt(document.getElementById("set-nprocs").value, 10) || 6,
     default_maxcore_mb: parseInt(document.getElementById("set-maxcore").value, 10) || 2400,
     eta_mode: etaEl ? etaEl.value : "conservative",
+    geo_graph_mode: geoEl ? geoEl.value : "all5",
   };
   settings = JSON.parse(await bridge.save_settings(JSON.stringify(payload)));
   updateOrcaStatus(settings.orca_valid);
-  // push the new mode to the live graph immediately
+  // push the new modes to the live graph immediately
   if (SCFGraph && SCFGraph.setEtaMode) SCFGraph.setEtaMode(settings.eta_mode);
+  if (SCFGraph && SCFGraph.setGeoMode) SCFGraph.setGeoMode(settings.geo_graph_mode);
+  if (_logMode === "graph") renderSCFPanel();   // redraw with the new style
   const s = document.getElementById("set-saved");
   s.textContent = "Saved."; setTimeout(() => s.textContent = "", 2000);
 }

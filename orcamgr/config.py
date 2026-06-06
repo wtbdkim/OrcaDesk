@@ -80,6 +80,9 @@ class Settings:
     # opt ETA prediction mode: "conservative" (predict only when confident) or
     # "eager" (predict earlier / more often, may be less accurate)
     eta_mode: str = "conservative"
+    # optimization graph style: "all5" (all five convergence criteria as
+    # value/tolerance ratios sharing one goal line) or "maxgrad" (MAX gradient only)
+    geo_graph_mode: str = "all5"
 
     @classmethod
     def load(cls) -> "Settings":

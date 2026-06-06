@@ -603,9 +603,11 @@ async function loadChoices(){
     fill("n-scf", choices.scf_convergences||[], "TightSCF");
     fill("n-ri", choices.ri_approximations||[], "RIJCOSX");
     setupCombo("ncombo-solvent", choices.solvents||[], "Water");
-    // apply the desktop's opt-ETA mode so the phone graph matches
+    // apply the desktop's opt-ETA mode + optimization-graph mode so the phone matches
     if(choices._settings && choices._settings.eta_mode && window.SCFGraph && SCFGraph.setEtaMode)
       SCFGraph.setEtaMode(choices._settings.eta_mode);
+    if(choices._settings && choices._settings.geo_graph_mode && window.SCFGraph && SCFGraph.setGeoMode)
+      SCFGraph.setGeoMode(choices._settings.geo_graph_mode);
   }catch(e){
     setupCombo("ncombo-func",["wB97X-D4","M06-2X","B3LYP","PBE0"],"wB97X-D4");
     setupCombo("ncombo-basis",["def2-TZVP","def2-SVP","6-311++G**"],"def2-TZVP");

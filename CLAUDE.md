@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ORCAdesk is a desktop GUI (PyQt6 + QWebEngine) for building, queuing, running, and
 parsing [ORCA](https://www.faccts.de/orca/) computational-chemistry jobs. The app
 shells out to the user's installed `orca` executable; it does not do the chemistry
-itself. Status is `0.1.0-beta`, Windows is the primary tested target.
+itself. Status is `0.1.1-beta`, Windows is the primary tested target.
 
 ## Commands
 

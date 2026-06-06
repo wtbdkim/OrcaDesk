@@ -60,6 +60,7 @@ class Bridge(QObject):
             "default_maxcore_mb": self.settings.default_maxcore_mb,
             "theme": self.settings.theme,
             "eta_mode": self.settings.eta_mode,
+            "geo_graph_mode": self.settings.geo_graph_mode,
             "orca_valid": self.settings.orca_is_valid(),
         })
 
@@ -76,6 +77,9 @@ class Bridge(QObject):
             # opt-ETA mode: only accept known values
             if "eta_mode" in data and data["eta_mode"] in ("conservative", "eager"):
                 self.settings.eta_mode = data["eta_mode"]
+            # optimization graph mode: only accept known values
+            if "geo_graph_mode" in data and data["geo_graph_mode"] in ("all5", "maxgrad"):
+                self.settings.geo_graph_mode = data["geo_graph_mode"]
             self.settings.save()
             return self.get_settings()
         except (json.JSONDecodeError, ValueError, TypeError) as e:

@@ -3,7 +3,7 @@
 A desktop GUI for building, queuing, running, and parsing ORCA computational
 chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark UI), Python core.
 
-> **Status: 0.1 beta** (`0.1.0-beta`). Desktop app: build → queue → run →
+> **Status: 0.1.1 beta** (`0.1.1-beta`). Desktop app: build → queue → run →
 > parse, validated against real ORCA 6.1.1 output. Run from source, or build a
 > standalone Windows app with `build.bat`. (Phone-sync is in development and not
 > part of this build.) See [CHANGELOG.md](CHANGELOG.md) for details.

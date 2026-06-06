@@ -17,8 +17,8 @@
 ; ============================================================
 
 #define MyAppName "ORCAdesk"
-#define MyAppVersion "0.1.0"
-#define MyAppVersionFull "0.1.0-beta"
+#define MyAppVersion "0.1.1"
+#define MyAppVersionFull "0.1.1-beta"
 #define MyAppPublisher "Taewoo Kim (Korea Science Academy of KAIST)"
 #define MyAppExeName "ORCAdesk.exe"
 
