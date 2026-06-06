@@ -114,6 +114,19 @@
   const GEO_ITEM_RE = /(Energy change|RMS gradient|MAX gradient|RMS step|MAX step)\s+(-?[\d.]+)\s+([\d.]+)\s+(YES|NO)/i;
   const GEO_TABLE_RE = /\|Geometry convergence\|/i;
 
+  // the (up to) five geometry-convergence criteria ORCA prints each step, with
+  // the colour each gets in the optimization graph (harmonious on the dark UI)
+  const GEO_CRITERIA = [
+    { key: "Energy change", label: "ΔE",       color: "#4cc9f0" },
+    { key: "RMS gradient",  label: "RMS grad", color: "#52b788" },
+    { key: "MAX gradient",  label: "MAX grad", color: "#ffd166" },
+    { key: "RMS step",      label: "RMS step", color: "#c08eff" },
+    { key: "MAX step",      label: "MAX step", color: "#ff8fa3" },
+  ];
+  const _GEO_CANON = {};
+  GEO_CRITERIA.forEach(function (c) { _GEO_CANON[c.key.toLowerCase()] = c.key; });
+  function _canonCrit(name) { return _GEO_CANON[(name || "").toLowerCase()] || name; }
+
   // per-criterion tolerances are read live from each table, so NormalOpt vs
   // TightOpt (different tolerances) are handled automatically.
   function GeoTracker() {
@@ -144,61 +157,52 @@
       this._pendingVals = {};
       return false;
     }
-    if (this._inTable) {
-      const m = line.match(GEO_ITEM_RE);
-      if (m) {
-        this._sawItem = true;
-        const name = m[1];
-        const val = parseFloat(m[2]);
-        const tol = parseFloat(m[3]);
-        const conv = m[4].toUpperCase() === "YES";
-        this._pendingCriteria[name] = conv;
-        if (isFinite(val) && isFinite(tol) && tol > 0) this._pendingVals[name] = { val: Math.abs(val), tol: tol };
-        if (/MAX gradient/i.test(name) && isFinite(val)) {
-          this.tol = tol;
-          // key by real cycle number; fall back to a fresh sequential key only
-          // if ORCA hasn't printed a cycle header yet (defensive)
-          const key = this.curCycle > 0 ? this.curCycle : (this.steps.length + 1);
-          const idx = this._byCycle[key];
-          if (idx == null) {
-            this._byCycle[key] = this.steps.length;
-            this.steps.push({ step: key, maxGrad: val, tol: tol });
-          } else {
-            this.steps[idx].maxGrad = val;   // same cycle re-emitted: overwrite
-            this.steps[idx].tol = tol;
-          }
-          if (this.startGrad === null) this.startGrad = val;
-        }
-        return true;
-      }
-      if (this._sawItem && (line.trim() === "" || /-{5,}/.test(line) || /\.{5,}/.test(line))) {
-        if (Object.keys(this._pendingCriteria).length) {
-          this._criteria = this._pendingCriteria;
-          // compute worst-ratio for this step from all criteria present
-          let worstLog = -99;
-          for (const k in this._pendingVals) {
-            const r = Math.log10(Math.max(this._pendingVals[k].val, 1e-12) / this._pendingVals[k].tol);
-            if (r > worstLog) worstLog = r;
-          }
-          if (worstLog > -90) {
-            // keep the worst/time series one-per-cycle too, so the ETA estimator
-            // isn't fed duplicate points when a cycle's table is re-emitted
-            const ckey = this.curCycle > 0 ? this.curCycle : ("seq" + this.worst.length);
-            const wi = this._worstByCycle[ckey];
-            if (wi == null) {
-              this._worstByCycle[ckey] = this.worst.length;
-              this.worst.push(worstLog);
-              this.stepTimes.push(Date.now());
-            } else {
-              this.worst[wi] = worstLog;   // overwrite; keep the original stepTime
-            }
-          }
-        }
-        this._inTable = false;
-        this._sawItem = false;
-      }
+    if (!this._inTable) return false;
+    const m = line.match(GEO_ITEM_RE);
+    if (m) {
+      this._sawItem = true;
+      const name = _canonCrit(m[1]);
+      const val = Math.abs(parseFloat(m[2]));
+      const tol = parseFloat(m[3]);
+      this._pendingCriteria[name] = m[4].toUpperCase() === "YES";
+      if (isFinite(val) && isFinite(tol) && tol > 0) this._pendingVals[name] = { val: val, tol: tol };
+      if (/MAX gradient/i.test(name) && isFinite(tol)) this.tol = tol;  // headline tol (back-compat)
+      return true;
+    }
+    if (this._sawItem && (line.trim() === "" || /-{5,}/.test(line) || /\.{5,}/.test(line))) {
+      this._commitStep();
+      this._inTable = false;
+      this._sawItem = false;
     }
     return false;
+  };
+  // Commit the just-parsed table as one optimization step. Keyed by the real
+  // cycle number so a re-emitted table overwrites instead of appending. Stores
+  // ALL criteria (value + tolerance), not just MAX gradient.
+  GeoTracker.prototype._commitStep = function () {
+    if (!Object.keys(this._pendingVals).length) return;
+    this._criteria = this._pendingCriteria;
+    const vals = {}, tols = {};
+    for (const k in this._pendingVals) { vals[k] = this._pendingVals[k].val; tols[k] = this._pendingVals[k].tol; }
+    const mg = (vals["MAX gradient"] != null) ? vals["MAX gradient"] : null;
+    const key = this.curCycle > 0 ? this.curCycle : (this.steps.length + 1);
+    const rec = { step: key, vals: vals, tols: tols, maxGrad: mg };
+    const idx = this._byCycle[key];
+    if (idx == null) { this._byCycle[key] = this.steps.length; this.steps.push(rec); }
+    else { this.steps[idx] = rec; }
+    if (this.startGrad === null && mg != null && mg > 0) this.startGrad = mg;
+    // worst-ratio series for the ETA estimator (one entry per cycle)
+    let worstLog = -99;
+    for (const k in this._pendingVals) {
+      const r = Math.log10(Math.max(this._pendingVals[k].val, 1e-12) / this._pendingVals[k].tol);
+      if (r > worstLog) worstLog = r;
+    }
+    if (worstLog > -90) {
+      const ckey = this.curCycle > 0 ? this.curCycle : ("seq" + this.worst.length);
+      const wi = this._worstByCycle[ckey];
+      if (wi == null) { this._worstByCycle[ckey] = this.worst.length; this.worst.push(worstLog); this.stepTimes.push(Date.now()); }
+      else { this.worst[wi] = worstLog; }
+    }
   };
   GeoTracker.prototype.allConverged = function () {
     // true only when every criterion at the latest step is YES (>=4 of them,
@@ -208,12 +212,20 @@
     if (names.length < 4) return false;
     return names.every(function (n) { return c[n]; });
   };
+  GeoTracker.prototype._lastMaxGrad = function () {
+    for (let i = this.steps.length - 1; i >= 0; i--) {
+      const g = this.steps[i].maxGrad;
+      if (g != null && g > 0) return g;
+    }
+    return null;
+  };
   GeoTracker.prototype.progress = function () {
     if (this.startGrad === null || !this.steps.length) return 0;
     // 100% only when the optimizer has actually met all convergence criteria;
     // otherwise cap at 99% even if MAX gradient alone reached the tolerance
     if (this.allConverged()) return 1;
-    const cur = this.steps[this.steps.length - 1].maxGrad;
+    const cur = this._lastMaxGrad();
+    if (cur === null) return 0;
     const ls = Math.log10(this.startGrad);
     const lt = Math.log10(this.tol);
     const lc = Math.log10(cur);
@@ -222,7 +234,7 @@
     return Math.max(0, Math.min(0.99, raw));
   };
   GeoTracker.prototype.current = function () {
-    return this.steps.length ? this.steps[this.steps.length - 1].maxGrad : null;
+    return this._lastMaxGrad();
   };
   GeoTracker.prototype.criteriaSummary = function () {
     // returns {met, total} from the latest completed step
@@ -327,13 +339,18 @@
     }
     if (this._etaPred == null || at < minStep) return null;
     const remaining = Math.max(this._etaPred - at, 0);
-    // median time-per-step from recent measured intervals
+    // median time-per-step from recent measured intervals. Discard sub-second
+    // gaps: those come from a burst of buffered log lines replayed in one poll
+    // tick (e.g. on window-unhide), not real per-step wall-clock — counting them
+    // would collapse the median and report an absurd "~0s remaining".
     const t = this.stepTimes; let etaMs = null;
     if (t.length >= 3) {
       const gaps = []; for (let i = 1; i < t.length; i++) gaps.push(t[i] - t[i - 1]);
-      const recent = gaps.slice(-10).sort(function (a, b) { return a - b; });
-      const medGap = recent[Math.floor(recent.length / 2)];
-      if (medGap > 0) etaMs = remaining * medGap;
+      const recent = gaps.slice(-10).filter(function (g) { return g >= 500; }).sort(function (a, b) { return a - b; });
+      if (recent.length) {
+        const medGap = recent[Math.floor(recent.length / 2)];
+        if (medGap > 0) etaMs = remaining * medGap;
+      }
     }
     // conf semantics:
     //  - raw present: "high"/"med"/"low" (a fresh confident estimate)
@@ -470,63 +487,97 @@
     );
   }
 
-  // x = optimization step, y = MAX gradient (log scale); dashed goal at tol
+  // x = optimization step, y = each convergence criterion (|value|, log scale).
+  // One thin coloured line per criterion + its dashed goal line at the tolerance.
   function renderGeoGraph(geo, opts) {
     opts = opts || {};
     const W = opts.width || 320;
     const H = opts.height || 180;
-    const padL = 58, padR = 14, padT = 14, padB = 40;
-    const pts = geo.steps.filter(function (s) { return s.maxGrad > 0; });
-
-    if (pts.length < 1) {
-      return `<svg viewBox="0 0 ${W} ${H}" class="scf-svg" xmlns="http://www.w3.org/2000/svg">
+    const padL = 58, padR = 14, padT = 28, padB = 40;   // padT leaves room for the legend
+    const steps = geo.steps || [];
+    const empty = `<svg viewBox="0 0 ${W} ${H}" class="scf-svg" xmlns="http://www.w3.org/2000/svg">
         <text x="${W / 2}" y="${H / 2}" text-anchor="middle" class="scf-empty-text">
           waiting for optimization steps…</text></svg>`;
-    }
-    const tol = geo.tol;
-    const gs = pts.map(function (s) { return s.maxGrad; });
-    const yMaxLog = Math.ceil(Math.log10(Math.max.apply(null, gs)));
-    const yMinLog = Math.floor(Math.log10(Math.min(tol, Math.min.apply(null, gs))));
-    const xN = Math.max(pts.length, 2);
+    if (!steps.length) return empty;
 
+    // build one series per criterion (only those actually present) + value range
+    let vmin = Infinity, vmax = -Infinity;
+    const series = [];
+    GEO_CRITERIA.forEach(function (crit) {
+      const sp = [];
+      steps.forEach(function (s, i) {
+        const v = s.vals ? s.vals[crit.key] : (crit.key === "MAX gradient" ? s.maxGrad : null);
+        if (v != null && v > 0 && isFinite(v)) {
+          sp.push({ i: i, v: v });
+          if (v < vmin) vmin = v;
+          if (v > vmax) vmax = v;
+        }
+      });
+      let tol = null;
+      for (let j = steps.length - 1; j >= 0; j--) {
+        if (steps[j].tols && steps[j].tols[crit.key] != null) { tol = steps[j].tols[crit.key]; break; }
+      }
+      if (tol != null && tol > 0 && tol < vmin) vmin = tol;
+      if (sp.length) series.push({ crit: crit, pts: sp, tol: tol });
+    });
+    if (!series.length || !isFinite(vmin) || !isFinite(vmax)) return empty;
+
+    const yMaxLog = Math.ceil(Math.log10(vmax));
+    const yMinLog = Math.floor(Math.log10(vmin));
+    const xN = Math.max(steps.length, 2);
     function X(i) { return padL + (i / (xN - 1)) * (W - padL - padR); }
     function Y(v) {
       const l = Math.log10(v);
       const t = (yMaxLog - l) / (yMaxLog - yMinLog || 1);
       return padT + t * (H - padT - padB);
     }
+
     let grid = "";
     for (let e = yMinLog; e <= yMaxLog; e++) {
       const yy = padT + ((yMaxLog - e) / (yMaxLog - yMinLog || 1)) * (H - padT - padB);
       grid += `<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" class="scf-grid"/>`;
       grid += `<text x="${padL - 6}" y="${yy + 3}" text-anchor="end" class="scf-axis">1e${e}</text>`;
     }
-    const goalY = Y(tol);
-    const goal = `<line x1="${padL}" y1="${goalY}" x2="${W - padR}" y2="${goalY}" class="scf-goal"/>`;
-    let d = "";
-    pts.forEach(function (s, i) { d += (i === 0 ? "M" : "L") + X(i).toFixed(1) + "," + Y(s.maxGrad).toFixed(1) + " "; });
-    const line = `<path d="${d.trim()}" class="scf-line" fill="none"/>`;
-    const startC = `<circle cx="${X(0).toFixed(1)}" cy="${Y(pts[0].maxGrad).toFixed(1)}" r="3.5" class="scf-start"/>`;
-    const li = pts.length - 1;
-    const curC = `<circle cx="${X(li).toFixed(1)}" cy="${Y(pts[li].maxGrad).toFixed(1)}" r="4" class="scf-cur"/>`;
+
+    let goals = "", lines = "", dots = "";
+    series.forEach(function (s) {
+      const col = s.crit.color;
+      if (s.tol != null && s.tol > 0) {
+        const gy = Y(s.tol).toFixed(1);
+        goals += `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="${col}" stroke-width="0.7" stroke-dasharray="2 3" opacity="0.35"/>`;
+      }
+      let d = "";
+      s.pts.forEach(function (p, k) { d += (k === 0 ? "M" : "L") + X(p.i).toFixed(1) + "," + Y(p.v).toFixed(1) + " "; });
+      lines += `<path d="${d.trim()}" fill="none" stroke="${col}" stroke-width="1.1" stroke-linejoin="round"/>`;
+      const last = s.pts[s.pts.length - 1];
+      dots += `<circle cx="${X(last.i).toFixed(1)}" cy="${Y(last.v).toFixed(1)}" r="2.2" fill="${col}"/>`;
+    });
 
     // x-axis tick numbers (real ORCA cycle numbers) — thinned when many
     const baseY = padT + (H - padT - padB);
     const stepEvery = Math.max(1, Math.ceil(xN / 8));
     let xticks = "";
-    for (let i = 0; i < pts.length; i += stepEvery) {
+    for (let i = 0; i < steps.length; i += stepEvery) {
       const xx = X(i);
       xticks += `<line x1="${xx.toFixed(1)}" y1="${baseY}" x2="${xx.toFixed(1)}" y2="${(baseY + 4).toFixed(1)}" class="scf-grid"/>`;
-      xticks += `<text x="${xx.toFixed(1)}" y="${(baseY + 15).toFixed(1)}" text-anchor="middle" class="scf-axis">${pts[i].step}</text>`;
+      xticks += `<text x="${xx.toFixed(1)}" y="${(baseY + 15).toFixed(1)}" text-anchor="middle" class="scf-axis">${steps[i].step}</text>`;
     }
 
-    // axis titles: y = MAX gradient (what we plot), x = optimization step
+    // legend row across the top: colour swatch + label per criterion present
+    let legend = "";
+    const segW = (W - padL - padR) / series.length;
+    series.forEach(function (s, k) {
+      const lx = padL + k * segW;
+      legend += `<line x1="${lx.toFixed(1)}" y1="9" x2="${(lx + 13).toFixed(1)}" y2="9" stroke="${s.crit.color}" stroke-width="2"/>`;
+      legend += `<text x="${(lx + 17).toFixed(1)}" y="12" class="scf-axis" fill="${s.crit.color}">${s.crit.label}</text>`;
+    });
+
     const midY = (padT + (H - padT - padB) / 2).toFixed(1);
-    const yTitle = `<text x="14" y="${midY}" text-anchor="middle" class="scf-axis-title" transform="rotate(-90 14 ${midY})">MAX gradient</text>`;
+    const yTitle = `<text x="12" y="${midY}" text-anchor="middle" class="scf-axis-title" transform="rotate(-90 12 ${midY})">|value| (a.u.)</text>`;
     const xTitle = `<text x="${((padL + W - padR) / 2).toFixed(1)}" y="${H - 4}" text-anchor="middle" class="scf-axis-title">optimization step</text>`;
 
     return `<svg viewBox="0 0 ${W} ${H}" class="scf-svg" xmlns="http://www.w3.org/2000/svg">
-      ${grid}${goal}${line}${startC}${curC}${xticks}${yTitle}${xTitle}</svg>`;
+      ${grid}${goals}${lines}${dots}${xticks}${legend}${yTitle}${xTitle}</svg>`;
   }
 
   const api = {
