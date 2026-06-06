@@ -1,6 +1,6 @@
 {
   "_source": "ORCA 6.1.1 Manual sections 3.3 (DFT) and 3.6 (Composite methods)",
-  "_note": "Functional names are case-insensitive in ORCA. Many can be combined with dispersion via '-D3' / '-D4' suffix or as separate keyword.",
+  "_note": "Functional names are case-insensitive in ORCA. The app normalizes a few names to ORCA's accepted spelling (M06-2X->M062X, M06-L->M06L, SCAN->SCANfunc) and rewrites combined dispersion tokens like 'B3LYP-D3'/'B3LYP-D3BJ' to the explicit separate keyword 'B3LYP D3BJ' (BJ damping, never bare -D3). Entries below were validated against ORCA 6.1.1 simple-input; names this build rejects were removed.",
 
   "lda": [
     "HFS",
@@ -39,7 +39,6 @@
     "B97M-V",
     "B97M-D3BJ",
     "B97M-D4",
-    "MN15-L",
     "revTPSS",
     "SCAN"
   ],
@@ -59,9 +58,9 @@
     "O3LYP",
     "mPW1PW",
     "mPW1LYP",
-    "BLYP-D3",
-    "B3LYP-D3",
-    "PBE0-D3"
+    "BLYP-D3BJ",
+    "B3LYP-D3BJ",
+    "PBE0-D3BJ"
   ],
 
   "meta_gga_hybrid": [
@@ -69,10 +68,6 @@
     "TPSS0",
     "M06",
     "M06-2X",
-    "MPW1B95",
-    "MPWB1K",
-    "BMK",
-    "MN15",
     "r2SCANh",
     "r2SCAN0",
     "r2SCAN50"
@@ -81,7 +76,6 @@
   "range_separated_hybrid": [
     "wB97",
     "wB97X",
-    "wB97X-D",
     "wB97X-D3",
     "wB97X-D3BJ",
     "wB97X-V",
@@ -92,14 +86,11 @@
     "wB97M-D4rev",
     "CAM-B3LYP",
     "LC-BLYP",
-    "LC-PBE",
-    "LC-wPBE"
+    "LC-PBE"
   ],
 
   "double_hybrid": [
     "B2PLYP",
-    "B2PLYP-D",
-    "B2PLYP-D3",
     "B2PLYP-D3BJ",
     "B2GP-PLYP",
     "mPW2PLYP",
@@ -108,9 +99,6 @@
     "DSD-BLYP",
     "DSD-PBEP86",
     "DSD-PBEB95",
-    "revDSD-PBEP86-D4",
-    "revDOD-PBEP86-D4",
-    "B2PLYP21",
     "wB2PLYP",
     "wB2GP-PLYP",
     "PBE-QIDH",
@@ -119,8 +107,7 @@
     "Pr2SCAN50",
     "Pr2SCAN69",
     "wPr2SCAN50",
-    "kPr2SCAN50",
-    "wB97M(2)"
+    "kPr2SCAN50"
   ],
 
   "composite_3c": [

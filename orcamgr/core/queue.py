@@ -29,8 +29,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional
 
-from .input_generator import StepConfig, build_input, render_raw_input, GEOMETRY_PLACEHOLDER
-from .runner import OrcaRunner, OrcaRunError
+from .input_generator import (
+    StepConfig, build_input, render_raw_input, GEOMETRY_PLACEHOLDER, check_neb_atom_order,
+)
+from .runner import OrcaRunner, OrcaRunError, OrcaCancelled
 from .parser import parse_file, ParseResult
 
 
@@ -170,17 +172,23 @@ class QueueEngine:
         # NEB-TS needs side .xyz files in the run folder that the %neb block
         # points at: the product geometry (required) and an optional TS guess.
         # build_input references fixed names "product.xyz" / "ts_guess.xyz", so
-        # write them here from the calc's stored coordinates.
-        if not calc.is_raw and calc.config.kind == "neb_ts":
+        # write them here. This must also happen in RAW mode — a raw NEB-TS keeps
+        # the NEB_End_XYZFile "product.xyz" reference, so the file must exist.
+        if calc.kind == "neb_ts":
             prod = (calc.config.neb_product_xyz or "").strip()
-            if not prod:
-                raise OrcaRunError(
-                    "NEB-TS needs a product geometry, but none was provided."
-                )
-            (calc_dir / "product.xyz").write_text(_as_xyz_file(prod), encoding="utf-8")
-            guess = (calc.config.neb_ts_guess_xyz or "").strip()
-            if guess:
-                (calc_dir / "ts_guess.xyz").write_text(_as_xyz_file(guess), encoding="utf-8")
+            if not calc.is_raw:
+                if not prod:
+                    raise OrcaRunError("NEB-TS needs a product geometry, but none was provided.")
+                # reactant (xyz) and product must have identical atoms in identical
+                # order — catch the #1 NEB-TS user error before launching ORCA.
+                chk = check_neb_atom_order(xyz, prod)
+                if not chk.get("ok"):
+                    raise OrcaRunError(chk.get("error") or "NEB-TS reactant/product atom mismatch.")
+            if prod:
+                (calc_dir / "product.xyz").write_text(_as_xyz_file(prod), encoding="utf-8")
+                guess = (calc.config.neb_ts_guess_xyz or "").strip()
+                if guess:
+                    (calc_dir / "ts_guess.xyz").write_text(_as_xyz_file(guess), encoding="utf-8")
 
         self.cb.log(f"[{calc.name}] ({calc.kind}) running ORCA...", "info")
         self.runner.run(inp_path, out_path, on_line=lambda ln: self.cb.log(ln, "orca"))
@@ -201,16 +209,16 @@ class QueueEngine:
             raise OrcaRunError(
                 f"ORCA did not terminate normally. {result.error_message or 'Check the .out file.'}"
             )
-        if calc.kind in ("opt", "ts_opt") and not result.opt_converged:
+        if calc.kind in ("opt", "ts_opt", "opt_freq", "ts_opt_freq") and not result.opt_converged:
             raise OrcaRunError("Optimization did not converge.")
-        if calc.kind == "freq" and result.n_imaginary > 0:
+        if calc.kind in ("freq", "opt_freq") and result.n_imaginary > 0:
             imag = [f for f in result.frequencies if f < 0]
             detail = ", ".join(f"{v:.2f}" for v in imag[:5])
             raise OrcaRunError(
                 f"{result.n_imaginary} imaginary frequency/frequencies "
                 f"(cm^-1: {detail}). Not a true minimum."
             )
-        if calc.kind == "ts_freq":
+        if calc.kind in ("ts_freq", "ts_opt_freq"):
             # a genuine transition state has exactly ONE imaginary frequency
             n = result.n_imaginary
             if n == 0:
@@ -224,6 +232,18 @@ class QueueEngine:
                 raise OrcaRunError(
                     f"{n} imaginary frequencies (cm^-1: {detail}). A transition "
                     "state should have exactly one; this is a higher-order saddle point."
+                )
+        if calc.kind == "neb_ts" and result.frequencies:
+            # preset_neb_ts appends FREQ to verify the located TS. If frequencies
+            # were computed, require exactly one imaginary mode (a true first-order
+            # saddle); skip the check when the user removed FREQ (no frequencies).
+            n = result.n_imaginary
+            if n != 1:
+                imag = [f for f in result.frequencies if f < 0]
+                detail = ", ".join(f"{v:.2f}" for v in imag[:5]) if imag else "none"
+                raise OrcaRunError(
+                    f"NEB-TS located a structure with {n} imaginary frequency/frequencies "
+                    f"(cm^-1: {detail}); a transition state must have exactly one."
                 )
 
     # -- dependency-scoped failure propagation --
@@ -314,6 +334,14 @@ class QueueEngine:
 
             try:
                 self._run_calc(calc, i)
+            except OrcaCancelled:
+                # user stopped the run mid-calc: mark THIS calc CANCELLED (not
+                # FAILED) and do NOT block its dependents — the remaining calcs
+                # are marked CANCELLED by the top-of-loop guard on the next pass.
+                calc.state = CalcState.CANCELLED
+                calc.message = "Cancelled by user."
+                self.cb.log(f"[{calc.name}] cancelled.", "info")
+                self.cb.calc_update(i, calc)
             except OrcaRunError as e:
                 calc.state = CalcState.FAILED
                 calc.message = self._failure_reason(calc, str(e))

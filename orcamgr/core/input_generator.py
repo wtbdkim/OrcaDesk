@@ -24,6 +24,68 @@ DEFAULT_RI = "RIJCOSX"
 DEFAULT_AUX = "def2/J"
 
 
+# ORCA's simple-input parser is strict about a few functional names: it spells
+# some Minnesota functionals WITHOUT the hyphen that common usage / the picker
+# list uses, and rejects the hyphenated form outright. Map the user-facing name
+# to ORCA's accepted keyword. Keys are matched case-insensitively on the whole
+# token. Only names whose ORCA form genuinely differs AND is accepted are listed
+# (verified against ORCA 6.1.1); valid hyphenated keywords such as CAM-B3LYP,
+# wB97X-D3, r2SCAN-3c, B97-D3 or LC-BLYP are intentionally NOT here so they pass
+# through untouched.
+_FUNCTIONAL_ALIASES = {
+    # Minnesota functionals: ORCA drops the hyphen and rejects the hyphenated form
+    "m06-2x": "M062X",
+    "m06-l": "M06L",
+    # ORCA spells the SCAN meta-GGA "SCANfunc"; bare "SCAN" is rejected
+    "scan": "SCANfunc",
+    # Combined dispersion tokens (FUNC-D3): ORCA rejects them and wants the
+    # dispersion as a SEPARATE keyword. We always emit D3BJ (Becke-Johnson
+    # damping) — never the bare "-D3" — so D3(BJ) is never confused with
+    # D3(zero). See the dispersion convention in CLAUDE.md.
+    "blyp-d3": "BLYP D3BJ",   "blyp-d3bj": "BLYP D3BJ",
+    "b3lyp-d3": "B3LYP D3BJ", "b3lyp-d3bj": "B3LYP D3BJ",
+    "pbe0-d3": "PBE0 D3BJ",   "pbe0-d3bj": "PBE0 D3BJ",
+    "b2plyp-d3": "B2PLYP D3BJ", "b2plyp-d3bj": "B2PLYP D3BJ",
+}
+
+
+def normalize_functional(name: str) -> str:
+    """Return ORCA's accepted simple-input keyword for a functional name.
+
+    ORCA's parser is strict: it rejects e.g. "M06-2X" (wants "M062X"), "SCAN"
+    (wants "SCANfunc"), and combined dispersion tokens like "B3LYP-D3" (wants
+    "B3LYP D3BJ"). Unknown / already-correct names are returned unchanged
+    (trimmed), so the 'arbitrary value used verbatim' contract still holds for
+    everything that isn't a known mismatch. Valid hyphenated keywords
+    (CAM-B3LYP, wB97X-D3/-D4, r2SCAN-3c, B97-D3, LC-BLYP, ...) are not in the
+    table and pass through untouched.
+    """
+    token = (name or "").strip()
+    return _FUNCTIONAL_ALIASES.get(token.lower(), token)
+
+
+# Double-hybrid functionals: their MP2 correlation part needs a correlation-
+# fitting ("/C") auxiliary basis. Verified to run in ORCA 6.1.1 (the others
+# from the old list — B2PLYP-D/-D3, revDSD/revDOD-PBEP86-D4, B2PLYP21,
+# wB97M(2) — are rejected by this build and were dropped from the picker).
+_DOUBLE_HYBRIDS = frozenset({
+    "b2plyp", "b2gp-plyp", "mpw2plyp", "b2k-plyp", "b2t-plyp",
+    "dsd-blyp", "dsd-pbep86", "dsd-pbeb95", "wb2plyp", "wb2gp-plyp",
+    "pbe-qidh", "pbe0-dh", "pbe0-2",
+    "pr2scan50", "pr2scan69", "wpr2scan50", "kpr2scan50",
+})
+
+
+def _needs_auxc(functional: str) -> bool:
+    """True if the method needs a correlation-fitting (/C) aux basis: any MP2/MP3
+    method or a double hybrid (the MP2-like correlation step needs AuxC)."""
+    norm = normalize_functional(functional).lower()
+    if "mp2" in norm or "mp3" in norm:
+        return True
+    base = norm.split()[0] if norm.strip() else ""   # strip a trailing " d3bj"
+    return base in _DOUBLE_HYBRIDS
+
+
 # ---- solvation ----------------------------------------------------------
 @dataclass
 class Solvation:
@@ -125,7 +187,40 @@ class StepConfig:
                 )
                 for b in basis_list if isinstance(b, dict) and b.get("element", "").strip()
             ]
+        # Coerce/clamp untrusted numeric fields. A phone-API payload reaches here
+        # via calc_from_dict, and these values are interpolated verbatim into
+        # %pal/%maxcore/%geom/%tddft — so a string (line injection) or an absurd
+        # value (resource exhaustion) must not pass through.
+        cfg.nprocs = _clamp_int(cfg.nprocs, 6, 1, 1024)
+        cfg.maxcore_mb = _clamp_int(cfg.maxcore_mb, 2400, 64, 1_000_000)
+        cfg.max_iter = _clamp_int(cfg.max_iter, 200, 1, 100_000)
+        cfg.neb_nimages = _clamp_int(cfg.neb_nimages, 8, 2, 200)
+        cfg.irc_maxiter = _clamp_int(cfg.irc_maxiter, 100, 1, 100_000)
+        cfg.tddft_nroots = _clamp_int(cfg.tddft_nroots, 40, 1, 10_000)
+        cfg.tddft_maxdim = _clamp_int(cfg.tddft_maxdim, 10, 1, 100_000)
+        cfg.freq_temp_k = _clamp_float(cfg.freq_temp_k, 298.15, 0.0, 100_000.0)
+        cfg.freq_pressure_atm = _clamp_float(cfg.freq_pressure_atm, 1.0, 0.0, 100_000.0)
         return cfg
+
+
+def _clamp_int(v, default: int, lo: int, hi: int) -> int:
+    """Coerce v to an int and clamp to [lo, hi]; fall back to default if not numeric."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(n, hi))
+
+
+def _clamp_float(v, default: float, lo: float, hi: float) -> float:
+    """Coerce v to a float and clamp to [lo, hi]; fall back to default if not numeric/NaN."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return default
+    if x != x:  # NaN
+        return default
+    return max(lo, min(x, hi))
 
 
 def _needs_auxj(ri: str) -> bool:
@@ -136,16 +231,37 @@ def _needs_auxj(ri: str) -> bool:
     return any(tag in r for tag in ("RIJCOSX", "RIJDX", "RIJONX")) or r == "RIJ" or r == "SPLITRIJ"
 
 
+def _ri_is_off(ri: str) -> bool:
+    """True if the user turned RI off (no RI keyword / NoRI)."""
+    r = (ri or "").strip().upper()
+    return r == "" or r == "NORI"
+
+
 def _auto_aux(cfg: "StepConfig") -> str:
-    """Pick a Coulomb aux basis if the method needs one and the user didn't put
-    an aux in extra options. Only auto-adds for def2 orbital bases (where def2/J
-    is the right universal fit); leaves other bases to the user."""
+    """Pick an auxiliary basis if the method needs one and the user didn't put
+    an aux in extra options.
+
+    - Double hybrids / MP2 need a correlation-fitting (/C) aux as well as the
+      Coulomb (/J) one, so we add AutoAux (it generates both). The user can opt
+      out by setting the RI approximation to NoRI, in which case ORCA runs the
+      conventional (non-RI) path and we add nothing.
+    - Plain hybrids/GGAs with an RI-J method just need /J; for def2 orbital
+      bases that is the universal def2/J. Other bases are left to the user."""
     opts = (cfg.options or "").upper()
     if "/J" in opts or "AUTOAUX" in opts:
         return ""  # user already supplied an aux (or AutoAux)
+
+    if _needs_auxc(cfg.functional):
+        # double hybrid / MP2: /C (and /J) needed unless RI is off
+        return "" if _ri_is_off(cfg.ri_approximation) else "AutoAux"
+
+    basis = (cfg.basis_set or "").lower()
+    ri = (cfg.ri_approximation or "").upper().replace("-", "").replace("_", "")
+    if ri == "RIJK":
+        # RIJK fits BOTH Coulomb and exchange, so it needs a /JK aux (not /J).
+        return "def2/JK" if "def2" in basis else "AutoAux"
     if not _needs_auxj(cfg.ri_approximation):
         return ""
-    basis = (cfg.basis_set or "").lower()
     if "def2" in basis:
         return DEFAULT_AUX  # def2/J
     return ""  # unknown orbital basis: don't guess, let the user decide
@@ -154,7 +270,7 @@ def _auto_aux(cfg: "StepConfig") -> str:
 def _keyword_line(cfg: StepConfig) -> str:
     parts = [
         "!",
-        cfg.functional,
+        normalize_functional(cfg.functional),
         cfg.basis_set,
         cfg.scf_convergence,
         cfg.ri_approximation,
@@ -256,16 +372,16 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         lines.extend(basis_lines)
         lines.append("end")
 
-    if cfg.kind in ("opt", "ts_opt"):
+    if cfg.kind in ("opt", "ts_opt", "opt_freq", "ts_opt_freq"):
         lines.append("%geom")
         lines.append(f"  MaxIter {cfg.max_iter}")
-        if cfg.kind == "ts_opt":
+        if cfg.kind in ("ts_opt", "ts_opt_freq"):
             # TS optimization needs a good initial Hessian; the manual computes
             # an exact Hessian before the first step (%geom Calc_Hess true).
             lines.append("  Calc_Hess true")
         lines.append("end")
 
-    if cfg.kind in ("freq", "ts_freq"):
+    if cfg.kind in ("freq", "ts_freq", "opt_freq", "ts_opt_freq"):
         # only emit the %freq block when temperature/pressure differ from the
         # ORCA defaults (298.15 K, 1.0 atm), matching the example convention
         if abs(cfg.freq_temp_k - 298.15) > 1e-6 or abs(cfg.freq_pressure_atm - 1.0) > 1e-6:
