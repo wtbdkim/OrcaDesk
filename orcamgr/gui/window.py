@@ -82,6 +82,13 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
+            # wait (bounded) for the run worker to actually stop ORCA and unwind,
+            # so closing the app doesn't orphan orca.exe or leave a half-written
+            # .out. cancel_queue() above already kills the subprocess tree.
+            self.store.wait_for_run(timeout=10)
+        except Exception:
+            pass
+        try:
             self.server_ctl.stop()
         except Exception:
             pass

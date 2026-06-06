@@ -14,6 +14,7 @@ a lock, no SQLite.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import threading
 from typing import Optional
@@ -33,6 +34,28 @@ EDITABLE_STATES = {CalcState.PENDING, CalcState.FAILED, CalcState.CANCELLED}
 def _new_pin() -> str:
     """A fresh 6-digit access PIN (cryptographically random, zero-padded)."""
     return f"{secrets.randbelow(1_000_000):06d}"
+
+
+# calc.name becomes an on-disk folder name (workspace_root / name), so it must be
+# validated at this single shared serialization point — the only client-side
+# guard lives in the desktop JS and is bypassed by the phone/HTTP path.
+_BAD_NAME_CHARS = re.compile(r'[\\/:*?"<>|]')
+_RESERVED_NAMES = {"con", "prn", "aux", "nul",
+                   *(f"com{i}" for i in range(1, 10)),
+                   *(f"lpt{i}" for i in range(1, 10))}
+
+
+def _validate_calc_name(name: str) -> None:
+    """Reject names that could escape the workspace or break on Windows.
+    Allows Unicode (e.g. Korean) — only path-dangerous patterns are blocked."""
+    if _BAD_NAME_CHARS.search(name):
+        raise ValueError('Name contains characters not allowed in a folder name: \\ / : * ? " < > |')
+    if ".." in name:
+        raise ValueError("Name must not contain '..'.")
+    if name.endswith("."):
+        raise ValueError("Name must not end with a dot.")
+    if name.split(".")[0].lower() in _RESERVED_NAMES:
+        raise ValueError(f"'{name}' uses a name reserved by Windows.")
 
 
 def _flatten_choices(value) -> list:
@@ -144,6 +167,7 @@ def calc_from_dict(d: dict) -> Calculation:
     name = d.get("name", "").strip()
     if not name:
         raise ValueError("Calculation name is required.")
+    _validate_calc_name(name)
     return Calculation(
         name=name,
         kind=d.get("kind", cfg.kind),
@@ -248,6 +272,11 @@ class QueueStore:
     def add(self, calc: Calculation) -> None:
         """Append a calculation. Raises ValueError on duplicate name."""
         with self._lock:
+            if self._running:
+                # the engine runs a frozen snapshot of the queue; a calc added
+                # mid-run would never execute, so the visible and executing
+                # queues would silently diverge.
+                raise ValueError("Cannot add to the queue while it is running.")
             if any(c.name == calc.name for c in self._calcs):
                 raise ValueError(f"A calculation named '{calc.name}' already exists.")
             self._calcs.append(calc)
@@ -255,9 +284,14 @@ class QueueStore:
 
     def remove(self, name: str) -> bool:
         with self._lock:
+            if self._running:
+                # the engine runs a frozen snapshot; removing any calc mid-run
+                # would diverge the visible queue from the executing one (same
+                # reason add/replace/reorder/clear are blocked while running).
+                raise ValueError("Cannot remove from the queue while it is running.")
             for i, c in enumerate(self._calcs):
                 if c.name == name:
-                    # don't allow removing something currently running
+                    # belt-and-suspenders: never remove the in-flight calc
                     if c.state == CalcState.RUNNING:
                         raise ValueError("Cannot remove a running calculation.")
                     del self._calcs[i]
@@ -278,6 +312,8 @@ class QueueStore:
         PENDING (and clears the old result/message) so it runs on the next Run.
         Raises ValueError if the target isn't editable, or on a name clash."""
         with self._lock:
+            if self._running:
+                raise ValueError("Cannot edit a calculation while the queue is running.")
             idx = None
             for i, c in enumerate(self._calcs):
                 if c.name == name:
@@ -306,6 +342,8 @@ class QueueStore:
         be editable (pending/failed/cancelled) so running/done items keep their
         place. Returns True on move."""
         with self._lock:
+            if self._running:
+                raise ValueError("Cannot reorder while the queue is running.")
             n = len(self._calcs)
             if not (0 <= from_idx < n) or not (0 <= to_idx < n):
                 raise ValueError("Index out of range.")
@@ -414,6 +452,17 @@ class QueueStore:
         engine.cancel()
         self.append_log("Cancellation requested...", "info")
         return True
+
+    def wait_for_run(self, timeout: "float | None" = None) -> bool:
+        """Block until the run worker thread finishes (or timeout elapses).
+        Returns True if no run is in progress afterwards. Used on app shutdown so
+        we don't orphan orca.exe / leave a half-written .out behind."""
+        with self._lock:
+            t = self._thread
+        if t is None:
+            return True
+        t.join(timeout)
+        return not t.is_alive()
 
 
 def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str,
