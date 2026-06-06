@@ -70,6 +70,10 @@ function startPolling() {
 }
 
 async function pollTick() {
+  // While the window is hidden, skip the work that forces DOM/SVG repaints so
+  // Chromium can release renderer memory; we resume on the next visible tick.
+  // (The backend keeps buffering; we catch up from _logSeq when shown again.)
+  if (document.hidden) return;
   try {
     // new log lines
     const logRes = JSON.parse(await bridge.get_log(_logSeq));
