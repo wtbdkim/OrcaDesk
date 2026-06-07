@@ -3,7 +3,7 @@
 A desktop GUI for building, queuing, running, and parsing ORCA computational
 chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark UI), Python core.
 
-> **Status: 0.1 beta** (`0.1.0-beta`). Desktop app: build → queue → run →
+> **Status: 0.1.1 beta** (`0.1.1-beta`). Desktop app: build → queue → run →
 > parse, validated against real ORCA 6.1.1 output. Run from source, or build a
 > standalone Windows app with `build.bat`. (Phone-sync is in development and not
 > part of this build.) See [CHANGELOG.md](CHANGELOG.md) for details.
@@ -77,13 +77,6 @@ Notes:
   expected; compress before sending.
 - Settings and workspaces are stored per-user in `%APPDATA%\ORCAdesk`,
   not inside the app folder, so they survive updates.
-
-### Making an installer (setup.exe)
-
-After building, you can wrap the app in a Windows install wizard using the
-included `installer.iss` (Inno Setup script). See `INSTALLER_GUIDE_KR.md` for
-step-by-step instructions. The result is a single `ORCAdesk-Setup.exe` you
-can hand to others.
 
 ## Project layout
 

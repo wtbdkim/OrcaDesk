@@ -13,6 +13,8 @@ only returned once the whole job finished):
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +28,34 @@ class OrcaRunError(RuntimeError):
     pass
 
 
+class OrcaCancelled(OrcaRunError):
+    """Raised when a run is stopped by the user — distinct from a real failure so
+    the queue can mark the calc CANCELLED (not FAILED) and not block dependents."""
+    pass
+
+
+def _kill_process_tree(proc: "subprocess.Popen") -> None:
+    """Kill the ORCA launcher AND its children (orca_* modules, MPI workers).
+    Popen.terminate() on Windows only kills the launcher PID, orphaning the
+    workers — they keep burning cores and locking scratch/.gbw files."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        if sys.platform.startswith("win"):
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+
+
 class OrcaRunner:
     """Executes ORCA on a single .inp file."""
 
@@ -36,11 +66,7 @@ class OrcaRunner:
 
     def cancel(self) -> None:
         self._cancelled = True
-        if self._proc and self._proc.poll() is None:
-            try:
-                self._proc.terminate()
-            except OSError:
-                pass
+        _kill_process_tree(self._proc)
 
     def run(
         self,
@@ -69,10 +95,16 @@ class OrcaRunner:
         # parallel runs find their resources; run in the input's directory.
         cmd = [str(self.orca_path), str(input_path)]
 
-        # On Windows, avoid popping up a console window.
+        # On Windows, avoid popping up a console window AND put ORCA in its own
+        # process group so cancel() can kill the whole tree. On POSIX, start a new
+        # session (setsid) so os.killpg can reach the MPI workers.
         creationflags = 0
+        start_new_session = False
         if sys.platform.startswith("win"):
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            creationflags = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        else:
+            start_new_session = True
 
         try:
             self._proc = subprocess.Popen(
@@ -85,6 +117,7 @@ class OrcaRunner:
                 encoding="utf-8",
                 errors="replace",
                 creationflags=creationflags,
+                start_new_session=start_new_session,
             )
         except OSError as e:
             raise OrcaRunError(f"Failed to launch ORCA: {e}") from e
@@ -102,7 +135,7 @@ class OrcaRunner:
         ret = self._proc.wait()
 
         if self._cancelled:
-            raise OrcaRunError("Cancelled by user.")
+            raise OrcaCancelled("Cancelled by user.")
         if ret != 0:
             raise OrcaRunError(
                 f"ORCA exited with code {ret}. See {output_path.name} for details."

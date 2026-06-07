@@ -4,14 +4,11 @@
 
   "pople_minimal": [
     "STO-3G",
-    "STO-6G",
     "MINI"
   ],
 
   "pople_split_valence": [
     "3-21G",
-    "3-21++G",
-    "3-21G*",
     "4-22GSP"
   ],
 
@@ -140,8 +137,7 @@
 
   "composite_method_internal": [
     "vDZP",
-    "def2-mSVP",
-    "mTZVPP"
+    "def2-mSVP"
   ],
 
   "auxiliary_coulomb_J": [

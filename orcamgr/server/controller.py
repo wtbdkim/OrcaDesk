@@ -74,7 +74,9 @@ class ServerController:
         from .app import create_app
 
         self._ip = _local_ip()
-        app = create_app(self.store)   # SHARE the GUI's store
+        # pass the bind host so the app only honours the loopback auth-bypass when
+        # actually bound to loopback (a LAN bind requires the PIN for all /api/)
+        app = create_app(self.store, bind_host=self.host)   # SHARE the GUI's store
         # log_config=None avoids uvicorn trying to load its default logging
         # dictConfig, which fails inside a PyInstaller bundle with
         # "Unable to configure formatter 'default'".

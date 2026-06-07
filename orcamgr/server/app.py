@@ -25,23 +25,30 @@ from .store import QueueStore, calc_from_dict, make_engine_factory, load_all_cho
 from ..paths import APP_VERSION, web_mobile_dir
 from ..config import Settings
 
-# requests from the local machine itself bypass the token (the desktop app)
-_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
+# loopback peers (the desktop app's own requests). "localhost" is never a
+# resolved socket peer (that is always an IP literal), so it is not listed.
+_LOCAL_HOSTS = {"127.0.0.1", "::1"}
 
 # paths that never require a token (serving the UI shell + token entry)
 _OPEN_PATHS = {"/", "/manifest.webmanifest", "/api/ping"}
 
 
-def create_app(store: QueueStore | None = None) -> FastAPI:
+def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") -> FastAPI:
     """
     Build the FastAPI app around a QueueStore. If no store is passed, a fresh
     one is created (standalone server mode). When embedded in the PyQt app, the
     app will pass in the SAME store the GUI uses, so both see one queue.
+
+    bind_host is the address uvicorn binds to. The loopback auth-bypass is only
+    honoured when the bind is loopback-only; on a LAN bind (0.0.0.0 / a routable
+    IP) the socket peer cannot be trusted (a same-host proxy/tunnel would make
+    every request look like 127.0.0.1), so the PIN is required for ALL /api/.
     """
     store = store or QueueStore()
     app = FastAPI(title="ORCAdesk", version=APP_VERSION)
     # stash the store on the app so routes (and tests) can reach it
     app.state.store = store
+    loopback_bind = bind_host in _LOCAL_HOSTS
 
     @app.middleware("http")
     async def require_token(request: Request, call_next):
@@ -52,7 +59,8 @@ def create_app(store: QueueStore | None = None) -> FastAPI:
         # only guard the API; static/other paths fall through
         if path.startswith("/api/"):
             client_host = request.client.host if request.client else ""
-            if client_host not in _LOCAL_HOSTS:
+            local_ok = loopback_bind and client_host in _LOCAL_HOSTS
+            if not local_ok:
                 supplied = request.headers.get("x-orcadesk-token") \
                     or request.query_params.get("token")
                 if not store.check_token(supplied):
@@ -162,9 +170,10 @@ def create_app(store: QueueStore | None = None) -> FastAPI:
         plus a few desktop settings the phone needs (e.g. the opt-ETA mode)."""
         data = load_all_choices()
         try:
-            data["_settings"] = {"eta_mode": Settings.load().eta_mode}
+            s = Settings.load()
+            data["_settings"] = {"eta_mode": s.eta_mode, "geo_graph_mode": s.geo_graph_mode}
         except Exception:
-            data["_settings"] = {"eta_mode": "conservative"}
+            data["_settings"] = {"eta_mode": "conservative", "geo_graph_mode": "all5"}
         return data
 
     # --- serve the mobile PWA at the site root ---

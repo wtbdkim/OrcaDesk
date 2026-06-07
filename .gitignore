@@ -23,7 +23,9 @@ dist/
 *.manifest
 *.spec.bak
 
-# --- Inno Setup installer output (make_installer.bat / installer.iss) ---
+# --- Inno Setup installer (kept local, not in the repo) ---
+installer.iss
+installer_output/
 Output/
 *.exe.tmp
 Setup.exe

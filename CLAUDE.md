@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ORCAdesk is a desktop GUI (PyQt6 + QWebEngine) for building, queuing, running, and
 parsing [ORCA](https://www.faccts.de/orca/) computational-chemistry jobs. The app
 shells out to the user's installed `orca` executable; it does not do the chemistry
-itself. Status is `0.1.0-beta`, Windows is the primary tested target.
+itself. Status is `0.1.1-beta`, Windows is the primary tested target.
 
 ## Commands
 
@@ -134,6 +134,22 @@ them there.
 - Option lists in `data/*.json` are sourced from the ORCA 6.1.1 manual; method fields
   accept arbitrary values not in the list (used verbatim), so don't treat the lists as
   closed enums.
+- **Functional-name normalization.** ORCA's simple-input parser is strict about some
+  names, so `input_generator.normalize_functional()` maps the picker label to ORCA's
+  accepted keyword before it goes on the `!` line (e.g. `M06-2X`→`M062X`, `M06-L`→`M06L`,
+  `SCAN`→`SCANfunc`). Valid hyphenated keywords (`CAM-B3LYP`, `wB97X-D3/-D4`, `r2SCAN-3c`,
+  `B97-D3`, `LC-BLYP`) are left untouched — the map is an exact dict, never a
+  hyphen-stripping heuristic. When adding functionals, verify the spelling against the
+  installed ORCA, not just the manual.
+- **Dispersion: always write `D3BJ`, never a bare/combined `-D3`.** D3(BJ damping) and
+  D3(zero damping) are different methods, and bare `-D3` is ambiguous; ORCA also rejects
+  combined `FUNC-D3` tokens (it wants the dispersion as a separate keyword). So combined
+  tokens like `B3LYP-D3`/`B3LYP-D3BJ` are normalized to `B3LYP D3BJ`. Use `D3BJ` (or
+  `D4`) explicitly everywhere.
+- **Double hybrids / MP2 need a `/C` correlation-fitting aux.** `_auto_aux` adds
+  `AutoAux` (generates `/J` and `/C`) for those methods when RI is on; if the user sets
+  the RI approximation to `NoRI` it adds nothing (conventional path). Plain hybrids/GGAs
+  with an RI-J method get `def2/J` for def2 bases as before.
 
 ## Git workflow
 
@@ -166,6 +182,9 @@ On **`dev`** — subject is a `type: summary` prefix. Allowed types:
 - `feat:` — a new feature
 - `fix:` — a bug fix
 - `hotfix:` — an urgent fix that may also be cherry-picked to `main`
+- `docs:` — documentation only (README, CHANGELOG, CLAUDE.md, *_KR.md, etc.)
+- `chore:` — build/packaging, dependencies, or tooling that isn't a feature or bug fix
+  (e.g. `build.spec`, `installer.iss`, `requirements*.txt`, `.gitignore`)
 
 ```
 feat: <one-line summary>
@@ -175,3 +194,7 @@ feat: <one-line summary>
 ```
 Keep the version-numbered format **only** for `main`; never prefix `main` commits with
 `feat:`/`fix:`, and never put a bare `x.x.x` subject on `dev`.
+
+**No co-author / attribution trailers.** Do not append `Co-Authored-By:` lines (or any
+other tool-attribution trailer such as "Generated with Claude Code") to commit messages.
+Commits should be authored solely under the repository's configured git user.

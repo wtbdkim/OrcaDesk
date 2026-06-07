@@ -3,6 +3,52 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.1-beta] — 2026-06-07
+
+Correctness and robustness release. Focus: ORCA input that this build actually
+accepts, safer cancellation/shutdown, and a clearer optimization graph.
+
+### Added
+- **Composite calc kinds** `Opt + Freq` and `TS Opt + Freq` — one ORCA run that
+  optimizes then runs frequencies, validated for convergence *and* the
+  imaginary-frequency count (0 for a minimum, 1 for a TS).
+- **Optimization graph: all five convergence criteria.** Each criterion is
+  plotted as value ÷ its own tolerance, so they share a single goal line at 1
+  (below the line = met). A Settings toggle switches between this and the
+  original MAX-gradient-only view.
+- **Build tab: Beginner / Expert modes.** Beginner is the guided form (and can
+  now also load a complete `.inp` directly); Expert is a paste/load-a-full-`.inp`
+  view where you only pick the calc kind (for parsing), with `{{GEOMETRY}}` +
+  reference still supported. The chosen mode is remembered.
+- Opt-in WebEngine remote debugging via `ORCADESK_REMOTE_DEBUG` (diagnostics).
+
+### Changed
+- **ORCA functional/basis compatibility.** Strict-name normalization on the
+  keyword line (`M06-2X`→`M062X`, `M06-L`→`M06L`, `SCAN`→`SCANfunc`); combined
+  dispersion tokens rewritten to the explicit separate keyword (`B3LYP-D3` →
+  `B3LYP D3BJ`); `RIJK` gets a `/JK` aux and double hybrids/MP2 get `AutoAux`
+  (skipped when RI is off). Functional/basis lists were validated against ORCA
+  6.1.1 and entries this build rejects were removed.
+- Optimization-graph step count is keyed to the real ORCA cycle number.
+
+### Fixed
+- **Cancellation/shutdown:** cancel now kills the whole ORCA process tree (no
+  orphaned MPI workers); a cancelled calc is marked CANCELLED (not FAILED) and
+  no longer blocks its dependents; closing the app waits for ORCA to stop so it
+  doesn't orphan `orca.exe` or leave a half-written `.out`.
+- **NEB-TS:** product/TS-guess side files are written in raw mode too,
+  reactant/product atom order is checked before launch, and the result is
+  validated (one imaginary mode) when frequencies were computed.
+- **UI:** NEB-TS product `.xyz` loading (was JSON-parsing raw text and failing);
+  "Reference another calculation" can enter raw mode without first picking a
+  reference; per-element basis/ECP values are HTML-escaped on edit; the opt-ETA
+  no longer flashes "~0s" after a burst of replayed log lines; log/graph
+  repaints are skipped while the window is hidden.
+- **Input validation / phone-sync (in development):** untrusted numeric fields
+  are coerced/clamped; calc names are validated against path traversal and
+  reserved names at the shared layer; the queue can't be edited while running;
+  the loopback auth-bypass is honoured only when bound to loopback.
+
 ## [0.1.0-beta] — 2026-06-03
 
 First beta of the **desktop** app. Core workflow (build → queue → run → parse)

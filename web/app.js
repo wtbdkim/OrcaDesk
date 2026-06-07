@@ -14,6 +14,12 @@ const localCalcs = {};          // name -> full calc (config/xyz/raw) added on T
 let editIndex = -1;             // queue index being edited, or -1 for "new"
 let rawMode = false;            // is the current build form in raw mode?
 let rawText = "";               // current raw .inp text being edited
+let buildMode = "beginner";     // "beginner" (guided form) or "expert" (paste a full .inp)
+// controls hidden in expert mode (the guided form, charge/mult, the raw button)
+const _EXPERT_HIDDEN = ["card-method", "field-charge", "field-mult", "raw-btn"];
+function _showIds(ids, on) {
+  ids.forEach(id => { const e = document.getElementById(id); if (e) e.style.display = on ? "" : "none"; });
+}
 let _running = false;           // mirrors store.running
 
 // Calculations the user can still edit / remove / reorder: never-run (pending)
@@ -26,7 +32,9 @@ function isEditableState(state) {
 // per-kind defaults for the config form
 const KIND_DEFS = {
   opt:     { calcGroup: "calculation_types_geometry",  calcDefault: "TightOpt", scfDefault: "TightSCF",     showMaxIter: true,  showTddft: false, showFreq: false, showNmr: false, allTypes: false, options: "" },
+  opt_freq:    { calcGroup: null,                      calcDefault: "TightOpt Freq", scfDefault: "VeryTightSCF", showMaxIter: true, showTddft: false, showFreq: true,  showNmr: false, allTypes: false, options: "", showIrc: false, showNeb: false },
   ts_opt:  { calcGroup: "calculation_types_geometry",  calcDefault: "OptTS",    scfDefault: "TightSCF",     showMaxIter: true,  showTddft: false, showFreq: false, showNmr: false, allTypes: false, options: "" },
+  ts_opt_freq: { calcGroup: null,                      calcDefault: "OptTS Freq",    scfDefault: "VeryTightSCF", showMaxIter: true, showTddft: false, showFreq: true,  showNmr: false, allTypes: false, options: "", showIrc: false, showNeb: false },
   freq:    { calcGroup: "calculation_types_frequency", calcDefault: "Freq",     scfDefault: "VeryTightSCF", showMaxIter: false, showTddft: false, showFreq: true,  showNmr: false, allTypes: false, options: "" },
   ts_freq: { calcGroup: "calculation_types_frequency", calcDefault: "Freq",     scfDefault: "VeryTightSCF", showMaxIter: false, showTddft: false, showFreq: true,  showNmr: false, allTypes: false, options: "" },
   tddft:   { calcGroup: null,                          calcDefault: "",         scfDefault: "TightSCF",     showMaxIter: false, showTddft: true,  showFreq: false, showNmr: false, allTypes: false, options: "" },
@@ -47,7 +55,9 @@ new QWebChannel(qt.webChannelTransport, async function(channel) {
   await loadSettings();
   await loadAbout();
   if (SCFGraph && SCFGraph.setEtaMode && settings.eta_mode) SCFGraph.setEtaMode(settings.eta_mode);
+  if (SCFGraph && SCFGraph.setGeoMode && settings.geo_graph_mode) SCFGraph.setGeoMode(settings.geo_graph_mode);
   renderConfigForm("opt");
+  if (settings.build_mode) setBuildMode(settings.build_mode, false);   // apply saved build mode (no re-save)
 
   // The queue + log now live in a shared store (also used by the phone). We
   // poll cheap getters instead of using Qt signals, so the desktop reflects
@@ -70,6 +80,10 @@ function startPolling() {
 }
 
 async function pollTick() {
+  // While the window is hidden, skip the work that forces DOM/SVG repaints so
+  // Chromium can release renderer memory; we resume on the next visible tick.
+  // (The backend keeps buffering; we catch up from _logSeq when shown again.)
+  if (document.hidden) return;
   try {
     // new log lines
     const logRes = JSON.parse(await bridge.get_log(_logSeq));
@@ -334,6 +348,10 @@ async function loadSettings() {
   const mode = settings.eta_mode || "conservative";
   const radio = document.querySelector(`input[name="eta-mode"][value="${mode}"]`);
   if (radio) radio.checked = true;
+  // optimization-graph mode radio
+  const gmode = settings.geo_graph_mode || "all5";
+  const grad = document.querySelector(`input[name="geo-mode"][value="${gmode}"]`);
+  if (grad) grad.checked = true;
   updateOrcaStatus(settings.orca_valid);
 }
 function updateOrcaStatus(valid) {
@@ -343,17 +361,21 @@ function updateOrcaStatus(valid) {
 }
 async function saveSettings() {
   const etaEl = document.querySelector('input[name="eta-mode"]:checked');
+  const geoEl = document.querySelector('input[name="geo-mode"]:checked');
   const payload = {
     orca_path: document.getElementById("set-orca").value.trim(),
     workspace_root: document.getElementById("set-ws").value.trim(),
     default_nprocs: parseInt(document.getElementById("set-nprocs").value, 10) || 6,
     default_maxcore_mb: parseInt(document.getElementById("set-maxcore").value, 10) || 2400,
     eta_mode: etaEl ? etaEl.value : "conservative",
+    geo_graph_mode: geoEl ? geoEl.value : "all5",
   };
   settings = JSON.parse(await bridge.save_settings(JSON.stringify(payload)));
   updateOrcaStatus(settings.orca_valid);
-  // push the new mode to the live graph immediately
+  // push the new modes to the live graph immediately
   if (SCFGraph && SCFGraph.setEtaMode) SCFGraph.setEtaMode(settings.eta_mode);
+  if (SCFGraph && SCFGraph.setGeoMode) SCFGraph.setGeoMode(settings.geo_graph_mode);
+  if (_logMode === "graph") renderSCFPanel();   // redraw with the new style
   const s = document.getElementById("set-saved");
   s.textContent = "Saved."; setTimeout(() => s.textContent = "", 2000);
 }
@@ -391,7 +413,15 @@ function refreshRefSelect() {
     sel.innerHTML = `<option value="">(no calculations in queue yet)</option>`;
     return;
   }
-  for (const c of queue) {
+  // a calc must not reference its own geometry (it would depend on itself), so
+  // when editing, exclude the calc being edited from the candidate list
+  const selfName = editIndex !== -1 && queue[editIndex] ? queue[editIndex].name : null;
+  const candidates = queue.filter(c => c.name !== selfName);
+  if (!candidates.length) {
+    sel.innerHTML = `<option value="">(no other calculation to reference)</option>`;
+    return;
+  }
+  for (const c of candidates) {
     const o = document.createElement("option");
     o.value = c.name; o.textContent = `${c.name}  (${c.kind})`;
     sel.appendChild(o);
@@ -399,10 +429,11 @@ function refreshRefSelect() {
   if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
 }
 
-async function loadXyz() {
-  const content = await bridge.load_xyz_file();
-  if (!content) return;
-  const lines = content.split(/\r?\n/);
+// Parse a raw .xyz file's text into a normalized "El x y z" coordinate block.
+// bridge.load_xyz_file() returns the file's RAW text (not JSON), so callers must
+// parse it as text — never JSON.parse it.
+function parseXyzText(content) {
+  const lines = (content || "").split(/\r?\n/);
   let start = 0;
   if (lines.length >= 2 && /^\s*\d+\s*$/.test(lines[0])) start = 2;  // skip count+comment
   const coords = [];
@@ -410,13 +441,20 @@ async function loadXyz() {
     const p = lines[i].trim().split(/\s+/);
     if (p.length < 4) continue;
     const [e, x, y, z] = p;
-    if ([x,y,z].some(v => isNaN(parseFloat(v)))) continue;
+    if ([x, y, z].some(v => isNaN(parseFloat(v)))) continue;
     coords.push(`${e} ${x} ${y} ${z}`);
   }
-  directXyz = coords.join("\n");
+  return coords.join("\n");
+}
+
+async function loadXyz() {
+  const content = await bridge.load_xyz_file();
+  if (!content) return;
+  directXyz = parseXyzText(content);
+  const n = directXyz ? directXyz.split("\n").length : 0;
   const st = document.getElementById("xyz-status");
-  st.textContent = coords.length ? `${coords.length} atoms loaded.` : "No atoms found in file.";
-  appendLog(`Loaded ${coords.length} atoms from .xyz.`, coords.length ? "ok" : "warn");
+  st.textContent = n ? `${n} atoms loaded.` : "No atoms found in file.";
+  appendLog(`Loaded ${n} atoms from .xyz.`, n ? "ok" : "warn");
 }
 
 // ---------- per-element basis / ECP ----------
@@ -425,9 +463,9 @@ function addBasisRow(element, basis, ecp) {
   const row = document.createElement("div");
   row.className = "basis-row";
   row.innerHTML = `
-    <input class="be-el mono" type="text" placeholder="I" value="${element ?? ""}">
-    <input class="be-basis mono" type="text" placeholder="def2-TZVP" value="${basis ?? ""}">
-    <input class="be-ecp mono" type="text" placeholder="def2-ECP" value="${ecp ?? ""}">
+    <input class="be-el mono" type="text" placeholder="I" value="${escapeHtml(element ?? "")}">
+    <input class="be-basis mono" type="text" placeholder="def2-TZVP" value="${escapeHtml(basis ?? "")}">
+    <input class="be-ecp mono" type="text" placeholder="def2-ECP" value="${escapeHtml(ecp ?? "")}">
     <button class="rm" title="Remove" onclick="this.parentElement.remove()">×</button>`;
   host.appendChild(row);
 }
@@ -611,14 +649,14 @@ function onIrcHessChange() {
 }
 
 async function loadNebProduct() {
-  const raw = await bridge.load_xyz_file();
-  const data = JSON.parse(raw);
-  if (data && data.xyz) {
-    _nebProductXyz = data.xyz;
-    const st = document.getElementById("cfg-neb-prod-status");
-    if (st) st.textContent = `loaded (${countAtoms(data.xyz)} atoms)`;
-    nebAtomCheck();
-  }
+  const content = await bridge.load_xyz_file();
+  if (!content) return;                       // user cancelled the picker
+  const xyz = parseXyzText(content);          // raw .xyz text, NOT JSON
+  if (!xyz) { appendLog("No atoms found in the product .xyz.", "warn"); return; }
+  _nebProductXyz = xyz;
+  const st = document.getElementById("cfg-neb-prod-status");
+  if (st) st.textContent = `loaded (${countAtoms(xyz)} atoms)`;
+  nebAtomCheck();
 }
 
 function countAtoms(xyz) {
@@ -705,7 +743,11 @@ function collectConfig(kind) {
 }
 
 // ---------- add / update queue ----------
-function collectCalcFromForm() {
+// forPreview = true is used when entering raw mode to generate the .inp
+// template: geometry isn't needed yet (raw carries its own coords, or a
+// reference is filled in at run time), so the "load .xyz" / "select a
+// reference" checks are relaxed — exactly like .xyz already behaves.
+function collectCalcFromForm(forPreview = false) {
   const name = document.getElementById("calc-name").value.trim();
   if (!name) throw new Error("Name is required.");
   if (/[\\/:*?"<>|]/.test(name))
@@ -720,14 +762,19 @@ function collectCalcFromForm() {
   let xyz = "", ref_name = "";
   if (src === "direct") {
     // in raw+direct the coords live in the raw text; xyz may be empty
-    if (!rawMode && !directXyz) throw new Error("Load an .xyz file first.");
+    if (!forPreview && !rawMode && !directXyz) throw new Error("Load an .xyz file first.");
     xyz = directXyz;
   } else {
     ref_name = document.getElementById("ref-select").value;
-    if (!ref_name) throw new Error("Select a calculation to reference.");
+    // a reference is required to actually queue the calc, but NOT to open the
+    // raw editor (you pick the reference before adding; the field stays enabled)
+    if (!forPreview && !ref_name) throw new Error("Select a calculation to reference.");
+    if (ref_name && ref_name === name) throw new Error("A calculation can't reference its own geometry.");
   }
 
-  // raw integrity: reference mode requires the placeholder
+  // raw integrity: must have actual .inp text, and reference mode needs the placeholder
+  if (rawMode && !forPreview && !rawText.trim())
+    throw new Error("Paste or load a complete .inp first.");
   if (rawMode && src === "reference" && !rawText.includes("{{GEOMETRY}}"))
     throw new Error("Raw input references another calculation but is missing the {{GEOMETRY}} placeholder.");
 
@@ -795,6 +842,10 @@ function editCalc(i) {
     appendLog(`"${mirror.name}" was added from another device; full options aren't available to edit here. You can remove it and recreate it.`, "warn");
   }
   editIndex = i;
+
+  // reveal the editor this calc needs, even if expert mode would hide the form
+  if (!c.is_raw) _showIds(["card-method", "field-charge", "field-mult"], true);
+  if (buildMode === "expert") _showIds(["raw-btn"], false);   // raw button stays hidden in expert
 
   document.getElementById("calc-name").value = c.name;
   document.getElementById("calc-charge").value = c.charge;
@@ -891,8 +942,17 @@ function updateEditUI() {
 }
 
 function exitEditMode() {
-  editIndex = -1; rawMode = false; rawText = "";
-  showRawCard(false); lockFormForRaw(false);
+  editIndex = -1;
+  if (buildMode === "expert") {
+    // back to the expert raw view: editor cleared, guided form + raw button re-hidden
+    rawMode = true; rawText = "";
+    const ta = document.getElementById("raw-text"); if (ta) ta.value = "";
+    _showIds(_EXPERT_HIDDEN, false);
+    showRawCard(true);
+  } else {
+    rawMode = false; rawText = "";
+    showRawCard(false); lockFormForRaw(false);
+  }
   updateEditUI();
 }
 
@@ -941,7 +1001,7 @@ async function enterRawMode() {
   rawMode = true;
   let calc;
   try {
-    calc = collectCalcFromForm();
+    calc = collectCalcFromForm(true);   // preview: geometry not required yet
   } catch (e) {
     rawMode = false;
     alert(e.message);
@@ -955,13 +1015,61 @@ async function enterRawMode() {
     return;
   }
 
-  rawText = res.text;
-  document.getElementById("raw-text").value = rawText;
-  document.getElementById("raw-text").oninput = (e) => { rawText = e.target.value; };
-  showRawCard(true);
-  lockFormForRaw(true);
-  updateEditUI();
+  enterRawWithText(res.text);
   appendLog("Raw mode: edit the .inp below (type your coordinates after the '* xyz' line), then Add/Update.", "info");
+}
+
+// shared raw-mode entry: show the raw editor populated with `text`. Used by the
+// generated-template path (enterRawMode), the file loader (loadInpFile), and
+// expert mode. In beginner the guided form is dimmed; in expert it is hidden.
+function enterRawWithText(text) {
+  rawMode = true;
+  rawText = text || "";
+  const ta = document.getElementById("raw-text");
+  ta.value = rawText;
+  ta.oninput = (e) => { rawText = e.target.value; };
+  showRawCard(true);
+  if (buildMode !== "expert") lockFormForRaw(true);
+  updateEditUI();
+}
+
+// Load a complete ORCA .inp from disk straight into the raw editor (no form
+// generation). Works in both modes; in beginner it enters raw mode.
+async function loadInpFile() {
+  // converting an in-progress FORM edit to raw is irreversible — warn like enterRawMode
+  if (editIndex !== -1 && !rawMode &&
+      !confirm("Load a .inp here? This calculation becomes raw input and can no longer be edited through the form.")) {
+    return;
+  }
+  const text = await bridge.load_inp_file();
+  if (!text) return;
+  enterRawWithText(text);
+  appendLog("Loaded .inp into the editor. Set the calc type (and Geometry source if it uses {{GEOMETRY}}), then Add to queue.", "info");
+}
+
+// Beginner (guided form) vs Expert (paste/load a complete .inp + pick the kind).
+function setBuildMode(mode, persist = true) {
+  if (mode !== "beginner" && mode !== "expert") return;
+  if (mode === buildMode && editIndex === -1) return;   // re-click of active mode: keep form state
+  if (editIndex !== -1) exitEditMode();                 // never carry an in-progress edit across a mode switch
+  buildMode = mode;
+  document.getElementById("bmode-beginner").classList.toggle("active", mode === "beginner");
+  document.getElementById("bmode-expert").classList.toggle("active", mode === "expert");
+  const hint = document.getElementById("bmode-hint");
+  if (mode === "expert") {
+    // always raw input: hide the method form + charge/mult + raw button, show the .inp editor
+    _showIds(_EXPERT_HIDDEN, false);
+    enterRawWithText(rawText);   // keep any pasted text; raw card shown
+    if (hint) hint.textContent = "Paste or load a complete .inp and pick the calc type (used for parsing). Use {{GEOMETRY}} + Geometry source → reference to inject another job's optimized geometry.";
+  } else {
+    // guided form
+    _showIds(_EXPERT_HIDDEN, true);
+    rawMode = false; rawText = "";
+    showRawCard(false); lockFormForRaw(false);
+    renderConfigForm(document.getElementById("calc-kind").value);
+    if (hint) hint.textContent = "";
+  }
+  if (persist && bridge && bridge.save_settings) bridge.save_settings(JSON.stringify({ build_mode: mode }));
 }
 
 function showRawCard(show) {
@@ -1194,7 +1302,7 @@ function currentRunningScf() {
 }
 function runningIsOpt() {
   const r = (queue || []).find(c => c.state === "running");
-  return r ? (r.kind === "opt" || r.kind === "ts_opt") : false;
+  return r ? ["opt", "ts_opt", "opt_freq", "ts_opt_freq"].includes(r.kind) : false;
 }
 // which graph to actually show: explicit choice, else geo if we have opt data
 function effectiveGraphKind() {
