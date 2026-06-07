@@ -9,7 +9,7 @@ separated (no cross-thread Qt signal juggling).
 
 JS calls these slots:
   get_about, get_settings, save_settings, autodetect_orca,
-  pick_orca_executable, pick_workspace, load_xyz_file, load_choices,
+  pick_orca_executable, pick_workspace, load_xyz_file, load_inp_file, load_choices,
   parse_out_file, build_inp_preview,
   add_calc, remove_calc, clear_queue, get_queue, get_log,
   run_queue, cancel_queue,
@@ -61,6 +61,7 @@ class Bridge(QObject):
             "theme": self.settings.theme,
             "eta_mode": self.settings.eta_mode,
             "geo_graph_mode": self.settings.geo_graph_mode,
+            "build_mode": self.settings.build_mode,
             "orca_valid": self.settings.orca_is_valid(),
         })
 
@@ -80,6 +81,9 @@ class Bridge(QObject):
             # optimization graph mode: only accept known values
             if "geo_graph_mode" in data and data["geo_graph_mode"] in ("all5", "maxgrad"):
                 self.settings.geo_graph_mode = data["geo_graph_mode"]
+            # build-tab mode: only accept known values
+            if "build_mode" in data and data["build_mode"] in ("beginner", "expert"):
+                self.settings.build_mode = data["build_mode"]
             self.settings.save()
             return self.get_settings()
         except (json.JSONDecodeError, ValueError, TypeError) as e:
@@ -109,6 +113,19 @@ class Bridge(QObject):
     def load_xyz_file(self) -> str:
         path, _ = QFileDialog.getOpenFileName(
             self.window, "Load .xyz file", "", "XYZ file (*.xyz);;All files (*.*)"
+        )
+        if not path:
+            return ""
+        try:
+            return Path(path).read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
+    @pyqtSlot(result=str)
+    def load_inp_file(self) -> str:
+        """Pick a complete ORCA .inp and return its text (used by expert/raw mode)."""
+        path, _ = QFileDialog.getOpenFileName(
+            self.window, "Load ORCA .inp file", "", "ORCA input (*.inp);;All files (*.*)"
         )
         if not path:
             return ""

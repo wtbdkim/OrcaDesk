@@ -83,6 +83,9 @@ class Settings:
     # optimization graph style: "all5" (all five convergence criteria as
     # value/tolerance ratios sharing one goal line) or "maxgrad" (MAX gradient only)
     geo_graph_mode: str = "all5"
+    # build-tab mode: "beginner" (the guided form) or "expert" (paste/load a
+    # complete .inp and only pick the calc kind, for parsing/validation)
+    build_mode: str = "beginner"
 
     @classmethod
     def load(cls) -> "Settings":

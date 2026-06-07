@@ -14,6 +14,12 @@ const localCalcs = {};          // name -> full calc (config/xyz/raw) added on T
 let editIndex = -1;             // queue index being edited, or -1 for "new"
 let rawMode = false;            // is the current build form in raw mode?
 let rawText = "";               // current raw .inp text being edited
+let buildMode = "beginner";     // "beginner" (guided form) or "expert" (paste a full .inp)
+// controls hidden in expert mode (the guided form, charge/mult, the raw button)
+const _EXPERT_HIDDEN = ["card-method", "field-charge", "field-mult", "raw-btn"];
+function _showIds(ids, on) {
+  ids.forEach(id => { const e = document.getElementById(id); if (e) e.style.display = on ? "" : "none"; });
+}
 let _running = false;           // mirrors store.running
 
 // Calculations the user can still edit / remove / reorder: never-run (pending)
@@ -51,6 +57,7 @@ new QWebChannel(qt.webChannelTransport, async function(channel) {
   if (SCFGraph && SCFGraph.setEtaMode && settings.eta_mode) SCFGraph.setEtaMode(settings.eta_mode);
   if (SCFGraph && SCFGraph.setGeoMode && settings.geo_graph_mode) SCFGraph.setGeoMode(settings.geo_graph_mode);
   renderConfigForm("opt");
+  if (settings.build_mode) setBuildMode(settings.build_mode, false);   // apply saved build mode (no re-save)
 
   // The queue + log now live in a shared store (also used by the phone). We
   // poll cheap getters instead of using Qt signals, so the desktop reflects
@@ -765,7 +772,9 @@ function collectCalcFromForm(forPreview = false) {
     if (ref_name && ref_name === name) throw new Error("A calculation can't reference its own geometry.");
   }
 
-  // raw integrity: reference mode requires the placeholder
+  // raw integrity: must have actual .inp text, and reference mode needs the placeholder
+  if (rawMode && !forPreview && !rawText.trim())
+    throw new Error("Paste or load a complete .inp first.");
   if (rawMode && src === "reference" && !rawText.includes("{{GEOMETRY}}"))
     throw new Error("Raw input references another calculation but is missing the {{GEOMETRY}} placeholder.");
 
@@ -833,6 +842,10 @@ function editCalc(i) {
     appendLog(`"${mirror.name}" was added from another device; full options aren't available to edit here. You can remove it and recreate it.`, "warn");
   }
   editIndex = i;
+
+  // reveal the editor this calc needs, even if expert mode would hide the form
+  if (!c.is_raw) _showIds(["card-method", "field-charge", "field-mult"], true);
+  if (buildMode === "expert") _showIds(["raw-btn"], false);   // raw button stays hidden in expert
 
   document.getElementById("calc-name").value = c.name;
   document.getElementById("calc-charge").value = c.charge;
@@ -929,8 +942,17 @@ function updateEditUI() {
 }
 
 function exitEditMode() {
-  editIndex = -1; rawMode = false; rawText = "";
-  showRawCard(false); lockFormForRaw(false);
+  editIndex = -1;
+  if (buildMode === "expert") {
+    // back to the expert raw view: editor cleared, guided form + raw button re-hidden
+    rawMode = true; rawText = "";
+    const ta = document.getElementById("raw-text"); if (ta) ta.value = "";
+    _showIds(_EXPERT_HIDDEN, false);
+    showRawCard(true);
+  } else {
+    rawMode = false; rawText = "";
+    showRawCard(false); lockFormForRaw(false);
+  }
   updateEditUI();
 }
 
@@ -993,13 +1015,61 @@ async function enterRawMode() {
     return;
   }
 
-  rawText = res.text;
-  document.getElementById("raw-text").value = rawText;
-  document.getElementById("raw-text").oninput = (e) => { rawText = e.target.value; };
-  showRawCard(true);
-  lockFormForRaw(true);
-  updateEditUI();
+  enterRawWithText(res.text);
   appendLog("Raw mode: edit the .inp below (type your coordinates after the '* xyz' line), then Add/Update.", "info");
+}
+
+// shared raw-mode entry: show the raw editor populated with `text`. Used by the
+// generated-template path (enterRawMode), the file loader (loadInpFile), and
+// expert mode. In beginner the guided form is dimmed; in expert it is hidden.
+function enterRawWithText(text) {
+  rawMode = true;
+  rawText = text || "";
+  const ta = document.getElementById("raw-text");
+  ta.value = rawText;
+  ta.oninput = (e) => { rawText = e.target.value; };
+  showRawCard(true);
+  if (buildMode !== "expert") lockFormForRaw(true);
+  updateEditUI();
+}
+
+// Load a complete ORCA .inp from disk straight into the raw editor (no form
+// generation). Works in both modes; in beginner it enters raw mode.
+async function loadInpFile() {
+  // converting an in-progress FORM edit to raw is irreversible — warn like enterRawMode
+  if (editIndex !== -1 && !rawMode &&
+      !confirm("Load a .inp here? This calculation becomes raw input and can no longer be edited through the form.")) {
+    return;
+  }
+  const text = await bridge.load_inp_file();
+  if (!text) return;
+  enterRawWithText(text);
+  appendLog("Loaded .inp into the editor. Set the calc type (and Geometry source if it uses {{GEOMETRY}}), then Add to queue.", "info");
+}
+
+// Beginner (guided form) vs Expert (paste/load a complete .inp + pick the kind).
+function setBuildMode(mode, persist = true) {
+  if (mode !== "beginner" && mode !== "expert") return;
+  if (mode === buildMode && editIndex === -1) return;   // re-click of active mode: keep form state
+  if (editIndex !== -1) exitEditMode();                 // never carry an in-progress edit across a mode switch
+  buildMode = mode;
+  document.getElementById("bmode-beginner").classList.toggle("active", mode === "beginner");
+  document.getElementById("bmode-expert").classList.toggle("active", mode === "expert");
+  const hint = document.getElementById("bmode-hint");
+  if (mode === "expert") {
+    // always raw input: hide the method form + charge/mult + raw button, show the .inp editor
+    _showIds(_EXPERT_HIDDEN, false);
+    enterRawWithText(rawText);   // keep any pasted text; raw card shown
+    if (hint) hint.textContent = "Paste or load a complete .inp and pick the calc type (used for parsing). Use {{GEOMETRY}} + Geometry source → reference to inject another job's optimized geometry.";
+  } else {
+    // guided form
+    _showIds(_EXPERT_HIDDEN, true);
+    rawMode = false; rawText = "";
+    showRawCard(false); lockFormForRaw(false);
+    renderConfigForm(document.getElementById("calc-kind").value);
+    if (hint) hint.textContent = "";
+  }
+  if (persist && bridge && bridge.save_settings) bridge.save_settings(JSON.stringify({ build_mode: mode }));
 }
 
 function showRawCard(show) {

@@ -16,6 +16,10 @@ accepts, safer cancellation/shutdown, and a clearer optimization graph.
   plotted as value ÷ its own tolerance, so they share a single goal line at 1
   (below the line = met). A Settings toggle switches between this and the
   original MAX-gradient-only view.
+- **Build tab: Beginner / Expert modes.** Beginner is the guided form (and can
+  now also load a complete `.inp` directly); Expert is a paste/load-a-full-`.inp`
+  view where you only pick the calc kind (for parsing), with `{{GEOMETRY}}` +
+  reference still supported. The chosen mode is remembered.
 - Opt-in WebEngine remote debugging via `ORCADESK_REMOTE_DEBUG` (diagnostics).
 
 ### Changed

@@ -39,6 +39,11 @@
 
     <!-- ============ BUILD ============ -->
     <section class="panel active" data-panel="build">
+      <div class="graph-subtoggle" style="margin-bottom:12px">
+        <button id="bmode-beginner" class="active" onclick="setBuildMode('beginner')">Beginner</button>
+        <button id="bmode-expert" onclick="setBuildMode('expert')">Expert</button>
+        <span class="hint" id="bmode-hint" style="margin:0 0 0 10px;align-self:center"></span>
+      </div>
       <div class="card">
         <div class="card-title">Calculation</div>
         <div class="card-desc">One calculation = one ORCA run. Give it a unique name (used as its folder).</div>
@@ -60,12 +65,12 @@
               <option value="general">General (any)</option>
             </select>
           </div>
-          <div class="field" style="flex:0 0 100px"><label>Charge</label><input id="calc-charge" type="number" value="0"></div>
-          <div class="field" style="flex:0 0 110px"><label>Mult.</label><input id="calc-mult" type="number" value="1" min="1"></div>
+          <div class="field" id="field-charge" style="flex:0 0 100px"><label>Charge</label><input id="calc-charge" type="number" value="0"></div>
+          <div class="field" id="field-mult" style="flex:0 0 110px"><label>Mult.</label><input id="calc-mult" type="number" value="1" min="1"></div>
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="card-geometry">
         <div class="card-title">Geometry source</div>
         <div class="card-desc">Use coordinates from an .xyz file, or take the optimized geometry of another queued calculation.</div>
         <div class="field-row" style="margin-bottom:12px">
@@ -87,7 +92,7 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="card-method">
         <div class="card-title">Method &amp; options</div>
         <div class="card-desc">Settings for this calculation.</div>
         <div id="calc-config"></div>
@@ -123,6 +128,7 @@
       <div id="edit-banner" class="hint" style="display:none;margin-bottom:8px"></div>
       <div class="btn-group">
         <button class="btn btn-primary" id="add-btn" onclick="addCalcToQueue()">Add to queue →</button>
+        <button class="btn" id="loadinp-btn" onclick="loadInpFile()">Load .inp file</button>
         <button class="btn" id="raw-btn" onclick="enterRawMode()">Edit raw .inp</button>
         <button class="btn btn-ghost" onclick="resetBuild()">Reset</button>
       </div>
