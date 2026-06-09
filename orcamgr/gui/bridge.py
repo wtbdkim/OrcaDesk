@@ -12,7 +12,7 @@ JS calls these slots:
   pick_orca_executable, pick_workspace, load_xyz_file, load_inp_file, load_choices,
   parse_out_file, build_inp_preview,
   add_calc, remove_calc, clear_queue, get_queue, get_log,
-  run_queue, cancel_queue,
+  run_queue, cancel_queue, stop_after_current,
   get_server_status, start_server, stop_server
 """
 
@@ -265,7 +265,17 @@ class Bridge(QObject):
         reference and converts to relative kcal/mol or kJ/mol."""
         pts = []
         for c in self.store.list():
-            if c.state != CalcState.DONE or not c.result:
+            if c.state != CalcState.DONE:
+                continue
+            # Parse-on-miss: DONE calcs restored from a previous session aren't
+            # eagerly re-parsed at startup, so read the .out on demand here (only
+            # when the user actually opens the free-energy profile).
+            if not c.result and c.output_path:
+                try:
+                    c.result = parse_file(c.output_path)
+                except Exception:
+                    pass
+            if not c.result:
                 continue
             g = getattr(c.result, "gibbs_eh", None)
             if g is None:
@@ -327,6 +337,34 @@ class Bridge(QObject):
     def cancel_queue(self) -> str:
         ok = self.store.cancel_run()
         return json.dumps({"ok": ok})
+
+    @pyqtSlot(result=str)
+    def stop_after_current(self) -> str:
+        """Graceful drain: finish the running job, then stop; leave the rest
+        pending (as opposed to cancel_queue, which kills the running job)."""
+        ok = self.store.request_stop_after_current()
+        return json.dumps({"ok": ok})
+
+    def resume_session_if_running(self) -> None:
+        """Startup hook (not a JS slot): if a calculation from the previous
+        session is still running, reattach to it and continue the queue. The
+        store has already restored + reconciled the queue in load_session()."""
+        if not self.store.has_live_running():
+            return
+        if not self.settings.orca_is_valid():
+            self.store.append_log(
+                "A calculation from the previous session is still running, but the "
+                "ORCA path is invalid — cannot reattach. Fix it in Settings.", "warn")
+            return
+        factory = make_engine_factory(self.store, self.settings.orca_path,
+                                      self.settings.workspace_root)
+        try:
+            self.store.start_run(factory)
+            self.store.append_log(
+                "Reattached to a calculation still running from the previous session.",
+                "info")
+        except (RuntimeError, ValueError) as e:
+            self.store.append_log(f"Could not reattach: {e}", "warn")
 
     # --- server control (phone sync) ---
     @pyqtSlot(result=str)

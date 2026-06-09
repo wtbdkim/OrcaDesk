@@ -10,9 +10,12 @@ a PyInstaller bundle.
 
 from __future__ import annotations
 
+import atexit
+import sys
+
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox
+from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QApplication
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebChannel import QWebChannel
 
@@ -43,6 +46,11 @@ class MainWindow(QMainWindow):
         # One shared queue, used by both the GUI and (optionally) the HTTP
         # server, so the desktop and the phone see the same calculations.
         self.store = QueueStore()
+        # Restore the previous session's queue (autosaved on every change) and
+        # reconcile it with reality — a calc left RUNNING when ORCAdesk closed
+        # keeps RUNNING if its detached ORCA is still alive, else is judged from
+        # its .out. Done before the WebView loads so the queue is there to poll.
+        self.store.load_session()
         self.server_ctl = ServerController(self.store)
 
         # Bridge owns all backend logic; register it on the channel.
@@ -53,6 +61,20 @@ class MainWindow(QMainWindow):
 
         index = web_dir() / "index.html"
         self.view.load(QUrl.fromLocalFile(str(index)))
+
+        # If a calculation from the previous session is still running, reattach
+        # and continue the queue from where it left off.
+        self.bridge.resume_session_if_running()
+
+        # Cleanup must run no matter how the app exits, not only on a window
+        # close. aboutToQuit covers QApplication.quit() (e.g. a Ctrl-C handler
+        # in main()); atexit is the interpreter-exit backstop. shutdown() is
+        # idempotent, so being reached by several of these paths is harmless.
+        self._shutdown_done = False
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.shutdown)
+        atexit.register(self.shutdown)
 
     def _first_run_setup(self):
         """If this is the first launch, let the user choose the workspace folder
@@ -75,21 +97,37 @@ class MainWindow(QMainWindow):
         # persist (writes config_file so this dialog won't show again)
         settings.save()
 
-    def closeEvent(self, event):
-        # stop a running queue and the server before the window dies
+    def shutdown(self):
+        """Idempotent teardown. The in-flight ORCA is deliberately LEFT RUNNING
+        so closing ORCAdesk doesn't stop a calculation: we only PAUSE the queue
+        (stop monitoring, no kill), wait — bounded — for the worker to unwind,
+        persist the queue (incl. the running pid) so it can be reattached next
+        launch, then stop the phone server. Safe to call multiple times and from
+        any exit path (closeEvent, aboutToQuit, atexit). Errors are logged, not
+        swallowed — this is the one moment cleanup matters.
+
+        (Explicit Cancel / Stop-after-current from the UI still kill / drain as
+        usual; only an app *close* leaves the job running.)"""
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
         try:
-            self.bridge.cancel_queue()
-        except Exception:
-            pass
+            self.store.pause_run()      # stop monitoring; do NOT kill ORCA
+        except Exception as e:
+            print(f"[shutdown] pause failed: {e}", file=sys.stderr)
         try:
-            # wait (bounded) for the run worker to actually stop ORCA and unwind,
-            # so closing the app doesn't orphan orca.exe or leave a half-written
-            # .out. cancel_queue() above already kills the subprocess tree.
             self.store.wait_for_run(timeout=10)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[shutdown] wait_for_run failed: {e}", file=sys.stderr)
+        try:
+            self.store.save_session()   # persist queue + running pid for reattach
+        except Exception as e:
+            print(f"[shutdown] save_session failed: {e}", file=sys.stderr)
         try:
             self.server_ctl.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[shutdown] server stop failed: {e}", file=sys.stderr)
+
+    def closeEvent(self, event):
+        self.shutdown()
         super().closeEvent(event)

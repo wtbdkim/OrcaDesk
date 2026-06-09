@@ -14,14 +14,21 @@ a lock, no SQLite.
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import threading
 from typing import Optional
 
-from ..core.queue import Calculation, CalcState, GeometrySource, QueueEngine, QueueCallbacks
+from ..core.queue import (
+    Calculation, CalcState, GeometrySource, QueueEngine, QueueCallbacks,
+    validate_result,
+)
 from ..core.input_generator import StepConfig
-from ..paths import data_dir
+from ..core.parser import parse_file
+from ..core.runner import OrcaRunError
+from ..core.procutil import process_matches
+from ..paths import data_dir, user_data_root
 
 # States whose calculations the user may still edit / remove / reorder.
 # PENDING: never run yet. FAILED / CANCELLED: finished unsuccessfully, so the
@@ -182,6 +189,100 @@ def calc_from_dict(d: dict) -> Calculation:
     )
 
 
+# ---- session persistence (autosave / restore) --------------------------
+# The whole queue is mirrored to a JSON file so closing ORCAdesk does not lose
+# it, and a calculation left RUNNING (its detached ORCA still going) can be
+# reattached on the next launch.
+
+def _session_file():
+    return user_data_root() / "session.json"
+
+
+def calc_to_session_dict(c: Calculation) -> dict:
+    """Full-fidelity serialization of a Calculation for the session file
+    (unlike calc_to_dict, which is the compact UI snapshot)."""
+    gs = c.geometry_source.value if isinstance(c.geometry_source, GeometrySource) else str(c.geometry_source)
+    st = c.state.value if isinstance(c.state, CalcState) else str(c.state)
+    return {
+        "name": c.name,
+        "kind": c.kind,
+        "config": c.config.to_dict() if c.config else {},
+        "charge": c.charge,
+        "multiplicity": c.multiplicity,
+        "geometry_source": gs,
+        "xyz": c.xyz,
+        "ref_name": c.ref_name,
+        "is_raw": c.is_raw,
+        "raw_text": c.raw_text,
+        "state": st,
+        "message": c.message,
+        "output_path": c.output_path,
+        "pid": c.pid,
+        "create_time": c.create_time,
+    }
+
+
+def calc_from_session_dict(d: dict) -> Calculation:
+    """Rebuild a Calculation from the session file, restoring runtime state
+    (state/message/output_path/pid) on top of calc_from_dict."""
+    c = calc_from_dict(d)            # config + geometry + name validation
+    st = d.get("state", "pending")
+    try:
+        c.state = CalcState(st)
+    except ValueError:
+        c.state = CalcState.PENDING
+    c.message = d.get("message", "")
+    c.output_path = d.get("output_path", "") or ""
+    c.pid = d.get("pid")
+    c.create_time = d.get("create_time")
+    return c
+
+
+def _parse_if_exists(path: str):
+    from pathlib import Path
+    if path and Path(path).exists():
+        try:
+            return parse_file(path)
+        except Exception:
+            return None
+    return None
+
+
+def reconcile_calcs(calcs: "list[Calculation]") -> None:
+    """Square a freshly loaded session with reality:
+
+    * A calc persisted as RUNNING whose process is genuinely still alive keeps
+      its RUNNING state (it will be reattached when the queue resumes).
+    * A calc persisted as RUNNING whose process is gone is judged from its .out:
+      terminated normally + valid -> DONE, otherwise FAILED (interrupted).
+
+    DONE calcs are deliberately NOT re-parsed here — their ParseResult isn't
+    persisted, but the only consumers (geometry references in QueueEngine, and
+    the free-energy profile) parse it on demand, so eagerly reading every DONE
+    .out on the UI thread before the window paints would be a pure startup stall
+    that scales with the restored queue size and .out file size.
+    """
+    for c in calcs:
+        if c.state == CalcState.RUNNING:
+            if c.pid and process_matches(c.pid, c.create_time):
+                continue  # genuinely still running — reattach on resume
+            c.pid = None
+            c.create_time = None
+            r = _parse_if_exists(c.output_path)
+            if r is not None and r.terminated_normally:
+                c.result = r
+                try:
+                    validate_result(c, r)
+                    c.state = CalcState.DONE
+                    c.message = "Completed (finished while ORCAdesk was closed)."
+                except OrcaRunError as e:
+                    c.state = CalcState.FAILED
+                    c.message = str(e)
+            else:
+                c.state = CalcState.FAILED
+                c.message = "Interrupted while ORCAdesk was closed."
+
+
 class QueueStore:
     """Thread-safe container for the calculation queue + run state + log buffer."""
 
@@ -280,7 +381,7 @@ class QueueStore:
             if any(c.name == calc.name for c in self._calcs):
                 raise ValueError(f"A calculation named '{calc.name}' already exists.")
             self._calcs.append(calc)
-            self._version += 1
+            self._bump_and_save()
 
     def remove(self, name: str) -> bool:
         with self._lock:
@@ -295,7 +396,7 @@ class QueueStore:
                     if c.state == CalcState.RUNNING:
                         raise ValueError("Cannot remove a running calculation.")
                     del self._calcs[i]
-                    self._version += 1
+                    self._bump_and_save()
                     return True
         return False
 
@@ -304,7 +405,7 @@ class QueueStore:
             if self._running:
                 raise ValueError("Cannot clear the queue while it is running.")
             self._calcs.clear()
-            self._version += 1
+            self._bump_and_save()
 
     def replace(self, name: str, new_calc: Calculation) -> bool:
         """Replace an editable calculation in place (keeps its queue position).
@@ -334,7 +435,7 @@ class QueueStore:
             new_calc.result = None
             new_calc.output_path = ""
             self._calcs[idx] = new_calc
-            self._version += 1
+            self._bump_and_save()
             return True
 
     def reorder(self, from_idx: int, to_idx: int) -> bool:
@@ -355,7 +456,7 @@ class QueueStore:
                 raise ValueError("Can only reorder within editable calculations.")
             item = self._calcs.pop(from_idx)
             self._calcs.insert(to_idx, item)
-            self._version += 1
+            self._bump_and_save()
             return True
 
     def list(self) -> list[Calculation]:
@@ -371,12 +472,12 @@ class QueueStore:
     def set_running(self, value: bool) -> None:
         with self._lock:
             self._running = bool(value)
-            self._version += 1
+            self._bump_and_save()
 
     def touch(self) -> None:
         """Bump version, e.g. after the engine mutates a calc's state in place."""
         with self._lock:
-            self._version += 1
+            self._bump_and_save()
 
     # ---- log buffer ----
     def append_log(self, message: str, level: str = "info") -> None:
@@ -422,7 +523,7 @@ class QueueStore:
             engine = engine_factory()
             self._engine = engine
             self._running = True
-            self._version += 1
+            self._bump_and_save()
 
         def _worker():
             try:
@@ -434,7 +535,7 @@ class QueueStore:
                     self._running = False
                     self._engine = None
                     self._thread = None
-                    self._version += 1
+                    self._bump_and_save()
                 self.append_log("Queue finished.", "info")
 
         t = threading.Thread(target=_worker, name="orcadesk-run", daemon=True)
@@ -453,6 +554,30 @@ class QueueStore:
         self.append_log("Cancellation requested...", "info")
         return True
 
+    def request_stop_after_current(self) -> bool:
+        """Ask the running engine to stop AFTER the current job finishes (a
+        graceful drain). The in-flight job is left to complete; remaining calcs
+        stay PENDING. Returns False if nothing is running."""
+        with self._lock:
+            if not self._running or self._engine is None:
+                return False
+            engine = self._engine
+        engine.request_stop_after_current()
+        self.append_log("Will stop after the current job finishes...", "info")
+        return True
+
+    def pause_run(self) -> bool:
+        """Stop processing the queue WITHOUT killing the in-flight ORCA — used on
+        app shutdown so the running calculation survives (its detached ORCA keeps
+        going) and can be reattached on the next launch. Returns False if nothing
+        is running."""
+        with self._lock:
+            if not self._running or self._engine is None:
+                return False
+            engine = self._engine
+        engine.detach()
+        return True
+
     def wait_for_run(self, timeout: "float | None" = None) -> bool:
         """Block until the run worker thread finishes (or timeout elapses).
         Returns True if no run is in progress afterwards. Used on app shutdown so
@@ -463,6 +588,57 @@ class QueueStore:
             return True
         t.join(timeout)
         return not t.is_alive()
+
+    # ---- session persistence ----
+    def _bump_and_save(self) -> None:
+        """Bump the change version AND autosave the queue. Replaces the bare
+        version increments so every mutation is persisted. The caller holds the
+        lock; the RLock is reentrant, so save_session re-acquiring is fine."""
+        self._version += 1
+        self.save_session()
+
+    def save_session(self) -> None:
+        """Persist the full queue to the session file (atomic replace). Best-
+        effort: a save failure must never break the running app."""
+        with self._lock:
+            payload = {
+                "schema": 1,
+                "calculations": [calc_to_session_dict(c) for c in self._calcs],
+            }
+        try:
+            path = _session_file()
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+    def load_session(self) -> None:
+        """Restore the queue from the session file and reconcile it with reality
+        (see reconcile_calcs). Call once at startup. No-op if missing/unreadable."""
+        path = _session_file()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        restored = []
+        for d in data.get("calculations", []):
+            try:
+                restored.append(calc_from_session_dict(d))
+            except Exception:
+                continue  # skip a corrupt entry rather than lose the whole queue
+        if not restored:
+            return
+        reconcile_calcs(restored)
+        with self._lock:
+            self._calcs = restored
+            self._version += 1
+
+    def has_live_running(self) -> bool:
+        """True if a calculation is still RUNNING after reconciliation — i.e. a
+        detached ORCA survived a previous session and should be reattached."""
+        with self._lock:
+            return any(c.state == CalcState.RUNNING for c in self._calcs)
 
 
 def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str,

@@ -21,6 +21,7 @@ function _showIds(ids, on) {
   ids.forEach(id => { const e = document.getElementById(id); if (e) e.style.display = on ? "" : "none"; });
 }
 let _running = false;           // mirrors store.running
+let _stopRequested = false;     // user asked to stop after the current job
 
 // Calculations the user can still edit / remove / reorder: never-run (pending)
 // plus finished-unsuccessfully (failed/cancelled), so they can be fixed and
@@ -1261,15 +1262,25 @@ async function runQueue() {
   if (!res.ok) {
     appendLog("Could not start: " + res.error, "err");
   } else {
-    _running = true; setRunUI(true);
+    _running = true; _stopRequested = false; setRunUI(true);
   }
 }
 async function cancelQueue() { await bridge.cancel_queue(); }
+async function stopAfterCurrent() {
+  _stopRequested = true;                  // one-shot for this run
+  setRunUI(_running);
+  const res = JSON.parse(await bridge.stop_after_current());
+  appendLog(res.ok ? "Will stop after the current job finishes."
+                    : "Nothing is running.", "info");
+}
 function setRunUI(running) {
   const rb = document.getElementById("run-btn");
   const cb = document.getElementById("cancel-btn");
+  const sb = document.getElementById("stop-after-btn");
   if (rb) rb.disabled = running;
   if (cb) cb.disabled = !running;
+  // stop-after is available only while running and until it's been requested
+  if (sb) sb.disabled = !running || _stopRequested;
 }
 
 // queue/log/state changes are now reflected by pollTick() (shared store),
