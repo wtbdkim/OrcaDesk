@@ -653,6 +653,7 @@
   const api = {
     SCFTracker: SCFTracker,
     GeoTracker: GeoTracker,
+    isScfIter: function (line) { return ITER_RE.test(line); },   // is this an SCF iteration row?
     targetFor: targetFor,
     renderSCFProgress: renderSCFProgress,
     renderSCFGraph: renderSCFGraph,

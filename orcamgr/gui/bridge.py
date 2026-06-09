@@ -137,16 +137,19 @@ class Bridge(QObject):
 
     @pyqtSlot(result=str)
     def load_inp_file(self) -> str:
-        """Pick a complete ORCA .inp and return its text (used by expert/raw mode)."""
+        """Pick a complete ORCA .inp; return its text PLUS the file's base name
+        so expert/raw mode can auto-fill the calculation name. JSON:
+        {"text": "<.inp contents>", "name": "<filename without .inp>"}."""
         path, _ = QFileDialog.getOpenFileName(
             self.window, "Load ORCA .inp file", "", "ORCA input (*.inp);;All files (*.*)"
         )
         if not path:
-            return ""
+            return json.dumps({"text": "", "name": ""})
         try:
-            return Path(path).read_text(encoding="utf-8")
+            p = Path(path)
+            return json.dumps({"text": p.read_text(encoding="utf-8"), "name": p.stem})
         except OSError:
-            return ""
+            return json.dumps({"text": "", "name": ""})
 
     # --- option lists ---
     @pyqtSlot(str, result=str)

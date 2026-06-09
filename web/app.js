@@ -22,6 +22,7 @@ function _showIds(ids, on) {
 }
 let _running = false;           // mirrors store.running
 let _stopRequested = false;     // user asked to stop after the current job
+let _starting = false;          // runQueue() is mid-start (guards the pre-_running await window)
 
 // Calculations the user can still edit / remove / reorder: never-run (pending)
 // plus finished-unsuccessfully (failed/cancelled), so they can be fixed and
@@ -110,6 +111,13 @@ async function pollTick() {
     // seed the graph from the full .out for a reattached / finished-while-closed
     // opt whose live stream didn't capture its history (see maybeSeedGraph)
     await maybeSeedGraph();
+    // small "~N s / SCF cycle" pace indicator (visible in both raw and graph mode)
+    const _paceEl = document.getElementById("scf-pace");
+    if (_paceEl) {
+      const _p = scfSecPerIter();
+      _paceEl.textContent = _p == null ? "" :
+        `~${_p < 10 ? _p.toFixed(1) : Math.round(_p)} s / SCF cycle`;
+    }
     // redraw SCF graph at most once per tick, only if new data arrived
     if (_logMode === "graph" && _scfDirty) renderSCFPanel();
   } catch (e) { /* transient; try again next tick */ }
@@ -964,12 +972,15 @@ function fillConfigForm(cfg) {
 function updateEditUI() {
   const banner = document.getElementById("edit-banner");
   const addBtn = document.getElementById("add-btn");
-  if (editIndex === -1) {
+  const editing = editIndex === -1 ? null : queue[editIndex];
+  if (!editing) {
+    // not editing, or the edited entry vanished (e.g. removed via phone/poll)
+    editIndex = -1;
     banner.style.display = "none";
     addBtn.textContent = "Add to queue →";
   } else {
     banner.style.display = "block";
-    banner.textContent = `Editing: ${queue[editIndex].name}${rawMode ? " (raw)" : ""}`;
+    banner.textContent = `Editing: ${editing.name}${rawMode ? " (raw)" : ""}`;
     addBtn.textContent = "Update";
   }
 }
@@ -1074,9 +1085,13 @@ async function loadInpFile() {
       !confirm("Load a .inp here? This calculation becomes raw input and can no longer be edited through the form.")) {
     return;
   }
-  const text = await bridge.load_inp_file();
-  if (!text) return;
-  enterRawWithText(text);
+  const res = JSON.parse(await bridge.load_inp_file());
+  if (!res || !res.text) return;
+  enterRawWithText(res.text);
+  // auto-fill the calculation name from the .inp filename (only when the user
+  // hasn't already typed a name, so a deliberate name isn't clobbered)
+  const nameEl = document.getElementById("calc-name");
+  if (nameEl && res.name && !nameEl.value.trim()) nameEl.value = res.name;
   appendLog("Loaded .inp into the editor. Set the calc type (and Geometry source if it uses {{GEOMETRY}}), then Add to queue.", "info");
 }
 
@@ -1263,38 +1278,46 @@ function showModal(title, bodyHtml, buttons) {
 }
 
 async function runQueue() {
-  if (_running) return;
+  // Re-entry guard: _running flips only AFTER the awaits below, so without
+  // _starting a fast double-click would open the overwrite modal twice (orphaning
+  // its promise). The backend still rejects a double start_run regardless.
+  if (_running || _starting) return;
   if (!queue.length) { appendLog("No calculations queued.", "warn"); return; }
   if (!settings.orca_valid) { alert("ORCA path is not set. Go to Settings."); switchTab("settings"); return; }
 
-  // Check whether any queued calc would overwrite an existing result on disk.
-  let skipNames = [];
+  _starting = true;
   try {
-    const chk = JSON.parse(await bridge.check_overwrite_conflicts());
-    if (chk.ok && chk.conflicts && chk.conflicts.length) {
-      const list = `<div class="names">${chk.conflicts.join(", ")}</div>`;
-      const choice = await showModal(
-        "Existing results found",
-        `${chk.conflicts.length} calculation(s) already have results saved on disk:<br><br>${list}<br>` +
-        `Running again will <b>overwrite</b> them. What would you like to do?`,
-        [
-          { label: "Cancel", value: "cancel" },
-          { label: "Keep existing (skip these)", value: "skip" },
-          { label: "Overwrite", value: "overwrite", danger: true },
-        ]
-      );
-      if (choice === "cancel" || choice == null) { appendLog("Run cancelled.", "info"); return; }
-      if (choice === "skip") skipNames = chk.conflicts;
-      // "overwrite" → skipNames stays empty, everything runs
-    }
-  } catch (e) { /* if the check fails, fall through and run normally */ }
+    // Check whether any queued calc would overwrite an existing result on disk.
+    let skipNames = [];
+    try {
+      const chk = JSON.parse(await bridge.check_overwrite_conflicts());
+      if (chk.ok && chk.conflicts && chk.conflicts.length) {
+        const list = `<div class="names">${chk.conflicts.join(", ")}</div>`;
+        const choice = await showModal(
+          "Existing results found",
+          `${chk.conflicts.length} calculation(s) already have results saved on disk:<br><br>${list}<br>` +
+          `Running again will <b>overwrite</b> them. What would you like to do?`,
+          [
+            { label: "Cancel", value: "cancel" },
+            { label: "Keep existing (skip these)", value: "skip" },
+            { label: "Overwrite", value: "overwrite", danger: true },
+          ]
+        );
+        if (choice === "cancel" || choice == null) { appendLog("Run cancelled.", "info"); return; }
+        if (choice === "skip") skipNames = chk.conflicts;
+        // "overwrite" → skipNames stays empty, everything runs
+      }
+    } catch (e) { /* if the check fails, fall through and run normally */ }
 
-  appendLog("--- starting queue ---", "info");
-  const res = JSON.parse(await bridge.run_queue(JSON.stringify(skipNames)));
-  if (!res.ok) {
-    appendLog("Could not start: " + res.error, "err");
-  } else {
-    _running = true; _stopRequested = false; setRunUI(true);
+    appendLog("--- starting queue ---", "info");
+    const res = JSON.parse(await bridge.run_queue(JSON.stringify(skipNames)));
+    if (!res.ok) {
+      appendLog("Could not start: " + res.error, "err");
+    } else {
+      _running = true; _stopRequested = false; setRunUI(true);
+    }
+  } finally {
+    _starting = false;
   }
 }
 async function cancelQueue() { await bridge.cancel_queue(); }
@@ -1339,6 +1362,17 @@ let _scfTracker = SCFGraph ? new SCFGraph.SCFTracker() : null;
 let _geoTracker = SCFGraph ? new SCFGraph.GeoTracker() : null;
 let _seededGraph = new Set();   // calc names whose graph is already sourced (live stream or disk-seed)
 const _OPT_KINDS = ["opt", "ts_opt", "opt_freq", "ts_opt_freq"];
+let _scfIterTimes = [];         // arrival times (ms) of recent live SCF-iteration lines, for s/cycle pace
+// Average wall-clock seconds per SCF iteration over the recent window. Uses
+// (last - first)/(n-1) so it stays accurate even though lines arrive batched
+// per 1s poll; null until there's enough of a time span to be meaningful.
+function scfSecPerIter() {
+  const t = _scfIterTimes;
+  if (t.length < 3) return null;
+  const span = t[t.length - 1] - t[0];
+  if (span < 800) return null;
+  return span / (t.length - 1) / 1000;
+}
 let _logMode = "raw";
 let _graphKind = "auto";   // "auto" | "scf" | "geo"  (sub-mode inside graph)
 function currentRunningScf() {
@@ -1406,6 +1440,7 @@ function appendLog(msg, level) {
     _geoTracker = new SCFGraph.GeoTracker();
     _graphKind = "auto";
     _scfDirty = true;
+    _scfIterTimes = [];   // new job: restart the s/cycle pace estimate
     // this session's live stream owns this calc's graph from the start, so the
     // reattach disk-seed (maybeSeedGraph) must not also rebuild it
     _seededGraph.add(_startM[1]);
@@ -1423,9 +1458,18 @@ function appendLog(msg, level) {
   if (_scfTracker && _scfTracker.push(msg)) changed = true;
   if (_geoTracker && _geoTracker.push(msg)) changed = true;
   if (changed) _scfDirty = true;
+  // record SCF-iteration arrival times for the s/cycle pace (live lines only;
+  // disk-seeded lines bypass appendLog so they don't skew the timing)
+  if (SCFGraph && SCFGraph.isScfIter(msg)) {
+    _scfIterTimes.push(Date.now());
+    if (_scfIterTimes.length > 40) _scfIterTimes.shift();
+  }
 }
 function clearLog() {
   document.getElementById("log").innerHTML = "";
+  _scfIterTimes = [];
+  const paceEl = document.getElementById("scf-pace");
+  if (paceEl) paceEl.textContent = "";
   if (SCFGraph) {
     _scfTracker = new SCFGraph.SCFTracker();
     _geoTracker = new SCFGraph.GeoTracker();
