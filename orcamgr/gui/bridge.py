@@ -11,14 +11,15 @@ JS calls these slots:
   get_about, get_settings, save_settings, autodetect_orca,
   pick_orca_executable, pick_workspace, load_xyz_file, load_inp_file, load_choices,
   parse_out_file, build_inp_preview,
-  add_calc, remove_calc, clear_queue, get_queue, get_log,
-  run_queue, cancel_queue,
+  add_calc, remove_calc, clear_queue, get_queue, get_calc, get_log, get_graph_lines,
+  run_queue, cancel_queue, stop_after_current,
   get_server_status, start_server, stop_server
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSlot
@@ -29,7 +30,22 @@ from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL
 from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import GeometrySource, CalcState
 from ..core.parser import parse_file
-from ..server.store import QueueStore, calc_from_dict, make_engine_factory, load_choice_groups
+from ..server.store import (
+    QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory, load_choice_groups,
+)
+
+
+# Line patterns the SCF/geo graph trackers care about (mirror of web/scf_graph.js
+# ITER_RE / GEO_RE / GEO_TABLE_RE / GEO_ITEM_RE). get_graph_lines() filters the
+# .out to just these so the UI can rebuild the FULL graph history on reattach,
+# without re-streaming the whole file through the capped log buffer.
+_G_CYCLE = re.compile(r"GEOMETRY OPTIMIZATION CYCLE\s+\d+", re.I)
+_G_ITER = re.compile(r"^\s*\d+\s+-?\d+\.\d+\s+-?\d+\.\d+[eE][+-]?\d+")
+_G_TABLE = re.compile(r"\|Geometry convergence\|", re.I)
+_G_ITEM = re.compile(
+    r"(Energy change|RMS gradient|MAX gradient|RMS step|MAX step)\s+-?[\d.]+\s+[\d.]+\s+(YES|NO)", re.I)
+_G_DASHES = re.compile(r"-{5,}")
+_G_DOTS = re.compile(r"\.{5,}")
 
 
 class Bridge(QObject):
@@ -123,16 +139,19 @@ class Bridge(QObject):
 
     @pyqtSlot(result=str)
     def load_inp_file(self) -> str:
-        """Pick a complete ORCA .inp and return its text (used by expert/raw mode)."""
+        """Pick a complete ORCA .inp; return its text PLUS the file's base name
+        so expert/raw mode can auto-fill the calculation name. JSON:
+        {"text": "<.inp contents>", "name": "<filename without .inp>"}."""
         path, _ = QFileDialog.getOpenFileName(
             self.window, "Load ORCA .inp file", "", "ORCA input (*.inp);;All files (*.*)"
         )
         if not path:
-            return ""
+            return json.dumps({"text": "", "name": ""})
         try:
-            return Path(path).read_text(encoding="utf-8")
+            p = Path(path)
+            return json.dumps({"text": p.read_text(encoding="utf-8"), "name": p.stem})
         except OSError:
-            return ""
+            return json.dumps({"text": "", "name": ""})
 
     # --- option lists ---
     @pyqtSlot(str, result=str)
@@ -252,9 +271,60 @@ class Bridge(QObject):
     def get_queue(self) -> str:
         return json.dumps(self.store.snapshot())
 
+    @pyqtSlot(str, result=str)
+    def get_calc(self, name: str) -> str:
+        """Return the FULL data (config / xyz / raw_text / charge / ...) for one
+        calculation, so it can be edited even when it isn't in this session's
+        in-memory copy — e.g. a calc restored from a previous session or added
+        from the phone (the polled snapshot omits these fields)."""
+        c = self.store.get(name)
+        if c is None:
+            return json.dumps({"ok": False, "error": "not found"})
+        return json.dumps({"ok": True, "calc": calc_to_session_dict(c)})
+
     @pyqtSlot(int, result=str)
     def get_log(self, since: int) -> str:
         return json.dumps(self.store.log_since(since))
+
+    @pyqtSlot(str, result=str)
+    def get_graph_lines(self, name: str) -> str:
+        """Return ONLY the SCF-iteration / geometry-convergence lines of a
+        calculation's .out, in file order, so the UI can rebuild the full live
+        SCF/optimization graph history — independent of the capped log buffer.
+
+        Takes the calc NAME (a still-RUNNING calc has no output_path yet) and
+        resolves {workspace}/{name}/{name}.out server-side. Reads line-by-line
+        and keeps a few hundred relevant lines even from a huge .out."""
+        try:
+            out_path = Path(self.settings.workspace_root) / name / f"{name}.out"
+            if not out_path.exists():
+                return json.dumps({"ok": False, "error": "no output", "lines": []})
+            lines = []
+            in_table = False
+            saw_item = False
+            with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+                for raw in f:
+                    ln = raw.rstrip("\r\n")
+                    if _G_CYCLE.search(ln):
+                        lines.append(ln)
+                    elif _G_TABLE.search(ln):
+                        in_table = True
+                        saw_item = False
+                        lines.append(ln)
+                    elif in_table and _G_ITEM.search(ln):
+                        saw_item = True
+                        lines.append(ln)
+                    elif in_table and saw_item and (
+                            ln.strip() == "" or _G_DASHES.search(ln) or _G_DOTS.search(ln)):
+                        # table terminator — kept so GeoTracker commits the step
+                        lines.append(ln)
+                        in_table = False
+                        saw_item = False
+                    elif _G_ITER.match(ln):
+                        lines.append(ln)
+            return json.dumps({"ok": True, "lines": lines})
+        except Exception as e:
+            return json.dumps({"ok": False, "error": str(e), "lines": []})
 
     # --- run / cancel ---
     @pyqtSlot(result=str)
@@ -265,7 +335,17 @@ class Bridge(QObject):
         reference and converts to relative kcal/mol or kJ/mol."""
         pts = []
         for c in self.store.list():
-            if c.state != CalcState.DONE or not c.result:
+            if c.state != CalcState.DONE:
+                continue
+            # Parse-on-miss: DONE calcs restored from a previous session aren't
+            # eagerly re-parsed at startup, so read the .out on demand here (only
+            # when the user actually opens the free-energy profile).
+            if not c.result and c.output_path:
+                try:
+                    c.result = parse_file(c.output_path)
+                except Exception:
+                    pass
+            if not c.result:
                 continue
             g = getattr(c.result, "gibbs_eh", None)
             if g is None:
@@ -327,6 +407,34 @@ class Bridge(QObject):
     def cancel_queue(self) -> str:
         ok = self.store.cancel_run()
         return json.dumps({"ok": ok})
+
+    @pyqtSlot(result=str)
+    def stop_after_current(self) -> str:
+        """Graceful drain: finish the running job, then stop; leave the rest
+        pending (as opposed to cancel_queue, which kills the running job)."""
+        ok = self.store.request_stop_after_current()
+        return json.dumps({"ok": ok})
+
+    def resume_session_if_running(self) -> None:
+        """Startup hook (not a JS slot): if a calculation from the previous
+        session is still running, reattach to it and continue the queue. The
+        store has already restored + reconciled the queue in load_session()."""
+        if not self.store.has_live_running():
+            return
+        if not self.settings.orca_is_valid():
+            self.store.append_log(
+                "A calculation from the previous session is still running, but the "
+                "ORCA path is invalid — cannot reattach. Fix it in Settings.", "warn")
+            return
+        factory = make_engine_factory(self.store, self.settings.orca_path,
+                                      self.settings.workspace_root)
+        try:
+            self.store.start_run(factory)
+            self.store.append_log(
+                "Reattached to a calculation still running from the previous session.",
+                "info")
+        except (RuntimeError, ValueError) as e:
+            self.store.append_log(f"Could not reattach: {e}", "warn")
 
     # --- server control (phone sync) ---
     @pyqtSlot(result=str)

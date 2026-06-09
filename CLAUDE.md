@@ -71,9 +71,20 @@ The `core/` pipeline:
 - `input_generator.py` — `StepConfig` → ORCA `.inp` text (`build_input`). Handles
   solvation (CPCM/SMD), RI, per-element basis/ECP, charge/multiplicity, raw-input mode
   (verbatim text with a `{{GEOMETRY}}` placeholder), and NEB-TS side `.xyz` files.
-- `runner.py` — `OrcaRunner` runs one `.inp` as a subprocess, streaming stdout
-  line-by-line to a callback while also writing the `.out` file. Supports cancel.
-- `queue.py` — `QueueEngine` orchestrates the pipeline (details below).
+- `runner.py` — `OrcaRunner` launches ORCA **detached**, with ORCA writing its own
+  stdout straight to the `.out` file (not via a Python pipe), so a run survives
+  ORCAdesk closing. Live log/progress come from **tailing** the `.out`. Verbs:
+  `launch()` (returns `(pid, create_time)` to persist), `adopt()` (reattach to a
+  process from a previous session), `monitor()` (tail until exit/cancel/detach),
+  `cancel()` (kill the tree), `detach()` (stop monitoring, leave ORCA running).
+  Process identity + tree-kill go through `procutil.py` (psutil), which guards
+  against PID reuse via `create_time`.
+- `procutil.py` — psutil-backed `process_matches(pid, create_time)` and
+  `kill_tree(...)`, used for reattach and reliable tree termination.
+- `queue.py` — `QueueEngine` orchestrates the pipeline (details below). Validation
+  is the module-level `validate_result()` (shared by the engine and session
+  reconciliation). Cancel verbs: hard `cancel()`, graceful `request_stop_after_current()`
+  (drain), and `detach()` (shutdown — leave the running job alive).
 - `parser.py` — `parse_file()` → `ParseResult` (energies, geometry, HOMO/LUMO,
   frequencies, thermochemistry, TD-DFT transitions, NMR, NEB path). Marker-based,
   tolerant of `\r\n`; when a value recurs (e.g. across opt steps) the **last**
@@ -81,9 +92,17 @@ The `core/` pipeline:
 
 ### Queue semantics (important invariants)
 
-These rules live in `QueueEngine.run_all` / `_validate` and `QueueStore`:
+These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 - **Calculation `name` is unique and is used as the on-disk folder name**
   (`{workspace}/{name}/`). Uniqueness is enforced in the store.
+- **The queue autosaves to `%APPDATA%\ORCAdesk\session.json`** on every mutation
+  (`QueueStore._bump_and_save`) and is restored on startup (`load_session`). A
+  `RUNNING` calc persists its detached ORCA's `(pid, create_time)`. On the next
+  launch, `reconcile_calcs` checks that identity: still alive → stays `RUNNING`
+  and is **reattached** (`OrcaRunner.adopt` + `monitor`, continuing the queue);
+  gone → judged from its `.out` (`DONE` if terminated normally + valid, else
+  `FAILED`). Closing ORCAdesk does **not** kill the running job — `shutdown()`
+  calls `store.pause_run()` (engine `detach()`), not cancel.
 - **Geometry source** is `DIRECT` (coords supplied, e.g. from `.xyz`) or `REFERENCE`
   (another queued calc by name). For a reference, the engine injects that calc's
   **optimized final geometry** at run time — so opt → freq reuses the optimized

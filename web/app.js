@@ -21,6 +21,8 @@ function _showIds(ids, on) {
   ids.forEach(id => { const e = document.getElementById(id); if (e) e.style.display = on ? "" : "none"; });
 }
 let _running = false;           // mirrors store.running
+let _stopRequested = false;     // user asked to stop after the current job
+let _starting = false;          // runQueue() is mid-start (guards the pre-_running await window)
 
 // Calculations the user can still edit / remove / reorder: never-run (pending)
 // plus finished-unsuccessfully (failed/cancelled), so they can be fixed and
@@ -106,9 +108,48 @@ async function pollTick() {
     } else if (snap) {
       if (!!snap.running !== _running) { _running = !!snap.running; setRunUI(_running); }
     }
+    // seed the graph from the full .out for a reattached / finished-while-closed
+    // opt whose live stream didn't capture its history (see maybeSeedGraph)
+    await maybeSeedGraph();
+    // small "~N s / SCF cycle" pace indicator (visible in both raw and graph mode)
+    const _paceEl = document.getElementById("scf-pace");
+    if (_paceEl) {
+      const _p = scfSecPerIter();
+      _paceEl.textContent = _p == null ? "" :
+        `~${_p < 10 ? _p.toFixed(1) : Math.round(_p)} s / SCF cycle`;
+    }
     // redraw SCF graph at most once per tick, only if new data arrived
     if (_logMode === "graph" && _scfDirty) renderSCFPanel();
   } catch (e) { /* transient; try again next tick */ }
+}
+// Rebuild the SCF/opt graph history from the .out on disk for an opt calc the
+// live stream never fully saw: a job reattached after a close (its monitor now
+// tails from EOF, so earlier cycles never stream) or one that FINISHED while
+// ORCAdesk was closed (no monitor ran at all). Fresh-launch calcs are skipped
+// because appendLog's start marker already added them to _seededGraph and the
+// live stream owns their graph. Idempotent: GeoTracker keys steps by cycle, so
+// any overlap with subsequent live lines overwrites rather than duplicates.
+async function maybeSeedGraph() {
+  if (!SCFGraph) return;
+  let target = (queue || []).find(c => c.state === "running" && _OPT_KINDS.includes(c.kind));
+  if (!target && _geoTracker && !_geoTracker.hasData()) {
+    // no live opt running: fill an empty graph from the most recent done opt
+    const dones = (queue || []).filter(c => c.state === "done" && _OPT_KINDS.includes(c.kind));
+    target = dones.length ? dones[dones.length - 1] : null;
+  }
+  if (!target || _seededGraph.has(target.name)) return;
+  _seededGraph.add(target.name);   // guard before the await: no double-seed across overlapping ticks
+  try {
+    const r = JSON.parse(await bridge.get_graph_lines(target.name));
+    if (r && r.ok && r.lines && r.lines.length) {
+      const t = new SCFGraph.SCFTracker();
+      const g = new SCFGraph.GeoTracker();
+      for (const ln of r.lines) { t.push(ln); g.push(ln); }   // offline: never via appendLog (no DOM flood)
+      _scfTracker = t; _geoTracker = g; _scfDirty = true;
+    }
+  } catch (e) {
+    _seededGraph.delete(target.name);   // let a later tick retry
+  }
 }
 
 // turn a store snapshot calc into the shape the UI render expects
@@ -804,7 +845,7 @@ async function addCalcToQueue() {
     if (wasEditing && oldName) {
       // edit in place: preserves the calc's position in the queue
       const res = JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc)));
-      if (!res.ok) { appendLog("Could not update: " + res.error, "err"); alert(res.error); await refreshQueue(); return; }
+      if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
       if (oldName !== calc.name) delete localCalcs[oldName];
       localCalcs[calc.name] = calc;
       appendLog(`Updated "${calc.name}".`, "ok");
@@ -817,7 +858,7 @@ async function addCalcToQueue() {
     const res = JSON.parse(await bridge.add_calc(JSON.stringify(calc)));
     if (!res.ok) {
       appendLog("Could not add: " + res.error, "err");
-      alert(res.error);
+      toast(res.error);
       await refreshQueue();
       return;
     }
@@ -827,19 +868,30 @@ async function addCalcToQueue() {
     await refreshQueue();
     switchTab("queue");
   } catch (e) {
-    alert(e.message); appendLog(e.message, "err");
+    appendLog(e.message, "err"); toast(e.message);
   }
 }
 
 // ---------- editing existing calcs ----------
-function editCalc(i) {
+async function editCalc(i) {
   const mirror = queue[i];
   if (!mirror) return;
   if (!isEditableState(mirror.state)) { toast("Only pending, failed, or cancelled calculations can be edited."); return; }
-  // prefer the full local copy (has config/xyz/raw_text); fall back to mirror
-  const c = localCalcs[mirror.name] || mirror;
-  if (!localCalcs[mirror.name]) {
-    appendLog(`"${mirror.name}" was added from another device; full options aren't available to edit here. You can remove it and recreate it.`, "warn");
+  // prefer the full local copy (has config/xyz/raw_text added on this PC)
+  let c = localCalcs[mirror.name];
+  if (!c) {
+    // not added in this session (restored from a previous run, or added via the
+    // phone): fetch the full calc so config/xyz/raw_text are editable here
+    try {
+      const res = JSON.parse(await bridge.get_calc(mirror.name));
+      if (res && res.ok && res.calc) { c = res.calc; localCalcs[mirror.name] = c; }
+    } catch (e) { /* fall through to the warning */ }
+    // the queue may have shifted during the await — make sure i still points at us
+    if (!queue[i] || queue[i].name !== mirror.name) return;
+  }
+  if (!c) {
+    c = mirror;
+    appendLog(`"${mirror.name}": full options couldn't be loaded; the edit may be incomplete.`, "warn");
   }
   editIndex = i;
 
@@ -931,12 +983,15 @@ function fillConfigForm(cfg) {
 function updateEditUI() {
   const banner = document.getElementById("edit-banner");
   const addBtn = document.getElementById("add-btn");
-  if (editIndex === -1) {
+  const editing = editIndex === -1 ? null : queue[editIndex];
+  if (!editing) {
+    // not editing, or the edited entry vanished (e.g. removed via phone/poll)
+    editIndex = -1;
     banner.style.display = "none";
     addBtn.textContent = "Add to queue →";
   } else {
     banner.style.display = "block";
-    banner.textContent = `Editing: ${queue[editIndex].name}${rawMode ? " (raw)" : ""}`;
+    banner.textContent = `Editing: ${editing.name}${rawMode ? " (raw)" : ""}`;
     addBtn.textContent = "Update";
   }
 }
@@ -987,12 +1042,12 @@ function insertSnippet(key) {
 // ---------- raw mode ----------
 async function enterRawMode() {
   if (rawMode) { switchTab("build"); return; }
-  const ok = confirm(
-    "Switch to RAW mode?\n\n" +
-    "You'll edit the ORCA .inp directly. After saving, this calculation can " +
-    "no longer be edited through the form — only as raw text. This cannot be undone.\n\n" +
-    "Continue?"
-  );
+  const ok = await confirmModal({
+    title: "Switch to raw mode?",
+    body: "You'll edit the ORCA .inp directly. After saving, this calculation can " +
+          "no longer be edited through the form — only as raw text. This can't be undone.",
+    confirm: "Switch to raw", danger: true,
+  });
   if (!ok) return;
 
   // Enter raw mode BEFORE collecting the form: raw input carries its own
@@ -1004,7 +1059,7 @@ async function enterRawMode() {
     calc = collectCalcFromForm(true);   // preview: geometry not required yet
   } catch (e) {
     rawMode = false;
-    alert(e.message);
+    toast(e.message);
     return;
   }
 
@@ -1036,14 +1091,21 @@ function enterRawWithText(text) {
 // Load a complete ORCA .inp from disk straight into the raw editor (no form
 // generation). Works in both modes; in beginner it enters raw mode.
 async function loadInpFile() {
-  // converting an in-progress FORM edit to raw is irreversible — warn like enterRawMode
-  if (editIndex !== -1 && !rawMode &&
-      !confirm("Load a .inp here? This calculation becomes raw input and can no longer be edited through the form.")) {
-    return;
+  // converting an in-progress FORM edit to raw is irreversible — confirm first
+  if (editIndex !== -1 && !rawMode) {
+    const ok = await confirmModal({
+      title: "Load a .inp here?",
+      body: "This calculation becomes raw input and can no longer be edited through the form.",
+      confirm: "Load .inp", danger: true });
+    if (!ok) return;
   }
-  const text = await bridge.load_inp_file();
-  if (!text) return;
-  enterRawWithText(text);
+  const res = JSON.parse(await bridge.load_inp_file());
+  if (!res || !res.text) return;
+  enterRawWithText(res.text);
+  // auto-fill the calculation name from the .inp filename (only when the user
+  // hasn't already typed a name, so a deliberate name isn't clobbered)
+  const nameEl = document.getElementById("calc-name");
+  if (nameEl && res.name && !nameEl.value.trim()) nameEl.value = res.name;
   appendLog("Loaded .inp into the editor. Set the calc type (and Geometry source if it uses {{GEOMETRY}}), then Add to queue.", "info");
 }
 
@@ -1194,13 +1256,18 @@ async function removeCalc(i) {
   const c = queue[i];
   if (!c) return;
   if (c.state === "running") { toast("Cannot remove a running calculation."); return; }
-  if (!confirm(`Remove "${c.name}" from the queue?`)) return;
+  if (!await confirmModal({ title: "Remove calculation?",
+      body: `Remove <b>${c.name}</b> from the queue?`, confirm: "Remove", danger: true })) return;
   await bridge.remove_calc(c.name);
   delete localCalcs[c.name];
   await refreshQueue();
 }
 async function clearQueue() {
   if (isRunning()) return;
+  if (!queue.length) return;
+  if (!await confirmModal({ title: "Clear the whole queue?",
+      body: `Remove all <b>${queue.length}</b> calculation(s) from the queue? This can't be undone.`,
+      confirm: "Clear all", danger: true })) return;
   const res = JSON.parse(await bridge.clear_queue());
   if (!res.ok) { appendLog(res.error || "Could not clear queue.", "warn"); return; }
   for (const k of Object.keys(localCalcs)) delete localCalcs[k];
@@ -1217,7 +1284,18 @@ function showModal(title, bodyHtml, buttons) {
     document.getElementById("modal-body").innerHTML = bodyHtml;
     const actions = document.getElementById("modal-actions");
     actions.innerHTML = "";
-    const close = (v) => { overlay.style.display = "none"; resolve(v); };
+    let onKey;
+    const close = (v) => {
+      overlay.style.display = "none";
+      overlay.onclick = null;
+      document.removeEventListener("keydown", onKey);
+      resolve(v);
+    };
+    // dismiss (= null) on Escape or a click on the backdrop, so the themed modal
+    // behaves like a normal dialog
+    onKey = (e) => { if (e.key === "Escape") close(null); };
+    document.addEventListener("keydown", onKey);
+    overlay.onclick = (e) => { if (e.target === overlay) close(null); };
     for (const b of buttons) {
       const btn = document.createElement("button");
       btn.className = "btn" + (b.primary ? " btn-primary" : "") + (b.danger ? " btn-danger" : "");
@@ -1229,47 +1307,84 @@ function showModal(title, bodyHtml, buttons) {
   });
 }
 
+// themed yes/no confirmation (replaces the system confirm() for irreversible
+// actions). opts: {title, body, confirm, cancel, danger}. Returns true if confirmed.
+async function confirmModal(opts) {
+  const v = await showModal(opts.title, opts.body || "", [
+    { label: opts.cancel || "Cancel", value: false },
+    { label: opts.confirm || "Confirm", value: true, danger: !!opts.danger, primary: !opts.danger },
+  ]);
+  return v === true;
+}
+
 async function runQueue() {
-  if (_running) return;
+  // Re-entry guard: _running flips only AFTER the awaits below, so without
+  // _starting a fast double-click would open the overwrite modal twice (orphaning
+  // its promise). The backend still rejects a double start_run regardless.
+  if (_running || _starting) return;
   if (!queue.length) { appendLog("No calculations queued.", "warn"); return; }
-  if (!settings.orca_valid) { alert("ORCA path is not set. Go to Settings."); switchTab("settings"); return; }
+  if (!settings.orca_valid) { toast("ORCA path is not set. Go to Settings."); switchTab("settings"); return; }
 
-  // Check whether any queued calc would overwrite an existing result on disk.
-  let skipNames = [];
+  _starting = true;
   try {
-    const chk = JSON.parse(await bridge.check_overwrite_conflicts());
-    if (chk.ok && chk.conflicts && chk.conflicts.length) {
-      const list = `<div class="names">${chk.conflicts.join(", ")}</div>`;
-      const choice = await showModal(
-        "Existing results found",
-        `${chk.conflicts.length} calculation(s) already have results saved on disk:<br><br>${list}<br>` +
-        `Running again will <b>overwrite</b> them. What would you like to do?`,
-        [
-          { label: "Cancel", value: "cancel" },
-          { label: "Keep existing (skip these)", value: "skip" },
-          { label: "Overwrite", value: "overwrite", danger: true },
-        ]
-      );
-      if (choice === "cancel" || choice == null) { appendLog("Run cancelled.", "info"); return; }
-      if (choice === "skip") skipNames = chk.conflicts;
-      // "overwrite" → skipNames stays empty, everything runs
-    }
-  } catch (e) { /* if the check fails, fall through and run normally */ }
+    // Check whether any queued calc would overwrite an existing result on disk.
+    let skipNames = [];
+    try {
+      const chk = JSON.parse(await bridge.check_overwrite_conflicts());
+      if (chk.ok && chk.conflicts && chk.conflicts.length) {
+        const list = `<div class="names">${chk.conflicts.join(", ")}</div>`;
+        const choice = await showModal(
+          "Existing results found",
+          `${chk.conflicts.length} calculation(s) already have results saved on disk:<br><br>${list}<br>` +
+          `Running again will <b>overwrite</b> them. What would you like to do?`,
+          [
+            { label: "Cancel", value: "cancel" },
+            { label: "Keep existing (skip these)", value: "skip" },
+            { label: "Overwrite", value: "overwrite", danger: true },
+          ]
+        );
+        if (choice === "cancel" || choice == null) { appendLog("Run cancelled.", "info"); return; }
+        if (choice === "skip") skipNames = chk.conflicts;
+        // "overwrite" → skipNames stays empty, everything runs
+      }
+    } catch (e) { /* if the check fails, fall through and run normally */ }
 
-  appendLog("--- starting queue ---", "info");
-  const res = JSON.parse(await bridge.run_queue(JSON.stringify(skipNames)));
-  if (!res.ok) {
-    appendLog("Could not start: " + res.error, "err");
-  } else {
-    _running = true; setRunUI(true);
+    appendLog("--- starting queue ---", "info");
+    const res = JSON.parse(await bridge.run_queue(JSON.stringify(skipNames)));
+    if (!res.ok) {
+      appendLog("Could not start: " + res.error, "err");
+    } else {
+      _running = true; _stopRequested = false; setRunUI(true);
+    }
+  } finally {
+    _starting = false;
   }
 }
-async function cancelQueue() { await bridge.cancel_queue(); }
+async function cancelQueue() {
+  if (!_running) return;
+  // Cancel kills the running ORCA job and skips the rest — irreversible, so confirm.
+  if (!await confirmModal({ title: "Stop the running job?",
+      body: "This <b>kills the running ORCA process</b> and cancels the remaining queue. " +
+            "Progress on the current job is lost. (To finish the current job first, use " +
+            "<b>Stop after current</b> instead.)",
+      confirm: "Stop run", cancel: "Keep running", danger: true })) return;
+  await bridge.cancel_queue();
+}
+async function stopAfterCurrent() {
+  _stopRequested = true;                  // one-shot for this run
+  setRunUI(_running);
+  const res = JSON.parse(await bridge.stop_after_current());
+  appendLog(res.ok ? "Will stop after the current job finishes."
+                    : "Nothing is running.", "info");
+}
 function setRunUI(running) {
   const rb = document.getElementById("run-btn");
   const cb = document.getElementById("cancel-btn");
+  const sb = document.getElementById("stop-after-btn");
   if (rb) rb.disabled = running;
   if (cb) cb.disabled = !running;
+  // stop-after is available only while running and until it's been requested
+  if (sb) sb.disabled = !running || _stopRequested;
 }
 
 // queue/log/state changes are now reflected by pollTick() (shared store),
@@ -1294,6 +1409,19 @@ async function maybeFetchResult(name, outputPath) {
 // ---------- log ----------
 let _scfTracker = SCFGraph ? new SCFGraph.SCFTracker() : null;
 let _geoTracker = SCFGraph ? new SCFGraph.GeoTracker() : null;
+let _seededGraph = new Set();   // calc names whose graph is already sourced (live stream or disk-seed)
+const _OPT_KINDS = ["opt", "ts_opt", "opt_freq", "ts_opt_freq"];
+let _scfIterTimes = [];         // arrival times (ms) of recent live SCF-iteration lines, for s/cycle pace
+// Average wall-clock seconds per SCF iteration over the recent window. Uses
+// (last - first)/(n-1) so it stays accurate even though lines arrive batched
+// per 1s poll; null until there's enough of a time span to be meaningful.
+function scfSecPerIter() {
+  const t = _scfIterTimes;
+  if (t.length < 3) return null;
+  const span = t[t.length - 1] - t[0];
+  if (span < 800) return null;
+  return span / (t.length - 1) / 1000;
+}
 let _logMode = "raw";
 let _graphKind = "auto";   // "auto" | "scf" | "geo"  (sub-mode inside graph)
 function currentRunningScf() {
@@ -1321,6 +1449,8 @@ function setLogMode(mode) {
   document.getElementById("log").style.display = mode === "raw" ? "block" : "none";
   document.getElementById("scf-panel").style.display = mode === "graph" ? "block" : "none";
   if (mode === "graph") renderSCFPanel();
+  else scrollLogToBottom();   // entering raw: jump to latest and refresh the button
+  updateLogJump();
 }
 function setGraphKind(k) { _graphKind = k; renderSCFPanel(); }
 function renderSCFPanel() {
@@ -1351,35 +1481,70 @@ function renderSCFPanel() {
   _scfDirty = false;
 }
 // matches the queue's per-calc start marker, e.g. "[opt1] (opt) running ORCA..."
-const _CALC_START_RE = /^\[.+\]\s*\(.+\)\s*running ORCA/i;
+function logAtBottom() {
+  const b = document.getElementById("log");
+  return !b || b.scrollHeight - b.scrollTop - b.clientHeight < 40;
+}
+function scrollLogToBottom() {
+  const b = document.getElementById("log");
+  if (b) b.scrollTop = b.scrollHeight;
+  updateLogJump();
+}
+// show the "jump to latest" button only when raw log is visible AND scrolled up
+function updateLogJump() {
+  const btn = document.getElementById("log-to-bottom");
+  if (!btn) return;
+  btn.hidden = !(_logMode === "raw" && !logAtBottom());
+}
+const _CALC_START_RE = /^\[(.+?)\]\s*\(.+\)\s*running ORCA/i;
 function appendLog(msg, level) {
   // a new calculation is starting: reset the convergence trackers so the graph
   // reflects the new job (and not the previous opt/freq)
-  if (_CALC_START_RE.test(msg) && SCFGraph) {
+  const _startM = SCFGraph ? _CALC_START_RE.exec(msg) : null;
+  if (_startM) {
     _scfTracker = new SCFGraph.SCFTracker();
     _geoTracker = new SCFGraph.GeoTracker();
     _graphKind = "auto";
     _scfDirty = true;
+    _scfIterTimes = [];   // new job: restart the s/cycle pace estimate
+    // this session's live stream owns this calc's graph from the start, so the
+    // reattach disk-seed (maybeSeedGraph) must not also rebuild it
+    _seededGraph.add(_startM[1]);
   }
   const box = document.getElementById("log");
+  // only auto-follow if the user is already at (near) the bottom — don't yank
+  // them down while they've scrolled up to read earlier output
+  const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   const div = document.createElement("div");
   div.className = "log-line log-" + (level || "info");
   div.textContent = msg;
   box.appendChild(div);
   // trim old lines so the DOM doesn't grow without bound (this was the lag)
   while (box.childElementCount > _LOG_MAX_LINES) box.removeChild(box.firstChild);
-  box.scrollTop = box.scrollHeight;
+  if (stick) box.scrollTop = box.scrollHeight;
+  updateLogJump();
   // feed both trackers; mark dirty (redraw is throttled in pollTick)
   let changed = false;
   if (_scfTracker && _scfTracker.push(msg)) changed = true;
   if (_geoTracker && _geoTracker.push(msg)) changed = true;
   if (changed) _scfDirty = true;
+  // record SCF-iteration arrival times for the s/cycle pace (live lines only;
+  // disk-seeded lines bypass appendLog so they don't skew the timing)
+  if (SCFGraph && SCFGraph.isScfIter(msg)) {
+    _scfIterTimes.push(Date.now());
+    if (_scfIterTimes.length > 40) _scfIterTimes.shift();
+  }
 }
 function clearLog() {
   document.getElementById("log").innerHTML = "";
+  _scfIterTimes = [];
+  updateLogJump();
+  const paceEl = document.getElementById("scf-pace");
+  if (paceEl) paceEl.textContent = "";
   if (SCFGraph) {
     _scfTracker = new SCFGraph.SCFTracker();
     _geoTracker = new SCFGraph.GeoTracker();
+    _seededGraph.clear();   // allow every calc's graph to re-seed
     if (_logMode === "graph") renderSCFPanel();
   }
 }

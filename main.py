@@ -18,6 +18,9 @@ if _dbg:
     _port = _dbg if (_dbg.isdigit() and int(_dbg) > 1024) else "9222"
     os.environ.setdefault("QTWEBENGINE_REMOTE_DEBUGGING", _port)
 
+import signal
+
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 
 from orcamgr.gui.window import MainWindow
@@ -28,6 +31,25 @@ def main():
     app.setApplicationName("ORCAdesk")
     window = MainWindow()
     window.show()
+
+    # Let Ctrl-C / SIGTERM from a console launch (dev) shut the app down cleanly
+    # via aboutToQuit -> MainWindow.shutdown, instead of killing the interpreter
+    # and orphaning ORCA. A periodic no-op timer hands control back to Python so
+    # the handler gets a chance to run under Qt's C++ event loop. (No effect in
+    # the windowed packaged build, which has no console to Ctrl-C.)
+    def _handle_signal(*_args):
+        app.quit()
+
+    try:
+        signal.signal(signal.SIGINT, _handle_signal)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, _handle_signal)
+    except (ValueError, OSError):
+        pass  # not on the main thread, or unsupported — non-fatal
+    _sig_timer = QTimer()
+    _sig_timer.timeout.connect(lambda: None)
+    _sig_timer.start(300)
+
     sys.exit(app.exec())
 
 
