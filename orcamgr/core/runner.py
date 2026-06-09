@@ -154,14 +154,35 @@ class OrcaRunner:
             self._pid = int(pid)
             self._create_time = create_time
 
+    @staticmethod
+    def end_position(output_path: Path) -> int:
+        """Current end-of-file offset of ``output_path`` as a TEXT-mode tell()
+        cookie compatible with monitor()'s seek() — NOT a byte size (os.path.
+        getsize would desync on CRLF). Used to start a reattach's tail at the
+        current EOF so the already-written output isn't re-streamed. 0 if the
+        file can't be read yet."""
+        try:
+            with open(output_path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(0, 2)
+                return f.tell()
+        except OSError:
+            return 0
+
     # ---- monitor (worker thread, blocks) ----
     def monitor(self, output_path: Path,
-                on_line: Optional[LogCallback] = None) -> None:
-        """Tail ``output_path`` and block until the process exits, is cancelled,
-        or is detached. Raises OrcaCancelled / OrcaDetached accordingly; returns
-        normally when ORCA finishes on its own."""
+                on_line: Optional[LogCallback] = None,
+                start_pos: int = 0) -> None:
+        """Tail ``output_path`` from ``start_pos`` and block until the process
+        exits, is cancelled, or is detached. Raises OrcaCancelled / OrcaDetached
+        accordingly; returns normally when ORCA finishes on its own.
+
+        ``start_pos`` (a tell() cookie from end_position()) lets a REATTACH begin
+        at the current end of file so the output written before the app closed
+        isn't re-streamed into the live log; a fresh launch leaves it 0 to read
+        from the start. The full graph history is rebuilt separately by the UI
+        from the .out on disk."""
         output_path = Path(output_path)
-        pos = 0
+        pos = int(start_pos)
         buf = ""
 
         def _drain() -> None:

@@ -107,9 +107,41 @@ async function pollTick() {
     } else if (snap) {
       if (!!snap.running !== _running) { _running = !!snap.running; setRunUI(_running); }
     }
+    // seed the graph from the full .out for a reattached / finished-while-closed
+    // opt whose live stream didn't capture its history (see maybeSeedGraph)
+    await maybeSeedGraph();
     // redraw SCF graph at most once per tick, only if new data arrived
     if (_logMode === "graph" && _scfDirty) renderSCFPanel();
   } catch (e) { /* transient; try again next tick */ }
+}
+// Rebuild the SCF/opt graph history from the .out on disk for an opt calc the
+// live stream never fully saw: a job reattached after a close (its monitor now
+// tails from EOF, so earlier cycles never stream) or one that FINISHED while
+// ORCAdesk was closed (no monitor ran at all). Fresh-launch calcs are skipped
+// because appendLog's start marker already added them to _seededGraph and the
+// live stream owns their graph. Idempotent: GeoTracker keys steps by cycle, so
+// any overlap with subsequent live lines overwrites rather than duplicates.
+async function maybeSeedGraph() {
+  if (!SCFGraph) return;
+  let target = (queue || []).find(c => c.state === "running" && _OPT_KINDS.includes(c.kind));
+  if (!target && _geoTracker && !_geoTracker.hasData()) {
+    // no live opt running: fill an empty graph from the most recent done opt
+    const dones = (queue || []).filter(c => c.state === "done" && _OPT_KINDS.includes(c.kind));
+    target = dones.length ? dones[dones.length - 1] : null;
+  }
+  if (!target || _seededGraph.has(target.name)) return;
+  _seededGraph.add(target.name);   // guard before the await: no double-seed across overlapping ticks
+  try {
+    const r = JSON.parse(await bridge.get_graph_lines(target.name));
+    if (r && r.ok && r.lines && r.lines.length) {
+      const t = new SCFGraph.SCFTracker();
+      const g = new SCFGraph.GeoTracker();
+      for (const ln of r.lines) { t.push(ln); g.push(ln); }   // offline: never via appendLog (no DOM flood)
+      _scfTracker = t; _geoTracker = g; _scfDirty = true;
+    }
+  } catch (e) {
+    _seededGraph.delete(target.name);   // let a later tick retry
+  }
 }
 
 // turn a store snapshot calc into the shape the UI render expects
@@ -1305,6 +1337,8 @@ async function maybeFetchResult(name, outputPath) {
 // ---------- log ----------
 let _scfTracker = SCFGraph ? new SCFGraph.SCFTracker() : null;
 let _geoTracker = SCFGraph ? new SCFGraph.GeoTracker() : null;
+let _seededGraph = new Set();   // calc names whose graph is already sourced (live stream or disk-seed)
+const _OPT_KINDS = ["opt", "ts_opt", "opt_freq", "ts_opt_freq"];
 let _logMode = "raw";
 let _graphKind = "auto";   // "auto" | "scf" | "geo"  (sub-mode inside graph)
 function currentRunningScf() {
@@ -1362,15 +1396,19 @@ function renderSCFPanel() {
   _scfDirty = false;
 }
 // matches the queue's per-calc start marker, e.g. "[opt1] (opt) running ORCA..."
-const _CALC_START_RE = /^\[.+\]\s*\(.+\)\s*running ORCA/i;
+const _CALC_START_RE = /^\[(.+?)\]\s*\(.+\)\s*running ORCA/i;
 function appendLog(msg, level) {
   // a new calculation is starting: reset the convergence trackers so the graph
   // reflects the new job (and not the previous opt/freq)
-  if (_CALC_START_RE.test(msg) && SCFGraph) {
+  const _startM = SCFGraph ? _CALC_START_RE.exec(msg) : null;
+  if (_startM) {
     _scfTracker = new SCFGraph.SCFTracker();
     _geoTracker = new SCFGraph.GeoTracker();
     _graphKind = "auto";
     _scfDirty = true;
+    // this session's live stream owns this calc's graph from the start, so the
+    // reattach disk-seed (maybeSeedGraph) must not also rebuild it
+    _seededGraph.add(_startM[1]);
   }
   const box = document.getElementById("log");
   const div = document.createElement("div");
@@ -1391,6 +1429,7 @@ function clearLog() {
   if (SCFGraph) {
     _scfTracker = new SCFGraph.SCFTracker();
     _geoTracker = new SCFGraph.GeoTracker();
+    _seededGraph.clear();   // allow every calc's graph to re-seed
     if (_logMode === "graph") renderSCFPanel();
   }
 }

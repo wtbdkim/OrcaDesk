@@ -238,7 +238,12 @@ class QueueEngine:
             self.cb.log(f"[{calc.name}] reattaching to ORCA still running "
                         f"(pid {calc.pid})...", "info")
             self.cb.calc_update(index, calc)
-            self._monitor_and_finish(calc, index, out_path)
+            # Tail from the CURRENT end of file: don't re-stream the output
+            # written before the app closed (that would flood the live log and,
+            # past the log-buffer cap, truncate the graph). The UI rebuilds the
+            # full SCF/opt-graph history separately from the .out on disk.
+            start_pos = self.runner.end_position(out_path)
+            self._monitor_and_finish(calc, index, out_path, start_pos=start_pos)
             return
 
         # Fresh launch.
@@ -296,11 +301,14 @@ class QueueEngine:
 
         self._monitor_and_finish(calc, index, out_path)
 
-    def _monitor_and_finish(self, calc: Calculation, index: int, out_path) -> None:
+    def _monitor_and_finish(self, calc: Calculation, index: int, out_path,
+                            start_pos: int = 0) -> None:
         """Tail ORCA's output until it exits (or is cancelled/detached), then
         parse + validate + mark DONE. Shared by the fresh-launch and reattach
-        paths. OrcaCancelled / OrcaDetached propagate to run_all."""
-        self.runner.monitor(out_path, on_line=lambda ln: self.cb.log(ln, "orca"))
+        paths (reattach passes start_pos = current EOF). OrcaCancelled /
+        OrcaDetached propagate to run_all."""
+        self.runner.monitor(out_path, on_line=lambda ln: self.cb.log(ln, "orca"),
+                            start_pos=start_pos)
 
         result = parse_file(str(out_path))
         calc.result = result

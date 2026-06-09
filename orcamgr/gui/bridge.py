@@ -11,7 +11,7 @@ JS calls these slots:
   get_about, get_settings, save_settings, autodetect_orca,
   pick_orca_executable, pick_workspace, load_xyz_file, load_inp_file, load_choices,
   parse_out_file, build_inp_preview,
-  add_calc, remove_calc, clear_queue, get_queue, get_log,
+  add_calc, remove_calc, clear_queue, get_queue, get_log, get_graph_lines,
   run_queue, cancel_queue, stop_after_current,
   get_server_status, start_server, stop_server
 """
@@ -19,6 +19,7 @@ JS calls these slots:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSlot
@@ -30,6 +31,19 @@ from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import GeometrySource, CalcState
 from ..core.parser import parse_file
 from ..server.store import QueueStore, calc_from_dict, make_engine_factory, load_choice_groups
+
+
+# Line patterns the SCF/geo graph trackers care about (mirror of web/scf_graph.js
+# ITER_RE / GEO_RE / GEO_TABLE_RE / GEO_ITEM_RE). get_graph_lines() filters the
+# .out to just these so the UI can rebuild the FULL graph history on reattach,
+# without re-streaming the whole file through the capped log buffer.
+_G_CYCLE = re.compile(r"GEOMETRY OPTIMIZATION CYCLE\s+\d+", re.I)
+_G_ITER = re.compile(r"^\s*\d+\s+-?\d+\.\d+\s+-?\d+\.\d+[eE][+-]?\d+")
+_G_TABLE = re.compile(r"\|Geometry convergence\|", re.I)
+_G_ITEM = re.compile(
+    r"(Energy change|RMS gradient|MAX gradient|RMS step|MAX step)\s+-?[\d.]+\s+[\d.]+\s+(YES|NO)", re.I)
+_G_DASHES = re.compile(r"-{5,}")
+_G_DOTS = re.compile(r"\.{5,}")
 
 
 class Bridge(QObject):
@@ -255,6 +269,46 @@ class Bridge(QObject):
     @pyqtSlot(int, result=str)
     def get_log(self, since: int) -> str:
         return json.dumps(self.store.log_since(since))
+
+    @pyqtSlot(str, result=str)
+    def get_graph_lines(self, name: str) -> str:
+        """Return ONLY the SCF-iteration / geometry-convergence lines of a
+        calculation's .out, in file order, so the UI can rebuild the full live
+        SCF/optimization graph history — independent of the capped log buffer.
+
+        Takes the calc NAME (a still-RUNNING calc has no output_path yet) and
+        resolves {workspace}/{name}/{name}.out server-side. Reads line-by-line
+        and keeps a few hundred relevant lines even from a huge .out."""
+        try:
+            out_path = Path(self.settings.workspace_root) / name / f"{name}.out"
+            if not out_path.exists():
+                return json.dumps({"ok": False, "error": "no output", "lines": []})
+            lines = []
+            in_table = False
+            saw_item = False
+            with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+                for raw in f:
+                    ln = raw.rstrip("\r\n")
+                    if _G_CYCLE.search(ln):
+                        lines.append(ln)
+                    elif _G_TABLE.search(ln):
+                        in_table = True
+                        saw_item = False
+                        lines.append(ln)
+                    elif in_table and _G_ITEM.search(ln):
+                        saw_item = True
+                        lines.append(ln)
+                    elif in_table and saw_item and (
+                            ln.strip() == "" or _G_DASHES.search(ln) or _G_DOTS.search(ln)):
+                        # table terminator — kept so GeoTracker commits the step
+                        lines.append(ln)
+                        in_table = False
+                        saw_item = False
+                    elif _G_ITER.match(ln):
+                        lines.append(ln)
+            return json.dumps({"ok": True, "lines": lines})
+        except Exception as e:
+            return json.dumps({"ok": False, "error": str(e), "lines": []})
 
     # --- run / cancel ---
     @pyqtSlot(result=str)
