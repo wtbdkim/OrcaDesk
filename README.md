@@ -1,10 +1,13 @@
 # ORCAdesk
 
 A desktop GUI for building, queuing, running, and parsing ORCA computational
-chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark UI), Python core.
+chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark **or light** UI),
+Python core.
 
-> **Status: 0.1.1 beta** (`0.1.1-beta`). Desktop app: build → queue → run →
-> parse, validated against real ORCA 6.1.1 output. Run from source, or build a
+> **Status: 0.2.0 beta** (`0.2.0-beta`). Desktop app: build → queue → run →
+> parse, validated against real ORCA 6.1.1 output. A running calculation now
+> **survives closing the app** and is reattached on the next launch, and the UI
+> ships with both a **dark and a light theme**. Run from source, or build a
 > standalone Windows app with `build.bat`. (Phone-sync is in development and not
 > part of this build.) See [CHANGELOG.md](CHANGELOG.md) for details.
 
@@ -42,11 +45,21 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
     `%plots`, custom blocks). Use `{{GEOMETRY}}` where coordinates go.
 - **Queue**: calculations run in order. If one fails, anything that references
   it (directly or transitively) is skipped (blocked); unrelated calculations
-  continue. Each calculation gets its own folder `{workspace}/{name}/`.
+  continue. Each calculation gets its own folder `{workspace}/{name}/`. The
+  queue **autosaves and is restored on the next launch**; you can **Cancel**
+  (kill the running job) or **Stop after current** (graceful drain), and
+  irreversible actions ask for confirmation first.
+- **Survives closing the app**: ORCA is launched detached and writes its own
+  `.out`, so closing ORCAdesk leaves the running job going. On the next launch a
+  still-running job is **reattached live** (its graph history rebuilt from the
+  `.out`); a job that finished while you were away is read back from disk.
 - **Log**: live ORCA stdout + events, plus a **convergence graph** view — SCF
   (|ΔE| per cycle) and, for optimizations, MAX gradient vs step with a progress
-  bar and a live **time estimate (ETA)**. ETA is a research-tuned estimator;
-  pick Conservative or Eager mode in Settings.
+  bar and a live **time estimate (ETA)**. A small `s / SCF cycle` pace readout
+  and a "jump to latest" button keep long runs readable. ETA is a research-tuned
+  estimator; pick Conservative or Eager mode in Settings.
+- **Theme**: toggle **dark / light** from the top bar (☀/☽); the choice is
+  remembered across launches.
 - **Results**: per-calculation summary (energy, HOMO/LUMO, gap, frequencies with
   imaginary-mode warnings, thermochemistry, TD-DFT transitions + a UV-Vis plot).
   You can also open any external `.out` file.
@@ -88,12 +101,15 @@ orcamgr/
   core/
     parser.py                 ORCA .out parser (verified vs ORCA 6.1.1)
     input_generator.py        .inp generation (+ CPCM/SMD solvation)
-    runner.py                 subprocess execution w/ live streaming
+    runner.py                 detached ORCA subprocess; tail .out + reattach
+    procutil.py               psutil process identity + tree-kill (reattach)
     queue.py                  multi-job pipeline orchestration
+  server/
+    store.py                  shared queue + session persistence (autosave)
   gui/
     window.py                 QMainWindow + WebEngine
     bridge.py                 JS <-> Python bridge, worker thread
-web/                          shadcn-style dark UI (html/css/js)
+web/                          shadcn-style dark/light UI (html/css/js)
 data/                         ORCA option lists (functionals, basis sets, ...)
 ```
 
