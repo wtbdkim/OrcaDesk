@@ -15,7 +15,7 @@
     <div class="brand">
       <div class="logo"><img src="orcadesk_logo.png" alt="ORCAdesk" /></div>
       <div>
-        <h1>ORCAdesk <span class="ver-badge">0.1.1 beta</span></h1>
+        <h1>ORCAdesk <span class="ver-badge">0.1.2 beta</span></h1>
         <div class="sub">computational chemistry job runner</div>
       </div>
     </div>
@@ -165,7 +165,11 @@
         <button id="logmode-graph" onclick="setLogMode('graph')">SCF graph</button>
         <span id="scf-pace" class="scf-pace" title="average wall-clock time per SCF iteration"></span>
       </div>
-      <div id="log" class="log-box"></div>
+      <div class="log-wrap">
+        <div id="log" class="log-box" onscroll="updateLogJump()"></div>
+        <button id="log-to-bottom" class="log-to-bottom" onclick="scrollLogToBottom()"
+                aria-label="Scroll to latest output" hidden>↓ Latest</button>
+      </div>
       <div id="scf-panel" class="scf-panel" style="display:none"></div>
     </section>
 

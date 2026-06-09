@@ -11,7 +11,7 @@ JS calls these slots:
   get_about, get_settings, save_settings, autodetect_orca,
   pick_orca_executable, pick_workspace, load_xyz_file, load_inp_file, load_choices,
   parse_out_file, build_inp_preview,
-  add_calc, remove_calc, clear_queue, get_queue, get_log, get_graph_lines,
+  add_calc, remove_calc, clear_queue, get_queue, get_calc, get_log, get_graph_lines,
   run_queue, cancel_queue, stop_after_current,
   get_server_status, start_server, stop_server
 """
@@ -30,7 +30,9 @@ from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL
 from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import GeometrySource, CalcState
 from ..core.parser import parse_file
-from ..server.store import QueueStore, calc_from_dict, make_engine_factory, load_choice_groups
+from ..server.store import (
+    QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory, load_choice_groups,
+)
 
 
 # Line patterns the SCF/geo graph trackers care about (mirror of web/scf_graph.js
@@ -268,6 +270,17 @@ class Bridge(QObject):
     @pyqtSlot(result=str)
     def get_queue(self) -> str:
         return json.dumps(self.store.snapshot())
+
+    @pyqtSlot(str, result=str)
+    def get_calc(self, name: str) -> str:
+        """Return the FULL data (config / xyz / raw_text / charge / ...) for one
+        calculation, so it can be edited even when it isn't in this session's
+        in-memory copy — e.g. a calc restored from a previous session or added
+        from the phone (the polled snapshot omits these fields)."""
+        c = self.store.get(name)
+        if c is None:
+            return json.dumps({"ok": False, "error": "not found"})
+        return json.dumps({"ok": True, "calc": calc_to_session_dict(c)})
 
     @pyqtSlot(int, result=str)
     def get_log(self, since: int) -> str:

@@ -3,6 +3,44 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.1.2-beta] — 2026-06-10
+
+Survive-close + reliability release. A running calculation now keeps going when
+ORCAdesk is closed and is re-attached on the next launch, plus a batch of
+editing/robustness fixes.
+
+### Added
+- **Run survives closing the app.** ORCA is launched detached and writes its own
+  `.out`; closing ORCAdesk no longer kills the running job — it is left running
+  and reattached on the next launch.
+- **Session restore.** The queue autosaves and is restored on startup; a job that
+  finished while closed is reconciled from its `.out` (done/failed), and a still-
+  running one is reattached live (the SCF/optimization graph history is rebuilt
+  from the `.out`).
+- **"Stop after current"** — finish the running job, then stop, leaving the rest
+  pending (vs. Cancel, which kills the running job).
+- **Editable raw calculations after queueing** — a raw `.inp` calc restored from a
+  previous session or added from the phone can now be edited (full data is fetched
+  on demand), not only same-session ones.
+- **Log: jump-to-latest.** Scrolling up no longer yanks you back down; a "↓ Latest"
+  button appears bottom-right when scrolled up.
+- **Average "s / SCF cycle"** indicator on the Log tab.
+- **Expert mode:** loading a complete `.inp` auto-fills the calculation name from
+  the file name.
+
+### Changed
+- **Confirmation dialogs are themed** (no more system pop-ups) and irreversible
+  actions — Cancel, Clear all, Remove, switch-to-raw — now confirm first.
+- Shorter default raw-log box so the Log panel fits without an outer scroll.
+- Cancellation hardened: psutil process-tree kill with confirm + escalation,
+  bounded waits, and a centralized idempotent shutdown.
+
+### Fixed
+- Optimization-graph history is no longer truncated after a close/reopen of a long
+  job (reattach tails from the current EOF; the graph is rebuilt from the `.out`).
+- Startup no longer re-parses every finished `.out` on the UI thread (parsed on
+  demand instead), avoiding a cold-start stall with a large restored queue.
+
 ## [0.1.1-beta] — 2026-06-07
 
 Correctness and robustness release. Focus: ORCA input that this build actually
