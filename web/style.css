@@ -13,6 +13,7 @@
   --border: #27272a;
   --input: #27272a;
   --input-bg: #0e0e10;
+  --code-bg: #050506;       /* log + raw-editor terminal surface */
   --muted: #18181b;
   --muted-foreground: #a1a1aa;
   --accent: #27272a;
@@ -34,6 +35,9 @@
   --err: #f87171;
   --info: #a1a1aa;
   --orca: #71717a;
+  --raw: #c084fc;
+  /* optimization-graph criterion series (tuned for the dark card) */
+  --crit-de: #4cc9f0; --crit-rmsg: #52b788; --crit-maxg: #ffd166; --crit-rmss: #c08eff; --crit-maxs: #ff8fa3;
 
   --radius: 8px;
   --radius-sm: 6px;
@@ -41,6 +45,45 @@
 
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+}
+
+/* ---- light theme (shadcn zinc light) — applied via html[data-theme="light"];
+   dark stays the default. Only design tokens change; every element reads these
+   variables, so the whole UI flips with no per-element overrides. ---- */
+html[data-theme="light"] {
+  --background: #ffffff;
+  --foreground: #09090b;
+  --card: #ffffff;
+  --card-foreground: #09090b;
+  --popover: #ffffff;
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  --input-bg: #ffffff;
+  --code-bg: #f4f4f5;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --secondary-hover: #e4e4e7;
+  --primary-hover: #27272a;
+  --destructive: #ef4444;
+  --destructive-foreground: #fef2f2;
+  --ring: #18181b;
+  --ring-glow: rgba(24,24,27,0.14);
+
+  /* semantic — darkened so they stay legible on a light background */
+  --ok: #15803d;
+  --warn: #b45309;
+  --err: #dc2626;
+  --info: #52525b;
+  --orca: #52525b;
+  --raw: #7c3aed;
+  /* criterion series — darkened so the thin lines stay legible on the white card */
+  --crit-de: #0e7490; --crit-rmsg: #15803d; --crit-maxg: #b45309; --crit-rmss: #7c3aed; --crit-maxs: #be123c;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -89,6 +132,14 @@ html, body {
 .brand .sub { font-size: 12px; color: var(--muted-foreground); }
 
 .status-group { display: inline-flex; align-items: center; gap: 8px; }
+.theme-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; padding: 0; cursor: pointer;
+  background: var(--card); color: var(--foreground);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 15px; line-height: 1;
+}
+.theme-toggle:hover { background: var(--accent); }
 .status-pill {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 12px; padding: 5px 10px;
@@ -167,7 +218,7 @@ input:focus, select:focus {
   box-shadow: 0 0 0 3px var(--ring-glow);
 }
 select { cursor: pointer; }
-input::placeholder { color: #52525b; }
+input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
 
 .checkbox {
   display: inline-flex; align-items: center; gap: 8px;
@@ -295,7 +346,7 @@ input::placeholder { color: #52525b; }
 .qstate.done    { background: rgba(74,222,128,0.15); color: var(--ok); }
 .qstate.failed  { background: rgba(248,113,113,0.15); color: var(--err); }
 .qstate.cancelled { background: var(--accent); color: var(--muted-foreground); }
-.qstate.raw { background: rgba(168,85,247,0.15); color: #c084fc; }
+.qstate.raw { background: rgba(168,85,247,0.15); color: var(--raw); }
 .queue-empty { text-align: center; color: var(--muted-foreground); padding: 56px 40px; }
 .queue-empty-icon { color: var(--border); margin-bottom: 14px; }
 .queue-empty-title { font-size: 14px; font-weight: 600; color: var(--foreground); margin-bottom: 4px; }
@@ -303,7 +354,7 @@ input::placeholder { color: #52525b; }
 
 .raw-editor {
   width: 100%; min-height: 320px; resize: vertical;
-  background: #050506; border: 1px solid var(--input);
+  background: var(--code-bg); border: 1px solid var(--input);
   border-radius: var(--radius-sm); color: var(--foreground);
   font-family: var(--font-mono); font-size: 13px; line-height: 1.55;
   padding: 12px; white-space: pre; overflow-wrap: normal; overflow-x: auto;
@@ -313,7 +364,7 @@ input::placeholder { color: #52525b; }
 /* ---- log ---- */
 .log-box {
   font-family: var(--font-mono); font-size: 12px;
-  background: #050506; border: 1px solid var(--border);
+  background: var(--code-bg); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 12px;
   /* shorter default so the panel fits the viewport without an outer scroll;
      min-height lets it shrink further on small windows before overflowing */
@@ -394,6 +445,7 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .scf-prog-meta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 6px; }
 .scf-svg { width: 100%; height: auto; margin-top: 12px; display: block; }
 .scf-grid { stroke: var(--border); stroke-width: 0.5; }
+.scf-goal-label { fill: var(--foreground); opacity: 0.85; }
 .scf-goal { stroke: var(--ok); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.7; }
 .scf-line { stroke: var(--warn); stroke-width: 1.8; }
 .scf-start { fill: var(--muted-foreground); }

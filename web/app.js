@@ -379,8 +379,25 @@ function comboValue(containerId) {
 }
 
 // ---------- settings ----------
+// ---- theme (light / dark) ----
+function applyTheme(theme) {
+  const t = theme === "light" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", t);
+  const btn = document.getElementById("theme-toggle");
+  if (btn) {
+    btn.textContent = t === "light" ? "☀" : "☽";   // ☀ / ☽
+    btn.title = t === "light" ? "Switch to dark theme" : "Switch to light theme";
+  }
+}
+async function toggleTheme() {
+  const next = (settings.theme === "light") ? "dark" : "light";
+  applyTheme(next);   // flip the UI instantly, then persist
+  settings = JSON.parse(await bridge.save_settings(JSON.stringify({ theme: next })));
+}
+
 async function loadSettings() {
   settings = JSON.parse(await bridge.get_settings());
+  applyTheme(settings.theme);
   document.getElementById("set-orca").value = settings.orca_path || "";
   document.getElementById("set-ws").value = settings.workspace_root || "";
   document.getElementById("set-nprocs").value = settings.default_nprocs || 6;

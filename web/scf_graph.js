@@ -120,14 +120,17 @@
   const GEO_ITEM_RE = /(Energy change|RMS gradient|MAX gradient|RMS step|MAX step)\s+(-?[\d.]+)\s+([\d.]+)\s+(YES|NO)/i;
   const GEO_TABLE_RE = /\|Geometry convergence\|/i;
 
-  // the (up to) five geometry-convergence criteria ORCA prints each step, with
-  // the colour each gets in the optimization graph (harmonious on the dark UI)
+  // the (up to) five geometry-convergence criteria ORCA prints each step. Colors
+  // come from CSS vars (--crit-*) so they adapt to the theme — dark keeps the
+  // original "harmonious on the dark UI" palette, light gets darker, legible
+  // variants. Emitted via inline style="" (SVG presentation attributes don't
+  // resolve var()).
   const GEO_CRITERIA = [
-    { key: "Energy change", label: "ΔE",       color: "#4cc9f0" },
-    { key: "RMS gradient",  label: "RMS grad", color: "#52b788" },
-    { key: "MAX gradient",  label: "MAX grad", color: "#ffd166" },
-    { key: "RMS step",      label: "RMS step", color: "#c08eff" },
-    { key: "MAX step",      label: "MAX step", color: "#ff8fa3" },
+    { key: "Energy change", label: "ΔE",       color: "var(--crit-de)" },
+    { key: "RMS gradient",  label: "RMS grad", color: "var(--crit-rmsg)" },
+    { key: "MAX gradient",  label: "MAX grad", color: "var(--crit-maxg)" },
+    { key: "RMS step",      label: "RMS step", color: "var(--crit-rmss)" },
+    { key: "MAX step",      label: "MAX step", color: "var(--crit-maxs)" },
   ];
   const _GEO_CANON = {};
   GEO_CRITERIA.forEach(function (c) { _GEO_CANON[c.key.toLowerCase()] = c.key; });
@@ -610,18 +613,18 @@
     const goalY = Y(1);
     const zone = `<rect x="${padL}" y="${goalY.toFixed(1)}" width="${(W - padR - padL).toFixed(1)}" height="${(baseY - goalY).toFixed(1)}" fill="#52b788" opacity="0.07"/>`;
     const goal =
-      `<line x1="${padL}" y1="${goalY.toFixed(1)}" x2="${W - padR}" y2="${goalY.toFixed(1)}" stroke="#e5e7eb" stroke-width="1.1" stroke-dasharray="5 3" opacity="0.8"/>` +
-      `<text x="${padL - 6}" y="${(goalY + 3).toFixed(1)}" text-anchor="end" class="scf-axis" fill="#e5e7eb">1</text>` +
-      `<text x="${(W - padR - 3).toFixed(1)}" y="${(goalY - 4).toFixed(1)}" text-anchor="end" class="scf-axis" fill="#9aa3b2">converged ≤ 1</text>`;
+      `<line x1="${padL}" y1="${goalY.toFixed(1)}" x2="${W - padR}" y2="${goalY.toFixed(1)}" class="scf-goal" stroke-width="1.1" stroke-dasharray="5 3"/>` +
+      `<text x="${padL - 6}" y="${(goalY + 3).toFixed(1)}" text-anchor="end" class="scf-goal-label">1</text>` +
+      `<text x="${(W - padR - 3).toFixed(1)}" y="${(goalY - 4).toFixed(1)}" text-anchor="end" class="scf-axis">converged ≤ 1</text>`;
 
     let lines = "", dots = "";
     series.forEach(function (s) {
       const col = s.crit.color;
       let d = "";
       s.pts.forEach(function (p, k) { d += (k === 0 ? "M" : "L") + X(p.i).toFixed(1) + "," + Y(p.r).toFixed(1) + " "; });
-      lines += `<path d="${d.trim()}" fill="none" stroke="${col}" stroke-width="1.1" stroke-linejoin="round"/>`;
+      lines += `<path d="${d.trim()}" fill="none" style="stroke:${col}" stroke-width="1.1" stroke-linejoin="round"/>`;
       const last = s.pts[s.pts.length - 1];
-      dots += `<circle cx="${X(last.i).toFixed(1)}" cy="${Y(last.r).toFixed(1)}" r="2.2" fill="${col}"/>`;
+      dots += `<circle cx="${X(last.i).toFixed(1)}" cy="${Y(last.r).toFixed(1)}" r="2.2" style="fill:${col}"/>`;
     });
 
     // x-axis tick numbers (real ORCA cycle numbers) — thinned when many
@@ -638,8 +641,8 @@
     const segW = (W - padL - padR) / series.length;
     series.forEach(function (s, k) {
       const lx = padL + k * segW;
-      legend += `<line x1="${lx.toFixed(1)}" y1="9" x2="${(lx + 13).toFixed(1)}" y2="9" stroke="${s.crit.color}" stroke-width="2"/>`;
-      legend += `<text x="${(lx + 17).toFixed(1)}" y="12" class="scf-axis" fill="${s.crit.color}">${s.crit.label}</text>`;
+      legend += `<line x1="${lx.toFixed(1)}" y1="9" x2="${(lx + 13).toFixed(1)}" y2="9" style="stroke:${s.crit.color}" stroke-width="2"/>`;
+      legend += `<text x="${(lx + 17).toFixed(1)}" y="12" class="scf-axis" style="fill:${s.crit.color}">${s.crit.label}</text>`;
     });
 
     const midY = (padT + (H - padT - padB) / 2).toFixed(1);

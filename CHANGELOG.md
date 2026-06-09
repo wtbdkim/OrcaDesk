@@ -3,6 +3,16 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.0-beta] — 2026-06-10
+
+Theming release.
+
+### Added
+- **Light theme.** A full shadcn-zinc light palette alongside the existing dark
+  theme, toggled from a ☀/☽ button in the top bar and remembered across launches.
+  Every element themes through CSS variables; the optimization-graph series and
+  the "raw" badge get darker, legible variants on the light card.
+
 ## [0.1.2-beta] — 2026-06-10
 
 Survive-close + reliability release. A running calculation now keeps going when
