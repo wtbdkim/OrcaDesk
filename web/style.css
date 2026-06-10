@@ -51,24 +51,25 @@
    dark stays the default. Only design tokens change; every element reads these
    variables, so the whole UI flips with no per-element overrides. ---- */
 html[data-theme="light"] {
-  --background: #ffffff;
+  /* warm light: BEIGE outside boxes, IVORY inside them — not stark white */
+  --background: #f5f5dc;
   --foreground: #09090b;
-  --card: #ffffff;
+  --card: #fffff0;
   --card-foreground: #09090b;
-  --popover: #ffffff;
-  --border: #e4e4e7;
-  --input: #e4e4e7;
-  --input-bg: #ffffff;
-  --code-bg: #f4f4f5;
-  --muted: #f4f4f5;
-  --muted-foreground: #71717a;
-  --accent: #f4f4f5;
+  --popover: #fffff0;
+  --border: #dad6b8;
+  --input: #dad6b8;
+  --input-bg: #fffff0;
+  --code-bg: #f2efd8;
+  --muted: #ece8ce;
+  --muted-foreground: #6f6d5c;
+  --accent: #ece8ce;
   --accent-foreground: #18181b;
   --primary: #18181b;
   --primary-foreground: #fafafa;
-  --secondary: #f4f4f5;
+  --secondary: #ece8ce;
   --secondary-foreground: #18181b;
-  --secondary-hover: #e4e4e7;
+  --secondary-hover: #e2dec0;
   --primary-hover: #27272a;
   --destructive: #ef4444;
   --destructive-foreground: #fef2f2;
@@ -81,7 +82,7 @@ html[data-theme="light"] {
   --err: #dc2626;
   --info: #52525b;
   --orca: #52525b;
-  --raw: #7c3aed;
+  --raw: #0f766e;   /* teal — purple clashed with the warm beige/ivory theme */
   /* criterion series — darkened so the thin lines stay legible on the white card */
   --crit-de: #0e7490; --crit-rmsg: #15803d; --crit-maxg: #b45309; --crit-rmss: #7c3aed; --crit-maxs: #be123c;
 }
@@ -148,8 +149,10 @@ html, body {
 }
 .status-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--err); }
 .status-pill.ok .dot { background: var(--ok); }
-/* CONNECT pill: grey when off (not an error), green when serving */
+/* ORCA pill: grey when not set, GREEN when ORCA is ready. The #id selector
+   outranks .status-pill.ok .dot, so the ready state needs an #id-level rule too. */
 #orca-status .dot { background: var(--muted-foreground); }
+#orca-status.ok .dot { background: var(--ok); }
 .ver-badge {
   font-size: 11px; font-weight: 500; vertical-align: middle;
   color: var(--muted-foreground); background: var(--secondary);
@@ -342,6 +345,8 @@ input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
 .qstate.failed  { background: rgba(248,113,113,0.15); color: var(--err); }
 .qstate.cancelled { background: var(--accent); color: var(--muted-foreground); }
 .qstate.raw { background: rgba(168,85,247,0.15); color: var(--raw); }
+/* light theme: the bg tint is hard-coded purple above, so retint it to match the teal --raw */
+html[data-theme="light"] .qstate.raw { background: rgba(15,118,110,0.13); }
 .queue-empty { text-align: center; color: var(--muted-foreground); padding: 56px 40px; }
 .queue-empty-icon { color: var(--border); margin-bottom: 14px; }
 .queue-empty-title { font-size: 14px; font-weight: 600; color: var(--foreground); margin-bottom: 4px; }
@@ -363,7 +368,7 @@ input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
   border-radius: var(--radius-sm); padding: 12px;
   /* shorter default so the panel fits the viewport without an outer scroll;
      min-height lets it shrink further on small windows before overflowing */
-  height: calc(100vh - 300px); min-height: 160px;
+  height: calc(100vh - 220px); min-height: 160px;
   overflow-y: auto; white-space: pre-wrap; word-break: break-word;
 }
 .log-wrap { position: relative; }
@@ -440,9 +445,10 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .scf-prog-meta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 6px; }
 /* ETA is the uncertain part: keep it visually subordinate to the accurate signals */
 .scf-prog-eta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 3px; opacity: 0.72; font-style: italic; }
-/* cap the width so the responsive SVG (viewBox 560x220) doesn't blow up to
-   ~750px tall on a wide window and force scrolling — ~350px tall is plenty */
-.scf-svg { width: 100%; max-width: 900px; height: auto; margin-top: 6px; display: block; }
+/* size the graph to the viewport HEIGHT (deriving width from the 560:220 ratio),
+   not the full window width — which blew it up to ~750px tall and forced
+   scrolling. This stays large but always fits the window without scrolling. */
+.scf-svg { aspect-ratio: 560 / 220; height: 54vh; width: auto; max-width: 100%; margin-top: 6px; display: block; }
 .scf-grid { stroke: var(--border); stroke-width: 0.5; }
 .scf-goal-label { fill: var(--foreground); opacity: 0.85; }
 .scf-goal { stroke: var(--ok); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.7; }
