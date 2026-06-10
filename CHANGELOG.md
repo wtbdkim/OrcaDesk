@@ -3,6 +3,26 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.1-beta] — 2026-06-10
+
+Light-theme warmth and graph/log sizing.
+
+### Changed
+- **Light theme is now warm, not stark white**: a beige page background
+  (`#F5F5DC`) with ivory cards/inputs/popovers (`#FFFFF0`) and beige-tinted fills
+  and borders, instead of white-on-white.
+- **The "raw" badge is teal in light mode** (was purple, which clashed with the
+  warm palette).
+- **The convergence graph is sized to the viewport height** instead of a fixed
+  920 px width cap, so it's much larger on a wide window while still always
+  fitting without scrolling; the raw-log box reclaims the vertical space freed by
+  dropping the old "Live output" header card.
+
+### Fixed
+- **The ORCA-status dot now turns green when ORCA is ready.** The "ready" class
+  was already applied, but a more-specific `#orca-status .dot` rule overrode the
+  `.ok` colour and kept the dot grey — added an `#id`-level ready rule.
+
 ## [0.3.0-beta] — 2026-06-10
 
 Drag-and-drop, live frequency progress, and UI polish.
