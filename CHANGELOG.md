@@ -3,6 +3,21 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.2-beta] — 2026-06-10
+
+Light-theme layering and uniform spacing.
+
+### Changed
+- **Light theme inverted: ivory page (`#FFFFF0`) with slightly-darker beige
+  cards (`#F5F5DC`)**, so boxes read as raised panels on a pale page (was the
+  other way around).
+- **The convergence/SCF graph now sits in its own nested box** — ivory in light
+  (lighter than the beige panel), a darker inset in dark — so the chart has its
+  own surface.
+- **Uniform 16 px spacing**: the gap between boxes and the gap from a box to the
+  window edge are now both 16 px, and the top bar, tabs and cards all align to
+  the same 16 px gutter (the page gutter was 20 px while cards sat 16 px apart).
+
 ## [0.3.1-beta] — 2026-06-10
 
 Light-theme warmth and graph/log sizing.
