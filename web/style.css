@@ -455,7 +455,9 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 /* size the graph to the viewport HEIGHT (deriving width from the 560:220 ratio),
    not the full window width — which blew it up to ~750px tall and forced
    scrolling. This stays large but always fits the window without scrolling. */
-.scf-svg { aspect-ratio: 560 / 220; height: 54vh; width: auto; max-width: 100%; display: block; }
+/* fill the graph box width; height follows the wide/flat viewBox (1100x360, set
+   in renderSCFPanel) so it stays a sensible height. max-height guards short windows. */
+.scf-svg { width: 100%; height: auto; max-height: 64vh; display: block; }
 .scf-grid { stroke: var(--border); stroke-width: 0.5; }
 .scf-goal-label { fill: var(--foreground); opacity: 0.85; }
 .scf-goal { stroke: var(--ok); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.7; }
