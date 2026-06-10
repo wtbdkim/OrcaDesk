@@ -9,9 +9,10 @@ separated (no cross-thread Qt signal juggling).
 
 JS calls these slots:
   get_about, get_settings, save_settings, autodetect_orca,
-  pick_orca_executable, pick_workspace, load_xyz_file, load_inp_file, load_choices,
+  pick_orca_executable, pick_workspace, load_xyz_file, load_inp_file,
+  load_inp_path, load_xyz_path, load_choices,
   parse_out_file, build_inp_preview,
-  add_calc, remove_calc, clear_queue, get_queue, get_calc, get_log, get_graph_lines,
+  add_calc, remove_calc, clear_queue, get_queue, get_calc, get_inp, get_log, get_graph_lines,
   run_queue, cancel_queue, stop_after_current,
   get_server_status, start_server, stop_server
 """
@@ -46,6 +47,11 @@ _G_ITEM = re.compile(
     r"(Energy change|RMS gradient|MAX gradient|RMS step|MAX step)\s+-?[\d.]+\s+[\d.]+\s+(YES|NO)", re.I)
 _G_DASHES = re.compile(r"-{5,}")
 _G_DOTS = re.compile(r"\.{5,}")
+# optimization-finished + post-opt-stage markers, so a reattach-seeded graph also
+# flips to 100% / "running frequencies…" (mirror of scf_graph.js OPT_DONE_RE / POST_OPT_RE)
+_G_DONE = re.compile(r"\*\*\*\s*OPTIMIZATION RUN DONE\s*\*\*\*|THE OPTIMIZATION HAS CONVERGED|HURRAY", re.I)
+_G_POST = re.compile(
+    r"VIBRATIONAL FREQUENCIES|ORCA SCF RESPONSE|GEOMETRIC PERTURBATIONS|CP-?SCF DRIVER|SCF HESSIAN|ANALYTICAL FREQUENCIES|NUMERICAL FREQUENCIES", re.I)
 
 
 class Bridge(QObject):
@@ -152,6 +158,24 @@ class Bridge(QObject):
             return json.dumps({"text": p.read_text(encoding="utf-8"), "name": p.stem})
         except OSError:
             return json.dumps({"text": "", "name": ""})
+
+    @pyqtSlot(str, result=str)
+    def load_inp_path(self, path: str) -> str:
+        """Load a .inp by PATH (drag-and-drop). Same {text, name} shape as
+        load_inp_file, so the JS side is identical."""
+        try:
+            p = Path(path)
+            return json.dumps({"text": p.read_text(encoding="utf-8", errors="replace"), "name": p.stem})
+        except OSError as e:
+            return json.dumps({"text": "", "name": "", "error": str(e)})
+
+    @pyqtSlot(str, result=str)
+    def load_xyz_path(self, path: str) -> str:
+        """Load a .xyz by PATH (drag-and-drop). Returns raw text like load_xyz_file."""
+        try:
+            return Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
 
     # --- option lists ---
     @pyqtSlot(str, result=str)
@@ -285,6 +309,18 @@ class Bridge(QObject):
     @pyqtSlot(int, result=str)
     def get_log(self, since: int) -> str:
         return json.dumps(self.store.log_since(since))
+
+    @pyqtSlot(str, result=str)
+    def get_inp(self, name: str) -> str:
+        """Return the on-disk ORCA .inp for a calculation, so a running or finished
+        job's actual input can be viewed read-only (not only editable ones)."""
+        try:
+            p = Path(self.settings.workspace_root) / name / f"{name}.inp"
+            if not p.exists():
+                return json.dumps({"ok": False, "error": "no input on disk yet"})
+            return json.dumps({"ok": True, "text": p.read_text(encoding="utf-8", errors="replace")})
+        except Exception as e:
+            return json.dumps({"ok": False, "error": str(e)})
 
     @pyqtSlot(str, result=str)
     def get_graph_lines(self, name: str) -> str:

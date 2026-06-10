@@ -23,7 +23,7 @@ from pathlib import Path
 
 
 APP_NAME = "ORCAdesk"
-APP_VERSION = "0.2.1-beta"
+APP_VERSION = "0.3.0-beta"
 APP_AUTHOR = "Taewoo Kim"
 APP_ORG = "Korea Science Academy of KAIST"
 APP_EMAIL = "wtbdkim@gmail.com"

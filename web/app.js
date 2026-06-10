@@ -71,6 +71,59 @@ new QWebChannel(qt.webChannelTransport, async function(channel) {
   appendLog("Ready.", "info");
 });
 
+// ---------- drag & drop of files (from Explorer) ----------
+// window.py captures the OS-level drop, resolves the real file path, and calls
+// one of these by extension: .inp -> Build raw editor, .xyz -> Build geometry,
+// .out -> Results. Using the path (not FileReader content) keeps huge .out files
+// off the JS heap. preventDefault stops Chromium navigating away if a stray drop
+// reaches the page.
+window.addEventListener("dragover", (e) => e.preventDefault(), false);
+window.addEventListener("drop", (e) => e.preventDefault(), false);
+
+window.onInpDropped = async function (path) {
+  if (!bridge) return;
+  try {
+    const res = JSON.parse(await bridge.load_inp_path(path));
+    if (!res || !res.text) { toast("Couldn't read that .inp"); return; }
+    setBuildMode("expert");
+    enterRawWithText(res.text);
+    const nameEl = document.getElementById("calc-name");
+    if (nameEl && res.name && !nameEl.value.trim()) nameEl.value = res.name;
+    switchTab("build");
+    appendLog(`Dropped .inp loaded${res.name ? " (" + res.name + ")" : ""}. Set the calc type, then Add to queue.`, "ok");
+  } catch (e) { toast("Drop failed"); }
+};
+
+window.onXyzDropped = async function (path) {
+  if (!bridge) return;
+  try {
+    const content = await bridge.load_xyz_path(path);
+    if (!content) { toast("Couldn't read that .xyz"); return; }
+    directXyz = parseXyzText(content);
+    const n = directXyz ? directXyz.split("\n").length : 0;
+    const st = document.getElementById("xyz-status");
+    if (st) st.textContent = n ? `${n} atoms loaded.` : "No atoms found in file.";
+    switchTab("build");
+    appendLog(`Dropped .xyz loaded (${n} atoms).`, n ? "ok" : "warn");
+  } catch (e) { toast("Drop failed"); }
+};
+
+window.onOutDropped = async function (path) {
+  if (!bridge) return;
+  try {
+    const raw = await bridge.parse_out_path(path);
+    let data; try { data = JSON.parse(raw); } catch { toast("Couldn't parse that .out"); return; }
+    if (!data || !data.summary) { toast("Couldn't parse that .out"); return; }
+    renderSummary(data.summary);
+    if (data.frequencies && data.frequencies.length) renderFreqSpectrum(data.frequencies, data.n_imaginary);
+    if (data.neb_path && data.neb_path.length) renderNebPath(data.neb_path);
+    if (data.transitions && data.transitions.length) renderSpectrum(data.transitions);
+    if (data.nmr && data.nmr.length) renderNmr(data.nmr);
+    switchTab("results");
+    appendLog("Dropped .out parsed.", "ok");
+  } catch (e) { toast("Drop failed"); }
+};
+
 // ---------- shared-store polling ----------
 let _logSeq = 0;          // last log sequence number we've shown
 let _queueVersion = -1;   // last queue version we've rendered
@@ -1183,6 +1236,28 @@ function toast(msg) {
   _toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
 }
 
+// view the on-disk ORCA .inp (read-only) for any calc, including a running one.
+// Running/finished jobs have the real .inp on disk; a pending one shows a preview.
+async function viewInp(i) {
+  const c = queue[i];
+  if (!c) return;
+  let text = null, note = "";
+  try {
+    const res = JSON.parse(await bridge.get_inp(c.name));
+    if (res.ok && res.text) text = res.text;
+  } catch (e) { /* fall through to preview */ }
+  if (text == null) {
+    let full = localCalcs[c.name];
+    if (!full) { try { const r = JSON.parse(await bridge.get_calc(c.name)); if (r.ok) full = r.calc; } catch (e) { } }
+    if (full && full.is_raw && full.raw_text) { text = full.raw_text; note = " (raw · not yet run)"; }
+    else if (full) {
+      try { const pv = JSON.parse(await bridge.build_inp_preview(JSON.stringify(full))); if (pv.ok) { text = pv.text; note = " (preview · not yet run)"; } } catch (e) { }
+    }
+  }
+  if (text == null) { toast("Input not available yet — run the queue first."); return; }
+  await showModal(`Input · ${escapeHtml(c.name)}${note}`, `<pre class="inp-view">${escapeHtml(text)}</pre>`, [{ label: "Close", value: null }]);
+}
+
 function renderQueue() {
   const el = document.getElementById("queue-list");
   if (!queue.length) { el.innerHTML = `<div class="queue-empty">
@@ -1204,6 +1279,8 @@ function renderQueue() {
     if (editable) div.setAttribute("draggable", "true");
     const handle = editable
       ? `<span class="drag-handle" title="Drag to reorder">≡</span>` : `<span class="drag-handle placeholder"></span>`;
+    // view the input (.inp) — available for ANY state, incl. running/done
+    const viewBtn = `<button class="btn btn-sm btn-ghost" onclick="viewInp(${i})" title="View input (.inp)">.inp</button>`;
     const editBtn = editable
       ? `<button class="btn btn-sm btn-ghost" onclick="editCalc(${i})">edit</button>` : "";
     const delBtn = removable
@@ -1220,6 +1297,7 @@ function renderQueue() {
         ) : ""}
       </div>
       <span class="qstate ${c.state}">${c.state}</span>
+      ${viewBtn}
       ${editBtn}
       ${delBtn}`;
     if (editable) attachDragHandlers(div);
@@ -1426,6 +1504,7 @@ async function maybeFetchResult(name, outputPath) {
 // ---------- log ----------
 let _scfTracker = SCFGraph ? new SCFGraph.SCFTracker() : null;
 let _geoTracker = SCFGraph ? new SCFGraph.GeoTracker() : null;
+let _freqTracker = SCFGraph ? new SCFGraph.FreqTracker() : null;
 let _seededGraph = new Set();   // calc names whose graph is already sourced (live stream or disk-seed)
 const _OPT_KINDS = ["opt", "ts_opt", "opt_freq", "ts_opt_freq"];
 let _scfIterTimes = [];         // arrival times (ms) of recent live SCF-iteration lines, for s/cycle pace
@@ -1473,6 +1552,13 @@ function setGraphKind(k) { _graphKind = k; renderSCFPanel(); }
 function renderSCFPanel() {
   if (!SCFGraph) return;
   const panel = document.getElementById("scf-panel");
+  // numerical-frequency stage (after an opt+freq's opt finished): show the
+  // displacement progress on top. Its ETA is reliable (the total is known).
+  let freqBlock = "";
+  if (_freqTracker && _freqTracker.hasData()) {
+    freqBlock = `<div class="graph-summary">${SCFGraph.renderFreqProgress(_freqTracker)}</div>` +
+                ((_geoTracker && _geoTracker.hasData()) ? `<div class="graph-divider"></div>` : "");
+  }
   const kind = effectiveGraphKind();
   // sub-toggle (SCF vs geometry) — only meaningful for opt runs
   const showToggle = (_geoTracker && _geoTracker.hasData());
@@ -1494,7 +1580,7 @@ function renderSCFPanel() {
            `<div class="graph-divider"></div>` +
            `<div class="graph-plot">${SCFGraph.renderSCFGraph(_scfTracker, scf, { width: 560, height: 220 })}</div>`;
   }
-  panel.innerHTML = head + body;
+  panel.innerHTML = freqBlock + head + body;
   _scfDirty = false;
 }
 // matches the queue's per-calc start marker, e.g. "[opt1] (opt) running ORCA..."
@@ -1521,6 +1607,7 @@ function appendLog(msg, level) {
   if (_startM) {
     _scfTracker = new SCFGraph.SCFTracker();
     _geoTracker = new SCFGraph.GeoTracker();
+    _freqTracker = new SCFGraph.FreqTracker();
     _graphKind = "auto";
     _scfDirty = true;
     _scfIterTimes = [];   // new job: restart the s/cycle pace estimate
@@ -1544,6 +1631,7 @@ function appendLog(msg, level) {
   let changed = false;
   if (_scfTracker && _scfTracker.push(msg)) changed = true;
   if (_geoTracker && _geoTracker.push(msg)) changed = true;
+  if (_freqTracker && _freqTracker.push(msg)) changed = true;
   if (changed) _scfDirty = true;
   // record SCF-iteration arrival times for the s/cycle pace (live lines only;
   // disk-seeded lines bypass appendLog so they don't skew the timing)
@@ -1561,6 +1649,7 @@ function clearLog() {
   if (SCFGraph) {
     _scfTracker = new SCFGraph.SCFTracker();
     _geoTracker = new SCFGraph.GeoTracker();
+    _freqTracker = new SCFGraph.FreqTracker();
     _seededGraph.clear();   // allow every calc's graph to re-seed
     if (_logMode === "graph") renderSCFPanel();
   }
