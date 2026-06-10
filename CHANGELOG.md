@@ -3,6 +3,48 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.0-beta] — 2026-06-10
+
+Drag-and-drop, live frequency progress, and UI polish.
+
+### Added
+- **Drag & drop files from Explorer.** Drop a `.inp` onto the window to load it
+  into the Build editor (the calculation name auto-fills from the filename), a
+  `.xyz` to set the Build geometry, or a `.out` to open it in Results. Routed by
+  extension; `.out` is parsed by path, so even multi-hundred-MB outputs stay off
+  the JS heap.
+- **Live frequency progress** in the graph panel:
+  - *Numerical* frequencies — a displacement counter (K / 6N) with a reliable
+    ETA (the total is known up front, unlike an optimization).
+  - *Analytical* frequencies (CP-SCF) — a real progress bar driven by the
+    coupled-perturbed-SCF "K / N perturbations done" counter (N = 3·atoms), with
+    a stage label for the derivative-integral build. Verified against a 58-atom
+    M06-2X/CPCM run.
+- **View the input of any queued job — including a RUNNING one** — via a ".inp"
+  button that shows the on-disk input read-only.
+
+### Changed
+- **An optimization flips to 100% the moment ORCA reports it finished**
+  (`*** OPTIMIZATION RUN DONE ***`) instead of being stuck at 99% when the last
+  criteria table reads e.g. 4/5 met, and it announces the next stage.
+- **The optimization ETA is shown as an order-of-magnitude bucket** ("a few
+  minutes" / "tens of minutes" / …) with the accurate signals (progress, step,
+  criteria met, measured per-step rate) up front and the uncertain time estimate
+  visually subordinate — the cycle count is irreducibly ~2× uncertain, so this
+  avoids false precision.
+- **Log tab layout.** Dropped the "Live output" header card, moved **Clear** to
+  the top-right of the toggle row, and capped the convergence-graph width so it
+  no longer grows to ~750 px tall and forces scrolling. The "converged ≤ 1" label
+  moved to the left so the descending curves don't cover it.
+
+### Fixed
+- **Design consistency: badges/chips reused outside their original parent now
+  render correctly.** The pill/box styling for `.qstate` (the Build "raw" tag),
+  `.qerror` (the Build NEB atom-mismatch warning) and `.rm` (remove buttons) was
+  scoped to one ancestor (`.queue-item …`), so the same class used elsewhere
+  rendered unstyled. Hoisted the shared look to ancestor-free base rules and
+  removed dead `.atom-row` styles.
+
 ## [0.2.1-beta] — 2026-06-10
 
 Optimization ETA accuracy + honesty, tuned against 85 real ORCA opt runs.

@@ -264,32 +264,20 @@ input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 10px;
 }
-.atom-row {
-  display: grid;
-  grid-template-columns: 70px 1fr 1fr 1fr 34px;
-  gap: 8px; margin-bottom: 6px;
-}
-.atom-row input { padding: 6px 8px; }
-.atom-row .rm {
-  background: transparent; border: 1px solid var(--border);
-  color: var(--err); border-radius: var(--radius-sm); cursor: pointer;
-  font-size: 14px; line-height: 1;
-}
-.atom-row .rm:hover { background: rgba(248,113,113,0.1); }
-.atoms-empty { font-size: 12px; color: var(--muted-foreground); padding: 8px 0; }
-
 .basis-row {
   display: grid;
   grid-template-columns: 90px 1fr 1fr 34px;
   gap: 8px; margin-bottom: 6px;
 }
 .basis-row input { padding: 6px 8px; }
-.basis-row .rm {
+/* remove-button (×) — ancestor-free so it styles wherever it's used, not only
+   under one parent (the old .atom-row/.basis-row dup had the same scoping trap) */
+.rm {
   background: transparent; border: 1px solid var(--border);
   color: var(--err); border-radius: var(--radius-sm); cursor: pointer;
   font-size: 14px; line-height: 1;
 }
-.basis-row .rm:hover { background: rgba(248,113,113,0.1); }
+.rm:hover { background: rgba(248,113,113,0.1); }
 
 /* ---- step config (Build) ---- */
 .step-tabs { display: flex; gap: 4px; margin-bottom: 14px; }
@@ -331,16 +319,23 @@ input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
 .toast.show { opacity: 1; }
 .queue-item .qname { font-weight: 600; font-size: 13px; }
 .queue-item .qsteps { font-size: 12px; color: var(--muted-foreground); font-family: var(--font-mono); }
-.queue-item .qerror {
-  font-size: 12px; color: var(--err); margin-top: 4px; line-height: 1.45;
+/* framed error chip — ancestor-free so the Build-tab NEB atom-mismatch warning
+   (#cfg-neb-atomcheck, also class "qerror") gets the same box as queue rows,
+   not bare red text. Same ancestor-scoping pitfall as the .qstate raw badge. */
+.qerror {
+  font-size: 12px; color: var(--err); line-height: 1.45;
   background: rgba(248,113,113,0.08); border-left: 2px solid var(--err);
   padding: 5px 8px; border-radius: 4px;
 }
-.queue-item .qstate {
-  margin-left: auto; font-size: 11px; font-weight: 600;
+.queue-item .qerror { margin-top: 4px; }
+/* pill shape applies to every .qstate badge (queue rows AND the Build "raw"
+   tag), so they look identical; only the right-push is queue-specific */
+.qstate {
+  display: inline-block; vertical-align: middle; font-size: 11px; font-weight: 600;
   padding: 3px 9px; border-radius: 999px; text-transform: uppercase;
   letter-spacing: .03em;
 }
+.queue-item .qstate { margin-left: auto; }
 .qstate.pending { background: var(--accent); color: var(--muted-foreground); }
 .qstate.running { background: rgba(251,191,36,0.15); color: var(--warn); }
 .qstate.done    { background: rgba(74,222,128,0.15); color: var(--ok); }
@@ -443,7 +438,11 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .scf-prog-bar { height: 8px; background: var(--accent); border-radius: 4px; overflow: hidden; }
 .scf-prog-bar > span { display: block; height: 100%; background: var(--ok); border-radius: 4px; transition: width 0.3s; }
 .scf-prog-meta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 6px; }
-.scf-svg { width: 100%; height: auto; margin-top: 12px; display: block; }
+/* ETA is the uncertain part: keep it visually subordinate to the accurate signals */
+.scf-prog-eta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 3px; opacity: 0.72; font-style: italic; }
+/* cap the width so the responsive SVG (viewBox 560x220) doesn't blow up to
+   ~750px tall on a wide window and force scrolling — ~350px tall is plenty */
+.scf-svg { width: 100%; max-width: 900px; height: auto; margin-top: 6px; display: block; }
 .scf-grid { stroke: var(--border); stroke-width: 0.5; }
 .scf-goal-label { fill: var(--foreground); opacity: 0.85; }
 .scf-goal { stroke: var(--ok); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.7; }
@@ -502,4 +501,10 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .modal-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
 .modal-body { font-size: 13px; color: var(--muted-foreground); line-height: 1.6; margin-bottom: 18px; }
 .modal-body .names { color: var(--foreground); font-family: var(--mono); font-size: 12px; }
+.inp-view {
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--foreground); padding: 12px; margin: 0;
+  max-height: 60vh; overflow: auto; white-space: pre; tab-size: 2;
+}
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }

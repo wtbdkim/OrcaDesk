@@ -125,6 +125,12 @@
   // accurate to ~8% (median). [the cycle-count itself is the irreducible ~65%
   // uncertainty — geometry-opt convergence has a long, unpredictable tail.]
   const GEO_ITERTIME_RE = /Time for complete geometry iter\s*:\s*([\d.]+)\s*s/i;
+  // ORCA finished the geometry optimization (converged, or done before a freq/
+  // property stage). The per-criteria table can read 4/5 met at that point, so we
+  // must flip to 100% on this marker rather than waiting for every criterion.
+  const OPT_DONE_RE = /\*\*\*\s*OPTIMIZATION RUN DONE\s*\*\*\*|THE OPTIMIZATION HAS CONVERGED|HURRAY/i;
+  // a post-optimization stage starting (so we can say "running frequencies/…")
+  const POST_OPT_RE = /VIBRATIONAL FREQUENCIES|ORCA SCF RESPONSE|GEOMETRIC PERTURBATIONS|CP-?SCF DRIVER|SCF HESSIAN|ANALYTICAL FREQUENCIES|NUMERICAL FREQUENCIES/i;
 
   // the (up to) five geometry-convergence criteria ORCA prints each step. Colors
   // come from CSS vars (--crit-*) so they adapt to the theme — dark keeps the
@@ -159,6 +165,8 @@
     this._byCycle = {};       // cycle number -> index into this.steps
     this._worstByCycle = {};  // cycle number -> index into this.worst / this.stepTimes
     this._secByCycle = {};    // cycle number -> real ORCA wall seconds for that cycle
+    this.done = false;        // geometry optimization has finished (converged / RUN DONE)
+    this.postStage = "";      // post-opt stage now running (e.g. "frequencies"), for the label
   }
   GeoTracker.prototype.push = function (line) {
     // Track the real ORCA optimization cycle number. Steps are keyed by this
@@ -168,6 +176,8 @@
     if (gc) { this.curCycle = parseInt(gc[1], 10); return false; }
     const ts = line.match(GEO_ITERTIME_RE);
     if (ts) { if (this.curCycle > 0) this._secByCycle[this.curCycle] = parseFloat(ts[1]); return false; }
+    if (OPT_DONE_RE.test(line)) { this.done = true; return true; }   // -> 100%, stop the ETA
+    if (this.done && !this.postStage && POST_OPT_RE.test(line)) { this.postStage = "frequencies / properties"; return false; }
     if (GEO_TABLE_RE.test(line)) {
       this._inTable = true;
       this._sawItem = false;
@@ -238,6 +248,7 @@
     return null;
   };
   GeoTracker.prototype.progress = function () {
+    if (this.done) return 1;            // ORCA reported the optimization finished
     if (this.startGrad === null || !this.steps.length) return 0;
     // 100% only when the optimizer has actually met all convergence criteria;
     // otherwise cap at 99% even if MAX gradient alone reached the tolerance
@@ -346,6 +357,29 @@
   };
   // public: returns {remainingSteps, etaMs, conf} or null. Uses temporal
   // smoothing on the predicted total and measured time-per-step.
+  // accurate per-step wall time (ms): ORCA's real "Time for complete geometry
+  // iter" (steady median, dropping the one-time-expensive cycle 1), falling back
+  // to Date.now poll intervals. ~7% median error — the reliable half of the ETA.
+  GeoTracker.prototype.perStepMs = function () {
+    const secs = [];
+    for (let i = 0; i < this.steps.length; i++) {
+      const v = this._secByCycle[this.steps[i].step];
+      if (v > 0) secs.push(v);
+    }
+    if (secs.length >= 2) {
+      const body = secs.slice(1);
+      const recent = (body.length ? body : secs).slice(-8).slice().sort(function (a, b) { return a - b; });
+      const m = recent[Math.floor(recent.length / 2)];
+      if (m > 0) return m * 1000;
+    }
+    const t = this.stepTimes;   // fallback: Date.now gaps (skip <500ms replay bursts)
+    if (t.length >= 3) {
+      const gaps = []; for (let i = 1; i < t.length; i++) gaps.push(t[i] - t[i - 1]);
+      const recent = gaps.slice(-10).filter(function (g) { return g >= 500; }).sort(function (a, b) { return a - b; });
+      if (recent.length) { const m = recent[Math.floor(recent.length / 2)]; if (m > 0) return m; }
+    }
+    return null;
+  };
   GeoTracker.prototype.estimateETA = function () {
     const raw = this._rawEta();
     const at = this.worst.length;
@@ -357,40 +391,9 @@
     }
     if (this._etaPred == null || at < minStep) return null;
     const remaining = Math.max(this._etaPred - at, 0);
-    // median time-per-step from recent measured intervals. Discard sub-second
-    // gaps: those come from a burst of buffered log lines replayed in one poll
-    // tick (e.g. on window-unhide), not real per-step wall-clock — counting them
-    // would collapse the median and report an absurd "~0s remaining".
-    let etaMs = null;
-    // PER-CYCLE TIME: prefer ORCA's own "Time for complete geometry iter" (the
-    // real compute time) over Date.now poll gaps — no UI jitter, no replay
-    // collapse. Steady median of recent cycles, dropping cycle 1 (one-time
-    // setup/Hessian, ~1.2x). Validated to ~8% time error given the cycle count.
-    const secs = [];
-    for (let i = 0; i < this.steps.length; i++) {
-      const v = this._secByCycle[this.steps[i].step];
-      if (v > 0) secs.push(v);
-    }
-    if (secs.length >= 2) {
-      const body = secs.slice(1);                                   // drop expensive cycle 1
-      const recent = (body.length ? body : secs).slice(-8).slice().sort(function (a, b) { return a - b; });
-      const medSec = recent[Math.floor(recent.length / 2)];
-      if (medSec > 0) etaMs = remaining * medSec * 1000;
-    }
-    if (etaMs == null) {
-      // fallback: Date.now intervals, used until ORCA prints cycle timings.
-      // Discard sub-second gaps: a burst of buffered log lines replayed in one
-      // poll tick (e.g. on window-unhide) is not real per-step wall-clock.
-      const t = this.stepTimes;
-      if (t.length >= 3) {
-        const gaps = []; for (let i = 1; i < t.length; i++) gaps.push(t[i] - t[i - 1]);
-        const recent = gaps.slice(-10).filter(function (g) { return g >= 500; }).sort(function (a, b) { return a - b; });
-        if (recent.length) {
-          const medGap = recent[Math.floor(recent.length / 2)];
-          if (medGap > 0) etaMs = remaining * medGap;
-        }
-      }
-    }
+    // remaining cycles x accurate per-step time (see perStepMs)
+    const perMs = this.perStepMs();
+    let etaMs = (perMs != null) ? remaining * perMs : null;
     // Honest uncertainty band. Geometry-opt cycle counts are intrinsically hard
     // to predict (verified ~65% median error across heuristic + regression models
     // on 85 real runs — convergence has a long, unpredictable tail), so the point
@@ -506,6 +509,19 @@
     const h = Math.floor(m / 60), mm = m % 60;
     return h + "h " + mm + "m";
   }
+  // Coarse, order-of-magnitude time bucket. The opt cycle count is ~2x uncertain,
+  // so a precise countdown would be false precision; geometric buckets (each ~one
+  // order of magnitude) mean a 2x miss usually stays in the same/adjacent bucket.
+  function _etaBucket(ms) {
+    if (ms == null || !isFinite(ms) || ms < 0) return null;
+    const s = ms / 1000;
+    if (s < 45) return "under a minute";
+    if (s < 8 * 60) return "a few minutes";
+    if (s < 50 * 60) return "tens of minutes";
+    if (s < 5 * 3600) return "a few hours";
+    if (s < 24 * 3600) return "many hours";
+    return "a day or more";
+  }
   function renderGeoProgress(geo) {
     const p = geo.progress();
     const pct = Math.round(p * 100);
@@ -513,23 +529,42 @@
     // show the real ORCA cycle number of the latest table, not the array length
     const nPts = geo.steps.length;
     const stepN = nPts ? geo.steps[nPts - 1].step : 0;
-    const critLabel = cs.total ? ` · criteria ${cs.met}/${cs.total} met` : "";
-    // ETA line (only when the estimator is confident enough)
+
+    // optimization finished -> jump to 100% and announce the next stage, instead
+    // of staying stuck at 99% (the last criteria table can read 4/5 met)
+    if (geo.done) {
+      const tail = geo.postStage ? ` — running ${geo.postStage}…` : "";
+      return (
+        `<div class="scf-prog-label">Optimization complete · 100% · step ${stepN}</div>` +
+        `<div class="scf-prog-bar"><span style="width:100%"></span></div>` +
+        `<div class="scf-prog-meta">✓ geometry converged${tail}</div>`
+      );
+    }
+
+    // accurate, real signals first: criteria met + measured per-step rate
+    const facts = [];
+    if (cs.total) facts.push(`${cs.met}/${cs.total} criteria met`);
+    const perMs = geo.perStepMs ? geo.perStepMs() : null;
+    const rate = _fmtDuration(perMs);
+    if (rate) facts.push(`~${rate}/step`);
+    const factLine = facts.length ? `<div class="scf-prog-meta">${facts.join(" · ")}</div>` : "";
+
+    // ETA is the unreliable part (cycle count ~2x uncertain) — keep it coarse and
+    // secondary: an order-of-magnitude bucket, not a false-precise countdown.
     let etaLine = "";
     const eta = geo.estimateETA ? geo.estimateETA() : null;
     if (eta && eta.conf !== "stale") {
+      const bucket = _etaBucket(eta.etaMs);
       const rem = Math.round(eta.remainingSteps);
-      const t = _fmtDuration(eta.etaMs);
-      // honest data-calibrated range (~[0.5x, 2x]); opt cycle count is irreducibly uncertain
-      const range = (t && eta.etaLowMs != null) ? ` (≈${_fmtDuration(eta.etaLowMs)}–${_fmtDuration(eta.etaHighMs)})` : "";
-      if (t) etaLine = `<div class="scf-prog-meta">~${t} remaining${range} · about ${rem} more step${rem === 1 ? "" : "s"}</div>`;
-      else etaLine = `<div class="scf-prog-meta">about ${rem} more step${rem === 1 ? "" : "s"}</div>`;
+      const more = `~${rem} more step${rem === 1 ? "" : "s"}`;
+      etaLine = `<div class="scf-prog-eta">${bucket ? "roughly " + bucket + " left · " : ""}${more}</div>`;
     } else if (nPts >= 4) {
-      etaLine = `<div class="scf-prog-meta">estimating…</div>`;
+      etaLine = `<div class="scf-prog-eta">estimating time…</div>`;
     }
     return (
-      `<div class="scf-prog-label">Optimization ${pct}% · step ${stepN}${critLabel}</div>` +
+      `<div class="scf-prog-label">Optimization ${pct}% · step ${stepN}</div>` +
       `<div class="scf-prog-bar"><span style="width:${pct}%"></span></div>` +
+      factLine +
       etaLine
     );
   }
@@ -653,7 +688,9 @@
     const goal =
       `<line x1="${padL}" y1="${goalY.toFixed(1)}" x2="${W - padR}" y2="${goalY.toFixed(1)}" class="scf-goal" stroke-width="1.1" stroke-dasharray="5 3"/>` +
       `<text x="${padL - 6}" y="${(goalY + 3).toFixed(1)}" text-anchor="end" class="scf-goal-label">1</text>` +
-      `<text x="${(W - padR - 3).toFixed(1)}" y="${(goalY - 4).toFixed(1)}" text-anchor="end" class="scf-axis">converged ≤ 1</text>`;
+      // left-aligned so the descending convergence lines (which crowd the right
+      // edge near the goal as it converges) don't cover the label
+      `<text x="${(padL + 5).toFixed(1)}" y="${(goalY - 4).toFixed(1)}" text-anchor="start" class="scf-axis">converged ≤ 1</text>`;
 
     let lines = "", dots = "";
     series.forEach(function (s) {
@@ -691,15 +728,147 @@
       ${grid}${zone}${goal}${lines}${dots}${xticks}${legend}${yTitle}${xTitle}</svg>`;
   }
 
+  // ---------- numerical-frequency progress (accurate ETA) ----------
+  // Numerical frequencies (e.g. M06-2X + CPCM) run a FIXED number of displacements
+  // (3N x 2 for central differences), each an SCF+gradient. Unlike a geometry opt,
+  // the TOTAL is printed up front and the counter is exact, so the ETA is reliable:
+  // its only error is per-displacement time variance (~a few %), not the ~65%
+  // cycle-count uncertainty of an opt.
+  const NFREQ_START_RE = /ORCA NUMERICAL FREQUENCIES/i;
+  const NDISP_RE = /Number of displacements\s+\.*\s*(\d+)/i;
+  const DISP_RE = /displacement\s+(\d+)\s*\/\s*(\d+)/i;   // numerical: "...for displacement K / N"
+  const VFREQ_RE = /VIBRATIONAL FREQUENCIES/i;
+  // analytical Hessian via coupled-perturbed SCF (CP-SCF). Not a black box: ORCA
+  // builds nuclear-perturbation ("geometric") integrals, then solves the CP-SCF
+  // response over 3N perturbations, printing "K / N done" each iteration — so we
+  // can show a real progress bar (verified against a 58-atom M06-2X/CPCM run).
+  const AINTEG_RE = /GEOMETRIC PERTURBATIONS/i;                            // derivative-integral build
+  const ACPSCF_RE = /ORCA SCF RESPONSE CALCULATION|SHARK CP-?SCF DRIVER/i; // CP-SCF response solve
+  const AFREQ_RE = /\bSCF HESSIAN\b|ANALYTICAL FREQUENC|Analytic(?:al)? Hessian/i;  // other analytical markers
+  const NPERT_RE = /Number of perturbations\s+\.*\s*(\d+)/i;               // CP-SCF total (= 3N)
+  const CPSCF_DONE_RE = /(\d+)\s*\/\s*(\d+)\s+done/i;                      // "K/N done" per CP-SCF iter
+
+  function FreqTracker() {
+    this.mode = "";        // "" | "numerical" | "analytical"
+    this.total = 0;        // numerical: total displacements (3N*2)
+    this.cur = 0;          // numerical: latest displacement index seen
+    this.active = false;   // a frequency stage is running
+    this.dispDone = false; // displacements / Hessian finished (frequencies computed)
+    this._times = [];      // numerical: Date.now() per new displacement
+    this.perturbTotal = 0; // analytical: total CP-SCF perturbations (= 3N)
+    this.perturbDone = 0;  // analytical: perturbations converged so far (K in "K/N done")
+    this.cpscfIter = 0;    // analytical: CP-SCF iteration count
+    this.aStage = "";      // analytical: "integrals" | "cpscf"
+  }
+  FreqTracker.prototype.push = function (line) {
+    if (VFREQ_RE.test(line)) { if (this.active) this.dispDone = true; return false; }
+    // numerical markers take precedence and lock the mode
+    if (NFREQ_START_RE.test(line)) { this.mode = "numerical"; this.active = true; return true; }
+    const h = line.match(NDISP_RE);
+    if (h) { this.total = parseInt(h[1], 10); this.mode = "numerical"; this.active = true; return true; }
+    const d = line.match(DISP_RE);
+    if (d) {
+      const k = parseInt(d[1], 10), n = parseInt(d[2], 10);
+      if (n > 0) this.total = n;
+      if (k > this.cur) { this.cur = k; this._times.push(Date.now()); if (this._times.length > 40) this._times.shift(); }
+      this.mode = "numerical"; this.active = true;
+      return true;
+    }
+    if (this.mode === "numerical") return false;
+    // analytical (CP-SCF) — two trackable stages: derivative-integral build,
+    // then the CP-SCF response solve with a "K / N done" perturbation counter
+    if (AINTEG_RE.test(line)) { this.mode = "analytical"; this.active = true; this.aStage = "integrals"; return true; }
+    if (ACPSCF_RE.test(line)) { this.mode = "analytical"; this.active = true; this.aStage = "cpscf"; return true; }
+    if (this.mode === "analytical") {
+      const np = line.match(NPERT_RE);
+      if (np) { this.perturbTotal = parseInt(np[1], 10); return true; }
+      const cd = line.match(CPSCF_DONE_RE);
+      if (cd) {
+        this.perturbDone = parseInt(cd[1], 10);
+        if (!this.perturbTotal) this.perturbTotal = parseInt(cd[2], 10);
+        this.cpscfIter++; this.aStage = "cpscf";
+        return true;
+      }
+    }
+    if (AFREQ_RE.test(line)) { this.mode = "analytical"; this.active = true; return true; }
+    return false;
+  };
+  FreqTracker.prototype.hasData = function () { return this.active; };
+  FreqTracker.prototype.progress = function () {
+    if (this.dispDone) return 1;
+    if (this.mode === "numerical") return this.total ? Math.min(this.cur / this.total, 0.999) : 0;
+    if (this.mode === "analytical") return (this.perturbTotal && this.perturbDone) ? Math.min(this.perturbDone / this.perturbTotal, 0.999) : 0;
+    return 0;
+  };
+  FreqTracker.prototype.perStepMs = function () {
+    const t = this._times;
+    if (t.length >= 2) {
+      const gaps = []; for (let i = 1; i < t.length; i++) gaps.push(t[i] - t[i - 1]);
+      const recent = gaps.slice(-8).filter(function (g) { return g >= 500; }).sort(function (a, b) { return a - b; });
+      if (recent.length) return recent[Math.floor(recent.length / 2)];
+    }
+    return null;
+  };
+  FreqTracker.prototype.estimateETA = function () {
+    if (!this.total || this.cur < 1 || this.dispDone) return null;
+    const remaining = Math.max(this.total - this.cur, 0);
+    const perMs = this.perStepMs();
+    return { remaining: remaining, etaMs: perMs != null ? remaining * perMs : null };
+  };
+  function renderFreqProgress(freq) {
+    // analytical Hessian (CP-SCF): show the perturbation counter when solving,
+    // a stage label while building integrals
+    if (freq.mode === "analytical") {
+      if (freq.dispDone) {
+        return `<div class="scf-prog-label">Analytical frequencies · Hessian complete · 100%</div>` +
+          `<div class="scf-prog-bar"><span style="width:100%"></span></div>` +
+          `<div class="scf-prog-meta">✓ diagonalizing + thermochemistry…</div>`;
+      }
+      if (freq.perturbTotal && freq.perturbDone) {
+        const apct = Math.round(freq.progress() * 100);
+        return `<div class="scf-prog-label">Analytical freq · CP-SCF ${apct}% · ${freq.perturbDone}/${freq.perturbTotal} perturbations</div>` +
+          `<div class="scf-prog-bar"><span style="width:${apct}%"></span></div>` +
+          `<div class="scf-prog-meta">coupled-perturbed SCF, iter ${freq.cpscfIter} · K/N is non-linear in time, so no ETA</div>`;
+      }
+      const what = freq.aStage === "cpscf" ? "coupled-perturbed SCF response" : "nuclear-perturbation (derivative) integrals";
+      return `<div class="scf-prog-label">Analytical frequencies</div>` +
+        `<div class="scf-prog-meta">building ${what}… (single analytical Hessian — a long step with no per-unit progress yet)</div>`;
+    }
+    const pct = Math.round(freq.progress() * 100);
+    if (freq.dispDone) {
+      return `<div class="scf-prog-label">Frequencies · displacements complete · 100%</div>` +
+        `<div class="scf-prog-bar"><span style="width:100%"></span></div>` +
+        `<div class="scf-prog-meta">building Hessian + thermochemistry…</div>`;
+    }
+    const out = [
+      `<div class="scf-prog-label">Numerical frequencies ${pct}% · displacement ${freq.cur}/${freq.total}</div>`,
+      `<div class="scf-prog-bar"><span style="width:${pct}%"></span></div>`,
+    ];
+    const perMs = freq.perStepMs();
+    const rate = _fmtDuration(perMs);
+    const eta = freq.estimateETA();
+    // freq ETA is reliable (known total) — show the real time, not a coarse bucket
+    if (eta && eta.etaMs != null) {
+      out.push(`<div class="scf-prog-meta">~${_fmtDuration(eta.etaMs)} remaining · ${eta.remaining} displacement${eta.remaining === 1 ? "" : "s"} left${rate ? " · ~" + rate + " each" : ""}</div>`);
+    } else if (rate) {
+      out.push(`<div class="scf-prog-meta">~${rate}/displacement</div>`);
+    } else {
+      out.push(`<div class="scf-prog-meta">estimating…</div>`);
+    }
+    return out.join("");
+  }
+
   const api = {
     SCFTracker: SCFTracker,
     GeoTracker: GeoTracker,
+    FreqTracker: FreqTracker,
     isScfIter: function (line) { return ITER_RE.test(line); },   // is this an SCF iteration row?
     targetFor: targetFor,
     renderSCFProgress: renderSCFProgress,
     renderSCFGraph: renderSCFGraph,
     renderGeoProgress: renderGeoProgress,
     renderGeoGraph: renderGeoGraph,
+    renderFreqProgress: renderFreqProgress,
     setEtaMode: setEtaMode,
     setGeoMode: setGeoMode,
     SCF_TARGETS: SCF_TARGETS,

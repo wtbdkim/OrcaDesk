@@ -11,9 +11,10 @@ a PyInstaller bundle.
 from __future__ import annotations
 
 import atexit
+import json
 import sys
 
-from PyQt6.QtCore import QUrl
+from PyQt6.QtCore import QUrl, QEvent
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QApplication
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -27,6 +28,9 @@ from ..server.controller import ServerController
 
 
 class MainWindow(QMainWindow):
+    # files that can be dropped onto the window -> routed by extension
+    DROP_EXTS = (".inp", ".xyz", ".out")
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"ORCAdesk {APP_VERSION}")
@@ -61,6 +65,14 @@ class MainWindow(QMainWindow):
 
         index = web_dir() / "index.html"
         self.view.load(QUrl.fromLocalFile(str(index)))
+
+        # Drag-and-drop a .inp/.xyz onto Build, a .out onto Results. QtWebEngine's
+        # real drop target is an internal child widget, so accepting drops on the
+        # window isn't enough — we also install an event filter on the view's
+        # focus proxy (the render widget) once it exists. See _install_drop_filter.
+        self.setAcceptDrops(True)
+        self._drop_child = None
+        self.view.loadFinished.connect(self._install_drop_filter)
 
         # If a calculation from the previous session is still running, reattach
         # and continue the queue from where it left off.
@@ -127,6 +139,66 @@ class MainWindow(QMainWindow):
             self.server_ctl.stop()
         except Exception as e:
             print(f"[shutdown] server stop failed: {e}", file=sys.stderr)
+
+    # ------------------------------------------------------------- drag & drop
+    def _drop_path(self, mime):
+        """First dropped local file with a handled extension, else None."""
+        if mime is None or not mime.hasUrls():
+            return None
+        for url in mime.urls():
+            p = url.toLocalFile()
+            if p and p.lower().endswith(self.DROP_EXTS):
+                return p
+        return None
+
+    def _dispatch_drop(self, path: str):
+        """Route a dropped file to the right tab via a JS entrypoint."""
+        ext = path.lower().rsplit(".", 1)[-1]
+        fn = {"inp": "onInpDropped", "xyz": "onXyzDropped", "out": "onOutDropped"}.get(ext)
+        if not fn:
+            return
+        # json.dumps -> a safely-escaped JS string literal (Windows backslashes)
+        self.view.page().runJavaScript(f"window.{fn} && window.{fn}({json.dumps(path)})")
+
+    def _install_drop_filter(self, _ok=False):
+        """QtWebEngine hosts the page in an internal child widget that is the real
+        drop target, so accepting drops on the window isn't enough. Accept drops on
+        the view's focus proxy (the render widget) and filter its drag/drop events.
+        The child is created lazily / can be recreated, so (re)install on each load."""
+        child = self.view.focusProxy()
+        if child is not None and child is not self._drop_child:
+            child.setAcceptDrops(True)
+            child.installEventFilter(self)
+            self._drop_child = child
+
+    def eventFilter(self, obj, event):
+        et = event.type()
+        if et in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+            if self._drop_path(event.mimeData()):
+                event.acceptProposedAction()
+                return True
+        elif et == QEvent.Type.Drop:
+            path = self._drop_path(event.mimeData())
+            if path:
+                self._dispatch_drop(path)
+                event.acceptProposedAction()
+                return True
+        return super().eventFilter(obj, event)
+
+    # window-level fallback, in case a drop reaches the window directly
+    def dragEnterEvent(self, event):
+        if self._drop_path(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        path = self._drop_path(event.mimeData())
+        if path:
+            self._dispatch_drop(path)
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
 
     def closeEvent(self, event):
         self.shutdown()

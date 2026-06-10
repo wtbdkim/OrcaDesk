@@ -4,12 +4,15 @@ A desktop GUI for building, queuing, running, and parsing ORCA computational
 chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark **or light** UI),
 Python core.
 
-> **Status: 0.2.0 beta** (`0.2.0-beta`). Desktop app: build → queue → run →
-> parse, validated against real ORCA 6.1.1 output. A running calculation now
-> **survives closing the app** and is reattached on the next launch, and the UI
-> ships with both a **dark and a light theme**. Run from source, or build a
-> standalone Windows app with `build.bat`. (Phone-sync is in development and not
-> part of this build.) See [CHANGELOG.md](CHANGELOG.md) for details.
+> **Status: 0.3.0 beta** (`0.3.0-beta`). Desktop app: build → queue → run →
+> parse, validated against real ORCA 6.1.1 output. A running calculation
+> **survives closing the app** and is reattached on the next launch; the UI ships
+> with both a **dark and a light theme**; you can **drag a `.inp`/`.xyz`/`.out`
+> onto the window** to load it; and the Log graph shows **live progress for
+> optimizations and frequency runs** (numerical *and* analytical/CP-SCF). Run from
+> source, or build a standalone Windows app with `build.bat`. (Phone-sync is in
+> development and not part of this build.) See [CHANGELOG.md](CHANGELOG.md) for
+> details.
 
 ## Requirements
 
@@ -54,10 +57,13 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   still-running job is **reattached live** (its graph history rebuilt from the
   `.out`); a job that finished while you were away is read back from disk.
 - **Log**: live ORCA stdout + events, plus a **convergence graph** view — SCF
-  (|ΔE| per cycle) and, for optimizations, MAX gradient vs step with a progress
-  bar and a live **time estimate (ETA)**. A small `s / SCF cycle` pace readout
-  and a "jump to latest" button keep long runs readable. ETA is a research-tuned
-  estimator; pick Conservative or Eager mode in Settings.
+  (|ΔE| per cycle) and, for optimizations, all five convergence criteria with a
+  progress bar. The progress reads from the real ORCA timing, so the accurate
+  signals (step, criteria met, per-step rate) lead and the inherently-uncertain
+  time is shown as an honest order-of-magnitude estimate, not false precision.
+  **Frequency runs get their own live progress** — a displacement counter for
+  numerical, a CP-SCF perturbation counter for analytical. A `s / SCF cycle`
+  pace readout and a "jump to latest" button keep long runs readable.
 - **Theme**: toggle **dark / light** from the top bar (☀/☽); the choice is
   remembered across launches.
 - **Results**: per-calculation summary (energy, HOMO/LUMO, gap, frequencies with
