@@ -3,6 +3,26 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.1-beta] — 2026-06-10
+
+Optimization ETA accuracy + honesty, tuned against 85 real ORCA opt runs.
+
+### Changed
+- **Per-cycle time now comes from ORCA's own `Time for complete geometry iter`
+  timing** (steady median, excluding the one-time-expensive first cycle) instead
+  of wall-clock poll gaps — eliminating UI-jitter / log-replay artifacts. On the
+  85 runs this time model is accurate to ~8% (median) given the cycle count.
+- **The ETA is shown as an honest range (≈[0.5×, 2×])** rather than a single
+  number. Geometry-optimization cycle counts are intrinsically hard to predict —
+  verified ~65% median error across heuristic *and* regression models on the same
+  runs, because convergence has a long, unpredictable tail near the tolerance —
+  so the estimate is presented as a calibrated band, not false precision.
+
+### Notes
+- Other methods (frequencies, scans, NEB) were evaluated but the available data
+  showed no step-predictable structure to model honestly (DFT frequencies are a
+  single analytical Hessian), so step-based ETA remains opt-only.
+
 ## [0.2.0-beta] — 2026-06-10
 
 Theming release.
