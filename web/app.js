@@ -1573,12 +1573,12 @@ function renderSCFPanel() {
   if (kind === "geo" && _geoTracker && _geoTracker.hasData()) {
     body = `<div class="graph-summary">${SCFGraph.renderGeoProgress(_geoTracker)}</div>` +
            `<div class="graph-divider"></div>` +
-           `<div class="graph-plot">${SCFGraph.renderGeoGraph(_geoTracker, { width: 560, height: 220 })}</div>`;
+           `<div class="graph-plot">${SCFGraph.renderGeoGraph(_geoTracker, { width: 1100, height: 360 })}</div>`;
   } else {
     const scf = currentRunningScf();
     body = `<div class="graph-summary">${SCFGraph.renderSCFProgress(_scfTracker, scf)}</div>` +
            `<div class="graph-divider"></div>` +
-           `<div class="graph-plot">${SCFGraph.renderSCFGraph(_scfTracker, scf, { width: 560, height: 220 })}</div>`;
+           `<div class="graph-plot">${SCFGraph.renderSCFGraph(_scfTracker, scf, { width: 1100, height: 360 })}</div>`;
   }
   panel.innerHTML = freqBlock + head + body;
   _scfDirty = false;

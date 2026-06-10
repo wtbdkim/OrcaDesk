@@ -3,6 +3,15 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.3-beta] — 2026-06-11
+
+### Changed
+- **The convergence/SCF graph now fills its box and is larger.** It was sized to
+  the viewport height, so its width was fixed and left empty space on the right
+  of the (wide) graph box. It now fills the box width on a flatter viewBox
+  (1100×360), so it's bigger and the leftover space is gone, while still fitting
+  without scrolling.
+
 ## [0.3.2-beta] — 2026-06-10
 
 Light-theme layering and uniform spacing.
