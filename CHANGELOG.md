@@ -5,6 +5,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **JS console messages now land in the Log tab.** The WebEngine page forwards
+  `console.*` output (and uncaught front-end errors) into the app log as
+  `[web] level=... line=... source=...` lines, so UI failures are diagnosable
+  in a deployed build without remote debugging. Identical repeated messages
+  are rate-limited (once per 5 s with a suppressed-repeat count), so a JS
+  error loop cannot flood the log buffer.
+
 ### Changed
 - **`QueueStore` moved from `orcamgr/server/store.py` to `orcamgr/state/store.py`.**
   The store is the single source of truth shared by the desktop Bridge *and* the

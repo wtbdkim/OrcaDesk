@@ -39,6 +39,11 @@ The entire UI lives in `web/` (HTML/CSS/JS, shadcn-style dark theme). `main.py` 
 `MainWindow` (`orcamgr/gui/window.py`), which hosts a `QWebEngineView` loading
 `web/index.html` and registers a single `Bridge` object on a `QWebChannel`.
 
+The view's page is `_ConsoleCapturePage` (`window.py`), which forwards JS console
+output into the shared log buffer as `[web] ...` lines (rate-limited per identical
+message) — so front-end errors are visible in the Log tab even in a deployed build;
+`ORCADESK_REMOTE_DEBUG` (handled in `main.py`) remains the dev-time tool.
+
 `orcamgr/gui/bridge.py` is the **entire backend API surface for the desktop**: every
 `@pyqtSlot` is callable from JS (the slot list is documented at the top of `bridge.py`).
 Slots take/return JSON strings. The JS side does not hold queue state — it **polls**

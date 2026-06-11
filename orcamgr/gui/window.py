@@ -13,11 +13,13 @@ from __future__ import annotations
 import atexit
 import json
 import sys
+import time
 
 from PyQt6.QtCore import QUrl, QEvent
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QApplication
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEnginePage
 from PyQt6.QtWebChannel import QWebChannel
 
 from ..paths import web_dir, resource_path, config_file, default_workspace_root, APP_VERSION
@@ -25,6 +27,58 @@ from ..config import Settings
 from .bridge import Bridge
 from ..state.store import QueueStore
 from ..server.controller import ServerController
+
+
+class _ConsoleCapturePage(QWebEnginePage):
+    """QWebEnginePage that forwards JS console messages — especially errors —
+    into the shared QueueStore log buffer, so front-end failures are visible
+    in the Log tab of a deployed build. This is post-deployment diagnostics;
+    ORCADESK_REMOTE_DEBUG (handled in main.py) stays the dev-time tool.
+
+    Identical repeated messages are rate-limited: the same (level, source,
+    line, text) fires at most once per _REPEAT_WINDOW seconds and carries a
+    suppressed-repeat count, so a JS error inside the 1 s poll timer cannot
+    flood the capped log buffer."""
+
+    _REPEAT_WINDOW = 5.0   # seconds a signature stays muted after being logged
+    _MAX_TRACKED = 256     # bound on the dedup map itself
+
+    # console level -> (label shown in the line, store log level for styling)
+    _LEVELS = {
+        QWebEnginePage.JavaScriptConsoleMessageLevel.InfoMessageLevel: ("info", "info"),
+        QWebEnginePage.JavaScriptConsoleMessageLevel.WarningMessageLevel: ("warn", "warn"),
+        QWebEnginePage.JavaScriptConsoleMessageLevel.ErrorMessageLevel: ("error", "err"),
+    }
+
+    def __init__(self, store: QueueStore, parent=None):
+        super().__init__(parent)
+        self._store = store
+        # signature -> [suppressed_count, last_emit_monotonic]
+        self._repeats: dict = {}
+
+    def javaScriptConsoleMessage(self, level, message, line_number, source_id):
+        label, log_level = self._LEVELS.get(level, ("info", "info"))
+        # full source is a long file:// URL; the basename is what's useful
+        # (data: URLs from setHtml have no path — cap them instead)
+        src = (source_id or "").replace("\\", "/").rsplit("/", 1)[-1] or "?"
+        if len(src) > 60:
+            src = src[:57] + "..."
+        sig = (label, src, line_number, message)
+        now = time.monotonic()
+        entry = self._repeats.get(sig)
+        if entry is not None and now - entry[1] < self._REPEAT_WINDOW:
+            entry[0] += 1   # muted — just count it
+            return
+        if len(self._repeats) >= self._MAX_TRACKED:
+            self._repeats.clear()
+        suffix = ""
+        if entry is not None and entry[0]:
+            suffix = f" (repeated {entry[0]}x in the last {now - entry[1]:.0f}s)"
+        self._repeats[sig] = [0, now]
+        self._store.append_log(
+            f"[web] level={label} line={line_number} source={src}: {message}{suffix}",
+            log_level,
+        )
 
 
 class MainWindow(QMainWindow):
@@ -56,6 +110,12 @@ class MainWindow(QMainWindow):
         # its .out. Done before the WebView loads so the queue is there to poll.
         self.store.load_session()
         self.server_ctl = ServerController(self.store)
+
+        # Replace the default page with one that forwards JS console output
+        # into the shared log buffer. Must happen before setWebChannel/load so
+        # the channel lands on the page that actually serves the UI.
+        self._page = _ConsoleCapturePage(self.store, self.view)
+        self.view.setPage(self._page)
 
         # Bridge owns all backend logic; register it on the channel.
         self.bridge = Bridge(self, self.store, self.server_ctl)
