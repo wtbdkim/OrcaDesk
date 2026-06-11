@@ -3,6 +3,16 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.4-beta] — 2026-06-11
+
+### Changed
+- **The convergence/SCF graph now fills the window height.** The viewBox height
+  is computed per-render from the space left below the plot (and follows window
+  resizes), so the graph ends flush with the bottom gutter instead of leaving a
+  large empty band under a fixed-ratio chart.
+- **The graph plot sits on a pure black/white surface** (`#000000` dark,
+  `#FFFFFF` light) instead of the page tint, so the chart pops from the panel.
+
 ## [0.3.3-beta] — 2026-06-11
 
 ### Changed
