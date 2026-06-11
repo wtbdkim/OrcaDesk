@@ -503,6 +503,9 @@ function switchTab(name) {
   document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
   document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.dataset.panel === name));
   if (name === "results") loadFreeEnergyProfile();
+  // the graph is sized by measuring its on-screen box, which is 0 while the Log
+  // tab is hidden — so re-render on entry to get a correct measurement
+  if (name === "log" && _logMode === "graph") renderSCFPanel();
 }
 
 // ---------- geometry source ----------
@@ -1569,20 +1572,42 @@ function renderSCFPanel() {
       <button class="${kind === 'scf' ? 'active' : ''}" onclick="setGraphKind('scf')">Current SCF</button>
     </div>`;
   }
+  const isGeo = (kind === "geo" && _geoTracker && _geoTracker.hasData());
   let body;
-  if (kind === "geo" && _geoTracker && _geoTracker.hasData()) {
+  if (isGeo) {
     body = `<div class="graph-summary">${SCFGraph.renderGeoProgress(_geoTracker)}</div>` +
            `<div class="graph-divider"></div>` +
-           `<div class="graph-plot">${SCFGraph.renderGeoGraph(_geoTracker, { width: 1100, height: 360 })}</div>`;
+           `<div class="graph-plot"></div>`;
   } else {
-    const scf = currentRunningScf();
-    body = `<div class="graph-summary">${SCFGraph.renderSCFProgress(_scfTracker, scf)}</div>` +
+    body = `<div class="graph-summary">${SCFGraph.renderSCFProgress(_scfTracker, currentRunningScf())}</div>` +
            `<div class="graph-divider"></div>` +
-           `<div class="graph-plot">${SCFGraph.renderSCFGraph(_scfTracker, scf, { width: 1100, height: 360 })}</div>`;
+           `<div class="graph-plot"></div>`;
   }
   panel.innerHTML = freqBlock + head + body;
+  // Two-pass render: the summary/legend above the plot varies in height, so
+  // measure the plot box NOW and pick a viewBox height whose aspect ratio makes
+  // the SVG (width:100%, height:auto) end flush with the bottom 16px gutter —
+  // no leftover space below, no scrolling.
+  const plot = panel.querySelector(".graph-plot");
+  if (plot) {
+    const innerW = plot.clientWidth - 20;   // minus the plot box's 10px side padding
+    // chrome below the SVG: plot padding/border + panel padding/border + window gutter ≈ 54px
+    const innerH = Math.max(window.innerHeight - plot.getBoundingClientRect().top - 54, 220);
+    // clientWidth is 0 while the Log tab is hidden — fall back to the flat
+    // default; switchTab re-renders with a real measurement on entry
+    const gopts = innerW > 0
+      ? { width: 1100, height: Math.round(1100 * innerH / innerW) }
+      : { width: 1100, height: 360 };
+    plot.innerHTML = isGeo
+      ? SCFGraph.renderGeoGraph(_geoTracker, gopts)
+      : SCFGraph.renderSCFGraph(_scfTracker, currentRunningScf(), gopts);
+  }
   _scfDirty = false;
 }
+// the graph is sized to the viewport, so it must follow window resizes
+window.addEventListener("resize", () => {
+  if (_logMode === "graph") renderSCFPanel();
+});
 // matches the queue's per-calc start marker, e.g. "[opt1] (opt) running ORCA..."
 function logAtBottom() {
   const b = document.getElementById("log");

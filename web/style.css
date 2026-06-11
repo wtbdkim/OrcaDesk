@@ -440,24 +440,23 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .scf-panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
 .graph-summary { margin-bottom: 4px; }
 .graph-divider { height: 1px; background: var(--border); margin: 14px 0; }
-/* nest the plot in its own box: ivory in light (lighter than the beige panel),
-   a darker inset in dark — so the chart sits on its own surface */
+/* nest the plot in its own box on a PURE black/white surface (not the page
+   tint) so the chart pops from the panel in both themes */
 .graph-plot {
-  background: var(--background); border: 1px solid var(--border);
+  background: #000; border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 10px;
 }
+html[data-theme="light"] .graph-plot { background: #fff; }
 .scf-prog-label { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .scf-prog-bar { height: 8px; background: var(--accent); border-radius: 4px; overflow: hidden; }
 .scf-prog-bar > span { display: block; height: 100%; background: var(--ok); border-radius: 4px; transition: width 0.3s; }
 .scf-prog-meta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 6px; }
 /* ETA is the uncertain part: keep it visually subordinate to the accurate signals */
 .scf-prog-eta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 3px; opacity: 0.72; font-style: italic; }
-/* size the graph to the viewport HEIGHT (deriving width from the 560:220 ratio),
-   not the full window width — which blew it up to ~750px tall and forced
-   scrolling. This stays large but always fits the window without scrolling. */
-/* fill the graph box width; height follows the wide/flat viewBox (1100x360, set
-   in renderSCFPanel) so it stays a sensible height. max-height guards short windows. */
-.scf-svg { width: 100%; height: auto; max-height: 64vh; display: block; }
+/* fill the graph box width; the viewBox height is computed per-render
+   (renderSCFPanel) to match the space left below the plot, so height:auto
+   lands the SVG flush with the bottom window gutter — no cap needed here. */
+.scf-svg { width: 100%; height: auto; display: block; }
 .scf-grid { stroke: var(--border); stroke-width: 0.5; }
 .scf-goal-label { fill: var(--foreground); opacity: 0.85; }
 .scf-goal { stroke: var(--ok); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.7; }
