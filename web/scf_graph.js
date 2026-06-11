@@ -1,3 +1,4 @@
+// @ts-check
 /* ============================================================
    scf_graph.js — shared by the desktop app (web/) and the mobile
    PWA (web_mobile/). Parses streaming ORCA log lines for SCF
@@ -7,7 +8,7 @@
    Pure-ish: SCFTracker has no DOM deps and is unit-testable in node.
    renderSCFGraph()/renderSCFProgress() build HTML/SVG strings.
    ============================================================ */
-(function (global) {
+(function (/** @type {any} */ global) {
   "use strict";
 
   // opt-ETA prediction mode: "conservative" (strict gating) or "eager"
@@ -313,7 +314,7 @@
     const y = _smooth3(w.slice(0, at)); const n = y.length;
     if (n < 6) return null;
     let ema = null; const a = 0.3;
-    for (let i = 1; i < n; i++) { const d = y[i - 1] - y[i]; ema = ema == null ? d : a * d + (1 - a) * ema; }
+    for (let i = 1; i < n; i++) { const d = y[i - 1] - y[i]; ema = ema == null ? d : a * d + (1 - a) * /** @type {number} */ (ema); }
     if (ema <= 0.005) return null;
     return at + Math.max(y[n - 1] / ema, 1);
   }

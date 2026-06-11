@@ -24,6 +24,9 @@ python -m orcamgr.server.run           # http://127.0.0.1:8000/docs for API docs
 # Build a standalone Windows app -> dist\ORCAdesk\ORCAdesk.exe (+ runtime folder)
 build.bat                              # installs deps + PyInstaller, then runs:
 python -m PyInstaller build.spec --noconfirm
+
+# Type-check the web/ front-end (plain JS + JSDoc, no build step; needs Node)
+npx -p typescript tsc --noEmit -p jsconfig.json
 ```
 
 There is **no automated test suite** and no linter configured. The parser and input
@@ -157,6 +160,13 @@ them there.
 - Bridge slots and API endpoints exchange **JSON strings**, typically
   `{"ok": bool, ...}` or `{"error": "..."}`; errors are returned as data, not raised
   across the JS boundary.
+- **`web/` is type-checked** (`// @ts-check` + JSDoc, config in `jsconfig.json`).
+  `web/types.js` holds the payload typedefs and **mirrors the Python serialization
+  layer field by field** (`orcamgr/state/store.py`, `StepConfig` in
+  `input_generator.py`, the per-slot payloads in `bridge.py`); `web/globals.d.ts`
+  declares the Qt/bridge environment (incl. every slot's signature). When you add
+  or change a payload or slot, update both, and keep
+  `npx -p typescript tsc --noEmit -p jsconfig.json` at zero errors.
 - ORCA defaults (functional `wB97X-D4`, basis `def2-TZVP`, `RIJCOSX`, aux `def2/J`)
   live in `input_generator.py`.
 - Option lists in `data/*.json` are sourced from the ORCA 6.1.1 manual; method fields

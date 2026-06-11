@@ -1,13 +1,28 @@
+// @ts-check
 /* ============================================================
    ORCAdesk front-end logic — calculation-based queue
+
+   Payload typedefs (CalcSummary, QueueSnapshot, LogPayload, ...) live in
+   web/types.js and mirror the Python serialization layer field by field;
+   the bridge/Qt environment is declared in web/globals.d.ts.
    ============================================================ */
 
+/** @type {OrcaBridge|null} */
 let bridge = null;
+/** @type {Partial<SettingsPayload>} */
 let settings = {};
+/** The store snapshot calc reduced to what the UI renders (see mirrorCalc).
+ * @typedef {Omit<CalcSummary, "meta">} CalcMirror */
+/** @type {CalcMirror[]} */
 let queue = [];                 // UI mirror of the shared store's queue
 let directXyz = "";             // last loaded .xyz coordinate block
+/** @type {Object<string, [string, string][]>} */
 const calcResults = {};         // name -> summaryRows
+/** @type {Object<string, {transitions?: TransitionPayload[], nmr?: NmrPayload[],
+ *                         frequencies?: number[], n_imaginary?: number,
+ *                         neb_path?: NebPointPayload[]}>} */
 const _resultExtras = {};       // name -> {transitions?, nmr?}
+/** @type {Object<string, CalcInput|CalcFull>} */
 const localCalcs = {};          // name -> full calc (config/xyz/raw) added on THIS PC,
                                 // so editing keeps the details the store snapshot omits
 
@@ -83,7 +98,7 @@ window.addEventListener("drop", (e) => e.preventDefault(), false);
 window.onInpDropped = async function (path) {
   if (!bridge) return;
   try {
-    const res = JSON.parse(await bridge.load_inp_path(path));
+    const res = /** @type {InpFilePayload} */ (JSON.parse(await bridge.load_inp_path(path)));
     if (!res || !res.text) { toast("Couldn't read that .inp"); return; }
     setBuildMode("expert");
     enterRawWithText(res.text);
@@ -112,6 +127,7 @@ window.onOutDropped = async function (path) {
   if (!bridge) return;
   try {
     const raw = await bridge.parse_out_path(path);
+    /** @type {ParsePayload} */
     let data; try { data = JSON.parse(raw); } catch { toast("Couldn't parse that .out"); return; }
     if (!data || !data.summary) { toast("Couldn't parse that .out"); return; }
     renderSummary(data.summary);
@@ -141,13 +157,13 @@ async function pollTick() {
   if (document.hidden) return;
   try {
     // new log lines
-    const logRes = JSON.parse(await bridge.get_log(_logSeq));
+    const logRes = /** @type {LogPayload} */ (JSON.parse(await bridge.get_log(_logSeq)));
     if (logRes && logRes.lines) {
       for (const ln of logRes.lines) appendLog(ln.msg, ln.level);
       if (typeof logRes.latest === "number") _logSeq = logRes.latest;
     }
     // queue changes (only re-render if version changed)
-    const snap = JSON.parse(await bridge.get_queue());
+    const snap = /** @type {QueueSnapshot} */ (JSON.parse(await bridge.get_queue()));
     if (snap && snap.version !== _queueVersion) {
       _queueVersion = snap.version;
       queue = (snap.calculations || []).map(mirrorCalc);
@@ -193,7 +209,7 @@ async function maybeSeedGraph() {
   if (!target || _seededGraph.has(target.name)) return;
   _seededGraph.add(target.name);   // guard before the await: no double-seed across overlapping ticks
   try {
-    const r = JSON.parse(await bridge.get_graph_lines(target.name));
+    const r = /** @type {GraphLinesResult} */ (JSON.parse(await bridge.get_graph_lines(target.name)));
     if (r && r.ok && r.lines && r.lines.length) {
       const t = new SCFGraph.SCFTracker();
       const g = new SCFGraph.GeoTracker();
@@ -206,6 +222,7 @@ async function maybeSeedGraph() {
 }
 
 // turn a store snapshot calc into the shape the UI render expects
+/** @param {CalcSummary} c @returns {CalcMirror} */
 function mirrorCalc(c) {
   return {
     name: c.name, kind: c.kind, state: c.state, message: c.message,
@@ -220,7 +237,7 @@ function mirrorCalc(c) {
 
 async function refreshQueue() {
   try {
-    const snap = JSON.parse(await bridge.get_queue());
+    const snap = /** @type {QueueSnapshot} */ (JSON.parse(await bridge.get_queue()));
     _queueVersion = snap.version;
     queue = (snap.calculations || []).map(mirrorCalc);
     renderQueue();
@@ -229,7 +246,7 @@ async function refreshQueue() {
 
 async function loadAbout() {
   try {
-    const a = JSON.parse(await bridge.get_about());
+    const a = /** @type {AboutPayload} */ (JSON.parse(await bridge.get_about()));
     const body = document.getElementById("about-body");
     body.innerHTML =
       `<div class="k">Version</div><div class="v">${a.version}</div>` +
@@ -244,7 +261,7 @@ async function loadAbout() {
 async function loadAllChoices() {
   const names = ["functionals","basis_sets","calculation_types","scf_convergences","ri_approximations","solvents"];
   for (const n of names) {
-    try { choicesCache[n] = JSON.parse(await bridge.load_choices(n)); }
+    try { choicesCache[n] = /** @type {ChoiceGroups} */ (JSON.parse(await bridge.load_choices(n))); }
     catch (e) { choicesCache[n] = {}; }
   }
 }
@@ -445,16 +462,19 @@ function applyTheme(theme) {
 async function toggleTheme() {
   const next = (settings.theme === "light") ? "dark" : "light";
   applyTheme(next);   // flip the UI instantly, then persist
-  settings = JSON.parse(await bridge.save_settings(JSON.stringify({ theme: next })));
+  const res = /** @type {SaveSettingsResult} */ (JSON.parse(await bridge.save_settings(JSON.stringify({ theme: next }))));
+  // bad input comes back as {error} — don't clobber the settings mirror with it
+  if ("error" in res) { toast("Could not save theme: " + res.error); return; }
+  settings = res;
 }
 
 async function loadSettings() {
-  settings = JSON.parse(await bridge.get_settings());
+  settings = /** @type {SettingsPayload} */ (JSON.parse(await bridge.get_settings()));
   applyTheme(settings.theme);
   document.getElementById("set-orca").value = settings.orca_path || "";
   document.getElementById("set-ws").value = settings.workspace_root || "";
-  document.getElementById("set-nprocs").value = settings.default_nprocs || 6;
-  document.getElementById("set-maxcore").value = settings.default_maxcore_mb || 2400;
+  document.getElementById("set-nprocs").value = String(settings.default_nprocs || 6);
+  document.getElementById("set-maxcore").value = String(settings.default_maxcore_mb || 2400);
   // ETA mode radio
   const mode = settings.eta_mode || "conservative";
   const radio = document.querySelector(`input[name="eta-mode"][value="${mode}"]`);
@@ -481,7 +501,10 @@ async function saveSettings() {
     eta_mode: etaEl ? etaEl.value : "conservative",
     geo_graph_mode: geoEl ? geoEl.value : "all5",
   };
-  settings = JSON.parse(await bridge.save_settings(JSON.stringify(payload)));
+  const res = /** @type {SaveSettingsResult} */ (JSON.parse(await bridge.save_settings(JSON.stringify(payload))));
+  // bad input comes back as {error} — don't clobber the settings mirror with it
+  if ("error" in res) { toast("Could not save settings: " + res.error); return; }
+  settings = res;
   updateOrcaStatus(settings.orca_valid);
   // push the new modes to the live graph immediately
   if (SCFGraph && SCFGraph.setEtaMode) SCFGraph.setEtaMode(settings.eta_mode);
@@ -816,6 +839,8 @@ function nebAtomCheck() {
   box.textContent = `✓ Reactant and product match (${r.length} atoms, same order).`;
 }
 
+/** Read the method form into the config payload sent to Python.
+ * @param {string} kind @returns {Partial<StepConfigPayload>} */
 function collectConfig(kind) {
   const def = KIND_DEFS[kind];
   const v = (id) => { const e = document.getElementById(id); return e ? e.value : ""; };
@@ -861,6 +886,8 @@ function collectConfig(kind) {
 // template: geometry isn't needed yet (raw carries its own coords, or a
 // reference is filled in at run time), so the "load .xyz" / "select a
 // reference" checks are relaxed — exactly like .xyz already behaves.
+/** Read the whole Build form into the calc payload for add_calc/update_calc.
+ * @param {boolean} [forPreview] @returns {CalcInput} */
 function collectCalcFromForm(forPreview = false) {
   const name = document.getElementById("calc-name").value.trim();
   if (!name) throw new Error("Name is required.");
@@ -900,7 +927,7 @@ function collectCalcFromForm(forPreview = false) {
     name, kind,
     charge: parseInt(document.getElementById("calc-charge").value, 10) || 0,
     multiplicity: parseInt(document.getElementById("calc-mult").value, 10) || 1,
-    geometry_source: src,
+    geometry_source: /** @type {"direct"|"reference"} */ (src),
     xyz, ref_name,
     is_raw: rawMode,
     raw_text: rawMode ? rawText : "",
@@ -917,7 +944,7 @@ async function addCalcToQueue() {
 
     if (wasEditing && oldName) {
       // edit in place: preserves the calc's position in the queue
-      const res = JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc)));
+      const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
       if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
       if (oldName !== calc.name) delete localCalcs[oldName];
       localCalcs[calc.name] = calc;
@@ -928,7 +955,7 @@ async function addCalcToQueue() {
       return;
     }
 
-    const res = JSON.parse(await bridge.add_calc(JSON.stringify(calc)));
+    const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
       appendLog("Could not add: " + res.error, "err");
       toast(res.error);
@@ -956,7 +983,7 @@ async function editCalc(i) {
     // not added in this session (restored from a previous run, or added via the
     // phone): fetch the full calc so config/xyz/raw_text are editable here
     try {
-      const res = JSON.parse(await bridge.get_calc(mirror.name));
+      const res = /** @type {GetCalcResult} */ (JSON.parse(await bridge.get_calc(mirror.name)));
       if (res && res.ok && res.calc) { c = res.calc; localCalcs[mirror.name] = c; }
     } catch (e) { /* fall through to the warning */ }
     // the queue may have shifted during the await — make sure i still points at us
@@ -973,8 +1000,8 @@ async function editCalc(i) {
   if (buildMode === "expert") _showIds(["raw-btn"], false);   // raw button stays hidden in expert
 
   document.getElementById("calc-name").value = c.name;
-  document.getElementById("calc-charge").value = c.charge;
-  document.getElementById("calc-mult").value = c.multiplicity;
+  document.getElementById("calc-charge").value = String(c.charge);
+  document.getElementById("calc-mult").value = String(c.multiplicity);
   document.getElementById("calc-kind").value = c.kind;
 
   // geometry source
@@ -1009,6 +1036,8 @@ async function editCalc(i) {
   switchTab("build");
 }
 
+/** Push a stored config back into the method form (inverse of collectConfig).
+ * @param {Partial<StepConfigPayload>} cfg */
 function fillConfigForm(cfg) {
   if (!cfg) return;
   const set = (id, val) => { const e = document.getElementById(id); if (e != null && val != null) e.value = val; };
@@ -1136,7 +1165,7 @@ async function enterRawMode() {
     return;
   }
 
-  const res = JSON.parse(await bridge.build_inp_preview(JSON.stringify(calc)));
+  const res = /** @type {TextResult} */ (JSON.parse(await bridge.build_inp_preview(JSON.stringify(calc))));
   if (!res.ok) {
     rawMode = false;
     appendLog("Could not generate .inp: " + res.error, "err");
@@ -1155,7 +1184,7 @@ function enterRawWithText(text) {
   rawText = text || "";
   const ta = document.getElementById("raw-text");
   ta.value = rawText;
-  ta.oninput = (e) => { rawText = e.target.value; };
+  ta.oninput = (e) => { rawText = /** @type {ORCAFormElement} */ (e.target).value; };
   showRawCard(true);
   if (buildMode !== "expert") lockFormForRaw(true);
   updateEditUI();
@@ -1172,7 +1201,7 @@ async function loadInpFile() {
       confirm: "Load .inp", danger: true });
     if (!ok) return;
   }
-  const res = JSON.parse(await bridge.load_inp_file());
+  const res = /** @type {InpFilePayload} */ (JSON.parse(await bridge.load_inp_file()));
   if (!res || !res.text) return;
   enterRawWithText(res.text);
   // auto-fill the calculation name from the .inp filename (only when the user
@@ -1210,7 +1239,7 @@ function setBuildMode(mode, persist = true) {
 function showRawCard(show) {
   document.getElementById("raw-card").style.display = show ? "block" : "none";
   if (show) {
-    document.getElementById("raw-text").oninput = (e) => { rawText = e.target.value; };
+    document.getElementById("raw-text").oninput = (e) => { rawText = /** @type {ORCAFormElement} */ (e.target).value; };
   }
 }
 
@@ -1226,6 +1255,7 @@ function lockFormForRaw(locked) {
 // ---------- queue ----------
 let _toastTimer = null;
 function toast(msg) {
+  /** @type {HTMLElement|null} */
   let t = document.getElementById("toast");
   if (!t) {
     t = document.createElement("div");
@@ -1246,15 +1276,15 @@ async function viewInp(i) {
   if (!c) return;
   let text = null, note = "";
   try {
-    const res = JSON.parse(await bridge.get_inp(c.name));
+    const res = /** @type {TextResult} */ (JSON.parse(await bridge.get_inp(c.name)));
     if (res.ok && res.text) text = res.text;
   } catch (e) { /* fall through to preview */ }
   if (text == null) {
     let full = localCalcs[c.name];
-    if (!full) { try { const r = JSON.parse(await bridge.get_calc(c.name)); if (r.ok) full = r.calc; } catch (e) { } }
+    if (!full) { try { const r = /** @type {GetCalcResult} */ (JSON.parse(await bridge.get_calc(c.name))); if (r.ok) full = r.calc; } catch (e) { } }
     if (full && full.is_raw && full.raw_text) { text = full.raw_text; note = " (raw · not yet run)"; }
     else if (full) {
-      try { const pv = JSON.parse(await bridge.build_inp_preview(JSON.stringify(full))); if (pv.ok) { text = pv.text; note = " (preview · not yet run)"; } } catch (e) { }
+      try { const pv = /** @type {TextResult} */ (JSON.parse(await bridge.build_inp_preview(JSON.stringify(full)))); if (pv.ok) { text = pv.text; note = " (preview · not yet run)"; } } catch (e) { }
     }
   }
   if (text == null) { toast("Input not available yet — run the queue first."); return; }
@@ -1278,7 +1308,7 @@ function renderQueue() {
     const removable = c.state !== "running";       // anything but running can be deleted
     const div = document.createElement("div");
     div.className = "queue-item" + (editable ? " draggable" : "");
-    div.dataset.index = i;
+    div.dataset.index = String(i);
     if (editable) div.setAttribute("draggable", "true");
     const handle = editable
       ? `<span class="drag-handle" title="Drag to reorder">≡</span>` : `<span class="drag-handle placeholder"></span>`;
@@ -1366,7 +1396,7 @@ async function clearQueue() {
   if (!await confirmModal({ title: "Clear the whole queue?",
       body: `Remove all <b>${queue.length}</b> calculation(s) from the queue? This can't be undone.`,
       confirm: "Clear all", danger: true })) return;
-  const res = JSON.parse(await bridge.clear_queue());
+  const res = /** @type {MutationResult} */ (JSON.parse(await bridge.clear_queue()));
   if (!res.ok) { appendLog(res.error || "Could not clear queue.", "warn"); return; }
   for (const k of Object.keys(localCalcs)) delete localCalcs[k];
   await refreshQueue();
@@ -1428,7 +1458,7 @@ async function runQueue() {
     // Check whether any queued calc would overwrite an existing result on disk.
     let skipNames = [];
     try {
-      const chk = JSON.parse(await bridge.check_overwrite_conflicts());
+      const chk = /** @type {ConflictsResult} */ (JSON.parse(await bridge.check_overwrite_conflicts()));
       if (chk.ok && chk.conflicts && chk.conflicts.length) {
         const list = `<div class="names">${chk.conflicts.join(", ")}</div>`;
         const choice = await showModal(
@@ -1448,7 +1478,7 @@ async function runQueue() {
     } catch (e) { /* if the check fails, fall through and run normally */ }
 
     appendLog("--- starting queue ---", "info");
-    const res = JSON.parse(await bridge.run_queue(JSON.stringify(skipNames)));
+    const res = /** @type {OkResult} */ (JSON.parse(await bridge.run_queue(JSON.stringify(skipNames))));
     if (!res.ok) {
       appendLog("Could not start: " + res.error, "err");
     } else {
@@ -1471,7 +1501,7 @@ async function cancelQueue() {
 async function stopAfterCurrent() {
   _stopRequested = true;                  // one-shot for this run
   setRunUI(_running);
-  const res = JSON.parse(await bridge.stop_after_current());
+  const res = /** @type {OkResult} */ (JSON.parse(await bridge.stop_after_current()));
   appendLog(res.ok ? "Will stop after the current job finishes."
                     : "Nothing is running.", "info");
 }
@@ -1492,7 +1522,7 @@ async function maybeFetchResult(name, outputPath) {
   if (!outputPath || calcResults[name]) return;
   try {
     const raw = await bridge.parse_out_path(outputPath);
-    const data = JSON.parse(raw);
+    const data = /** @type {ParsePayload} */ (JSON.parse(raw));
     if (data && data.summary) {
       calcResults[name] = data.summary;
       if (data.transitions && data.transitions.length) _resultExtras[name] = { transitions: data.transitions };
@@ -1703,6 +1733,7 @@ function showSelectedResult() {
     if (extras.nmr && extras.nmr.length) renderNmr(extras.nmr);
   }
 }
+/** @param {[string, string][]} rows */
 function renderSummary(rows) {
   const body = document.getElementById("result-body");
   let html = `<div class="kv">`;
@@ -1718,6 +1749,7 @@ function renderSummary(rows) {
 }
 async function openOutFile() {
   const raw = await bridge.parse_out_file();
+  /** @type {ParsePayload} */
   let data; try { data = JSON.parse(raw); } catch { return; }
   if (!data.summary) { appendLog("Could not parse file.", "err"); return; }
   renderSummary(data.summary);
@@ -1727,6 +1759,7 @@ async function openOutFile() {
   if (data.nmr && data.nmr.length) renderNmr(data.nmr);
   switchTab("results");
 }
+/** @param {TransitionPayload[]} transitions */
 function renderSpectrum(transitions) {
   const body = document.getElementById("result-body");
   const maxF = Math.max(...transitions.map(t => t.fosc), 1e-6);
@@ -1751,6 +1784,7 @@ function renderSpectrum(transitions) {
     </svg>`;
 }
 
+/** @param {number[]} frequencies @param {number} [nImaginary] */
 function renderFreqSpectrum(frequencies, nImaginary) {
   const body = document.getElementById("result-body");
   if (!frequencies || !frequencies.length) return;
@@ -1797,6 +1831,7 @@ function renderFreqSpectrum(frequencies, nImaginary) {
     ${warn}`;
 }
 
+/** @param {NmrPayload[]} nmr */
 function renderNmr(nmr) {
   const body = document.getElementById("result-body");
   let rows = "";
@@ -1813,6 +1848,7 @@ function renderNmr(nmr) {
     <div class="hint">Absolute shieldings — subtract from a reference (e.g. TMS) to get chemical shifts.</div>`;
 }
 
+/** @param {NebPointPayload[]} path */
 function renderNebPath(path) {
   const body = document.getElementById("result-body");
   if (!path || !path.length) return;
@@ -1864,11 +1900,12 @@ function renderNebPath(path) {
 }
 
 // ---- free energy profile (Results tab) ----
+/** @type {FepPoint[]} */
 let _fepPoints = [];   // cached [{name, gibbs_eh, ...}] in queue order
 
 async function loadFreeEnergyProfile() {
   try {
-    const res = JSON.parse(await bridge.get_free_energy_profile());
+    const res = /** @type {FepResult} */ (JSON.parse(await bridge.get_free_energy_profile()));
     _fepPoints = (res.ok && res.points) ? res.points : [];
   } catch (e) { _fepPoints = []; }
   // populate the reference dropdown (default: first point = RC)

@@ -14,6 +14,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   error loop cannot flood the log buffer.
 
 ### Changed
+- **The web front-end is now type-checked** (`// @ts-check` + JSDoc against
+  `jsconfig.json`; payload typedefs in `web/types.js` mirror the Python
+  serialization layer). Typing surfaced one real bug, now fixed: a failed
+  settings save returned `{"error": ...}` and silently replaced the in-memory
+  settings mirror; it now shows a toast and keeps the previous settings.
 - **`QueueStore` moved from `orcamgr/server/store.py` to `orcamgr/state/store.py`.**
   The store is the single source of truth shared by the desktop Bridge *and* the
   phone-sync HTTP server, so living under `server/` misrepresented the dependency
