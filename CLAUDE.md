@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ORCAdesk is a desktop GUI (PyQt6 + QWebEngine) for building, queuing, running, and
 parsing [ORCA](https://www.faccts.de/orca/) computational-chemistry jobs. The app
 shells out to the user's installed `orca` executable; it does not do the chemistry
-itself. Status is `0.1.1-beta`, Windows is the primary tested target.
+itself. Status is beta; the current version is `APP_VERSION` in `orcamgr/paths.py`
+(also the top entry of `CHANGELOG.md`). Windows is the primary tested target.
 
 ## Commands
 
@@ -217,3 +218,22 @@ Keep the version-numbered format **only** for `main`; never prefix `main` commit
 **No co-author / attribution trailers.** Do not append `Co-Authored-By:` lines (or any
 other tool-attribution trailer such as "Generated with Claude Code") to commit messages.
 Commits should be authored solely under the repository's configured git user.
+
+### Pre-commit documentation check (mandatory)
+
+Before **every** commit, verify the Markdown docs reflect the change and update any
+that are stale — include those updates in the same commit:
+
+- `CHANGELOG.md` — any user-visible change (feature, fix, UI/behavior change) gets an
+  entry. Version bumps must keep `APP_VERSION` in `orcamgr/paths.py` and the top
+  `CHANGELOG.md` entry in sync.
+- `CLAUDE.md` — update when the change touches anything this file documents:
+  architecture, queue semantics/invariants, Bridge API surface, conventions
+  (normalization rules, defaults), paths/build layout, or the git workflow itself.
+- `README.md` — update when commands, install steps, requirements, or user-facing
+  features described there change.
+- Other docs (`INSTALLER_GUIDE_KR.md`, `orcamgr/server/STAGE*_TEST_KR.md`, etc.) —
+  update when the procedure they describe changes.
+
+If nothing in the docs is affected, no doc edit is needed — but the check itself is
+not optional: confirm it before committing, every time.
