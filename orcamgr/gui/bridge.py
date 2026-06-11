@@ -31,7 +31,7 @@ from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL
 from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import GeometrySource, CalcState
 from ..core.parser import parse_file
-from ..server.store import (
+from ..state.store import (
     QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory, load_choice_groups,
 )
 

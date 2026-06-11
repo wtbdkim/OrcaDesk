@@ -23,7 +23,7 @@ from PyQt6.QtWebChannel import QWebChannel
 from ..paths import web_dir, resource_path, config_file, default_workspace_root, APP_VERSION
 from ..config import Settings
 from .bridge import Bridge
-from ..server.store import QueueStore
+from ..state.store import QueueStore
 from ..server.controller import ServerController
 
 

@@ -3,6 +3,15 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **`QueueStore` moved from `orcamgr/server/store.py` to `orcamgr/state/store.py`.**
+  The store is the single source of truth shared by the desktop Bridge *and* the
+  phone-sync HTTP server, so living under `server/` misrepresented the dependency
+  direction (now `gui -> state <- server`). The old import path still works through
+  a deprecation shim.
+
 ## [0.3.4-beta] — 2026-06-11
 
 ### Changed

@@ -17,7 +17,7 @@ import socket
 import threading
 from typing import Optional
 
-from .store import QueueStore
+from ..state.store import QueueStore
 
 DEFAULT_PORT = 8000
 

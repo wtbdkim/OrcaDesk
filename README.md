@@ -110,8 +110,9 @@ orcamgr/
     runner.py                 detached ORCA subprocess; tail .out + reattach
     procutil.py               psutil process identity + tree-kill (reattach)
     queue.py                  multi-job pipeline orchestration
-  server/
-    store.py                  shared queue + session persistence (autosave)
+  state/
+    store.py                  shared queue (single source of truth) + session autosave
+  server/                     optional phone-sync HTTP layer (FastAPI; not in the build)
   gui/
     window.py                 QMainWindow + WebEngine
     bridge.py                 JS <-> Python bridge, worker thread

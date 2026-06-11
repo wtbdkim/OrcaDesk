@@ -48,12 +48,15 @@ signal juggling. If you add backend functionality, it goes through a new Bridge 
 
 ### One shared QueueStore is the single source of truth
 
-`orcamgr/server/store.py` `QueueStore` holds the queue (a list of `Calculation`),
+`orcamgr/state/store.py` `QueueStore` holds the queue (a list of `Calculation`),
 the run flag, and the log buffer, guarded by a `threading.RLock`. The **same store
 instance** is shared by the desktop Bridge and the FastAPI server (constructed once in
 `window.py` and passed to both), so the desktop and a connected phone always see one
 queue. `QueueStore` is intentionally free of PyQt and FastAPI imports so it stays
-unit-testable in isolation.
+unit-testable in isolation. It lives in `orcamgr/state/` (not `server/`) so the
+dependency direction is explicit: `gui -> state <- server`. The old location
+`orcamgr/server/store.py` is a deprecated re-export shim (emits a
+`DeprecationWarning`); new code must import `orcamgr.state.store`.
 
 `store.py` also owns the **shared serialization layer** — `calc_from_dict` /
 `calc_to_dict` / `StepConfig` round-tripping and `load_*_choices` (reading
