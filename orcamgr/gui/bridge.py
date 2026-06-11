@@ -34,6 +34,15 @@ from ..core.parser import parse_file
 from ..state.store import (
     QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory, load_choice_groups,
 )
+# Response payloads are CONSTRUCTED through these TypedDicts (plain dicts at
+# runtime, so the JSON wire format is unchanged) — schemas.py is the single
+# source of truth, mirrored for the front-end by web/types.js.
+from ..state.schemas import (
+    AboutPayload, ConflictsResult, ErrorPayload, FepPoint, FepResult,
+    GetCalcResult, GraphLinesResult, InpFilePayload, MutationResult,
+    NmrPayload, OkResult, ParsePayload, QrResult, ServerStatusPayload,
+    SettingsPayload, StartServerResult, TextResult, TransitionPayload,
+)
 
 
 # Line patterns the SCF/geo graph trackers care about (mirror of web/scf_graph.js
@@ -65,27 +74,27 @@ class Bridge(QObject):
     # --- about / metadata ---
     @pyqtSlot(result=str)
     def get_about(self) -> str:
-        return json.dumps({
-            "version": APP_VERSION,
-            "author": APP_AUTHOR,
-            "org": APP_ORG,
-            "email": APP_EMAIL,
-        })
+        return json.dumps(AboutPayload(
+            version=APP_VERSION,
+            author=APP_AUTHOR,
+            org=APP_ORG,
+            email=APP_EMAIL,
+        ))
 
     # --- settings ---
     @pyqtSlot(result=str)
     def get_settings(self) -> str:
-        return json.dumps({
-            "orca_path": self.settings.orca_path,
-            "workspace_root": self.settings.workspace_root,
-            "default_nprocs": self.settings.default_nprocs,
-            "default_maxcore_mb": self.settings.default_maxcore_mb,
-            "theme": self.settings.theme,
-            "eta_mode": self.settings.eta_mode,
-            "geo_graph_mode": self.settings.geo_graph_mode,
-            "build_mode": self.settings.build_mode,
-            "orca_valid": self.settings.orca_is_valid(),
-        })
+        return json.dumps(SettingsPayload(
+            orca_path=self.settings.orca_path,
+            workspace_root=self.settings.workspace_root,
+            default_nprocs=self.settings.default_nprocs,
+            default_maxcore_mb=self.settings.default_maxcore_mb,
+            theme=self.settings.theme,
+            eta_mode=self.settings.eta_mode,
+            geo_graph_mode=self.settings.geo_graph_mode,
+            build_mode=self.settings.build_mode,
+            orca_valid=self.settings.orca_is_valid(),
+        ))
 
     @pyqtSlot(str, result=str)
     def save_settings(self, payload_json: str) -> str:
@@ -109,7 +118,7 @@ class Bridge(QObject):
             self.settings.save()
             return self.get_settings()
         except (json.JSONDecodeError, ValueError, TypeError) as e:
-            return json.dumps({"error": str(e)})
+            return json.dumps(ErrorPayload(error=str(e)))
 
     @pyqtSlot(result=str)
     def autodetect_orca(self) -> str:
@@ -152,12 +161,12 @@ class Bridge(QObject):
             self.window, "Load ORCA .inp file", "", "ORCA input (*.inp);;All files (*.*)"
         )
         if not path:
-            return json.dumps({"text": "", "name": ""})
+            return json.dumps(InpFilePayload(text="", name=""))
         try:
             p = Path(path)
-            return json.dumps({"text": p.read_text(encoding="utf-8"), "name": p.stem})
+            return json.dumps(InpFilePayload(text=p.read_text(encoding="utf-8"), name=p.stem))
         except OSError:
-            return json.dumps({"text": "", "name": ""})
+            return json.dumps(InpFilePayload(text="", name=""))
 
     @pyqtSlot(str, result=str)
     def load_inp_path(self, path: str) -> str:
@@ -165,9 +174,9 @@ class Bridge(QObject):
         load_inp_file, so the JS side is identical."""
         try:
             p = Path(path)
-            return json.dumps({"text": p.read_text(encoding="utf-8", errors="replace"), "name": p.stem})
+            return json.dumps(InpFilePayload(text=p.read_text(encoding="utf-8", errors="replace"), name=p.stem))
         except OSError as e:
-            return json.dumps({"text": "", "name": "", "error": str(e)})
+            return json.dumps(InpFilePayload(text="", name="", error=str(e)))
 
     @pyqtSlot(str, result=str)
     def load_xyz_path(self, path: str) -> str:
@@ -197,29 +206,30 @@ class Bridge(QObject):
     def parse_out_path(self, path: str) -> str:
         """Parse a specific .out path (used to auto-load finished queue results)."""
         if not path or not Path(path).exists():
-            return json.dumps({"error": "file not found"})
+            return json.dumps(ErrorPayload(error="file not found"))
         return self._parse_path(path)
 
     def _parse_path(self, path: str) -> str:
         try:
             r = parse_file(path)
-            return json.dumps({
-                "summary": r.summary_rows(),
-                "transitions": [
-                    {"state": t.state, "ev": t.energy_ev, "nm": t.wavelength_nm, "fosc": t.fosc}
+            return json.dumps(ParsePayload(
+                summary=r.summary_rows(),
+                transitions=[
+                    TransitionPayload(state=t.state, ev=t.energy_ev,
+                                      nm=t.wavelength_nm, fosc=t.fosc)
                     for t in r.transitions
                 ],
-                "frequencies": r.frequencies,
-                "n_imaginary": r.n_imaginary,
-                "mulliken": r.mulliken_charges,
-                "nmr": [
-                    {"idx": i, "el": el, "iso": iso, "aniso": an}
+                frequencies=r.frequencies,
+                n_imaginary=r.n_imaginary,
+                mulliken=r.mulliken_charges,
+                nmr=[
+                    NmrPayload(idx=i, el=el, iso=iso, aniso=an)
                     for (i, el, iso, an) in r.nmr_shieldings
                 ],
-                "neb_path": r.neb_path,
-            })
+                neb_path=r.neb_path,
+            ))
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            return json.dumps(ErrorPayload(error=str(e)))
 
     # --- raw .inp preview (for entering raw-edit mode) ---
     @pyqtSlot(str, result=str)
@@ -235,9 +245,9 @@ class Bridge(QObject):
                 use_placeholder=use_ph,
                 xyz=d.get("xyz", ""),
             )
-            return json.dumps({"ok": True, "text": text})
+            return json.dumps(TextResult(ok=True, text=text))
         except Exception as e:
-            return json.dumps({"ok": False, "error": str(e)})
+            return json.dumps(TextResult(ok=False, error=str(e)))
 
     # --- queue management (shared store) ---
     @pyqtSlot(str, result=str)
@@ -246,36 +256,36 @@ class Bridge(QObject):
             d = json.loads(calc_json)
             calc = calc_from_dict(d)
         except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-            return json.dumps({"ok": False, "error": f"Invalid calculation data: {e}"})
+            return json.dumps(MutationResult(ok=False, error=f"Invalid calculation data: {e}"))
         try:
             self.store.add(calc)
         except ValueError as e:
-            return json.dumps({"ok": False, "error": str(e)})
-        return json.dumps({"ok": True, "snapshot": self.store.snapshot()})
+            return json.dumps(MutationResult(ok=False, error=str(e)))
+        return json.dumps(MutationResult(ok=True, snapshot=self.store.snapshot()))
 
     @pyqtSlot(str, result=str)
     def remove_calc(self, name: str) -> str:
         try:
             ok = self.store.remove(name)
         except ValueError as e:
-            return json.dumps({"ok": False, "error": str(e)})
-        return json.dumps({"ok": ok, "snapshot": self.store.snapshot()})
+            return json.dumps(MutationResult(ok=False, error=str(e)))
+        return json.dumps(MutationResult(ok=ok, snapshot=self.store.snapshot()))
 
     @pyqtSlot(result=str)
     def clear_queue(self) -> str:
         try:
             self.store.clear()
         except ValueError as e:
-            return json.dumps({"ok": False, "error": str(e)})
-        return json.dumps({"ok": True, "snapshot": self.store.snapshot()})
+            return json.dumps(MutationResult(ok=False, error=str(e)))
+        return json.dumps(MutationResult(ok=True, snapshot=self.store.snapshot()))
 
     @pyqtSlot(int, int, result=str)
     def reorder_calc(self, from_idx: int, to_idx: int) -> str:
         try:
             self.store.reorder(int(from_idx), int(to_idx))
         except ValueError as e:
-            return json.dumps({"ok": False, "error": str(e)})
-        return json.dumps({"ok": True, "snapshot": self.store.snapshot()})
+            return json.dumps(MutationResult(ok=False, error=str(e)))
+        return json.dumps(MutationResult(ok=True, snapshot=self.store.snapshot()))
 
     @pyqtSlot(str, str, result=str)
     def update_calc(self, old_name: str, calc_json: str) -> str:
@@ -284,12 +294,12 @@ class Bridge(QObject):
             d = json.loads(calc_json)
             calc = calc_from_dict(d)
         except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-            return json.dumps({"ok": False, "error": f"Invalid calculation data: {e}"})
+            return json.dumps(MutationResult(ok=False, error=f"Invalid calculation data: {e}"))
         try:
             self.store.replace(old_name, calc)
         except ValueError as e:
-            return json.dumps({"ok": False, "error": str(e)})
-        return json.dumps({"ok": True, "snapshot": self.store.snapshot()})
+            return json.dumps(MutationResult(ok=False, error=str(e)))
+        return json.dumps(MutationResult(ok=True, snapshot=self.store.snapshot()))
 
     @pyqtSlot(result=str)
     def get_queue(self) -> str:
@@ -303,8 +313,8 @@ class Bridge(QObject):
         from the phone (the polled snapshot omits these fields)."""
         c = self.store.get(name)
         if c is None:
-            return json.dumps({"ok": False, "error": "not found"})
-        return json.dumps({"ok": True, "calc": calc_to_session_dict(c)})
+            return json.dumps(GetCalcResult(ok=False, error="not found"))
+        return json.dumps(GetCalcResult(ok=True, calc=calc_to_session_dict(c)))
 
     @pyqtSlot(int, result=str)
     def get_log(self, since: int) -> str:
@@ -317,10 +327,10 @@ class Bridge(QObject):
         try:
             p = Path(self.settings.workspace_root) / name / f"{name}.inp"
             if not p.exists():
-                return json.dumps({"ok": False, "error": "no input on disk yet"})
-            return json.dumps({"ok": True, "text": p.read_text(encoding="utf-8", errors="replace")})
+                return json.dumps(TextResult(ok=False, error="no input on disk yet"))
+            return json.dumps(TextResult(ok=True, text=p.read_text(encoding="utf-8", errors="replace")))
         except Exception as e:
-            return json.dumps({"ok": False, "error": str(e)})
+            return json.dumps(TextResult(ok=False, error=str(e)))
 
     @pyqtSlot(str, result=str)
     def get_graph_lines(self, name: str) -> str:
@@ -334,7 +344,7 @@ class Bridge(QObject):
         try:
             out_path = Path(self.settings.workspace_root) / name / f"{name}.out"
             if not out_path.exists():
-                return json.dumps({"ok": False, "error": "no output", "lines": []})
+                return json.dumps(GraphLinesResult(ok=False, error="no output", lines=[]))
             lines = []
             in_table = False
             saw_item = False
@@ -358,9 +368,9 @@ class Bridge(QObject):
                         saw_item = False
                     elif _G_ITER.match(ln):
                         lines.append(ln)
-            return json.dumps({"ok": True, "lines": lines})
+            return json.dumps(GraphLinesResult(ok=True, lines=lines))
         except Exception as e:
-            return json.dumps({"ok": False, "error": str(e), "lines": []})
+            return json.dumps(GraphLinesResult(ok=False, error=str(e), lines=[]))
 
     # --- run / cancel ---
     @pyqtSlot(result=str)
@@ -386,13 +396,13 @@ class Bridge(QObject):
             g = getattr(c.result, "gibbs_eh", None)
             if g is None:
                 continue
-            pts.append({
-                "name": c.name,
-                "gibbs_eh": g,
-                "final_energy_eh": getattr(c.result, "final_energy_eh", None),
-                "kind": c.kind,
-            })
-        return json.dumps({"ok": True, "points": pts})
+            pts.append(FepPoint(
+                name=c.name,
+                gibbs_eh=g,
+                final_energy_eh=getattr(c.result, "final_energy_eh", None),
+                kind=c.kind,
+            ))
+        return json.dumps(FepResult(ok=True, points=pts))
 
     @pyqtSlot(result=str)
     def check_overwrite_conflicts(self) -> str:
@@ -409,14 +419,14 @@ class Bridge(QObject):
                 out_path = ws / c.name / f"{c.name}.out"
                 if out_path.exists():
                     conflicts.append(c.name)
-            return json.dumps({"ok": True, "conflicts": conflicts})
+            return json.dumps(ConflictsResult(ok=True, conflicts=conflicts))
         except Exception as e:
-            return json.dumps({"ok": False, "error": str(e), "conflicts": []})
+            return json.dumps(ConflictsResult(ok=False, error=str(e), conflicts=[]))
 
     @pyqtSlot(str, result=str)
     def run_queue(self, skip_names_json: str = "") -> str:
         if not self.settings.orca_is_valid():
-            return json.dumps({"ok": False, "error": "ORCA path is not set or invalid. Check Settings."})
+            return json.dumps(OkResult(ok=False, error="ORCA path is not set or invalid. Check Settings."))
         # names the user chose to skip (e.g. to preserve existing results)
         try:
             skip_names = set(json.loads(skip_names_json)) if skip_names_json else set()
@@ -427,29 +437,29 @@ class Bridge(QObject):
         names = {c.name for c in calcs}
         for c in calcs:
             if c.geometry_source == GeometrySource.REFERENCE and c.ref_name not in names:
-                return json.dumps({"ok": False,
-                    "error": f"'{c.name}' references '{c.ref_name}', which is not in the queue."})
+                return json.dumps(OkResult(ok=False,
+                    error=f"'{c.name}' references '{c.ref_name}', which is not in the queue."))
         factory = make_engine_factory(self.store, self.settings.orca_path,
                                       self.settings.workspace_root, skip_names)
         try:
             self.store.start_run(factory)
         except RuntimeError as e:
-            return json.dumps({"ok": False, "error": str(e)})
+            return json.dumps(OkResult(ok=False, error=str(e)))
         except ValueError as e:
-            return json.dumps({"ok": False, "error": str(e)})
-        return json.dumps({"ok": True})
+            return json.dumps(OkResult(ok=False, error=str(e)))
+        return json.dumps(OkResult(ok=True))
 
     @pyqtSlot(result=str)
     def cancel_queue(self) -> str:
         ok = self.store.cancel_run()
-        return json.dumps({"ok": ok})
+        return json.dumps(OkResult(ok=ok))
 
     @pyqtSlot(result=str)
     def stop_after_current(self) -> str:
         """Graceful drain: finish the running job, then stop; leave the rest
         pending (as opposed to cancel_queue, which kills the running job)."""
         ok = self.store.request_stop_after_current()
-        return json.dumps({"ok": ok})
+        return json.dumps(OkResult(ok=ok))
 
     def resume_session_if_running(self) -> None:
         """Startup hook (not a JS slot): if a calculation from the previous
@@ -476,21 +486,21 @@ class Bridge(QObject):
     @pyqtSlot(result=str)
     def get_server_status(self) -> str:
         if not self.server_ctl:
-            return json.dumps({"available": False, "running": False})
-        return json.dumps({
-            "available": True,
-            "running": self.server_ctl.is_running(),
-            "url": self.server_ctl.url(),
-            "token": self.store.token,
-            "clients": self.store.active_clients(),
-        })
+            return json.dumps(ServerStatusPayload(available=False, running=False))
+        return json.dumps(ServerStatusPayload(
+            available=True,
+            running=self.server_ctl.is_running(),
+            url=self.server_ctl.url(),
+            token=self.store.token,
+            clients=self.store.active_clients(),
+        ))
 
     @pyqtSlot(result=str)
     def get_connect_qr(self) -> str:
         """Return a data-URI PNG QR encoding the connect URL (address + PIN),
         so scanning it on a phone opens the UI already authorized."""
         if not self.server_ctl or not self.server_ctl.is_running():
-            return json.dumps({"ok": False, "error": "Server is not running."})
+            return json.dumps(QrResult(ok=False, error="Server is not running."))
         connect_url = f"{self.server_ctl.url()}/?pin={self.store.token}"
         try:
             import qrcode
@@ -499,34 +509,34 @@ class Bridge(QObject):
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             data = base64.b64encode(buf.getvalue()).decode("ascii")
-            return json.dumps({
-                "ok": True,
-                "data_uri": f"data:image/png;base64,{data}",
-                "url": connect_url,
-            })
+            return json.dumps(QrResult(
+                ok=True,
+                data_uri=f"data:image/png;base64,{data}",
+                url=connect_url,
+            ))
         except ImportError:
-            return json.dumps({"ok": False, "error": "qrcode library not installed.",
-                               "url": connect_url})
+            return json.dumps(QrResult(ok=False, error="qrcode library not installed.",
+                                       url=connect_url))
         except Exception as e:
-            return json.dumps({"ok": False, "error": str(e), "url": connect_url})
+            return json.dumps(QrResult(ok=False, error=str(e), url=connect_url))
 
     @pyqtSlot(result=str)
     def start_server(self) -> str:
         if not self.server_ctl:
-            return json.dumps({"ok": False, "error": "Server support is not available."})
+            return json.dumps(StartServerResult(ok=False, error="Server support is not available."))
         try:
             self.server_ctl.start()
-            return json.dumps({"ok": True, "url": self.server_ctl.url(),
-                               "token": self.store.token})
+            return json.dumps(StartServerResult(ok=True, url=self.server_ctl.url(),
+                                                token=self.store.token))
         except Exception as e:
-            return json.dumps({"ok": False, "error": str(e)})
+            return json.dumps(StartServerResult(ok=False, error=str(e)))
 
     @pyqtSlot(result=str)
     def stop_server(self) -> str:
         if not self.server_ctl:
-            return json.dumps({"ok": False, "error": "Server support is not available."})
+            return json.dumps(OkResult(ok=False, error="Server support is not available."))
         try:
             self.server_ctl.stop()
-            return json.dumps({"ok": True})
+            return json.dumps(OkResult(ok=True))
         except Exception as e:
-            return json.dumps({"ok": False, "error": str(e)})
+            return json.dumps(OkResult(ok=False, error=str(e)))

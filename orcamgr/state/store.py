@@ -29,6 +29,9 @@ from ..core.parser import parse_file
 from ..core.runner import OrcaRunError
 from ..core.procutil import process_matches
 from ..paths import data_dir, user_data_root
+# Wire-payload shapes (plain dicts at runtime; see schemas.py for the mirror
+# contract with web/types.js)
+from .schemas import CalcFull, CalcSummary, LogLine, LogPayload, QueueSnapshot
 
 # States whose calculations the user may still edit / remove / reorder.
 # PENDING: never run yet. FAILED / CANCELLED: finished unsuccessfully, so the
@@ -135,25 +138,25 @@ def load_choice_groups(name: str) -> dict:
     return groups
 
 
-def calc_to_dict(c: Calculation) -> dict:
+def calc_to_dict(c: Calculation) -> CalcSummary:
     """Serialize a Calculation to a plain dict for JSON responses."""
-    return {
-        "name": c.name,
-        "kind": c.kind,
-        "charge": c.charge,
-        "multiplicity": c.multiplicity,
-        "geometry_source": c.geometry_source.value
+    return CalcSummary(
+        name=c.name,
+        kind=c.kind,
+        charge=c.charge,
+        multiplicity=c.multiplicity,
+        geometry_source=c.geometry_source.value
         if isinstance(c.geometry_source, GeometrySource) else str(c.geometry_source),
-        "ref_name": c.ref_name,
-        "is_raw": c.is_raw,
-        "state": c.state.value if isinstance(c.state, CalcState) else str(c.state),
-        "message": c.message,
-        "output_path": c.output_path,
+        ref_name=c.ref_name,
+        is_raw=c.is_raw,
+        state=c.state.value if isinstance(c.state, CalcState) else str(c.state),
+        message=c.message,
+        output_path=c.output_path,
         # SCF convergence setting (used by the live graph to place the target line)
-        "scf_convergence": getattr(c.config, "scf_convergence", "") if c.config else "",
+        scf_convergence=getattr(c.config, "scf_convergence", "") if c.config else "",
         # a compact one-line summary for list rows
-        "meta": _meta_line(c),
-    }
+        meta=_meta_line(c),
+    )
 
 
 def _meta_line(c: Calculation) -> str:
@@ -198,28 +201,28 @@ def _session_file():
     return user_data_root() / "session.json"
 
 
-def calc_to_session_dict(c: Calculation) -> dict:
+def calc_to_session_dict(c: Calculation) -> CalcFull:
     """Full-fidelity serialization of a Calculation for the session file
     (unlike calc_to_dict, which is the compact UI snapshot)."""
     gs = c.geometry_source.value if isinstance(c.geometry_source, GeometrySource) else str(c.geometry_source)
     st = c.state.value if isinstance(c.state, CalcState) else str(c.state)
-    return {
-        "name": c.name,
-        "kind": c.kind,
-        "config": c.config.to_dict() if c.config else {},
-        "charge": c.charge,
-        "multiplicity": c.multiplicity,
-        "geometry_source": gs,
-        "xyz": c.xyz,
-        "ref_name": c.ref_name,
-        "is_raw": c.is_raw,
-        "raw_text": c.raw_text,
-        "state": st,
-        "message": c.message,
-        "output_path": c.output_path,
-        "pid": c.pid,
-        "create_time": c.create_time,
-    }
+    return CalcFull(
+        name=c.name,
+        kind=c.kind,
+        config=c.config.to_dict() if c.config else {},
+        charge=c.charge,
+        multiplicity=c.multiplicity,
+        geometry_source=gs,
+        xyz=c.xyz,
+        ref_name=c.ref_name,
+        is_raw=c.is_raw,
+        raw_text=c.raw_text,
+        state=st,
+        message=c.message,
+        output_path=c.output_path,
+        pid=c.pid,
+        create_time=c.create_time,
+    )
 
 
 def calc_from_session_dict(d: dict) -> Calculation:
@@ -345,14 +348,14 @@ class QueueStore:
             return len(self._clients)
 
     # ---- reads ----
-    def snapshot(self) -> dict:
+    def snapshot(self) -> QueueSnapshot:
         """Full state for a client (queue list + running flag + version)."""
         with self._lock:
-            return {
-                "running": self._running,
-                "version": self._version,
-                "calculations": [calc_to_dict(c) for c in self._calcs],
-            }
+            return QueueSnapshot(
+                running=self._running,
+                version=self._version,
+                calculations=[calc_to_dict(c) for c in self._calcs],
+            )
 
     def version(self) -> int:
         with self._lock:
@@ -488,14 +491,14 @@ class QueueStore:
             if len(self._log) > 5000:
                 self._log = self._log[-4000:]
 
-    def log_since(self, since: int = 0) -> dict:
+    def log_since(self, since: int = 0) -> LogPayload:
         """Return log lines with seq > since, plus the latest seq."""
         with self._lock:
             lines = [
-                {"seq": s, "level": lv, "msg": m}
+                LogLine(seq=s, level=lv, msg=m)
                 for (s, lv, m) in self._log if s > since
             ]
-            return {"lines": lines, "latest": self._log_seq}
+            return LogPayload(lines=lines, latest=self._log_seq)
 
     def clear_log(self) -> None:
         with self._lock:

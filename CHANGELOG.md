@@ -14,6 +14,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   error loop cannot flood the log buffer.
 
 ### Changed
+- **Bridge/API payloads now have a single source of truth:**
+  `orcamgr/state/schemas.py` defines TypedDicts for every payload crossing the
+  QWebChannel bridge and the phone HTTP API (settings, log, queue snapshots,
+  parse results, server status, ok/error envelopes), and `bridge.py` /
+  `server/app.py` / `store.py` build their responses through them instead of
+  ad-hoc dicts. The JSON wire format is byte-identical (verified against 40
+  captured payloads); `web/types.js` cross-references it as the JS mirror.
 - **The web front-end is now type-checked** (`// @ts-check` + JSDoc against
   `jsconfig.json`; payload typedefs in `web/types.js` mirror the Python
   serialization layer). Typing surfaced one real bug, now fixed: a failed

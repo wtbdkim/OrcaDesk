@@ -10,6 +10,9 @@
                                      calc_from_dict / snapshot / log_since
      - orcamgr/core/input_generator.py  StepConfig / Solvation / BasisAssignment
      - orcamgr/gui/bridge.py         per-slot response payloads
+   orcamgr/state/schemas.py is the Python-side single source of truth for
+   the non-Calculation payloads (TypedDicts the bridge and HTTP server
+   build their responses through) — these typedefs are its JS mirror.
 
    This file is a plain global script: under jsconfig.json all
    @typedef names declared here are visible to web/app.js and

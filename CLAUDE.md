@@ -71,6 +71,16 @@ dependency direction is explicit: `gui -> state <- server`. The old location
 `data/*.json`). Both the Bridge and the HTTP server build `Calculation` objects through
 the same `calc_from_dict`, so desktop and phone produce identical inputs.
 
+`orcamgr/state/schemas.py` is the **single source of truth for the wire payloads**:
+TypedDicts for everything the bridge and the HTTP API send that isn't the
+Calculation/StepConfig serialization itself (settings, log lines, queue snapshots,
+parse results, server status, the `{"ok": ...}`/`{"error": ...}` envelopes).
+`bridge.py`, `server/app.py`, and `store.py` construct responses through these types
+(plain dicts at runtime — wire format unchanged), and `web/types.js` mirrors them for
+the front-end. Don't annotate FastAPI endpoints with these TypedDicts as return types
+— FastAPI would infer a response_model and put pydantic between the dict and the wire;
+endpoints keep `-> dict` and only *construct* through the schema types.
+
 ### Running the queue: core/ is GUI-agnostic
 
 A run is started via `QueueStore.start_run(engine_factory)`, which spins a daemon
