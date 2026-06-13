@@ -450,9 +450,37 @@ html[data-theme="light"] .graph-plot { background: #fff; }
 .scf-prog-label { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .scf-prog-bar { height: 8px; background: var(--accent); border-radius: 4px; overflow: hidden; }
 .scf-prog-bar > span { display: block; height: 100%; background: var(--ok); border-radius: 4px; transition: width 0.3s; }
-.scf-prog-meta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 6px; }
+/* flex row so the right-aligned pace chip (.scf-pace, margin-left:auto) can
+   share the line with the status text */
+.scf-prog-meta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 6px; display: flex; align-items: baseline; }
 /* ETA is the uncertain part: keep it visually subordinate to the accurate signals */
 .scf-prog-eta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 3px; opacity: 0.72; font-style: italic; }
+
+/* ---- analytical-frequencies phase panel (HUD-style: hazard stripes, phase
+   label left, stage headline number center, 7-dot phase chain right) ---- */
+.freq-jump { font-family: var(--font-mono); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: var(--card); }
+.freq-jump-stripes {
+  height: 7px;
+  background: repeating-linear-gradient(135deg, rgba(248,113,113,0.55) 0 6px, transparent 6px 12px);
+}
+.freq-jump-title { text-align: center; font-size: 13px; font-weight: 700; letter-spacing: 0.22em; margin-top: 8px; color: var(--foreground); }
+.freq-jump-row { display: flex; align-items: center; gap: 14px; padding: 2px 16px; }
+.freq-jump-phase { font-size: 13px; font-weight: 700; letter-spacing: 0.12em; color: var(--ok); white-space: nowrap; min-width: 92px; }
+.freq-jump-of { font-size: 10px; font-weight: 600; color: var(--muted-foreground); }
+.freq-jump-center { flex: 1; text-align: center; }
+.freq-jump-value { font-size: 26px; font-weight: 700; letter-spacing: 0.06em; line-height: 1.15; color: var(--foreground); font-variant-numeric: tabular-nums; }
+.freq-jump-caption { font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted-foreground); }
+.freq-jump-dots { display: flex; align-items: center; white-space: nowrap; min-width: 92px; justify-content: flex-end; }
+.freq-jump-dot { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--muted-foreground); box-sizing: border-box; flex: none; }
+.freq-jump-dot.done { background: var(--ok); border-color: var(--ok); }
+.freq-jump-dot.cur { border-color: var(--ok); animation: freq-dot-pulse 1.2s ease-in-out infinite; }
+.freq-jump-link { width: 7px; border-top: 1.5px solid var(--muted-foreground); opacity: 0.55; flex: none; }
+.freq-jump-link.done { border-color: var(--ok); opacity: 1; }
+.freq-jump-status { text-align: center; font-size: 10px; letter-spacing: 0.18em; color: var(--muted-foreground); padding: 0 16px 8px; }
+@keyframes freq-dot-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--ok); opacity: 1; }
+  50%      { box-shadow: 0 0 6px 1px var(--ok); opacity: 0.55; }
+}
 /* fill the graph box width; the viewBox height is computed per-render
    (renderSCFPanel) to match the space left below the plot, so height:auto
    lands the SVG flush with the bottom window gutter — no cap needed here. */

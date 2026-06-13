@@ -180,13 +180,11 @@ async function pollTick() {
     // seed the graph from the full .out for a reattached / finished-while-closed
     // opt whose live stream didn't capture its history (see maybeSeedGraph)
     await maybeSeedGraph();
-    // small "~N s / SCF cycle" pace indicator (visible in both raw and graph mode)
+    // small "~N s / SCF cycle" pace indicator — lives in the graph summary's
+    // progress meta line, so the span only exists while the SCF panel is shown;
+    // keep it fresh between (throttled) panel re-renders
     const _paceEl = document.getElementById("scf-pace");
-    if (_paceEl) {
-      const _p = scfSecPerIter();
-      _paceEl.textContent = _p == null ? "" :
-        `~${_p < 10 ? _p.toFixed(1) : Math.round(_p)} s / SCF cycle`;
-    }
+    if (_paceEl) _paceEl.textContent = scfPaceText();
     // redraw SCF graph at most once per tick, only if new data arrived
     if (_logMode === "graph" && _scfDirty) renderSCFPanel();
   } catch (e) { /* transient; try again next tick */ }
@@ -1538,6 +1536,7 @@ async function maybeFetchResult(name, outputPath) {
 let _scfTracker = SCFGraph ? new SCFGraph.SCFTracker() : null;
 let _geoTracker = SCFGraph ? new SCFGraph.GeoTracker() : null;
 let _freqTracker = SCFGraph ? new SCFGraph.FreqTracker() : null;
+let _tddftTracker = SCFGraph ? new SCFGraph.TddftTracker() : null;
 let _seededGraph = new Set();   // calc names whose graph is already sourced (live stream or disk-seed)
 const _OPT_KINDS = ["opt", "ts_opt", "opt_freq", "ts_opt_freq"];
 let _scfIterTimes = [];         // arrival times (ms) of recent live SCF-iteration lines, for s/cycle pace
@@ -1550,6 +1549,11 @@ function scfSecPerIter() {
   const span = t[t.length - 1] - t[0];
   if (span < 800) return null;
   return span / (t.length - 1) / 1000;
+}
+// display text for the pace chip ("" while there's no estimate yet)
+function scfPaceText() {
+  const p = scfSecPerIter();
+  return p == null ? "" : `~${p < 10 ? p.toFixed(1) : Math.round(p)} s / SCF cycle`;
 }
 let _logMode = "raw";
 let _graphKind = "auto";   // "auto" | "scf" | "geo"  (sub-mode inside graph)
@@ -1585,11 +1589,15 @@ function setGraphKind(k) { _graphKind = k; renderSCFPanel(); }
 function renderSCFPanel() {
   if (!SCFGraph) return;
   const panel = document.getElementById("scf-panel");
-  // numerical-frequency stage (after an opt+freq's opt finished): show the
-  // displacement progress on top. Its ETA is reliable (the total is known).
+  // post-SCF stage panel on top: the frequency stage (analytical phase chain
+  // or numerical displacement progress) or the TD-DFT phase chain — a run is
+  // only ever one of the two, so freq wins if both somehow have data
   let freqBlock = "";
   if (_freqTracker && _freqTracker.hasData()) {
     freqBlock = `<div class="graph-summary">${SCFGraph.renderFreqProgress(_freqTracker)}</div>` +
+                ((_geoTracker && _geoTracker.hasData()) ? `<div class="graph-divider"></div>` : "");
+  } else if (_tddftTracker && _tddftTracker.hasData()) {
+    freqBlock = `<div class="graph-summary">${SCFGraph.renderTddftProgress(_tddftTracker)}</div>` +
                 ((_geoTracker && _geoTracker.hasData()) ? `<div class="graph-divider"></div>` : "");
   }
   const kind = effectiveGraphKind();
@@ -1605,11 +1613,11 @@ function renderSCFPanel() {
   const isGeo = (kind === "geo" && _geoTracker && _geoTracker.hasData());
   let body;
   if (isGeo) {
-    body = `<div class="graph-summary">${SCFGraph.renderGeoProgress(_geoTracker)}</div>` +
+    body = `<div class="graph-summary">${SCFGraph.renderGeoProgress(_geoTracker, scfPaceText())}</div>` +
            `<div class="graph-divider"></div>` +
            `<div class="graph-plot"></div>`;
   } else {
-    body = `<div class="graph-summary">${SCFGraph.renderSCFProgress(_scfTracker, currentRunningScf())}</div>` +
+    body = `<div class="graph-summary">${SCFGraph.renderSCFProgress(_scfTracker, currentRunningScf(), scfPaceText())}</div>` +
            `<div class="graph-divider"></div>` +
            `<div class="graph-plot"></div>`;
   }
@@ -1663,6 +1671,7 @@ function appendLog(msg, level) {
     _scfTracker = new SCFGraph.SCFTracker();
     _geoTracker = new SCFGraph.GeoTracker();
     _freqTracker = new SCFGraph.FreqTracker();
+    _tddftTracker = new SCFGraph.TddftTracker();
     _graphKind = "auto";
     _scfDirty = true;
     _scfIterTimes = [];   // new job: restart the s/cycle pace estimate
@@ -1687,6 +1696,7 @@ function appendLog(msg, level) {
   if (_scfTracker && _scfTracker.push(msg)) changed = true;
   if (_geoTracker && _geoTracker.push(msg)) changed = true;
   if (_freqTracker && _freqTracker.push(msg)) changed = true;
+  if (_tddftTracker && _tddftTracker.push(msg)) changed = true;
   if (changed) _scfDirty = true;
   // record SCF-iteration arrival times for the s/cycle pace (live lines only;
   // disk-seeded lines bypass appendLog so they don't skew the timing)
@@ -1705,6 +1715,7 @@ function clearLog() {
     _scfTracker = new SCFGraph.SCFTracker();
     _geoTracker = new SCFGraph.GeoTracker();
     _freqTracker = new SCFGraph.FreqTracker();
+    _tddftTracker = new SCFGraph.TddftTracker();
     _seededGraph.clear();   // allow every calc's graph to re-seed
     if (_logMode === "graph") renderSCFPanel();
   }

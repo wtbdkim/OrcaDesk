@@ -3,7 +3,48 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.5-beta] — 2026-06-13
+
+### Fixed
+- **The frequency/TD-DFT phase panel no longer lingers through `ts_opt` and
+  `irc` runs.** ORCAdesk's `ts_opt` input sets `%geom Calc_Hess true` and
+  `irc` sets `InitHess calc_anfreq`, so ORCA computes a full analytical
+  Hessian inside optimization cycle 1 / before the IRC walk — the panel
+  correctly appeared for that Hessian but then sat stale ("ASSEMBLING SCF
+  HESSIAN") for the entire remaining run. A new `GEOMETRY OPTIMIZATION CYCLE`
+  / `FORWARD IRC` / `BACKWARD IRC` banner now clears the chain, so the panel
+  shows only while a Hessian (or, in raw-input excited-state opts, a TD-DFT
+  stage) is actually being computed. Verified against freshly-run ORCA 6.1.1
+  `OptTS Calc_Hess` and `IRC` outputs plus a per-kind exclusivity audit over
+  263 classified real outputs (opt/opt_freq/ts_opt/ts_freq/irc/freq/tddft/
+  nmr/neb_ts/sp): each panel appears only for its own stage, zero violations.
+- **NMR runs no longer show the analytical-frequencies panel.** GIAO NMR (and
+  polarizability) jobs solve their own CP-SCF equations and print the same
+  "ORCA SCF RESPONSE CALCULATION" banner as the Hessian pipeline, which
+  falsely activated the frequency phase panel. Shared banners now only
+  *advance* an already-active chain; only the Hessian-specific banners
+  (derivative integrals, SCF HESSIAN) can activate it. Verified against 286
+  real ORCA outputs (60 opt, 38 opt+freq, 22 freq, 9 TD-DFT, NMR/SP/NEB/
+  Docker/utility runs): zero false activations, zero missed stages.
+- **A finished opt's graph seeded from disk now reads 100% / converged.**
+  `get_graph_lines` defined the optimization-finished and post-opt-stage
+  patterns but never included matching lines in its filter, so a graph rebuilt
+  from the `.out` (reattach, or finished while ORCAdesk was closed) stayed at
+  ~99% with no "✓ geometry converged" even for a converged opt.
+- **The CP-SCF perturbation total no longer gets overwritten by later property
+  solves.** Some runs print several "Number of perturbations" lines (the
+  geometric 3N solve first, then smaller IR/EPR property solves); the first
+  one now wins, and the Hessian-dimension / mode-count display uses the true
+  3N from the atom count.
+- **Opt-only runs no longer show the frequency-stage banner.** The freq/post-opt
+  stage detectors matched ORCA's section banners case-insensitively, so
+  mixed-case lines present in *every* output — the header credits ("pre 5.0
+  version of the SCF Hessian") and the end-of-run property echo ("Properties
+  with geometric perturbations:", "SCF Hessian ... NO") — falsely switched a
+  plain optimization into the "Analytical frequencies" display and appended
+  "running frequencies / properties…" to the converged line. The markers are
+  now case-sensitive (the real banners are uppercase), verified against real
+  opt-only and analytical-frequency ORCA 6.1.1 outputs.
 
 ### Added
 - **JS console messages now land in the Log tab.** The WebEngine page forwards
@@ -14,6 +55,28 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   error loop cannot flood the log buffer.
 
 ### Changed
+- **TD-DFT runs get the same HUD-style phase panel** as analytical
+  frequencies, with a 5-dot chain over ORCA's TD-DFT pipeline: XC-kernel
+  setup → iterative diagonalization (live `RPA`/`DAVIDSON` label and
+  iteration counter) → excited-state analysis → transition spectra → final
+  CIS/TD-DFT total energy (banner order verified against 7 real ORCA 6.1.1
+  TD-DFT outputs, both full TD-DFT and TDA). The panel center shows the
+  requested root count.
+- **The analytical-frequencies stage is now a HUD-style phase panel** —
+  hazard-striped border, centered "ANALYTICAL FREQUENCIES" title, a `PHASE k/7`
+  label, and a 7-dot phase chain (done = filled, current = pulsing) tracking
+  ORCA's real Hessian pipeline: derivative integrals → CP-SCF response →
+  Hessian assembly → frequencies → normal modes → IR spectrum →
+  thermochemistry (banner order verified against 4 real ORCA 6.1.1 freq
+  outputs). The panel center shows the stage's headline number (atom count,
+  K/N perturbations with CP-SCF iteration, 3N×3N Hessian dimension, mode
+  count, temperature) and the bottom status line names the running stage;
+  `ORCA TERMINATED NORMALLY` completes the chain. Numerical frequencies keep
+  the displacement progress bar.
+- **The "~N s / SCF cycle" pace indicator moved from the Log-tab toolbar into
+  the SCF panel's progress meta line** (right-aligned on the same row as the
+  criteria/"✓ geometry converged" status), where the rest of the run pacing
+  info lives.
 - **Bridge/API payloads now have a single source of truth:**
   `orcamgr/state/schemas.py` defines TypedDicts for every payload crossing the
   QWebChannel bridge and the phone HTTP API (settings, log, queue snapshots,

@@ -135,10 +135,12 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 - **`DONE` calcs are never recomputed** on a re-run (the result is frozen);
   `FAILED`/`CANCELLED` calcs *do* re-run so the user can retry. Only
   `PENDING`/`FAILED`/`CANCELLED` are editable/reorderable (`EDITABLE_STATES`).
-- **Result validation is per-kind**: `opt`/`ts_opt` must converge; `freq` must have
-  zero imaginary frequencies; `ts_freq` must have exactly one. A validation failure
-  marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`, `freq`, `ts_freq`, `tddft`,
-  `sp`, `nmr`, `neb_ts`.
+- **Result validation is per-kind**: `opt`/`ts_opt` (and the combined
+  `opt_freq`/`ts_opt_freq`) must converge; `freq`/`opt_freq` must have zero
+  imaginary frequencies; `ts_freq`/`ts_opt_freq` must have exactly one. A
+  validation failure marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`,
+  `freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `irc`, `tddft`, `sp`, `nmr`,
+  `neb_ts`.
 
 ### Optional phone-sync server
 

@@ -130,8 +130,14 @@
   // property stage). The per-criteria table can read 4/5 met at that point, so we
   // must flip to 100% on this marker rather than waiting for every criterion.
   const OPT_DONE_RE = /\*\*\*\s*OPTIMIZATION RUN DONE\s*\*\*\*|THE OPTIMIZATION HAS CONVERGED|HURRAY/i;
-  // a post-optimization stage starting (so we can say "running frequencies/…")
-  const POST_OPT_RE = /VIBRATIONAL FREQUENCIES|ORCA SCF RESPONSE|GEOMETRIC PERTURBATIONS|CP-?SCF DRIVER|SCF HESSIAN|ANALYTICAL FREQUENCIES|NUMERICAL FREQUENCIES/i;
+  // a post-optimization stage starting (so we can say "running frequencies/…").
+  // Case-SENSITIVE on purpose: the real markers are ORCA's UPPERCASE section
+  // banners, while every output — opt-only runs included — also contains
+  // mixed-case mentions that must NOT match: the header credits ("pre 5.0
+  // version of the SCF Hessian") and the property-block echo ("Properties with
+  // geometric perturbations:", "SCF Hessian ... NO"). A case-insensitive match
+  // here showed "running frequencies…" (and the freq banner) on plain opts.
+  const POST_OPT_RE = /VIBRATIONAL FREQUENCIES|ORCA SCF RESPONSE|GEOMETRIC PERTURBATIONS|CP-?SCF DRIVER|SCF HESSIAN|ANALYTICAL FREQUENCIES|NUMERICAL FREQUENCIES/;
 
   // the (up to) five geometry-convergence criteria ORCA prints each step. Colors
   // come from CSS vars (--crit-*) so they adapt to the theme — dark keeps the
@@ -419,15 +425,23 @@
     return x.toExponential(2);
   }
 
+  // The live "~N s / SCF cycle" pace chip, right-aligned in the progress meta
+  // line (.scf-prog-meta is a flex row). Rendered with the current value, then
+  // kept fresh between panel re-renders by app.js's poll tick (by id).
+  function _paceSpan(pace) {
+    return `<span id="scf-pace" class="scf-pace" title="average wall-clock time per SCF iteration">${pace || ""}</span>`;
+  }
+
   // progress bar HTML
-  function renderSCFProgress(tracker, scfConv) {
+  function renderSCFProgress(tracker, scfConv, pace) {
     const target = targetFor(scfConv);
     const p = tracker.progress(target);
     const pct = Math.round(p * 100);
     const stepLabel = tracker.step > 0 ? `Geometry step ${tracker.step} · ` : "";
     return (
       `<div class="scf-prog-label">${stepLabel}SCF convergence ${pct}%</div>` +
-      `<div class="scf-prog-bar"><span style="width:${pct}%"></span></div>`
+      `<div class="scf-prog-bar"><span style="width:${pct}%"></span></div>` +
+      `<div class="scf-prog-meta">${_paceSpan(pace)}</div>`
     );
   }
 
@@ -523,7 +537,7 @@
     if (s < 24 * 3600) return "many hours";
     return "a day or more";
   }
-  function renderGeoProgress(geo) {
+  function renderGeoProgress(geo, pace) {
     const p = geo.progress();
     const pct = Math.round(p * 100);
     const cs = geo.criteriaSummary();
@@ -538,7 +552,7 @@
       return (
         `<div class="scf-prog-label">Optimization complete · 100% · step ${stepN}</div>` +
         `<div class="scf-prog-bar"><span style="width:100%"></span></div>` +
-        `<div class="scf-prog-meta">✓ geometry converged${tail}</div>`
+        `<div class="scf-prog-meta">✓ geometry converged${tail}${_paceSpan(pace)}</div>`
       );
     }
 
@@ -548,7 +562,9 @@
     const perMs = geo.perStepMs ? geo.perStepMs() : null;
     const rate = _fmtDuration(perMs);
     if (rate) facts.push(`~${rate}/step`);
-    const factLine = facts.length ? `<div class="scf-prog-meta">${facts.join(" · ")}</div>` : "";
+    // always emitted (even with no facts yet) so the pace chip's span exists
+    // for the poll tick's live update
+    const factLine = `<div class="scf-prog-meta">${facts.join(" · ")}${_paceSpan(pace)}</div>`;
 
     // ETA is the unreliable part (cycle count ~2x uncertain) — keep it coarse and
     // secondary: an order-of-magnitude bucket, not a false-precise countdown.
@@ -735,19 +751,48 @@
   // the TOTAL is printed up front and the counter is exact, so the ETA is reliable:
   // its only error is per-displacement time variance (~a few %), not the ~65%
   // cycle-count uncertainty of an opt.
-  const NFREQ_START_RE = /ORCA NUMERICAL FREQUENCIES/i;
+  // Stage-start markers are case-SENSITIVE: ORCA prints them as UPPERCASE
+  // section banners, and every output (opt-only included) also carries
+  // mixed-case look-alikes that must not trigger the freq banner — the header
+  // credits ("pre 5.0 version of the SCF Hessian") and the property-block echo
+  // ("Properties with geometric perturbations:", "SCF Hessian ... NO").
+  const NFREQ_START_RE = /ORCA NUMERICAL FREQUENCIES/;
   const NDISP_RE = /Number of displacements\s+\.*\s*(\d+)/i;
   const DISP_RE = /displacement\s+(\d+)\s*\/\s*(\d+)/i;   // numerical: "...for displacement K / N"
-  const VFREQ_RE = /VIBRATIONAL FREQUENCIES/i;
+  const VFREQ_RE = /VIBRATIONAL FREQUENCIES/;
   // analytical Hessian via coupled-perturbed SCF (CP-SCF). Not a black box: ORCA
-  // builds nuclear-perturbation ("geometric") integrals, then solves the CP-SCF
-  // response over 3N perturbations, printing "K / N done" each iteration — so we
-  // can show a real progress bar (verified against a 58-atom M06-2X/CPCM run).
-  const AINTEG_RE = /GEOMETRIC PERTURBATIONS/i;                            // derivative-integral build
-  const ACPSCF_RE = /ORCA SCF RESPONSE CALCULATION|SHARK CP-?SCF DRIVER/i; // CP-SCF response solve
-  const AFREQ_RE = /\bSCF HESSIAN\b|ANALYTICAL FREQUENC|Analytic(?:al)? Hessian/i;  // other analytical markers
+  // prints an UPPERCASE banner for each stage of the pipeline, always in the
+  // same order (verified on 4 real ORCA 6.1.1 freq outputs, 12-52 atoms,
+  // CPCM/SMD): derivative integrals -> CP-SCF response (with a "K / N done"
+  // perturbation counter) -> Hessian assembly -> frequencies -> normal modes
+  // -> IR spectrum -> thermochemistry. The UI shows them as a 7-dot phase chain.
+  // `boot: true` marks banners unique to a Hessian computation, which may
+  // ACTIVATE the chain. The others only ADVANCE an already-active chain —
+  // they also occur in other job types (GIAO NMR and polarizability runs
+  // print "ORCA SCF RESPONSE CALCULATION" for their own CP-SCF solves, and
+  // numerical-freq runs print the post-Hessian banners), so letting them
+  // bootstrap showed the analytical-freq panel during plain NMR runs.
+  const A_STAGES = [
+    { key: "integrals", re: /GEOMETRIC PERTURBATIONS/, boot: true,                status: "BUILDING DERIVATIVE INTEGRALS" },
+    { key: "cpscf",     re: /ORCA SCF RESPONSE CALCULATION|SHARK CP-?SCF DRIVER/, status: "SOLVING CP-SCF RESPONSE" },
+    { key: "hessian",   re: /\bSCF HESSIAN\b/, boot: true,                        status: "ASSEMBLING SCF HESSIAN" },
+    { key: "freq",      re: VFREQ_RE,                                             status: "COMPUTING VIBRATIONAL FREQUENCIES" },
+    { key: "modes",     re: /\bNORMAL MODES\b/,                                   status: "EXTRACTING NORMAL MODES" },
+    { key: "ir",        re: /\bIR SPECTRUM\b/,                                    status: "COMPUTING IR SPECTRUM" },
+    { key: "thermo",    re: /THERMOCHEMISTRY AT\s+([\d.]+)/,                      status: "THERMOCHEMISTRY ANALYSIS" },
+  ];
+  const AFREQ_RE = /ANALYTICAL FREQUENC|Analytic(?:al)? Hessian/;  // other analytical markers (no stage)
+  const ANUCLEI_RE = /GEOMETRIC PERTURBATIONS\s*\((\d+)\s*nuclei\)/; // banner carries the atom count
   const NPERT_RE = /Number of perturbations\s+\.*\s*(\d+)/i;               // CP-SCF total (= 3N)
   const CPSCF_DONE_RE = /(\d+)\s*\/\s*(\d+)\s+done/i;                      // "K/N done" per CP-SCF iter
+  const ATERM_RE = /ORCA TERMINATED NORMALLY/;                             // job end -> chain complete
+  // A new optimization cycle or IRC walk starting means the Hessian/TD-DFT
+  // chain we were tracking belonged to a PRE-step stage — ts_opt's
+  // "Calc_Hess true" and IRC's InitHess compute a full analytical Hessian
+  // INSIDE cycle 1 / before the walk (verified on real BP86 OptTS + IRC
+  // runs) — so the panel must clear instead of sitting stale through the
+  // remaining cycles. Banners are uppercase; matched case-sensitively.
+  const PHASE_RESET_RE = /GEOMETRY OPTIMIZATION CYCLE|FORWARD IRC|BACKWARD IRC/;
 
   function FreqTracker() {
     this.mode = "";        // "" | "numerical" | "analytical"
@@ -759,10 +804,39 @@
     this.perturbTotal = 0; // analytical: total CP-SCF perturbations (= 3N)
     this.perturbDone = 0;  // analytical: perturbations converged so far (K in "K/N done")
     this.cpscfIter = 0;    // analytical: CP-SCF iteration count
-    this.aStage = "";      // analytical: "integrals" | "cpscf"
+    this.aStage = "";      // analytical: key of the current A_STAGES entry ("" = not staged yet)
+    this.aIdx = -1;        // analytical: index of aStage in A_STAGES (-1 = none)
+    this.nuclei = 0;       // analytical: atom count (from the GEOMETRIC PERTURBATIONS banner)
+    this.tempK = 0;        // analytical: thermochemistry temperature (K)
+    this.finished = false; // analytical: ORCA TERMINATED NORMALLY seen — chain complete
   }
+  // advance the analytical phase chain — monotonic, so a re-seen banner (or a
+  // late "K/N done" line) can never move the chain backwards
+  FreqTracker.prototype._advance = function (idx) {
+    this.mode = "analytical"; this.active = true;
+    if (idx > this.aIdx) { this.aIdx = idx; this.aStage = A_STAGES[idx].key; }
+    if (this.aIdx >= 3) this.dispDone = true;   // "freq" and later: Hessian is done
+    return true;
+  };
+  // back to a clean slate (a pre-step Hessian's chain is over, see PHASE_RESET_RE)
+  FreqTracker.prototype._resetChain = function () {
+    this.mode = ""; this.total = 0; this.cur = 0; this.active = false;
+    this.dispDone = false; this._times = [];
+    this.perturbTotal = 0; this.perturbDone = 0; this.cpscfIter = 0;
+    this.aStage = ""; this.aIdx = -1; this.nuclei = 0; this.tempK = 0;
+    this.finished = false;
+  };
   FreqTracker.prototype.push = function (line) {
-    if (VFREQ_RE.test(line)) { if (this.active) this.dispDone = true; return false; }
+    if (PHASE_RESET_RE.test(line)) {
+      const was = this.active;
+      if (was) this._resetChain();
+      return was;   // true -> re-render so the stale panel disappears
+    }
+    if (VFREQ_RE.test(line) && this.mode !== "analytical") {
+      // numerical (or untyped) run reaching the frequency table
+      if (this.active) this.dispDone = true;
+      return false;
+    }
     // numerical markers take precedence and lock the mode
     if (NFREQ_START_RE.test(line)) { this.mode = "numerical"; this.active = true; return true; }
     const h = line.match(NDISP_RE);
@@ -776,20 +850,35 @@
       return true;
     }
     if (this.mode === "numerical") return false;
-    // analytical (CP-SCF) — two trackable stages: derivative-integral build,
-    // then the CP-SCF response solve with a "K / N done" perturbation counter
-    if (AINTEG_RE.test(line)) { this.mode = "analytical"; this.active = true; this.aStage = "integrals"; return true; }
-    if (ACPSCF_RE.test(line)) { this.mode = "analytical"; this.active = true; this.aStage = "cpscf"; return true; }
+    // analytical pipeline: stage banners (ordered, see A_STAGES)
+    for (let i = 0; i < A_STAGES.length; i++) {
+      if (A_STAGES[i].re.test(line)) {
+        if (this.mode !== "analytical" && !A_STAGES[i].boot) break;   // shared banner: never bootstraps
+        if (A_STAGES[i].key === "integrals") {
+          const n = line.match(ANUCLEI_RE);
+          if (n) { this.nuclei = parseInt(n[1], 10); if (!this.perturbTotal) this.perturbTotal = 3 * this.nuclei; }
+        } else if (A_STAGES[i].key === "thermo") {
+          const t = line.match(A_STAGES[i].re);
+          if (t && t[1]) this.tempK = parseFloat(t[1]);
+        }
+        return this._advance(i);
+      }
+    }
     if (this.mode === "analytical") {
+      // first NPERT wins: the geometric CP-SCF (the Hessian's 3N-ish solve) is
+      // always the FIRST response solve in the pipeline; later property solves
+      // (IR intensities, EPR/NMR blocks) print their own, smaller
+      // "Number of perturbations" lines that must not overwrite the total
       const np = line.match(NPERT_RE);
-      if (np) { this.perturbTotal = parseInt(np[1], 10); return true; }
+      if (np) { if (!this.perturbTotal) this.perturbTotal = parseInt(np[1], 10); return true; }
       const cd = line.match(CPSCF_DONE_RE);
       if (cd) {
         this.perturbDone = parseInt(cd[1], 10);
         if (!this.perturbTotal) this.perturbTotal = parseInt(cd[2], 10);
-        this.cpscfIter++; this.aStage = "cpscf";
-        return true;
+        this.cpscfIter++;
+        return this._advance(1);   // "cpscf"
       }
+      if (ATERM_RE.test(line)) { this.finished = true; return true; }
     }
     if (AFREQ_RE.test(line)) { this.mode = "analytical"; this.active = true; return true; }
     return false;
@@ -816,25 +905,174 @@
     const perMs = this.perStepMs();
     return { remaining: remaining, etaMs: perMs != null ? remaining * perMs : null };
   };
-  function renderFreqProgress(freq) {
-    // analytical Hessian (CP-SCF): show the perturbation counter when solving,
-    // a stage label while building integrals
-    if (freq.mode === "analytical") {
-      if (freq.dispDone) {
-        return `<div class="scf-prog-label">Analytical frequencies · Hessian complete · 100%</div>` +
-          `<div class="scf-prog-bar"><span style="width:100%"></span></div>` +
-          `<div class="scf-prog-meta">✓ diagonalizing + thermochemistry…</div>`;
+
+  // ---- TD-DFT stage tracking ----
+  // Same idea as the analytical-frequencies chain: ORCA prints an UPPERCASE
+  // banner per pipeline stage, always in the same order (verified on 7 real
+  // ORCA 6.1.1 TD-DFT outputs, both full TD-DFT/RPA and TDA/Davidson):
+  // XC-kernel setup -> iterative diagonalization (with "****Iteration K****"
+  // lines and a fixed "Number of roots" total) -> excited-state analysis ->
+  // transition spectra -> final CIS/TD-DFT total energy.
+  const TD_STAGES = [
+    { key: "setup",   re: /TD-DFT XC SETUP/,                              status: "BUILDING XC KERNEL" },
+    { key: "solver",  re: /RPA-DIAGONALIZATION|DAVIDSON-DIAGONALIZATION/, status: "ITERATIVE DIAGONALIZATION" },
+    { key: "states",  re: /TD-DFT(?:\/TDA)? EXCITED STATES/,              status: "ANALYZING EXCITED STATES" },
+    { key: "spectra", re: /ABSORPTION SPECTRUM VIA TRANSITION/,           status: "COMPUTING TRANSITION SPECTRA" },
+    { key: "energy",  re: /CIS\/TD-DFT TOTAL ENERGY/,                     status: "FINALIZING TOTAL ENERGY" },
+  ];
+  const TD_ROOTS_RE = /Number of roots to be determined\s+\.+\s*(\d+)/;
+  const TD_ITER_RE = /\*{4}\s*Iteration\s+(\d+)\s*\*{4}/;
+
+  function TddftTracker() {
+    this.active = false;   // a TD-DFT stage banner has been seen
+    this.aStage = "";      // key of the current TD_STAGES entry ("" = none yet)
+    this.aIdx = -1;        // index of aStage in TD_STAGES (-1 = none)
+    this.roots = 0;        // excited states requested ("Number of roots ...")
+    this.iter = -1;        // latest solver iteration (ORCA counts from 0)
+    this.solver = "";      // "RPA" | "DAVIDSON" (which solver banner matched)
+    this.finished = false; // ORCA TERMINATED NORMALLY seen — chain complete
+  }
+  // monotonic, like FreqTracker._advance: a re-seen banner (the spectra stage
+  // prints several "... SPECTRUM VIA TRANSITION ..." blocks) never moves back
+  TddftTracker.prototype._advance = function (idx) {
+    this.active = true;
+    if (idx > this.aIdx) { this.aIdx = idx; this.aStage = TD_STAGES[idx].key; }
+    return true;
+  };
+  TddftTracker.prototype.push = function (line) {
+    // same pre-step reset as FreqTracker: an excited-state optimization (raw
+    // input) runs the TD-DFT module inside every cycle — show the chain while
+    // it runs, clear it when the next cycle starts
+    if (PHASE_RESET_RE.test(line)) {
+      const was = this.active;
+      if (was) {
+        this.active = false; this.aStage = ""; this.aIdx = -1;
+        this.roots = 0; this.iter = -1; this.solver = ""; this.finished = false;
       }
-      if (freq.perturbTotal && freq.perturbDone) {
-        const apct = Math.round(freq.progress() * 100);
-        return `<div class="scf-prog-label">Analytical freq · CP-SCF ${apct}% · ${freq.perturbDone}/${freq.perturbTotal} perturbations</div>` +
-          `<div class="scf-prog-bar"><span style="width:${apct}%"></span></div>` +
-          `<div class="scf-prog-meta">coupled-perturbed SCF, iter ${freq.cpscfIter} · K/N is non-linear in time, so no ETA</div>`;
-      }
-      const what = freq.aStage === "cpscf" ? "coupled-perturbed SCF response" : "nuclear-perturbation (derivative) integrals";
-      return `<div class="scf-prog-label">Analytical frequencies</div>` +
-        `<div class="scf-prog-meta">building ${what}… (single analytical Hessian — a long step with no per-unit progress yet)</div>`;
+      return was;
     }
+    for (let i = 0; i < TD_STAGES.length; i++) {
+      if (TD_STAGES[i].re.test(line)) {
+        if (TD_STAGES[i].key === "solver") this.solver = /RPA-DIAGONALIZATION/.test(line) ? "RPA" : "DAVIDSON";
+        return this._advance(i);
+      }
+    }
+    if (!this.active) return false;
+    const r = line.match(TD_ROOTS_RE);
+    if (r) { this.roots = parseInt(r[1], 10); return true; }
+    if (this.aStage === "solver") {
+      const it = line.match(TD_ITER_RE);
+      if (it) { this.iter = parseInt(it[1], 10); return true; }
+    }
+    if (ATERM_RE.test(line)) { this.finished = true; return true; }
+    return false;
+  };
+  TddftTracker.prototype.hasData = function () { return this.active; };
+
+  // HUD phase panel (shared by the analytical-freq and TD-DFT chains):
+  // hazard-striped border, title, PHASE k/n label, the stage's headline number
+  // where a countdown would sit, a connected dot chain (done = filled,
+  // current = pulsing), and an uppercase status line.
+  function _phasePanelHtml(title, stages, idx, finished, value, caption, status) {
+    const n = stages.length;
+    const at = finished ? n : idx;   // n = past the last dot (all done)
+    let dots = "";
+    for (let i = 0; i < n; i++) {
+      if (i) dots += `<span class="freq-jump-link${i <= at ? " done" : ""}"></span>`;
+      const cls = i < at ? " done" : (i === at ? " cur" : "");
+      dots += `<span class="freq-jump-dot${cls}" title="${stages[i].status.toLowerCase()}"></span>`;
+    }
+    const phase = finished ? "DONE" : `PHASE ${Math.max(at, 0) + 1}<span class="freq-jump-of">/${n}</span>`;
+    return (
+      `<div class="freq-jump">` +
+        `<div class="freq-jump-stripes"></div>` +
+        `<div class="freq-jump-title">${title}</div>` +
+        `<div class="freq-jump-row">` +
+          `<div class="freq-jump-phase">${phase}</div>` +
+          `<div class="freq-jump-center">` +
+            `<div class="freq-jump-value">${value}</div>` +
+            `<div class="freq-jump-caption">${caption}</div>` +
+          `</div>` +
+          `<div class="freq-jump-dots">${dots}</div>` +
+        `</div>` +
+        `<div class="freq-jump-status">${status}</div>` +
+        `<div class="freq-jump-stripes"></div>` +
+      `</div>`
+    );
+  }
+
+  function renderTddftProgress(td) {
+    // center display: the requested root count once known
+    let value = "—", caption = "initializing";
+    if (td.finished) {
+      value = "✓"; caption = "all stages complete";
+    } else if (td.aStage === "setup") {
+      caption = "xc kernel";
+    } else if (td.aStage === "solver") {
+      if (td.roots) { value = String(td.roots); caption = "roots"; }
+      else caption = "diagonalizing";
+    } else if (td.aStage === "states") {
+      if (td.roots) value = String(td.roots);
+      caption = "excited states";
+    } else if (td.aStage === "spectra") {
+      if (td.roots) value = String(td.roots);
+      caption = "transitions";
+    } else if (td.aStage === "energy") {
+      if (td.roots) value = String(td.roots);
+      caption = "total energy";
+    }
+    let status;
+    if (td.finished) status = "TD-DFT COMPLETE";
+    else if (td.aIdx < 0) status = "INITIALIZING";
+    else if (td.aStage === "solver") {
+      status = `${td.solver || "ITERATIVE"} DIAGONALIZATION`;
+      if (td.iter >= 0) status += ` — ITER ${td.iter}`;
+    } else status = TD_STAGES[td.aIdx].status;
+    return _phasePanelHtml("TD-DFT EXCITED STATES", TD_STAGES, td.aIdx, td.finished, value, caption, status);
+  }
+
+  // Analytical-Hessian phase panel: per-stage headline number for the center
+  // (atoms -> K/N perturbations -> Hessian dimension -> mode count ->
+  // temperature), then the shared HUD builder.
+  function _renderAnalyticalPanel(freq) {
+    // dim3N: the true Hessian dimension / mode count (3 x atoms). The CP-SCF
+    // perturbation count can differ from 3N (some runs solve extra
+    // perturbations), so it is only the denominator of the cpscf counter.
+    const dim3N = freq.nuclei ? 3 * freq.nuclei : freq.perturbTotal;
+    const cpTotal = freq.perturbTotal || dim3N;
+
+    // center display (the reference design's timer slot)
+    let value = "—", caption = "initializing";
+    if (freq.finished) {
+      value = "✓"; caption = "all stages complete";
+    } else if (freq.aStage === "integrals") {
+      if (freq.nuclei) { value = String(freq.nuclei); caption = "nuclei"; }
+      else caption = "derivative integrals";
+    } else if (freq.aStage === "cpscf") {
+      value = `${freq.perturbDone}/${cpTotal || "?"}`; caption = "perturbations";
+    } else if (freq.aStage === "hessian") {
+      if (dim3N) value = `${dim3N}×${dim3N}`;
+      caption = "hessian";
+    } else if (freq.aStage === "freq" || freq.aStage === "modes" || freq.aStage === "ir") {
+      if (dim3N) value = String(dim3N);
+      caption = "normal modes";
+    } else if (freq.aStage === "thermo") {
+      if (freq.tempK) value = `${freq.tempK} K`;
+      caption = "thermochemistry";
+    }
+
+    let status;
+    if (freq.finished) status = "ANALYTICAL HESSIAN COMPLETE";
+    else if (freq.aIdx < 0) status = "INITIALIZING";
+    else {
+      status = A_STAGES[freq.aIdx].status;
+      if (freq.aStage === "cpscf" && freq.cpscfIter) status += ` — ITER ${freq.cpscfIter}`;
+    }
+    return _phasePanelHtml("ANALYTICAL FREQUENCIES", A_STAGES, freq.aIdx, freq.finished, value, caption, status);
+  }
+
+  function renderFreqProgress(freq) {
+    if (freq.mode === "analytical") return _renderAnalyticalPanel(freq);
     const pct = Math.round(freq.progress() * 100);
     if (freq.dispDone) {
       return `<div class="scf-prog-label">Frequencies · displacements complete · 100%</div>` +
@@ -863,6 +1101,7 @@
     SCFTracker: SCFTracker,
     GeoTracker: GeoTracker,
     FreqTracker: FreqTracker,
+    TddftTracker: TddftTracker,
     isScfIter: function (line) { return ITER_RE.test(line); },   // is this an SCF iteration row?
     targetFor: targetFor,
     renderSCFProgress: renderSCFProgress,
@@ -870,6 +1109,7 @@
     renderGeoProgress: renderGeoProgress,
     renderGeoGraph: renderGeoGraph,
     renderFreqProgress: renderFreqProgress,
+    renderTddftProgress: renderTddftProgress,
     setEtaMode: setEtaMode,
     setGeoMode: setGeoMode,
     SCF_TARGETS: SCF_TARGETS,

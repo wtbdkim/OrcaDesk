@@ -155,7 +155,8 @@
       <div class="log-mode-toggle">
         <button id="logmode-raw" class="active" onclick="setLogMode('raw')">Raw</button>
         <button id="logmode-graph" onclick="setLogMode('graph')">SCF graph</button>
-        <span id="scf-pace" class="scf-pace" title="average wall-clock time per SCF iteration"></span>
+        <!-- the "~N s / SCF cycle" pace chip lives in the SCF panel's progress
+             meta line (scf_graph.js _paceSpan), not in this toolbar -->
         <button class="btn btn-sm btn-ghost" style="margin-left:auto" onclick="clearLog()">Clear</button>
       </div>
       <div class="log-wrap">

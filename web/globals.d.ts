@@ -69,6 +69,7 @@ interface SCFGraphAPI {
   SCFTracker: new () => any;
   GeoTracker: new () => any;
   FreqTracker: new () => any;
+  TddftTracker: new () => any;
   isScfIter(line: string): boolean;
   targetFor(scfConvergence: string): number;
   renderSCFProgress(...args: any[]): string;
@@ -76,6 +77,7 @@ interface SCFGraphAPI {
   renderGeoProgress(...args: any[]): string;
   renderGeoGraph(...args: any[]): string;
   renderFreqProgress(...args: any[]): string;
+  renderTddftProgress(...args: any[]): string;
   setEtaMode(mode: string): void;
   setGeoMode(mode: string): void;
   SCF_TARGETS: Record<string, number>;

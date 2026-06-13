@@ -61,9 +61,13 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   progress bar. The progress reads from the real ORCA timing, so the accurate
   signals (step, criteria met, per-step rate) lead and the inherently-uncertain
   time is shown as an honest order-of-magnitude estimate, not false precision.
-  **Frequency runs get their own live progress** — a displacement counter for
-  numerical, a CP-SCF perturbation counter for analytical. A `s / SCF cycle`
-  pace readout and a "jump to latest" button keep long runs readable.
+  **Frequency and TD-DFT runs get their own live stage panel** — a HUD-style
+  phase chain over ORCA's real pipeline (analytical Hessian: integrals →
+  CP-SCF with a perturbation counter → Hessian → modes → thermochemistry;
+  TD-DFT: setup → diagonalization with an iteration counter → states →
+  spectra); numerical frequencies keep a displacement progress bar. A
+  `s / SCF cycle` pace readout and a "jump to latest" button keep long runs
+  readable.
 - **Theme**: toggle **dark / light** from the top bar (☀/☽); the choice is
   remembered across launches.
 - **Results**: per-calculation summary (energy, HOMO/LUMO, gap, frequencies with

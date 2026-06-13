@@ -57,10 +57,15 @@ _G_ITEM = re.compile(
 _G_DASHES = re.compile(r"-{5,}")
 _G_DOTS = re.compile(r"\.{5,}")
 # optimization-finished + post-opt-stage markers, so a reattach-seeded graph also
-# flips to 100% / "running frequencies…" (mirror of scf_graph.js OPT_DONE_RE / POST_OPT_RE)
+# flips to 100% / "running frequencies…" (mirror of scf_graph.js OPT_DONE_RE / POST_OPT_RE).
+# _G_POST is case-SENSITIVE like its JS mirror: the real markers are ORCA's
+# UPPERCASE section banners, while every output (opt-only included) carries
+# mixed-case look-alikes that must not match (header credits "pre 5.0 version
+# of the SCF Hessian"; property echo "Properties with geometric perturbations:",
+# "SCF Hessian ... NO").
 _G_DONE = re.compile(r"\*\*\*\s*OPTIMIZATION RUN DONE\s*\*\*\*|THE OPTIMIZATION HAS CONVERGED|HURRAY", re.I)
 _G_POST = re.compile(
-    r"VIBRATIONAL FREQUENCIES|ORCA SCF RESPONSE|GEOMETRIC PERTURBATIONS|CP-?SCF DRIVER|SCF HESSIAN|ANALYTICAL FREQUENCIES|NUMERICAL FREQUENCIES", re.I)
+    r"VIBRATIONAL FREQUENCIES|ORCA SCF RESPONSE|GEOMETRIC PERTURBATIONS|CP-?SCF DRIVER|SCF HESSIAN|ANALYTICAL FREQUENCIES|NUMERICAL FREQUENCIES")
 
 
 class Bridge(QObject):
@@ -366,6 +371,10 @@ class Bridge(QObject):
                         lines.append(ln)
                         in_table = False
                         saw_item = False
+                    elif _G_DONE.search(ln) or _G_POST.search(ln):
+                        # opt-finished / post-opt-stage markers — kept so a
+                        # seeded graph flips to 100% / "running frequencies…"
+                        lines.append(ln)
                     elif _G_ITER.match(ln):
                         lines.append(ln)
             return json.dumps(GraphLinesResult(ok=True, lines=lines))
