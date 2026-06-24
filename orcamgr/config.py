@@ -72,6 +72,12 @@ def autodetect_orca() -> str:
 @dataclass
 class Settings:
     orca_path: str = ""
+    # Path to the Python interpreter of the user's MLIP environment (PyTorch +
+    # mace-torch + ASE). ORCAdesk does not install that toolchain — it shells
+    # out to this interpreter the same way it shells out to orca_path. Empty
+    # until the user points at it. Readiness (do the packages import?) is probed
+    # separately in orcamgr/mlip/env.py, not stored here.
+    mlip_python: str = ""
     workspace_root: str = ""
     # default compute resources (used to seed the GUI)
     default_nprocs: int = 6
@@ -114,3 +120,9 @@ class Settings:
 
     def orca_is_valid(self) -> bool:
         return bool(self.orca_path) and Path(self.orca_path).exists()
+
+    def mlip_is_set(self) -> bool:
+        """Cheap check that the MLIP interpreter path points at an existing file.
+        This is necessary but NOT sufficient for "ready" — whether the required
+        packages import is probed in orcamgr/mlip/env.py."""
+        return bool(self.mlip_python) and Path(self.mlip_python).exists()

@@ -47,6 +47,20 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   opt-only and analytical-frequency ORCA 6.1.1 outputs.
 
 ### Added
+- **"MLIP ready" status indicator + environment probe.** A second status pill in
+  the top bar (next to "ORCA ready") reports whether a Machine-Learned
+  Interatomic Potential environment is usable. Because ORCAdesk does **not**
+  install the MLIP toolchain — the user creates their own Python env (PyTorch +
+  mace-torch + ASE) and points a new *MLIP environment* setting at its
+  interpreter — the indicator does an honest **import probe** rather than a mere
+  file-exists check: it shells out to that interpreter, tries to import the
+  required packages, and only goes green when they actually load (showing the
+  detected Python/mace versions, or naming the missing package otherwise). The
+  probe runs in a background thread (importing torch is slow) and the UI polls,
+  so it never blocks. New, deliberately ORCA-independent package `orcamgr/mlip/`
+  holds the detection logic; new bridge slots `pick_mlip_python` / `check_mlip` /
+  `get_mlip_status`. This is the first piece of the planned MLIP→ORCA bridge
+  (pre-optimize cheaply with an MLIP, then refine with ORCA).
 - **JS console messages now land in the Log tab.** The WebEngine page forwards
   `console.*` output (and uncaught front-end errors) into the app log as
   `[web] level=... line=... source=...` lines, so UI failures are diagnosable

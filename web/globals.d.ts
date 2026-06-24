@@ -16,6 +16,10 @@ interface OrcaBridge {
   get_settings(): Promise<string>;
   save_settings(payloadJson: string): Promise<string>;
   autodetect_orca(): Promise<string>;          // raw path string, not JSON
+  // MLIP environment (separate from ORCA)
+  pick_mlip_python(): Promise<string>;         // raw path string
+  check_mlip(): Promise<string>;               // MlipStatusPayload JSON
+  get_mlip_status(): Promise<string>;          // MlipStatusPayload JSON
   // file pickers / loaders
   pick_orca_executable(): Promise<string>;     // raw path string
   pick_workspace(): Promise<string>;           // raw path string

@@ -154,6 +154,11 @@ html, body {
    outranks .status-pill.ok .dot, so the ready state needs an #id-level rule too. */
 #orca-status .dot { background: var(--muted-foreground); }
 #orca-status.ok .dot { background: var(--ok); }
+/* MLIP pill: grey when unset/checking, GREEN when the env's packages import,
+   RED when a path is set but the probe failed (missing package / bad interpreter). */
+#mlip-status .dot { background: var(--muted-foreground); }
+#mlip-status.ok .dot { background: var(--ok); }
+#mlip-status.err .dot { background: var(--err); }
 .ver-badge {
   font-size: 11px; font-weight: 500; vertical-align: middle;
   color: var(--muted-foreground); background: var(--secondary);

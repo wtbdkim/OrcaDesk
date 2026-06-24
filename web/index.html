@@ -24,6 +24,9 @@
       <div id="orca-status" class="status-pill">
         <span class="dot"></span><span id="orca-status-text">ORCA not set</span>
       </div>
+      <div id="mlip-status" class="status-pill">
+        <span class="dot"></span><span id="mlip-status-text">MLIP not set</span>
+      </div>
     </div>
   </header>
 
@@ -212,6 +215,16 @@
           <button class="btn" onclick="pickOrca()">Browse</button>
           <button class="btn btn-ghost" onclick="autodetectOrca()">Auto-detect</button>
         </div>
+      </div>
+      <div class="card">
+        <div class="card-title">MLIP environment</div>
+        <div class="card-desc">Path to the Python interpreter of your MLIP environment (PyTorch + mace-torch + ASE), used for fast pre-optimization. ORCAdesk does not install these — create the environment yourself (e.g. <code>pip install torch mace-torch ase</code>) and point here. Kept entirely separate from ORCA.</div>
+        <div class="field-row">
+          <div class="field"><input id="set-mlip" type="text" class="mono" placeholder="C:\path\to\mlip-env\Scripts\python.exe"></div>
+          <button class="btn" onclick="pickMlipPython()">Browse</button>
+          <button class="btn btn-ghost" onclick="checkMlip(true)">Check environment</button>
+        </div>
+        <div id="set-mlip-status" class="hint" style="margin-top:6px"></div>
       </div>
       <div class="card">
         <div class="card-title">Workspace</div>

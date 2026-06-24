@@ -163,6 +163,7 @@
  * success but {error} on bad input — see SaveSettingsResult.
  * @typedef {Object} SettingsPayload
  * @property {string} orca_path
+ * @property {string} mlip_python
  * @property {string} workspace_root
  * @property {number} default_nprocs
  * @property {number} default_maxcore_mb
@@ -171,6 +172,19 @@
  * @property {"all5"|"maxgrad"} geo_graph_mode
  * @property {"beginner"|"expert"} build_mode
  * @property {boolean} orca_valid
+ */
+
+/**
+ * Mirror of Bridge.get_mlip_status() / check_mlip(). MLIP environment readiness.
+ * ORCAdesk does not install the MLIP toolchain; the user points it at their own
+ * Python env and this reports whether torch/mace/ase actually import.
+ * @typedef {Object} MlipStatusPayload
+ * @property {"unset"|"checking"|"ready"|"error"} state
+ * @property {string} python    configured interpreter path
+ * @property {string} version   interpreter Python version, or ""
+ * @property {string} label     ver-badge text, e.g. "mace 0.3.6", or ""
+ * @property {string[]} missing required packages that did not import
+ * @property {string} message   human-readable status / error detail
  */
 
 /**

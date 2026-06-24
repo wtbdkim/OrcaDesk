@@ -151,6 +151,24 @@ queue API under `/api/`. fastapi/uvicorn are **optional** — `ServerController.
 gates the whole feature, and the desktop app works fine without them. Per `CHANGELOG.md`
 phone-sync is in development and **not part of the packaged build**.
 
+### MLIP environment (deliberately separate from ORCA)
+
+`orcamgr/mlip/` is a dedicated package, kept **out of** the ORCA pipeline in
+`core/` on purpose: a Machine-Learned Interatomic Potential is a separate Python
+toolchain (PyTorch + mace-torch + ASE) that ORCAdesk shells out to the same way
+it shells out to the ORCA executable — it never installs that toolchain. The
+user creates their own env and points the `Settings.mlip_python` interpreter path
+at it. Currently the package holds only `env.py` (environment detection backing
+the "MLIP ready" top-bar indicator). Unlike `orca_is_valid()` (a file-exists
+check), MLIP readiness is an **import probe**: `probe_mlip()` runs the user's
+interpreter and checks `torch`/`mace`/`ase` actually import, so the indicator is
+honest about the common "I pip-installed it myself but the env is incomplete"
+case. The probe is slow (importing torch), so it runs in a background thread on
+the Bridge and the UI polls `get_mlip_status()` (status slots: `check_mlip` /
+`get_mlip_status`; picker: `pick_mlip_python`). The wire shape is
+`MlipStatusPayload` in `state/schemas.py` (mirrored in `web/types.js`). The MLIP
+*run* pipeline (a runner/parser mirroring `core/`) is not built yet.
+
 ### Paths: dev vs PyInstaller-frozen
 
 `orcamgr/paths.py` is the single place that resolves locations, and the split matters:

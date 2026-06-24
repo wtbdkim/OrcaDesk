@@ -470,6 +470,7 @@ async function loadSettings() {
   settings = /** @type {SettingsPayload} */ (JSON.parse(await bridge.get_settings()));
   applyTheme(settings.theme);
   document.getElementById("set-orca").value = settings.orca_path || "";
+  document.getElementById("set-mlip").value = settings.mlip_python || "";
   document.getElementById("set-ws").value = settings.workspace_root || "";
   document.getElementById("set-nprocs").value = String(settings.default_nprocs || 6);
   document.getElementById("set-maxcore").value = String(settings.default_maxcore_mb || 2400);
@@ -482,17 +483,70 @@ async function loadSettings() {
   const grad = document.querySelector(`input[name="geo-mode"][value="${gmode}"]`);
   if (grad) grad.checked = true;
   updateOrcaStatus(settings.orca_valid);
+  // MLIP readiness is a separate background probe (importing torch is slow):
+  // if a path is set, kick a check and poll; otherwise show "not set".
+  if (settings.mlip_python) checkMlip(false);
+  else updateMlipStatus({ state: "unset", python: "", version: "", label: "", missing: [], message: "" });
 }
 function updateOrcaStatus(valid) {
   const pill = document.getElementById("orca-status");
   pill.classList.toggle("ok", !!valid);
   document.getElementById("orca-status-text").textContent = valid ? "ORCA ready" : "ORCA not set";
 }
+
+let _mlipPollTimer = 0;
+/** Reflect an MlipStatusPayload on the top-bar pill and the Settings hint line.
+ *  @param {MlipStatusPayload} st */
+function updateMlipStatus(st) {
+  const state = (st && st.state) || "unset";
+  const pill = document.getElementById("mlip-status");
+  pill.classList.toggle("ok", state === "ready");
+  pill.classList.toggle("err", state === "error");
+  document.getElementById("mlip-status-text").textContent =
+    state === "ready" ? "MLIP ready"
+    : state === "checking" ? "MLIP checking…"
+    : state === "error" ? "MLIP error"
+    : "MLIP not set";
+  const hint = document.getElementById("set-mlip-status");
+  if (!hint) return;
+  if (state === "ready") {
+    const parts = [];
+    if (st.version) parts.push("python " + st.version);
+    if (st.label) parts.push(st.label);
+    hint.textContent = "Ready" + (parts.length ? " · " + parts.join(" · ") : "");
+    hint.style.color = "var(--ok)";
+  } else if (state === "checking") {
+    hint.textContent = "Checking environment…"; hint.style.color = "";
+  } else if (state === "error") {
+    hint.textContent = st.message || "Environment not ready."; hint.style.color = "var(--err)";
+  } else {
+    hint.textContent = ""; hint.style.color = "";
+  }
+}
+/** Poll get_mlip_status() until the background probe settles. */
+async function pollMlipStatus() {
+  const st = /** @type {MlipStatusPayload} */ (JSON.parse(await bridge.get_mlip_status()));
+  updateMlipStatus(st);
+  clearTimeout(_mlipPollTimer);
+  if (st.state === "checking") _mlipPollTimer = setTimeout(pollMlipStatus, 800);
+}
+/** (Re)run the MLIP environment probe. When the user clicks "Check environment"
+ *  (explicit), persist the typed path first so the right interpreter is probed. */
+async function checkMlip(explicit) {
+  if (explicit) await saveSettings();   // saveSettings persists mlip_python and restarts the probe
+  else await bridge.check_mlip();
+  pollMlipStatus();
+}
+async function pickMlipPython() {
+  const p = await bridge.pick_mlip_python();
+  if (p) document.getElementById("set-mlip").value = p;
+}
 async function saveSettings() {
   const etaEl = document.querySelector('input[name="eta-mode"]:checked');
   const geoEl = document.querySelector('input[name="geo-mode"]:checked');
   const payload = {
     orca_path: document.getElementById("set-orca").value.trim(),
+    mlip_python: document.getElementById("set-mlip").value.trim(),
     workspace_root: document.getElementById("set-ws").value.trim(),
     default_nprocs: parseInt(document.getElementById("set-nprocs").value, 10) || 6,
     default_maxcore_mb: parseInt(document.getElementById("set-maxcore").value, 10) || 2400,
@@ -504,6 +558,7 @@ async function saveSettings() {
   if ("error" in res) { toast("Could not save settings: " + res.error); return; }
   settings = res;
   updateOrcaStatus(settings.orca_valid);
+  pollMlipStatus();   // save_settings restarts the MLIP probe if its path changed
   // push the new modes to the live graph immediately
   if (SCFGraph && SCFGraph.setEtaMode) SCFGraph.setEtaMode(settings.eta_mode);
   if (SCFGraph && SCFGraph.setGeoMode) SCFGraph.setGeoMode(settings.geo_graph_mode);

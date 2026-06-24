@@ -9,7 +9,8 @@ separated (no cross-thread Qt signal juggling).
 
 JS calls these slots:
   get_about, get_settings, save_settings, autodetect_orca,
-  pick_orca_executable, pick_workspace, load_xyz_file, load_inp_file,
+  pick_orca_executable, pick_mlip_python, check_mlip, get_mlip_status,
+  pick_workspace, load_xyz_file, load_inp_file,
   load_inp_path, load_xyz_path, load_choices,
   parse_out_file, build_inp_preview,
   add_calc, remove_calc, clear_queue, get_queue, get_calc, get_inp, get_log, get_graph_lines,
@@ -21,12 +22,17 @@ from __future__ import annotations
 
 import json
 import re
+import sys
+import threading
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSlot
 from PyQt6.QtWidgets import QFileDialog
 
 from ..config import Settings, autodetect_orca
+from ..mlip.env import (
+    probe_mlip, status_from_probe, unset_status, checking_status,
+)
 from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL
 from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import GeometrySource, CalcState
@@ -39,9 +45,10 @@ from ..state.store import (
 # source of truth, mirrored for the front-end by web/types.js.
 from ..state.schemas import (
     AboutPayload, ConflictsResult, ErrorPayload, FepPoint, FepResult,
-    GetCalcResult, GraphLinesResult, InpFilePayload, MutationResult,
-    NmrPayload, OkResult, ParsePayload, QrResult, ServerStatusPayload,
-    SettingsPayload, StartServerResult, TextResult, TransitionPayload,
+    GetCalcResult, GraphLinesResult, InpFilePayload, MlipStatusPayload,
+    MutationResult, NmrPayload, OkResult, ParsePayload, QrResult,
+    ServerStatusPayload, SettingsPayload, StartServerResult, TextResult,
+    TransitionPayload,
 )
 
 
@@ -75,6 +82,13 @@ class Bridge(QObject):
         self.settings = Settings.load()
         self.store = store            # shared with the HTTP server
         self.server_ctl = server_ctl  # ServerController (may be None)
+        # MLIP environment status (MlipStatusPayload dict). The probe imports
+        # torch, so it runs in a background thread and the UI polls
+        # get_mlip_status(). A single dict reassigned atomically (GIL) is the
+        # shared state — no lock needed for this read-mostly flag.
+        self._mlip_status = unset_status()
+        if self.settings.mlip_is_set():
+            self._start_mlip_probe()
 
     # --- about / metadata ---
     @pyqtSlot(result=str)
@@ -91,6 +105,7 @@ class Bridge(QObject):
     def get_settings(self) -> str:
         return json.dumps(SettingsPayload(
             orca_path=self.settings.orca_path,
+            mlip_python=self.settings.mlip_python,
             workspace_root=self.settings.workspace_root,
             default_nprocs=self.settings.default_nprocs,
             default_maxcore_mb=self.settings.default_maxcore_mb,
@@ -105,7 +120,8 @@ class Bridge(QObject):
     def save_settings(self, payload_json: str) -> str:
         try:
             data = json.loads(payload_json or "{}")
-            for k in ("orca_path", "workspace_root", "theme"):
+            mlip_before = self.settings.mlip_python
+            for k in ("orca_path", "mlip_python", "workspace_root", "theme"):
                 if k in data:
                     setattr(self.settings, k, data[k])
             for k in ("default_nprocs", "default_maxcore_mb"):
@@ -121,6 +137,13 @@ class Bridge(QObject):
             if "build_mode" in data and data["build_mode"] in ("beginner", "expert"):
                 self.settings.build_mode = data["build_mode"]
             self.settings.save()
+            # Re-probe the MLIP env if its interpreter path changed (or restart
+            # so a freshly-set path is reflected without an explicit Check).
+            if self.settings.mlip_python != mlip_before:
+                if self.settings.mlip_is_set():
+                    self._start_mlip_probe()
+                else:
+                    self._mlip_status = unset_status()
             return self.get_settings()
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             return json.dumps(ErrorPayload(error=str(e)))
@@ -139,6 +162,42 @@ class Bridge(QObject):
         filt = "ORCA executable (orca.exe);;All files (*.*)"
         path, _ = QFileDialog.getOpenFileName(self.window, "Locate orca executable", "", filt)
         return path or ""
+
+    # --- MLIP environment (kept separate from ORCA) ---
+    @pyqtSlot(result=str)
+    def pick_mlip_python(self) -> str:
+        exe = "python.exe" if sys.platform.startswith("win") else "python"
+        filt = f"Python interpreter ({exe});;All files (*.*)"
+        path, _ = QFileDialog.getOpenFileName(
+            self.window, "Locate the MLIP environment's Python interpreter", "", filt)
+        return path or ""
+
+    def _start_mlip_probe(self) -> None:
+        """Probe the configured MLIP interpreter in a background thread (importing
+        torch is slow and must not block the Qt UI thread). Result is published on
+        self._mlip_status for get_mlip_status() to serve."""
+        path = self.settings.mlip_python
+        self._mlip_status = checking_status(path)
+
+        def _worker(p: str) -> None:
+            self._mlip_status = status_from_probe(probe_mlip(p))
+
+        threading.Thread(target=_worker, args=(path,), daemon=True).start()
+
+    @pyqtSlot(result=str)
+    def check_mlip(self) -> str:
+        """(Re)start the MLIP environment probe. No-op if one is already running.
+        Returns the current status immediately; the UI polls get_mlip_status()."""
+        if self._mlip_status.get("state") != "checking":
+            if self.settings.mlip_is_set():
+                self._start_mlip_probe()
+            else:
+                self._mlip_status = unset_status()
+        return json.dumps(self._mlip_status)
+
+    @pyqtSlot(result=str)
+    def get_mlip_status(self) -> str:
+        return json.dumps(MlipStatusPayload(**self._mlip_status))
 
     @pyqtSlot(result=str)
     def pick_workspace(self) -> str:

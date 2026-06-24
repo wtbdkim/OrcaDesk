@@ -91,6 +91,7 @@ class LogPayload(TypedDict):
 
 class SettingsPayload(TypedDict):
     orca_path: str
+    mlip_python: str          # MLIP env interpreter path (readiness via MlipStatusPayload)
     workspace_root: str
     default_nprocs: int
     default_maxcore_mb: int
@@ -99,6 +100,19 @@ class SettingsPayload(TypedDict):
     geo_graph_mode: str       # "all5" | "maxgrad"
     build_mode: str           # "beginner" | "expert"
     orca_valid: bool
+
+
+class MlipStatusPayload(TypedDict):
+    """Bridge.get_mlip_status() / check_mlip() — MLIP environment readiness.
+    ORCAdesk does not install the MLIP toolchain; the user points it at their own
+    Python env and this reports whether torch/mace/ase actually import. The probe
+    runs in a background thread (importing torch is slow), so the UI polls."""
+    state: str                # "unset" | "checking" | "ready" | "error"
+    python: str               # configured interpreter path
+    version: str              # interpreter Python version (e.g. "3.11.5"), or ""
+    label: str                # ver-badge text, e.g. "mace 0.3.6", or ""
+    missing: "list[str]"      # required packages that did not import
+    message: str              # human-readable status / error detail
 
 
 class ErrorPayload(TypedDict):
