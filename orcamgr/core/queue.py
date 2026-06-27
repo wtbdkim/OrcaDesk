@@ -113,9 +113,18 @@ def validate_result(calc: Calculation, result: ParseResult) -> None:
     imaginary modes; ts_freq exactly one; neb_ts (when freqs were computed)
     exactly one."""
     if not result.terminated_normally:
+        # MLIP jobs don't produce an ORCA .out; their failure reason comes from
+        # the parsed result's error_message directly.
+        if calc.kind.startswith("mlip"):
+            raise OrcaRunError(result.error_message or "MLIP run did not finish.")
         raise OrcaRunError(
             f"ORCA did not terminate normally. {result.error_message or 'Check the .out file.'}"
         )
+    # MLIP optimization: the only check is convergence (no ORCA-style keywords).
+    if calc.kind.startswith("mlip"):
+        if result.is_optimization and not result.opt_converged:
+            raise OrcaRunError("MLIP optimization did not converge within the step limit.")
+        return
     if calc.kind in ("opt", "ts_opt", "opt_freq", "ts_opt_freq") and not result.opt_converged:
         raise OrcaRunError("Optimization did not converge.")
     if calc.kind in ("freq", "opt_freq") and result.n_imaginary > 0:
@@ -154,13 +163,32 @@ def validate_result(calc: Calculation, result: ParseResult) -> None:
             )
 
 
+def result_from_output(calc: Calculation):
+    """Parse a finished calc's on-disk output into a ParseResult, dispatching on
+    kind: MLIP calcs use the MLIP parser (a JSON result), ORCA calcs the ORCA
+    .out parser. Shared by the engine's reference resolution and the session
+    reconciliation in store.py so both stay consistent. The mlip import is lazy
+    to keep core/ importable without the mlip package."""
+    if calc.kind.startswith("mlip"):
+        from ..mlip.parser import parse_mlip_result
+        return parse_mlip_result(calc.output_path)
+    return parse_file(str(calc.output_path))
+
+
 class QueueEngine:
     """Runs a list of Calculations in order, resolving geometry references."""
 
     def __init__(self, orca_path: str, workspace_root: str,
                  callbacks: Optional[QueueCallbacks] = None,
-                 skip_names: Optional[set] = None):
+                 skip_names: Optional[set] = None,
+                 mlip_envs: Optional[list] = None):
         self.runner = OrcaRunner(orca_path)
+        # Registered MLIP environments [{id, name, python}], used to resolve which
+        # interpreter runs a mlip_* calc. Empty if MLIP isn't configured.
+        self.mlip_envs = list(mlip_envs or [])
+        # the MlipRunner of the in-flight MLIP job, so cancel()/detach() can reach
+        # it (the ORCA runner and the MLIP runner are separate objects).
+        self._mlip_runner = None
         self.workspace_root = Path(workspace_root)
         self.cb = callbacks or QueueCallbacks()
         # hard cancel: kill the current job and skip the rest (CANCELLED).
@@ -179,6 +207,8 @@ class QueueEngine:
     def cancel(self) -> None:
         self._cancel_event.set()
         self.runner.cancel()
+        if self._mlip_runner is not None:
+            self._mlip_runner.cancel()
 
     def request_stop_after_current(self) -> None:
         """Stop processing once the in-flight job finishes; leave the remaining
@@ -191,6 +221,8 @@ class QueueEngine:
         running calc is left in the RUNNING state (its pid is already persisted)."""
         self._detach_event.set()
         self.runner.detach()
+        if self._mlip_runner is not None:
+            self._mlip_runner.detach()
 
     # -- geometry resolution --
     def _resolve_geometry(self, calc: Calculation) -> str:
@@ -208,10 +240,12 @@ class QueueEngine:
             raise OrcaRunError(f"Referenced calculation '{calc.ref_name}' not found in queue.")
         # Parse-on-miss: a DONE ref restored from a previous session has no
         # in-memory ParseResult (we don't eagerly re-parse on load), so read its
-        # .out now — at run time, gated behind a multi-minute ORCA job anyway.
+        # output now. Dispatch on kind: an MLIP ref's output is the worker's JSON
+        # result, NOT an ORCA .out — parsing it with the ORCA parser would yield
+        # no geometry and break the handoff after a restart.
         if ref.state == CalcState.DONE and not ref.result and ref.output_path:
             try:
-                ref.result = parse_file(ref.output_path)
+                ref.result = result_from_output(ref)
             except Exception:
                 pass  # leave result None; the checks below give a clear error
         if ref.state == CalcState.DONE and ref.result and ref.result.geometry:
@@ -323,6 +357,76 @@ class QueueEngine:
         self.cb.log(f"[{calc.name}] done.", "ok")
         self.cb.calc_update(index, calc)
 
+    # -- single MLIP calculation (runs OUTSIDE the ORCA pipeline) --
+    def _resolve_mlip_python(self, calc: Calculation) -> str:
+        """The interpreter that runs this calc's MLIP job: the env named by
+        config.mlip_env_id, or the first registered env when unset."""
+        if not self.mlip_envs:
+            raise OrcaRunError(
+                "No MLIP environment registered. Add one in Settings → "
+                "MLIP environments before running an MLIP calculation.")
+        env_id = (getattr(calc.config, "mlip_env_id", "") or "").strip()
+        if env_id:
+            env = next((e for e in self.mlip_envs if e.get("id") == env_id), None)
+            if env is None:
+                raise OrcaRunError(
+                    f"The MLIP environment for '{calc.name}' is no longer registered.")
+        else:
+            env = self.mlip_envs[0]
+        python = (env.get("python") or "").strip()
+        if not python or not Path(python).exists():
+            raise OrcaRunError(
+                f"MLIP interpreter not found: '{python}'. Check Settings → "
+                "MLIP environments.")
+        return python
+
+    def _run_mlip_calc(self, calc: Calculation, index: int) -> None:
+        """Run a mlip_* calc: relax the geometry with a MACE model in the user's
+        env, parse the result into a ParseResult (so it hands off to ORCA refs
+        just like an opt does), validate convergence, mark DONE. Mirrors
+        _run_calc/_monitor_and_finish but uses MlipRunner instead of ORCA."""
+        from ..mlip.runner import MlipRunner, write_mlip_run_files
+        from ..mlip.parser import parse_mlip_result
+
+        calc.state = CalcState.RUNNING
+        calc.message = ""
+        self.cb.calc_update(index, calc)
+
+        xyz = self._resolve_geometry(calc)
+        if not xyz.strip():
+            raise OrcaRunError("No coordinates to optimize (geometry is empty).")
+        python = self._resolve_mlip_python(calc)
+
+        calc_dir = self.workspace_root / calc.name
+        calc_dir.mkdir(parents=True, exist_ok=True)
+        out_path = calc_dir / f"{calc.name}.out"
+        result_json = calc_dir / f"{calc.name}.mlip.json"
+        script_path, config_path = write_mlip_run_files(
+            calc_dir, calc.name, calc.config.mlip_model, xyz, result_json)
+
+        model = calc.config.mlip_model or "MACE"
+        self.cb.log(f"[{calc.name}] (mlip_opt) optimizing with {model} via {python}...", "info")
+        runner = MlipRunner(python)
+        self._mlip_runner = runner
+        try:
+            runner.run(script_path, [str(config_path)], out_path,
+                       cwd=calc_dir, on_line=lambda ln: self.cb.log(ln, "orca"))
+        finally:
+            self._mlip_runner = None
+
+        result = parse_mlip_result(str(result_json))
+        calc.result = result
+        calc.output_path = str(result_json)
+
+        validate_result(calc, result)   # raises on failure / non-convergence
+
+        calc.state = CalcState.DONE
+        calc.pid = None
+        calc.create_time = None
+        calc.message = "Completed."
+        self.cb.log(f"[{calc.name}] done.", "ok")
+        self.cb.calc_update(index, calc)
+
     # -- dependency-scoped failure propagation --
     def _dependents_of(self, calcs: list[Calculation], failed_name: str) -> set[str]:
         """All calc names that depend on failed_name, directly or transitively."""
@@ -346,6 +450,12 @@ class QueueEngine:
         .out, read the actual failure cause from it (SCF not converged, etc.);
         otherwise fall back to the runner's message. 'Cancelled' passes through."""
         if "cancel" in runner_msg.lower():
+            return runner_msg
+        # MLIP failures already carry a precise reason (worker error / non-
+        # convergence); their .out is a plain optimizer log, not an ORCA file, so
+        # don't run it through the ORCA parser (it would invent an ORCA-style
+        # message and clobber the real one).
+        if calc.kind.startswith("mlip"):
             return runner_msg
         try:
             out_path = self.workspace_root / calc.name / f"{calc.name}.out"
@@ -430,7 +540,13 @@ class QueueEngine:
                     continue
 
             try:
-                self._run_calc(calc, i)
+                # MLIP calcs run OUTSIDE the ORCA pipeline (see orcamgr/mlip/):
+                # a MACE relaxation in the user's env, not an ORCA .inp. The
+                # except-handlers below treat cancel/shutdown/failure identically.
+                if calc.kind.startswith("mlip"):
+                    self._run_mlip_calc(calc, i)
+                else:
+                    self._run_calc(calc, i)
             except OrcaDetached:
                 # app shutdown mid-calc: leave THIS calc RUNNING (its ORCA keeps
                 # going headless; pid is persisted) and stop processing so it can

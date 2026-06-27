@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ORCAdesk is a desktop GUI (PyQt6 + QWebEngine) for building, queuing, running, and
 parsing [ORCA](https://www.faccts.de/orca/) computational-chemistry jobs. The app
 shells out to the user's installed `orca` executable; it does not do the chemistry
-itself. Status is `0.1.1-beta`, Windows is the primary tested target.
+itself. Status is beta; the current version is `APP_VERSION` in `orcamgr/paths.py`
+(also the top entry of `CHANGELOG.md`). Windows is the primary tested target.
 
 ## Commands
 
@@ -23,6 +24,9 @@ python -m orcamgr.server.run           # http://127.0.0.1:8000/docs for API docs
 # Build a standalone Windows app -> dist\ORCAdesk\ORCAdesk.exe (+ runtime folder)
 build.bat                              # installs deps + PyInstaller, then runs:
 python -m PyInstaller build.spec --noconfirm
+
+# Type-check the web/ front-end (plain JS + JSDoc, no build step; needs Node)
+npx -p typescript tsc --noEmit -p jsconfig.json
 ```
 
 There is **no automated test suite** and no linter configured. The parser and input
@@ -38,6 +42,11 @@ The entire UI lives in `web/` (HTML/CSS/JS, shadcn-style dark theme). `main.py` 
 `MainWindow` (`orcamgr/gui/window.py`), which hosts a `QWebEngineView` loading
 `web/index.html` and registers a single `Bridge` object on a `QWebChannel`.
 
+The view's page is `_ConsoleCapturePage` (`window.py`), which forwards JS console
+output into the shared log buffer as `[web] ...` lines (rate-limited per identical
+message) — so front-end errors are visible in the Log tab even in a deployed build;
+`ORCADESK_REMOTE_DEBUG` (handled in `main.py`) remains the dev-time tool.
+
 `orcamgr/gui/bridge.py` is the **entire backend API surface for the desktop**: every
 `@pyqtSlot` is callable from JS (the slot list is documented at the top of `bridge.py`).
 Slots take/return JSON strings. The JS side does not hold queue state — it **polls**
@@ -47,17 +56,30 @@ signal juggling. If you add backend functionality, it goes through a new Bridge 
 
 ### One shared QueueStore is the single source of truth
 
-`orcamgr/server/store.py` `QueueStore` holds the queue (a list of `Calculation`),
+`orcamgr/state/store.py` `QueueStore` holds the queue (a list of `Calculation`),
 the run flag, and the log buffer, guarded by a `threading.RLock`. The **same store
 instance** is shared by the desktop Bridge and the FastAPI server (constructed once in
 `window.py` and passed to both), so the desktop and a connected phone always see one
 queue. `QueueStore` is intentionally free of PyQt and FastAPI imports so it stays
-unit-testable in isolation.
+unit-testable in isolation. It lives in `orcamgr/state/` (not `server/`) so the
+dependency direction is explicit: `gui -> state <- server`. The old location
+`orcamgr/server/store.py` is a deprecated re-export shim (emits a
+`DeprecationWarning`); new code must import `orcamgr.state.store`.
 
 `store.py` also owns the **shared serialization layer** — `calc_from_dict` /
 `calc_to_dict` / `StepConfig` round-tripping and `load_*_choices` (reading
 `data/*.json`). Both the Bridge and the HTTP server build `Calculation` objects through
 the same `calc_from_dict`, so desktop and phone produce identical inputs.
+
+`orcamgr/state/schemas.py` is the **single source of truth for the wire payloads**:
+TypedDicts for everything the bridge and the HTTP API send that isn't the
+Calculation/StepConfig serialization itself (settings, log lines, queue snapshots,
+parse results, server status, the `{"ok": ...}`/`{"error": ...}` envelopes).
+`bridge.py`, `server/app.py`, and `store.py` construct responses through these types
+(plain dicts at runtime — wire format unchanged), and `web/types.js` mirrors them for
+the front-end. Don't annotate FastAPI endpoints with these TypedDicts as return types
+— FastAPI would infer a response_model and put pydantic between the dict and the wire;
+endpoints keep `-> dict` and only *construct* through the schema types.
 
 ### Running the queue: core/ is GUI-agnostic
 
@@ -113,10 +135,14 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 - **`DONE` calcs are never recomputed** on a re-run (the result is frozen);
   `FAILED`/`CANCELLED` calcs *do* re-run so the user can retry. Only
   `PENDING`/`FAILED`/`CANCELLED` are editable/reorderable (`EDITABLE_STATES`).
-- **Result validation is per-kind**: `opt`/`ts_opt` must converge; `freq` must have
-  zero imaginary frequencies; `ts_freq` must have exactly one. A validation failure
-  marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`, `freq`, `ts_freq`, `tddft`,
-  `sp`, `nmr`, `neb_ts`.
+- **Result validation is per-kind**: `opt`/`ts_opt` (and the combined
+  `opt_freq`/`ts_opt_freq`) must converge; `freq`/`opt_freq` must have zero
+  imaginary frequencies; `ts_freq`/`ts_opt_freq` must have exactly one. A
+  validation failure marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`,
+  `freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `irc`, `tddft`, `sp`, `nmr`,
+  `neb_ts`, `mlip_opt`. Kinds starting with `mlip` run **outside** the ORCA
+  pipeline: `QueueEngine.run_all` routes them to `_run_mlip_calc` (a MACE
+  relaxation in the user's env) instead of `_run_calc`. See the MLIP section.
 
 ### Optional phone-sync server
 
@@ -126,6 +152,78 @@ thread on the shared store. It serves the mobile PWA from `web_mobile/` at `/` a
 queue API under `/api/`. fastapi/uvicorn are **optional** — `ServerController.is_available()`
 gates the whole feature, and the desktop app works fine without them. Per `CHANGELOG.md`
 phone-sync is in development and **not part of the packaged build**.
+
+### MLIP environment (deliberately separate from ORCA)
+
+`orcamgr/mlip/` is a dedicated package, kept **out of** the ORCA pipeline in
+`core/` on purpose: a Machine-Learned Interatomic Potential is a separate Python
+toolchain (PyTorch + mace-torch + ASE) that ORCAdesk shells out to the same way
+it shells out to the ORCA executable — it never installs that toolchain.
+
+**One environment per MLIP.** The user registers their own Python environments
+in `Settings.mlip_envs` (a list of `{id, name, python}`), not a single path —
+because different MLIPs pin conflicting dependencies (MACE and SevenNet pin
+different `e3nn`), so they cannot share a venv. The legacy single
+`mlip_python` setting is auto-migrated to one env entry on load.
+
+Currently the package holds only `env.py` (environment detection backing the
+"MLIP ready" top-bar indicator). Unlike `orca_is_valid()` (a file-exists check),
+MLIP readiness is an **import probe**: `probe_env()` runs each registered
+interpreter and **auto-detects** which backends import. The backend registry is
+`MLIP_BACKENDS` (key → import-package name; MACE/SevenNet seeded, extensible);
+an env is `ready` only when the common deps `COMMON_PACKAGES` (`torch`, `ase`)
+*and* at least one backend import — so the indicator is honest about the common
+"I pip-installed it myself but the env is incomplete" case. Probes are slow
+(importing torch), so each runs in a background thread on the Bridge and the UI
+polls `get_mlip_status()`. Bridge slots: `pick_mlip_python` (picker),
+`add_mlip_env` / `remove_mlip_env` (manage the list, each persists + probes),
+`check_mlip(id)` (re-probe one env, or all when id is `""`), `get_mlip_status`
+(aggregate). Per-env live state lives in `Bridge._mlip_envs_status` (keyed by
+env id, guarded by `Bridge._mlip_lock`); MLIP is **not** routed through
+`save_settings` (its own channel). The wire shapes are `MlipBackend` /
+`MlipEnvPayload` / `MlipStatusPayload` in `state/schemas.py` — the aggregate
+`MlipStatusPayload` is `{state, envs[]}` where the top-bar `state` is `ready` if
+any env is ready, else `checking`/`error`/`unset` — built by `aggregate_status`
+and mirrored in `web/types.js`.
+
+**Building MLIP jobs.** The Build tab has a third mode besides `beginner`/`expert`
+— `mlip` (`Settings.build_mode`; the three-way toggle is `#bmode-*` in
+`index.html`, `setBuildMode` in `app.js`). MLIP mode hides the whole ORCA build
+UI (`_ORCA_BUILD`) and shows a self-contained `#card-mlip`: a name, a MACE-model
+dropdown (options in `data/mace_models.json`, served via `load_choices`), and an
+`.xyz` loader, which add a `mlip_opt` calc to the **shared queue** through the
+same `add_calc`/`calc_from_dict` path as ORCA calcs. The model lives on
+`StepConfig.mlip_model` (+ `mlip_env_id`, `""` = first ready env); `build_input`
+ignores those — an MLIP calc never produces an ORCA `.inp`. `_meta_line` shows
+the model instead of charge/mult for `mlip*` kinds, and `editCalc` refuses
+in-place editing of MLIP calcs for now (remove + re-add).
+
+**Running MLIP jobs.** The run pipeline mirrors `core/` but lives in
+`orcamgr/mlip/` (kept off ORCA's path): `runner.py` (`MlipRunner` +
+`write_mlip_run_files` + the `MACE_WORKER_SCRIPT`) and `parser.py`
+(`parse_mlip_result`). `QueueEngine._run_mlip_calc` resolves geometry (direct or
+reference) and the interpreter (`config.mlip_env_id`, else the first registered
+env, via `_resolve_mlip_python`), writes an input `.xyz` + a JSON config + the
+worker script into the run folder, then runs the user's interpreter on it. The
+worker — running in the **user's** env, so it may import `torch`/`mace`/`ase`
+(ORCAdesk's env need not) — loads a MACE calculator (`mace_off`/`mace_mp` by
+model+size from `parse_mace_model`), runs an ASE `LBFGS` relaxation (CPU,
+fmax 0.05), and writes the optimized geometry + energy + convergence to a JSON
+result; `MlipRunner` tails its stdout into the `.out` and the live log and is
+cancellable (`QueueEngine.cancel`/`detach` forward to the active `MlipRunner`).
+`parse_mlip_result` reads that JSON into the **shared `ParseResult`** (geometry,
+`final_energy_eh`, `opt_converged`), so a downstream ORCA calc references an
+MLIP-optimized geometry through the **same** `_resolve_geometry` path an opt→freq
+handoff uses. `validate_result` checks `mlip_opt` convergence; `_failure_reason`
+skips the ORCA `.out` parse for mlip kinds. The engine gets the env list via
+`make_engine_factory(..., mlip_envs=settings.mlip_envs)`; `run_queue` only
+requires a valid ORCA path when a non-MLIP calc will run (an all-MLIP queue runs
+without ORCA). Output parsing dispatches on kind through the module-level
+`result_from_output` (used by reference resolution and session reconciliation),
+so a DONE `mlip_opt` referenced **after a restart** is parsed by the MLIP parser,
+not the ORCA one. The pipeline was validated end to end against a real MACE
+environment (MACE-OFF), including the MLIP→ORCA geometry handoff; the automated
+tests use a stdlib-only stub for `MACE_WORKER_SCRIPT` since CI has no MACE env.
 
 ### Paths: dev vs PyInstaller-frozen
 
@@ -148,6 +246,13 @@ them there.
 - Bridge slots and API endpoints exchange **JSON strings**, typically
   `{"ok": bool, ...}` or `{"error": "..."}`; errors are returned as data, not raised
   across the JS boundary.
+- **`web/` is type-checked** (`// @ts-check` + JSDoc, config in `jsconfig.json`).
+  `web/types.js` holds the payload typedefs and **mirrors the Python serialization
+  layer field by field** (`orcamgr/state/store.py`, `StepConfig` in
+  `input_generator.py`, the per-slot payloads in `bridge.py`); `web/globals.d.ts`
+  declares the Qt/bridge environment (incl. every slot's signature). When you add
+  or change a payload or slot, update both, and keep
+  `npx -p typescript tsc --noEmit -p jsconfig.json` at zero errors.
 - ORCA defaults (functional `wB97X-D4`, basis `def2-TZVP`, `RIJCOSX`, aux `def2/J`)
   live in `input_generator.py`.
 - Option lists in `data/*.json` are sourced from the ORCA 6.1.1 manual; method fields
@@ -217,3 +322,22 @@ Keep the version-numbered format **only** for `main`; never prefix `main` commit
 **No co-author / attribution trailers.** Do not append `Co-Authored-By:` lines (or any
 other tool-attribution trailer such as "Generated with Claude Code") to commit messages.
 Commits should be authored solely under the repository's configured git user.
+
+### Pre-commit documentation check (mandatory)
+
+Before **every** commit, verify the Markdown docs reflect the change and update any
+that are stale — include those updates in the same commit:
+
+- `CHANGELOG.md` — any user-visible change (feature, fix, UI/behavior change) gets an
+  entry. Version bumps must keep `APP_VERSION` in `orcamgr/paths.py` and the top
+  `CHANGELOG.md` entry in sync.
+- `CLAUDE.md` — update when the change touches anything this file documents:
+  architecture, queue semantics/invariants, Bridge API surface, conventions
+  (normalization rules, defaults), paths/build layout, or the git workflow itself.
+- `README.md` — update when commands, install steps, requirements, or user-facing
+  features described there change.
+- Other docs (`INSTALLER_GUIDE_KR.md`, `orcamgr/server/STAGE*_TEST_KR.md`, etc.) —
+  update when the procedure they describe changes.
+
+If nothing in the docs is affected, no doc edit is needed — but the check itself is
+not optional: confirm it before committing, every time.

@@ -154,6 +154,31 @@ html, body {
    outranks .status-pill.ok .dot, so the ready state needs an #id-level rule too. */
 #orca-status .dot { background: var(--muted-foreground); }
 #orca-status.ok .dot { background: var(--ok); }
+/* MLIP pill: grey when unset/checking, GREEN when the env's packages import,
+   RED when a path is set but the probe failed (missing package / bad interpreter). */
+#mlip-status .dot { background: var(--muted-foreground); }
+#mlip-status.ok .dot { background: var(--ok); }
+#mlip-status.err .dot { background: var(--err); }
+/* Registered MLIP environments list (Settings tab) */
+.mlip-env-list { display: flex; flex-direction: column; gap: 6px; }
+.mlip-env-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+}
+.mlip-env-info { flex: 1; min-width: 0; }
+.mlip-env-name { font-weight: 500; }
+.mlip-env-path {
+  font-size: 11px; color: var(--muted-foreground);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mlip-env-detail { font-size: 12px; margin-top: 2px; }
+.mlip-env-btns { display: flex; gap: 4px; flex-shrink: 0; }
+.mlip-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  background: var(--muted-foreground);
+}
+.mlip-dot.ok { background: var(--ok); }
+.mlip-dot.err { background: var(--err); }
 .ver-badge {
   font-size: 11px; font-weight: 500; vertical-align: middle;
   color: var(--muted-foreground); background: var(--secondary);
@@ -322,7 +347,7 @@ input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
   box-shadow: 0 4px 16px rgba(0,0,0,0.4);
 }
 .toast.show { opacity: 1; }
-.queue-item .qname { font-weight: 600; font-size: 13px; }
+.queue-item .qname { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
 .queue-item .qsteps { font-size: 12px; color: var(--muted-foreground); font-family: var(--font-mono); }
 /* framed error chip — ancestor-free so the Build-tab NEB atom-mismatch warning
    (#cfg-neb-atomcheck, also class "qerror") gets the same box as queue rows,
@@ -340,7 +365,12 @@ input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
   padding: 3px 9px; border-radius: 999px; text-transform: uppercase;
   letter-spacing: .03em;
 }
-.queue-item .qstate { margin-left: auto; }
+/* only the row's STATE badge pushes to the right; the raw/MLIP tag sits inside
+   .qname (a flex row), so '>' keeps margin-left:auto off it */
+.queue-item > .qstate { margin-left: auto; }
+/* the inline type tag next to the name (raw / MLIP) is smaller and flatter than
+   the status pill, so it reads as a tag rather than a second status badge */
+.qname .qstate { font-size: 10px; padding: 1px 7px; }
 .qstate.pending { background: var(--accent); color: var(--muted-foreground); }
 .qstate.running { background: rgba(251,191,36,0.15); color: var(--warn); }
 .qstate.done    { background: rgba(74,222,128,0.15); color: var(--ok); }
@@ -450,9 +480,37 @@ html[data-theme="light"] .graph-plot { background: #fff; }
 .scf-prog-label { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .scf-prog-bar { height: 8px; background: var(--accent); border-radius: 4px; overflow: hidden; }
 .scf-prog-bar > span { display: block; height: 100%; background: var(--ok); border-radius: 4px; transition: width 0.3s; }
-.scf-prog-meta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 6px; }
+/* flex row so the right-aligned pace chip (.scf-pace, margin-left:auto) can
+   share the line with the status text */
+.scf-prog-meta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 6px; display: flex; align-items: baseline; }
 /* ETA is the uncertain part: keep it visually subordinate to the accurate signals */
 .scf-prog-eta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 3px; opacity: 0.72; font-style: italic; }
+
+/* ---- analytical-frequencies phase panel (HUD-style: hazard stripes, phase
+   label left, stage headline number center, 7-dot phase chain right) ---- */
+.freq-jump { font-family: var(--font-mono); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: var(--card); }
+.freq-jump-stripes {
+  height: 7px;
+  background: repeating-linear-gradient(135deg, rgba(248,113,113,0.55) 0 6px, transparent 6px 12px);
+}
+.freq-jump-title { text-align: center; font-size: 13px; font-weight: 700; letter-spacing: 0.22em; margin-top: 8px; color: var(--foreground); }
+.freq-jump-row { display: flex; align-items: center; gap: 14px; padding: 2px 16px; }
+.freq-jump-phase { font-size: 13px; font-weight: 700; letter-spacing: 0.12em; color: var(--ok); white-space: nowrap; min-width: 92px; }
+.freq-jump-of { font-size: 10px; font-weight: 600; color: var(--muted-foreground); }
+.freq-jump-center { flex: 1; text-align: center; }
+.freq-jump-value { font-size: 26px; font-weight: 700; letter-spacing: 0.06em; line-height: 1.15; color: var(--foreground); font-variant-numeric: tabular-nums; }
+.freq-jump-caption { font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted-foreground); }
+.freq-jump-dots { display: flex; align-items: center; white-space: nowrap; min-width: 92px; justify-content: flex-end; }
+.freq-jump-dot { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--muted-foreground); box-sizing: border-box; flex: none; }
+.freq-jump-dot.done { background: var(--ok); border-color: var(--ok); }
+.freq-jump-dot.cur { border-color: var(--ok); animation: freq-dot-pulse 1.2s ease-in-out infinite; }
+.freq-jump-link { width: 7px; border-top: 1.5px solid var(--muted-foreground); opacity: 0.55; flex: none; }
+.freq-jump-link.done { border-color: var(--ok); opacity: 1; }
+.freq-jump-status { text-align: center; font-size: 10px; letter-spacing: 0.18em; color: var(--muted-foreground); padding: 0 16px 8px; }
+@keyframes freq-dot-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--ok); opacity: 1; }
+  50%      { box-shadow: 0 0 6px 1px var(--ok); opacity: 0.55; }
+}
 /* fill the graph box width; the viewBox height is computed per-render
    (renderSCFPanel) to match the space left below the plot, so height:auto
    lands the SVG flush with the bottom window gutter — no cap needed here. */

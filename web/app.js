@@ -1,22 +1,39 @@
+// @ts-check
 /* ============================================================
    ORCAdesk front-end logic — calculation-based queue
+
+   Payload typedefs (CalcSummary, QueueSnapshot, LogPayload, ...) live in
+   web/types.js and mirror the Python serialization layer field by field;
+   the bridge/Qt environment is declared in web/globals.d.ts.
    ============================================================ */
 
+/** @type {OrcaBridge|null} */
 let bridge = null;
+/** @type {Partial<SettingsPayload>} */
 let settings = {};
+/** The store snapshot calc reduced to what the UI renders (see mirrorCalc).
+ * @typedef {Omit<CalcSummary, "meta">} CalcMirror */
+/** @type {CalcMirror[]} */
 let queue = [];                 // UI mirror of the shared store's queue
 let directXyz = "";             // last loaded .xyz coordinate block
+/** @type {Object<string, [string, string][]>} */
 const calcResults = {};         // name -> summaryRows
+/** @type {Object<string, {transitions?: TransitionPayload[], nmr?: NmrPayload[],
+ *                         frequencies?: number[], n_imaginary?: number,
+ *                         neb_path?: NebPointPayload[]}>} */
 const _resultExtras = {};       // name -> {transitions?, nmr?}
+/** @type {Object<string, CalcInput|CalcFull>} */
 const localCalcs = {};          // name -> full calc (config/xyz/raw) added on THIS PC,
                                 // so editing keeps the details the store snapshot omits
 
 let editIndex = -1;             // queue index being edited, or -1 for "new"
 let rawMode = false;            // is the current build form in raw mode?
 let rawText = "";               // current raw .inp text being edited
-let buildMode = "beginner";     // "beginner" (guided form) or "expert" (paste a full .inp)
+let buildMode = "beginner";     // "beginner" (guided form), "expert" (paste a full .inp), or "mlip" (MACE pre-opt)
 // controls hidden in expert mode (the guided form, charge/mult, the raw button)
 const _EXPERT_HIDDEN = ["card-method", "field-charge", "field-mult", "raw-btn"];
+// the whole ORCA build UI — hidden in mlip mode (which shows card-mlip instead)
+const _ORCA_BUILD = ["card-calc", "card-geometry", "card-method", "raw-card", "build-actions"];
 function _showIds(ids, on) {
   ids.forEach(id => { const e = document.getElementById(id); if (e) e.style.display = on ? "" : "none"; });
 }
@@ -83,7 +100,7 @@ window.addEventListener("drop", (e) => e.preventDefault(), false);
 window.onInpDropped = async function (path) {
   if (!bridge) return;
   try {
-    const res = JSON.parse(await bridge.load_inp_path(path));
+    const res = /** @type {InpFilePayload} */ (JSON.parse(await bridge.load_inp_path(path)));
     if (!res || !res.text) { toast("Couldn't read that .inp"); return; }
     setBuildMode("expert");
     enterRawWithText(res.text);
@@ -112,6 +129,7 @@ window.onOutDropped = async function (path) {
   if (!bridge) return;
   try {
     const raw = await bridge.parse_out_path(path);
+    /** @type {ParsePayload} */
     let data; try { data = JSON.parse(raw); } catch { toast("Couldn't parse that .out"); return; }
     if (!data || !data.summary) { toast("Couldn't parse that .out"); return; }
     renderSummary(data.summary);
@@ -141,13 +159,13 @@ async function pollTick() {
   if (document.hidden) return;
   try {
     // new log lines
-    const logRes = JSON.parse(await bridge.get_log(_logSeq));
+    const logRes = /** @type {LogPayload} */ (JSON.parse(await bridge.get_log(_logSeq)));
     if (logRes && logRes.lines) {
       for (const ln of logRes.lines) appendLog(ln.msg, ln.level);
       if (typeof logRes.latest === "number") _logSeq = logRes.latest;
     }
     // queue changes (only re-render if version changed)
-    const snap = JSON.parse(await bridge.get_queue());
+    const snap = /** @type {QueueSnapshot} */ (JSON.parse(await bridge.get_queue()));
     if (snap && snap.version !== _queueVersion) {
       _queueVersion = snap.version;
       queue = (snap.calculations || []).map(mirrorCalc);
@@ -164,13 +182,11 @@ async function pollTick() {
     // seed the graph from the full .out for a reattached / finished-while-closed
     // opt whose live stream didn't capture its history (see maybeSeedGraph)
     await maybeSeedGraph();
-    // small "~N s / SCF cycle" pace indicator (visible in both raw and graph mode)
+    // small "~N s / SCF cycle" pace indicator — lives in the graph summary's
+    // progress meta line, so the span only exists while the SCF panel is shown;
+    // keep it fresh between (throttled) panel re-renders
     const _paceEl = document.getElementById("scf-pace");
-    if (_paceEl) {
-      const _p = scfSecPerIter();
-      _paceEl.textContent = _p == null ? "" :
-        `~${_p < 10 ? _p.toFixed(1) : Math.round(_p)} s / SCF cycle`;
-    }
+    if (_paceEl) _paceEl.textContent = scfPaceText();
     // redraw SCF graph at most once per tick, only if new data arrived
     if (_logMode === "graph" && _scfDirty) renderSCFPanel();
   } catch (e) { /* transient; try again next tick */ }
@@ -193,7 +209,7 @@ async function maybeSeedGraph() {
   if (!target || _seededGraph.has(target.name)) return;
   _seededGraph.add(target.name);   // guard before the await: no double-seed across overlapping ticks
   try {
-    const r = JSON.parse(await bridge.get_graph_lines(target.name));
+    const r = /** @type {GraphLinesResult} */ (JSON.parse(await bridge.get_graph_lines(target.name)));
     if (r && r.ok && r.lines && r.lines.length) {
       const t = new SCFGraph.SCFTracker();
       const g = new SCFGraph.GeoTracker();
@@ -206,6 +222,7 @@ async function maybeSeedGraph() {
 }
 
 // turn a store snapshot calc into the shape the UI render expects
+/** @param {CalcSummary} c @returns {CalcMirror} */
 function mirrorCalc(c) {
   return {
     name: c.name, kind: c.kind, state: c.state, message: c.message,
@@ -220,7 +237,7 @@ function mirrorCalc(c) {
 
 async function refreshQueue() {
   try {
-    const snap = JSON.parse(await bridge.get_queue());
+    const snap = /** @type {QueueSnapshot} */ (JSON.parse(await bridge.get_queue()));
     _queueVersion = snap.version;
     queue = (snap.calculations || []).map(mirrorCalc);
     renderQueue();
@@ -229,7 +246,7 @@ async function refreshQueue() {
 
 async function loadAbout() {
   try {
-    const a = JSON.parse(await bridge.get_about());
+    const a = /** @type {AboutPayload} */ (JSON.parse(await bridge.get_about()));
     const body = document.getElementById("about-body");
     body.innerHTML =
       `<div class="k">Version</div><div class="v">${a.version}</div>` +
@@ -242,9 +259,9 @@ async function loadAbout() {
 
 // ---------- choices ----------
 async function loadAllChoices() {
-  const names = ["functionals","basis_sets","calculation_types","scf_convergences","ri_approximations","solvents"];
+  const names = ["functionals","basis_sets","calculation_types","scf_convergences","ri_approximations","solvents","mace_models"];
   for (const n of names) {
-    try { choicesCache[n] = JSON.parse(await bridge.load_choices(n)); }
+    try { choicesCache[n] = /** @type {ChoiceGroups} */ (JSON.parse(await bridge.load_choices(n))); }
     catch (e) { choicesCache[n] = {}; }
   }
 }
@@ -445,16 +462,19 @@ function applyTheme(theme) {
 async function toggleTheme() {
   const next = (settings.theme === "light") ? "dark" : "light";
   applyTheme(next);   // flip the UI instantly, then persist
-  settings = JSON.parse(await bridge.save_settings(JSON.stringify({ theme: next })));
+  const res = /** @type {SaveSettingsResult} */ (JSON.parse(await bridge.save_settings(JSON.stringify({ theme: next }))));
+  // bad input comes back as {error} — don't clobber the settings mirror with it
+  if ("error" in res) { toast("Could not save theme: " + res.error); return; }
+  settings = res;
 }
 
 async function loadSettings() {
-  settings = JSON.parse(await bridge.get_settings());
+  settings = /** @type {SettingsPayload} */ (JSON.parse(await bridge.get_settings()));
   applyTheme(settings.theme);
   document.getElementById("set-orca").value = settings.orca_path || "";
   document.getElementById("set-ws").value = settings.workspace_root || "";
-  document.getElementById("set-nprocs").value = settings.default_nprocs || 6;
-  document.getElementById("set-maxcore").value = settings.default_maxcore_mb || 2400;
+  document.getElementById("set-nprocs").value = String(settings.default_nprocs || 6);
+  document.getElementById("set-maxcore").value = String(settings.default_maxcore_mb || 2400);
   // ETA mode radio
   const mode = settings.eta_mode || "conservative";
   const radio = document.querySelector(`input[name="eta-mode"][value="${mode}"]`);
@@ -464,11 +484,134 @@ async function loadSettings() {
   const grad = document.querySelector(`input[name="geo-mode"][value="${gmode}"]`);
   if (grad) grad.checked = true;
   updateOrcaStatus(settings.orca_valid);
+  // MLIP environments are managed in their own channel (a background probe per
+  // env); render from get_mlip_status() and poll while any is still checking.
+  pollMlipStatus();
 }
 function updateOrcaStatus(valid) {
   const pill = document.getElementById("orca-status");
   pill.classList.toggle("ok", !!valid);
   document.getElementById("orca-status-text").textContent = valid ? "ORCA ready" : "ORCA not set";
+}
+
+let _mlipPollTimer = 0;
+/** Backend list -> "MACE 0.3.6, SevenNet 0.10.0".
+ *  @param {MlipBackend[]} backends */
+function mlipBackendText(backends) {
+  return (backends || []).map(b => b.label + " " + b.version).join(", ");
+}
+/** Reflect an aggregate MlipStatusPayload on the top-bar pill (state + hover
+ *  detail) and the Settings env list.
+ *  @param {MlipStatusPayload} st */
+function renderMlip(st) {
+  const state = (st && st.state) || "unset";
+  const envs = (st && st.envs) || [];
+  const pill = document.getElementById("mlip-status");
+  pill.classList.toggle("ok", state === "ready");
+  pill.classList.toggle("err", state === "error");
+  document.getElementById("mlip-status-text").textContent =
+    state === "ready" ? "MLIP: ready"
+    : state === "checking" ? "MLIP: checking…"
+    : state === "error" ? "MLIP: error"
+    : "MLIP: not set";
+  // hover tooltip: one line per env with its detected backends / status
+  pill.title = envs.length
+    ? envs.map(e =>
+        e.name + ": " + (
+          e.state === "ready" ? mlipBackendText(e.backends)
+          : e.state === "checking" ? "checking…"
+          : (e.message || "not ready"))).join("\n")
+    : "No MLIP environment registered";
+  renderMlipEnvList(envs);
+}
+/** Render the registered-environment rows in the Settings tab.
+ *  @param {MlipEnvPayload[]} envs */
+function renderMlipEnvList(envs) {
+  const box = document.getElementById("mlip-env-list");
+  if (!box) return;
+  box.textContent = "";
+  if (!envs.length) {
+    const d = document.createElement("div");
+    d.className = "hint";
+    d.textContent = "No environment registered yet.";
+    box.appendChild(d);
+    return;
+  }
+  for (const e of envs) {
+    const row = document.createElement("div");
+    row.className = "mlip-env-row";
+
+    const dot = document.createElement("span");
+    dot.className = "mlip-dot" + (e.state === "ready" ? " ok" : e.state === "error" ? " err" : "");
+
+    const info = document.createElement("div");
+    info.className = "mlip-env-info";
+    const nm = document.createElement("div");
+    nm.className = "mlip-env-name";
+    nm.textContent = e.name || "(unnamed)";
+    const pa = document.createElement("div");
+    pa.className = "mlip-env-path mono";
+    pa.textContent = e.python;
+    const de = document.createElement("div");
+    de.className = "mlip-env-detail";
+    if (e.state === "ready") {
+      de.textContent = (mlipBackendText(e.backends) || "ready") + (e.version ? " · python " + e.version : "");
+      de.style.color = "var(--ok)";
+    } else if (e.state === "checking") {
+      de.textContent = "checking…";
+    } else {
+      de.textContent = e.message || "not ready";
+      de.style.color = "var(--err)";
+    }
+    info.append(nm, pa, de);
+
+    const btns = document.createElement("div");
+    btns.className = "mlip-env-btns";
+    const chk = document.createElement("button");
+    chk.className = "btn btn-ghost";
+    chk.textContent = "Check";
+    chk.onclick = () => checkMlipEnv(e.id);
+    const rm = document.createElement("button");
+    rm.className = "btn btn-ghost";
+    rm.textContent = "Remove";
+    rm.onclick = () => removeMlipEnv(e.id);
+    btns.append(chk, rm);
+
+    row.append(dot, info, btns);
+    box.appendChild(row);
+  }
+}
+/** Poll get_mlip_status() until every env probe settles. */
+async function pollMlipStatus() {
+  const st = /** @type {MlipStatusPayload} */ (JSON.parse(await bridge.get_mlip_status()));
+  renderMlip(st);
+  clearTimeout(_mlipPollTimer);
+  if (st.state === "checking") _mlipPollTimer = setTimeout(pollMlipStatus, 800);
+}
+/** Register the interpreter currently in the "Add" field as a new MLIP env. */
+async function addMlipEnv() {
+  const input = document.getElementById("set-mlip");
+  const python = input.value.trim();
+  if (!python) { toast("Enter or browse to a Python interpreter path."); return; }
+  const res = JSON.parse(await bridge.add_mlip_env(JSON.stringify({ python })));
+  if (res && res.error) { toast("Could not add environment: " + res.error); return; }
+  input.value = "";
+  renderMlip(/** @type {MlipStatusPayload} */ (res));
+  pollMlipStatus();
+}
+async function removeMlipEnv(id) {
+  const res = JSON.parse(await bridge.remove_mlip_env(id));
+  renderMlip(/** @type {MlipStatusPayload} */ (res));
+}
+/** Re-probe a single registered env. */
+async function checkMlipEnv(id) {
+  const res = JSON.parse(await bridge.check_mlip(id));
+  renderMlip(/** @type {MlipStatusPayload} */ (res));
+  pollMlipStatus();
+}
+async function pickMlipPython() {
+  const p = await bridge.pick_mlip_python();
+  if (p) document.getElementById("set-mlip").value = p;
 }
 async function saveSettings() {
   const etaEl = document.querySelector('input[name="eta-mode"]:checked');
@@ -481,7 +624,10 @@ async function saveSettings() {
     eta_mode: etaEl ? etaEl.value : "conservative",
     geo_graph_mode: geoEl ? geoEl.value : "all5",
   };
-  settings = JSON.parse(await bridge.save_settings(JSON.stringify(payload)));
+  const res = /** @type {SaveSettingsResult} */ (JSON.parse(await bridge.save_settings(JSON.stringify(payload))));
+  // bad input comes back as {error} — don't clobber the settings mirror with it
+  if ("error" in res) { toast("Could not save settings: " + res.error); return; }
+  settings = res;
   updateOrcaStatus(settings.orca_valid);
   // push the new modes to the live graph immediately
   if (SCFGraph && SCFGraph.setEtaMode) SCFGraph.setEtaMode(settings.eta_mode);
@@ -816,6 +962,8 @@ function nebAtomCheck() {
   box.textContent = `✓ Reactant and product match (${r.length} atoms, same order).`;
 }
 
+/** Read the method form into the config payload sent to Python.
+ * @param {string} kind @returns {Partial<StepConfigPayload>} */
 function collectConfig(kind) {
   const def = KIND_DEFS[kind];
   const v = (id) => { const e = document.getElementById(id); return e ? e.value : ""; };
@@ -861,6 +1009,8 @@ function collectConfig(kind) {
 // template: geometry isn't needed yet (raw carries its own coords, or a
 // reference is filled in at run time), so the "load .xyz" / "select a
 // reference" checks are relaxed — exactly like .xyz already behaves.
+/** Read the whole Build form into the calc payload for add_calc/update_calc.
+ * @param {boolean} [forPreview] @returns {CalcInput} */
 function collectCalcFromForm(forPreview = false) {
   const name = document.getElementById("calc-name").value.trim();
   if (!name) throw new Error("Name is required.");
@@ -900,7 +1050,7 @@ function collectCalcFromForm(forPreview = false) {
     name, kind,
     charge: parseInt(document.getElementById("calc-charge").value, 10) || 0,
     multiplicity: parseInt(document.getElementById("calc-mult").value, 10) || 1,
-    geometry_source: src,
+    geometry_source: /** @type {"direct"|"reference"} */ (src),
     xyz, ref_name,
     is_raw: rawMode,
     raw_text: rawMode ? rawText : "",
@@ -917,7 +1067,7 @@ async function addCalcToQueue() {
 
     if (wasEditing && oldName) {
       // edit in place: preserves the calc's position in the queue
-      const res = JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc)));
+      const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
       if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
       if (oldName !== calc.name) delete localCalcs[oldName];
       localCalcs[calc.name] = calc;
@@ -928,7 +1078,7 @@ async function addCalcToQueue() {
       return;
     }
 
-    const res = JSON.parse(await bridge.add_calc(JSON.stringify(calc)));
+    const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
       appendLog("Could not add: " + res.error, "err");
       toast(res.error);
@@ -945,18 +1095,82 @@ async function addCalcToQueue() {
   }
 }
 
+// ---------- MLIP build mode (MACE pre-optimization) ----------
+let mlipXyz = "";               // last loaded .xyz coordinate block for the MLIP form
+let _mlipModelFilled = false;   // populate the model dropdown once
+function renderMlipForm() {
+  const sel = document.getElementById("mlip-model");
+  if (sel && !_mlipModelFilled) {
+    fillGroupedSelect(sel, choicesCache.mace_models, "MACE-OFF medium");
+    _mlipModelFilled = true;
+  }
+}
+async function loadMlipXyz() {
+  const content = await bridge.load_xyz_file();
+  if (!content) return;
+  mlipXyz = parseXyzText(content);
+  const n = mlipXyz ? mlipXyz.split("\n").length : 0;
+  document.getElementById("mlip-xyz-status").textContent =
+    n ? `${n} atoms loaded.` : "No atoms found in file.";
+}
+function resetMlipForm() {
+  document.getElementById("mlip-name").value = "";
+  mlipXyz = "";
+  document.getElementById("mlip-xyz-status").textContent = "";
+}
+async function addMlipCalcToQueue() {
+  try {
+    const name = document.getElementById("mlip-name").value.trim();
+    if (!name) throw new Error("Name is required.");
+    if (/[\\/:*?"<>|]/.test(name))
+      throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
+    if (queue.some(c => c.name === name))
+      throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
+    if (!mlipXyz) throw new Error("Load an .xyz file first.");
+    const model = document.getElementById("mlip-model").value;
+    const calc = /** @type {CalcInput} */ ({
+      name, kind: "mlip_opt",
+      charge: 0, multiplicity: 1,
+      geometry_source: "direct",
+      xyz: mlipXyz, ref_name: "",
+      is_raw: false, raw_text: "",
+      config: { kind: "mlip_opt", mlip_model: model, mlip_env_id: "" },
+      state: "pending", message: "",
+    });
+    const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
+    if (!res.ok) {
+      appendLog("Could not add: " + res.error, "err");
+      toast(res.error);
+      await refreshQueue();
+      return;
+    }
+    localCalcs[calc.name] = calc;
+    appendLog(`Added "${calc.name}" (MLIP ${model}) to queue.`, "ok");
+    resetMlipForm();
+    await refreshQueue();
+    switchTab("queue");
+  } catch (e) {
+    appendLog(e.message, "err"); toast(e.message);
+  }
+}
+
 // ---------- editing existing calcs ----------
 async function editCalc(i) {
   const mirror = queue[i];
   if (!mirror) return;
   if (!isEditableState(mirror.state)) { toast("Only pending, failed, or cancelled calculations can be edited."); return; }
+  // MLIP calcs use the separate MLIP form, not the ORCA editor. In-place editing
+  // isn't wired yet — remove and re-add from the MLIP build mode instead.
+  if ((mirror.kind || "").startsWith("mlip")) { toast("Editing MLIP calculations isn't supported yet — remove it and re-add from the MLIP build mode."); return; }
+  // a normal calc edits in the ORCA build form; leave MLIP mode if we're in it
+  if (buildMode === "mlip") setBuildMode(mirror.is_raw ? "expert" : "beginner", false);
   // prefer the full local copy (has config/xyz/raw_text added on this PC)
   let c = localCalcs[mirror.name];
   if (!c) {
     // not added in this session (restored from a previous run, or added via the
     // phone): fetch the full calc so config/xyz/raw_text are editable here
     try {
-      const res = JSON.parse(await bridge.get_calc(mirror.name));
+      const res = /** @type {GetCalcResult} */ (JSON.parse(await bridge.get_calc(mirror.name)));
       if (res && res.ok && res.calc) { c = res.calc; localCalcs[mirror.name] = c; }
     } catch (e) { /* fall through to the warning */ }
     // the queue may have shifted during the await — make sure i still points at us
@@ -973,8 +1187,8 @@ async function editCalc(i) {
   if (buildMode === "expert") _showIds(["raw-btn"], false);   // raw button stays hidden in expert
 
   document.getElementById("calc-name").value = c.name;
-  document.getElementById("calc-charge").value = c.charge;
-  document.getElementById("calc-mult").value = c.multiplicity;
+  document.getElementById("calc-charge").value = String(c.charge);
+  document.getElementById("calc-mult").value = String(c.multiplicity);
   document.getElementById("calc-kind").value = c.kind;
 
   // geometry source
@@ -1009,6 +1223,8 @@ async function editCalc(i) {
   switchTab("build");
 }
 
+/** Push a stored config back into the method form (inverse of collectConfig).
+ * @param {Partial<StepConfigPayload>} cfg */
 function fillConfigForm(cfg) {
   if (!cfg) return;
   const set = (id, val) => { const e = document.getElementById(id); if (e != null && val != null) e.value = val; };
@@ -1136,7 +1352,7 @@ async function enterRawMode() {
     return;
   }
 
-  const res = JSON.parse(await bridge.build_inp_preview(JSON.stringify(calc)));
+  const res = /** @type {TextResult} */ (JSON.parse(await bridge.build_inp_preview(JSON.stringify(calc))));
   if (!res.ok) {
     rawMode = false;
     appendLog("Could not generate .inp: " + res.error, "err");
@@ -1155,7 +1371,7 @@ function enterRawWithText(text) {
   rawText = text || "";
   const ta = document.getElementById("raw-text");
   ta.value = rawText;
-  ta.oninput = (e) => { rawText = e.target.value; };
+  ta.oninput = (e) => { rawText = /** @type {ORCAFormElement} */ (e.target).value; };
   showRawCard(true);
   if (buildMode !== "expert") lockFormForRaw(true);
   updateEditUI();
@@ -1172,7 +1388,7 @@ async function loadInpFile() {
       confirm: "Load .inp", danger: true });
     if (!ok) return;
   }
-  const res = JSON.parse(await bridge.load_inp_file());
+  const res = /** @type {InpFilePayload} */ (JSON.parse(await bridge.load_inp_file()));
   if (!res || !res.text) return;
   enterRawWithText(res.text);
   // auto-fill the calculation name from the .inp filename (only when the user
@@ -1184,25 +1400,31 @@ async function loadInpFile() {
 
 // Beginner (guided form) vs Expert (paste/load a complete .inp + pick the kind).
 function setBuildMode(mode, persist = true) {
-  if (mode !== "beginner" && mode !== "expert") return;
+  if (mode !== "beginner" && mode !== "expert" && mode !== "mlip") return;
   if (mode === buildMode && editIndex === -1) return;   // re-click of active mode: keep form state
   if (editIndex !== -1) exitEditMode();                 // never carry an in-progress edit across a mode switch
   buildMode = mode;
-  document.getElementById("bmode-beginner").classList.toggle("active", mode === "beginner");
-  document.getElementById("bmode-expert").classList.toggle("active", mode === "expert");
+  for (const m of ["beginner", "expert", "mlip"])
+    document.getElementById("bmode-" + m).classList.toggle("active", mode === m);
   const hint = document.getElementById("bmode-hint");
-  if (mode === "expert") {
+  const mlip = (mode === "mlip");
+  // MLIP mode swaps the entire ORCA build UI for the self-contained MLIP card.
+  _showIds(_ORCA_BUILD, !mlip);
+  _showIds(["card-mlip"], mlip);
+  if (hint) hint.textContent = "";
+  if (mlip) {
+    rawMode = false; rawText = "";
+    renderMlipForm();
+  } else if (mode === "expert") {
     // always raw input: hide the method form + charge/mult + raw button, show the .inp editor
     _showIds(_EXPERT_HIDDEN, false);
     enterRawWithText(rawText);   // keep any pasted text; raw card shown
-    if (hint) hint.textContent = "Paste or load a complete .inp and pick the calc type (used for parsing). Use {{GEOMETRY}} + Geometry source → reference to inject another job's optimized geometry.";
   } else {
     // guided form
     _showIds(_EXPERT_HIDDEN, true);
     rawMode = false; rawText = "";
     showRawCard(false); lockFormForRaw(false);
     renderConfigForm(document.getElementById("calc-kind").value);
-    if (hint) hint.textContent = "";
   }
   if (persist && bridge && bridge.save_settings) bridge.save_settings(JSON.stringify({ build_mode: mode }));
 }
@@ -1210,7 +1432,7 @@ function setBuildMode(mode, persist = true) {
 function showRawCard(show) {
   document.getElementById("raw-card").style.display = show ? "block" : "none";
   if (show) {
-    document.getElementById("raw-text").oninput = (e) => { rawText = e.target.value; };
+    document.getElementById("raw-text").oninput = (e) => { rawText = /** @type {ORCAFormElement} */ (e.target).value; };
   }
 }
 
@@ -1226,6 +1448,7 @@ function lockFormForRaw(locked) {
 // ---------- queue ----------
 let _toastTimer = null;
 function toast(msg) {
+  /** @type {HTMLElement|null} */
   let t = document.getElementById("toast");
   if (!t) {
     t = document.createElement("div");
@@ -1244,21 +1467,21 @@ function toast(msg) {
 async function viewInp(i) {
   const c = queue[i];
   if (!c) return;
-  let text = null, note = "";
+  let text = null;
   try {
-    const res = JSON.parse(await bridge.get_inp(c.name));
+    const res = /** @type {TextResult} */ (JSON.parse(await bridge.get_inp(c.name)));
     if (res.ok && res.text) text = res.text;
   } catch (e) { /* fall through to preview */ }
   if (text == null) {
     let full = localCalcs[c.name];
-    if (!full) { try { const r = JSON.parse(await bridge.get_calc(c.name)); if (r.ok) full = r.calc; } catch (e) { } }
-    if (full && full.is_raw && full.raw_text) { text = full.raw_text; note = " (raw · not yet run)"; }
+    if (!full) { try { const r = /** @type {GetCalcResult} */ (JSON.parse(await bridge.get_calc(c.name))); if (r.ok) full = r.calc; } catch (e) { } }
+    if (full && full.is_raw && full.raw_text) { text = full.raw_text; }
     else if (full) {
-      try { const pv = JSON.parse(await bridge.build_inp_preview(JSON.stringify(full))); if (pv.ok) { text = pv.text; note = " (preview · not yet run)"; } } catch (e) { }
+      try { const pv = /** @type {TextResult} */ (JSON.parse(await bridge.build_inp_preview(JSON.stringify(full)))); if (pv.ok) { text = pv.text; } } catch (e) { }
     }
   }
   if (text == null) { toast("Input not available yet — run the queue first."); return; }
-  await showModal(`Input · ${escapeHtml(c.name)}${note}`, `<pre class="inp-view">${escapeHtml(text)}</pre>`, [{ label: "Close", value: null }]);
+  await showModal(`Input · ${escapeHtml(c.name)}`, `<pre class="inp-view">${escapeHtml(text)}</pre>`, [{ label: "Close", value: null }]);
 }
 
 function renderQueue() {
@@ -1274,11 +1497,12 @@ function renderQueue() {
   queue.forEach((c, i) => {
     const srcLabel = c.geometry_source === "reference" ? `ref → ${c.ref_name}` : ".xyz";
     const rawBadge = c.is_raw ? `<span class="qstate raw">raw</span>` : "";
+    const mlipBadge = (c.kind || "").startsWith("mlip") ? `<span class="qstate raw">MLIP</span>` : "";
     const editable = isEditableState(c.state);   // pending/failed/cancelled: edit + drag
     const removable = c.state !== "running";       // anything but running can be deleted
     const div = document.createElement("div");
     div.className = "queue-item" + (editable ? " draggable" : "");
-    div.dataset.index = i;
+    div.dataset.index = String(i);
     if (editable) div.setAttribute("draggable", "true");
     const handle = editable
       ? `<span class="drag-handle" title="Drag to reorder">≡</span>` : `<span class="drag-handle placeholder"></span>`;
@@ -1291,7 +1515,7 @@ function renderQueue() {
     div.innerHTML = `
       ${handle}
       <div style="flex:1">
-        <div class="qname">${escapeHtml(c.name)} ${rawBadge}</div>
+        <div class="qname">${escapeHtml(c.name)}${rawBadge}${mlipBadge}</div>
         <div class="qsteps">${c.kind} · ${srcLabel} · charge ${c.charge} · mult ${c.multiplicity}</div>
         ${c.message ? (
           c.state === "failed"
@@ -1366,7 +1590,7 @@ async function clearQueue() {
   if (!await confirmModal({ title: "Clear the whole queue?",
       body: `Remove all <b>${queue.length}</b> calculation(s) from the queue? This can't be undone.`,
       confirm: "Clear all", danger: true })) return;
-  const res = JSON.parse(await bridge.clear_queue());
+  const res = /** @type {MutationResult} */ (JSON.parse(await bridge.clear_queue()));
   if (!res.ok) { appendLog(res.error || "Could not clear queue.", "warn"); return; }
   for (const k of Object.keys(localCalcs)) delete localCalcs[k];
   await refreshQueue();
@@ -1428,7 +1652,7 @@ async function runQueue() {
     // Check whether any queued calc would overwrite an existing result on disk.
     let skipNames = [];
     try {
-      const chk = JSON.parse(await bridge.check_overwrite_conflicts());
+      const chk = /** @type {ConflictsResult} */ (JSON.parse(await bridge.check_overwrite_conflicts()));
       if (chk.ok && chk.conflicts && chk.conflicts.length) {
         const list = `<div class="names">${chk.conflicts.join(", ")}</div>`;
         const choice = await showModal(
@@ -1448,7 +1672,7 @@ async function runQueue() {
     } catch (e) { /* if the check fails, fall through and run normally */ }
 
     appendLog("--- starting queue ---", "info");
-    const res = JSON.parse(await bridge.run_queue(JSON.stringify(skipNames)));
+    const res = /** @type {OkResult} */ (JSON.parse(await bridge.run_queue(JSON.stringify(skipNames))));
     if (!res.ok) {
       appendLog("Could not start: " + res.error, "err");
     } else {
@@ -1471,7 +1695,7 @@ async function cancelQueue() {
 async function stopAfterCurrent() {
   _stopRequested = true;                  // one-shot for this run
   setRunUI(_running);
-  const res = JSON.parse(await bridge.stop_after_current());
+  const res = /** @type {OkResult} */ (JSON.parse(await bridge.stop_after_current()));
   appendLog(res.ok ? "Will stop after the current job finishes."
                     : "Nothing is running.", "info");
 }
@@ -1492,7 +1716,7 @@ async function maybeFetchResult(name, outputPath) {
   if (!outputPath || calcResults[name]) return;
   try {
     const raw = await bridge.parse_out_path(outputPath);
-    const data = JSON.parse(raw);
+    const data = /** @type {ParsePayload} */ (JSON.parse(raw));
     if (data && data.summary) {
       calcResults[name] = data.summary;
       if (data.transitions && data.transitions.length) _resultExtras[name] = { transitions: data.transitions };
@@ -1508,6 +1732,7 @@ async function maybeFetchResult(name, outputPath) {
 let _scfTracker = SCFGraph ? new SCFGraph.SCFTracker() : null;
 let _geoTracker = SCFGraph ? new SCFGraph.GeoTracker() : null;
 let _freqTracker = SCFGraph ? new SCFGraph.FreqTracker() : null;
+let _tddftTracker = SCFGraph ? new SCFGraph.TddftTracker() : null;
 let _seededGraph = new Set();   // calc names whose graph is already sourced (live stream or disk-seed)
 const _OPT_KINDS = ["opt", "ts_opt", "opt_freq", "ts_opt_freq"];
 let _scfIterTimes = [];         // arrival times (ms) of recent live SCF-iteration lines, for s/cycle pace
@@ -1520,6 +1745,11 @@ function scfSecPerIter() {
   const span = t[t.length - 1] - t[0];
   if (span < 800) return null;
   return span / (t.length - 1) / 1000;
+}
+// display text for the pace chip ("" while there's no estimate yet)
+function scfPaceText() {
+  const p = scfSecPerIter();
+  return p == null ? "" : `~${p < 10 ? p.toFixed(1) : Math.round(p)} s / SCF cycle`;
 }
 let _logMode = "raw";
 let _graphKind = "auto";   // "auto" | "scf" | "geo"  (sub-mode inside graph)
@@ -1555,11 +1785,15 @@ function setGraphKind(k) { _graphKind = k; renderSCFPanel(); }
 function renderSCFPanel() {
   if (!SCFGraph) return;
   const panel = document.getElementById("scf-panel");
-  // numerical-frequency stage (after an opt+freq's opt finished): show the
-  // displacement progress on top. Its ETA is reliable (the total is known).
+  // post-SCF stage panel on top: the frequency stage (analytical phase chain
+  // or numerical displacement progress) or the TD-DFT phase chain — a run is
+  // only ever one of the two, so freq wins if both somehow have data
   let freqBlock = "";
   if (_freqTracker && _freqTracker.hasData()) {
     freqBlock = `<div class="graph-summary">${SCFGraph.renderFreqProgress(_freqTracker)}</div>` +
+                ((_geoTracker && _geoTracker.hasData()) ? `<div class="graph-divider"></div>` : "");
+  } else if (_tddftTracker && _tddftTracker.hasData()) {
+    freqBlock = `<div class="graph-summary">${SCFGraph.renderTddftProgress(_tddftTracker)}</div>` +
                 ((_geoTracker && _geoTracker.hasData()) ? `<div class="graph-divider"></div>` : "");
   }
   const kind = effectiveGraphKind();
@@ -1575,11 +1809,11 @@ function renderSCFPanel() {
   const isGeo = (kind === "geo" && _geoTracker && _geoTracker.hasData());
   let body;
   if (isGeo) {
-    body = `<div class="graph-summary">${SCFGraph.renderGeoProgress(_geoTracker)}</div>` +
+    body = `<div class="graph-summary">${SCFGraph.renderGeoProgress(_geoTracker, scfPaceText())}</div>` +
            `<div class="graph-divider"></div>` +
            `<div class="graph-plot"></div>`;
   } else {
-    body = `<div class="graph-summary">${SCFGraph.renderSCFProgress(_scfTracker, currentRunningScf())}</div>` +
+    body = `<div class="graph-summary">${SCFGraph.renderSCFProgress(_scfTracker, currentRunningScf(), scfPaceText())}</div>` +
            `<div class="graph-divider"></div>` +
            `<div class="graph-plot"></div>`;
   }
@@ -1633,6 +1867,7 @@ function appendLog(msg, level) {
     _scfTracker = new SCFGraph.SCFTracker();
     _geoTracker = new SCFGraph.GeoTracker();
     _freqTracker = new SCFGraph.FreqTracker();
+    _tddftTracker = new SCFGraph.TddftTracker();
     _graphKind = "auto";
     _scfDirty = true;
     _scfIterTimes = [];   // new job: restart the s/cycle pace estimate
@@ -1657,6 +1892,7 @@ function appendLog(msg, level) {
   if (_scfTracker && _scfTracker.push(msg)) changed = true;
   if (_geoTracker && _geoTracker.push(msg)) changed = true;
   if (_freqTracker && _freqTracker.push(msg)) changed = true;
+  if (_tddftTracker && _tddftTracker.push(msg)) changed = true;
   if (changed) _scfDirty = true;
   // record SCF-iteration arrival times for the s/cycle pace (live lines only;
   // disk-seeded lines bypass appendLog so they don't skew the timing)
@@ -1675,6 +1911,7 @@ function clearLog() {
     _scfTracker = new SCFGraph.SCFTracker();
     _geoTracker = new SCFGraph.GeoTracker();
     _freqTracker = new SCFGraph.FreqTracker();
+    _tddftTracker = new SCFGraph.TddftTracker();
     _seededGraph.clear();   // allow every calc's graph to re-seed
     if (_logMode === "graph") renderSCFPanel();
   }
@@ -1703,6 +1940,7 @@ function showSelectedResult() {
     if (extras.nmr && extras.nmr.length) renderNmr(extras.nmr);
   }
 }
+/** @param {[string, string][]} rows */
 function renderSummary(rows) {
   const body = document.getElementById("result-body");
   let html = `<div class="kv">`;
@@ -1718,6 +1956,7 @@ function renderSummary(rows) {
 }
 async function openOutFile() {
   const raw = await bridge.parse_out_file();
+  /** @type {ParsePayload} */
   let data; try { data = JSON.parse(raw); } catch { return; }
   if (!data.summary) { appendLog("Could not parse file.", "err"); return; }
   renderSummary(data.summary);
@@ -1727,6 +1966,7 @@ async function openOutFile() {
   if (data.nmr && data.nmr.length) renderNmr(data.nmr);
   switchTab("results");
 }
+/** @param {TransitionPayload[]} transitions */
 function renderSpectrum(transitions) {
   const body = document.getElementById("result-body");
   const maxF = Math.max(...transitions.map(t => t.fosc), 1e-6);
@@ -1751,6 +1991,7 @@ function renderSpectrum(transitions) {
     </svg>`;
 }
 
+/** @param {number[]} frequencies @param {number} [nImaginary] */
 function renderFreqSpectrum(frequencies, nImaginary) {
   const body = document.getElementById("result-body");
   if (!frequencies || !frequencies.length) return;
@@ -1797,6 +2038,7 @@ function renderFreqSpectrum(frequencies, nImaginary) {
     ${warn}`;
 }
 
+/** @param {NmrPayload[]} nmr */
 function renderNmr(nmr) {
   const body = document.getElementById("result-body");
   let rows = "";
@@ -1813,6 +2055,7 @@ function renderNmr(nmr) {
     <div class="hint">Absolute shieldings — subtract from a reference (e.g. TMS) to get chemical shifts.</div>`;
 }
 
+/** @param {NebPointPayload[]} path */
 function renderNebPath(path) {
   const body = document.getElementById("result-body");
   if (!path || !path.length) return;
@@ -1864,11 +2107,12 @@ function renderNebPath(path) {
 }
 
 // ---- free energy profile (Results tab) ----
+/** @type {FepPoint[]} */
 let _fepPoints = [];   // cached [{name, gibbs_eh, ...}] in queue order
 
 async function loadFreeEnergyProfile() {
   try {
-    const res = JSON.parse(await bridge.get_free_energy_profile());
+    const res = /** @type {FepResult} */ (JSON.parse(await bridge.get_free_energy_profile()));
     _fepPoints = (res.ok && res.points) ? res.points : [];
   } catch (e) { _fepPoints = []; }
   // populate the reference dropdown (default: first point = RC)

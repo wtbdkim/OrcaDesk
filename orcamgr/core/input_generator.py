@@ -165,6 +165,12 @@ class StepConfig:
     neb_preopt_ends: bool = False        # re-optimize endpoints before the band
     neb_ts_guess_xyz: str = ""           # optional TS guess geometry
 
+    # MLIP (Machine-Learned Interatomic Potential) — used only when kind starts
+    # with "mlip". These drive the separate MLIP pipeline in orcamgr/mlip/, NOT
+    # ORCA: build_input() ignores them entirely (ORCA never sees an MLIP calc).
+    mlip_model: str = ""                 # e.g. "MACE-OFF medium"
+    mlip_env_id: str = ""                # registered MLIP env to run in ("" = first ready)
+
     def to_dict(self) -> dict:
         d = asdict(self)
         return d

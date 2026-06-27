@@ -9,6 +9,7 @@ on a friend's machine where ORCA lives somewhere else.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -72,6 +73,14 @@ def autodetect_orca() -> str:
 @dataclass
 class Settings:
     orca_path: str = ""
+    # Registered MLIP environments, one dict per env: {"id", "name", "python"}.
+    # ORCAdesk does not install any MLIP toolchain — it shells out to each env's
+    # interpreter the same way it shells out to orca_path. There is one env *per
+    # MLIP* because different MLIPs pin conflicting dependencies (MACE vs SevenNet
+    # both pin different e3nn), so they cannot share a venv. Readiness (do the
+    # packages import? which backends?) is probed in orcamgr/mlip/env.py, not
+    # stored here.
+    mlip_envs: list = field(default_factory=list)
     workspace_root: str = ""
     # default compute resources (used to seed the GUI)
     default_nprocs: int = 6
@@ -90,13 +99,14 @@ class Settings:
     @classmethod
     def load(cls) -> "Settings":
         path = config_file()
+        data: dict = {}
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 s = cls(**{k: v for k, v in data.items()
                            if k in cls.__dataclass_fields__})
             except (json.JSONDecodeError, TypeError, OSError):
-                s = cls()
+                data, s = {}, cls()
         else:
             s = cls()
 
@@ -105,6 +115,14 @@ class Settings:
             s.orca_path = autodetect_orca()
         if not s.workspace_root:
             s.workspace_root = str(default_workspace_root())
+        # migrate the old single-interpreter setting to the env list. Use a
+        # deterministic id (hash of the interpreter path) rather than a random
+        # one, so that if the app is reloaded before the first save() lands, the
+        # re-migration yields the SAME env id instead of churning it.
+        legacy = data.get("mlip_python")
+        if legacy and not s.mlip_envs:
+            mig_id = hashlib.sha1(str(legacy).encode("utf-8")).hexdigest()[:8]
+            s.mlip_envs = [{"id": mig_id, "name": "MLIP", "python": legacy}]
         return s
 
     def save(self) -> None:
@@ -114,3 +132,7 @@ class Settings:
 
     def orca_is_valid(self) -> bool:
         return bool(self.orca_path) and Path(self.orca_path).exists()
+
+    def mlip_env(self, env_id: str) -> dict | None:
+        """The registered MLIP environment with this id, or None."""
+        return next((e for e in self.mlip_envs if e.get("id") == env_id), None)

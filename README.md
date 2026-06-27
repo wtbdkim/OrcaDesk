@@ -4,15 +4,16 @@ A desktop GUI for building, queuing, running, and parsing ORCA computational
 chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark **or light** UI),
 Python core.
 
-> **Status: 0.3.0 beta** (`0.3.0-beta`). Desktop app: build → queue → run →
+> **Status: 0.4.0 beta** (`0.4.0-beta`). Desktop app: build → queue → run →
 > parse, validated against real ORCA 6.1.1 output. A running calculation
 > **survives closing the app** and is reattached on the next launch; the UI ships
 > with both a **dark and a light theme**; you can **drag a `.inp`/`.xyz`/`.out`
 > onto the window** to load it; and the Log graph shows **live progress for
-> optimizations and frequency runs** (numerical *and* analytical/CP-SCF). Run from
-> source, or build a standalone Windows app with `build.bat`. (Phone-sync is in
-> development and not part of this build.) See [CHANGELOG.md](CHANGELOG.md) for
-> details.
+> optimizations and frequency runs** (numerical *and* analytical/CP-SCF). You can
+> also **pre-optimize a structure with a MACE model (MLIP)** and hand the result
+> off to an ORCA job, using your own Python environment. Run from source, or build
+> a standalone Windows app with `build.bat`. (Phone-sync is in development and not
+> part of this build.) See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Requirements
 
@@ -61,9 +62,13 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   progress bar. The progress reads from the real ORCA timing, so the accurate
   signals (step, criteria met, per-step rate) lead and the inherently-uncertain
   time is shown as an honest order-of-magnitude estimate, not false precision.
-  **Frequency runs get their own live progress** — a displacement counter for
-  numerical, a CP-SCF perturbation counter for analytical. A `s / SCF cycle`
-  pace readout and a "jump to latest" button keep long runs readable.
+  **Frequency and TD-DFT runs get their own live stage panel** — a HUD-style
+  phase chain over ORCA's real pipeline (analytical Hessian: integrals →
+  CP-SCF with a perturbation counter → Hessian → modes → thermochemistry;
+  TD-DFT: setup → diagonalization with an iteration counter → states →
+  spectra); numerical frequencies keep a displacement progress bar. A
+  `s / SCF cycle` pace readout and a "jump to latest" button keep long runs
+  readable.
 - **Theme**: toggle **dark / light** from the top bar (☀/☽); the choice is
   remembered across launches.
 - **Results**: per-calculation summary (energy, HOMO/LUMO, gap, frequencies with
@@ -110,8 +115,9 @@ orcamgr/
     runner.py                 detached ORCA subprocess; tail .out + reattach
     procutil.py               psutil process identity + tree-kill (reattach)
     queue.py                  multi-job pipeline orchestration
-  server/
-    store.py                  shared queue + session persistence (autosave)
+  state/
+    store.py                  shared queue (single source of truth) + session autosave
+  server/                     optional phone-sync HTTP layer (FastAPI; not in the build)
   gui/
     window.py                 QMainWindow + WebEngine
     bridge.py                 JS <-> Python bridge, worker thread

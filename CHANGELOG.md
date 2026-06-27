@@ -3,6 +3,131 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.0-beta] — 2026-06-28
+
+### Fixed
+- **The frequency/TD-DFT phase panel no longer lingers through `ts_opt` and
+  `irc` runs.** ORCAdesk's `ts_opt` input sets `%geom Calc_Hess true` and
+  `irc` sets `InitHess calc_anfreq`, so ORCA computes a full analytical
+  Hessian inside optimization cycle 1 / before the IRC walk — the panel
+  correctly appeared for that Hessian but then sat stale ("ASSEMBLING SCF
+  HESSIAN") for the entire remaining run. A new `GEOMETRY OPTIMIZATION CYCLE`
+  / `FORWARD IRC` / `BACKWARD IRC` banner now clears the chain, so the panel
+  shows only while a Hessian (or, in raw-input excited-state opts, a TD-DFT
+  stage) is actually being computed. Verified against freshly-run ORCA 6.1.1
+  `OptTS Calc_Hess` and `IRC` outputs plus a per-kind exclusivity audit over
+  263 classified real outputs (opt/opt_freq/ts_opt/ts_freq/irc/freq/tddft/
+  nmr/neb_ts/sp): each panel appears only for its own stage, zero violations.
+- **NMR runs no longer show the analytical-frequencies panel.** GIAO NMR (and
+  polarizability) jobs solve their own CP-SCF equations and print the same
+  "ORCA SCF RESPONSE CALCULATION" banner as the Hessian pipeline, which
+  falsely activated the frequency phase panel. Shared banners now only
+  *advance* an already-active chain; only the Hessian-specific banners
+  (derivative integrals, SCF HESSIAN) can activate it. Verified against 286
+  real ORCA outputs (60 opt, 38 opt+freq, 22 freq, 9 TD-DFT, NMR/SP/NEB/
+  Docker/utility runs): zero false activations, zero missed stages.
+- **A finished opt's graph seeded from disk now reads 100% / converged.**
+  `get_graph_lines` defined the optimization-finished and post-opt-stage
+  patterns but never included matching lines in its filter, so a graph rebuilt
+  from the `.out` (reattach, or finished while ORCAdesk was closed) stayed at
+  ~99% with no "✓ geometry converged" even for a converged opt.
+- **The CP-SCF perturbation total no longer gets overwritten by later property
+  solves.** Some runs print several "Number of perturbations" lines (the
+  geometric 3N solve first, then smaller IR/EPR property solves); the first
+  one now wins, and the Hessian-dimension / mode-count display uses the true
+  3N from the atom count.
+- **Opt-only runs no longer show the frequency-stage banner.** The freq/post-opt
+  stage detectors matched ORCA's section banners case-insensitively, so
+  mixed-case lines present in *every* output — the header credits ("pre 5.0
+  version of the SCF Hessian") and the end-of-run property echo ("Properties
+  with geometric perturbations:", "SCF Hessian ... NO") — falsely switched a
+  plain optimization into the "Analytical frequencies" display and appended
+  "running frequencies / properties…" to the converged line. The markers are
+  now case-sensitive (the real banners are uppercase), verified against real
+  opt-only and analytical-frequency ORCA 6.1.1 outputs.
+
+### Added
+- **"MLIP ready" status indicator + environment probe (multi-environment).** A
+  second status pill in the top bar (next to "ORCA ready") reports whether any
+  Machine-Learned Interatomic Potential environment is usable; hovering lists
+  each registered environment and the backends it provides. Because ORCAdesk
+  does **not** install the MLIP toolchain, the user registers their own Python
+  environments under a new *MLIP environments* setting — **one per MLIP**, since
+  different MLIPs pin conflicting dependencies (e.g. MACE and SevenNet need
+  different `e3nn`) and cannot share a venv. For each, the indicator does an
+  honest **import probe** rather than a mere file-exists check: it shells out to
+  that interpreter, **auto-detects** which known MLIP backends import (MACE,
+  SevenNet; the registry is extensible), and only goes green when the common
+  deps (`torch`, `ase`) plus at least one backend actually load — showing the
+  detected backend/Python versions, or naming what is missing otherwise. Probes
+  run in background threads (importing torch is slow) and the UI polls, so it
+  never blocks. New, deliberately ORCA-independent package `orcamgr/mlip/` holds
+  the detection logic; new bridge slots `pick_mlip_python` / `add_mlip_env` /
+  `remove_mlip_env` / `check_mlip` / `get_mlip_status`. This is the first piece
+  of the planned MLIP→ORCA bridge (pre-optimize cheaply with an MLIP, then refine
+  with ORCA).
+- **MLIP build mode + MACE pre-optimization that actually runs.** The Build tab
+  gains a third mode next to Beginner/Expert: **MLIP**. It hides the ORCA build
+  form and shows a small dedicated form — pick a MACE model (MACE-OFF for
+  organics or MACE-MP-0 for materials, three sizes each), load an `.xyz`, name
+  it, and add a `mlip_opt` calculation to the same queue as ORCA jobs. Running
+  the queue now executes MLIP jobs end to end: the queue engine shells out to the
+  MACE interpreter registered in *MLIP environments*, runs an ASE `LBFGS`
+  geometry optimization (CPU) with the chosen model, and streams its progress to
+  the live log. The optimized geometry is parsed into the same result shape as an
+  ORCA job, so a **downstream ORCA calc can reference an MLIP-optimized geometry**
+  — pre-optimize cheaply with MACE, then refine with DFT — through the same
+  "reference another calculation" mechanism as an opt→freq handoff (works across
+  restarts too). An all-MLIP queue runs without ORCA configured. Validated end to
+  end against a real MACE environment (MACE-OFF), including the MLIP→ORCA handoff.
+- **JS console messages now land in the Log tab.** The WebEngine page forwards
+  `console.*` output (and uncaught front-end errors) into the app log as
+  `[web] level=... line=... source=...` lines, so UI failures are diagnosable
+  in a deployed build without remote debugging. Identical repeated messages
+  are rate-limited (once per 5 s with a suppressed-repeat count), so a JS
+  error loop cannot flood the log buffer.
+
+### Changed
+- **TD-DFT runs get the same HUD-style phase panel** as analytical
+  frequencies, with a 5-dot chain over ORCA's TD-DFT pipeline: XC-kernel
+  setup → iterative diagonalization (live `RPA`/`DAVIDSON` label and
+  iteration counter) → excited-state analysis → transition spectra → final
+  CIS/TD-DFT total energy (banner order verified against 7 real ORCA 6.1.1
+  TD-DFT outputs, both full TD-DFT and TDA). The panel center shows the
+  requested root count.
+- **The analytical-frequencies stage is now a HUD-style phase panel** —
+  hazard-striped border, centered "ANALYTICAL FREQUENCIES" title, a `PHASE k/7`
+  label, and a 7-dot phase chain (done = filled, current = pulsing) tracking
+  ORCA's real Hessian pipeline: derivative integrals → CP-SCF response →
+  Hessian assembly → frequencies → normal modes → IR spectrum →
+  thermochemistry (banner order verified against 4 real ORCA 6.1.1 freq
+  outputs). The panel center shows the stage's headline number (atom count,
+  K/N perturbations with CP-SCF iteration, 3N×3N Hessian dimension, mode
+  count, temperature) and the bottom status line names the running stage;
+  `ORCA TERMINATED NORMALLY` completes the chain. Numerical frequencies keep
+  the displacement progress bar.
+- **The "~N s / SCF cycle" pace indicator moved from the Log-tab toolbar into
+  the SCF panel's progress meta line** (right-aligned on the same row as the
+  criteria/"✓ geometry converged" status), where the rest of the run pacing
+  info lives.
+- **Bridge/API payloads now have a single source of truth:**
+  `orcamgr/state/schemas.py` defines TypedDicts for every payload crossing the
+  QWebChannel bridge and the phone HTTP API (settings, log, queue snapshots,
+  parse results, server status, ok/error envelopes), and `bridge.py` /
+  `server/app.py` / `store.py` build their responses through them instead of
+  ad-hoc dicts. The JSON wire format is byte-identical (verified against 40
+  captured payloads); `web/types.js` cross-references it as the JS mirror.
+- **The web front-end is now type-checked** (`// @ts-check` + JSDoc against
+  `jsconfig.json`; payload typedefs in `web/types.js` mirror the Python
+  serialization layer). Typing surfaced one real bug, now fixed: a failed
+  settings save returned `{"error": ...}` and silently replaced the in-memory
+  settings mirror; it now shows a toast and keeps the previous settings.
+- **`QueueStore` moved from `orcamgr/server/store.py` to `orcamgr/state/store.py`.**
+  The store is the single source of truth shared by the desktop Bridge *and* the
+  phone-sync HTTP server, so living under `server/` misrepresented the dependency
+  direction (now `gui -> state <- server`). The old import path still works through
+  a deprecation shim.
+
 ## [0.3.4-beta] — 2026-06-11
 
 ### Changed

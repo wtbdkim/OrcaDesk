@@ -21,9 +21,19 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
 
-from .store import QueueStore, calc_from_dict, make_engine_factory, load_all_choices
+from ..state.store import QueueStore, calc_from_dict, make_engine_factory, load_all_choices
+from ..state.schemas import (
+    HealthPayload, HeartbeatResult, MutationResult, OkResult, PingPayload,
+    RunStartedResult,
+)
 from ..paths import APP_VERSION, web_mobile_dir
 from ..config import Settings
+
+# NOTE: endpoints keep their `-> dict` return annotation on purpose. FastAPI
+# infers a response_model from the return annotation, and a TypedDict model
+# would put pydantic validation/serialization between us and the wire — so the
+# body is CONSTRUCTED through the schemas.py types instead (a plain dict at
+# runtime), which keeps the JSON byte-identical.
 
 # loopback peers (the desktop app's own requests). "localhost" is never a
 # resolved socket peer (that is always an IP literal), so it is not listed.
@@ -75,25 +85,25 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
         """Lightweight reachability + token check for the phone.
         Open (no middleware guard) so the phone can test a PIN; returns whether
         the supplied token is valid WITHOUT revealing the real one."""
-        return {"ok": True, "authorized": store.check_token(token)}
+        return PingPayload(ok=True, authorized=store.check_token(token))
 
     @app.get("/api/health")
     def health() -> dict:
-        return {
-            "status": "ok",
-            "app": "ORCAdesk",
-            "version": APP_VERSION,
-            "running": store.running,
-            "queue_version": store.version(),
-            "clients": store.active_clients(),
-        }
+        return HealthPayload(
+            status="ok",
+            app="ORCAdesk",
+            version=APP_VERSION,
+            running=store.running,
+            queue_version=store.version(),
+            clients=store.active_clients(),
+        )
 
     @app.post("/api/heartbeat")
     def heartbeat(payload: dict) -> dict:
         """Phone pings this periodically so the PC can show 'N phones connected'."""
         cid = str(payload.get("client_id", "")).strip()
         store.heartbeat(cid)
-        return {"ok": True, "clients": store.active_clients()}
+        return HeartbeatResult(ok=True, clients=store.active_clients())
 
     @app.get("/api/queue")
     def get_queue() -> dict:
@@ -110,7 +120,7 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
         except ValueError as e:
             # duplicate name etc.
             raise HTTPException(status_code=409, detail=str(e))
-        return {"ok": True, "snapshot": store.snapshot()}
+        return MutationResult(ok=True, snapshot=store.snapshot())
 
     @app.delete("/api/queue/{name}")
     def remove_calc(name: str) -> dict:
@@ -120,7 +130,7 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
             raise HTTPException(status_code=409, detail=str(e))
         if not removed:
             raise HTTPException(status_code=404, detail=f"No calculation named '{name}'.")
-        return {"ok": True, "snapshot": store.snapshot()}
+        return MutationResult(ok=True, snapshot=store.snapshot())
 
     @app.post("/api/queue/reorder")
     def reorder_calc(payload: dict) -> dict:
@@ -133,7 +143,7 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
             store.reorder(f, t)
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e))
-        return {"ok": True, "snapshot": store.snapshot()}
+        return MutationResult(ok=True, snapshot=store.snapshot())
 
     @app.post("/api/run")
     def run_queue() -> dict:
@@ -151,14 +161,14 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
             raise HTTPException(status_code=409, detail=str(e))   # already running
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))   # empty queue
-        return {"ok": True, "running": True}
+        return RunStartedResult(ok=True, running=True)
 
     @app.post("/api/cancel")
     def cancel_queue() -> dict:
         ok = store.cancel_run()
         if not ok:
             raise HTTPException(status_code=409, detail="No run is in progress.")
-        return {"ok": True}
+        return OkResult(ok=True)
 
     @app.get("/api/log")
     def get_log(since: int = 0) -> dict:

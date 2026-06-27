@@ -1,0 +1,25 @@
+{
+  // Type-checking config for the web/ front-end (plain JS + JSDoc, no build).
+  // Check with:  npx -p typescript tsc --noEmit -p jsconfig.json
+  // The payload typedefs live in web/types.js and MUST mirror the Python
+  // serialization layer (orcamgr/state/store.py + orcamgr/gui/bridge.py)
+  // field by field; web/globals.d.ts declares the Qt/QWebChannel environment.
+  "compilerOptions": {
+    "checkJs": true,
+    "noEmit": true,
+    "target": "ES2022",
+    "module": "esnext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // Pragmatic, not strict: the UI predates typing. strictNullChecks would
+    // demand hundreds of null guards on getElementById without catching the
+    // class of bug we care about (payload field names across the bridge).
+    "strict": false,
+    // explicit: newer TypeScript versions flip this default independently
+    // of "strict"
+    "strictNullChecks": false,
+    "skipLibCheck": true,
+    // don't pick up @types packages from any stray node_modules
+    "types": []
+  },
+  "include": ["web/**/*.js", "web/**/*.d.ts"]
+}
