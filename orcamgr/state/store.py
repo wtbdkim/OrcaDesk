@@ -99,7 +99,8 @@ def _flatten_choices(value) -> list:
 def load_all_choices() -> dict:
     """Read every data/*.json and return {name: [flat list of options]}."""
     names = ["functionals", "basis_sets", "scf_convergences",
-             "ri_approximations", "solvents", "calculation_types", "options"]
+             "ri_approximations", "solvents", "calculation_types", "options",
+             "mace_models"]
     result = {}
     for name in names:
         path = data_dir() / f"{name}.json"
@@ -164,6 +165,10 @@ def _meta_line(c: Calculation) -> str:
         src = f"ref {c.ref_name}"
     else:
         src = ".xyz"
+    # MLIP calcs don't use charge/multiplicity; show the MACE model instead.
+    if c.kind.startswith("mlip"):
+        model = getattr(c.config, "mlip_model", "") if c.config else ""
+        return f"{c.kind} · {src} · {model or 'MACE'}"
     return f"{c.kind} · {src} · q{c.charge} m{c.multiplicity}"
 
 
@@ -241,14 +246,21 @@ def calc_from_session_dict(d: dict) -> Calculation:
     return c
 
 
-def _parse_if_exists(path: str):
+def _parse_if_exists(calc):
+    """Parse a calc's on-disk output if present, dispatching on kind (MLIP uses
+    its JSON parser, ORCA the .out parser). Returns None on any read/parse error
+    so reconciliation can fall back to FAILED rather than crash."""
     from pathlib import Path
-    if path and Path(path).exists():
-        try:
-            return parse_file(path)
-        except Exception:
-            return None
-    return None
+    path = getattr(calc, "output_path", "") or ""
+    if not (path and Path(path).exists()):
+        return None
+    try:
+        if getattr(calc, "kind", "").startswith("mlip"):
+            from ..mlip.parser import parse_mlip_result
+            return parse_mlip_result(path)
+        return parse_file(path)
+    except Exception:
+        return None
 
 
 def reconcile_calcs(calcs: "list[Calculation]") -> None:
@@ -271,7 +283,7 @@ def reconcile_calcs(calcs: "list[Calculation]") -> None:
                 continue  # genuinely still running — reattach on resume
             c.pid = None
             c.create_time = None
-            r = _parse_if_exists(c.output_path)
+            r = _parse_if_exists(c)
             if r is not None and r.terminated_normally:
                 c.result = r
                 try:
@@ -645,20 +657,25 @@ class QueueStore:
 
 
 def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str,
-                        skip_names: "set[str] | None" = None):
+                        skip_names: "set[str] | None" = None,
+                        mlip_envs: "list | None" = None):
     """
     Returns a zero-arg factory that builds a QueueEngine whose callbacks feed
     the given store (log buffer + version bumps). Used by start_run().
 
     skip_names: calculations the user chose not to run (e.g. to avoid
     overwriting existing results on disk).
+    mlip_envs: registered MLIP environments [{id, name, python}], so the engine
+    can run mlip_* calcs in the user's MACE interpreter. None/empty disables MLIP.
     """
     skip = set(skip_names or ())
+    envs = list(mlip_envs or [])
 
     def factory() -> QueueEngine:
         cb = QueueCallbacks(
             log=lambda msg, level: store.append_log(msg, level),
             calc_update=lambda i, c: store.touch(),
         )
-        return QueueEngine(orca_path, workspace_root, cb, skip_names=skip)
+        return QueueEngine(orca_path, workspace_root, cb, skip_names=skip,
+                           mlip_envs=envs)
     return factory

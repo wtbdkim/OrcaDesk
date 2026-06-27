@@ -1,12 +1,18 @@
 """
 MLIP environment detection.
 
-ORCAdesk does NOT install the MLIP toolchain. The user creates their own Python
-environment (PyTorch + mace-torch + ASE) and points ORCAdesk at its interpreter;
-this module probes that interpreter so the UI can show an HONEST "MLIP ready"
-status — green only when the required packages actually import, not merely when
-the interpreter path exists. (The common failure mode of "I ran pip myself" is a
-venv that's missing a package, which a file-exists check would miss.)
+ORCAdesk does NOT install any MLIP toolchain. The user registers one or more
+Python environments — *one per MLIP*, because different MLIPs pin conflicting
+dependency versions (e.g. MACE and SevenNet pin different ``e3nn``), so a single
+shared env would break. ORCAdesk just points at each environment's interpreter
+and probes it so the UI can show an HONEST readiness status — green only when
+the packages actually import, not merely when the interpreter path exists. (The
+common failure mode of "I ran pip myself" is a venv missing a package, which a
+file-exists check would miss.)
+
+Detection is **auto**: the probe imports every MLIP package it knows about
+(:data:`MLIP_BACKENDS`) in the user's interpreter and reports which ones are
+present, so one registered env naturally surfaces whatever backends it contains.
 
 Kept entirely separate from the ORCA discovery logic in ``orcamgr/config.py``.
 """
@@ -16,25 +22,74 @@ from __future__ import annotations
 import subprocess
 import sys
 import json
+import uuid
 from pathlib import Path
 
 
-# Packages the MLIP pre-optimization workflow needs in the user's environment.
-REQUIRED_PACKAGES = ("torch", "mace", "ase")
+# Dependencies every MLIP environment needs regardless of which backend it hosts.
+COMMON_PACKAGES = ("torch", "ase")
 
-# Probe executed INSIDE the user's interpreter: import each required package,
-# capture its version (or None on failure), and print a single JSON line.
-# Built from REQUIRED_PACKAGES so there is one source of truth.
+# Known MLIP backends: key -> {label, package}. ``package`` is the import name
+# that proves the backend is installed; ``label`` is what the UI shows. The probe
+# imports each of these and reports the ones that load, so detection is automatic
+# (the user never declares which MLIP an env contains). Extend by adding a row —
+# verify the import name against the actual installed package.
+MLIP_BACKENDS = {
+    "mace":     {"label": "MACE",     "package": "mace"},
+    "sevennet": {"label": "SevenNet", "package": "sevenn"},
+}
+
+
+def new_env_id() -> str:
+    """Stable short id for a registered MLIP environment."""
+    return uuid.uuid4().hex[:8]
+
+
+def resolve_interpreter(path: str) -> str:
+    """Normalize a user-supplied interpreter path. A very common mistake is to
+    point at the env *folder* (e.g. ``C:\\Program Files\\Python312``) instead of
+    the interpreter inside it — launching a directory raises WinError 5. If given
+    a directory, find the python executable within it. Returns the resolved path,
+    or the original (stripped of surrounding quotes) when nothing better is found,
+    so the caller's existence/probe checks still produce a clear error."""
+    p = (path or "").strip().strip('"')
+    if not p:
+        return p
+    pp = Path(p)
+    if pp.is_dir():
+        if sys.platform.startswith("win"):
+            cands = [pp / "python.exe", pp / "Scripts" / "python.exe"]
+        else:
+            cands = [pp / "bin" / "python3", pp / "bin" / "python", pp / "python"]
+        for c in cands:
+            if c.exists():
+                return str(c)
+    return p
+
+
+def _probe_names() -> list[str]:
+    """All import names the probe checks: the common deps plus every backend's
+    package, de-duplicated, common-first."""
+    names = list(COMMON_PACKAGES)
+    for spec in MLIP_BACKENDS.values():
+        if spec["package"] not in names:
+            names.append(spec["package"])
+    return names
+
+
+# Probe executed INSIDE the user's interpreter: import each name, capture its
+# version (or None on failure), print a single JSON line. Built from the registry
+# so there is one source of truth.
 _PROBE = (
     "import importlib, json, sys\n"
-    f"pkgs = {list(REQUIRED_PACKAGES)!r}\n"
+    f"names = {_probe_names()!r}\n"
     "out = {}\n"
-    "for _name in pkgs:\n"
+    "for _n in names:\n"
     "    try:\n"
-    "        _m = importlib.import_module(_name)\n"
-    "        out[_name] = getattr(_m, '__version__', '?')\n"
+    "        _m = importlib.import_module(_n)\n"
+    "        out[_n] = getattr(_m, '__version__', '?')\n"
     "    except Exception:\n"
-    "        out[_name] = None\n"
+    "        out[_n] = None\n"
     "print(json.dumps({'python': sys.version.split()[0], 'packages': out}))\n"
 )
 
@@ -46,26 +101,32 @@ def _no_window_flags() -> int:
     return 0
 
 
-def probe_mlip(python_path: str, timeout: float = 30.0) -> dict:
+def probe_env(python_path: str, timeout: float = 30.0) -> dict:
     """
-    Run the user's Python interpreter and check the MLIP packages import.
+    Run the user's Python interpreter and check which MLIP packages import.
 
     Returns a plain dict:
-      ready    : bool                 -- path exists AND all REQUIRED_PACKAGES import
-      python   : str                  -- the configured interpreter path
-      version  : str                  -- interpreter version (e.g. "3.11.5"), or ""
-      packages : dict[str, str|None]  -- package -> version, or None if missing
-      missing  : list[str]            -- required packages that failed to import
-      error    : str | None           -- why the probe could not run at all
+      python         : str                 -- the configured interpreter path
+      version        : str                 -- interpreter version ("3.11.5"), or ""
+      packages       : dict[str, str|None] -- import name -> version, or None
+      common_missing : list[str]           -- of COMMON_PACKAGES, which failed
+      backends       : list[dict]          -- detected: {key, label, version}
+      ready          : bool                -- all common deps import AND >=1 backend
+      error          : str | None          -- why the probe could not run at all
     """
     path = (python_path or "").strip()
     base: dict = {
-        "ready": False, "python": path, "version": "",
-        "packages": {}, "missing": list(REQUIRED_PACKAGES), "error": None,
+        "python": path, "version": "", "packages": {},
+        "common_missing": list(COMMON_PACKAGES), "backends": [],
+        "ready": False, "error": None,
     }
 
     if not path or not Path(path).exists():
         base["error"] = "Interpreter path is not set or does not exist."
+        return base
+    if Path(path).is_dir():
+        base["error"] = ("That path is a folder, not a Python interpreter — "
+                         "point at the python.exe inside it.")
         return base
 
     try:
@@ -90,61 +151,71 @@ def probe_mlip(python_path: str, timeout: float = 30.0) -> dict:
         return base
 
     packages = data.get("packages", {}) or {}
-    missing = [p for p in REQUIRED_PACKAGES if not packages.get(p)]
+    common_missing = [p for p in COMMON_PACKAGES if not packages.get(p)]
+    backends = [
+        {"key": key, "label": spec["label"], "version": packages[spec["package"]]}
+        for key, spec in MLIP_BACKENDS.items()
+        if packages.get(spec["package"])
+    ]
     base.update(
         version=data.get("python", ""),
         packages=packages,
-        missing=missing,
-        ready=(len(missing) == 0),
+        common_missing=common_missing,
+        backends=backends,
+        ready=(not common_missing and bool(backends)),
     )
     return base
 
 
-# ---- wire-shape helpers (MlipStatusPayload in state/schemas.py) -------------
-# These build the dict the bridge serializes to the front-end. Kept here so the
+# ---- wire-shape helpers (MlipEnvPayload / MlipStatusPayload in schemas.py) ----
+# These build the dicts the bridge serializes to the front-end. Kept here so the
 # MLIP status vocabulary lives with the MLIP code, not in the bridge.
 
-def status_from_probe(probe: dict) -> dict:
-    """Map a :func:`probe_mlip` result to the MlipStatusPayload wire shape."""
+def env_payload_checking(env_id: str, name: str, python: str) -> dict:
+    """MlipEnvPayload while a probe is running in the background."""
+    return {
+        "id": env_id, "name": name, "python": python,
+        "state": "checking", "version": "", "backends": [],
+        "message": "Checking environment…",
+    }
+
+
+def env_payload_from_probe(env_id: str, name: str, probe: dict) -> dict:
+    """Map a :func:`probe_env` result to the MlipEnvPayload wire shape."""
+    backends = probe.get("backends") or []
     if probe.get("ready"):
-        mace_v = (probe.get("packages") or {}).get("mace") or "?"
-        return {
-            "state": "ready",
-            "python": probe.get("python", ""),
-            "version": probe.get("version", ""),
-            "label": f"mace {mace_v}",
-            "missing": [],
-            "message": "All required packages available.",
-        }
-    missing = probe.get("missing") or []
-    if probe.get("error"):
-        message = probe["error"]
-    elif missing:
-        message = "Missing: " + ", ".join(missing)
+        state = "ready"
+        message = "Ready: " + ", ".join(f"{b['label']} {b['version']}" for b in backends)
     else:
-        message = "Environment not ready."
+        state = "error"
+        common_missing = probe.get("common_missing") or []
+        if probe.get("error"):
+            message = probe["error"]
+        elif common_missing:
+            message = "Missing core packages: " + ", ".join(common_missing)
+        elif not backends:
+            known = ", ".join(spec["label"] for spec in MLIP_BACKENDS.values())
+            message = f"No MLIP package found (need one of: {known})."
+        else:
+            message = "Environment not ready."
     return {
-        "state": "error",
-        "python": probe.get("python", ""),
-        "version": probe.get("version", ""),
-        "label": "",
-        "missing": list(missing),
-        "message": message,
+        "id": env_id, "name": name, "python": probe.get("python", ""),
+        "state": state, "version": probe.get("version", ""),
+        "backends": backends, "message": message,
     }
 
 
-def unset_status() -> dict:
-    """Status when no MLIP interpreter is configured."""
-    return {
-        "state": "unset", "python": "", "version": "", "label": "",
-        "missing": list(REQUIRED_PACKAGES),
-        "message": "MLIP interpreter not set.",
-    }
-
-
-def checking_status(python_path: str) -> dict:
-    """Status while a probe is running in the background."""
-    return {
-        "state": "checking", "python": python_path or "", "version": "",
-        "label": "", "missing": [], "message": "Checking environment…",
-    }
+def aggregate_status(envs: list[dict]) -> dict:
+    """Roll a list of MlipEnvPayload up into the top-bar MlipStatusPayload.
+    Aggregate state: ``ready`` if any env is ready, else ``checking`` if any is
+    still probing, else ``error`` if envs exist but none are ready, else
+    ``unset`` when nothing is registered."""
+    if not envs:
+        return {"state": "unset", "envs": []}
+    if any(e["state"] == "ready" for e in envs):
+        state = "ready"
+    elif any(e["state"] == "checking" for e in envs):
+        state = "checking"
+    else:
+        state = "error"
+    return {"state": state, "envs": envs}

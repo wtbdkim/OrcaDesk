@@ -66,7 +66,7 @@
 
 /**
  * Method configuration. Mirror of StepConfig in input_generator.py
- * (to_dict()/from_dict are a plain asdict round-trip) — 27 fields.
+ * (to_dict()/from_dict are a plain asdict round-trip) — 29 fields.
  * @typedef {Object} StepConfigPayload
  * @property {string} kind
  * @property {string} functional
@@ -95,6 +95,8 @@
  * @property {number} neb_nimages
  * @property {boolean} neb_preopt_ends
  * @property {string} neb_ts_guess_xyz
+ * @property {string} mlip_model       MACE model, e.g. "MACE-OFF medium" (kind "mlip*")
+ * @property {string} mlip_env_id      registered MLIP env to run in ("" = first ready)
  */
 
 /**
@@ -163,28 +165,44 @@
  * success but {error} on bad input — see SaveSettingsResult.
  * @typedef {Object} SettingsPayload
  * @property {string} orca_path
- * @property {string} mlip_python
  * @property {string} workspace_root
  * @property {number} default_nprocs
  * @property {number} default_maxcore_mb
  * @property {string} theme
  * @property {"conservative"|"eager"} eta_mode
  * @property {"all5"|"maxgrad"} geo_graph_mode
- * @property {"beginner"|"expert"} build_mode
+ * @property {"beginner"|"expert"|"mlip"} build_mode
  * @property {boolean} orca_valid
  */
 
 /**
- * Mirror of Bridge.get_mlip_status() / check_mlip(). MLIP environment readiness.
- * ORCAdesk does not install the MLIP toolchain; the user points it at their own
- * Python env and this reports whether torch/mace/ase actually import.
+ * One MLIP backend detected inside a registered environment.
+ * @typedef {Object} MlipBackend
+ * @property {string} key       registry key, e.g. "mace"
+ * @property {string} label     display label, e.g. "MACE"
+ * @property {string} version   installed package version, e.g. "0.3.6"
+ */
+
+/**
+ * One registered MLIP environment (config merged with its live probe).
+ * ORCAdesk does not install the MLIP toolchain; the user points each env at
+ * their own Python and this reports which backends actually import.
+ * @typedef {Object} MlipEnvPayload
+ * @property {string} id
+ * @property {string} name
+ * @property {string} python    configured interpreter path
+ * @property {"checking"|"ready"|"error"} state
+ * @property {string} version   interpreter Python version, or ""
+ * @property {MlipBackend[]} backends   auto-detected backends present
+ * @property {string} message   human-readable status / error detail
+ */
+
+/**
+ * Mirror of Bridge.get_mlip_status() / check_mlip() / add_mlip_env() /
+ * remove_mlip_env(). Aggregate MLIP picture: top-bar state + every env.
  * @typedef {Object} MlipStatusPayload
  * @property {"unset"|"checking"|"ready"|"error"} state
- * @property {string} python    configured interpreter path
- * @property {string} version   interpreter Python version, or ""
- * @property {string} label     ver-badge text, e.g. "mace 0.3.6", or ""
- * @property {string[]} missing required packages that did not import
- * @property {string} message   human-readable status / error detail
+ * @property {MlipEnvPayload[]} envs
  */
 
 /**

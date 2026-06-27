@@ -29,9 +29,11 @@ const localCalcs = {};          // name -> full calc (config/xyz/raw) added on T
 let editIndex = -1;             // queue index being edited, or -1 for "new"
 let rawMode = false;            // is the current build form in raw mode?
 let rawText = "";               // current raw .inp text being edited
-let buildMode = "beginner";     // "beginner" (guided form) or "expert" (paste a full .inp)
+let buildMode = "beginner";     // "beginner" (guided form), "expert" (paste a full .inp), or "mlip" (MACE pre-opt)
 // controls hidden in expert mode (the guided form, charge/mult, the raw button)
 const _EXPERT_HIDDEN = ["card-method", "field-charge", "field-mult", "raw-btn"];
+// the whole ORCA build UI — hidden in mlip mode (which shows card-mlip instead)
+const _ORCA_BUILD = ["card-calc", "card-geometry", "card-method", "raw-card", "build-actions"];
 function _showIds(ids, on) {
   ids.forEach(id => { const e = document.getElementById(id); if (e) e.style.display = on ? "" : "none"; });
 }
@@ -257,7 +259,7 @@ async function loadAbout() {
 
 // ---------- choices ----------
 async function loadAllChoices() {
-  const names = ["functionals","basis_sets","calculation_types","scf_convergences","ri_approximations","solvents"];
+  const names = ["functionals","basis_sets","calculation_types","scf_convergences","ri_approximations","solvents","mace_models"];
   for (const n of names) {
     try { choicesCache[n] = /** @type {ChoiceGroups} */ (JSON.parse(await bridge.load_choices(n))); }
     catch (e) { choicesCache[n] = {}; }
@@ -470,7 +472,6 @@ async function loadSettings() {
   settings = /** @type {SettingsPayload} */ (JSON.parse(await bridge.get_settings()));
   applyTheme(settings.theme);
   document.getElementById("set-orca").value = settings.orca_path || "";
-  document.getElementById("set-mlip").value = settings.mlip_python || "";
   document.getElementById("set-ws").value = settings.workspace_root || "";
   document.getElementById("set-nprocs").value = String(settings.default_nprocs || 6);
   document.getElementById("set-maxcore").value = String(settings.default_maxcore_mb || 2400);
@@ -483,10 +484,9 @@ async function loadSettings() {
   const grad = document.querySelector(`input[name="geo-mode"][value="${gmode}"]`);
   if (grad) grad.checked = true;
   updateOrcaStatus(settings.orca_valid);
-  // MLIP readiness is a separate background probe (importing torch is slow):
-  // if a path is set, kick a check and poll; otherwise show "not set".
-  if (settings.mlip_python) checkMlip(false);
-  else updateMlipStatus({ state: "unset", python: "", version: "", label: "", missing: [], message: "" });
+  // MLIP environments are managed in their own channel (a background probe per
+  // env); render from get_mlip_status() and poll while any is still checking.
+  pollMlipStatus();
 }
 function updateOrcaStatus(valid) {
   const pill = document.getElementById("orca-status");
@@ -495,46 +495,118 @@ function updateOrcaStatus(valid) {
 }
 
 let _mlipPollTimer = 0;
-/** Reflect an MlipStatusPayload on the top-bar pill and the Settings hint line.
+/** Backend list -> "MACE 0.3.6, SevenNet 0.10.0".
+ *  @param {MlipBackend[]} backends */
+function mlipBackendText(backends) {
+  return (backends || []).map(b => b.label + " " + b.version).join(", ");
+}
+/** Reflect an aggregate MlipStatusPayload on the top-bar pill (state + hover
+ *  detail) and the Settings env list.
  *  @param {MlipStatusPayload} st */
-function updateMlipStatus(st) {
+function renderMlip(st) {
   const state = (st && st.state) || "unset";
+  const envs = (st && st.envs) || [];
   const pill = document.getElementById("mlip-status");
   pill.classList.toggle("ok", state === "ready");
   pill.classList.toggle("err", state === "error");
   document.getElementById("mlip-status-text").textContent =
-    state === "ready" ? "MLIP ready"
-    : state === "checking" ? "MLIP checking…"
-    : state === "error" ? "MLIP error"
-    : "MLIP not set";
-  const hint = document.getElementById("set-mlip-status");
-  if (!hint) return;
-  if (state === "ready") {
-    const parts = [];
-    if (st.version) parts.push("python " + st.version);
-    if (st.label) parts.push(st.label);
-    hint.textContent = "Ready" + (parts.length ? " · " + parts.join(" · ") : "");
-    hint.style.color = "var(--ok)";
-  } else if (state === "checking") {
-    hint.textContent = "Checking environment…"; hint.style.color = "";
-  } else if (state === "error") {
-    hint.textContent = st.message || "Environment not ready."; hint.style.color = "var(--err)";
-  } else {
-    hint.textContent = ""; hint.style.color = "";
+    state === "ready" ? "MLIP: ready"
+    : state === "checking" ? "MLIP: checking…"
+    : state === "error" ? "MLIP: error"
+    : "MLIP: not set";
+  // hover tooltip: one line per env with its detected backends / status
+  pill.title = envs.length
+    ? envs.map(e =>
+        e.name + ": " + (
+          e.state === "ready" ? mlipBackendText(e.backends)
+          : e.state === "checking" ? "checking…"
+          : (e.message || "not ready"))).join("\n")
+    : "No MLIP environment registered";
+  renderMlipEnvList(envs);
+}
+/** Render the registered-environment rows in the Settings tab.
+ *  @param {MlipEnvPayload[]} envs */
+function renderMlipEnvList(envs) {
+  const box = document.getElementById("mlip-env-list");
+  if (!box) return;
+  box.textContent = "";
+  if (!envs.length) {
+    const d = document.createElement("div");
+    d.className = "hint";
+    d.textContent = "No environment registered yet.";
+    box.appendChild(d);
+    return;
+  }
+  for (const e of envs) {
+    const row = document.createElement("div");
+    row.className = "mlip-env-row";
+
+    const dot = document.createElement("span");
+    dot.className = "mlip-dot" + (e.state === "ready" ? " ok" : e.state === "error" ? " err" : "");
+
+    const info = document.createElement("div");
+    info.className = "mlip-env-info";
+    const nm = document.createElement("div");
+    nm.className = "mlip-env-name";
+    nm.textContent = e.name || "(unnamed)";
+    const pa = document.createElement("div");
+    pa.className = "mlip-env-path mono";
+    pa.textContent = e.python;
+    const de = document.createElement("div");
+    de.className = "mlip-env-detail";
+    if (e.state === "ready") {
+      de.textContent = (mlipBackendText(e.backends) || "ready") + (e.version ? " · python " + e.version : "");
+      de.style.color = "var(--ok)";
+    } else if (e.state === "checking") {
+      de.textContent = "checking…";
+    } else {
+      de.textContent = e.message || "not ready";
+      de.style.color = "var(--err)";
+    }
+    info.append(nm, pa, de);
+
+    const btns = document.createElement("div");
+    btns.className = "mlip-env-btns";
+    const chk = document.createElement("button");
+    chk.className = "btn btn-ghost";
+    chk.textContent = "Check";
+    chk.onclick = () => checkMlipEnv(e.id);
+    const rm = document.createElement("button");
+    rm.className = "btn btn-ghost";
+    rm.textContent = "Remove";
+    rm.onclick = () => removeMlipEnv(e.id);
+    btns.append(chk, rm);
+
+    row.append(dot, info, btns);
+    box.appendChild(row);
   }
 }
-/** Poll get_mlip_status() until the background probe settles. */
+/** Poll get_mlip_status() until every env probe settles. */
 async function pollMlipStatus() {
   const st = /** @type {MlipStatusPayload} */ (JSON.parse(await bridge.get_mlip_status()));
-  updateMlipStatus(st);
+  renderMlip(st);
   clearTimeout(_mlipPollTimer);
   if (st.state === "checking") _mlipPollTimer = setTimeout(pollMlipStatus, 800);
 }
-/** (Re)run the MLIP environment probe. When the user clicks "Check environment"
- *  (explicit), persist the typed path first so the right interpreter is probed. */
-async function checkMlip(explicit) {
-  if (explicit) await saveSettings();   // saveSettings persists mlip_python and restarts the probe
-  else await bridge.check_mlip();
+/** Register the interpreter currently in the "Add" field as a new MLIP env. */
+async function addMlipEnv() {
+  const input = document.getElementById("set-mlip");
+  const python = input.value.trim();
+  if (!python) { toast("Enter or browse to a Python interpreter path."); return; }
+  const res = JSON.parse(await bridge.add_mlip_env(JSON.stringify({ python })));
+  if (res && res.error) { toast("Could not add environment: " + res.error); return; }
+  input.value = "";
+  renderMlip(/** @type {MlipStatusPayload} */ (res));
+  pollMlipStatus();
+}
+async function removeMlipEnv(id) {
+  const res = JSON.parse(await bridge.remove_mlip_env(id));
+  renderMlip(/** @type {MlipStatusPayload} */ (res));
+}
+/** Re-probe a single registered env. */
+async function checkMlipEnv(id) {
+  const res = JSON.parse(await bridge.check_mlip(id));
+  renderMlip(/** @type {MlipStatusPayload} */ (res));
   pollMlipStatus();
 }
 async function pickMlipPython() {
@@ -546,7 +618,6 @@ async function saveSettings() {
   const geoEl = document.querySelector('input[name="geo-mode"]:checked');
   const payload = {
     orca_path: document.getElementById("set-orca").value.trim(),
-    mlip_python: document.getElementById("set-mlip").value.trim(),
     workspace_root: document.getElementById("set-ws").value.trim(),
     default_nprocs: parseInt(document.getElementById("set-nprocs").value, 10) || 6,
     default_maxcore_mb: parseInt(document.getElementById("set-maxcore").value, 10) || 2400,
@@ -558,7 +629,6 @@ async function saveSettings() {
   if ("error" in res) { toast("Could not save settings: " + res.error); return; }
   settings = res;
   updateOrcaStatus(settings.orca_valid);
-  pollMlipStatus();   // save_settings restarts the MLIP probe if its path changed
   // push the new modes to the live graph immediately
   if (SCFGraph && SCFGraph.setEtaMode) SCFGraph.setEtaMode(settings.eta_mode);
   if (SCFGraph && SCFGraph.setGeoMode) SCFGraph.setGeoMode(settings.geo_graph_mode);
@@ -1025,11 +1095,75 @@ async function addCalcToQueue() {
   }
 }
 
+// ---------- MLIP build mode (MACE pre-optimization) ----------
+let mlipXyz = "";               // last loaded .xyz coordinate block for the MLIP form
+let _mlipModelFilled = false;   // populate the model dropdown once
+function renderMlipForm() {
+  const sel = document.getElementById("mlip-model");
+  if (sel && !_mlipModelFilled) {
+    fillGroupedSelect(sel, choicesCache.mace_models, "MACE-OFF medium");
+    _mlipModelFilled = true;
+  }
+}
+async function loadMlipXyz() {
+  const content = await bridge.load_xyz_file();
+  if (!content) return;
+  mlipXyz = parseXyzText(content);
+  const n = mlipXyz ? mlipXyz.split("\n").length : 0;
+  document.getElementById("mlip-xyz-status").textContent =
+    n ? `${n} atoms loaded.` : "No atoms found in file.";
+}
+function resetMlipForm() {
+  document.getElementById("mlip-name").value = "";
+  mlipXyz = "";
+  document.getElementById("mlip-xyz-status").textContent = "";
+}
+async function addMlipCalcToQueue() {
+  try {
+    const name = document.getElementById("mlip-name").value.trim();
+    if (!name) throw new Error("Name is required.");
+    if (/[\\/:*?"<>|]/.test(name))
+      throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
+    if (queue.some(c => c.name === name))
+      throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
+    if (!mlipXyz) throw new Error("Load an .xyz file first.");
+    const model = document.getElementById("mlip-model").value;
+    const calc = /** @type {CalcInput} */ ({
+      name, kind: "mlip_opt",
+      charge: 0, multiplicity: 1,
+      geometry_source: "direct",
+      xyz: mlipXyz, ref_name: "",
+      is_raw: false, raw_text: "",
+      config: { kind: "mlip_opt", mlip_model: model, mlip_env_id: "" },
+      state: "pending", message: "",
+    });
+    const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
+    if (!res.ok) {
+      appendLog("Could not add: " + res.error, "err");
+      toast(res.error);
+      await refreshQueue();
+      return;
+    }
+    localCalcs[calc.name] = calc;
+    appendLog(`Added "${calc.name}" (MLIP ${model}) to queue.`, "ok");
+    resetMlipForm();
+    await refreshQueue();
+    switchTab("queue");
+  } catch (e) {
+    appendLog(e.message, "err"); toast(e.message);
+  }
+}
+
 // ---------- editing existing calcs ----------
 async function editCalc(i) {
   const mirror = queue[i];
   if (!mirror) return;
   if (!isEditableState(mirror.state)) { toast("Only pending, failed, or cancelled calculations can be edited."); return; }
+  // MLIP calcs use the separate MLIP form, not the ORCA editor. In-place editing
+  // isn't wired yet — remove and re-add from the MLIP build mode instead.
+  if ((mirror.kind || "").startsWith("mlip")) { toast("Editing MLIP calculations isn't supported yet — remove it and re-add from the MLIP build mode."); return; }
+  // a normal calc edits in the ORCA build form; leave MLIP mode if we're in it
+  if (buildMode === "mlip") setBuildMode(mirror.is_raw ? "expert" : "beginner", false);
   // prefer the full local copy (has config/xyz/raw_text added on this PC)
   let c = localCalcs[mirror.name];
   if (!c) {
@@ -1266,25 +1400,31 @@ async function loadInpFile() {
 
 // Beginner (guided form) vs Expert (paste/load a complete .inp + pick the kind).
 function setBuildMode(mode, persist = true) {
-  if (mode !== "beginner" && mode !== "expert") return;
+  if (mode !== "beginner" && mode !== "expert" && mode !== "mlip") return;
   if (mode === buildMode && editIndex === -1) return;   // re-click of active mode: keep form state
   if (editIndex !== -1) exitEditMode();                 // never carry an in-progress edit across a mode switch
   buildMode = mode;
-  document.getElementById("bmode-beginner").classList.toggle("active", mode === "beginner");
-  document.getElementById("bmode-expert").classList.toggle("active", mode === "expert");
+  for (const m of ["beginner", "expert", "mlip"])
+    document.getElementById("bmode-" + m).classList.toggle("active", mode === m);
   const hint = document.getElementById("bmode-hint");
-  if (mode === "expert") {
+  const mlip = (mode === "mlip");
+  // MLIP mode swaps the entire ORCA build UI for the self-contained MLIP card.
+  _showIds(_ORCA_BUILD, !mlip);
+  _showIds(["card-mlip"], mlip);
+  if (hint) hint.textContent = "";
+  if (mlip) {
+    rawMode = false; rawText = "";
+    renderMlipForm();
+  } else if (mode === "expert") {
     // always raw input: hide the method form + charge/mult + raw button, show the .inp editor
     _showIds(_EXPERT_HIDDEN, false);
     enterRawWithText(rawText);   // keep any pasted text; raw card shown
-    if (hint) hint.textContent = "Paste or load a complete .inp and pick the calc type (used for parsing). Use {{GEOMETRY}} + Geometry source → reference to inject another job's optimized geometry.";
   } else {
     // guided form
     _showIds(_EXPERT_HIDDEN, true);
     rawMode = false; rawText = "";
     showRawCard(false); lockFormForRaw(false);
     renderConfigForm(document.getElementById("calc-kind").value);
-    if (hint) hint.textContent = "";
   }
   if (persist && bridge && bridge.save_settings) bridge.save_settings(JSON.stringify({ build_mode: mode }));
 }
@@ -1327,7 +1467,7 @@ function toast(msg) {
 async function viewInp(i) {
   const c = queue[i];
   if (!c) return;
-  let text = null, note = "";
+  let text = null;
   try {
     const res = /** @type {TextResult} */ (JSON.parse(await bridge.get_inp(c.name)));
     if (res.ok && res.text) text = res.text;
@@ -1335,13 +1475,13 @@ async function viewInp(i) {
   if (text == null) {
     let full = localCalcs[c.name];
     if (!full) { try { const r = /** @type {GetCalcResult} */ (JSON.parse(await bridge.get_calc(c.name))); if (r.ok) full = r.calc; } catch (e) { } }
-    if (full && full.is_raw && full.raw_text) { text = full.raw_text; note = " (raw · not yet run)"; }
+    if (full && full.is_raw && full.raw_text) { text = full.raw_text; }
     else if (full) {
-      try { const pv = /** @type {TextResult} */ (JSON.parse(await bridge.build_inp_preview(JSON.stringify(full)))); if (pv.ok) { text = pv.text; note = " (preview · not yet run)"; } } catch (e) { }
+      try { const pv = /** @type {TextResult} */ (JSON.parse(await bridge.build_inp_preview(JSON.stringify(full)))); if (pv.ok) { text = pv.text; } } catch (e) { }
     }
   }
   if (text == null) { toast("Input not available yet — run the queue first."); return; }
-  await showModal(`Input · ${escapeHtml(c.name)}${note}`, `<pre class="inp-view">${escapeHtml(text)}</pre>`, [{ label: "Close", value: null }]);
+  await showModal(`Input · ${escapeHtml(c.name)}`, `<pre class="inp-view">${escapeHtml(text)}</pre>`, [{ label: "Close", value: null }]);
 }
 
 function renderQueue() {
@@ -1357,6 +1497,7 @@ function renderQueue() {
   queue.forEach((c, i) => {
     const srcLabel = c.geometry_source === "reference" ? `ref → ${c.ref_name}` : ".xyz";
     const rawBadge = c.is_raw ? `<span class="qstate raw">raw</span>` : "";
+    const mlipBadge = (c.kind || "").startsWith("mlip") ? `<span class="qstate raw">MLIP</span>` : "";
     const editable = isEditableState(c.state);   // pending/failed/cancelled: edit + drag
     const removable = c.state !== "running";       // anything but running can be deleted
     const div = document.createElement("div");
@@ -1374,7 +1515,7 @@ function renderQueue() {
     div.innerHTML = `
       ${handle}
       <div style="flex:1">
-        <div class="qname">${escapeHtml(c.name)} ${rawBadge}</div>
+        <div class="qname">${escapeHtml(c.name)}${rawBadge}${mlipBadge}</div>
         <div class="qsteps">${c.kind} · ${srcLabel} · charge ${c.charge} · mult ${c.multiplicity}</div>
         ${c.message ? (
           c.state === "failed"

@@ -9,7 +9,8 @@ separated (no cross-thread Qt signal juggling).
 
 JS calls these slots:
   get_about, get_settings, save_settings, autodetect_orca,
-  pick_orca_executable, pick_mlip_python, check_mlip, get_mlip_status,
+  pick_orca_executable, pick_mlip_python, add_mlip_env, remove_mlip_env,
+  check_mlip, get_mlip_status,
   pick_workspace, load_xyz_file, load_inp_file,
   load_inp_path, load_xyz_path, load_choices,
   parse_out_file, build_inp_preview,
@@ -31,7 +32,8 @@ from PyQt6.QtWidgets import QFileDialog
 
 from ..config import Settings, autodetect_orca
 from ..mlip.env import (
-    probe_mlip, status_from_probe, unset_status, checking_status,
+    probe_env, new_env_id, resolve_interpreter,
+    env_payload_checking, env_payload_from_probe, aggregate_status,
 )
 from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL
 from ..core.input_generator import StepConfig, build_input_template
@@ -82,13 +84,15 @@ class Bridge(QObject):
         self.settings = Settings.load()
         self.store = store            # shared with the HTTP server
         self.server_ctl = server_ctl  # ServerController (may be None)
-        # MLIP environment status (MlipStatusPayload dict). The probe imports
-        # torch, so it runs in a background thread and the UI polls
-        # get_mlip_status(). A single dict reassigned atomically (GIL) is the
-        # shared state — no lock needed for this read-mostly flag.
-        self._mlip_status = unset_status()
-        if self.settings.mlip_is_set():
-            self._start_mlip_probe()
+        # Live MLIP probe results, keyed by env id (each value an MlipEnvPayload
+        # dict). Probes import torch (slow), so they run in background threads and
+        # the UI polls get_mlip_status(). The dict and settings.mlip_envs are
+        # touched from both the worker threads and the Qt UI thread, so all access
+        # goes through this lock.
+        self._mlip_lock = threading.Lock()
+        self._mlip_envs_status: dict[str, dict] = {}
+        for env in self.settings.mlip_envs:
+            self._start_mlip_probe(env["id"], env.get("name", ""), env.get("python", ""))
 
     # --- about / metadata ---
     @pyqtSlot(result=str)
@@ -105,7 +109,6 @@ class Bridge(QObject):
     def get_settings(self) -> str:
         return json.dumps(SettingsPayload(
             orca_path=self.settings.orca_path,
-            mlip_python=self.settings.mlip_python,
             workspace_root=self.settings.workspace_root,
             default_nprocs=self.settings.default_nprocs,
             default_maxcore_mb=self.settings.default_maxcore_mb,
@@ -120,8 +123,7 @@ class Bridge(QObject):
     def save_settings(self, payload_json: str) -> str:
         try:
             data = json.loads(payload_json or "{}")
-            mlip_before = self.settings.mlip_python
-            for k in ("orca_path", "mlip_python", "workspace_root", "theme"):
+            for k in ("orca_path", "workspace_root", "theme"):
                 if k in data:
                     setattr(self.settings, k, data[k])
             for k in ("default_nprocs", "default_maxcore_mb"):
@@ -134,16 +136,9 @@ class Bridge(QObject):
             if "geo_graph_mode" in data and data["geo_graph_mode"] in ("all5", "maxgrad"):
                 self.settings.geo_graph_mode = data["geo_graph_mode"]
             # build-tab mode: only accept known values
-            if "build_mode" in data and data["build_mode"] in ("beginner", "expert"):
+            if "build_mode" in data and data["build_mode"] in ("beginner", "expert", "mlip"):
                 self.settings.build_mode = data["build_mode"]
             self.settings.save()
-            # Re-probe the MLIP env if its interpreter path changed (or restart
-            # so a freshly-set path is reflected without an explicit Check).
-            if self.settings.mlip_python != mlip_before:
-                if self.settings.mlip_is_set():
-                    self._start_mlip_probe()
-                else:
-                    self._mlip_status = unset_status()
             return self.get_settings()
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             return json.dumps(ErrorPayload(error=str(e)))
@@ -172,32 +167,78 @@ class Bridge(QObject):
             self.window, "Locate the MLIP environment's Python interpreter", "", filt)
         return path or ""
 
-    def _start_mlip_probe(self) -> None:
-        """Probe the configured MLIP interpreter in a background thread (importing
-        torch is slow and must not block the Qt UI thread). Result is published on
-        self._mlip_status for get_mlip_status() to serve."""
-        path = self.settings.mlip_python
-        self._mlip_status = checking_status(path)
+    def _start_mlip_probe(self, env_id: str, name: str, python: str) -> None:
+        """Probe one registered MLIP interpreter in a background thread (importing
+        torch is slow and must not block the Qt UI thread). Publishes the result on
+        self._mlip_envs_status[env_id] for get_mlip_status() to serve. A probe that
+        finishes after its env was removed is discarded."""
+        with self._mlip_lock:
+            self._mlip_envs_status[env_id] = env_payload_checking(env_id, name, python)
 
-        def _worker(p: str) -> None:
-            self._mlip_status = status_from_probe(probe_mlip(p))
+        def _worker() -> None:
+            result = env_payload_from_probe(env_id, name, probe_env(python))
+            with self._mlip_lock:
+                if self.settings.mlip_env(env_id) is not None:
+                    self._mlip_envs_status[env_id] = result
 
-        threading.Thread(target=_worker, args=(path,), daemon=True).start()
+        threading.Thread(target=_worker, daemon=True).start()
 
-    @pyqtSlot(result=str)
-    def check_mlip(self) -> str:
-        """(Re)start the MLIP environment probe. No-op if one is already running.
-        Returns the current status immediately; the UI polls get_mlip_status()."""
-        if self._mlip_status.get("state") != "checking":
-            if self.settings.mlip_is_set():
-                self._start_mlip_probe()
-            else:
-                self._mlip_status = unset_status()
-        return json.dumps(self._mlip_status)
+    @pyqtSlot(str, result=str)
+    def add_mlip_env(self, payload_json: str) -> str:
+        """Register a new MLIP environment {name?, python} and probe it. Returns the
+        updated MlipStatusPayload (or {error} on bad input)."""
+        try:
+            data = json.loads(payload_json or "{}")
+            python = (data.get("python") or "").strip()
+            if not python:
+                return json.dumps(ErrorPayload(error="No interpreter path given."))
+            # a folder pick (e.g. the env dir) -> the python.exe inside it
+            python = resolve_interpreter(python)
+            name = (data.get("name") or "").strip() or Path(python).parent.name or "MLIP"
+            env_id = new_env_id()
+            with self._mlip_lock:
+                self.settings.mlip_envs.append(
+                    {"id": env_id, "name": name, "python": python})
+            self.settings.save()
+            self._start_mlip_probe(env_id, name, python)
+            return self.get_mlip_status()
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+
+    @pyqtSlot(str, result=str)
+    def remove_mlip_env(self, env_id: str) -> str:
+        """Unregister an MLIP environment. Returns the updated MlipStatusPayload."""
+        with self._mlip_lock:
+            self.settings.mlip_envs = [
+                e for e in self.settings.mlip_envs if e.get("id") != env_id]
+            self._mlip_envs_status.pop(env_id, None)
+        self.settings.save()
+        return self.get_mlip_status()
+
+    @pyqtSlot(str, result=str)
+    def check_mlip(self, env_id: str = "") -> str:
+        """(Re)start the probe for one env (by id) or all envs (empty id). Returns
+        the current MlipStatusPayload immediately; the UI polls get_mlip_status()."""
+        with self._mlip_lock:
+            targets = [e for e in self.settings.mlip_envs
+                       if not env_id or e.get("id") == env_id]
+        for e in targets:
+            self._start_mlip_probe(e["id"], e.get("name", ""), e.get("python", ""))
+        return self.get_mlip_status()
 
     @pyqtSlot(result=str)
     def get_mlip_status(self) -> str:
-        return json.dumps(MlipStatusPayload(**self._mlip_status))
+        """Aggregate MlipStatusPayload: every registered env (config order) merged
+        with its latest probe result."""
+        with self._mlip_lock:
+            envs = []
+            for cfg in self.settings.mlip_envs:
+                st = self._mlip_envs_status.get(cfg["id"])
+                if st is None:
+                    st = env_payload_checking(
+                        cfg["id"], cfg.get("name", ""), cfg.get("python", ""))
+                envs.append(st)
+        return json.dumps(MlipStatusPayload(**aggregate_status(envs)))
 
     @pyqtSlot(result=str)
     def pick_workspace(self) -> str:
@@ -493,7 +534,12 @@ class Bridge(QObject):
 
     @pyqtSlot(str, result=str)
     def run_queue(self, skip_names_json: str = "") -> str:
-        if not self.settings.orca_is_valid():
+        calcs = self.store.list()
+        # ORCA is required only if a non-MLIP calc will actually run — an all-MLIP
+        # queue runs through the user's MACE env without ORCA configured.
+        needs_orca = any(not c.kind.startswith("mlip") and c.state != CalcState.DONE
+                         for c in calcs)
+        if needs_orca and not self.settings.orca_is_valid():
             return json.dumps(OkResult(ok=False, error="ORCA path is not set or invalid. Check Settings."))
         # names the user chose to skip (e.g. to preserve existing results)
         try:
@@ -501,14 +547,14 @@ class Bridge(QObject):
         except Exception:
             skip_names = set()
         # validate references resolve to existing names
-        calcs = self.store.list()
         names = {c.name for c in calcs}
         for c in calcs:
             if c.geometry_source == GeometrySource.REFERENCE and c.ref_name not in names:
                 return json.dumps(OkResult(ok=False,
                     error=f"'{c.name}' references '{c.ref_name}', which is not in the queue."))
         factory = make_engine_factory(self.store, self.settings.orca_path,
-                                      self.settings.workspace_root, skip_names)
+                                      self.settings.workspace_root, skip_names,
+                                      mlip_envs=self.settings.mlip_envs)
         try:
             self.store.start_run(factory)
         except RuntimeError as e:
@@ -541,7 +587,8 @@ class Bridge(QObject):
                 "ORCA path is invalid — cannot reattach. Fix it in Settings.", "warn")
             return
         factory = make_engine_factory(self.store, self.settings.orca_path,
-                                      self.settings.workspace_root)
+                                      self.settings.workspace_root,
+                                      mlip_envs=self.settings.mlip_envs)
         try:
             self.store.start_run(factory)
             self.store.append_log(

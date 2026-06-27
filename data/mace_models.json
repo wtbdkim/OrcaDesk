@@ -1,0 +1,11 @@
+{
+  "_source": "MACE foundation models. MACE-OFF: neutral organic molecules (H, C, N, O, F, P, S, Cl, Br, I). MACE-MP-0: inorganic / materials across the periodic table. Larger sizes trade speed for accuracy. The value (e.g. 'MACE-OFF medium') is stored on the calc; the MLIP runner maps it to the matching loader (mace_off / mace_mp) and model size.",
+  "MACE-OFF (organic)": {
+    "_note": "Organic molecules; loaded via mace_off(model=...).",
+    "keywords": ["MACE-OFF small", "MACE-OFF medium", "MACE-OFF large"]
+  },
+  "MACE-MP-0 (materials)": {
+    "_note": "Inorganic / periodic systems; loaded via mace_mp(model=...).",
+    "keywords": ["MACE-MP-0 small", "MACE-MP-0 medium", "MACE-MP-0 large"]
+  }
+}

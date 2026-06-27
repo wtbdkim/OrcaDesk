@@ -15,7 +15,7 @@
     <div class="brand">
       <div class="logo"><img src="orcadesk_logo.png" alt="ORCAdesk" /></div>
       <div>
-        <h1>ORCAdesk <span class="ver-badge">0.3.4 beta</span></h1>
+        <h1>ORCAdesk <span class="ver-badge">0.4.0 beta</span></h1>
         <div class="sub">computational chemistry job runner</div>
       </div>
     </div>
@@ -24,8 +24,8 @@
       <div id="orca-status" class="status-pill">
         <span class="dot"></span><span id="orca-status-text">ORCA not set</span>
       </div>
-      <div id="mlip-status" class="status-pill">
-        <span class="dot"></span><span id="mlip-status-text">MLIP not set</span>
+      <div id="mlip-status" class="status-pill" title="MLIP environments">
+        <span class="dot"></span><span id="mlip-status-text">MLIP: not set</span>
       </div>
     </div>
   </header>
@@ -46,9 +46,10 @@
       <div class="graph-subtoggle" style="margin-bottom:12px">
         <button id="bmode-beginner" class="active" onclick="setBuildMode('beginner')">Beginner</button>
         <button id="bmode-expert" onclick="setBuildMode('expert')">Expert</button>
+        <button id="bmode-mlip" onclick="setBuildMode('mlip')">MLIP</button>
         <span class="hint" id="bmode-hint" style="margin:0 0 0 10px;align-self:center"></span>
       </div>
-      <div class="card">
+      <div class="card" id="card-calc">
         <div class="card-title">Calculation</div>
         <div class="card-desc">One calculation = one ORCA run. Give it a unique name (used as its folder).</div>
         <div class="field-row">
@@ -113,7 +114,7 @@
 
       <div class="card" id="raw-card" style="display:none">
         <div class="card-title">Raw .inp <span class="qstate raw" style="margin-left:6px">raw</span></div>
-        <div class="card-desc">Edit the ORCA input directly. To reuse another calculation's optimized geometry, set <b>Geometry source → reference</b> (in the form above), pick the opt job, and put <span class="mono">{{GEOMETRY}}</span> where the coordinates go — it's filled in automatically when the job runs.</div>
+        <div class="card-desc">Edit the ORCA input directly. To reuse another job's optimized geometry, set <b>Geometry source</b> to <b>reference</b> above, pick the source job, and put <span class="mono">{{GEOMETRY}}</span> where the coordinates go. It is filled in at run time. This also injects an MLIP pre-optimized geometry.</div>
         <div class="btn-group" style="flex-wrap:wrap;margin-bottom:8px">
           <span class="hint" style="margin:0;align-self:center">Insert block:</span>
           <button class="btn btn-sm btn-ghost" onclick="insertSnippet('geometry')" title="Placeholder for a referenced calculation's optimized geometry">{{GEOMETRY}}</button>
@@ -129,8 +130,26 @@
         <textarea id="raw-text" class="mono raw-editor" spellcheck="false"></textarea>
       </div>
 
+      <!-- MLIP mode: self-contained form (shown only when build mode = mlip) -->
+      <div class="card" id="card-mlip" style="display:none">
+        <div class="card-title">MLIP pre-optimization <span class="qstate raw" style="margin-left:6px">MLIP</span></div>
+        <div class="card-desc">Fast pre-optimization with a MACE model before ORCA. Requires a MACE environment in Settings.</div>
+        <div class="field-row">
+          <div class="field"><label>Name</label><input id="mlip-name" type="text" placeholder="e.g. mol-mace-opt"></div>
+          <div class="field" style="flex:0 0 240px"><label>MACE model</label><select id="mlip-model"></select></div>
+        </div>
+        <div class="btn-group" style="margin-top:10px;margin-bottom:4px">
+          <button class="btn btn-sm" onclick="loadMlipXyz()">Load .xyz</button>
+          <span id="mlip-xyz-status" class="hint" style="margin:0;align-self:center"></span>
+        </div>
+        <div class="btn-group" style="margin-top:14px">
+          <button class="btn btn-primary" onclick="addMlipCalcToQueue()">Add to queue →</button>
+          <button class="btn btn-ghost" onclick="resetMlipForm()">Reset</button>
+        </div>
+      </div>
+
       <div id="edit-banner" class="hint" style="display:none;margin-bottom:8px"></div>
-      <div class="btn-group">
+      <div class="btn-group" id="build-actions">
         <button class="btn btn-primary" id="add-btn" onclick="addCalcToQueue()">Add to queue →</button>
         <button class="btn" id="loadinp-btn" onclick="loadInpFile()">Load .inp file</button>
         <button class="btn" id="raw-btn" onclick="enterRawMode()">Edit raw .inp</button>
@@ -141,8 +160,6 @@
     <!-- ============ QUEUE ============ -->
     <section class="panel" data-panel="queue">
       <div class="card">
-        <div class="card-title">Job queue</div>
-        <div class="card-desc">Jobs run sequentially. A failed job is skipped; the rest continue.</div>
         <div id="queue-list"><div class="queue-empty">No jobs queued. Build one in the Build tab.</div></div>
       </div>
       <div class="btn-group">
@@ -217,14 +234,14 @@
         </div>
       </div>
       <div class="card">
-        <div class="card-title">MLIP environment</div>
-        <div class="card-desc">Path to the Python interpreter of your MLIP environment (PyTorch + mace-torch + ASE), used for fast pre-optimization. ORCAdesk does not install these — create the environment yourself (e.g. <code>pip install torch mace-torch ase</code>) and point here. Kept entirely separate from ORCA.</div>
-        <div class="field-row">
+        <div class="card-title">MLIP environments</div>
+        <div class="card-desc">One Python environment per MLIP (each needs its own venv; different MLIPs pin conflicting dependencies). ORCAdesk does not install these; add the interpreter of an environment you set up yourself. Backends are auto-detected.</div>
+        <div id="mlip-env-list" class="mlip-env-list"></div>
+        <div class="field-row" style="margin-top:8px">
           <div class="field"><input id="set-mlip" type="text" class="mono" placeholder="C:\path\to\mlip-env\Scripts\python.exe"></div>
           <button class="btn" onclick="pickMlipPython()">Browse</button>
-          <button class="btn btn-ghost" onclick="checkMlip(true)">Check environment</button>
+          <button class="btn" onclick="addMlipEnv()">Add</button>
         </div>
-        <div id="set-mlip-status" class="hint" style="margin-top:6px"></div>
       </div>
       <div class="card">
         <div class="card-title">Workspace</div>

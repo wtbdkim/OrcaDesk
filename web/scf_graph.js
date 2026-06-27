@@ -548,11 +548,11 @@
     // optimization finished -> jump to 100% and announce the next stage, instead
     // of staying stuck at 99% (the last criteria table can read 4/5 met)
     if (geo.done) {
-      const tail = geo.postStage ? ` — running ${geo.postStage}…` : "";
+      const tail = geo.postStage ? `, running ${geo.postStage}` : "";
       return (
         `<div class="scf-prog-label">Optimization complete · 100% · step ${stepN}</div>` +
         `<div class="scf-prog-bar"><span style="width:100%"></span></div>` +
-        `<div class="scf-prog-meta">✓ geometry converged${tail}${_paceSpan(pace)}</div>`
+        `<div class="scf-prog-meta">geometry converged${tail}${_paceSpan(pace)}</div>`
       );
     }
 

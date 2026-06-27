@@ -91,28 +91,45 @@ class LogPayload(TypedDict):
 
 class SettingsPayload(TypedDict):
     orca_path: str
-    mlip_python: str          # MLIP env interpreter path (readiness via MlipStatusPayload)
     workspace_root: str
     default_nprocs: int
     default_maxcore_mb: int
     theme: str
     eta_mode: str             # "conservative" | "eager"
     geo_graph_mode: str       # "all5" | "maxgrad"
-    build_mode: str           # "beginner" | "expert"
+    build_mode: str           # "beginner" | "expert" | "mlip"
     orca_valid: bool
 
 
-class MlipStatusPayload(TypedDict):
-    """Bridge.get_mlip_status() / check_mlip() — MLIP environment readiness.
-    ORCAdesk does not install the MLIP toolchain; the user points it at their own
-    Python env and this reports whether torch/mace/ase actually import. The probe
+class MlipBackend(TypedDict):
+    """One MLIP backend detected inside a registered environment."""
+    key: str                  # registry key, e.g. "mace"
+    label: str                # display label, e.g. "MACE"
+    version: str              # installed package version, e.g. "0.3.6"
+
+
+class MlipEnvPayload(TypedDict):
+    """One registered MLIP environment (config merged with its live probe).
+    ORCAdesk does not install the MLIP toolchain; the user points each env at
+    their own Python and this reports which backends actually import. The probe
     runs in a background thread (importing torch is slow), so the UI polls."""
-    state: str                # "unset" | "checking" | "ready" | "error"
+    id: str                   # stable env id
+    name: str                 # user-facing label
     python: str               # configured interpreter path
+    state: str                # "checking" | "ready" | "error"
     version: str              # interpreter Python version (e.g. "3.11.5"), or ""
-    label: str                # ver-badge text, e.g. "mace 0.3.6", or ""
-    missing: "list[str]"      # required packages that did not import
+    backends: "list[MlipBackend]"   # auto-detected MLIP backends present
     message: str              # human-readable status / error detail
+
+
+class MlipStatusPayload(TypedDict):
+    """Bridge.get_mlip_status() / check_mlip() / add_mlip_env() / remove_mlip_env()
+    — the whole MLIP picture: an aggregate state for the top-bar pill plus every
+    registered environment. Aggregate state is "ready" if any env is ready, else
+    "checking" if any is probing, else "error" if envs exist but none are ready,
+    else "unset"."""
+    state: str                # "unset" | "checking" | "ready" | "error"
+    envs: "list[MlipEnvPayload]"
 
 
 class ErrorPayload(TypedDict):

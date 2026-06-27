@@ -3,7 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [0.3.5-beta] — 2026-06-13
+## [0.4.0-beta] — 2026-06-28
 
 ### Fixed
 - **The frequency/TD-DFT phase panel no longer lingers through `ts_opt` and
@@ -47,20 +47,39 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   opt-only and analytical-frequency ORCA 6.1.1 outputs.
 
 ### Added
-- **"MLIP ready" status indicator + environment probe.** A second status pill in
-  the top bar (next to "ORCA ready") reports whether a Machine-Learned
-  Interatomic Potential environment is usable. Because ORCAdesk does **not**
-  install the MLIP toolchain — the user creates their own Python env (PyTorch +
-  mace-torch + ASE) and points a new *MLIP environment* setting at its
-  interpreter — the indicator does an honest **import probe** rather than a mere
-  file-exists check: it shells out to that interpreter, tries to import the
-  required packages, and only goes green when they actually load (showing the
-  detected Python/mace versions, or naming the missing package otherwise). The
-  probe runs in a background thread (importing torch is slow) and the UI polls,
-  so it never blocks. New, deliberately ORCA-independent package `orcamgr/mlip/`
-  holds the detection logic; new bridge slots `pick_mlip_python` / `check_mlip` /
-  `get_mlip_status`. This is the first piece of the planned MLIP→ORCA bridge
-  (pre-optimize cheaply with an MLIP, then refine with ORCA).
+- **"MLIP ready" status indicator + environment probe (multi-environment).** A
+  second status pill in the top bar (next to "ORCA ready") reports whether any
+  Machine-Learned Interatomic Potential environment is usable; hovering lists
+  each registered environment and the backends it provides. Because ORCAdesk
+  does **not** install the MLIP toolchain, the user registers their own Python
+  environments under a new *MLIP environments* setting — **one per MLIP**, since
+  different MLIPs pin conflicting dependencies (e.g. MACE and SevenNet need
+  different `e3nn`) and cannot share a venv. For each, the indicator does an
+  honest **import probe** rather than a mere file-exists check: it shells out to
+  that interpreter, **auto-detects** which known MLIP backends import (MACE,
+  SevenNet; the registry is extensible), and only goes green when the common
+  deps (`torch`, `ase`) plus at least one backend actually load — showing the
+  detected backend/Python versions, or naming what is missing otherwise. Probes
+  run in background threads (importing torch is slow) and the UI polls, so it
+  never blocks. New, deliberately ORCA-independent package `orcamgr/mlip/` holds
+  the detection logic; new bridge slots `pick_mlip_python` / `add_mlip_env` /
+  `remove_mlip_env` / `check_mlip` / `get_mlip_status`. This is the first piece
+  of the planned MLIP→ORCA bridge (pre-optimize cheaply with an MLIP, then refine
+  with ORCA).
+- **MLIP build mode + MACE pre-optimization that actually runs.** The Build tab
+  gains a third mode next to Beginner/Expert: **MLIP**. It hides the ORCA build
+  form and shows a small dedicated form — pick a MACE model (MACE-OFF for
+  organics or MACE-MP-0 for materials, three sizes each), load an `.xyz`, name
+  it, and add a `mlip_opt` calculation to the same queue as ORCA jobs. Running
+  the queue now executes MLIP jobs end to end: the queue engine shells out to the
+  MACE interpreter registered in *MLIP environments*, runs an ASE `LBFGS`
+  geometry optimization (CPU) with the chosen model, and streams its progress to
+  the live log. The optimized geometry is parsed into the same result shape as an
+  ORCA job, so a **downstream ORCA calc can reference an MLIP-optimized geometry**
+  — pre-optimize cheaply with MACE, then refine with DFT — through the same
+  "reference another calculation" mechanism as an opt→freq handoff (works across
+  restarts too). An all-MLIP queue runs without ORCA configured. Validated end to
+  end against a real MACE environment (MACE-OFF), including the MLIP→ORCA handoff.
 - **JS console messages now land in the Log tab.** The WebEngine page forwards
   `console.*` output (and uncaught front-end errors) into the app log as
   `[web] level=... line=... source=...` lines, so UI failures are diagnosable

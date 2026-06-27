@@ -140,7 +140,9 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   imaginary frequencies; `ts_freq`/`ts_opt_freq` must have exactly one. A
   validation failure marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`,
   `freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `irc`, `tddft`, `sp`, `nmr`,
-  `neb_ts`.
+  `neb_ts`, `mlip_opt`. Kinds starting with `mlip` run **outside** the ORCA
+  pipeline: `QueueEngine.run_all` routes them to `_run_mlip_calc` (a MACE
+  relaxation in the user's env) instead of `_run_calc`. See the MLIP section.
 
 ### Optional phone-sync server
 
@@ -156,18 +158,72 @@ phone-sync is in development and **not part of the packaged build**.
 `orcamgr/mlip/` is a dedicated package, kept **out of** the ORCA pipeline in
 `core/` on purpose: a Machine-Learned Interatomic Potential is a separate Python
 toolchain (PyTorch + mace-torch + ASE) that ORCAdesk shells out to the same way
-it shells out to the ORCA executable — it never installs that toolchain. The
-user creates their own env and points the `Settings.mlip_python` interpreter path
-at it. Currently the package holds only `env.py` (environment detection backing
-the "MLIP ready" top-bar indicator). Unlike `orca_is_valid()` (a file-exists
-check), MLIP readiness is an **import probe**: `probe_mlip()` runs the user's
-interpreter and checks `torch`/`mace`/`ase` actually import, so the indicator is
-honest about the common "I pip-installed it myself but the env is incomplete"
-case. The probe is slow (importing torch), so it runs in a background thread on
-the Bridge and the UI polls `get_mlip_status()` (status slots: `check_mlip` /
-`get_mlip_status`; picker: `pick_mlip_python`). The wire shape is
-`MlipStatusPayload` in `state/schemas.py` (mirrored in `web/types.js`). The MLIP
-*run* pipeline (a runner/parser mirroring `core/`) is not built yet.
+it shells out to the ORCA executable — it never installs that toolchain.
+
+**One environment per MLIP.** The user registers their own Python environments
+in `Settings.mlip_envs` (a list of `{id, name, python}`), not a single path —
+because different MLIPs pin conflicting dependencies (MACE and SevenNet pin
+different `e3nn`), so they cannot share a venv. The legacy single
+`mlip_python` setting is auto-migrated to one env entry on load.
+
+Currently the package holds only `env.py` (environment detection backing the
+"MLIP ready" top-bar indicator). Unlike `orca_is_valid()` (a file-exists check),
+MLIP readiness is an **import probe**: `probe_env()` runs each registered
+interpreter and **auto-detects** which backends import. The backend registry is
+`MLIP_BACKENDS` (key → import-package name; MACE/SevenNet seeded, extensible);
+an env is `ready` only when the common deps `COMMON_PACKAGES` (`torch`, `ase`)
+*and* at least one backend import — so the indicator is honest about the common
+"I pip-installed it myself but the env is incomplete" case. Probes are slow
+(importing torch), so each runs in a background thread on the Bridge and the UI
+polls `get_mlip_status()`. Bridge slots: `pick_mlip_python` (picker),
+`add_mlip_env` / `remove_mlip_env` (manage the list, each persists + probes),
+`check_mlip(id)` (re-probe one env, or all when id is `""`), `get_mlip_status`
+(aggregate). Per-env live state lives in `Bridge._mlip_envs_status` (keyed by
+env id, guarded by `Bridge._mlip_lock`); MLIP is **not** routed through
+`save_settings` (its own channel). The wire shapes are `MlipBackend` /
+`MlipEnvPayload` / `MlipStatusPayload` in `state/schemas.py` — the aggregate
+`MlipStatusPayload` is `{state, envs[]}` where the top-bar `state` is `ready` if
+any env is ready, else `checking`/`error`/`unset` — built by `aggregate_status`
+and mirrored in `web/types.js`.
+
+**Building MLIP jobs.** The Build tab has a third mode besides `beginner`/`expert`
+— `mlip` (`Settings.build_mode`; the three-way toggle is `#bmode-*` in
+`index.html`, `setBuildMode` in `app.js`). MLIP mode hides the whole ORCA build
+UI (`_ORCA_BUILD`) and shows a self-contained `#card-mlip`: a name, a MACE-model
+dropdown (options in `data/mace_models.json`, served via `load_choices`), and an
+`.xyz` loader, which add a `mlip_opt` calc to the **shared queue** through the
+same `add_calc`/`calc_from_dict` path as ORCA calcs. The model lives on
+`StepConfig.mlip_model` (+ `mlip_env_id`, `""` = first ready env); `build_input`
+ignores those — an MLIP calc never produces an ORCA `.inp`. `_meta_line` shows
+the model instead of charge/mult for `mlip*` kinds, and `editCalc` refuses
+in-place editing of MLIP calcs for now (remove + re-add).
+
+**Running MLIP jobs.** The run pipeline mirrors `core/` but lives in
+`orcamgr/mlip/` (kept off ORCA's path): `runner.py` (`MlipRunner` +
+`write_mlip_run_files` + the `MACE_WORKER_SCRIPT`) and `parser.py`
+(`parse_mlip_result`). `QueueEngine._run_mlip_calc` resolves geometry (direct or
+reference) and the interpreter (`config.mlip_env_id`, else the first registered
+env, via `_resolve_mlip_python`), writes an input `.xyz` + a JSON config + the
+worker script into the run folder, then runs the user's interpreter on it. The
+worker — running in the **user's** env, so it may import `torch`/`mace`/`ase`
+(ORCAdesk's env need not) — loads a MACE calculator (`mace_off`/`mace_mp` by
+model+size from `parse_mace_model`), runs an ASE `LBFGS` relaxation (CPU,
+fmax 0.05), and writes the optimized geometry + energy + convergence to a JSON
+result; `MlipRunner` tails its stdout into the `.out` and the live log and is
+cancellable (`QueueEngine.cancel`/`detach` forward to the active `MlipRunner`).
+`parse_mlip_result` reads that JSON into the **shared `ParseResult`** (geometry,
+`final_energy_eh`, `opt_converged`), so a downstream ORCA calc references an
+MLIP-optimized geometry through the **same** `_resolve_geometry` path an opt→freq
+handoff uses. `validate_result` checks `mlip_opt` convergence; `_failure_reason`
+skips the ORCA `.out` parse for mlip kinds. The engine gets the env list via
+`make_engine_factory(..., mlip_envs=settings.mlip_envs)`; `run_queue` only
+requires a valid ORCA path when a non-MLIP calc will run (an all-MLIP queue runs
+without ORCA). Output parsing dispatches on kind through the module-level
+`result_from_output` (used by reference resolution and session reconciliation),
+so a DONE `mlip_opt` referenced **after a restart** is parsed by the MLIP parser,
+not the ORCA one. The pipeline was validated end to end against a real MACE
+environment (MACE-OFF), including the MLIP→ORCA geometry handoff; the automated
+tests use a stdlib-only stub for `MACE_WORKER_SCRIPT` since CI has no MACE env.
 
 ### Paths: dev vs PyInstaller-frozen
 
