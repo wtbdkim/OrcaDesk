@@ -34,8 +34,15 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   (hidden for MLIP, where they are meaningless), the direct-geometry source label
   is simplified from `.xyz` to `xyz`, and the redundant "Completed." note is
   hidden for finished jobs (the `done` badge already conveys it).
+- **Rolled back the convergence/SCF graph plot surface to the page tint**
+  (`var(--background)`); it had been pure black/white since 0.3.4. The
+  window-height fill from 0.3.4 is kept.
 
 ### Fixed
+- **The top-bar version badge now derives from `APP_VERSION`** instead of a
+  hardcoded string, so it can no longer drift from the actual version (the window
+  title and About dialog already read `APP_VERSION`). The version is now
+  single-sourced — bump only `APP_VERSION` in `orcamgr/paths.py`.
 - Removed a duplicated *ZPE* row from the frequency summary.
 
 ## [0.4.0-beta] — 2026-06-28

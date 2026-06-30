@@ -473,13 +473,12 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .scf-panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
 .graph-summary { margin-bottom: 4px; }
 .graph-divider { height: 1px; background: var(--border); margin: 14px 0; }
-/* nest the plot in its own box on a PURE black/white surface (not the page
-   tint) so the chart pops from the panel in both themes */
+/* nest the plot in its own box: it sits on the page tint (ivory in light, a
+   darker inset in dark) so the chart has its own surface within the panel */
 .graph-plot {
-  background: #000; border: 1px solid var(--border);
+  background: var(--background); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 10px;
 }
-html[data-theme="light"] .graph-plot { background: #fff; }
 .scf-prog-label { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .scf-prog-bar { height: 8px; background: var(--accent); border-radius: 4px; overflow: hidden; }
 .scf-prog-bar > span { display: block; height: 100%; background: var(--ok); border-radius: 4px; transition: width 0.3s; }

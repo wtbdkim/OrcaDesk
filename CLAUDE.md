@@ -260,6 +260,12 @@ them there.
 
 ## Conventions
 
+- **The version is single-sourced from `APP_VERSION` (`orcamgr/paths.py`).** Every
+  *displayed* version derives from it: the window title (`window.py`) and the
+  desktop UI (the top-bar badge + About dialog, via the `get_about()` bridge slot →
+  `AboutPayload.version`, set in `app.js loadAbout()`). **Never hardcode a version
+  string in `web/`** — to release, bump only `APP_VERSION` (and the prose in
+  `CHANGELOG.md` / `README.md`).
 - Bridge slots and API endpoints exchange **JSON strings**, typically
   `{"ok": bool, ...}` or `{"error": "..."}`; errors are returned as data, not raised
   across the JS boundary.

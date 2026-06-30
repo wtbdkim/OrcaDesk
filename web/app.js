@@ -245,6 +245,10 @@ async function refreshQueue() {
 async function loadAbout() {
   try {
     const a = /** @type {AboutPayload} */ (JSON.parse(await bridge.get_about()));
+    // single source of truth for the version: APP_VERSION (paths.py) flows here
+    // via get_about(), so the top-bar badge never drifts from CHANGELOG/README.
+    const badge = document.getElementById("ver-badge");
+    if (badge) badge.textContent = a.version.replace("-", " ");
     const body = document.getElementById("about-body");
     body.innerHTML =
       `<div class="k">Version</div><div class="v">${a.version}</div>` +
