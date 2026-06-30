@@ -72,6 +72,21 @@ class ParseResult:
     final_energy_eh: Optional[float] = None
     dispersion_correction_eh: Optional[float] = None
 
+    # --- SCF energy decomposition (TOTAL SCF ENERGY block) ---
+    nuclear_repulsion_eh: Optional[float] = None
+    electronic_energy_eh: Optional[float] = None
+    one_electron_eh: Optional[float] = None
+    two_electron_eh: Optional[float] = None
+    kinetic_energy_eh: Optional[float] = None
+    potential_energy_eh: Optional[float] = None
+    virial_ratio: Optional[float] = None
+
+    # --- electric / rotational properties ---
+    dipole_au: Optional[float] = None
+    dipole_debye: Optional[float] = None
+    rot_const_cm: list[float] = field(default_factory=list)    # 3 constants, cm^-1
+    rot_const_mhz: list[float] = field(default_factory=list)   # 3 constants, MHz
+
     # --- optimization ---
     is_optimization: bool = False
     opt_converged: bool = False
@@ -89,6 +104,11 @@ class ParseResult:
 
     # --- population ---
     mulliken_charges: list[tuple[str, float]] = field(default_factory=list)
+    loewdin_charges: list[tuple[str, float]] = field(default_factory=list)
+    # Mayer population: per-atom total valence (idx, element, VA)
+    mayer_valences: list = field(default_factory=list)
+    # Mayer bond orders: (label_i e.g. "0-N", label_j e.g. "1-C", order)
+    mayer_bonds: list = field(default_factory=list)
 
     # --- frequencies / thermochemistry ---
     has_frequencies: bool = False
@@ -98,10 +118,16 @@ class ParseResult:
     total_thermal_eh: Optional[float] = None
     gibbs_eh: Optional[float] = None
     g_minus_e_el_eh: Optional[float] = None
+    temperature_k: Optional[float] = None
+    pressure_atm: Optional[float] = None
+    enthalpy_eh: Optional[float] = None
+    entropy_term_eh: Optional[float] = None   # T*S, the "Final entropy term"
 
     # --- TD-DFT ---
     has_tddft: bool = False
     transitions: list[Transition] = field(default_factory=list)
+    # per excited state: {"state", "ev", "contributions": [(from, to, weight)]}
+    tddft_states: list = field(default_factory=list)
 
     # --- NMR ---
     has_nmr: bool = False
@@ -116,44 +142,102 @@ class ParseResult:
     def to_dict(self) -> dict:
         return asdict(self)
 
-    def summary_rows(self) -> list[tuple[str, str]]:
-        rows: list[tuple[str, str]] = []
-        rows.append(("File", self.filename))
-        rows.append(("ORCA version", self.orca_version or "?"))
-        status = "Normal" if self.terminated_normally else "ABNORMAL / incomplete"
-        rows.append(("Termination", status))
+    @property
+    def shows_electronic_props(self) -> bool:
+        """Whether to surface general electronic-structure properties (orbitals /
+        HOMO-LUMO, atomic charges, Mayer bonds, dipole, rotational constants, SCF
+        energy decomposition). ORCA prints these for every SCF job, but they are
+        only shown as results for single-point and optimization runs; specialty
+        runs (freq / tddft / nmr / neb) show only their specialty result."""
+        specialty = (self.has_frequencies or self.has_tddft
+                     or self.has_nmr or self.has_neb_path)
+        return self.is_optimization or not specialty
+
+    def summary_rows(self) -> list[tuple[str, str, str]]:
+        """Label/value/category rows. category is ``"elec"`` for general
+        electronic-structure properties (SCF decomposition, HOMO/LUMO, dipole,
+        rotational constants) which the Results tab hides on specialty jobs
+        unless 'Show all' is on; ``""`` otherwise. All rows are always emitted —
+        the per-kind filtering happens on the front-end using ``show_elec``."""
+        rows: list[tuple[str, str, str]] = []
+
+        def add(label: str, value: str, cat: str = "") -> None:
+            rows.append((label, value, cat))
+
+        add("File", self.filename)
+        add("ORCA version", self.orca_version or "?")
+        add("Termination",
+            "Normal" if self.terminated_normally else "ABNORMAL / incomplete")
         if self.error_message:
-            rows.append(("Error", self.error_message))
+            add("Error", self.error_message)
         if self.run_time_string:
-            rows.append(("Run time", self.run_time_string))
+            add("Run time", self.run_time_string)
         if self.charge is not None:
-            rows.append(("Charge / Mult", f"{self.charge} / {self.multiplicity}"))
+            add("Charge / Mult", f"{self.charge} / {self.multiplicity}")
         if self.n_atoms:
-            rows.append(("Atoms", str(self.n_atoms)))
+            add("Atoms", str(self.n_atoms))
+        if self.n_electrons is not None:
+            add("Electrons", str(self.n_electrons))
         if self.final_energy_eh is not None:
-            rows.append(("Final SP energy", f"{self.final_energy_eh:.8f} Eh"))
+            add("Final SP energy", f"{self.final_energy_eh:.8f} Eh")
+        if self.dispersion_correction_eh is not None:
+            add("Dispersion corr.", f"{self.dispersion_correction_eh:.8f} Eh")
+        # SCF energy decomposition (electronic)
+        if self.nuclear_repulsion_eh is not None:
+            add("Nuclear repulsion", f"{self.nuclear_repulsion_eh:.6f} Eh", "elec")
+        if self.electronic_energy_eh is not None:
+            add("Electronic energy", f"{self.electronic_energy_eh:.6f} Eh", "elec")
+        if self.one_electron_eh is not None:
+            add("One-electron energy", f"{self.one_electron_eh:.6f} Eh", "elec")
+        if self.two_electron_eh is not None:
+            add("Two-electron energy", f"{self.two_electron_eh:.6f} Eh", "elec")
+        if self.kinetic_energy_eh is not None:
+            add("Kinetic energy", f"{self.kinetic_energy_eh:.6f} Eh", "elec")
+        if self.potential_energy_eh is not None:
+            add("Potential energy", f"{self.potential_energy_eh:.6f} Eh", "elec")
+        if self.virial_ratio is not None:
+            add("Virial ratio", f"{self.virial_ratio:.5f}", "elec")
         if self.is_optimization:
-            rows.append(("Optimization", "converged" if self.opt_converged else "NOT converged"))
+            add("Optimization",
+                "converged" if self.opt_converged else "NOT converged")
+        # orbital / dipole / rotational props (electronic)
         if self.homo_ev is not None:
-            rows.append(("HOMO", f"#{self.homo_index}  {self.homo_ev:.4f} eV"))
+            add("HOMO", f"#{self.homo_index}  {self.homo_ev:.4f} eV", "elec")
         if self.lumo_ev is not None:
-            rows.append(("LUMO", f"#{self.lumo_index}  {self.lumo_ev:.4f} eV"))
+            add("LUMO", f"#{self.lumo_index}  {self.lumo_ev:.4f} eV", "elec")
         if self.gap_ev is not None:
-            rows.append(("HOMO-LUMO gap", f"{self.gap_ev:.4f} eV"))
+            add("HOMO-LUMO gap", f"{self.gap_ev:.4f} eV", "elec")
+        if self.dipole_debye is not None:
+            add("Dipole moment", f"{self.dipole_debye:.4f} Debye", "elec")
+        if self.rot_const_cm:
+            add("Rotational const.",
+                " / ".join(f"{c:.4f}" for c in self.rot_const_cm) + " cm⁻¹", "elec")
         if self.has_frequencies:
-            rows.append(("Frequencies", f"{len(self.frequencies)} modes"))
-            rows.append(("Imaginary modes", str(self.n_imaginary)))
+            add("Frequencies", f"{len(self.frequencies)} modes")
+            add("Imaginary modes", str(self.n_imaginary))
             if self.gibbs_eh is not None:
-                rows.append(("Final Gibbs G", f"{self.gibbs_eh:.8f} Eh"))
+                add("Final Gibbs G", f"{self.gibbs_eh:.8f} Eh")
+            if self.total_thermal_eh is not None:
+                add("Inner energy U", f"{self.total_thermal_eh:.8f} Eh")
+            if self.enthalpy_eh is not None:
+                add("Enthalpy H", f"{self.enthalpy_eh:.8f} Eh")
+            if self.entropy_term_eh is not None:
+                add("Entropy term T·S", f"{self.entropy_term_eh:.8f} Eh")
             if self.zpe_eh is not None:
-                rows.append(("ZPE", f"{self.zpe_eh:.8f} Eh"))
+                add("ZPE", f"{self.zpe_eh:.8f} Eh")
+            if self.g_minus_e_el_eh is not None:
+                add("G - E(el)", f"{self.g_minus_e_el_eh:.8f} Eh")
+            if self.temperature_k is not None:
+                add("Temperature", f"{self.temperature_k:.2f} K")
+            if self.pressure_atm is not None:
+                add("Pressure", f"{self.pressure_atm:.2f} atm")
         if self.has_tddft:
-            rows.append(("TD-DFT states", str(len(self.transitions))))
+            add("TD-DFT states", str(len(self.transitions)))
             bright = self.brightest_transition()
             if bright:
-                rows.append(("Brightest", f"{bright.wavelength_nm:.1f} nm  (f={bright.fosc:.4f})"))
+                add("Brightest", f"{bright.wavelength_nm:.1f} nm  (f={bright.fosc:.4f})")
         if self.has_nmr:
-            rows.append(("NMR nuclei", str(len(self.nmr_shieldings))))
+            add("NMR nuclei", str(len(self.nmr_shieldings)))
         return rows
 
     def brightest_transition(self) -> Optional[Transition]:
@@ -246,9 +330,15 @@ class OrcaOutParser:
         self._parse_geometry(lines, r)
         self._parse_orbitals(lines, r)
         self._parse_mulliken(lines, r)
+        self._parse_loewdin(lines, r)
+        self._parse_mayer(lines, r)
+        self._parse_scf_components(lines, r)
+        self._parse_dipole(lines, r)
+        self._parse_rotational(lines, r)
         self._parse_frequencies(lines, r)
         self._parse_thermochemistry(lines, r)
         self._parse_tddft(lines, r)
+        self._parse_tddft_states(lines, r)
         self._parse_nmr(lines, r)
         self._parse_neb_path(lines, r)
 
@@ -404,6 +494,103 @@ class OrcaOutParser:
             charges.append((m.group(1), float(m.group(2))))
         r.mulliken_charges = charges
 
+    def _parse_loewdin(self, lines, r):
+        idxs = _find_all(lines, "LOEWDIN ATOMIC CHARGES")
+        if not idxs:
+            return
+        start = idxs[-1] + 2
+        charges: list[tuple[str, float]] = []
+        for ln in lines[start:]:
+            s = ln.strip()
+            if s.startswith("Sum of atomic charges") or not s:
+                break
+            m = re.match(r"\d+\s+([A-Za-z]{1,3})\s*:\s*(-?\d+\.\d+)", s)
+            if not m:
+                break
+            charges.append((m.group(1), float(m.group(2))))
+        r.loewdin_charges = charges
+
+    def _parse_mayer(self, lines, r):
+        idxs = _find_all(lines, "MAYER POPULATION ANALYSIS")
+        if not idxs:
+            return
+        start = idxs[-1]
+        # per-atom table: header "ATOM  NA  ZA  QA  VA  BVA  FA", then rows
+        head = None
+        for i in range(start, min(start + 20, len(lines))):
+            if lines[i].strip().startswith("ATOM") and "VA" in lines[i]:
+                head = i
+                break
+        vals: list = []
+        scan_from = start
+        if head is not None:
+            scan_from = head + 1
+            for ln in lines[head + 1:]:
+                s = ln.strip()
+                if not s:
+                    break
+                m = re.match(
+                    r"(\d+)\s+([A-Za-z]{1,3})\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+"
+                    r"(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", s)
+                if not m:
+                    break
+                # groups: idx, el, NA, ZA, QA, VA, BVA, FA  -> keep VA (group 6)
+                vals.append((int(m.group(1)), m.group(2), float(m.group(6))))
+        r.mayer_valences = vals
+        # bond orders, printed after the table as "B(  i-El ,  j-El ) :  order"
+        bond_re = re.compile(
+            r"B\(\s*(\d+)-\s*([A-Za-z]{1,3})\s*,\s*(\d+)-\s*([A-Za-z]{1,3})\s*\)\s*:\s*(-?\d+\.\d+)")
+        bonds: list = []
+        for ln in lines[scan_from: scan_from + 1500]:
+            matches = bond_re.findall(ln)
+            if matches:
+                for i_idx, i_el, j_idx, j_el, order in matches:
+                    bonds.append((f"{i_idx}-{i_el}", f"{j_idx}-{j_el}", float(order)))
+            elif bonds and ln.strip() and not ln.strip().startswith("B("):
+                # bond block ended (hit a different section)
+                break
+        r.mayer_bonds = bonds
+
+    def _parse_scf_components(self, lines, r):
+        pats = {
+            "nuclear_repulsion_eh": r"Nuclear Repulsion\s*:\s*(-?\d+\.\d+)",
+            "electronic_energy_eh": r"Electronic Energy\s*:\s*(-?\d+\.\d+)",
+            "one_electron_eh": r"One Electron Energy\s*:\s*(-?\d+\.\d+)",
+            "two_electron_eh": r"Two Electron Energy\s*:\s*(-?\d+\.\d+)",
+            "potential_energy_eh": r"Potential Energy\s*:\s*(-?\d+\.\d+)",
+            "kinetic_energy_eh": r"Kinetic Energy\s*:\s*(-?\d+\.\d+)",
+            "virial_ratio": r"Virial Ratio\s*:\s*(-?\d+\.\d+)",
+        }
+        for ln in lines:
+            for attr, pat in pats.items():
+                m = re.search(pat, ln)
+                if m:
+                    setattr(r, attr, float(m.group(1)))
+
+    def _parse_dipole(self, lines, r):
+        for ln in lines:
+            m = re.search(r"Magnitude \(a\.u\.\)\s*:\s*(-?\d+\.\d+)", ln)
+            if m:
+                r.dipole_au = float(m.group(1))
+            m = re.search(r"Magnitude \(Debye\)\s*:\s*(-?\d+\.\d+)", ln)
+            if m:
+                r.dipole_debye = float(m.group(1))
+
+    def _parse_rotational(self, lines, r):
+        for ln in lines:
+            m = re.search(r"Rotational constants in cm-1:\s*(.+)", ln)
+            if m:
+                try:
+                    r.rot_const_cm = [float(x) for x in m.group(1).split()][:3]
+                except ValueError:
+                    pass
+            m = re.search(r"Rotational constants in MHz\s*:\s*(.+)", ln)
+            if m:
+                try:
+                    r.rot_const_mhz = [float(x) for x in m.group(1).split()][:3]
+                except ValueError:
+                    pass
+
     def _parse_frequencies(self, lines, r):
         idxs = _find_all(lines, "VIBRATIONAL FREQUENCIES")
         if not idxs:
@@ -441,6 +628,18 @@ class OrcaOutParser:
             m = re.search(r"G-E\(el\)\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
             if m:
                 r.g_minus_e_el_eh = float(m.group(1))
+            m = re.search(r"Total Enthalpy\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
+            if m:
+                r.enthalpy_eh = float(m.group(1))
+            m = re.search(r"Final entropy term\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
+            if m:
+                r.entropy_term_eh = float(m.group(1))
+            m = re.search(r"Temperature\s+\.*\s*(-?\d+\.\d+)\s*K\b", ln)
+            if m:
+                r.temperature_k = float(m.group(1))
+            m = re.search(r"Pressure\s+\.*\s*(-?\d+\.\d+)\s*atm", ln)
+            if m:
+                r.pressure_atm = float(m.group(1))
 
     def _parse_tddft(self, lines, r):
         idxs = _find_all(lines, "ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE")
@@ -466,6 +665,36 @@ class OrcaOutParser:
                 if len(trans) > 1:
                     break
         r.transitions = trans
+
+    def _parse_tddft_states(self, lines, r):
+        """Excited-state composition from the 'TD-DFT/TDA EXCITED STATES' block:
+        each STATE lists the dominant occupied->virtual orbital pairs and their
+        weights. NOTE: validated against the ORCA 6.1 format spec but not yet
+        against a real TD-DFT .out in this workspace (none available)."""
+        starts = [i for i, ln in enumerate(lines)
+                  if "EXCITED STATES" in ln.upper()]
+        if not starts:
+            return
+        start = starts[0]
+        state_re = re.compile(
+            r"STATE\s+(\d+):\s*E=\s*[\d.]+\s*au\s+([\d.]+)\s*eV")
+        contrib_re = re.compile(
+            r"(\d+[ab]?)\s*->\s*(\d+[ab]?)\s*:\s*([\d.]+)")
+        states: list = []
+        cur = None
+        for ln in lines[start:start + 4000]:
+            ms = state_re.search(ln)
+            if ms:
+                cur = {"state": int(ms.group(1)),
+                       "ev": float(ms.group(2)), "contributions": []}
+                states.append(cur)
+                continue
+            if cur is not None:
+                mc = contrib_re.search(ln)
+                if mc:
+                    cur["contributions"].append(
+                        (mc.group(1), mc.group(2), float(mc.group(3))))
+        r.tddft_states = [s for s in states if s["contributions"]]
 
     # -- NMR shielding --
     def _parse_nmr(self, lines, r):

@@ -16,12 +16,13 @@ let settings = {};
 /** @type {CalcMirror[]} */
 let queue = [];                 // UI mirror of the shared store's queue
 let directXyz = "";             // last loaded .xyz coordinate block
-/** @type {Object<string, [string, string][]>} */
-const calcResults = {};         // name -> summaryRows
-/** @type {Object<string, {transitions?: TransitionPayload[], nmr?: NmrPayload[],
- *                         frequencies?: number[], n_imaginary?: number,
- *                         neb_path?: NebPointPayload[]}>} */
-const _resultExtras = {};       // name -> {transitions?, nmr?}
+/** @type {Object<string, [string, string, string][]>} */
+const calcResults = {};         // name -> summaryRows (label/value/category)
+/** @type {Object<string, ParsePayload>} */
+const _resultExtras = {};       // name -> full parsed payload (everything but is keyed for re-render)
+let showAllResults = false;     // "Show all" toggle: ignore per-calc-type gating
+/** @type {ParsePayload|null} */
+let _currentResult = null;      // last-rendered payload, for re-render on toggle
 /** @type {Object<string, CalcInput|CalcFull>} */
 const localCalcs = {};          // name -> full calc (config/xyz/raw) added on THIS PC,
                                 // so editing keeps the details the store snapshot omits
@@ -132,11 +133,8 @@ window.onOutDropped = async function (path) {
     /** @type {ParsePayload} */
     let data; try { data = JSON.parse(raw); } catch { toast("Couldn't parse that .out"); return; }
     if (!data || !data.summary) { toast("Couldn't parse that .out"); return; }
-    renderSummary(data.summary);
-    if (data.frequencies && data.frequencies.length) renderFreqSpectrum(data.frequencies, data.n_imaginary);
-    if (data.neb_path && data.neb_path.length) renderNebPath(data.neb_path);
-    if (data.transitions && data.transitions.length) renderSpectrum(data.transitions);
-    if (data.nmr && data.nmr.length) renderNmr(data.nmr);
+    _currentResult = data;
+    renderResult(data);
     switchTab("results");
     appendLog("Dropped .out parsed.", "ok");
   } catch (e) { toast("Drop failed"); }
@@ -247,6 +245,10 @@ async function refreshQueue() {
 async function loadAbout() {
   try {
     const a = /** @type {AboutPayload} */ (JSON.parse(await bridge.get_about()));
+    // single source of truth for the version: APP_VERSION (paths.py) flows here
+    // via get_about(), so the top-bar badge never drifts from CHANGELOG/README.
+    const badge = document.getElementById("ver-badge");
+    if (badge) badge.textContent = a.version.replace("-", " ");
     const body = document.getElementById("about-body");
     body.innerHTML =
       `<div class="k">Version</div><div class="v">${a.version}</div>` +
@@ -1495,9 +1497,14 @@ function renderQueue() {
   </div>`; return; }
   el.innerHTML = "";
   queue.forEach((c, i) => {
-    const srcLabel = c.geometry_source === "reference" ? `ref → ${c.ref_name}` : ".xyz";
+    const srcLabel = c.geometry_source === "reference" ? `ref → ${c.ref_name}` : "xyz";
+    const isMlip = (c.kind || "").startsWith("mlip");
     const rawBadge = c.is_raw ? `<span class="qstate raw">raw</span>` : "";
-    const mlipBadge = (c.kind || "").startsWith("mlip") ? `<span class="qstate raw">MLIP</span>` : "";
+    const mlipBadge = isMlip ? `<span class="qstate raw">MLIP</span>` : "";
+    // charge/mult are meaningless for MLIP; show them only for ORCA calcs
+    const cmLabel = isMlip ? "" : ` · charge ${c.charge} · mult ${c.multiplicity}`;
+    // a "Completed." note is redundant with the done badge — hide completion notices
+    const showMsg = !!c.message && !(c.state === "done" && /^Completed\b/.test(c.message));
     const editable = isEditableState(c.state);   // pending/failed/cancelled: edit + drag
     const removable = c.state !== "running";       // anything but running can be deleted
     const div = document.createElement("div");
@@ -1516,8 +1523,8 @@ function renderQueue() {
       ${handle}
       <div style="flex:1">
         <div class="qname">${escapeHtml(c.name)}${rawBadge}${mlipBadge}</div>
-        <div class="qsteps">${c.kind} · ${srcLabel} · charge ${c.charge} · mult ${c.multiplicity}</div>
-        ${c.message ? (
+        <div class="qsteps">${c.kind} · ${srcLabel}${cmLabel}</div>
+        ${showMsg ? (
           c.state === "failed"
             ? `<div class="qerror">⚠ ${escapeHtml(c.message)}</div>`
             : `<div class="qsteps" style="color:var(--muted-foreground)">${escapeHtml(c.message)}</div>`
@@ -1719,10 +1726,7 @@ async function maybeFetchResult(name, outputPath) {
     const data = /** @type {ParsePayload} */ (JSON.parse(raw));
     if (data && data.summary) {
       calcResults[name] = data.summary;
-      if (data.transitions && data.transitions.length) _resultExtras[name] = { transitions: data.transitions };
-      if (data.nmr && data.nmr.length) _resultExtras[name] = Object.assign(_resultExtras[name] || {}, { nmr: data.nmr });
-      if (data.frequencies && data.frequencies.length) _resultExtras[name] = Object.assign(_resultExtras[name] || {}, { frequencies: data.frequencies, n_imaginary: data.n_imaginary || 0 });
-      if (data.neb_path && data.neb_path.length) _resultExtras[name] = Object.assign(_resultExtras[name] || {}, { neb_path: data.neb_path });
+      _resultExtras[name] = data;   // keep the whole payload for rich rendering
       refreshResultSelect();
     }
   } catch (e) { /* parsing failed; skip */ }
@@ -1930,21 +1934,61 @@ function refreshResultSelect() {
 function showSelectedResult() {
   const name = document.getElementById("result-select").value;
   if (!name || name === "—") return;
-  const rows = calcResults[name];
-  if (rows) renderSummary(rows);
-  const extras = _resultExtras[name];
-  if (extras) {
-    if (extras.frequencies && extras.frequencies.length) renderFreqSpectrum(extras.frequencies, extras.n_imaginary);
-    if (extras.neb_path && extras.neb_path.length) renderNebPath(extras.neb_path);
-    if (extras.transitions && extras.transitions.length) renderSpectrum(extras.transitions);
-    if (extras.nmr && extras.nmr.length) renderNmr(extras.nmr);
-  }
+  _currentResult = _resultExtras[name] || null;
+  renderResult(_currentResult);
 }
-/** @param {[string, string][]} rows */
-function renderSummary(rows) {
+
+/** Render summary + every applicable section for a parsed payload. @param {ParsePayload} [d] */
+function renderResult(d) {
+  if (!d) return;
+  if (d.summary) renderSummary(d.summary, d);
+  renderResultSections(d);
+}
+
+/** Toggle "Show all": reveal every parsed value regardless of calc-type gating. */
+function toggleShowAll() {
+  showAllResults = !showAllResults;
+  const btn = document.getElementById("btn-showall");
+  if (btn) btn.classList.toggle("on", showAllResults);   // tinted box when on
+  if (_currentResult) renderResult(_currentResult);
+}
+
+/**
+ * Render every non-summary section we have for a parsed result, in a fixed
+ * order. Accepts a ParsePayload (Open .out) or the cached payload of a queue
+ * result. renderSummary must be called first — these all append to the body.
+ * @param {ParsePayload} [d]
+ */
+function renderResultSections(d) {
+  if (!d) return;
+  // "Final geometry" → opt jobs; electronic-structure sections → sp/opt jobs.
+  // "Show all" overrides both. Specialty sections (freq/tddft/nmr/neb) are
+  // present-only — they only exist for their kind, so no extra gating needed.
+  const geom = showAllResults || d.is_optimization;
+  const elec = showAllResults || d.show_elec;
+  if (geom && d.geometry && d.geometry.length) renderGeometry(d.geometry);
+  if (elec && d.orbitals && d.orbitals.length) renderOrbitals(d.orbitals);
+  if (elec && d.mulliken && d.mulliken.length) renderMulliken(d.mulliken);
+  if (elec && d.loewdin && d.loewdin.length) renderLoewdin(d.loewdin);
+  if (elec && ((d.mayer_bonds && d.mayer_bonds.length) || (d.mayer_valences && d.mayer_valences.length)))
+    renderMayer(d.mayer_bonds || [], d.mayer_valences || []);
+  if (d.frequencies && d.frequencies.length) renderFreqSpectrum(d.frequencies, d.n_imaginary);
+  if (d.transitions && d.transitions.length) renderSpectrum(d.transitions);
+  if (d.tddft_states && d.tddft_states.length) renderTddftStates(d.tddft_states);
+  if (d.nmr && d.nmr.length) renderNmr(d.nmr);
+  if (d.neb_path && d.neb_path.length) renderNebPath(d.neb_path);
+  if (d.input_keywords || d.input_block) renderInputEcho(d.input_keywords, d.input_block);
+}
+/** @param {[string, string, string][]} rows @param {ParsePayload} [d] */
+function renderSummary(rows, d) {
   const body = document.getElementById("result-body");
+  // electronic-structure rows (category "elec") only show for sp/opt jobs,
+  // unless "Show all" is on
+  const showElec = showAllResults || !!(d && d.show_elec);
   let html = `<div class="kv">`;
-  for (const [k, v] of rows) {
+  for (const row of rows) {
+    const k = row[0], v = row[1], cat = row[2] || "";
+    if (cat === "elec" && !showElec) continue;
     let cls = "";
     if (/imaginary/i.test(k) && !/^0$/.test(String(v))) cls = "warn";
     if (/ABNORMAL|NOT converged/i.test(String(v))) cls = "err";
@@ -1954,16 +1998,170 @@ function renderSummary(rows) {
   html += `</div>`;
   body.innerHTML = html;
 }
+
+let _lastGeomXyz = "";   // last rendered geometry, for the Copy .xyz button
+/** @param {GeomAtomPayload[]} geom */
+function renderGeometry(geom) {
+  const body = document.getElementById("result-body");
+  let rows = "";
+  geom.forEach((a, i) => {
+    rows += `<tr><td>${i+1}</td><td>${escapeHtml(a.el)}</td><td>${a.x.toFixed(6)}</td><td>${a.y.toFixed(6)}</td><td>${a.z.toFixed(6)}</td></tr>`;
+  });
+  _lastGeomXyz = `${geom.length}\n\n` + geom.map(a => `${a.el}  ${a.x.toFixed(6)}  ${a.y.toFixed(6)}  ${a.z.toFixed(6)}`).join("\n");
+  body.innerHTML += `
+    <div class="divider"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <div class="card-title">Final geometry (${geom.length} atoms, Å)</div>
+      <button class="btn btn-sm btn-ghost" onclick="copyGeometryXyz()">Copy .xyz</button>
+    </div>
+    <div style="max-height:280px;overflow:auto">
+      <table class="data">
+        <thead><tr><th>#</th><th>El</th><th>x</th><th>y</th><th>z</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+async function copyGeometryXyz() {
+  if (!_lastGeomXyz) return;
+  try { await navigator.clipboard.writeText(_lastGeomXyz); toast("Geometry copied as .xyz"); }
+  catch (e) { toast("Copy failed — clipboard unavailable"); }
+}
+
+/** @param {OrbitalPayload[]} orbs */
+function renderOrbitals(orbs) {
+  const body = document.getElementById("result-body");
+  let homoI = -1;
+  orbs.forEach((o, i) => { if (o.occ > 0.01) homoI = i; });
+  let rows = "";
+  orbs.forEach((o, i) => {
+    let tag = "", color = "";
+    if (i === homoI) { tag = " ← HOMO"; color = "color:var(--ok);font-weight:600"; }
+    else if (i === homoI + 1) { tag = " ← LUMO"; color = "color:var(--warn);font-weight:600"; }
+    rows += `<tr><td>${o.idx}</td><td>${o.occ.toFixed(3)}</td><td style="${color}">${o.ev.toFixed(4)}${tag}</td></tr>`;
+  });
+  body.innerHTML += `
+    <div class="divider"></div>
+    <div class="card-title">Orbital energies (${orbs.length} levels)</div>
+    <div style="max-height:280px;overflow:auto">
+      <table class="data">
+        <thead><tr><th>#</th><th>Occ</th><th>E (eV)</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+/** @param {[string, number][]} mulliken */
+function renderMulliken(mulliken) {
+  const body = document.getElementById("result-body");
+  let rows = "", sum = 0;
+  mulliken.forEach(([el, q], i) => {
+    sum += q;
+    rows += `<tr><td>${i+1} ${escapeHtml(el)}</td><td>${q.toFixed(6)}</td></tr>`;
+  });
+  body.innerHTML += `
+    <div class="divider"></div>
+    <div class="card-title">Mulliken atomic charges</div>
+    <div style="max-height:280px;overflow:auto">
+      <table class="data">
+        <thead><tr><th>Atom</th><th>Charge (e)</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="hint">Sum of charges = ${sum.toFixed(4)} e</div>`;
+}
+
+/** @param {[string, number][]} loewdin */
+function renderLoewdin(loewdin) {
+  const body = document.getElementById("result-body");
+  let rows = "", sum = 0;
+  loewdin.forEach(([el, q], i) => {
+    sum += q;
+    rows += `<tr><td>${i+1} ${escapeHtml(el)}</td><td>${q.toFixed(6)}</td></tr>`;
+  });
+  body.innerHTML += `
+    <div class="divider"></div>
+    <div class="card-title">Löwdin atomic charges</div>
+    <div style="max-height:280px;overflow:auto">
+      <table class="data">
+        <thead><tr><th>Atom</th><th>Charge (e)</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="hint">Sum of charges = ${sum.toFixed(4)} e</div>`;
+}
+
+/** @param {[string, string, number][]} bonds @param {[number, string, number][]} valences */
+function renderMayer(bonds, valences) {
+  const body = document.getElementById("result-body");
+  let bRows = "";
+  bonds.forEach(([i, j, order]) => {
+    const cls = order >= 0.6 ? "" : "color:var(--muted-foreground)";
+    bRows += `<tr><td style="${cls}">${escapeHtml(i)} – ${escapeHtml(j)}</td><td style="${cls}">${order.toFixed(4)}</td></tr>`;
+  });
+  let vRows = "";
+  valences.forEach(([idx, el, va]) => {
+    vRows += `<tr><td>${idx} ${escapeHtml(el)}</td><td>${va.toFixed(4)}</td></tr>`;
+  });
+  const bondsTbl = bonds.length ? `
+    <div class="card-title" style="font-size:13px;margin-top:8px">Bond orders</div>
+    <div style="max-height:240px;overflow:auto">
+      <table class="data">
+        <thead><tr><th>Bond</th><th>Order</th></tr></thead>
+        <tbody>${bRows}</tbody>
+      </table>
+    </div>` : "";
+  const valTbl = valences.length ? `
+    <div class="card-title" style="font-size:13px;margin-top:8px">Total valence (VA)</div>
+    <div style="max-height:240px;overflow:auto">
+      <table class="data">
+        <thead><tr><th>Atom</th><th>Valence</th></tr></thead>
+        <tbody>${vRows}</tbody>
+      </table>
+    </div>` : "";
+  body.innerHTML += `
+    <div class="divider"></div>
+    <div class="card-title">Mayer population analysis</div>
+    ${bondsTbl}${valTbl}`;
+}
+
+/** @param {TddftStatePayload[]} states */
+function renderTddftStates(states) {
+  const body = document.getElementById("result-body");
+  let rows = "";
+  for (const s of states) {
+    const top = (s.contributions || []).slice(0, 4)
+      .map(([f, t, w]) => `${escapeHtml(f)}→${escapeHtml(t)} (${(w*100).toFixed(0)}%)`)
+      .join(", ");
+    rows += `<tr><td>${s.state}</td><td>${s.ev.toFixed(3)}</td><td>${top}</td></tr>`;
+  }
+  body.innerHTML += `
+    <div class="divider"></div>
+    <div class="card-title">TD-DFT excited-state composition (${states.length})</div>
+    <div style="max-height:280px;overflow:auto">
+      <table class="data">
+        <thead><tr><th>State</th><th>E (eV)</th><th>Dominant orbital transitions</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+/** @param {string} [keywords] @param {string} [block] */
+function renderInputEcho(keywords, block) {
+  const body = document.getElementById("result-body");
+  const pre = (t) => `<pre class="mono" style="white-space:pre-wrap;word-break:break-word;font-size:12px;background:rgba(127,127,127,0.08);padding:10px;border-radius:var(--radius-sm);margin:6px 0 0;overflow:auto">${escapeHtml(t)}</pre>`;
+  let html = `<div class="divider"></div><div class="card-title">Input echo</div>`;
+  if (keywords) html += `<div class="hint" style="margin-top:8px">Keywords</div>${pre(keywords)}`;
+  if (block) html += `<div class="hint" style="margin-top:8px">Input block</div>${pre(block)}`;
+  body.innerHTML += html;
+}
+
 async function openOutFile() {
   const raw = await bridge.parse_out_file();
   /** @type {ParsePayload} */
   let data; try { data = JSON.parse(raw); } catch { return; }
   if (!data.summary) { appendLog("Could not parse file.", "err"); return; }
-  renderSummary(data.summary);
-  if (data.frequencies && data.frequencies.length) renderFreqSpectrum(data.frequencies, data.n_imaginary);
-  if (data.neb_path && data.neb_path.length) renderNebPath(data.neb_path);
-  if (data.transitions && data.transitions.length) renderSpectrum(data.transitions);
-  if (data.nmr && data.nmr.length) renderNmr(data.nmr);
+  _currentResult = data;
+  renderResult(data);
   switchTab("results");
 }
 /** @param {TransitionPayload[]} transitions */

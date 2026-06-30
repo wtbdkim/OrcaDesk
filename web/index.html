@@ -15,7 +15,7 @@
     <div class="brand">
       <div class="logo"><img src="orcadesk_logo.png" alt="ORCAdesk" /></div>
       <div>
-        <h1>ORCAdesk <span class="ver-badge">0.4.0 beta</span></h1>
+        <h1>ORCAdesk <span class="ver-badge" id="ver-badge"></span></h1>
         <div class="sub">computational chemistry job runner</div>
       </div>
     </div>
@@ -197,6 +197,8 @@
           </div>
           <div class="btn-group">
             <select id="result-select" style="width:auto" onchange="showSelectedResult()"></select>
+            <button id="btn-showall" class="btn btn-sm btn-ghost" onclick="toggleShowAll()"
+                    title="Show every parsed value, ignoring per-calc-type filtering">Show all</button>
             <button class="btn btn-sm" onclick="openOutFile()">Open .out</button>
           </div>
         </div>
