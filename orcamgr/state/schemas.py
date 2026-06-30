@@ -180,17 +180,50 @@ class NebPointPayload(TypedDict):
     is_ts: bool
 
 
+class GeomAtomPayload(TypedDict):
+    """One atom of the final/optimized geometry (Angstrom)."""
+    el: str
+    x: float
+    y: float
+    z: float
+
+
+class OrbitalPayload(TypedDict):
+    """One molecular-orbital energy level."""
+    idx: int
+    occ: float
+    ev: float
+
+
+class TddftStatePayload(TypedDict):
+    """One TD-DFT excited state with its dominant orbital contributions.
+    `contributions` is a list of [from_orbital, to_orbital, weight] triples."""
+    state: int
+    ev: float
+    contributions: "list[tuple[str, str, float]]"
+
+
 class ParsePayload(TypedDict, total=False):
     """Successful parse of a .out. All keys optional on the wire because the
     failure branch sends ErrorPayload and parse_out_file returns "{}" on a
-    cancelled dialog; a successful parse emits all seven data keys."""
-    summary: "list[tuple[str, str]]"          # label/value rows (JSON: arrays)
+    cancelled dialog; a successful parse emits every data key it has."""
+    summary: "list[tuple[str, str, str]]"     # label/value/category rows
+    is_optimization: bool                     # gates "Final geometry" (front-end)
+    show_elec: bool                           # gates electronic-structure sections
     transitions: "list[TransitionPayload]"
     frequencies: "list[float]"                # cm^-1, negatives = imaginary
     n_imaginary: int
     mulliken: "list[tuple[str, float]]"
+    loewdin: "list[tuple[str, float]]"        # Loewdin atomic charges
+    mayer_valences: "list[tuple[int, str, float]]"   # (idx, element, Mayer valence)
+    mayer_bonds: "list[tuple[str, str, float]]"      # (atom_i, atom_j, bond order)
     nmr: "list[NmrPayload]"
     neb_path: "list[NebPointPayload]"
+    geometry: "list[GeomAtomPayload]"         # final/optimized coordinates (A)
+    orbitals: "list[OrbitalPayload]"          # orbital energies (eV) + occupations
+    tddft_states: "list[TddftStatePayload]"   # excited-state composition
+    input_keywords: str                       # echoed "!" simple-input line
+    input_block: str                          # echoed input block (%-blocks etc.)
 
 
 # ---- ok/error envelopes -------------------------------------------------------

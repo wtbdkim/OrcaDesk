@@ -284,6 +284,9 @@ input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
 .btn-ghost:hover { background: var(--accent); }
 .btn-danger { color: var(--err); }
 .btn-danger:hover { background: rgba(248,113,113,0.1); border-color: var(--err); }
+/* toggle "on" state (e.g. Show all): tinted box, matching the done-badge accent */
+.btn.on { background: rgba(74,222,128,0.15); border-color: var(--ok); color: var(--ok); }
+.btn.on:hover { background: rgba(74,222,128,0.22); }
 .btn-sm { padding: 5px 10px; font-size: 12px; }
 .btn-block { width: 100%; justify-content: center; padding: 11px; font-size: 14px; }
 

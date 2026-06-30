@@ -4,7 +4,7 @@ A desktop GUI for building, queuing, running, and parsing ORCA computational
 chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark **or light** UI),
 Python core.
 
-> **Status: 0.4.0 beta** (`0.4.0-beta`). Desktop app: build → queue → run →
+> **Status: 0.4.1 beta** (`0.4.1-beta`). Desktop app: build → queue → run →
 > parse, validated against real ORCA 6.1.1 output. A running calculation
 > **survives closing the app** and is reattached on the next launch; the UI ships
 > with both a **dark and a light theme**; you can **drag a `.inp`/`.xyz`/`.out`
@@ -71,9 +71,14 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   readable.
 - **Theme**: toggle **dark / light** from the top bar (☀/☽); the choice is
   remembered across launches.
-- **Results**: per-calculation summary (energy, HOMO/LUMO, gap, frequencies with
-  imaginary-mode warnings, thermochemistry, TD-DFT transitions + a UV-Vis plot).
-  You can also open any external `.out` file.
+- **Results**: per-calculation summary plus every value the parser extracts —
+  final geometry (with *Copy .xyz*), orbital energies (HOMO/LUMO), Mulliken &
+  Löwdin charges, Mayer bond orders/valences, dipole moment, rotational
+  constants, SCF energy decomposition, frequencies (with imaginary-mode
+  warnings) and full thermochemistry, TD-DFT transitions + a UV-Vis plot and the
+  excited-state composition, NMR shieldings, and the NEB path. Sections are shown
+  for the relevant calculation type; a **`Show all`** toggle reveals everything
+  regardless of type. You can also open any external `.out` file.
 - **Settings**: ORCA path, workspace folder, default resources, and ETA mode.
 
 ## Build a standalone Windows app

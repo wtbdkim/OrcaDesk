@@ -265,17 +265,49 @@
  */
 
 /**
+ * @typedef {Object} GeomAtomPayload
+ * @property {string} el
+ * @property {number} x
+ * @property {number} y
+ * @property {number} z
+ */
+
+/**
+ * @typedef {Object} OrbitalPayload
+ * @property {number} idx
+ * @property {number} occ
+ * @property {number} ev
+ */
+
+/**
+ * @typedef {Object} TddftStatePayload
+ * @property {number} state
+ * @property {number} ev
+ * @property {[string, string, number][]} contributions   [from, to, weight]
+ */
+
+/**
  * Parsed .out payload (parse_out_file / parse_out_path). On failure only
  * {error} is present; parse_out_file returns literally "{}" on a
  * cancelled file dialog, so every field is optional.
  * @typedef {Object} ParsePayload
- * @property {[string, string][]} [summary]      label/value rows
+ * @property {[string, string, string][]} [summary]   label/value/category rows
+ * @property {boolean} [is_optimization]         gates "Final geometry"
+ * @property {boolean} [show_elec]               gates electronic-structure sections
  * @property {TransitionPayload[]} [transitions]
  * @property {number[]} [frequencies]            cm^-1, negatives = imaginary
  * @property {number} [n_imaginary]
  * @property {[string, number][]} [mulliken]
+ * @property {[string, number][]} [loewdin]
+ * @property {[number, string, number][]} [mayer_valences]   [idx, el, valence]
+ * @property {[string, string, number][]} [mayer_bonds]      [atom_i, atom_j, order]
  * @property {NmrPayload[]} [nmr]
  * @property {NebPointPayload[]} [neb_path]
+ * @property {GeomAtomPayload[]} [geometry]
+ * @property {OrbitalPayload[]} [orbitals]
+ * @property {TddftStatePayload[]} [tddft_states]
+ * @property {string} [input_keywords]
+ * @property {string} [input_block]
  * @property {string} [error]
  */
 

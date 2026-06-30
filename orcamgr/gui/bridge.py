@@ -47,10 +47,10 @@ from ..state.store import (
 # source of truth, mirrored for the front-end by web/types.js.
 from ..state.schemas import (
     AboutPayload, ConflictsResult, ErrorPayload, FepPoint, FepResult,
-    GetCalcResult, GraphLinesResult, InpFilePayload, MlipStatusPayload,
-    MutationResult, NmrPayload, OkResult, ParsePayload, QrResult,
-    ServerStatusPayload, SettingsPayload, StartServerResult, TextResult,
-    TransitionPayload,
+    GeomAtomPayload, GetCalcResult, GraphLinesResult, InpFilePayload,
+    MlipStatusPayload, MutationResult, NmrPayload, OkResult, OrbitalPayload,
+    ParsePayload, QrResult, ServerStatusPayload, SettingsPayload,
+    StartServerResult, TextResult, TransitionPayload,
 )
 
 
@@ -317,8 +317,15 @@ class Bridge(QObject):
     def _parse_path(self, path: str) -> str:
         try:
             r = parse_file(path)
+            # Send everything that was parsed plus the two gating flags; the
+            # front-end decides what to show per calc kind (and "Show all"
+            # overrides it). is_optimization gates "Final geometry"; show_elec
+            # gates general electronic-structure sections (orbitals, charges,
+            # Mayer, dipole, SCF decomposition).
             return json.dumps(ParsePayload(
                 summary=r.summary_rows(),
+                is_optimization=r.is_optimization,
+                show_elec=r.shows_electronic_props,
                 transitions=[
                     TransitionPayload(state=t.state, ev=t.energy_ev,
                                       nm=t.wavelength_nm, fosc=t.fosc)
@@ -332,6 +339,20 @@ class Bridge(QObject):
                     for (i, el, iso, an) in r.nmr_shieldings
                 ],
                 neb_path=r.neb_path,
+                geometry=[
+                    GeomAtomPayload(el=a.symbol, x=a.x, y=a.y, z=a.z)
+                    for a in r.geometry
+                ],
+                orbitals=[
+                    OrbitalPayload(idx=o.index, occ=o.occ, ev=o.energy_ev)
+                    for o in r.orbitals
+                ],
+                loewdin=r.loewdin_charges,
+                mayer_valences=r.mayer_valences,
+                mayer_bonds=r.mayer_bonds,
+                tddft_states=r.tddft_states,
+                input_keywords=r.input_keywords,
+                input_block=r.input_block,
             ))
         except Exception as e:
             return json.dumps(ErrorPayload(error=str(e)))

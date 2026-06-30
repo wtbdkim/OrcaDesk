@@ -3,6 +3,41 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.1-beta] — 2026-06-30
+
+### Added
+- **The Results tab now surfaces every value the parser extracts.** In addition
+  to the existing summary/spectra it shows the **final geometry** (coordinate
+  table + a *Copy .xyz* button), the **full orbital-energy list** (HOMO/LUMO
+  highlighted), **Mulliken and Löwdin atomic charges**, **Mayer population**
+  (bond orders + per-atom valence), the **dipole moment**, **rotational
+  constants**, the **SCF energy decomposition** (nuclear repulsion, electronic,
+  one-/two-electron, kinetic, potential, virial ratio), an extended
+  **thermochemistry breakdown** (inner energy *U*, enthalpy *H*, entropy term
+  *T·S*, temperature, pressure), the **TD-DFT excited-state composition**
+  (dominant orbital transitions per state), and the **input echo** (keywords +
+  input block).
+- **`Show all` toggle** in the Results header reveals every parsed value
+  regardless of calculation type; the button is tinted while active.
+
+### Changed
+- **Result sections are gated to the relevant calculation type.** The final
+  geometry shows only for optimizations; general electronic-structure properties
+  (orbitals, charges, Mayer, dipole, rotational constants, SCF decomposition)
+  show only for single-point / optimization jobs; freq/TD-DFT/NMR/NEB results
+  show only their specialty. The `Show all` toggle overrides this gating.
+- The parser (`parse_file`) now also extracts Löwdin charges, Mayer population,
+  dipole moment, rotational constants, the SCF energy decomposition, the extended
+  thermochemistry quantities, and the TD-DFT excited-state composition. Validated
+  against real ORCA 6.1.1 output (sp / opt / freq / TD-DFT / NMR / NEB).
+- **Queue cards are tidier:** charge/multiplicity are shown only for ORCA calcs
+  (hidden for MLIP, where they are meaningless), the direct-geometry source label
+  is simplified from `.xyz` to `xyz`, and the redundant "Completed." note is
+  hidden for finished jobs (the `done` badge already conveys it).
+
+### Fixed
+- Removed a duplicated *ZPE* row from the frequency summary.
+
 ## [0.4.0-beta] — 2026-06-28
 
 ### Fixed

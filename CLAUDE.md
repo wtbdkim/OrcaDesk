@@ -81,6 +81,17 @@ the front-end. Don't annotate FastAPI endpoints with these TypedDicts as return 
 — FastAPI would infer a response_model and put pydantic between the dict and the wire;
 endpoints keep `-> dict` and only *construct* through the schema types.
 
+The **Results tab** is purely presentational over `ParsePayload`: `bridge._parse_path`
+sends the *whole* `ParseResult` (every section the parser found) plus two gating flags
+— `is_optimization` and `show_elec` (`= ParseResult.shows_electronic_props`) — and the
+front-end (`web/app.js` `renderResultSections` / `renderSummary`) decides what to show
+per calc kind. Final geometry shows only for opt jobs; general electronic-structure
+sections (orbitals, charges, Mayer, dipole, rotational, SCF decomposition, and the
+`"elec"`-tagged summary rows) show only for sp/opt; freq/tddft/nmr/neb sections are
+present-only. The Results header's **`Show all`** toggle (`showAllResults` in `app.js`)
+overrides the gating to reveal everything parsed. Keep the gating on the front-end (not
+the payload) so the toggle re-renders without a re-fetch.
+
 ### Running the queue: core/ is GUI-agnostic
 
 A run is started via `QueueStore.start_run(engine_factory)`, which spins a daemon
@@ -107,10 +118,16 @@ The `core/` pipeline:
   is the module-level `validate_result()` (shared by the engine and session
   reconciliation). Cancel verbs: hard `cancel()`, graceful `request_stop_after_current()`
   (drain), and `detach()` (shutdown — leave the running job alive).
-- `parser.py` — `parse_file()` → `ParseResult` (energies, geometry, HOMO/LUMO,
-  frequencies, thermochemistry, TD-DFT transitions, NMR, NEB path). Marker-based,
+- `parser.py` — `parse_file()` → `ParseResult` (energies + SCF energy
+  decomposition, geometry, orbitals/HOMO-LUMO, Mulliken & Löwdin charges, Mayer
+  population (bond orders + valences), dipole moment, rotational constants,
+  frequencies, full thermochemistry (U/H/G/ZPE/T·S/temp/pressure), TD-DFT
+  transitions + excited-state composition, NMR, NEB path). Marker-based,
   tolerant of `\r\n`; when a value recurs (e.g. across opt steps) the **last**
-  occurrence wins.
+  occurrence wins. `ParseResult.summary_rows()` returns `(label, value, category)`
+  rows where `category="elec"` tags general electronic-structure rows; the
+  `shows_electronic_props` property (`is_optimization or not specialty`) decides
+  which sections the Results tab shows per kind — see the Results-gating note.
 
 ### Queue semantics (important invariants)
 
@@ -282,6 +299,11 @@ Two long-lived branches:
   `dev`). Each commit corresponds to a tagged version.
 - **`dev`** — integration branch for day-to-day work. Branch feature work off `dev`
   and merge back into `dev`; promote to `main` only when cutting a release.
+
+**When to commit.** Don't let large uncommitted diffs accumulate. Once roughly
+**200–300 lines** of changes have built up (or at a natural logical boundary — a
+finished feature or fix), **proactively suggest committing** to the user. Still
+only actually commit when they confirm, and follow the branch/message rules below.
 
 **Commit message format depends on the branch.** Both use a one-line subject, a blank
 line, then a detailed body.
