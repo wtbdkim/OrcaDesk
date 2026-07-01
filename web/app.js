@@ -108,7 +108,7 @@ window.onInpDropped = async function (path) {
     const nameEl = document.getElementById("calc-name");
     if (nameEl && res.name && !nameEl.value.trim()) nameEl.value = res.name;
     switchTab("build");
-    appendLog(`Dropped .inp loaded${res.name ? " (" + res.name + ")" : ""}. Set the calc type, then Add to queue.`, "ok");
+    appendLog(`Dropped .inp loaded${res.name ? " (" + res.name + ")" : ""}. Next: calc type, then Add to queue.`, "ok");
   } catch (e) { toast("Drop failed"); }
 };
 
@@ -120,7 +120,7 @@ window.onXyzDropped = async function (path) {
     directXyz = parseXyzText(content);
     const n = directXyz ? directXyz.split("\n").length : 0;
     const st = document.getElementById("xyz-status");
-    if (st) st.textContent = n ? `${n} atoms loaded.` : "No atoms found in file.";
+    if (st) st.textContent = n ? `${n} atoms loaded.` : "No atoms in file.";
     switchTab("build");
     appendLog(`Dropped .xyz loaded (${n} atoms).`, n ? "ok" : "warn");
   } catch (e) { toast("Drop failed"); }
@@ -458,7 +458,7 @@ function applyTheme(theme) {
   const btn = document.getElementById("theme-toggle");
   if (btn) {
     btn.textContent = t === "light" ? "☀" : "☽";   // ☀ / ☽
-    btn.title = t === "light" ? "Switch to dark theme" : "Switch to light theme";
+    btn.title = t === "light" ? "Dark theme" : "Light theme";
   }
 }
 async function toggleTheme() {
@@ -497,6 +497,21 @@ function updateOrcaStatus(valid) {
 }
 
 let _mlipPollTimer = 0;
+let _mlipReady = false;   // any registered MACE env is ready — gates the MLIP build card
+/** Grey out and lock the MLIP build card when no MACE environment is ready. */
+function applyMlipLock() {
+  const card = document.getElementById("card-mlip");
+  if (!card) return;
+  const locked = !_mlipReady;
+  card.classList.toggle("locked", locked);
+  const note = document.getElementById("mlip-lock-note");
+  if (note) note.style.display = locked ? "" : "none";
+  for (const id of ["mlip-name", "mlip-model"]) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = locked;
+  }
+  card.querySelectorAll("button").forEach(b => { b.disabled = locked; });
+}
 /** Backend list -> "MACE 0.3.6, SevenNet 0.10.0".
  *  @param {MlipBackend[]} backends */
 function mlipBackendText(backends) {
@@ -508,6 +523,8 @@ function mlipBackendText(backends) {
 function renderMlip(st) {
   const state = (st && st.state) || "unset";
   const envs = (st && st.envs) || [];
+  _mlipReady = (state === "ready");
+  applyMlipLock();
   const pill = document.getElementById("mlip-status");
   pill.classList.toggle("ok", state === "ready");
   pill.classList.toggle("err", state === "error");
@@ -594,7 +611,7 @@ async function pollMlipStatus() {
 async function addMlipEnv() {
   const input = document.getElementById("set-mlip");
   const python = input.value.trim();
-  if (!python) { toast("Enter or browse to a Python interpreter path."); return; }
+  if (!python) { toast("A Python interpreter path (enter or browse)."); return; }
   const res = JSON.parse(await bridge.add_mlip_env(JSON.stringify({ python })));
   if (res && res.error) { toast("Could not add environment: " + res.error); return; }
   input.value = "";
@@ -643,7 +660,7 @@ async function pickWorkspace() { const p = await bridge.pick_workspace(); if (p)
 async function autodetectOrca() {
   const p = await bridge.autodetect_orca();
   if (p) { document.getElementById("set-orca").value = p; appendLog("Auto-detected ORCA: " + p, "ok"); }
-  else appendLog("Could not auto-detect ORCA. Set the path manually.", "warn");
+  else appendLog("ORCA not auto-detectable — manual path entry needed.", "warn");
 }
 
 // ---------- tabs ----------
@@ -715,8 +732,8 @@ async function loadXyz() {
   directXyz = parseXyzText(content);
   const n = directXyz ? directXyz.split("\n").length : 0;
   const st = document.getElementById("xyz-status");
-  st.textContent = n ? `${n} atoms loaded.` : "No atoms found in file.";
-  appendLog(`Loaded ${n} atoms from .xyz.`, n ? "ok" : "warn");
+  st.textContent = n ? `${n} atoms loaded.` : "No atoms in file.";
+  appendLog(`${n} atoms loaded from .xyz.`, n ? "ok" : "warn");
 }
 
 // ---------- per-element basis / ECP ----------
@@ -785,9 +802,9 @@ function renderConfigForm(kind, preserve) {
     ? `<div class="field" style="flex:0 0 130px"><label>MaxIter</label><input id="cfg-maxiter" type="number" value="200" min="1"></div>` : "";
   const nmrRows = def.showNmr ? `
     <div class="field-row">
-      <label class="checkbox"><input id="cfg-jcoupling" type="checkbox"> Also compute J-couplings (%eprnmr SSALL)</label>
+      <label class="checkbox"><input id="cfg-jcoupling" type="checkbox"> Additional J-couplings (%eprnmr SSALL)</label>
     </div>
-    <div class="hint">NMR shielding is always computed; check the box to add spin-spin (J) couplings.</div>` : "";
+    <div class="hint">NMR shielding always computed; checkbox adds spin-spin (J) couplings.</div>` : "";
   const tddftRows = def.showTddft ? `
     <div class="field-row">
       <div class="field"><label>nroots</label><input id="cfg-nroots" type="number" value="40" min="1"></div>
@@ -800,7 +817,7 @@ function renderConfigForm(kind, preserve) {
       <div class="field"><label>Temperature (K)</label><input id="cfg-temp" type="number" value="298.15" step="0.01" min="0"></div>
       <div class="field"><label>Pressure (atm)</label><input id="cfg-pressure" type="number" value="1.0" step="0.1" min="0"></div>
     </div>
-    <div class="hint">Defaults (298.15 K, 1.0 atm) omit the %freq block; change them to emit it.</div>` : "";
+    <div class="hint">Default 298.15 K / 1.0 atm omits the %freq block; any change emits it.</div>` : "";
   const ircRows = def.showIrc ? `
     <div class="field-row">
       <div class="field"><label>Direction</label>
@@ -818,7 +835,7 @@ function renderConfigForm(kind, preserve) {
     <div class="field-row" id="cfg-irc-hessfile-row" style="display:none">
       <div class="field"><label>.hess filename</label><input id="cfg-irc-hessfile" type="text" class="mono" placeholder="e.g. TS2.hess (in this calc's folder)"></div>
     </div>
-    <div class="hint">IRC starts from a TS structure. Set Geometry below to <b>reference</b> a TS calculation. Reading a .hess from that TS's freq run is fastest; otherwise it's recomputed here.</div>` : "";
+    <div class="hint">IRC start point: a TS structure — Geometry below to <b>reference</b> a TS calc. Fastest with a .hess from that TS's freq run, else recomputed here.</div>` : "";
   const nebRows = def.showNeb ? `
     <div class="field-row">
       <div class="field"><label>Product geometry (.xyz)</label>
@@ -826,22 +843,22 @@ function renderConfigForm(kind, preserve) {
         <span id="cfg-neb-prod-status" class="hint" style="margin-left:8px">no product loaded</span>
       </div>
       <div class="field" style="flex:0 0 120px"><label>Images</label><input id="cfg-neb-nimages" type="number" value="8" min="3"></div>
-      <div class="field"><label class="checkbox" style="margin-top:24px"><input id="cfg-neb-preopt" type="checkbox"> Pre-opt ends</label></div>
+      <div class="field"><label class="checkbox" style="margin-top:24px"><input id="cfg-neb-preopt" type="checkbox"> Endpoint pre-optimization</label></div>
     </div>
     <div id="cfg-neb-atomcheck" class="hint" style="margin-top:4px"></div>
-    <div class="hint">NEB-TS finds the TS between the reactant (set Geometry below) and the product. <b>The two structures must have the same atoms in the same order</b> — build the product by copying the reactant and moving atoms, then load it here.</div>` : "";
+    <div class="hint">NEB-TS: the TS between reactant (Geometry below) and product. <b>Identical atoms in identical order in both</b> — product built by copying the reactant and moving atoms, then loaded here.</div>` : "";
 
   host.innerHTML = `
     <div class="field-row">
       <div class="field"><label>Functional</label>
         <div class="combo" id="combo-functional">
-          <input type="text" class="mono combo-input" autocomplete="off" placeholder="type to search or enter your own">
+          <input type="text" class="mono combo-input" autocomplete="off" placeholder="searchable — or your own value">
           <div class="combo-list" style="display:none"></div>
         </div>
       </div>
       <div class="field"><label>Basis set</label>
         <div class="combo" id="combo-basis">
-          <input type="text" class="mono combo-input" autocomplete="off" placeholder="type to search or enter your own">
+          <input type="text" class="mono combo-input" autocomplete="off" placeholder="searchable — or your own value">
           <div class="combo-list" style="display:none"></div>
         </div>
       </div>
@@ -859,7 +876,7 @@ function renderConfigForm(kind, preserve) {
       </div>
       <div class="field" id="cfg-solvent-field"><label>Solvent</label>
         <div class="combo" id="combo-solvent">
-          <input type="text" class="mono combo-input" autocomplete="off" placeholder="type to search or enter your own">
+          <input type="text" class="mono combo-input" autocomplete="off" placeholder="searchable — or your own value">
           <div class="combo-list" style="display:none"></div>
         </div>
       </div>
@@ -914,7 +931,7 @@ async function loadNebProduct() {
   const content = await bridge.load_xyz_file();
   if (!content) return;                       // user cancelled the picker
   const xyz = parseXyzText(content);          // raw .xyz text, NOT JSON
-  if (!xyz) { appendLog("No atoms found in the product .xyz.", "warn"); return; }
+  if (!xyz) { appendLog("No atoms in the product .xyz.", "warn"); return; }
   _nebProductXyz = xyz;
   const st = document.getElementById("cfg-neb-prod-status");
   if (st) st.textContent = `loaded (${countAtoms(xyz)} atoms)`;
@@ -949,7 +966,7 @@ function nebAtomCheck() {
   const tr = tally(r), tp = tally(p);
   const composMismatch = Object.keys({...tr, ...tp}).some(e => tr[e] !== tp[e]);
   if (composMismatch) {
-    box.className = "qerror"; box.textContent = `⚠ Element composition differs between reactant and product.`;
+    box.className = "qerror"; box.textContent = `⚠ Element composition mismatch between reactant and product.`;
     return;
   }
   // order
@@ -1073,7 +1090,7 @@ async function addCalcToQueue() {
       if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
       if (oldName !== calc.name) delete localCalcs[oldName];
       localCalcs[calc.name] = calc;
-      appendLog(`Updated "${calc.name}".`, "ok");
+      appendLog(`"${calc.name}" updated.`, "ok");
       exitEditMode();
       await refreshQueue();
       switchTab("queue");
@@ -1088,7 +1105,7 @@ async function addCalcToQueue() {
       return;
     }
     localCalcs[calc.name] = calc;
-    appendLog(`Added "${calc.name}" (${calc.kind}${calc.is_raw ? ", raw" : ""}) to queue.`, "ok");
+    appendLog(`"${calc.name}" (${calc.kind}${calc.is_raw ? ", raw" : ""}) added to queue.`, "ok");
     exitEditMode();
     await refreshQueue();
     switchTab("queue");
@@ -1113,7 +1130,7 @@ async function loadMlipXyz() {
   mlipXyz = parseXyzText(content);
   const n = mlipXyz ? mlipXyz.split("\n").length : 0;
   document.getElementById("mlip-xyz-status").textContent =
-    n ? `${n} atoms loaded.` : "No atoms found in file.";
+    n ? `${n} atoms loaded.` : "No atoms in file.";
 }
 function resetMlipForm() {
   document.getElementById("mlip-name").value = "";
@@ -1122,6 +1139,7 @@ function resetMlipForm() {
 }
 async function addMlipCalcToQueue() {
   try {
+    if (!_mlipReady) throw new Error("A ready MACE environment required (setup in Settings).");
     const name = document.getElementById("mlip-name").value.trim();
     if (!name) throw new Error("Name is required.");
     if (/[\\/:*?"<>|]/.test(name))
@@ -1147,7 +1165,7 @@ async function addMlipCalcToQueue() {
       return;
     }
     localCalcs[calc.name] = calc;
-    appendLog(`Added "${calc.name}" (MLIP ${model}) to queue.`, "ok");
+    appendLog(`"${calc.name}" (MLIP ${model}) added to queue.`, "ok");
     resetMlipForm();
     await refreshQueue();
     switchTab("queue");
@@ -1160,10 +1178,10 @@ async function addMlipCalcToQueue() {
 async function editCalc(i) {
   const mirror = queue[i];
   if (!mirror) return;
-  if (!isEditableState(mirror.state)) { toast("Only pending, failed, or cancelled calculations can be edited."); return; }
+  if (!isEditableState(mirror.state)) { toast("Editing limited to pending, failed, or cancelled calculations."); return; }
   // MLIP calcs use the separate MLIP form, not the ORCA editor. In-place editing
   // isn't wired yet — remove and re-add from the MLIP build mode instead.
-  if ((mirror.kind || "").startsWith("mlip")) { toast("Editing MLIP calculations isn't supported yet — remove it and re-add from the MLIP build mode."); return; }
+  if ((mirror.kind || "").startsWith("mlip")) { toast("No in-place editing of MLIP calculations yet — removal, then re-add from the MLIP build mode."); return; }
   // a normal calc edits in the ORCA build form; leave MLIP mode if we're in it
   if (buildMode === "mlip") setBuildMode(mirror.is_raw ? "expert" : "beginner", false);
   // prefer the full local copy (has config/xyz/raw_text added on this PC)
@@ -1335,8 +1353,8 @@ async function enterRawMode() {
   if (rawMode) { switchTab("build"); return; }
   const ok = await confirmModal({
     title: "Switch to raw mode?",
-    body: "You'll edit the ORCA .inp directly. After saving, this calculation can " +
-          "no longer be edited through the form — only as raw text. This can't be undone.",
+    body: "Direct edit of the ORCA .inp. After saving: no more form editing — " +
+          "raw text only, irreversibly.",
     confirm: "Switch to raw", danger: true,
   });
   if (!ok) return;
@@ -1362,7 +1380,7 @@ async function enterRawMode() {
   }
 
   enterRawWithText(res.text);
-  appendLog("Raw mode: edit the .inp below (type your coordinates after the '* xyz' line), then Add/Update.", "info");
+  appendLog("Raw mode — .inp editable below (coordinates after the '* xyz' line), then Add/Update.", "info");
 }
 
 // shared raw-mode entry: show the raw editor populated with `text`. Used by the
@@ -1386,7 +1404,7 @@ async function loadInpFile() {
   if (editIndex !== -1 && !rawMode) {
     const ok = await confirmModal({
       title: "Load a .inp here?",
-      body: "This calculation becomes raw input and can no longer be edited through the form.",
+      body: "This calculation becomes raw input, no longer form-editable.",
       confirm: "Load .inp", danger: true });
     if (!ok) return;
   }
@@ -1397,7 +1415,7 @@ async function loadInpFile() {
   // hasn't already typed a name, so a deliberate name isn't clobbered)
   const nameEl = document.getElementById("calc-name");
   if (nameEl && res.name && !nameEl.value.trim()) nameEl.value = res.name;
-  appendLog("Loaded .inp into the editor. Set the calc type (and Geometry source if it uses {{GEOMETRY}}), then Add to queue.", "info");
+  appendLog(".inp loaded into the editor. Calc type next (plus Geometry source for {{GEOMETRY}}), then Add to queue.", "info");
 }
 
 // Beginner (guided form) vs Expert (paste/load a complete .inp + pick the kind).
@@ -1417,6 +1435,7 @@ function setBuildMode(mode, persist = true) {
   if (mlip) {
     rawMode = false; rawText = "";
     renderMlipForm();
+    applyMlipLock();
   } else if (mode === "expert") {
     // always raw input: hide the method form + charge/mult + raw button, show the .inp editor
     _showIds(_EXPERT_HIDDEN, false);
@@ -1482,7 +1501,7 @@ async function viewInp(i) {
       try { const pv = /** @type {TextResult} */ (JSON.parse(await bridge.build_inp_preview(JSON.stringify(full)))); if (pv.ok) { text = pv.text; } } catch (e) { }
     }
   }
-  if (text == null) { toast("Input not available yet — run the queue first."); return; }
+  if (text == null) { toast("Input not available yet (queue run needed first)."); return; }
   await showModal(`Input · ${escapeHtml(c.name)}`, `<pre class="inp-view">${escapeHtml(text)}</pre>`, [{ label: "Close", value: null }]);
 }
 
@@ -1493,7 +1512,7 @@ function renderQueue() {
       <path d="M3 7h18M3 12h18M3 17h18"/><circle cx="6" cy="7" r="0.5" fill="currentColor"/>
     </svg>
     <div class="queue-empty-title">No calculations queued</div>
-    <div class="queue-empty-sub">Build one in the Build tab to get started.</div>
+    <div class="queue-empty-sub">A new calculation from the Build tab to get started.</div>
   </div>`; return; }
   el.innerHTML = "";
   queue.forEach((c, i) => {
@@ -1512,9 +1531,9 @@ function renderQueue() {
     div.dataset.index = String(i);
     if (editable) div.setAttribute("draggable", "true");
     const handle = editable
-      ? `<span class="drag-handle" title="Drag to reorder">≡</span>` : `<span class="drag-handle placeholder"></span>`;
+      ? `<span class="drag-handle" title="Reorder handle">≡</span>` : `<span class="drag-handle placeholder"></span>`;
     // view the input (.inp) — available for ANY state, incl. running/done
-    const viewBtn = `<button class="btn btn-sm btn-ghost" onclick="viewInp(${i})" title="View input (.inp)">.inp</button>`;
+    const viewBtn = `<button class="btn btn-sm btn-ghost" onclick="viewInp(${i})" title="Input (.inp)">.inp</button>`;
     const editBtn = editable
       ? `<button class="btn btn-sm btn-ghost" onclick="editCalc(${i})">edit</button>` : "";
     const delBtn = removable
@@ -1573,7 +1592,7 @@ async function reorderCalc(from, to) {
   // both endpoints must be editable (server enforces too)
   if (!queue[from] || !queue[to]) return;
   if (!isEditableState(queue[from].state) || !isEditableState(queue[to].state)) {
-    toast("Only pending, failed, or cancelled calculations can be reordered.");
+    toast("Reordering limited to pending, failed, or cancelled calculations.");
     return;
   }
   try {
@@ -1652,7 +1671,7 @@ async function runQueue() {
   // its promise). The backend still rejects a double start_run regardless.
   if (_running || _starting) return;
   if (!queue.length) { appendLog("No calculations queued.", "warn"); return; }
-  if (!settings.orca_valid) { toast("ORCA path is not set. Go to Settings."); switchTab("settings"); return; }
+  if (!settings.orca_valid) { toast("ORCA path not set (see Settings)."); switchTab("settings"); return; }
 
   _starting = true;
   try {
@@ -1703,8 +1722,8 @@ async function stopAfterCurrent() {
   _stopRequested = true;                  // one-shot for this run
   setRunUI(_running);
   const res = /** @type {OkResult} */ (JSON.parse(await bridge.stop_after_current()));
-  appendLog(res.ok ? "Will stop after the current job finishes."
-                    : "Nothing is running.", "info");
+  appendLog(res.ok ? "Stop scheduled after the current job finishes."
+                    : "Nothing running.", "info");
 }
 function setRunUI(running) {
   const rb = document.getElementById("run-btn");
@@ -2222,7 +2241,7 @@ function renderFreqSpectrum(frequencies, nImaginary) {
 
   const warn = nImaginary > 0
     ? `<div class="freq-warn">⚠ ${nImaginary} imaginary mode${nImaginary>1?"s":""} (negative frequency) — this is a saddle point, not a minimum. Re-optimize (try TightOpt / a tighter grid) before trusting thermochemistry.</div>`
-    : `<div class="hint" style="margin-top:6px">No imaginary modes — structure is a local minimum.</div>`;
+    : `<div class="hint" style="margin-top:6px">No imaginary modes — a local minimum.</div>`;
 
   body.innerHTML += `
     <div class="divider"></div>
@@ -2250,7 +2269,7 @@ function renderNmr(nmr) {
       <thead><tr><th>Nucleus</th><th>Isotropic</th><th>Anisotropy</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    <div class="hint">Absolute shieldings — subtract from a reference (e.g. TMS) to get chemical shifts.</div>`;
+    <div class="hint">Absolute shieldings — reference subtraction (e.g. TMS) for chemical shifts.</div>`;
 }
 
 /** @param {NebPointPayload[]} path */
@@ -2329,7 +2348,7 @@ function renderFreeEnergyProfile() {
   const body = document.getElementById("fep-body");
   if (!body) return;
   if (!_fepPoints.length) {
-    body.innerHTML = `<div class="hint">No finished frequency calculations yet. Run jobs with FREQ to build a profile.</div>`;
+    body.innerHTML = `<div class="hint">No finished frequency calculations yet — FREQ jobs build the profile.</div>`;
     return;
   }
   const units = (document.getElementById("fep-units") || {}).value || "kcal";

@@ -51,7 +51,7 @@
       </div>
       <div class="card" id="card-calc">
         <div class="card-title">Calculation</div>
-        <div class="card-desc">One calculation = one ORCA run. Give it a unique name (used as its folder).</div>
+        <div class="card-desc">One ORCA run per calculation; unique name (used as its folder).</div>
         <div class="field-row">
           <div class="field"><label>Name</label><input id="calc-name" type="text" placeholder="e.g. Ltyr-MV-opt"></div>
           <div class="field" style="flex:0 0 130px"><label>Type</label>
@@ -77,10 +77,9 @@
 
       <div class="card" id="card-geometry">
         <div class="card-title">Geometry source</div>
-        <div class="card-desc">Use coordinates from an .xyz file, or take the optimized geometry of another queued calculation.</div>
         <div class="field-row" style="margin-bottom:12px">
           <label class="checkbox"><input type="radio" name="geomsrc" value="direct" checked onchange="onGeomSourceChange()"> From .xyz file</label>
-          <label class="checkbox"><input type="radio" name="geomsrc" value="reference" onchange="onGeomSourceChange()"> Reference another calculation</label>
+          <label class="checkbox"><input type="radio" name="geomsrc" value="reference" onchange="onGeomSourceChange()"> From another calculation</label>
         </div>
         <div id="geom-direct">
           <div class="btn-group" style="margin-bottom:4px">
@@ -90,22 +89,21 @@
         </div>
         <div id="geom-reference" style="display:none">
           <div class="field">
-            <label>Take optimized geometry from</label>
+            <label>Optimized geometry from</label>
             <select id="ref-select"></select>
           </div>
-          <div class="hint">The referenced calculation runs first; its final geometry is injected here at run time.</div>
+          <div class="hint">Referenced calc's optimized geometry, injected here at run time (it runs first).</div>
         </div>
       </div>
 
       <div class="card" id="card-method">
         <div class="card-title">Method &amp; options</div>
-        <div class="card-desc">Settings for this calculation.</div>
         <div id="calc-config"></div>
         <div class="divider"></div>
         <div class="atoms-head">
           <div>
             <label style="margin:0">Per-element basis / ECP</label>
-            <div class="card-desc" style="margin:2px 0 0">Override basis/ECP for specific elements (e.g. heavy atoms). Leave empty for none.</div>
+            <div class="card-desc" style="margin:2px 0 0">Per-element basis/ECP overrides (empty for none).</div>
           </div>
           <button class="btn btn-sm" onclick="addBasisRow()">+ Element</button>
         </div>
@@ -114,9 +112,9 @@
 
       <div class="card" id="raw-card" style="display:none">
         <div class="card-title">Raw .inp <span class="qstate raw" style="margin-left:6px">raw</span></div>
-        <div class="card-desc">Edit the ORCA input directly. To reuse another job's optimized geometry, set <b>Geometry source</b> to <b>reference</b> above, pick the source job, and put <span class="mono">{{GEOMETRY}}</span> where the coordinates go. It is filled in at run time. This also injects an MLIP pre-optimized geometry.</div>
+        <div class="card-desc">Direct ORCA input editor. <span class="mono">{{GEOMETRY}}</span> placeholder (with <b>Geometry source</b> = <b>reference</b> and a chosen source job) for that job's optimized or MLIP pre-optimized geometry, filled in at run time.</div>
         <div class="btn-group" style="flex-wrap:wrap;margin-bottom:8px">
-          <span class="hint" style="margin:0;align-self:center">Insert block:</span>
+          <span class="hint" style="margin:0;align-self:center">Insertable blocks:</span>
           <button class="btn btn-sm btn-ghost" onclick="insertSnippet('geometry')" title="Placeholder for a referenced calculation's optimized geometry">{{GEOMETRY}}</button>
           <button class="btn btn-sm btn-ghost" onclick="insertSnippet('scf')">%scf</button>
           <button class="btn btn-sm btn-ghost" onclick="insertSnippet('basis')">%basis (newgto/ecp)</button>
@@ -133,7 +131,7 @@
       <!-- MLIP mode: self-contained form (shown only when build mode = mlip) -->
       <div class="card" id="card-mlip" style="display:none">
         <div class="card-title">MLIP pre-optimization <span class="qstate raw" style="margin-left:6px">MLIP</span></div>
-        <div class="card-desc">Fast pre-optimization with a MACE model before ORCA. Requires a MACE environment in Settings.</div>
+        <div id="mlip-lock-note" class="mlip-lock-note" style="display:none">Ready MACE environment required.</div>
         <div class="field-row">
           <div class="field"><label>Name</label><input id="mlip-name" type="text" placeholder="e.g. mol-mace-opt"></div>
           <div class="field" style="flex:0 0 240px"><label>MACE model</label><select id="mlip-model"></select></div>
@@ -160,7 +158,7 @@
     <!-- ============ QUEUE ============ -->
     <section class="panel" data-panel="queue">
       <div class="card">
-        <div id="queue-list"><div class="queue-empty">No jobs queued. Build one in the Build tab.</div></div>
+        <div id="queue-list"><div class="queue-empty">No queued jobs — new ones from the Build tab.</div></div>
       </div>
       <div class="btn-group">
         <button class="btn btn-primary" id="run-btn" onclick="runQueue()">Run queue</button>
@@ -193,12 +191,12 @@
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
           <div>
             <div class="card-title">Results</div>
-            <div class="card-desc" style="margin:0">Pick a completed job, or open any .out file.</div>
+            <div class="card-desc" style="margin:0">A completed job, or any .out file.</div>
           </div>
           <div class="btn-group">
             <select id="result-select" style="width:auto" onchange="showSelectedResult()"></select>
             <button id="btn-showall" class="btn btn-sm btn-ghost" onclick="toggleShowAll()"
-                    title="Show every parsed value, ignoring per-calc-type filtering">Show all</button>
+                    title="Every parsed value, ignoring per-calc-type filtering">Show all</button>
             <button class="btn btn-sm" onclick="openOutFile()">Open .out</button>
           </div>
         </div>
@@ -220,7 +218,7 @@
             <button class="btn btn-sm" onclick="renderFreeEnergyProfile()">Refresh</button>
           </div>
         </div>
-        <div id="fep-body"><div class="hint">No finished frequency calculations yet. Run jobs with FREQ to build a profile.</div></div>
+        <div id="fep-body"><div class="hint">No finished frequency calculations yet — FREQ jobs build the profile.</div></div>
       </div>
     </section>
 
@@ -228,7 +226,7 @@
     <section class="panel" data-panel="settings">
       <div class="card">
         <div class="card-title">ORCA executable</div>
-        <div class="card-desc">Path to orca.exe. Required to run jobs. Auto-detected on first launch.</div>
+        <div class="card-desc">Path to orca.exe (auto-detected on first launch).</div>
         <div class="field-row">
           <div class="field"><input id="set-orca" type="text" class="mono" placeholder="C:\ORCA_6.1.1\orca.exe"></div>
           <button class="btn" onclick="pickOrca()">Browse</button>
@@ -237,7 +235,7 @@
       </div>
       <div class="card">
         <div class="card-title">MLIP environments</div>
-        <div class="card-desc">One Python environment per MLIP (each needs its own venv; different MLIPs pin conflicting dependencies). ORCAdesk does not install these; add the interpreter of an environment you set up yourself. Backends are auto-detected.</div>
+        <div class="card-desc">One Python environment per MLIP (each its own venv — different MLIPs pin conflicting dependencies). Not installed by ORCAdesk; the interpreter of an environment you set up yourself, with auto-detected backends.</div>
         <div id="mlip-env-list" class="mlip-env-list"></div>
         <div class="field-row" style="margin-top:8px">
           <div class="field"><input id="set-mlip" type="text" class="mono" placeholder="C:\path\to\mlip-env\Scripts\python.exe"></div>
@@ -247,7 +245,7 @@
       </div>
       <div class="card">
         <div class="card-title">Workspace</div>
-        <div class="card-desc">Where calculation folders are written.</div>
+        <div class="card-desc">Output location for calculation folders.</div>
         <div class="field-row">
           <div class="field"><input id="set-ws" type="text" class="mono"></div>
           <button class="btn" onclick="pickWorkspace()">Browse</button>
@@ -263,26 +261,26 @@
       </div>
       <div class="card">
         <div class="card-title">Optimization time estimate</div>
-        <div class="card-desc">How the live graph predicts remaining time during a geometry optimization.</div>
+        <div class="card-desc">Live remaining-time estimate during a geometry optimization.</div>
         <label class="radio-row">
           <input type="radio" name="eta-mode" value="conservative" checked>
-          <span><strong>Conservative</strong> — only show an estimate when the trend is clear. Fewer estimates, but more reliable. Shows "estimating…" otherwise.</span>
+          <span><strong>Conservative</strong> — an estimate only once the trend is clear; fewer but more reliable ("estimating…" otherwise).</span>
         </label>
         <label class="radio-row">
           <input type="radio" name="eta-mode" value="eager">
-          <span><strong>Eager</strong> — show an estimate earlier and keep it on screen. More responsive, but the number can be rougher.</span>
+          <span><strong>Eager</strong> — an earlier, persistent estimate; more responsive but rougher.</span>
         </label>
       </div>
       <div class="card">
         <div class="card-title">Optimization graph</div>
-        <div class="card-desc">What the live "Optimization" graph plots during a geometry optimization.</div>
+        <div class="card-desc">Live "Optimization" graph contents during a geometry optimization.</div>
         <label class="radio-row">
           <input type="radio" name="geo-mode" value="all5" checked>
           <span><strong>All 5 criteria</strong> — every convergence criterion as value ÷ its tolerance, sharing one goal line at 1 (below the line = met).</span>
         </label>
         <label class="radio-row">
           <input type="radio" name="geo-mode" value="maxgrad">
-          <span><strong>MAX gradient only</strong> — just the MAX gradient on an absolute axis with its tolerance as the goal line (the original view).</span>
+          <span><strong>MAX gradient only</strong> — just the MAX gradient on an absolute axis with its tolerance as the goal line.</span>
         </label>
       </div>
       <button class="btn btn-primary" onclick="saveSettings()">Save settings</button>

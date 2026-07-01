@@ -213,7 +213,10 @@ same `add_calc`/`calc_from_dict` path as ORCA calcs. The model lives on
 `StepConfig.mlip_model` (+ `mlip_env_id`, `""` = first ready env); `build_input`
 ignores those — an MLIP calc never produces an ORCA `.inp`. `_meta_line` shows
 the model instead of charge/mult for `mlip*` kinds, and `editCalc` refuses
-in-place editing of MLIP calcs for now (remove + re-add).
+in-place editing of MLIP calcs for now (remove + re-add). The card is **locked**
+(greyed, inputs/buttons disabled, `#mlip-lock-note` shown) until some MLIP env is
+ready — `applyMlipLock` in `app.js`, driven by the `get_mlip_status` poll
+(`_mlipReady`); `addMlipCalcToQueue` guards on it too.
 
 **Running MLIP jobs.** The run pipeline mirrors `core/` but lives in
 `orcamgr/mlip/` (kept off ORCA's path): `runner.py` (`MlipRunner` +

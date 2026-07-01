@@ -4,7 +4,7 @@ A desktop GUI for building, queuing, running, and parsing ORCA computational
 chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark **or light** UI),
 Python core.
 
-> **Status: 0.4.1 beta** (`0.4.1-beta`). Desktop app: build → queue → run →
+> **Status: 0.4.2 beta** (`0.4.2-beta`). Desktop app: build → queue → run →
 > parse, validated against real ORCA 6.1.1 output. A running calculation
 > **survives closing the app** and is reattached on the next launch; the UI ships
 > with both a **dark and a light theme**; you can **drag a `.inp`/`.xyz`/`.out`
@@ -32,21 +32,33 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
 
 ## How it works
 
-- **Build**: create one calculation at a time. Give it a unique name (used as
-  its folder), pick the type (Opt / Freq / TDDFT / SP), set charge/multiplicity,
-  choose a geometry source, configure the method, and add it to the queue.
+- **Build**: create one calculation at a time in one of three modes —
+  **Beginner** (guided form), **Expert** (paste/load a complete `.inp`), or
+  **MLIP** (MACE pre-optimization, see below). Give it a unique name (used as its
+  folder), pick the type, set charge/multiplicity, choose a geometry source,
+  configure the method, and add it to the queue.
   - **Geometry source** is either an `.xyz` file, or a **reference** to another
     queued calculation — in which case that calculation's optimized geometry is
     injected automatically at run time.
-  - Calculation types: **Opt, TS Opt** (OptTS), **Freq, TS Freq** (expects one
-    imaginary mode), **TDDFT, SP**. Freq/TS-Freq accept a temperature/pressure
-    (the `%freq` block is emitted only when they differ from 298.15 K / 1.0 atm).
+  - Calculation types: **Opt, Opt + Freq, TS Opt, TS Opt + Freq, Freq, TS Freq**
+    (expects one imaginary mode), **NEB-TS** (find a TS), **IRC** (verify a TS),
+    **TDDFT, NMR, SP**, and **General** (any). Freq variants accept a
+    temperature/pressure (the `%freq` block is emitted only when they differ from
+    298.15 K / 1.0 atm).
   - **Method fields** (functional / basis / solvent) are searchable
     comboboxes: type to filter the grouped list, or enter any value not in the
     list (e.g. a LibXC functional or a custom basis) — it's used verbatim.
-  - **Raw .inp** mode lets you hand-edit the full input for anything the form
-    doesn't cover (e.g. per-element basis/ECP via `%basis newgto/newecp`,
+  - **Expert (raw `.inp`)** mode lets you hand-edit the full input for anything the
+    form doesn't cover (e.g. per-element basis/ECP via `%basis newgto/newecp`,
     `%plots`, custom blocks). Use `{{GEOMETRY}}` where coordinates go.
+- **MLIP pre-optimization**: optionally relax a structure with a **MACE** model
+  (MLIP) before handing it to ORCA — fast, and a good starting geometry for the
+  DFT job. It runs in **your own** Python environment (PyTorch + mace-torch + ASE),
+  registered under **Settings → MLIP environments**; ORCAdesk shells out to it and
+  never installs the toolchain. The MLIP build card stays **locked until a MACE
+  environment is ready**. An `mlip_opt` job joins the same queue, and its optimized
+  geometry can be referenced by a downstream ORCA calculation just like an
+  opt→freq handoff.
 - **Queue**: calculations run in order. If one fails, anything that references
   it (directly or transitively) is skipped (blocked); unrelated calculations
   continue. Each calculation gets its own folder `{workspace}/{name}/`. The
@@ -78,8 +90,13 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   warnings) and full thermochemistry, TD-DFT transitions + a UV-Vis plot and the
   excited-state composition, NMR shieldings, and the NEB path. Sections are shown
   for the relevant calculation type; a **`Show all`** toggle reveals everything
-  regardless of type. You can also open any external `.out` file.
-- **Settings**: ORCA path, workspace folder, default resources, and ETA mode.
+  regardless of type. You can also open any external `.out` file. A **free-energy
+  profile** view plots relative Gibbs free energy across finished frequency
+  calculations in queue order.
+- **Settings**: ORCA executable path, **MLIP environments** (register your own
+  MACE-capable Python interpreters; backends are auto-detected), workspace folder,
+  per-step defaults (nprocs / maxcore), and two live-graph options — the
+  optimization time-estimate mode and what the optimization graph plots.
 
 ## Build a standalone Windows app
 
@@ -122,6 +139,7 @@ orcamgr/
     queue.py                  multi-job pipeline orchestration
   state/
     store.py                  shared queue (single source of truth) + session autosave
+  mlip/                       MLIP (MACE) env detection + relaxation runner/parser
   server/                     optional phone-sync HTTP layer (FastAPI; not in the build)
   gui/
     window.py                 QMainWindow + WebEngine
