@@ -3,6 +3,27 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.2-beta] — 2026-07-01
+
+### Added
+- **The MLIP build card is locked until a MACE environment is ready.** When no
+  registered environment reports ready (checking / error / unset), the whole
+  "MLIP pre-optimization" card greys out, its inputs and buttons are disabled, and
+  a `Ready MACE environment required.` note appears. It unlocks automatically once
+  a MACE environment becomes ready, and adding an MLIP job is guarded regardless.
+
+### Changed
+- **UI copy overhaul.** Card descriptions, hints, radio explanations,
+  status/toast/log messages, and live-graph labels across Build / Queue / Log /
+  Results / Settings were rewritten into concise **noun-form** phrasing, with
+  redundant filler and restating removed (e.g. the `converged ≤ 1` graph label,
+  the duplicated MLIP-card description, "Settings for this calculation.",
+  "(e.g. heavy atoms)", "(the original view)"). No behavior change.
+- **README** refreshed to match the current app — the three build modes
+  (Beginner / Expert / MLIP), the full calc-type list (incl. NEB-TS, IRC, NMR,
+  Opt+Freq…), the MLIP pre-optimization workflow, the Settings contents, and the
+  `orcamgr/mlip/` package in the project layout.
+
 ## [0.4.1-beta] — 2026-06-30
 
 ### Added

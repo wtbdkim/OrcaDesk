@@ -704,10 +704,7 @@
     const zone = `<rect x="${padL}" y="${goalY.toFixed(1)}" width="${(W - padR - padL).toFixed(1)}" height="${(baseY - goalY).toFixed(1)}" fill="#52b788" opacity="0.07"/>`;
     const goal =
       `<line x1="${padL}" y1="${goalY.toFixed(1)}" x2="${W - padR}" y2="${goalY.toFixed(1)}" class="scf-goal" stroke-width="1.1" stroke-dasharray="5 3"/>` +
-      `<text x="${padL - 6}" y="${(goalY + 3).toFixed(1)}" text-anchor="end" class="scf-goal-label">1</text>` +
-      // left-aligned so the descending convergence lines (which crowd the right
-      // edge near the goal as it converges) don't cover the label
-      `<text x="${(padL + 5).toFixed(1)}" y="${(goalY - 4).toFixed(1)}" text-anchor="start" class="scf-axis">converged ≤ 1</text>`;
+      `<text x="${padL - 6}" y="${(goalY + 3).toFixed(1)}" text-anchor="end" class="scf-goal-label">1</text>`;
 
     let lines = "", dots = "";
     series.forEach(function (s) {
