@@ -1,0 +1,5 @@
+# Developer-only dependencies (running the test suite).
+# The app itself needs only requirements.txt; the server tests additionally
+# use requirements-server.txt (fastapi TestClient) and auto-skip without it.
+pytest
+httpx    # fastapi.testclient's transport; without it the server tests skip

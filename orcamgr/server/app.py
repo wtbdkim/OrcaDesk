@@ -21,7 +21,10 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
 
-from ..state.store import QueueStore, calc_from_dict, make_engine_factory, load_all_choices
+from ..state.store import (
+    QueueStore, calc_from_dict, make_engine_factory, load_all_choices,
+    queue_needs_orca,
+)
 from ..state.schemas import (
     HealthPayload, HeartbeatResult, MutationResult, OkResult, PingPayload,
     RunStartedResult,
@@ -149,12 +152,18 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
     def run_queue() -> dict:
         # ORCA path / workspace come from the saved desktop settings
         settings = Settings.load()
-        if not settings.orca_is_valid():
+        # Same shared decision as the desktop bridge's run_queue (P4, A18):
+        # ORCA is required only when a non-MLIP calc will actually run, so an
+        # all-MLIP queue starts from the phone too, with no ORCA configured.
+        if queue_needs_orca(store.list()) and not settings.orca_is_valid():
             raise HTTPException(
                 status_code=400,
                 detail="ORCA executable is not set. Configure it in the desktop app's Settings.",
             )
-        factory = make_engine_factory(store, settings.orca_path, settings.workspace_root)
+        # mlip_envs must ride along or a phone-started MLIP calc would find
+        # no interpreter and fail even with a ready env registered (A18).
+        factory = make_engine_factory(store, settings.orca_path, settings.workspace_root,
+                                      mlip_envs=settings.mlip_envs)
         try:
             store.start_run(factory)
         except RuntimeError as e:

@@ -13,7 +13,7 @@ Each step produces a complete .inp text given an XYZ coordinate block.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields as dataclass_fields, asdict
 from typing import Optional
 
 
@@ -119,10 +119,12 @@ class StepConfig:
     """
     One ORCA calculation step.
 
-    ``kind`` is a label ('opt' | 'ts_opt' | 'freq' | 'ts_freq' | 'tddft' |
-    'nmr' | 'sp' | 'general') used by the queue to decide ordering and result
-    handling. The actual ORCA behaviour is driven by the keyword fields, so
-    custom combinations are possible.
+    ``kind`` is a label ('opt' | 'ts_opt' | 'freq' | 'ts_freq' | 'opt_freq' |
+    'ts_opt_freq' | 'irc' | 'tddft' | 'sp' | 'general' | 'nmr' | 'neb_ts' |
+    'mlip_opt') used by the queue to decide ordering and result handling.
+    The actual ORCA behaviour is driven by the keyword fields, so custom
+    combinations are possible. 'mlip_*' kinds never reach build_input (they
+    run through orcamgr/mlip/, not ORCA).
     """
     kind: str = "opt"
     functional: str = DEFAULT_FUNCTIONAL
@@ -191,8 +193,22 @@ class StepConfig:
                     basis=str(b.get("basis", "")).strip(),
                     ecp=str(b.get("ecp", "")).strip(),
                 )
-                for b in basis_list if isinstance(b, dict) and b.get("element", "").strip()
+                # str() in the filter too: a non-string element value (e.g. an
+                # int from a malformed phone payload) must be filtered, not
+                # crash .strip() at the trust boundary.
+                for b in basis_list
+                if isinstance(b, dict) and str(b.get("element", "") or "").strip()
             ]
+        # Coerce untrusted string fields: a non-string value for a str-typed
+        # field (kind=123, options=42) would pass deserialization silently and
+        # crash later inside build_input (e.g. .upper() in _auto_aux) — the
+        # trust boundary is here, so degrade to the field's default here.
+        for f in dataclass_fields(cfg):
+            if isinstance(f.default, str) and not isinstance(getattr(cfg, f.name), str):
+                setattr(cfg, f.name, f.default)
+        for f in dataclass_fields(cfg.solvation):
+            if isinstance(f.default, str) and not isinstance(getattr(cfg.solvation, f.name), str):
+                setattr(cfg.solvation, f.name, f.default)
         # Coerce/clamp untrusted numeric fields. A phone-API payload reaches here
         # via calc_from_dict, and these values are interpolated verbatim into
         # %pal/%maxcore/%geom/%tddft — so a string (line injection) or an absurd

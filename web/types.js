@@ -213,6 +213,16 @@
 /** @typedef {SettingsPayload|ErrorPayload} SaveSettingsResult */
 
 /**
+ * autodetect_orca() result. A MUTATION slot despite the getter-ish name:
+ * on success the found path is also written into settings and saved.
+ * "path" is present on every branch ("" when nothing was found).
+ * @typedef {Object} AutodetectResult
+ * @property {boolean} ok
+ * @property {string} path
+ * @property {string} [error]   only when detection itself raised
+ */
+
+/**
  * Mirror of Bridge.get_about().
  * @typedef {Object} AboutPayload
  * @property {string} version
@@ -224,12 +234,16 @@
 /* ---------- files / choices (orcamgr/gui/bridge.py) ---------- */
 
 /**
- * load_inp_file / load_inp_path result. "error" only appears on the
- * path variant's OSError branch.
- * @typedef {Object} InpFilePayload
+ * Unified result of the four file-loader slots (load_xyz_file /
+ * load_xyz_path / load_inp_file / load_inp_path) — 5 keys, all always
+ * present. "cancelled" means the user closed the picker (a deliberate
+ * choice, not an error); ok=false means a real read failure.
+ * @typedef {Object} LoadResult
+ * @property {boolean} ok
+ * @property {boolean} cancelled
  * @property {string} text
- * @property {string} name    filename stem, for auto-filling the calc name
- * @property {string} [error]
+ * @property {string} name    filename stem, for auto-filling the calc name ("" if none)
+ * @property {string} error   "" except on the read-failure branch
  */
 
 /**

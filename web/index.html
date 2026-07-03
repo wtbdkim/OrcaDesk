@@ -25,7 +25,7 @@
         <span class="dot"></span><span id="orca-status-text">ORCA not set</span>
       </div>
       <div id="mlip-status" class="status-pill" title="MLIP environments">
-        <span class="dot"></span><span id="mlip-status-text">MLIP: not set</span>
+        <span class="dot"></span><span id="mlip-status-text">MLIP not set</span>
       </div>
     </div>
   </header>
@@ -43,7 +43,10 @@
 
     <!-- ============ BUILD ============ -->
     <section class="panel active" data-panel="build">
-      <div class="graph-subtoggle" style="margin-bottom:12px">
+      <!-- log-mode-toggle (not graph-subtoggle): at page level the subtoggle's
+           --background buttons match the page color and the surface vanishes;
+           this variant sits on --card like the Log tab's Raw/graph toggle -->
+      <div class="log-mode-toggle" style="margin-bottom:12px">
         <button id="bmode-beginner" class="active" onclick="setBuildMode('beginner')">Beginner</button>
         <button id="bmode-expert" onclick="setBuildMode('expert')">Expert</button>
         <button id="bmode-mlip" onclick="setBuildMode('mlip')">MLIP</button>
@@ -64,7 +67,7 @@
               <option value="ts_freq">TS Freq</option>
               <option value="neb_ts">NEB-TS (find TS)</option>
               <option value="irc">IRC (verify TS)</option>
-              <option value="tddft">TDDFT</option>
+              <option value="tddft">TD-DFT</option>
               <option value="nmr">NMR</option>
               <option value="sp">SP</option>
               <option value="general">General (any)</option>
@@ -158,7 +161,8 @@
     <!-- ============ QUEUE ============ -->
     <section class="panel" data-panel="queue">
       <div class="card">
-        <div id="queue-list"><div class="queue-empty">No queued jobs — new ones from the Build tab.</div></div>
+        <!-- pre-bridge placeholder only; renderQueue() replaces it — keep the copy in sync -->
+        <div id="queue-list"><div class="queue-empty">No calculations queued — a new calculation from the Build tab to get started.</div></div>
       </div>
       <div class="btn-group">
         <button class="btn btn-primary" id="run-btn" onclick="runQueue()">Run queue</button>

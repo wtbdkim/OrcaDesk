@@ -103,6 +103,11 @@ class Settings:
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
+                # Valid JSON that isn't an object (a list, a string, a bare
+                # number) must degrade to defaults like corrupt JSON does
+                # (P32) — data.items() on a non-dict would crash startup.
+                if not isinstance(data, dict):
+                    data = {}
                 s = cls(**{k: v for k, v in data.items()
                            if k in cls.__dataclass_fields__})
             except (json.JSONDecodeError, TypeError, OSError):
@@ -126,9 +131,18 @@ class Settings:
         return s
 
     def save(self) -> None:
-        config_file().write_text(
-            json.dumps(asdict(self), indent=2), encoding="utf-8"
-        )
+        """Persist settings atomically (same tmp + os.replace pattern as
+        QueueStore.save_session). Writing settings.json in place could leave a
+        half-written file on a crash/power loss, which the next session's
+        load() would reject — silently losing every setting. Best-effort: a
+        save failure must never break the running app."""
+        path = config_file()
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
 
     def orca_is_valid(self) -> bool:
         return bool(self.orca_path) and Path(self.orca_path).exists()

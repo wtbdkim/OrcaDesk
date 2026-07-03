@@ -24,8 +24,6 @@
   --secondary-foreground: #fafafa;
   --secondary-hover: #3f3f46;
   --primary-hover: #e4e4e7;
-  --destructive: #7f1d1d;
-  --destructive-foreground: #fef2f2;
   --ring: #d4d4d8;
   --ring-glow: rgba(212,212,216,0.18);
 
@@ -36,6 +34,17 @@
   --info: #a1a1aa;
   --orca: #71717a;
   --raw: #c084fc;
+  /* semantic tints — alpha ladder per §11.19 (8/10/15/22/30/55%), derived from
+     the semantic colors above so themed retints happen in one place */
+  --ok-tint: rgba(74,222,128,.15);          /* 15% */
+  --ok-tint-strong: rgba(74,222,128,.22);   /* 22% */
+  --warn-tint: rgba(251,191,36,.15);        /* 15% */
+  --err-tint: rgba(248,113,113,.15);        /* 15% */
+  --err-tint-bg: rgba(248,113,113,.08);     /* 8% */
+  --err-tint-hover: rgba(248,113,113,.10);  /* 10% */
+  --err-outline: rgba(248,113,113,.3);      /* 30% */
+  --err-stripe: rgba(248,113,113,.55);      /* 55% */
+  --raw-tint: rgba(192,132,252,.15);        /* 15% of --raw #c084fc */
   /* optimization-graph criterion series (tuned for the dark card) */
   --crit-de: #4cc9f0; --crit-rmsg: #52b788; --crit-maxg: #ffd166; --crit-rmss: #c08eff; --crit-maxs: #ff8fa3;
 
@@ -72,8 +81,6 @@ html[data-theme="light"] {
   --secondary-foreground: #18181b;
   --secondary-hover: #e2dec0;
   --primary-hover: #27272a;
-  --destructive: #ef4444;
-  --destructive-foreground: #fef2f2;
   --ring: #18181b;
   --ring-glow: rgba(24,24,27,0.14);
 
@@ -84,6 +91,17 @@ html[data-theme="light"] {
   --info: #52525b;
   --orca: #52525b;
   --raw: #0f766e;   /* teal — purple clashed with the warm beige/ivory theme */
+  /* semantic tints — same §11.19 alpha ladder (8/10/15/22/30/55%) but derived
+     from the darkened light-theme semantic colors above */
+  --ok-tint: rgba(21,128,61,.15);           /* 15% */
+  --ok-tint-strong: rgba(21,128,61,.22);    /* 22% */
+  --warn-tint: rgba(180,83,9,.15);          /* 15% */
+  --err-tint: rgba(220,38,38,.15);          /* 15% */
+  --err-tint-bg: rgba(220,38,38,.08);       /* 8% */
+  --err-tint-hover: rgba(220,38,38,.10);    /* 10% */
+  --err-outline: rgba(220,38,38,.3);        /* 30% */
+  --err-stripe: rgba(220,38,38,.55);        /* 55% */
+  --raw-tint: rgba(15,118,110,.15);         /* 15% of --raw teal */
   /* criterion series — darkened so the thin lines stay legible on the white card */
   --crit-de: #0e7490; --crit-rmsg: #15803d; --crit-maxg: #b45309; --crit-rmss: #7c3aed; --crit-maxs: #be123c;
 }
@@ -148,7 +166,10 @@ html, body {
   border-radius: 999px; border: 1px solid var(--border);
   background: var(--card); color: var(--muted-foreground);
 }
-.status-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--err); }
+/* default dot is NEUTRAL, not red — a red default makes any new pill render as
+   an error before its state class lands (D42); ok/err are turned on by the
+   .ok/.err class (and #id) rules below */
+.status-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted-foreground); }
 .status-pill.ok .dot { background: var(--ok); }
 /* ORCA pill: grey when not set, GREEN when ORCA is ready. The #id selector
    outranks .status-pill.ok .dot, so the ready state needs an #id-level rule too. */
@@ -160,10 +181,13 @@ html, body {
 #mlip-status.ok .dot { background: var(--ok); }
 #mlip-status.err .dot { background: var(--err); }
 /* Registered MLIP environments list (Settings tab) */
-.mlip-env-list { display: flex; flex-direction: column; gap: 6px; }
+.mlip-env-list { display: flex; flex-direction: column; gap: 8px; }
+/* canonical list-row recipe (§11.9) — same box as .queue-item so registered
+   envs read as the same kind of list the queue is */
 .mlip-env-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--card);
 }
 .mlip-env-info { flex: 1; min-width: 0; }
 .mlip-env-name { font-weight: 500; }
@@ -182,7 +206,7 @@ html, body {
 .ver-badge {
   font-size: 11px; font-weight: 500; vertical-align: middle;
   color: var(--muted-foreground); background: var(--secondary);
-  border: 1px solid var(--border); border-radius: 5px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 1px 6px; margin-left: 6px; letter-spacing: 0.02em;
 }
 
@@ -293,19 +317,32 @@ input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
 .btn-ghost { background: transparent; }
 .btn-ghost:hover { background: var(--accent); }
 .btn-danger { color: var(--err); }
-.btn-danger:hover { background: rgba(248,113,113,0.1); border-color: var(--err); }
+.btn-danger:hover { background: var(--err-tint-hover); border-color: var(--err); }
 /* toggle "on" state (e.g. Show all): tinted box, matching the done-badge accent */
-.btn.on { background: rgba(74,222,128,0.15); border-color: var(--ok); color: var(--ok); }
-.btn.on:hover { background: rgba(74,222,128,0.22); }
+.btn.on { background: var(--ok-tint); border-color: var(--ok); color: var(--ok); }
+.btn.on:hover { background: var(--ok-tint-strong); }
 .btn-sm { padding: 5px 10px; font-size: 12px; }
-.btn-block { width: 100%; justify-content: center; padding: 11px; font-size: 14px; }
 
 .btn-group { display: flex; gap: 8px; }
+
+/* keyboard focus (B18): only text fields had a focus ring, so tabbing through
+   buttons/tabs/toggles was invisible — give them the same ring as inputs.
+   :focus-visible keeps mouse clicks ring-free. */
+.btn:focus-visible,
+.tab:focus-visible,
+.theme-toggle:focus-visible,
+.rm:focus-visible,
+.log-mode-toggle button:focus-visible,
+.graph-subtoggle button:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px var(--ring-glow);
+}
 
 /* ---- atoms table ---- */
 .atoms-head {
   display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 10px;
+  margin-bottom: 8px;   /* §11.1 canonical spacing step */
 }
 .basis-row {
   display: grid;
@@ -320,21 +357,7 @@ input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
   color: var(--err); border-radius: var(--radius-sm); cursor: pointer;
   font-size: 14px; line-height: 1;
 }
-.rm:hover { background: rgba(248,113,113,0.1); }
-
-/* ---- step config (Build) ---- */
-.step-tabs { display: flex; gap: 4px; margin-bottom: 14px; }
-.step-tab {
-  font-size: 12px; padding: 6px 12px; border-radius: 999px;
-  border: 1px solid var(--border); background: var(--card);
-  color: var(--muted-foreground); cursor: pointer;
-  display: inline-flex; align-items: center; gap: 6px;
-}
-.step-tab.enabled { color: var(--foreground); border-color: var(--ring); }
-.step-tab .toggle { width: 8px; height: 8px; border-radius: 50%; background: var(--secondary-hover); }
-.step-tab.enabled .toggle { background: var(--ok); }
-.step-body { display: none; }
-.step-body.active { display: block; }
+.rm:hover { background: var(--err-tint-hover); }
 
 /* ---- queue list ---- */
 .queue-item {
@@ -367,7 +390,7 @@ input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
    not bare red text. Same ancestor-scoping pitfall as the .qstate raw badge. */
 .qerror {
   font-size: 12px; color: var(--err); line-height: 1.45;
-  background: rgba(248,113,113,0.08); border-left: 2px solid var(--err);
+  background: var(--err-tint-bg); border-left: 2px solid var(--err);
   padding: 5px 8px; border-radius: 4px;
 }
 .queue-item .qerror { margin-top: 4px; }
@@ -385,13 +408,14 @@ input::placeholder { color: var(--muted-foreground); opacity: 0.7; }
    the status pill, so it reads as a tag rather than a second status badge */
 .qname .qstate { font-size: 10px; padding: 1px 7px; }
 .qstate.pending { background: var(--accent); color: var(--muted-foreground); }
-.qstate.running { background: rgba(251,191,36,0.15); color: var(--warn); }
-.qstate.done    { background: rgba(74,222,128,0.15); color: var(--ok); }
-.qstate.failed  { background: rgba(248,113,113,0.15); color: var(--err); }
+.qstate.running { background: var(--warn-tint); color: var(--warn); }
+.qstate.done    { background: var(--ok-tint); color: var(--ok); }
+.qstate.failed  { background: var(--err-tint); color: var(--err); }
 .qstate.cancelled { background: var(--accent); color: var(--muted-foreground); }
-.qstate.raw { background: rgba(168,85,247,0.15); color: var(--raw); }
-/* light theme: the bg tint is hard-coded purple above, so retint it to match the teal --raw */
-html[data-theme="light"] .qstate.raw { background: rgba(15,118,110,0.13); }
+/* blocked is a neutral "skipped" state (§12 matrix, matches mobile), not an
+   error of this calc itself — so it reads like pending/cancelled, not failed */
+.qstate.blocked { background: var(--accent); color: var(--muted-foreground); }
+.qstate.raw { background: var(--raw-tint); color: var(--raw); }
 .queue-empty { text-align: center; color: var(--muted-foreground); padding: 56px 40px; }
 .queue-empty-icon { color: var(--border); margin-bottom: 14px; }
 .queue-empty-title { font-size: 14px; font-weight: 600; color: var(--foreground); margin-bottom: 4px; }
@@ -464,8 +488,8 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .freq-stick.zero { stroke: var(--border); stroke-width: 1; }
 .freq-warn {
   margin-top: 8px; padding: 8px 10px; font-size: 12px; line-height: 1.5;
-  color: var(--err); background: rgba(248,113,113,0.08);
-  border: 1px solid rgba(248,113,113,0.3); border-radius: 6px;
+  color: var(--err); background: var(--err-tint-bg);
+  border: 1px solid var(--err-outline); border-radius: var(--radius-sm);
 }
 
 .hint { font-size: 12px; color: var(--muted-foreground); margin-top: 8px; }
@@ -475,7 +499,7 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .log-mode-toggle { display: flex; gap: 6px; margin-bottom: 10px; align-items: center; }
 .scf-pace { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); }
 .log-mode-toggle button {
-  font-family: inherit; font-size: 12px; font-weight: 600; padding: 6px 14px;
+  font-family: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px;
   border: 1px solid var(--border); background: var(--card); color: var(--muted-foreground);
   border-radius: var(--radius-sm); cursor: pointer;
 }
@@ -503,7 +527,7 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .freq-jump { font-family: var(--font-mono); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: var(--card); }
 .freq-jump-stripes {
   height: 7px;
-  background: repeating-linear-gradient(135deg, rgba(248,113,113,0.55) 0 6px, transparent 6px 12px);
+  background: repeating-linear-gradient(135deg, var(--err-stripe) 0 6px, transparent 6px 12px);
 }
 .freq-jump-title { text-align: center; font-size: 13px; font-weight: 700; letter-spacing: 0.22em; margin-top: 8px; color: var(--foreground); }
 .freq-jump-row { display: flex; align-items: center; gap: 14px; padding: 2px 16px; }
@@ -540,7 +564,7 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 /* SCF/Geometry sub-toggle inside the graph panel */
 .graph-subtoggle { display: flex; gap: 6px; margin-bottom: 12px; }
 .graph-subtoggle button {
-  font-family: inherit; font-size: 11px; font-weight: 600; padding: 5px 12px;
+  font-family: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px;
   border: 1px solid var(--border); background: var(--background); color: var(--muted-foreground);
   border-radius: var(--radius-sm); cursor: pointer;
 }
@@ -552,14 +576,14 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .combo-list {
   position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
   margin-top: 4px; max-height: 280px; overflow-y: auto;
-  background: var(--popover, #1a1d24); border: 1px solid var(--border);
+  background: var(--popover); border: 1px solid var(--border);
   border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0,0,0,.4);
 }
 .combo-group {
   position: sticky; top: 0; z-index: 1;
   padding: 6px 10px 4px; font-size: 10px; font-weight: 700; letter-spacing: .04em;
   text-transform: uppercase; color: var(--muted-foreground);
-  background: var(--popover, #1a1d24); border-bottom: 1px solid var(--border);
+  background: var(--popover); border-bottom: 1px solid var(--border);
 }
 .combo-item {
   padding: 7px 10px; font-size: 13px; cursor: pointer;
@@ -579,12 +603,12 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 }
 .modal {
   background: var(--card); border: 1px solid var(--border);
-  border-radius: 10px; padding: 20px; max-width: 460px; width: calc(100% - 40px);
+  border-radius: var(--radius-lg); padding: 20px; max-width: 460px; width: calc(100% - 40px);
   box-shadow: 0 16px 48px rgba(0,0,0,0.5);
 }
 .modal-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
 .modal-body { font-size: 13px; color: var(--muted-foreground); line-height: 1.6; margin-bottom: 18px; }
-.modal-body .names { color: var(--foreground); font-family: var(--mono); font-size: 12px; }
+.modal-body .names { color: var(--foreground); font-family: var(--font-mono); font-size: 12px; }
 .inp-view {
   font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
   background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);

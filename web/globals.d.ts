@@ -15,7 +15,7 @@ interface OrcaBridge {
   get_about(): Promise<string>;
   get_settings(): Promise<string>;
   save_settings(payloadJson: string): Promise<string>;
-  autodetect_orca(): Promise<string>;          // raw path string, not JSON
+  autodetect_orca(): Promise<string>;          // AutodetectResult JSON (mutates settings on success)
   // MLIP environments (separate from ORCA; one env per MLIP)
   pick_mlip_python(): Promise<string>;         // raw path string
   add_mlip_env(payloadJson: string): Promise<string>;  // MlipStatusPayload | {error}
@@ -25,10 +25,11 @@ interface OrcaBridge {
   // file pickers / loaders
   pick_orca_executable(): Promise<string>;     // raw path string
   pick_workspace(): Promise<string>;           // raw path string
-  load_xyz_file(): Promise<string>;            // raw file text
-  load_xyz_path(path: string): Promise<string>; // raw file text
-  load_inp_file(): Promise<string>;
-  load_inp_path(path: string): Promise<string>;
+  // all four loaders share one LoadResult JSON envelope (cancel vs failure)
+  load_xyz_file(): Promise<string>;            // LoadResult JSON
+  load_xyz_path(path: string): Promise<string>; // LoadResult JSON
+  load_inp_file(): Promise<string>;            // LoadResult JSON
+  load_inp_path(path: string): Promise<string>; // LoadResult JSON
   load_choices(name: string): Promise<string>;
   // parsing
   parse_out_file(): Promise<string>;

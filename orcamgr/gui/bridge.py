@@ -13,10 +13,12 @@ JS calls these slots:
   check_mlip, get_mlip_status,
   pick_workspace, load_xyz_file, load_inp_file,
   load_inp_path, load_xyz_path, load_choices,
-  parse_out_file, build_inp_preview,
-  add_calc, remove_calc, clear_queue, get_queue, get_calc, get_inp, get_log, get_graph_lines,
+  parse_out_file, parse_out_path, build_inp_preview,
+  add_calc, remove_calc, clear_queue, reorder_calc, update_calc,
+  get_queue, get_calc, get_inp, get_log, get_graph_lines,
+  get_free_energy_profile, check_overwrite_conflicts,
   run_queue, cancel_queue, stop_after_current,
-  get_server_status, start_server, stop_server
+  get_server_status, get_connect_qr, start_server, stop_server
 """
 
 from __future__ import annotations
@@ -40,14 +42,15 @@ from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import GeometrySource, CalcState
 from ..core.parser import parse_file
 from ..state.store import (
-    QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory, load_choice_groups,
+    QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory,
+    load_choice_groups, queue_needs_orca,
 )
 # Response payloads are CONSTRUCTED through these TypedDicts (plain dicts at
 # runtime, so the JSON wire format is unchanged) — schemas.py is the single
 # source of truth, mirrored for the front-end by web/types.js.
 from ..state.schemas import (
-    AboutPayload, ConflictsResult, ErrorPayload, FepPoint, FepResult,
-    GeomAtomPayload, GetCalcResult, GraphLinesResult, InpFilePayload,
+    AboutPayload, AutodetectResult, ConflictsResult, ErrorPayload, FepPoint,
+    FepResult, GeomAtomPayload, GetCalcResult, GraphLinesResult, LoadResult,
     MlipStatusPayload, MutationResult, NmrPayload, OkResult, OrbitalPayload,
     ParsePayload, QrResult, ServerStatusPayload, SettingsPayload,
     StartServerResult, TextResult, TransitionPayload,
@@ -145,11 +148,20 @@ class Bridge(QObject):
 
     @pyqtSlot(result=str)
     def autodetect_orca(self) -> str:
-        path = autodetect_orca()
+        """Scan PATH + common install roots for the ORCA executable and return
+        an AutodetectResult JSON. Despite the getter-ish name this is a
+        MUTATION slot: a found path is written to settings.orca_path and saved
+        immediately (A3) — the JSON envelope (rather than a bare path string)
+        exists so the outcome, including failure, is explicit on the wire."""
+        try:
+            path = autodetect_orca()
+        except Exception as e:
+            return json.dumps(AutodetectResult(ok=False, path="", error=str(e)))
         if path:
             self.settings.orca_path = path
             self.settings.save()
-        return path
+            return json.dumps(AutodetectResult(ok=True, path=path))
+        return json.dumps(AutodetectResult(ok=False, path=""))
 
     # --- file pickers ---
     @pyqtSlot(result=str)
@@ -245,51 +257,58 @@ class Bridge(QObject):
         path = QFileDialog.getExistingDirectory(self.window, "Select workspace folder")
         return path or ""
 
+    @staticmethod
+    def _load_result(path: str) -> str:
+        """Build the unified LoadResult envelope shared by every load_* slot.
+        An empty path means the user cancelled the file dialog — a deliberate
+        choice, reported as ok=True/cancelled=True so the front-end never
+        surfaces it as an error; ok=False is reserved for real read failures
+        (the old per-slot shapes conflated the two — A2). "name" is the file
+        stem, used to auto-fill the calculation name."""
+        if not path:
+            return json.dumps(LoadResult(
+                ok=True, cancelled=True, text="", name="", error=""))
+        try:
+            p = Path(path)
+            # errors="replace": a stray non-UTF-8 byte must degrade to a
+            # visible replacement char, not escape the OSError handling as a
+            # UnicodeDecodeError crossing the JS boundary.
+            return json.dumps(LoadResult(
+                ok=True, cancelled=False,
+                text=p.read_text(encoding="utf-8", errors="replace"),
+                name=p.stem, error=""))
+        except OSError as e:
+            return json.dumps(LoadResult(
+                ok=False, cancelled=False, text="", name="", error=str(e)))
+
     @pyqtSlot(result=str)
     def load_xyz_file(self) -> str:
+        """Pick a .xyz file; returns a LoadResult JSON."""
         path, _ = QFileDialog.getOpenFileName(
             self.window, "Load .xyz file", "", "XYZ file (*.xyz);;All files (*.*)"
         )
-        if not path:
-            return ""
-        try:
-            return Path(path).read_text(encoding="utf-8")
-        except OSError:
-            return ""
+        return self._load_result(path)
 
     @pyqtSlot(result=str)
     def load_inp_file(self) -> str:
-        """Pick a complete ORCA .inp; return its text PLUS the file's base name
-        so expert/raw mode can auto-fill the calculation name. JSON:
-        {"text": "<.inp contents>", "name": "<filename without .inp>"}."""
+        """Pick a complete ORCA .inp; returns a LoadResult JSON (its "name"
+        lets expert/raw mode auto-fill the calculation name)."""
         path, _ = QFileDialog.getOpenFileName(
             self.window, "Load ORCA .inp file", "", "ORCA input (*.inp);;All files (*.*)"
         )
-        if not path:
-            return json.dumps(InpFilePayload(text="", name=""))
-        try:
-            p = Path(path)
-            return json.dumps(InpFilePayload(text=p.read_text(encoding="utf-8"), name=p.stem))
-        except OSError:
-            return json.dumps(InpFilePayload(text="", name=""))
+        return self._load_result(path)
 
     @pyqtSlot(str, result=str)
     def load_inp_path(self, path: str) -> str:
-        """Load a .inp by PATH (drag-and-drop). Same {text, name} shape as
+        """Load a .inp by PATH (drag-and-drop). Same LoadResult as
         load_inp_file, so the JS side is identical."""
-        try:
-            p = Path(path)
-            return json.dumps(InpFilePayload(text=p.read_text(encoding="utf-8", errors="replace"), name=p.stem))
-        except OSError as e:
-            return json.dumps(InpFilePayload(text="", name="", error=str(e)))
+        return self._load_result(path)
 
     @pyqtSlot(str, result=str)
     def load_xyz_path(self, path: str) -> str:
-        """Load a .xyz by PATH (drag-and-drop). Returns raw text like load_xyz_file."""
-        try:
-            return Path(path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return ""
+        """Load a .xyz by PATH (drag-and-drop). Same LoadResult as
+        load_xyz_file."""
+        return self._load_result(path)
 
     # --- option lists ---
     @pyqtSlot(str, result=str)
@@ -516,6 +535,11 @@ class Bridge(QObject):
             # Parse-on-miss: DONE calcs restored from a previous session aren't
             # eagerly re-parsed at startup, so read the .out on demand here (only
             # when the user actually opens the free-energy profile).
+            # Writing c.result WITHOUT the store lock is safe only via the
+            # DONE-frozen invariant (P24): the engine never touches a DONE calc
+            # again, and this loop reads DONE calcs exclusively, so no other
+            # thread writes this field concurrently (A4). If DONE calcs ever
+            # become mutable elsewhere, this must take the store lock.
             if not c.result and c.output_path:
                 try:
                     c.result = parse_file(c.output_path)
@@ -538,13 +562,21 @@ class Bridge(QObject):
     def check_overwrite_conflicts(self) -> str:
         """Return the names of queued calculations that would overwrite an
         existing result on disk (a {name}.out already in the workspace), so the
-        UI can warn before a run clobbers earlier work. DONE calcs are excluded
-        because the run loop skips them anyway."""
+        UI can warn before a run clobbers earlier work. Excluded states:
+        DONE is skipped by the run loop anyway; FAILED is locked (P24) — it
+        never runs again, so it has nothing to overwrite; and a CANCELLED calc
+        overwriting its own partial .out is the whole point of a retry, not a
+        loss worth warning about. The warning exists for PENDING/BLOCKED name
+        reuse — a fresh calc whose name would clobber an earlier good result."""
         try:
             ws = Path(self.settings.workspace_root)
             conflicts = []
+            # RUNNING is excluded too: a reattached (or reattachable) detached
+            # job keeps appending to its own .out — that is not an overwrite.
+            skip = {CalcState.DONE, CalcState.FAILED, CalcState.CANCELLED,
+                    CalcState.RUNNING}
             for c in self.store.list():
-                if c.state == CalcState.DONE:
+                if c.state in skip:
                     continue
                 out_path = ws / c.name / f"{c.name}.out"
                 if out_path.exists():
@@ -556,11 +588,11 @@ class Bridge(QObject):
     @pyqtSlot(str, result=str)
     def run_queue(self, skip_names_json: str = "") -> str:
         calcs = self.store.list()
-        # ORCA is required only if a non-MLIP calc will actually run — an all-MLIP
-        # queue runs through the user's MACE env without ORCA configured.
-        needs_orca = any(not c.kind.startswith("mlip") and c.state != CalcState.DONE
-                         for c in calcs)
-        if needs_orca and not self.settings.orca_is_valid():
+        # ORCA is required only if a non-MLIP calc will actually run — an
+        # all-MLIP queue runs through the user's MACE env without ORCA
+        # configured. Shared helper so this decision cannot drift from the
+        # phone's /api/run (P4, A18).
+        if queue_needs_orca(calcs) and not self.settings.orca_is_valid():
             return json.dumps(OkResult(ok=False, error="ORCA path is not set or invalid. Check Settings."))
         # names the user chose to skip (e.g. to preserve existing results)
         try:
@@ -621,7 +653,10 @@ class Bridge(QObject):
     # --- server control (phone sync) ---
     @pyqtSlot(result=str)
     def get_server_status(self) -> str:
-        if not self.server_ctl:
+        # "available" must mean "start_server would work": the controller
+        # object alone is not enough — an install without fastapi/uvicorn
+        # would otherwise show the feature as available and fail on use (A9).
+        if not self.server_ctl or not self.server_ctl.is_available():
             return json.dumps(ServerStatusPayload(available=False, running=False))
         return json.dumps(ServerStatusPayload(
             available=True,

@@ -669,13 +669,24 @@ class OrcaOutParser:
     def _parse_tddft_states(self, lines, r):
         """Excited-state composition from the 'TD-DFT/TDA EXCITED STATES' block:
         each STATE lists the dominant occupied->virtual orbital pairs and their
-        weights. NOTE: validated against the ORCA 6.1 format spec but not yet
-        against a real TD-DFT .out in this workspace (none available)."""
+        weights.
+
+        The marker match is CASE-SENSITIVE on purpose: every freq
+        thermochemistry section prints "(2) There are no thermally accessible
+        electronically excited states" (observed in 62 real non-TDDFT outputs
+        in the corpus), which a case-folded match treats as the section header
+        - and combined with last-wins it would land AFTER the real block in a
+        TD-DFT+Freq run and miss the states. The LAST occurrence wins, per the
+        parser-wide rule (a recurring section's final block is the definitive
+        one). Validated against 9 real TD-DFT .out files (ORCA 6.x): the
+        uppercase header appears exactly once per file, so first-vs-last is
+        identical on this corpus; a genuinely recurring block remains
+        unvalidated."""
         starts = [i for i, ln in enumerate(lines)
-                  if "EXCITED STATES" in ln.upper()]
+                  if "EXCITED STATES" in ln]
         if not starts:
             return
-        start = starts[0]
+        start = starts[-1]
         state_re = re.compile(
             r"STATE\s+(\d+):\s*E=\s*[\d.]+\s*au\s+([\d.]+)\s*eV")
         contrib_re = re.compile(

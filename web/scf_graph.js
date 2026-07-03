@@ -429,7 +429,7 @@
   // line (.scf-prog-meta is a flex row). Rendered with the current value, then
   // kept fresh between panel re-renders by app.js's poll tick (by id).
   function _paceSpan(pace) {
-    return `<span id="scf-pace" class="scf-pace" title="average wall-clock time per SCF iteration">${pace || ""}</span>`;
+    return `<span id="scf-pace" class="scf-pace" title="Average wall-clock time per SCF cycle">${pace || ""}</span>`;
   }
 
   // progress bar HTML
@@ -701,7 +701,9 @@
 
     // converged zone (ratio < 1) shaded faintly, plus the single dashed goal line
     const goalY = Y(1);
-    const zone = `<rect x="${padL}" y="${goalY.toFixed(1)}" width="${(W - padR - padL).toFixed(1)}" height="${(baseY - goalY).toFixed(1)}" fill="#52b788" opacity="0.07"/>`;
+    // fill via inline style (SVG presentation attributes don't resolve var());
+    // a hardcoded hex here stayed dark-theme green in light mode
+    const zone = `<rect x="${padL}" y="${goalY.toFixed(1)}" width="${(W - padR - padL).toFixed(1)}" height="${(baseY - goalY).toFixed(1)}" style="fill:var(--crit-rmsg)" opacity="0.07"/>`;
     const goal =
       `<line x1="${padL}" y1="${goalY.toFixed(1)}" x2="${W - padR}" y2="${goalY.toFixed(1)}" class="scf-goal" stroke-width="1.1" stroke-dasharray="5 3"/>` +
       `<text x="${padL - 6}" y="${(goalY + 3).toFixed(1)}" text-anchor="end" class="scf-goal-label">1</text>`;
@@ -1070,7 +1072,9 @@
 
   function renderFreqProgress(freq) {
     if (freq.mode === "analytical") return _renderAnalyticalPanel(freq);
-    const pct = Math.round(freq.progress() * 100);
+    // floor, not round: progress() caps at 0.999 while the final displacement
+    // is still running, and round() displayed a premature "100%" there
+    const pct = Math.floor(freq.progress() * 100);
     if (freq.dispDone) {
       return `<div class="scf-prog-label">Frequencies · displacements complete · 100%</div>` +
         `<div class="scf-prog-bar"><span style="width:100%"></span></div>` +

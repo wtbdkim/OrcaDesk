@@ -15,9 +15,13 @@ Failure propagation: if a calculation fails, any calculation that depends on it
 (directly or transitively) is marked BLOCKED and skipped. Unrelated calculations
 continue. This is dependency-scoped, not whole-queue.
 
+A FAILED calculation is locked (P24): it never re-enters the run loop — retrying
+means building a new calculation. Only CANCELLED (a deliberate user stop, not a
+failure) re-runs.
+
 Folder layout: each calculation gets its own folder ``{workspace}/{name}/``.
-Names are unique within a queue (enforced at the UI/bridge layer), so folders
-never collide.
+Names are unique within a queue (enforced by the store — ``QueueStore`` rejects
+duplicates), so folders never collide.
 
 The engine is GUI-agnostic: it communicates only through callbacks.
 """
@@ -55,7 +59,9 @@ class GeometrySource(str, Enum):
 @dataclass
 class Calculation:
     name: str                              # unique; used as folder name
-    kind: str                              # opt / freq / tddft / sp
+    # opt | ts_opt | freq | ts_freq | opt_freq | ts_opt_freq | irc | tddft |
+    # sp | general | nmr | neb_ts | mlip_opt (mlip_* runs outside ORCA)
+    kind: str
     config: StepConfig
     charge: int = 0
     multiplicity: int = 1
@@ -474,6 +480,13 @@ class QueueEngine:
     def run_all(self, calcs: list[Calculation]) -> None:
         self._by_name = {c.name: c for c in calcs}
         blocked_names: set[str] = set()
+        # Calcs already FAILED from a previous run are failure seeds (P24:
+        # FAILED is locked, never re-run): block their transitive dependents up
+        # front, exactly as a live failure would — otherwise a dependent would
+        # launch and die later in reference resolution with a murkier message.
+        for c in calcs:
+            if c.state == CalcState.FAILED:
+                blocked_names |= self._dependents_of(calcs, c.name)
 
         for i, calc in enumerate(calcs):
             if self._detach_event.is_set():
@@ -482,11 +495,17 @@ class QueueEngine:
                 break
 
             if self._cancel_event.is_set():
-                calc.state = CalcState.CANCELLED
-                calc.message = "Cancelled."
-                calc.pid = None
-                calc.create_time = None
-                self.cb.calc_update(i, calc)
+                # Never stamp over a terminal state: DONE is frozen and FAILED
+                # is locked (P24) — re-stamping them CANCELLED would make them
+                # re-runnable and lose the result / failure diagnosis. BLOCKED
+                # keeps its "Skipped: a dependency failed." diagnosis too.
+                if calc.state not in (CalcState.DONE, CalcState.FAILED,
+                                      CalcState.BLOCKED):
+                    calc.state = CalcState.CANCELLED
+                    calc.message = "Cancelled."
+                    calc.pid = None
+                    calc.create_time = None
+                    self.cb.calc_update(i, calc)
                 continue
 
             # Graceful drain: the user asked to stop AFTER the current job. By
@@ -500,6 +519,24 @@ class QueueEngine:
                 )
                 break
 
+            # Already finished successfully on a previous run: don't recompute
+            # (that would waste time and overwrite good results). Checked BEFORE
+            # blocked_names so a frozen DONE result is never re-stamped BLOCKED
+            # by a dependency that failed later. CANCELLED calculations DO
+            # re-run, so the user can retry them.
+            if calc.state == CalcState.DONE:
+                self.cb.log(f"[{calc.name}] already done \u2014 skipping.", "info")
+                self.cb.calc_update(i, calc)
+                continue
+
+            # FAILED is locked (P24): never re-run a failed calc; a retry is a
+            # NEW calculation. Checked before blocked_names so the failure
+            # diagnosis is never re-stamped BLOCKED.
+            if calc.state == CalcState.FAILED:
+                self.cb.log(f"[{calc.name}] failed previously \u2014 locked; "
+                            "build a new calculation to retry.", "warn")
+                continue
+
             if calc.name in blocked_names:
                 calc.state = CalcState.BLOCKED
                 calc.message = "Skipped: a dependency failed."
@@ -507,35 +544,48 @@ class QueueEngine:
                 self.cb.calc_update(i, calc)
                 continue
 
-            # Already finished successfully on a previous run: don't recompute
-            # (that would waste time and overwrite good results). FAILED and
-            # CANCELLED calculations DO re-run, so the user can retry them.
-            if calc.state == CalcState.DONE:
-                self.cb.log(f"[{calc.name}] already done \u2014 skipping.", "info")
-                self.cb.calc_update(i, calc)
-                continue
-
             # User chose to keep the existing result on disk for this one.
-            # Load that .out (so references and the Results tab still work)
-            # instead of recomputing and overwriting it.
+            # Load that output (so references and the Results tab still work)
+            # instead of recomputing and overwriting it. Parse through
+            # result_from_output (kind dispatch: an MLIP calc's result is the
+            # worker's JSON, not an ORCA .out) and gate DONE behind
+            # validate_result, so a crashed or chemically-bad output can't be
+            # resurrected as DONE (the 0.4.2 incident: a FAILED raw calc came
+            # back DONE through this path). If the existing result doesn't
+            # hold up, "keep" is impossible; the honest fallback is to run
+            # the calc, never to mark it FAILED (the user asked to preserve
+            # a result, not to lock the calc over a stale one).
             if calc.name in self._skip_names:
-                out_path = self.workspace_root / calc.name / f"{calc.name}.out"
-                try:
-                    if out_path.exists():
-                        calc.result = parse_file(str(out_path))
-                        calc.output_path = str(out_path)
+                if calc.kind.startswith("mlip"):
+                    out_path = self.workspace_root / calc.name / f"{calc.name}.mlip.json"
+                else:
+                    out_path = self.workspace_root / calc.name / f"{calc.name}.out"
+                problem = ""
+                if out_path.exists():
+                    # result_from_output reads calc.output_path; restore it on
+                    # failure so a bad keep-attempt leaves no stale pointer.
+                    prev_output_path = calc.output_path
+                    calc.output_path = str(out_path)
+                    try:
+                        result = result_from_output(calc)
+                        validate_result(calc, result)
+                        calc.result = result
                         calc.state = CalcState.DONE
                         calc.message = "Kept existing result (not recomputed)."
                         self._by_name[calc.name] = calc
                         self.cb.log(f"[{calc.name}] kept existing result on disk \u2014 not recomputed.", "info")
-                    else:
-                        # nothing on disk after all; fall through and run it
-                        self.cb.log(f"[{calc.name}] no existing result found; running.", "warn")
-                        self._skip_names.discard(calc.name)
-                except Exception as e:
-                    self.cb.log(f"[{calc.name}] could not read existing result ({e}); running.", "warn")
+                    except OrcaRunError as e:
+                        problem = f"existing result invalid ({e})"
+                        calc.output_path = prev_output_path
+                    except Exception as e:
+                        problem = f"could not read existing result ({e})"
+                        calc.output_path = prev_output_path
+                else:
+                    problem = "no existing result found"
+                if problem:
+                    self.cb.log(f"[{calc.name}] {problem}; running.", "warn")
                     self._skip_names.discard(calc.name)
-                if calc.name in self._skip_names:
+                else:
                     self.cb.calc_update(i, calc)
                     continue
 
@@ -551,7 +601,13 @@ class QueueEngine:
                 # app shutdown mid-calc: leave THIS calc RUNNING (its ORCA keeps
                 # going headless; pid is persisted) and stop processing so it can
                 # be reattached on the next launch. Do not touch its state.
-                self.cb.log(f"[{calc.name}] left running in the background.", "info")
+                # An MLIP job has no detach/reattach machinery and was
+                # TERMINATED by detach (mlip/runner.py); claiming it is still
+                # running would be a false log line (P2).
+                if calc.kind.startswith("mlip"):
+                    self.cb.log(f"[{calc.name}] stopped on shutdown.", "info")
+                else:
+                    self.cb.log(f"[{calc.name}] left running in the background.", "info")
                 break
             except OrcaCancelled:
                 # user stopped the run mid-calc: mark THIS calc CANCELLED (not

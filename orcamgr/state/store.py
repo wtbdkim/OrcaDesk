@@ -7,8 +7,8 @@ be unit-tested on its own. It wraps a list of Calculation objects with a
 threading.RLock so concurrent access (Qt UI thread + server worker thread) is
 safe.
 
-This is the "길 1" design we agreed on: one in-memory queue object, shared via
-a lock, no SQLite.
+This is the option-1 design we agreed on: one in-memory queue object, shared
+via a lock, no SQLite.
 """
 
 from __future__ import annotations
@@ -33,12 +33,16 @@ from ..paths import data_dir, user_data_root
 # contract with web/types.js)
 from .schemas import CalcFull, CalcSummary, LogLine, LogPayload, QueueSnapshot
 
-# States whose calculations the user may still edit / remove / reorder.
-# PENDING: never run yet. FAILED / CANCELLED: finished unsuccessfully, so the
-# user can fix and retry them. DONE is intentionally excluded (a completed
-# result is frozen — make a new calculation to rerun). RUNNING/BLOCKED are
-# excluded too (in-flight or dependency-gated).
-EDITABLE_STATES = {CalcState.PENDING, CalcState.FAILED, CalcState.CANCELLED}
+# States whose calculations the user may still edit / reorder.
+# PENDING: never run yet. CANCELLED: a deliberate user stop, not a failure, so
+# it can be fixed and retried. BLOCKED: must stay editable because after its
+# failed parent is removed the user has to re-point the reference at another
+# calculation — locking it would strand it forever. FAILED is deliberately NOT
+# editable (P24 revision): a failure locks the calc at the moment it fails —
+# no edit, no re-run; the only remaining interaction is removal (×). DONE is
+# excluded too (a completed result is frozen — make a new calculation to
+# rerun), and RUNNING is in flight.
+EDITABLE_STATES = {CalcState.PENDING, CalcState.CANCELLED, CalcState.BLOCKED}
 
 
 def _new_pin() -> str:
@@ -183,12 +187,18 @@ def calc_from_dict(d: dict) -> Calculation:
     if not name:
         raise ValueError("Calculation name is required.")
     _validate_calc_name(name)
+    # charge/multiplicity are f-string-interpolated into the .inp's
+    # "* xyz {charge} {multiplicity}" line. int() already blocks string
+    # injection, but not absurd magnitudes — clamp to physically generous
+    # ranges so a bogus client payload can't emit a nonsense input file.
+    charge = max(-100, min(100, int(d.get("charge", 0))))
+    multiplicity = max(1, min(200, int(d.get("multiplicity", 1))))
     return Calculation(
         name=name,
         kind=d.get("kind", cfg.kind),
         config=cfg,
-        charge=int(d.get("charge", 0)),
-        multiplicity=int(d.get("multiplicity", 1)),
+        charge=charge,
+        multiplicity=multiplicity,
         geometry_source=GeometrySource(src),
         xyz=d.get("xyz", ""),
         ref_name=d.get("ref_name", ""),
@@ -314,7 +324,9 @@ class QueueStore:
         # the background engine + thread while a run is in progress
         self._engine = None
         self._thread: Optional[threading.Thread] = None
-        # access token (6-digit PIN), generated fresh per server start
+        # access token (6-digit PIN), generated once per app launch (at store
+        # construction) — it lives for the whole app session, across server
+        # stop/starts
         self._token = _new_pin()
         # connected phone clients: {client_id: last_seen_epoch}
         self._clients: dict[str, float] = {}
@@ -324,11 +336,6 @@ class QueueStore:
     @property
     def token(self) -> str:
         with self._lock:
-            return self._token
-
-    def regenerate_token(self) -> str:
-        with self._lock:
-            self._token = _new_pin()
             return self._token
 
     def check_token(self, supplied: Optional[str]) -> bool:
@@ -424,8 +431,9 @@ class QueueStore:
 
     def replace(self, name: str, new_calc: Calculation) -> bool:
         """Replace an editable calculation in place (keeps its queue position).
-        Editable = pending, failed, or cancelled. Editing resets the entry to
-        PENDING (and clears the old result/message) so it runs on the next Run.
+        Editable = pending, cancelled, or blocked (see EDITABLE_STATES). Editing
+        resets the entry to PENDING (and clears the old result/message) so it
+        runs on the next Run.
         Raises ValueError if the target isn't editable, or on a name clash."""
         with self._lock:
             if self._running:
@@ -438,7 +446,7 @@ class QueueStore:
             if idx is None:
                 raise ValueError(f"No calculation named '{name}'.")
             if self._calcs[idx].state not in EDITABLE_STATES:
-                raise ValueError("Only pending, failed, or cancelled calculations can be edited.")
+                raise ValueError("Only pending, cancelled, or blocked calculations can be edited.")
             # if renaming, the new name must not collide with a DIFFERENT entry
             if new_calc.name != name and any(
                 c.name == new_calc.name for j, c in enumerate(self._calcs) if j != idx
@@ -455,8 +463,8 @@ class QueueStore:
 
     def reorder(self, from_idx: int, to_idx: int) -> bool:
         """Move an editable calculation to a new position. Both endpoints must
-        be editable (pending/failed/cancelled) so running/done items keep their
-        place. Returns True on move."""
+        be editable (see EDITABLE_STATES) so running/done/failed items keep
+        their place. Returns True on move."""
         with self._lock:
             if self._running:
                 raise ValueError("Cannot reorder while the queue is running.")
@@ -466,7 +474,7 @@ class QueueStore:
             if from_idx == to_idx:
                 return False
             if self._calcs[from_idx].state not in EDITABLE_STATES:
-                raise ValueError("Only pending, failed, or cancelled calculations can be moved.")
+                raise ValueError("Only pending, cancelled, or blocked calculations can be moved.")
             if self._calcs[to_idx].state not in EDITABLE_STATES:
                 raise ValueError("Can only reorder within editable calculations.")
             item = self._calcs.pop(from_idx)
@@ -654,6 +662,25 @@ class QueueStore:
         detached ORCA survived a previous session and should be reattached."""
         with self._lock:
             return any(c.state == CalcState.RUNNING for c in self._calcs)
+
+
+def queue_needs_orca(calcs: "list[Calculation]") -> bool:
+    """True if running these calculations would launch ORCA at least once —
+    i.e. some calc is not DONE and its kind is not an mlip_* kind.
+
+    Single shared decision (P4) for both run entry points (the desktop bridge
+    and the phone server): an all-MLIP queue runs in the user's MLIP env and
+    must be runnable with no ORCA executable configured, so requiring a valid
+    ORCA path is gated on this instead of being unconditional. DONE calcs are
+    never recomputed and FAILED calcs are locked (P24) — neither will ever
+    launch ORCA, so they don't count (a stale FAILED ORCA calc must not force
+    an ORCA path onto an otherwise all-MLIP queue).
+    """
+    return any(
+        c.state not in (CalcState.DONE, CalcState.FAILED)
+        and not c.kind.startswith("mlip")
+        for c in calcs
+    )
 
 
 def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str,

@@ -10,11 +10,21 @@ shells out to the user's installed `orca` executable; it does not do the chemist
 itself. Status is beta; the current version is `APP_VERSION` in `orcamgr/paths.py`
 (also the top entry of `CHANGELOG.md`). Windows is the primary tested target.
 
+Two normative companion documents govern how this codebase is written:
+**`PRINCIPLES.md`** (development principles, cited as `P1`, `P10`, …) and
+**`DESIGN.md`** (visual/UX principles + the design-token reference, cited as
+`D1`, `D10`, …). They are binding: follow them when writing code or UI, and
+when a change introduces or amends a principle, update the relevant document
+in the same commit; a deliberate deviation is justified in the commit body
+and recorded in the appendices (with a disposition) if it is kept. This file
+stays the operational guide;
+where they overlap, the principles documents are the norm.
+
 ## Commands
 
 ```bash
 # Develop (desktop app)
-pip install -r requirements.txt        # PyQt6 + PyQt6-WebEngine
+pip install -r requirements.txt        # PyQt6 + PyQt6-WebEngine + psutil
 python main.py
 
 # Optional phone-sync server, standalone (for API testing on localhost)
@@ -27,12 +37,24 @@ python -m PyInstaller build.spec --noconfirm
 
 # Type-check the web/ front-end (plain JS + JSDoc, no build step; needs Node)
 npx -p typescript tsc --noEmit -p jsconfig.json
+
+# Run the automated test suite (pip install -r requirements-dev.txt once)
+python -m pytest                       # 234 tests over the framework-free layers
+node tests/web/scf_graph.test.js       # 23 tracker/progress tests, no npm deps
 ```
 
-There is **no automated test suite** and no linter configured. The parser and input
-generator were validated manually against real ORCA 6.1.1 output. The
-`orcamgr/server/STAGE*_TEST_KR.md` files are manual server-test checklists (Korean),
-not runnable tests.
+The **automated test suite** (`tests/`, pytest + one plain-Node script) covers the
+framework-free layers: `state/` (store, schemas, session persistence), `core/`
+(queue-engine semantics with a fake runner, per-kind validation, input generator,
+parser on synthetic fixtures), `mlip/` (with a stdlib-only stub worker — no MACE
+env needed), `config`, `procutil` (real child processes), and the phone HTTP API
+via `fastapi.testclient` (auto-skips without fastapi). The Qt bridge/window layers
+are thin adapters and are exercised manually. Tests that read the real ORCA output
+corpus auto-skip when the corpus directory is absent, so the suite is green on any
+machine. There is no linter configured. Parser/input-generator *evidence* still
+comes from manual validation against real ORCA 6.1.1 output (P3); the
+`orcamgr/server/STAGE*_TEST_KR.md` files are manual server-test checklists
+(Korean), not runnable tests.
 
 ## Architecture
 
@@ -150,13 +172,24 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   every calc that references it (transitively) is marked `BLOCKED` and skipped;
   unrelated calcs continue.
 - **`DONE` calcs are never recomputed** on a re-run (the result is frozen);
-  `FAILED`/`CANCELLED` calcs *do* re-run so the user can retry. Only
-  `PENDING`/`FAILED`/`CANCELLED` are editable/reorderable (`EDITABLE_STATES`).
+  **`FAILED` calcs are locked** at the moment of failure (P24): no re-run,
+  no edit, no reorder — a re-run skips them and blocks their dependents up
+  front; retrying means building a new calculation. Their remaining
+  interactions are read-only diagnosis and × removal, which is
+  queue-list-only — workspace folders are never deleted (no file-deletion
+  code exists; a binding rule). Only `CANCELLED` (a deliberate user stop)
+  re-runs. `EDITABLE_STATES` is `PENDING`/`CANCELLED`/`BLOCKED` — BLOCKED
+  stays editable so a dependent can be re-pointed after its failed parent
+  is removed. The keep-existing ("skip") run option parses the kept output
+  through `result_from_output` and stamps `DONE` only if `validate_result`
+  passes; otherwise the calc runs.
 - **Result validation is per-kind**: `opt`/`ts_opt` (and the combined
   `opt_freq`/`ts_opt_freq`) must converge; `freq`/`opt_freq` must have zero
-  imaginary frequencies; `ts_freq`/`ts_opt_freq` must have exactly one. A
+  imaginary frequencies; `ts_freq`/`ts_opt_freq` must have exactly one;
+  `neb_ts` must have exactly one when frequencies were computed. A
   validation failure marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`,
-  `freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `irc`, `tddft`, `sp`, `nmr`,
+  `freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `irc`, `tddft`, `sp`,
+  `general` (free keyword combination; no per-kind validation), `nmr`,
   `neb_ts`, `mlip_opt`. Kinds starting with `mlip` run **outside** the ORCA
   pipeline: `QueueEngine.run_all` routes them to `_run_mlip_calc` (a MACE
   relaxation in the user's env) instead of `_run_calc`. See the MLIP section.
@@ -183,8 +216,9 @@ because different MLIPs pin conflicting dependencies (MACE and SevenNet pin
 different `e3nn`), so they cannot share a venv. The legacy single
 `mlip_python` setting is auto-migrated to one env entry on load.
 
-Currently the package holds only `env.py` (environment detection backing the
-"MLIP ready" top-bar indicator). Unlike `orca_is_valid()` (a file-exists check),
+The package holds `env.py` (environment detection backing the "MLIP ready"
+top-bar indicator) plus the run pipeline (`runner.py`, `parser.py` — see
+"Running MLIP jobs" below). Unlike `orca_is_valid()` (a file-exists check),
 MLIP readiness is an **import probe**: `probe_env()` runs each registered
 interpreter and **auto-detects** which backends import. The backend registry is
 `MLIP_BACKENDS` (key → import-package name; MACE/SevenNet seeded, extensible);
@@ -236,14 +270,17 @@ cancellable (`QueueEngine.cancel`/`detach` forward to the active `MlipRunner`).
 MLIP-optimized geometry through the **same** `_resolve_geometry` path an opt→freq
 handoff uses. `validate_result` checks `mlip_opt` convergence; `_failure_reason`
 skips the ORCA `.out` parse for mlip kinds. The engine gets the env list via
-`make_engine_factory(..., mlip_envs=settings.mlip_envs)`; `run_queue` only
-requires a valid ORCA path when a non-MLIP calc will run (an all-MLIP queue runs
-without ORCA). Output parsing dispatches on kind through the module-level
+`make_engine_factory(..., mlip_envs=settings.mlip_envs)`; a valid ORCA path is
+required only when a non-MLIP calc will actually run — that decision is the
+shared `queue_needs_orca` (`state/store.py`), used by **both** run entry points
+(the desktop bridge's `run_queue` and the phone's `/api/run`), so an all-MLIP
+queue runs without ORCA from either client. Output parsing dispatches on kind through the module-level
 `result_from_output` (used by reference resolution and session reconciliation),
 so a DONE `mlip_opt` referenced **after a restart** is parsed by the MLIP parser,
 not the ORCA one. The pipeline was validated end to end against a real MACE
-environment (MACE-OFF), including the MLIP→ORCA geometry handoff; the automated
-tests use a stdlib-only stub for `MACE_WORKER_SCRIPT` since CI has no MACE env.
+environment (MACE-OFF), including the MLIP→ORCA geometry handoff; those
+validation runs were performed locally — there is no checked-in test suite
+or CI (see the Commands section).
 
 ### Paths: dev vs PyInstaller-frozen
 
@@ -367,8 +404,21 @@ that are stale — include those updates in the same commit:
   (normalization rules, defaults), paths/build layout, or the git workflow itself.
 - `README.md` — update when commands, install steps, requirements, or user-facing
   features described there change.
+- `PRINCIPLES.md` / `DESIGN.md` — update when the change introduces or amends a
+  convention/principle, deliberately deviates from one (if the deviation is
+  kept, record it in the appendix with a disposition), or resolves a deviation
+  already listed there.
+  `DESIGN.md` §8 (tokens) and Part II (§9–§15: scales, component recipes,
+  state matrix, copy templates) mirror the implementation — keep them in sync,
+  and run the §15 checklist for any UI change.
 - Other docs (`INSTALLER_GUIDE_KR.md`, `orcamgr/server/STAGE*_TEST_KR.md`, etc.) —
   update when the procedure they describe changes.
 
 If nothing in the docs is affected, no doc edit is needed — but the check itself is
 not optional: confirm it before committing, every time.
+
+Alongside the doc check, run the test suite before every commit that touches
+Python or `web/scf_graph.js` (`python -m pytest` and, for scf_graph changes,
+`node tests/web/scf_graph.test.js`) — the suite is fast (~3 s) and pins the
+principle contracts (P56). A red test is either a test bug or a product bug;
+never adjust a test to make wrong behavior pass.

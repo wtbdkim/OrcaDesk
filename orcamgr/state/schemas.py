@@ -147,13 +147,18 @@ class AboutPayload(TypedDict):
 
 # ---- file loaders ------------------------------------------------------------
 
-class _InpFileBase(TypedDict):
+class LoadResult(TypedDict):
+    """Unified envelope for the four file-loader slots (load_xyz_file /
+    load_xyz_path / load_inp_file / load_inp_path) — 5 keys, all always
+    present. "cancelled" distinguishes the user closing the picker (a
+    deliberate choice: ok=True, cancelled=True, no error) from a real read
+    failure (ok=False, "error" filled) — the previous per-slot shapes
+    conflated the two, so the UI couldn't tell cancel from OSError (A2)."""
+    ok: bool
+    cancelled: bool
     text: str
-    name: str                 # filename stem, auto-fills the calc name
-
-
-class InpFilePayload(_InpFileBase, total=False):
-    error: str                # only on load_inp_path's OSError branch
+    name: str                 # filename stem (auto-fills the calc name), "" if none
+    error: str                # "" except on the read-failure branch
 
 
 # ---- parse results (Bridge._parse_path) --------------------------------------
@@ -279,6 +284,16 @@ class ConflictsResult(_Ok, total=False):
     """check_overwrite_conflicts — "conflicts" is present on every branch."""
     error: str
     conflicts: "list[str]"
+
+
+class AutodetectResult(_Ok, total=False):
+    """autodetect_orca — "path" is present on every branch ("" when nothing
+    was found); "error" only when detection itself raised. NOTE: despite the
+    getter-ish name this is a MUTATION slot — a found path is also written to
+    settings.orca_path and saved (A3), which the envelope makes explicit
+    instead of returning a bare string."""
+    path: str
+    error: str
 
 
 # ---- phone-sync server (bridge slots + HTTP endpoints) ------------------------

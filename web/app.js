@@ -42,11 +42,12 @@ let _running = false;           // mirrors store.running
 let _stopRequested = false;     // user asked to stop after the current job
 let _starting = false;          // runQueue() is mid-start (guards the pre-_running await window)
 
-// Calculations the user can still edit / remove / reorder: never-run (pending)
-// plus finished-unsuccessfully (failed/cancelled), so they can be fixed and
-// retried. done/running/blocked are frozen. Mirrors EDITABLE_STATES in store.py.
+// Calculations the user can still edit / remove / reorder: pending, cancelled,
+// or blocked. Mirrors EDITABLE_STATES in store.py — P24 amended: FAILED is
+// locked, so the failure evidence (.out, message, the exact input that failed)
+// can't be edited away before it's inspected. done/running stay frozen too.
 function isEditableState(state) {
-  return state === "pending" || state === "failed" || state === "cancelled";
+  return state === "pending" || state === "cancelled" || state === "blocked";
 }
 
 // per-kind defaults for the config form
@@ -101,29 +102,31 @@ window.addEventListener("drop", (e) => e.preventDefault(), false);
 window.onInpDropped = async function (path) {
   if (!bridge) return;
   try {
-    const res = /** @type {InpFilePayload} */ (JSON.parse(await bridge.load_inp_path(path)));
-    if (!res || !res.text) { toast("Couldn't read that .inp"); return; }
+    const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_inp_path(path)));
+    if (res.cancelled) return;   // deliberate dismissal, never an error
+    if (!res.ok) { failNotify("Could not read that .inp."); return; }
     setBuildMode("expert");
     enterRawWithText(res.text);
     const nameEl = document.getElementById("calc-name");
     if (nameEl && res.name && !nameEl.value.trim()) nameEl.value = res.name;
     switchTab("build");
     appendLog(`Dropped .inp loaded${res.name ? " (" + res.name + ")" : ""}. Next: calc type, then Add to queue.`, "ok");
-  } catch (e) { toast("Drop failed"); }
+  } catch (e) { failNotify("Could not load the dropped file."); }
 };
 
 window.onXyzDropped = async function (path) {
   if (!bridge) return;
   try {
-    const content = await bridge.load_xyz_path(path);
-    if (!content) { toast("Couldn't read that .xyz"); return; }
-    directXyz = parseXyzText(content);
+    const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_path(path)));
+    if (res.cancelled) return;   // deliberate dismissal, never an error
+    if (!res.ok) { failNotify("Could not read that .xyz."); return; }
+    directXyz = parseXyzText(res.text);
     const n = directXyz ? directXyz.split("\n").length : 0;
     const st = document.getElementById("xyz-status");
-    if (st) st.textContent = n ? `${n} atoms loaded.` : "No atoms in file.";
+    if (st) st.textContent = n ? `loaded (${n} atoms)` : "No atoms in file.";
     switchTab("build");
     appendLog(`Dropped .xyz loaded (${n} atoms).`, n ? "ok" : "warn");
-  } catch (e) { toast("Drop failed"); }
+  } catch (e) { failNotify("Could not load the dropped file."); }
 };
 
 window.onOutDropped = async function (path) {
@@ -131,13 +134,13 @@ window.onOutDropped = async function (path) {
   try {
     const raw = await bridge.parse_out_path(path);
     /** @type {ParsePayload} */
-    let data; try { data = JSON.parse(raw); } catch { toast("Couldn't parse that .out"); return; }
-    if (!data || !data.summary) { toast("Couldn't parse that .out"); return; }
+    let data; try { data = JSON.parse(raw); } catch { toast("Could not parse that .out."); return; }
+    if (!data || !data.summary) { toast("Could not parse that .out."); return; }
     _currentResult = data;
     renderResult(data);
     switchTab("results");
     appendLog("Dropped .out parsed.", "ok");
-  } catch (e) { toast("Drop failed"); }
+  } catch (e) { failNotify("Could not load the dropped file."); }
 };
 
 // ---------- shared-store polling ----------
@@ -466,7 +469,7 @@ async function toggleTheme() {
   applyTheme(next);   // flip the UI instantly, then persist
   const res = /** @type {SaveSettingsResult} */ (JSON.parse(await bridge.save_settings(JSON.stringify({ theme: next }))));
   // bad input comes back as {error} — don't clobber the settings mirror with it
-  if ("error" in res) { toast("Could not save theme: " + res.error); return; }
+  if ("error" in res) { failNotify("Could not save theme: " + res.error); return; }
   settings = res;
 }
 
@@ -528,11 +531,12 @@ function renderMlip(st) {
   const pill = document.getElementById("mlip-status");
   pill.classList.toggle("ok", state === "ready");
   pill.classList.toggle("err", state === "error");
+  // no colon — same "NAME state" form as the ORCA pill ("ORCA ready")
   document.getElementById("mlip-status-text").textContent =
-    state === "ready" ? "MLIP: ready"
-    : state === "checking" ? "MLIP: checking…"
-    : state === "error" ? "MLIP: error"
-    : "MLIP: not set";
+    state === "ready" ? "MLIP ready"
+    : state === "checking" ? "MLIP checking…"
+    : state === "error" ? "MLIP error"
+    : "MLIP not set";
   // hover tooltip: one line per env with its detected backends / status
   pill.title = envs.length
     ? envs.map(e =>
@@ -587,11 +591,11 @@ function renderMlipEnvList(envs) {
     const btns = document.createElement("div");
     btns.className = "mlip-env-btns";
     const chk = document.createElement("button");
-    chk.className = "btn btn-ghost";
+    chk.className = "btn btn-sm btn-ghost";
     chk.textContent = "Check";
     chk.onclick = () => checkMlipEnv(e.id);
     const rm = document.createElement("button");
-    rm.className = "btn btn-ghost";
+    rm.className = "btn btn-sm btn-ghost";
     rm.textContent = "Remove";
     rm.onclick = () => removeMlipEnv(e.id);
     btns.append(chk, rm);
@@ -613,7 +617,7 @@ async function addMlipEnv() {
   const python = input.value.trim();
   if (!python) { toast("A Python interpreter path (enter or browse)."); return; }
   const res = JSON.parse(await bridge.add_mlip_env(JSON.stringify({ python })));
-  if (res && res.error) { toast("Could not add environment: " + res.error); return; }
+  if (res && res.error) { failNotify("Could not add environment: " + res.error); return; }
   input.value = "";
   renderMlip(/** @type {MlipStatusPayload} */ (res));
   pollMlipStatus();
@@ -645,7 +649,7 @@ async function saveSettings() {
   };
   const res = /** @type {SaveSettingsResult} */ (JSON.parse(await bridge.save_settings(JSON.stringify(payload))));
   // bad input comes back as {error} — don't clobber the settings mirror with it
-  if ("error" in res) { toast("Could not save settings: " + res.error); return; }
+  if ("error" in res) { failNotify("Could not save settings: " + res.error); return; }
   settings = res;
   updateOrcaStatus(settings.orca_valid);
   // push the new modes to the live graph immediately
@@ -658,9 +662,19 @@ async function saveSettings() {
 async function pickOrca() { const p = await bridge.pick_orca_executable(); if (p) document.getElementById("set-orca").value = p; }
 async function pickWorkspace() { const p = await bridge.pick_workspace(); if (p) document.getElementById("set-ws").value = p; }
 async function autodetectOrca() {
-  const p = await bridge.autodetect_orca();
-  if (p) { document.getElementById("set-orca").value = p; appendLog("Auto-detected ORCA: " + p, "ok"); }
-  else appendLog("ORCA not auto-detectable — manual path entry needed.", "warn");
+  const res = /** @type {AutodetectResult} */ (JSON.parse(await bridge.autodetect_orca()));
+  if (res.ok && res.path) {
+    document.getElementById("set-orca").value = res.path;
+    // the slot persisted the path backend-side — re-pull settings so the
+    // orca_valid mirror (gates runQueue) and the top-bar pill don't go stale
+    settings = /** @type {SettingsPayload} */ (JSON.parse(await bridge.get_settings()));
+    updateOrcaStatus(settings.orca_valid);
+    appendLog("Auto-detected ORCA: " + res.path, "ok");
+  } else if (res.error) {
+    failNotify("Auto-detect failed: " + res.error);
+  } else {
+    appendLog("ORCA not auto-detectable — manual path entry needed.", "warn");
+  }
 }
 
 // ---------- tabs ----------
@@ -709,8 +723,8 @@ function refreshRefSelect() {
 }
 
 // Parse a raw .xyz file's text into a normalized "El x y z" coordinate block.
-// bridge.load_xyz_file() returns the file's RAW text (not JSON), so callers must
-// parse it as text — never JSON.parse it.
+// The load_* slots return a LoadResult JSON envelope; callers feed this the
+// envelope's .text field (the file body itself is plain text, not JSON).
 function parseXyzText(content) {
   const lines = (content || "").split(/\r?\n/);
   let start = 0;
@@ -727,12 +741,13 @@ function parseXyzText(content) {
 }
 
 async function loadXyz() {
-  const content = await bridge.load_xyz_file();
-  if (!content) return;
-  directXyz = parseXyzText(content);
+  const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
+  if (res.cancelled) return;   // deliberate dismissal, never an error
+  if (!res.ok) { failNotify("Could not read that .xyz."); return; }
+  directXyz = parseXyzText(res.text);
   const n = directXyz ? directXyz.split("\n").length : 0;
   const st = document.getElementById("xyz-status");
-  st.textContent = n ? `${n} atoms loaded.` : "No atoms in file.";
+  st.textContent = n ? `loaded (${n} atoms)` : "No atoms in file.";
   appendLog(`${n} atoms loaded from .xyz.`, n ? "ok" : "warn");
 }
 
@@ -810,7 +825,7 @@ function renderConfigForm(kind, preserve) {
       <div class="field"><label>nroots</label><input id="cfg-nroots" type="number" value="40" min="1"></div>
       <div class="field"><label>maxdim</label><input id="cfg-maxdim" type="number" value="10" min="1"></div>
       <div class="field"><label class="checkbox" style="margin-top:24px"><input id="cfg-tda" type="checkbox"> TDA</label></div>
-      <div class="field"><label class="checkbox" style="margin-top:24px"><input id="cfg-triplets" type="checkbox"> triplets</label></div>
+      <div class="field"><label class="checkbox" style="margin-top:24px"><input id="cfg-triplets" type="checkbox"> Triplets</label></div>
     </div>` : "";
   const freqRows = def.showFreq ? `
     <div class="field-row">
@@ -835,11 +850,11 @@ function renderConfigForm(kind, preserve) {
     <div class="field-row" id="cfg-irc-hessfile-row" style="display:none">
       <div class="field"><label>.hess filename</label><input id="cfg-irc-hessfile" type="text" class="mono" placeholder="e.g. TS2.hess (in this calc's folder)"></div>
     </div>
-    <div class="hint">IRC start point: a TS structure — Geometry below to <b>reference</b> a TS calc. Fastest with a .hess from that TS's freq run, else recomputed here.</div>` : "";
+    <div class="hint">IRC start point: a TS geometry — Geometry below to <b>reference</b> a TS calc. Fastest with a .hess from that TS's freq run, else recomputed here.</div>` : "";
   const nebRows = def.showNeb ? `
     <div class="field-row">
       <div class="field"><label>Product geometry (.xyz)</label>
-        <button class="btn btn-sm" onclick="loadNebProduct()">Load product .xyz…</button>
+        <button class="btn btn-sm" onclick="loadNebProduct()">Load product .xyz</button>
         <span id="cfg-neb-prod-status" class="hint" style="margin-left:8px">no product loaded</span>
       </div>
       <div class="field" style="flex:0 0 120px"><label>Images</label><input id="cfg-neb-nimages" type="number" value="8" min="3"></div>
@@ -883,7 +898,7 @@ function renderConfigForm(kind, preserve) {
     </div>
     <div class="field-row">
       <div class="field"><label>Extra options</label><input id="cfg-options" type="text" class="mono" value="${def.options}"></div>
-      <div class="field" style="flex:0 0 130px"><label>maxcore (MB)</label><input id="cfg-maxcore" type="number" value="${settings.default_maxcore_mb||2400}" min="100" step="100"></div>
+      <div class="field" style="flex:0 0 130px"><label>maxcore (MB / core)</label><input id="cfg-maxcore" type="number" value="${settings.default_maxcore_mb||2400}" min="100" step="100"></div>
       <div class="field" style="flex:0 0 110px"><label>nprocs</label><input id="cfg-nprocs" type="number" value="${settings.default_nprocs||6}" min="1"></div>
       ${maxIterRow}
     </div>
@@ -928,9 +943,10 @@ function onIrcHessChange() {
 }
 
 async function loadNebProduct() {
-  const content = await bridge.load_xyz_file();
-  if (!content) return;                       // user cancelled the picker
-  const xyz = parseXyzText(content);          // raw .xyz text, NOT JSON
+  const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
+  if (res.cancelled) return;   // deliberate dismissal, never an error
+  if (!res.ok) { failNotify("Could not read that .xyz."); return; }
+  const xyz = parseXyzText(res.text);
   if (!xyz) { appendLog("No atoms in the product .xyz.", "warn"); return; }
   _nebProductXyz = xyz;
   const st = document.getElementById("cfg-neb-prod-status");
@@ -1125,12 +1141,13 @@ function renderMlipForm() {
   }
 }
 async function loadMlipXyz() {
-  const content = await bridge.load_xyz_file();
-  if (!content) return;
-  mlipXyz = parseXyzText(content);
+  const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
+  if (res.cancelled) return;   // deliberate dismissal, never an error
+  if (!res.ok) { failNotify("Could not read that .xyz."); return; }
+  mlipXyz = parseXyzText(res.text);
   const n = mlipXyz ? mlipXyz.split("\n").length : 0;
   document.getElementById("mlip-xyz-status").textContent =
-    n ? `${n} atoms loaded.` : "No atoms in file.";
+    n ? `loaded (${n} atoms)` : "No atoms in file.";
 }
 function resetMlipForm() {
   document.getElementById("mlip-name").value = "";
@@ -1139,7 +1156,7 @@ function resetMlipForm() {
 }
 async function addMlipCalcToQueue() {
   try {
-    if (!_mlipReady) throw new Error("A ready MACE environment required (setup in Settings).");
+    if (!_mlipReady) throw new Error("Ready MACE environment required (see Settings).");
     const name = document.getElementById("mlip-name").value.trim();
     if (!name) throw new Error("Name is required.");
     if (/[\\/:*?"<>|]/.test(name))
@@ -1178,7 +1195,7 @@ async function addMlipCalcToQueue() {
 async function editCalc(i) {
   const mirror = queue[i];
   if (!mirror) return;
-  if (!isEditableState(mirror.state)) { toast("Editing limited to pending, failed, or cancelled calculations."); return; }
+  if (!isEditableState(mirror.state)) { toast("Editing limited to pending, cancelled, or blocked calculations."); return; }
   // MLIP calcs use the separate MLIP form, not the ORCA editor. In-place editing
   // isn't wired yet — remove and re-add from the MLIP build mode instead.
   if ((mirror.kind || "").startsWith("mlip")) { toast("No in-place editing of MLIP calculations yet — removal, then re-add from the MLIP build mode."); return; }
@@ -1217,7 +1234,7 @@ async function editCalc(i) {
   if (c.geometry_source === "direct") {
     directXyz = c.xyz || "";
     document.getElementById("xyz-status").textContent =
-      directXyz ? `${directXyz.split("\n").filter(Boolean).length} atoms loaded.` : "";
+      directXyz ? `loaded (${directXyz.split("\n").filter(Boolean).length} atoms)` : "";
   } else {
     refreshRefSelect();
     document.getElementById("ref-select").value = c.ref_name;
@@ -1375,7 +1392,7 @@ async function enterRawMode() {
   const res = /** @type {TextResult} */ (JSON.parse(await bridge.build_inp_preview(JSON.stringify(calc))));
   if (!res.ok) {
     rawMode = false;
-    appendLog("Could not generate .inp: " + res.error, "err");
+    failNotify("Could not generate .inp: " + res.error);
     return;
   }
 
@@ -1403,19 +1420,20 @@ async function loadInpFile() {
   // converting an in-progress FORM edit to raw is irreversible — confirm first
   if (editIndex !== -1 && !rawMode) {
     const ok = await confirmModal({
-      title: "Load a .inp here?",
+      title: "Load an .inp here?",
       body: "This calculation becomes raw input, no longer form-editable.",
       confirm: "Load .inp", danger: true });
     if (!ok) return;
   }
-  const res = /** @type {InpFilePayload} */ (JSON.parse(await bridge.load_inp_file()));
-  if (!res || !res.text) return;
+  const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_inp_file()));
+  if (res.cancelled) return;   // deliberate dismissal, never an error
+  if (!res.ok) { failNotify("Could not read that .inp."); return; }
   enterRawWithText(res.text);
   // auto-fill the calculation name from the .inp filename (only when the user
   // hasn't already typed a name, so a deliberate name isn't clobbered)
   const nameEl = document.getElementById("calc-name");
   if (nameEl && res.name && !nameEl.value.trim()) nameEl.value = res.name;
-  appendLog(".inp loaded into the editor. Calc type next (plus Geometry source for {{GEOMETRY}}), then Add to queue.", "info");
+  appendLog(".inp loaded into the editor. Next: calc type (plus Geometry source for {{GEOMETRY}}), then Add to queue.", "info");
 }
 
 // Beginner (guided form) vs Expert (paste/load a complete .inp + pick the kind).
@@ -1483,6 +1501,15 @@ function toast(msg) {
   _toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
 }
 
+// Single failure channel: toast (immediate, visible from any tab) + log
+// (persistent, reviewable later). Single-channel failures either vanished
+// after 2.2s (toast-only) or went unseen unless the Log tab happened to be
+// open (log-only) — every failure call site goes through here.
+function failNotify(msg) {
+  toast(msg);
+  appendLog(msg, "err");
+}
+
 // view the on-disk ORCA .inp (read-only) for any calc, including a running one.
 // Running/finished jobs have the real .inp on disk; a pending one shows a preview.
 async function viewInp(i) {
@@ -1516,7 +1543,8 @@ function renderQueue() {
   </div>`; return; }
   el.innerHTML = "";
   queue.forEach((c, i) => {
-    const srcLabel = c.geometry_source === "reference" ? `ref → ${c.ref_name}` : "xyz";
+    // ref_name is user-typed (a calc name) and lands in innerHTML — escape it
+    const srcLabel = c.geometry_source === "reference" ? `ref → ${escapeHtml(c.ref_name)}` : "xyz";
     const isMlip = (c.kind || "").startsWith("mlip");
     const rawBadge = c.is_raw ? `<span class="qstate raw">raw</span>` : "";
     const mlipBadge = isMlip ? `<span class="qstate raw">MLIP</span>` : "";
@@ -1524,7 +1552,7 @@ function renderQueue() {
     const cmLabel = isMlip ? "" : ` · charge ${c.charge} · mult ${c.multiplicity}`;
     // a "Completed." note is redundant with the done badge — hide completion notices
     const showMsg = !!c.message && !(c.state === "done" && /^Completed\b/.test(c.message));
-    const editable = isEditableState(c.state);   // pending/failed/cancelled: edit + drag
+    const editable = isEditableState(c.state);   // pending/cancelled/blocked: edit + drag
     const removable = c.state !== "running";       // anything but running can be deleted
     const div = document.createElement("div");
     div.className = "queue-item" + (editable ? " draggable" : "");
@@ -1592,20 +1620,21 @@ async function reorderCalc(from, to) {
   // both endpoints must be editable (server enforces too)
   if (!queue[from] || !queue[to]) return;
   if (!isEditableState(queue[from].state) || !isEditableState(queue[to].state)) {
-    toast("Reordering limited to pending, failed, or cancelled calculations.");
+    failNotify("Reordering limited to pending, cancelled, or blocked calculations.");
     return;
   }
   try {
     await bridge.reorder_calc(from, to);
     await refreshQueue();
-  } catch (e) { toast("Reorder failed."); }
+  } catch (e) { failNotify("Reorder failed."); }
 }
 async function removeCalc(i) {
   const c = queue[i];
   if (!c) return;
-  if (c.state === "running") { toast("Cannot remove a running calculation."); return; }
+  if (c.state === "running") { failNotify("Could not remove: the calculation is running."); return; }
+  // c.name is user-typed and goes into the modal's innerHTML — escape it
   if (!await confirmModal({ title: "Remove calculation?",
-      body: `Remove <b>${c.name}</b> from the queue?`, confirm: "Remove", danger: true })) return;
+      body: `Remove <b>${escapeHtml(c.name)}</b> from the queue?`, confirm: "Remove", danger: true })) return;
   await bridge.remove_calc(c.name);
   delete localCalcs[c.name];
   await refreshQueue();
@@ -1614,10 +1643,10 @@ async function clearQueue() {
   if (isRunning()) return;
   if (!queue.length) return;
   if (!await confirmModal({ title: "Clear the whole queue?",
-      body: `Remove all <b>${queue.length}</b> calculation(s) from the queue? This can't be undone.`,
+      body: `Remove all <b>${queue.length}</b> ${queue.length === 1 ? "calculation" : "calculations"} from the queue? This can't be undone.`,
       confirm: "Clear all", danger: true })) return;
   const res = /** @type {MutationResult} */ (JSON.parse(await bridge.clear_queue()));
-  if (!res.ok) { appendLog(res.error || "Could not clear queue.", "warn"); return; }
+  if (!res.ok) { failNotify(res.error || "Could not clear queue."); return; }
   for (const k of Object.keys(localCalcs)) delete localCalcs[k];
   await refreshQueue();
 }
@@ -1671,7 +1700,12 @@ async function runQueue() {
   // its promise). The backend still rejects a double start_run regardless.
   if (_running || _starting) return;
   if (!queue.length) { appendLog("No calculations queued.", "warn"); return; }
-  if (!settings.orca_valid) { toast("ORCA path not set (see Settings)."); switchTab("settings"); return; }
+  // Mirrors store.queue_needs_orca (P4): ORCA is required only if a calc that
+  // will actually launch it exists — an all-MLIP queue (or one whose only ORCA
+  // calcs are DONE/FAILED, which never re-run) runs with no ORCA configured.
+  const needsOrca = queue.some((c) =>
+    c.state !== "done" && c.state !== "failed" && !c.kind.startsWith("mlip"));
+  if (needsOrca && !settings.orca_valid) { failNotify("ORCA path not set (see Settings)."); switchTab("settings"); return; }
 
   _starting = true;
   try {
@@ -1680,10 +1714,12 @@ async function runQueue() {
     try {
       const chk = /** @type {ConflictsResult} */ (JSON.parse(await bridge.check_overwrite_conflicts()));
       if (chk.ok && chk.conflicts && chk.conflicts.length) {
-        const list = `<div class="names">${chk.conflicts.join(", ")}</div>`;
+        // conflict names are user-typed calc names landing in innerHTML — escape
+        const list = `<div class="names">${chk.conflicts.map(escapeHtml).join(", ")}</div>`;
+        const nc = chk.conflicts.length;
         const choice = await showModal(
-          "Existing results found",
-          `${chk.conflicts.length} calculation(s) already have results saved on disk:<br><br>${list}<br>` +
+          "Overwrite existing results?",
+          `${nc} ${nc === 1 ? "calculation already has" : "calculations already have"} results saved on disk:<br><br>${list}<br>` +
           `Running again will <b>overwrite</b> them. What would you like to do?`,
           [
             { label: "Cancel", value: "cancel" },
@@ -1697,10 +1733,10 @@ async function runQueue() {
       }
     } catch (e) { /* if the check fails, fall through and run normally */ }
 
-    appendLog("--- starting queue ---", "info");
+    appendLog("--- running queue ---", "info");
     const res = /** @type {OkResult} */ (JSON.parse(await bridge.run_queue(JSON.stringify(skipNames))));
     if (!res.ok) {
-      appendLog("Could not start: " + res.error, "err");
+      failNotify("Could not start: " + res.error);
     } else {
       _running = true; _stopRequested = false; setRunUI(true);
     }
@@ -2008,10 +2044,13 @@ function renderSummary(rows, d) {
   for (const row of rows) {
     const k = row[0], v = row[1], cat = row[2] || "";
     if (cat === "elec" && !showElec) continue;
+    // Failure patterns FIRST, and else-if so later tests can't overwrite:
+    // "NOT converged" contains "converged" and "ABNORMAL" contains "Normal",
+    // so sequential ifs let the success test repaint failures green.
     let cls = "";
-    if (/imaginary/i.test(k) && !/^0$/.test(String(v))) cls = "warn";
     if (/ABNORMAL|NOT converged/i.test(String(v))) cls = "err";
-    if (/converged|Normal/i.test(String(v))) cls = "ok";
+    else if (/imaginary/i.test(k) && !/^0$/.test(String(v))) cls = "warn";
+    else if (/converged|Normal/i.test(String(v))) cls = "ok";
     html += `<div class="k">${escapeHtml(k)}</div><div class="v ${cls}">${escapeHtml(String(v))}</div>`;
   }
   html += `</div>`;
@@ -2029,7 +2068,7 @@ function renderGeometry(geom) {
   _lastGeomXyz = `${geom.length}\n\n` + geom.map(a => `${a.el}  ${a.x.toFixed(6)}  ${a.y.toFixed(6)}  ${a.z.toFixed(6)}`).join("\n");
   body.innerHTML += `
     <div class="divider"></div>
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
       <div class="card-title">Final geometry (${geom.length} atoms, Å)</div>
       <button class="btn btn-sm btn-ghost" onclick="copyGeometryXyz()">Copy .xyz</button>
     </div>
@@ -2042,8 +2081,8 @@ function renderGeometry(geom) {
 }
 async function copyGeometryXyz() {
   if (!_lastGeomXyz) return;
-  try { await navigator.clipboard.writeText(_lastGeomXyz); toast("Geometry copied as .xyz"); }
-  catch (e) { toast("Copy failed — clipboard unavailable"); }
+  try { await navigator.clipboard.writeText(_lastGeomXyz); toast("Geometry copied as .xyz."); }
+  catch (e) { failNotify("Copy failed — clipboard unavailable."); }
 }
 
 /** @param {OrbitalPayload[]} orbs */
@@ -2203,8 +2242,8 @@ function renderSpectrum(transitions) {
     <svg class="spectrum" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
       <line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}" stroke="var(--border)"/>
       ${bars}
-      <text x="${pad}" y="${H-8}" fill="var(--muted-foreground)" font-size="10">${minNm.toFixed(0)} nm</text>
-      <text x="${W-pad-30}" y="${H-8}" fill="var(--muted-foreground)" font-size="10">${maxNm.toFixed(0)} nm</text>
+      <text class="mono" x="${pad}" y="${H-8}" fill="var(--muted-foreground)" font-size="10">${minNm.toFixed(0)} nm</text>
+      <text class="mono" x="${W-pad-30}" y="${H-8}" fill="var(--muted-foreground)" font-size="10">${maxNm.toFixed(0)} nm</text>
     </svg>`;
 }
 
@@ -2249,8 +2288,8 @@ function renderFreqSpectrum(frequencies, nImaginary) {
     <svg class="spectrum" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
       <line x1="${padL}" y1="${baseY}" x2="${W-padR}" y2="${baseY}" stroke="var(--border)"/>
       ${sticks}
-      <text x="${x(minF).toFixed(1)}" y="${H-8}" fill="var(--muted-foreground)" font-size="10">${minF.toFixed(0)}</text>
-      <text x="${(W-padR-50)}" y="${H-8}" fill="var(--muted-foreground)" font-size="10">${maxF.toFixed(0)} cm⁻¹</text>
+      <text class="mono" x="${x(minF).toFixed(1)}" y="${H-8}" fill="var(--muted-foreground)" font-size="10">${minF.toFixed(0)}</text>
+      <text class="mono" x="${(W-padR-50)}" y="${H-8}" fill="var(--muted-foreground)" font-size="10">${maxF.toFixed(0)} cm⁻¹</text>
     </svg>
     ${warn}`;
 }
@@ -2265,10 +2304,12 @@ function renderNmr(nmr) {
   body.innerHTML += `
     <div class="divider"></div>
     <div class="card-title">NMR chemical shielding (ppm)</div>
-    <table class="data">
-      <thead><tr><th>Nucleus</th><th>Isotropic</th><th>Anisotropy</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
+    <div style="max-height:280px;overflow:auto">
+      <table class="data">
+        <thead><tr><th>Nucleus</th><th>Isotropic</th><th>Anisotropy</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
     <div class="hint">Absolute shieldings — reference subtraction (e.g. TMS) for chemical shifts.</div>`;
 }
 
@@ -2315,8 +2356,8 @@ function renderNebPath(path) {
       <line x1="${padL}" y1="${zeroY}" x2="${W-padR}" y2="${zeroY}" stroke="var(--border)" stroke-dasharray="3 3"/>
       <polyline points="${pts}" fill="none" stroke="var(--muted-foreground)" stroke-width="1.5"/>
       ${dots}
-      <text x="14" y="${padT+4}" fill="var(--muted-foreground)" font-size="10">${hi.toFixed(1)}</text>
-      <text x="14" y="${(H-padB).toFixed(1)}" fill="var(--muted-foreground)" font-size="10">${lo.toFixed(1)}</text>
+      <text class="mono" x="14" y="${padT+4}" fill="var(--muted-foreground)" font-size="10">${hi.toFixed(1)}</text>
+      <text class="mono" x="14" y="${(H-padB).toFixed(1)}" fill="var(--muted-foreground)" font-size="10">${lo.toFixed(1)}</text>
       <text x="14" y="${H/2}" fill="var(--muted-foreground)" font-size="10" transform="rotate(-90 14 ${H/2})" text-anchor="middle">ΔE (kcal/mol)</text>
       ${reactLbl}${prodLbl}
     </svg>
@@ -2373,9 +2414,9 @@ function renderFreeEnergyProfile() {
   const levelHalf = Math.min(34, (W - padL - padR) / (n * 2.4));  // half-width of each level bar
 
   let svg = "";
-  // zero baseline
-  svg += `<line x1="${padL}" y1="${y(0).toFixed(1)}" x2="${W-padR}" y2="${y(0).toFixed(1)}" stroke="var(--border)" stroke-dasharray="4 4"/>`;
-  svg += `<text x="${padL-8}" y="${y(0).toFixed(1)}" text-anchor="end" dominant-baseline="middle" class="scf-axis" style="font-size:10px">0</text>`;
+  // zero baseline ("3 3" dashes: same rhythm as every other zero/goal line)
+  svg += `<line x1="${padL}" y1="${y(0).toFixed(1)}" x2="${W-padR}" y2="${y(0).toFixed(1)}" stroke="var(--border)" stroke-dasharray="3 3"/>`;
+  svg += `<text x="${padL-8}" y="${y(0).toFixed(1)}" text-anchor="end" dominant-baseline="middle" class="scf-axis">0</text>`;
   // connectors (dashed, sloping between level ends)
   for (let i = 0; i < n - 1; i++) {
     svg += `<line x1="${(x(i)+levelHalf).toFixed(1)}" y1="${y(pts[i].dg).toFixed(1)}" x2="${(x(i+1)-levelHalf).toFixed(1)}" y2="${y(pts[i+1].dg).toFixed(1)}" stroke="var(--muted-foreground)" stroke-width="1" stroke-dasharray="3 3" opacity="0.6"/>`;
@@ -2391,7 +2432,7 @@ function renderFreeEnergyProfile() {
     svg += `<text x="${px.toFixed(1)}" y="${(H-padB+16).toFixed(1)}" text-anchor="middle" style="font-size:10px;fill:var(--muted-foreground)">${escapeHtml(label)}</text>`;
   }
   // y axis title
-  svg += `<text x="14" y="${(padT+(H-padT-padB)/2).toFixed(1)}" text-anchor="middle" transform="rotate(-90 14 ${(padT+(H-padT-padB)/2).toFixed(1)})" class="scf-axis-title" style="font-size:11px">ΔG (${unitLabel})</text>`;
+  svg += `<text x="14" y="${(padT+(H-padT-padB)/2).toFixed(1)}" text-anchor="middle" transform="rotate(-90 14 ${(padT+(H-padT-padB)/2).toFixed(1)})" class="scf-axis-title">ΔG (${unitLabel})</text>`;
 
   body.innerHTML = `
     <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${svg}</svg>

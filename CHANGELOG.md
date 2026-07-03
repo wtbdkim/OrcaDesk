@@ -3,6 +3,149 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.3-beta] — 2026-07-03
+
+Constitution-compliance release: the amended failure-lock rule (PRINCIPLES.md
+P24) is implemented end to end, the appendices' fix backlog (PRINCIPLES.md
+Appendix A, DESIGN.md Appendix B) is worked off, and the project gains its
+first automated test suite.
+
+### Added
+- **Automated test suite** (`tests/`, PRINCIPLES.md P56): 234 pytest tests
+  over the framework-free layers — queue-engine semantics (the P24 failure
+  lock, dependency-scoped blocking, keep-existing validation, the three stop
+  verbs) driven by a fake runner, per-kind result validation, store/session
+  persistence and the structural run-freeze, name validation and
+  trust-boundary clamps, input-generator normalization (exact-map
+  functionals, `D3BJ`, `_auto_aux`), the parser on synthetic fixtures (plus
+  a real-corpus smoke test that auto-skips off-machine), the MLIP pipeline
+  end to end with a **stdlib-only stub worker** (no MACE env needed), the
+  phone HTTP API via `fastapi.testclient` (auto-skips without fastapi), and
+  psutil process identity/tree-kill with real child processes — plus 23
+  plain-Node tests for `scf_graph.js` trackers (idempotent cycle keying, the
+  99 % cap, marker case-sensitivity, ETA buckets). `pip install -r
+  requirements-dev.txt`, then `python -m pytest` and
+  `node tests/web/scf_graph.test.js`; the suite runs in ~3 s with no ORCA,
+  no MACE, and no network. On its first run it caught the three boundary
+  bugs fixed below.
+
+### Changed
+- **A failed calculation is now locked at the moment of failure.** It can no
+  longer be edited, re-run, or reordered: re-running the queue skips it (with
+  a log note saying to build a new calculation to retry), its transitive
+  dependents are blocked up front exactly as a live failure would block them,
+  and Cancel never re-stamps it. Its remaining interactions are read-only
+  diagnosis (state badge, failure message, its on-disk output) and **×
+  removal** — which removes only the queue entry; **workspace folders are
+  never deleted** (the app contains no file-deletion code). Only a
+  **cancelled** calculation (a deliberate user stop, not a failure) re-runs.
+  BLOCKED calculations are now editable, so a dependent can be re-pointed at
+  another calculation after its failed parent is removed —
+  `EDITABLE_STATES` is now pending / cancelled / blocked, mirrored by the
+  UI's edit/drag affordances.
+- **"Keep existing (skip these)" now verifies the result it keeps.** The kept
+  output is parsed through the per-kind dispatcher (an MLIP calc's JSON
+  result is no longer fed to the ORCA parser) and stamped `DONE` only if it
+  passes per-kind validation — a crashed or chemically-bad output can no
+  longer be resurrected as `DONE` (the 0.4.2 incident). If the existing
+  result doesn't hold up, the calc simply runs instead.
+- **The overwrite-conflict warning is scoped to PENDING/BLOCKED name reuse.**
+  DONE never re-runs, FAILED is locked (nothing to overwrite), a CANCELLED
+  retry overwriting its own partial `.out` is the point of a retry, and a
+  RUNNING calc only ever appends to its own `.out` (reattach is not an
+  overwrite) — none of those raises the dialog anymore. Cancelling a run
+  also preserves a BLOCKED calc's "Skipped: a dependency failed." diagnosis
+  instead of re-stamping it "Cancelled."
+- **File-loader slots return one unified JSON envelope** (`LoadResult`) that
+  distinguishes user-cancel from a real read failure — cancelling a file
+  picker is no longer conflated with an I/O error — and `autodetect_orca`
+  returns an explicit `AutodetectResult` envelope (the UI now also refreshes
+  the ORCA-ready pill after a successful autodetect).
+- **UI conformance sweep against DESIGN.md**: segmented toggles converge on
+  one canonical size and the Build-mode toggle regains a visible surface at
+  page level; MLIP environment rows restyle onto the canonical list-row
+  recipe; the modal radius uses `--radius-lg` and off-scale literal radii are
+  normalized; dead CSS is removed (`.step-tab*`, `.btn-block`, the unused
+  `--destructive` tokens); copy is normalized per the spec (`Could not
+  {verb}: …` failures, `TD-DFT`, programmatic plurals instead of
+  `calculation(s)`, `loaded (12 atoms)` inline statuses, the question-form
+  `Overwrite existing results?` modal title, the colon-free `MLIP ready`
+  pill, one single-sourced empty-queue string); failures now land on **both**
+  channels (toast + persistent `err` log line) through one shared helper;
+  the NMR results table gets the standard scroll wrapper and Results-chart
+  ticks/dashes match the chart spec.
+
+### Fixed
+- **Three trust-boundary crashes found by the new test suite**: a
+  `settings.json` containing valid JSON that isn't an object (a list, a bare
+  string) crashed startup instead of degrading to defaults; a phone-API
+  payload with a non-string `basis_assignments` element crashed
+  deserialization; and non-string values for string-typed `StepConfig`
+  fields (`kind`, `options`, solvation) slipped through deserialization to
+  crash later inside `build_input` — all three now degrade to defaults at
+  the boundary, with regression tests.
+- **Failure verdicts in the Results summary rendered green.** The value
+  colorizer's success pattern (`/converged|Normal/i`) re-matched the
+  substrings of `NOT converged` and `ABNORMAL`, repainting both failure
+  verdicts as success; the checks are now exclusive, failure patterns first.
+- **An MLIP job terminated on shutdown no longer logs "left running in the
+  background."** MLIP jobs carry no detach/reattach machinery and are
+  stopped on shutdown; the log now says so honestly ("stopped on shutdown").
+- **An all-MLIP queue can now be started from the phone API — and from the
+  desktop UI without an ORCA path.** The `/api/run` endpoint shares the
+  desktop's ORCA-needed decision (`queue_needs_orca`, single-sourced in
+  `state/store.py`) and passes the registered MLIP environments to the
+  engine — previously it unconditionally required a valid ORCA path and MLIP
+  calcs launched from the phone could not resolve an interpreter. The
+  desktop's own Run button mirrors the same decision instead of always
+  demanding an ORCA path, and locked FAILED ORCA calcs (which never launch
+  ORCA) no longer count toward needing one. The shared `scf_graph.js`'s
+  criterion-series tokens (`--crit-*`) are also defined in the mobile PWA
+  now, so its graphs no longer render transparent series.
+- **The server status no longer reports "available" when fastapi isn't
+  installed** (`get_server_status` now consults
+  `ServerController.is_available()` instead of the controller's mere
+  existence).
+- **TD-DFT excited-state composition is parsed from the right block.** The
+  section marker is now case-sensitive (every freq thermochemistry section
+  prints a lowercase look-alike, observed in 62 real non-TD-DFT outputs) and
+  the **last** occurrence wins, per the parser-wide rule — validated against
+  9 real TD-DFT `.out` files.
+- **`Settings.save` is atomic** (tmp + `os.replace`, best-effort — the same
+  treatment `session.json` already had), so a crash mid-save can no longer
+  leave a half-written `settings.json` that loses every setting.
+- **`charge`/`multiplicity` from clients are now range-clamped** (to ±100 /
+  1–200) at deserialization, so a bogus payload can't emit a nonsense `.inp`
+  coordinate header.
+- **Escape gaps closed**: the overwrite-conflict name list, the
+  remove-confirm calc name, and the queue row's `ref → name` label are now
+  HTML-escaped.
+- **The numerical-frequency progress no longer flashes "100%"** while the
+  final displacement is still running (the displayed percent is floored, so
+  the honesty cap actually shows).
+- **Keyboard focus is visible** on buttons, tabs, segmented toggles, and
+  remove buttons (a `:focus-visible` ring matching the input focus ring);
+  previously only text fields showed focus.
+- **Theme tints are token-derived.** Status-badge/toggle/error tints come
+  from shared `--*-tint` tokens on the §11.19 alpha ladder (the light-theme
+  raw-badge retint hack and its mismatched purple base are gone); the SCF
+  graph's converged-zone shading re-colors in light theme (was a hardcoded
+  dark-theme green); the combo dropdown dropped a stale pre-zinc fallback
+  color; a BLOCKED badge now renders styled on desktop (neutral, like the
+  other skipped states); the modal name list regains its monospace
+  (undefined `var(--mono)` → `--font-mono`); new status pills default to a
+  neutral dot instead of red.
+- **Mobile PWA token bugs**: two uses of the undefined `var(--fg)`, `--muted`
+  (a background tone) used as text color, and a hardcoded log background are
+  fixed with the desktop's token names (`--foreground`,
+  `--muted-foreground`, `--code-bg`).
+- The dead `regenerate_token` method is removed and the token comment now
+  states the truth: the phone-sync PIN is generated once per app launch and
+  lives for the whole session. Stale docstrings were corrected (name
+  uniqueness is enforced by the store, complete calc-kind lists, the MLIP
+  package contents, six slots missing from the bridge's slot list), and a
+  leftover Korean phrase in the store docstring is now English.
+
 ## [0.4.2-beta] — 2026-07-01
 
 ### Added

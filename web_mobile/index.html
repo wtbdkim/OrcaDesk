@@ -14,6 +14,11 @@
   --primary:#fafafa; --primary-foreground:#18181b; --ring:#d4d4d8;
   --ok:#4ade80; --warn:#fbbf24; --err:#f87171; --info:#a1a1aa; --orca:#71717a;
   --raw:#c084fc;
+  --code-bg:#050506; /* log terminal surface; same token name as desktop web/style.css */
+  /* optimization-graph criterion series — the shared scf_graph.js references
+     var(--crit-*) (series lines + converged-zone fill); without these the
+     chart renders transparent on mobile. Dark values (mobile is dark-only). */
+  --crit-de:#4cc9f0; --crit-rmsg:#52b788; --crit-maxg:#ffd166; --crit-rmss:#c08eff; --crit-maxs:#ff8fa3;
   --radius:10px; --radius-sm:7px;
   --font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
   --font-mono:"JetBrains Mono","Cascadia Code",Consolas,ui-monospace,monospace;
@@ -101,7 +106,7 @@ html,body{height:100%;background:var(--background);color:var(--foreground);
 .scf-start{fill:var(--muted-foreground);}
 .scf-cur{fill:var(--warn);}
 .scf-axis{fill:var(--muted-foreground);font-size:9px;font-family:var(--font-mono);}
-.scf-axis-title{fill:var(--fg);font-size:10px;font-weight:600;opacity:.85;}
+.scf-axis-title{fill:var(--foreground);font-size:10px;font-weight:600;opacity:.85;}
 .scf-empty-text{fill:var(--muted-foreground);font-size:11px;}
 .graph-subtoggle{display:flex;gap:6px;margin-bottom:12px;}
 .graph-subtoggle button{font-family:inherit;font-size:11px;font-weight:600;padding:6px 12px;
@@ -113,9 +118,9 @@ html,body{height:100%;background:var(--background);color:var(--foreground);
 .combo-list{position:absolute;top:100%;left:0;right:0;z-index:50;margin-top:4px;
   max-height:240px;overflow-y:auto;background:var(--card);border:1px solid var(--border);
   border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.5);-webkit-overflow-scrolling:touch;}
-.combo-item{padding:10px 12px;font-size:14px;cursor:pointer;font-family:var(--font-mono);color:var(--fg);}
+.combo-item{padding:10px 12px;font-size:14px;cursor:pointer;font-family:var(--font-mono);color:var(--foreground);}
 .combo-item:active,.combo-item.active{background:var(--accent);}
-.combo-none{padding:10px 12px;font-size:13px;color:var(--muted);font-style:italic;}
+.combo-none{padding:10px 12px;font-size:13px;color:var(--muted-foreground);font-style:italic;}
 .badge-raw{font-size:9px;font-weight:700;padding:2px 6px;border-radius:999px;
   background:rgba(192,132,252,.15);color:var(--raw);text-transform:uppercase;}
 
@@ -180,7 +185,7 @@ html,body{height:100%;background:var(--background);color:var(--foreground);
 #adv-wrap.open{display:block;}
 
 /* log */
-.logbox{font-family:var(--font-mono);font-size:11.5px;background:#050506;
+.logbox{font-family:var(--font-mono);font-size:11.5px;background:var(--code-bg);
   border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;
   height:calc(100vh - var(--topbar-h) - var(--tabbar-h) - 150px);
   min-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;}
