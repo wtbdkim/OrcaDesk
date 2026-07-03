@@ -209,6 +209,13 @@ class QueueEngine:
         # calculations the user chose to skip this run (e.g. to keep existing
         # results on disk instead of overwriting them)
         self._skip_names = set(skip_names or ())
+        # True once the current calc attempt has actually launched (or adopted)
+        # its ORCA process — i.e. the on-disk .out belongs to THIS attempt.
+        # Gates _failure_reason's .out parse: the folder may hold a stale .out
+        # from a previous run (e.g. after a rejected keep-existing result), and
+        # parsing it on a pre-launch failure would mask the real cause (A22).
+        # Reset per calc in run_all, set in _run_calc.
+        self._orca_launched = False
 
     def cancel(self) -> None:
         self._cancel_event.set()
@@ -275,6 +282,9 @@ class QueueEngine:
         if (calc.state == CalcState.RUNNING and calc.pid
                 and process_matches(calc.pid, calc.create_time)):
             self.runner.adopt(calc.pid, calc.create_time)
+            # The adopted process owns the on-disk .out, so a failure diagnosis
+            # may trust it (see _failure_reason).
+            self._orca_launched = True
             self.cb.log(f"[{calc.name}] reattaching to ORCA still running "
                         f"(pid {calc.pid})...", "info")
             self.cb.calc_update(index, calc)
@@ -333,6 +343,9 @@ class QueueEngine:
 
         self.cb.log(f"[{calc.name}] ({calc.kind}) running ORCA...", "info")
         pid, create_time = self.runner.launch(inp_path, out_path)
+        # From here the .out on disk is THIS attempt's output — a failure
+        # diagnosis may trust it (see _failure_reason).
+        self._orca_launched = True
         calc.pid = pid
         calc.create_time = create_time
         # persist the pid immediately so a reattach is possible even if ORCAdesk
@@ -453,8 +466,9 @@ class QueueEngine:
 
     def _failure_reason(self, calc: Calculation, runner_msg: str) -> str:
         """Turn a raw runner error into a user-facing reason. If ORCA wrote an
-        .out, read the actual failure cause from it (SCF not converged, etc.);
-        otherwise fall back to the runner's message. 'Cancelled' passes through."""
+        .out during THIS attempt, read the actual failure cause from it (SCF not
+        converged, etc.); otherwise fall back to the runner's message.
+        'Cancelled' passes through."""
         if "cancel" in runner_msg.lower():
             return runner_msg
         # MLIP failures already carry a precise reason (worker error / non-
@@ -462,6 +476,11 @@ class QueueEngine:
         # don't run it through the ORCA parser (it would invent an ORCA-style
         # message and clobber the real one).
         if calc.kind.startswith("mlip"):
+            return runner_msg
+        # Pre-launch failure (geometry resolution, input generation, the launch
+        # itself): any .out in the folder predates this attempt, so its parsed
+        # cause would be a stale diagnosis — keep the real error (A22).
+        if not self._orca_launched:
             return runner_msg
         try:
             out_path = self.workspace_root / calc.name / f"{calc.name}.out"
@@ -589,6 +608,9 @@ class QueueEngine:
                     self.cb.calc_update(i, calc)
                     continue
 
+            # No launch has happened for this attempt yet — until _run_calc
+            # reports one, _failure_reason must not trust an on-disk .out (A22).
+            self._orca_launched = False
             try:
                 # MLIP calcs run OUTSIDE the ORCA pipeline (see orcamgr/mlip/):
                 # a MACE relaxation in the user's env, not an ORCA .inp. The

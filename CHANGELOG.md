@@ -11,7 +11,7 @@ Appendix A, DESIGN.md Appendix B) is worked off, and the project gains its
 first automated test suite.
 
 ### Added
-- **Automated test suite** (`tests/`, PRINCIPLES.md P56): 234 pytest tests
+- **Automated test suite** (`tests/`, PRINCIPLES.md P56): 237 pytest tests
   over the framework-free layers — queue-engine semantics (the P24 failure
   lock, dependency-scoped blocking, keep-existing validation, the three stop
   verbs) driven by a fake runner, per-kind result validation, store/session
@@ -76,6 +76,14 @@ first automated test suite.
   ticks/dashes match the chart spec.
 
 ### Fixed
+- **A pre-launch failure is no longer misdiagnosed from a stale `.out`**
+  (PRINCIPLES.md A22). When a run fails before ORCA launches — e.g. geometry
+  resolution after a rejected keep-existing result — the failure message now
+  keeps the real cause instead of parsing the previous run's `.out` left in
+  the folder (which would report the *old* failure, like "SCF did not
+  converge", and send the user chasing the wrong problem). The `.out` is
+  consulted only once the current attempt has actually launched (or
+  reattached to) its ORCA process.
 - **Three trust-boundary crashes found by the new test suite**: a
   `settings.json` containing valid JSON that isn't an object (a list, a bare
   string) crashed startup instead of degrading to defaults; a phone-API

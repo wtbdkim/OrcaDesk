@@ -8,6 +8,8 @@ fake, so these tests pin the queue-level invariants in isolation:
 * graceful drain (request_stop_after_current) leaves the rest PENDING
 * keep-existing (skip_names) gates DONE behind validate_result and falls
   back to running -- never to FAILED -- when the on-disk result is unusable
+* a pre-launch failure keeps its real cause -- a stale .out from a previous
+  run never masks it (A22); post-launch, the .out diagnosis still wins
 * an unexpected exception fails one calc and blocks its dependents, but
   never kills the queue
 
@@ -331,6 +333,66 @@ def test_keep_existing_missing_output_falls_back_to_running(tmp_path):
     assert harness.calls == ["keepme"]
     assert calc.state is CalcState.DONE
     assert "no existing result found" in harness.log_text()
+
+
+# ---- failure diagnosis: a stale .out must not mask a pre-launch error (A22) -------
+def test_real_prelaunch_failure_ignores_stale_out(tmp_path):
+    # The real _run_calc (no fake) dies in geometry resolution — before any
+    # launch — while the folder holds a failure-bearing .out from a previous
+    # run. The diagnosis must be the resolution error, not the stale .out's.
+    logs: list[tuple[str, str]] = []
+    engine = QueueEngine(
+        orca_path="orca-not-needed-in-tests",
+        workspace_root=str(tmp_path),
+        callbacks=QueueCallbacks(log=lambda msg, level: logs.append((msg, level))),
+    )
+    calc = make_calc("child", kind="opt", ref="ghost")   # ref not in the queue
+    _write_out(tmp_path, "child", ABORTED_OPT_OUT)       # stale diagnosis on disk
+
+    engine.run_all([calc])
+
+    assert calc.state is CalcState.FAILED
+    assert calc.message == "Referenced calculation 'ghost' not found in queue."
+    assert "error termination" not in calc.message       # the stale .out stayed out
+
+
+def test_keep_existing_fallback_prelaunch_failure_keeps_real_cause(tmp_path):
+    # The A22 reproduction: a keep-existing result is rejected (so its
+    # failure-bearing .out stays on disk), then the fallback run dies before
+    # ORCA launches. The user must see the pre-launch cause.
+    harness = EngineHarness(tmp_path, skip_names={"keepme"})
+    harness.behaviors["keepme"] = raiser(
+        OrcaRunError("No coordinates provided (direct source is empty)."))
+    calc = make_calc("keepme", kind="opt")
+    _write_out(tmp_path, "keepme", ABORTED_OPT_OUT)
+
+    harness.engine.run_all([calc])
+
+    assert harness.calls == ["keepme"]                   # the fallback ran
+    assert calc.state is CalcState.FAILED
+    assert calc.message == "No coordinates provided (direct source is empty)."
+    assert "error termination" not in calc.message
+
+
+def test_postlaunch_failure_still_reads_out_diagnosis(tmp_path):
+    # Counterpart: once ORCA has launched, the .out on disk IS this attempt's
+    # output, so the parsed diagnosis must still win over the runner message.
+    harness = EngineHarness(tmp_path)
+
+    def launch_then_die(_calc: Calculation) -> None:
+        # what the real _run_calc does right after runner.launch() succeeds
+        harness.engine._orca_launched = True
+        raise OrcaRunError("ORCA exited with code 1")
+
+    harness.behaviors["job"] = launch_then_die
+    calc = make_calc("job", kind="opt")
+    _write_out(tmp_path, "job", ABORTED_OPT_OUT)
+
+    harness.engine.run_all([calc])
+
+    assert calc.state is CalcState.FAILED
+    assert "error termination" in calc.message           # parsed from the .out
+    assert calc.message != "ORCA exited with code 1"
 
 
 # ---- defensive handling: unexpected exceptions -----------------------------------

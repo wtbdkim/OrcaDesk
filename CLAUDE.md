@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 234 tests over the framework-free layers
+python -m pytest                       # 237 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 23 tracker/progress tests, no npm deps
 ```
 
