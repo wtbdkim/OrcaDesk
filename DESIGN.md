@@ -287,8 +287,8 @@ destructive choice. Confirm only when something would be lost.
 
 ### D62 — Progressive disclosure
 
-Complexity is revealed in layers: three mutually-exclusive build modes
-(Beginner form / Expert raw / MLIP), form fields driven per calc-kind by
+Complexity is revealed in layers: four mutually-exclusive build modes
+(Beginner form / Expert raw / MLIP / CREST), form fields driven per calc-kind by
 `KIND_DEFS` flags, conditional fields appearing only after their premise
 (solvent model → solvent; InitHess=read → filename), Results gated per kind
 with **Show all** as the override. Hiding is filtering, never data removal —

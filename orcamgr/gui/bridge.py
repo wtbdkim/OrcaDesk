@@ -37,13 +37,17 @@ from ..mlip.env import (
     probe_env, new_env_id, resolve_interpreter,
     env_payload_checking, env_payload_from_probe, aggregate_status,
 )
+from ..crest.env import (
+    probe_all as crest_probe_all, aggregate_status as crest_aggregate_status,
+)
+from ..crest.wsl import list_distros as crest_list_distros
 from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL
 from ..core.input_generator import StepConfig, build_input_template
-from ..core.queue import GeometrySource, CalcState
+from ..core.queue import GeometrySource, CalcState, result_from_output
 from ..core.parser import parse_file
 from ..state.store import (
     QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory,
-    load_choice_groups, queue_needs_orca,
+    load_choice_groups, queue_needs_orca, make_conformer_followups,
 )
 # Response payloads are CONSTRUCTED through these TypedDicts (plain dicts at
 # runtime, so the JSON wire format is unchanged) — schemas.py is the single
@@ -54,6 +58,7 @@ from ..state.schemas import (
     MlipStatusPayload, MutationResult, NmrPayload, OkResult, OrbitalPayload,
     ParsePayload, QrResult, ServerStatusPayload, SettingsPayload,
     StartServerResult, TextResult, TransitionPayload,
+    CrestStatusPayload, ConformerPayload,
 )
 
 
@@ -96,6 +101,13 @@ class Bridge(QObject):
         self._mlip_envs_status: dict[str, dict] = {}
         for env in self.settings.mlip_envs:
             self._start_mlip_probe(env["id"], env.get("name", ""), env.get("python", ""))
+        # Live CREST status (WSL distro probe). Like MLIP the probe is slow (it
+        # spawns wsl.exe + runs `crest --version`), so it runs in a background
+        # thread and the UI polls get_crest_status(). Guarded by its own lock.
+        self._crest_lock = threading.Lock()
+        self._crest_status: dict = {"state": "checking", "distros": [], "wsl": True}
+        self._crest_installing = False
+        self._start_crest_probe()
 
     # --- about / metadata ---
     @pyqtSlot(result=str)
@@ -119,6 +131,7 @@ class Bridge(QObject):
             eta_mode=self.settings.eta_mode,
             geo_graph_mode=self.settings.geo_graph_mode,
             build_mode=self.settings.build_mode,
+            crest_distro=self.settings.crest_distro,
             orca_valid=self.settings.orca_is_valid(),
         ))
 
@@ -126,7 +139,7 @@ class Bridge(QObject):
     def save_settings(self, payload_json: str) -> str:
         try:
             data = json.loads(payload_json or "{}")
-            for k in ("orca_path", "workspace_root", "theme"):
+            for k in ("orca_path", "workspace_root", "theme", "crest_distro"):
                 if k in data:
                     setattr(self.settings, k, data[k])
             for k in ("default_nprocs", "default_maxcore_mb"):
@@ -139,7 +152,7 @@ class Bridge(QObject):
             if "geo_graph_mode" in data and data["geo_graph_mode"] in ("all5", "maxgrad"):
                 self.settings.geo_graph_mode = data["geo_graph_mode"]
             # build-tab mode: only accept known values
-            if "build_mode" in data and data["build_mode"] in ("beginner", "expert", "mlip"):
+            if "build_mode" in data and data["build_mode"] in ("beginner", "expert", "mlip", "crest"):
                 self.settings.build_mode = data["build_mode"]
             self.settings.save()
             return self.get_settings()
@@ -252,6 +265,88 @@ class Bridge(QObject):
                 envs.append(st)
         return json.dumps(MlipStatusPayload(**aggregate_status(envs)))
 
+    # --- CREST environment (WSL-backed, kept separate from ORCA) ---
+    def _start_crest_probe(self) -> None:
+        """Probe every usable WSL distro for CREST in a background thread (spawning
+        wsl.exe + running `crest --version` must not block the Qt UI thread).
+        Publishes the aggregate on self._crest_status for get_crest_status()."""
+        with self._crest_lock:
+            prev = self._crest_status.get("distros", [])
+            self._crest_status = {"state": "checking", "distros": prev,
+                                  "wsl": self._crest_status.get("wsl", True)}
+
+        def _worker() -> None:
+            status = crest_aggregate_status(crest_probe_all())
+            with self._crest_lock:
+                # don't clobber a status set by an in-flight install
+                if not self._crest_installing:
+                    self._crest_status = status
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @pyqtSlot(result=str)
+    def get_crest_status(self) -> str:
+        """The latest aggregate CrestStatusPayload (state + per-distro probes).
+        The probe runs in the background; the UI polls this."""
+        with self._crest_lock:
+            status = dict(self._crest_status)
+        status.setdefault("state", "checking")
+        status.setdefault("distros", [])
+        status.setdefault("wsl", True)
+        return json.dumps(CrestStatusPayload(**status))
+
+    @pyqtSlot(result=str)
+    def check_crest(self) -> str:
+        """Re-probe WSL distros for CREST. Returns the current status immediately;
+        the UI polls get_crest_status() for the refreshed result."""
+        self._start_crest_probe()
+        return self.get_crest_status()
+
+    @pyqtSlot(str, result=str)
+    def install_crest(self, distro: str = "") -> str:
+        """Auto-install the static CREST binary into ``distro`` (or the first
+        usable distro) in a background thread. Returns the current status
+        immediately; the UI polls get_crest_status(). No-op if already installing."""
+        with self._crest_lock:
+            if self._crest_installing:
+                return self.get_crest_status()
+            self._crest_installing = True
+            self._crest_status = {"state": "checking",
+                                  "distros": self._crest_status.get("distros", []),
+                                  "wsl": True}
+
+        def _worker() -> None:
+            from ..crest.installer import install_crest as do_install
+            target = (distro or "").strip()
+            if not target:
+                distros = crest_list_distros()
+                target = distros[0] if distros else ""
+            if target:
+                try:
+                    do_install(target)
+                except Exception:
+                    pass  # the re-probe below reports the real readiness
+            status = crest_aggregate_status(crest_probe_all())
+            with self._crest_lock:
+                self._crest_installing = False
+                self._crest_status = status
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return self.get_crest_status()
+
+    @pyqtSlot(result=str)
+    def list_crest_distros(self) -> str:
+        """Usable (non-infrastructure) WSL distro names, for the Settings picker."""
+        return json.dumps({"distros": crest_list_distros()})
+
+    @pyqtSlot(str, result=str)
+    def set_crest_distro(self, distro: str) -> str:
+        """Persist the preferred WSL distro for CREST and re-probe."""
+        self.settings.crest_distro = (distro or "").strip()
+        self.settings.save()
+        self._start_crest_probe()
+        return self.get_crest_status()
+
     @pyqtSlot(result=str)
     def pick_workspace(self) -> str:
         path = QFileDialog.getExistingDirectory(self.window, "Select workspace folder")
@@ -335,16 +430,30 @@ class Bridge(QObject):
 
     def _parse_path(self, path: str) -> str:
         try:
-            r = parse_file(path)
-            # Send everything that was parsed plus the two gating flags; the
+            # A CREST conformer search stores its data in sibling files
+            # (crest_conformers.xyz), not the .out itself, so dispatch on their
+            # presence to the CREST parser; otherwise the ORCA .out parser.
+            folder = Path(path).parent
+            if (folder / "crest_conformers.xyz").exists() or (folder / "crest_best.xyz").exists():
+                from ..crest.parser import parse_crest_result
+                r = parse_crest_result(path)
+            else:
+                r = parse_file(path)
+            # Send everything that was parsed plus the gating flags; the
             # front-end decides what to show per calc kind (and "Show all"
             # overrides it). is_optimization gates "Final geometry"; show_elec
-            # gates general electronic-structure sections (orbitals, charges,
-            # Mayer, dipole, SCF decomposition).
+            # gates general electronic-structure sections; is_conformer_search
+            # gates the CREST ensemble list.
             return json.dumps(ParsePayload(
                 summary=r.summary_rows(),
                 is_optimization=r.is_optimization,
                 show_elec=r.shows_electronic_props,
+                is_conformer_search=r.is_conformer_search,
+                conformers=[
+                    ConformerPayload(index=c.index, energy_eh=c.energy_eh,
+                                     rel_kcal=c.rel_kcal, n_atoms=len(c.geometry))
+                    for c in getattr(r, "conformers", [])
+                ],
                 transitions=[
                     TransitionPayload(state=t.state, ev=t.energy_ev,
                                       nm=t.wavelength_nm, fosc=t.fosc)
@@ -406,6 +515,52 @@ class Bridge(QObject):
             self.store.add(calc)
         except ValueError as e:
             return json.dumps(MutationResult(ok=False, error=str(e)))
+        return json.dumps(MutationResult(ok=True, snapshot=self.store.snapshot()))
+
+    @pyqtSlot(str, result=str)
+    def add_calcs_from_conformers(self, payload_json: str) -> str:
+        """Batch-create ORCA follow-up calcs from selected CREST conformers.
+
+        Payload: {parent_name, indices:[1-based...], kind:"opt"|"opt_freq"}. Each
+        selected conformer becomes an independent DIRECT-geometry calc (its
+        coordinates + the parent's charge/multiplicity), so "re-optimize these
+        conformers with ORCA" is one action. Returns the updated snapshot."""
+        try:
+            d = json.loads(payload_json or "{}")
+            parent_name = (d.get("parent_name") or "").strip()
+            indices = [int(x) for x in (d.get("indices") or [])]
+            kind = (d.get("kind") or "opt").strip()
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            return json.dumps(MutationResult(ok=False, error=f"Invalid request: {e}"))
+
+        parent = self.store.get(parent_name)
+        if parent is None:
+            return json.dumps(MutationResult(ok=False,
+                error=f"CREST calculation '{parent_name}' not found."))
+        result = parent.result
+        if result is None:
+            try:
+                result = result_from_output(parent)
+            except Exception as e:
+                return json.dumps(MutationResult(ok=False,
+                    error=f"Could not read the CREST result: {e}"))
+
+        existing = {c.name for c in self.store.list()}
+        try:
+            new_calcs = make_conformer_followups(parent, result, indices, kind, existing)
+        except ValueError as e:
+            return json.dumps(MutationResult(ok=False, error=str(e)))
+
+        added = 0
+        for c in new_calcs:
+            try:
+                self.store.add(c)
+                added += 1
+            except ValueError:
+                pass  # a race on the name; skip rather than abort the batch
+        if added == 0:
+            return json.dumps(MutationResult(ok=False,
+                error="Could not add any conformer follow-up calculations."))
         return json.dumps(MutationResult(ok=True, snapshot=self.store.snapshot()))
 
     @pyqtSlot(str, result=str)
@@ -607,7 +762,8 @@ class Bridge(QObject):
                     error=f"'{c.name}' references '{c.ref_name}', which is not in the queue."))
         factory = make_engine_factory(self.store, self.settings.orca_path,
                                       self.settings.workspace_root, skip_names,
-                                      mlip_envs=self.settings.mlip_envs)
+                                      mlip_envs=self.settings.mlip_envs,
+                                      crest_distro=self.settings.crest_distro)
         try:
             self.store.start_run(factory)
         except RuntimeError as e:
@@ -634,14 +790,17 @@ class Bridge(QObject):
         store has already restored + reconciled the queue in load_session()."""
         if not self.store.has_live_running():
             return
-        if not self.settings.orca_is_valid():
+        # Only ORCA calcs need a valid ORCA path; an all-CREST/MLIP queue can
+        # reattach with no ORCA configured (P4, same gate as run_queue).
+        if queue_needs_orca(self.store.list()) and not self.settings.orca_is_valid():
             self.store.append_log(
                 "A calculation from the previous session is still running, but the "
                 "ORCA path is invalid — cannot reattach. Fix it in Settings.", "warn")
             return
         factory = make_engine_factory(self.store, self.settings.orca_path,
                                       self.settings.workspace_root,
-                                      mlip_envs=self.settings.mlip_envs)
+                                      mlip_envs=self.settings.mlip_envs,
+                                      crest_distro=self.settings.crest_distro)
         try:
             self.store.start_run(factory)
             self.store.append_log(

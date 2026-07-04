@@ -59,6 +59,15 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   environment is ready**. An `mlip_opt` job joins the same queue, and its optimized
   geometry can be referenced by a downstream ORCA calculation just like an
   opt→freq handoff.
+- **CREST conformer search**: explore low-energy conformers with the xTB
+  tight-binding methods. CREST has no native Windows build, so ORCAdesk runs its
+  Linux binary through **WSL** — pick a distribution under **Settings → CREST**
+  and ORCAdesk can install the (statically-linked) binary into it for you; the
+  one manual prerequisite is having a WSL distro. A `crest_conf` job joins the
+  same queue (it runs detached and survives the app closing, like an ORCA run);
+  its finished ensemble is listed in the **Results** tab, from which you select
+  conformers and generate ORCA `opt` / `opt+freq` jobs in one click. The CREST
+  build card stays **locked until a distro with CREST is ready**.
 - **Queue**: calculations run in order. If one fails, anything that references
   it (directly or transitively) is skipped (blocked); unrelated calculations
   continue. Each calculation gets its own folder `{workspace}/{name}/`. The
@@ -140,6 +149,7 @@ orcamgr/
   state/
     store.py                  shared queue (single source of truth) + session autosave
   mlip/                       MLIP (MACE) env detection + relaxation runner/parser
+  crest/                      CREST conformer search via WSL (env/installer/runner/parser)
   server/                     optional phone-sync HTTP layer (FastAPI; not in the build)
   gui/
     window.py                 QMainWindow + WebEngine

@@ -173,6 +173,10 @@ def _meta_line(c: Calculation) -> str:
     if c.kind.startswith("mlip"):
         model = getattr(c.config, "mlip_model", "") if c.config else ""
         return f"{c.kind} · {src} · {model or 'MACE'}"
+    # CREST calcs use charge/multiplicity too; also show the tight-binding method.
+    if c.kind.startswith("crest"):
+        method = getattr(c.config, "crest_method", "") if c.config else ""
+        return f"{c.kind} · {src} · {method or 'gfn2'} · q{c.charge} m{c.multiplicity}"
     return f"{c.kind} · {src} · q{c.charge} m{c.multiplicity}"
 
 
@@ -205,6 +209,74 @@ def calc_from_dict(d: dict) -> Calculation:
         is_raw=bool(d.get("is_raw", False)),
         raw_text=d.get("raw_text", ""),
     )
+
+
+# ---- CREST conformer -> ORCA follow-up jobs -----------------------------
+
+def _bare_xyz_from_conformer(conf) -> str:
+    """A conformer's geometry as a bare 'El x y z' block (no count/comment
+    header) — the form build_input injects into the coordinate block, and the
+    form a DIRECT-geometry calc stores in calc.xyz. Handles both Conformer
+    dataclasses and plain dicts (a result round-tripped through JSON)."""
+    geom = conf.get("geometry", []) if isinstance(conf, dict) else getattr(conf, "geometry", [])
+    lines = []
+    for a in geom:
+        if isinstance(a, dict):
+            sym, x, y, z = a.get("symbol"), a.get("x"), a.get("y"), a.get("z")
+        else:
+            sym, x, y, z = a.symbol, a.x, a.y, a.z
+        if sym is None or x is None or y is None or z is None:
+            continue
+        lines.append(f"{sym} {float(x):.10f} {float(y):.10f} {float(z):.10f}")
+    return "\n".join(lines)
+
+
+def _unique_followup_name(base: str, taken: "set[str]") -> str:
+    """A queue-unique name derived from ``base`` (append _2, _3, ... on clash)."""
+    if base not in taken:
+        return base
+    i = 2
+    while f"{base}_{i}" in taken:
+        i += 1
+    return f"{base}_{i}"
+
+
+def make_conformer_followups(parent: Calculation, result, indices: "list[int]",
+                             kind: str, existing_names: "set[str]") -> "list[Calculation]":
+    """Build ORCA follow-up Calculations from selected CREST conformers.
+
+    Each selected conformer (1-based ``indices`` into ``result.conformers``)
+    becomes an independent DIRECT-geometry calc of ``kind`` ('opt' or 'opt_freq')
+    with that conformer's coordinates baked in and the parent's charge/multiplicity
+    — so "re-optimize these N conformers with ORCA" is one action. Names are
+    ``{parent}_c{i}``, made unique against ``existing_names``. Raises ValueError on
+    an unsupported kind or when nothing usable is selected."""
+    calc_type = {"opt": "TightOpt", "opt_freq": "TightOpt Freq"}.get(kind)
+    if calc_type is None:
+        raise ValueError("Follow-up kind must be 'opt' or 'opt_freq'.")
+    conformers = getattr(result, "conformers", None) or []
+    if not conformers:
+        raise ValueError("The CREST calculation has no conformers to use.")
+
+    taken = set(existing_names)
+    out: list[Calculation] = []
+    for i in indices:
+        if not isinstance(i, int) or not (1 <= i <= len(conformers)):
+            continue
+        xyz = _bare_xyz_from_conformer(conformers[i - 1])
+        if not xyz.strip():
+            continue
+        name = _unique_followup_name(f"{parent.name}_c{i}", taken)
+        taken.add(name)
+        cfg = StepConfig(kind=kind, calculation_type=calc_type)
+        out.append(Calculation(
+            name=name, kind=kind, config=cfg,
+            charge=parent.charge, multiplicity=parent.multiplicity,
+            geometry_source=GeometrySource.DIRECT, xyz=xyz,
+        ))
+    if not out:
+        raise ValueError("No valid conformers were selected.")
+    return out
 
 
 # ---- session persistence (autosave / restore) --------------------------
@@ -258,19 +330,43 @@ def calc_from_session_dict(d: dict) -> Calculation:
 
 def _parse_if_exists(calc):
     """Parse a calc's on-disk output if present, dispatching on kind (MLIP uses
-    its JSON parser, ORCA the .out parser). Returns None on any read/parse error
-    so reconciliation can fall back to FAILED rather than crash."""
+    its JSON parser, CREST its ensemble parser, ORCA the .out parser). Returns
+    None on any read/parse error so reconciliation can fall back to FAILED rather
+    than crash."""
     from pathlib import Path
     path = getattr(calc, "output_path", "") or ""
     if not (path and Path(path).exists()):
         return None
     try:
-        if getattr(calc, "kind", "").startswith("mlip"):
+        kind = getattr(calc, "kind", "")
+        if kind.startswith("mlip"):
             from ..mlip.parser import parse_mlip_result
             return parse_mlip_result(path)
+        if kind.startswith("crest"):
+            from ..crest.parser import parse_crest_result
+            return parse_crest_result(path)
         return parse_file(path)
     except Exception:
         return None
+
+
+def _crest_calc_alive(calc) -> bool:
+    """WSL-aware liveness for a RUNNING crest_* calc. psutil (process_matches)
+    can't see inside WSL, so ask the CrestRunner (kill -0 + start-time guard) in
+    the distro persisted on config.crest_env_id. Lazy import keeps state/ free of
+    the crest package at import time."""
+    if not getattr(calc, "pid", None):
+        return False
+    distro = (getattr(calc.config, "crest_env_id", "") or "").strip() if calc.config else ""
+    if not distro:
+        return False
+    try:
+        from ..crest.runner import CrestRunner
+        runner = CrestRunner(distro, "")
+        runner.adopt(calc.pid, calc.create_time)
+        return runner.is_alive()
+    except Exception:
+        return False
 
 
 def reconcile_calcs(calcs: "list[Calculation]") -> None:
@@ -289,7 +385,13 @@ def reconcile_calcs(calcs: "list[Calculation]") -> None:
     """
     for c in calcs:
         if c.state == CalcState.RUNNING:
-            if c.pid and process_matches(c.pid, c.create_time):
+            # CREST runs in WSL (Linux pid), so psutil can't judge it — use the
+            # WSL-aware check. Everything else (ORCA) uses psutil process_matches.
+            if c.kind.startswith("crest"):
+                alive = _crest_calc_alive(c)
+            else:
+                alive = bool(c.pid and process_matches(c.pid, c.create_time))
+            if alive:
                 continue  # genuinely still running — reattach on resume
             c.pid = None
             c.create_time = None
@@ -666,26 +768,29 @@ class QueueStore:
 
 def queue_needs_orca(calcs: "list[Calculation]") -> bool:
     """True if running these calculations would launch ORCA at least once —
-    i.e. some calc is not DONE and its kind is not an mlip_* kind.
+    i.e. some calc is not DONE and its kind is neither an mlip_* nor a crest_*
+    kind (both run outside ORCA: mlip in the user's MACE env, crest via WSL).
 
     Single shared decision (P4) for both run entry points (the desktop bridge
-    and the phone server): an all-MLIP queue runs in the user's MLIP env and
-    must be runnable with no ORCA executable configured, so requiring a valid
-    ORCA path is gated on this instead of being unconditional. DONE calcs are
-    never recomputed and FAILED calcs are locked (P24) — neither will ever
-    launch ORCA, so they don't count (a stale FAILED ORCA calc must not force
-    an ORCA path onto an otherwise all-MLIP queue).
+    and the phone server): an all-MLIP or all-CREST queue must be runnable with
+    no ORCA executable configured, so requiring a valid ORCA path is gated on
+    this instead of being unconditional. DONE calcs are never recomputed and
+    FAILED calcs are locked (P24) — neither will ever launch ORCA, so they don't
+    count (a stale FAILED ORCA calc must not force an ORCA path onto an otherwise
+    all-MLIP/CREST queue).
     """
     return any(
         c.state not in (CalcState.DONE, CalcState.FAILED)
         and not c.kind.startswith("mlip")
+        and not c.kind.startswith("crest")
         for c in calcs
     )
 
 
 def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str,
                         skip_names: "set[str] | None" = None,
-                        mlip_envs: "list | None" = None):
+                        mlip_envs: "list | None" = None,
+                        crest_distro: str = ""):
     """
     Returns a zero-arg factory that builds a QueueEngine whose callbacks feed
     the given store (log buffer + version bumps). Used by start_run().
@@ -694,9 +799,12 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
     overwriting existing results on disk).
     mlip_envs: registered MLIP environments [{id, name, python}], so the engine
     can run mlip_* calcs in the user's MACE interpreter. None/empty disables MLIP.
+    crest_distro: preferred WSL distro for crest_* calcs ("" = auto-detect the
+    first distro that has CREST).
     """
     skip = set(skip_names or ())
     envs = list(mlip_envs or [])
+    crest_pref = (crest_distro or "").strip()
 
     def factory() -> QueueEngine:
         cb = QueueCallbacks(
@@ -704,5 +812,5 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
             calc_update=lambda i, c: store.touch(),
         )
         return QueueEngine(orca_path, workspace_root, cb, skip_names=skip,
-                           mlip_envs=envs)
+                           mlip_envs=envs, crest_distro=crest_pref)
     return factory

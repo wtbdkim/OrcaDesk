@@ -81,6 +81,11 @@ class Settings:
     # packages import? which backends?) is probed in orcamgr/mlip/env.py, not
     # stored here.
     mlip_envs: list = field(default_factory=list)
+    # Preferred WSL distro for CREST conformer searches ("" = auto-detect the
+    # first distro that has the crest binary). CREST has no native Windows build,
+    # so ORCAdesk runs its Linux binary through WSL (see orcamgr/crest/); the
+    # binary is detected/installed per-distro, not stored here.
+    crest_distro: str = ""
     workspace_root: str = ""
     # default compute resources (used to seed the GUI)
     default_nprocs: int = 6
@@ -92,8 +97,9 @@ class Settings:
     # optimization graph style: "all5" (all five convergence criteria as
     # value/tolerance ratios sharing one goal line) or "maxgrad" (MAX gradient only)
     geo_graph_mode: str = "all5"
-    # build-tab mode: "beginner" (the guided form) or "expert" (paste/load a
-    # complete .inp and only pick the calc kind, for parsing/validation)
+    # build-tab mode: "beginner" (the guided form), "expert" (paste/load a
+    # complete .inp and only pick the calc kind), "mlip" (MACE relaxation), or
+    # "crest" (conformer search via WSL)
     build_mode: str = "beginner"
 
     @classmethod

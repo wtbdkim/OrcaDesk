@@ -161,9 +161,11 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
                 detail="ORCA executable is not set. Configure it in the desktop app's Settings.",
             )
         # mlip_envs must ride along or a phone-started MLIP calc would find
-        # no interpreter and fail even with a ready env registered (A18).
+        # no interpreter and fail even with a ready env registered (A18);
+        # crest_distro likewise so a phone-started CREST calc resolves its WSL distro.
         factory = make_engine_factory(store, settings.orca_path, settings.workspace_root,
-                                      mlip_envs=settings.mlip_envs)
+                                      mlip_envs=settings.mlip_envs,
+                                      crest_distro=settings.crest_distro)
         try:
             store.start_run(factory)
         except RuntimeError as e:

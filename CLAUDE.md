@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 237 tests over the framework-free layers
+python -m pytest                       # 262 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 23 tracker/progress tests, no npm deps
 ```
 
@@ -47,8 +47,10 @@ The **automated test suite** (`tests/`, pytest + one plain-Node script) covers t
 framework-free layers: `state/` (store, schemas, session persistence), `core/`
 (queue-engine semantics with a fake runner, per-kind validation, input generator,
 parser on synthetic fixtures), `mlip/` (with a stdlib-only stub worker — no MACE
-env needed), `config`, `procutil` (real child processes), and the phone HTTP API
-via `fastapi.testclient` (auto-skips without fastapi). The Qt bridge/window layers
+env needed), `crest/` (ensemble parser against a real ethanol corpus in
+`tests/crest/fixtures/`, CLI-flag building, and the QueueEngine path via a fake
+runner — no WSL/CREST needed), `config`, `procutil` (real child processes), and
+the phone HTTP API via `fastapi.testclient` (auto-skips without fastapi). The Qt bridge/window layers
 are thin adapters and are exercised manually. Tests that read the real ORCA output
 corpus auto-skip when the corpus directory is absent, so the suite is green on any
 machine. There is no linter configured. Parser/input-generator *evidence* still
@@ -190,9 +192,12 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   validation failure marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`,
   `freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `irc`, `tddft`, `sp`,
   `general` (free keyword combination; no per-kind validation), `nmr`,
-  `neb_ts`, `mlip_opt`. Kinds starting with `mlip` run **outside** the ORCA
-  pipeline: `QueueEngine.run_all` routes them to `_run_mlip_calc` (a MACE
-  relaxation in the user's env) instead of `_run_calc`. See the MLIP section.
+  `neb_ts`, `mlip_opt`, `crest_conf`. Kinds starting with `mlip` or `crest` run
+  **outside** the ORCA pipeline: `QueueEngine.run_all` routes `mlip*` to
+  `_run_mlip_calc` (a MACE relaxation in the user's env) and `crest*` to
+  `_run_crest_calc` (a conformer search in WSL) instead of `_run_calc`.
+  `crest_conf` validation requires normal termination + at least one conformer.
+  See the MLIP and CREST sections.
 
 ### Optional phone-sync server
 
@@ -281,6 +286,70 @@ not the ORCA one. The pipeline was validated end to end against a real MACE
 environment (MACE-OFF), including the MLIP→ORCA geometry handoff; those
 validation runs were performed locally — there is no checked-in test suite
 or CI (see the Commands section).
+
+### CREST environment (a WSL-backed third backend)
+
+`orcamgr/crest/` is a dedicated package, kept **out of** the ORCA pipeline in
+`core/` like `mlip/`. CREST is a conformer-sampling tool with **no native
+Windows build**, so ORCAdesk runs its statically-linked Linux binary through
+**WSL** — it never installs a chemistry toolchain, it shells out (here, into a
+distro). v1 scope is conformer search only (`crest_conf`).
+
+The package: `wsl.py` (low-level `wsl.exe` helpers — distro enumeration with
+infrastructure distros like `docker-desktop` filtered out, `WSL_UTF8=1`, always
+`-d <distro>` explicitly), `env.py` (probe each distro for the `crest` binary,
+backing the "CREST ready" top-bar indicator; `aggregate_status` mirrors the MLIP
+four-state pill), `installer.py` (download the static release tarball into a
+distro + symlink — fully scriptable, so ORCAdesk auto-installs CREST; the one
+manual prerequisite is a WSL distro existing), plus the run pipeline
+(`runner.py`, `parser.py`).
+
+**Running CREST jobs** mirrors the *ORCA* runner (not the MLIP one) because a
+CREST run is long and must survive ORCAdesk closing. `QueueEngine._run_crest_calc`
+resolves the distro (`config.crest_env_id`, else `settings.crest_distro`, else
+the first distro with CREST — persisted back onto `config.crest_env_id` so a
+reattach knows where the job runs) and writes a self-contained `run_crest.sh`
+into the Windows workspace folder. `CrestRunner.launch` starts it **detached**
+(`setsid`) in WSL: the script records its own Linux pid + start-time, runs CREST
+in an **ext4 scratch dir** (`~/.orcadesk/scratch/<name>`, never `/mnt` — 9P is
+5–300× slower and CREST is I/O-heavy), redirects CREST's stdout to the Windows
+`<name>.out` for live tailing, then copies the ensemble results back and writes a
+`<name>.crest.rc` marker. The launcher **waits (inside WSL) until the `.pid`
+appears** before returning — without that, `wsl.exe` closes the pty before
+`setsid` finishes detaching and the child is killed (a real bug found by
+end-to-end testing). Because it's a true detach, `monitor` tails the `.out` +
+watches for `.rc`, `cancel` does a process-group kill (`kill -- -PID`, reaching
+xtb/OpenMP children), and reattach after a restart uses the pid + start-time (the
+WSL analogue of `procutil.process_matches`; `reconcile_calcs` special-cases
+`crest*` via `_crest_calc_alive`).
+
+`parse_crest_result` reads `crest_conformers.xyz` (comment line = absolute energy
+in Hartree, energy-sorted) + `crest.energies` into the shared `ParseResult` — new
+`conformers: list[Conformer]` + `is_conformer_search`, with `geometry` /
+`final_energy_eh` set to the lowest conformer so the existing best-geometry
+reference path still works. `validate_result` requires normal termination
+(marker `"CREST terminated normally."`, matched as a substring) + ≥1 conformer.
+`queue_needs_orca` excludes `crest*` too, so an all-CREST queue runs with no ORCA
+path. Charge/multiplicity come from the `Calculation` (shared with ORCA); CREST's
+`--uhf` is the **number of unpaired electrons = multiplicity − 1** (not the
+multiplicity). The pipeline was validated end to end against a real CREST 3.0.2
+install in WSL Ubuntu (including the conformer→ORCA handoff).
+
+**Conformer → ORCA handoff.** A finished `crest_conf` result exposes its whole
+ranked ensemble in the Results tab (checkboxes + "select all"); the "Generate
+ORCA opt / opt + freq jobs" button calls `Bridge.add_calcs_from_conformers` →
+`store.make_conformer_followups`, which builds one **DIRECT-geometry** ORCA calc
+per selected conformer (its coordinates baked in, parent's charge/multiplicity),
+named `{parent}_c{i}`. This is the queue's first 1→N handoff.
+
+**Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
+`list_crest_distros` / `set_crest_distro` / `add_calcs_from_conformers`) follow
+the MLIP pattern: a background probe publishes to `Bridge._crest_status` (guarded
+by `_crest_lock`) and the UI polls `get_crest_status`. The Build tab gains a
+fourth mode (`crest`; `Settings.build_mode`), a locked `#card-crest` (until a
+distro has CREST), and a **Settings → CREST** distro picker + Install button. Wire
+shapes: `CrestStatusPayload` / `CrestDistroPayload` / `ConformerPayload` in
+`state/schemas.py`, mirrored in `web/types.js`.
 
 ### Paths: dev vs PyInstaller-frozen
 

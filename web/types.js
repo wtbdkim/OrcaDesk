@@ -97,6 +97,11 @@
  * @property {string} neb_ts_guess_xyz
  * @property {string} mlip_model       MACE model, e.g. "MACE-OFF medium" (kind "mlip*")
  * @property {string} mlip_env_id      registered MLIP env to run in ("" = first ready)
+ * @property {string} [crest_method]   CREST tight-binding method (kind "crest*"): gfn2|gfnff|gfn0
+ * @property {string} [crest_solvent]  ALPB implicit-solvent name ("" = gas phase)
+ * @property {number} [crest_ewin]     conformer energy window (kcal/mol)
+ * @property {number} [crest_threads]  CREST thread count (-T)
+ * @property {string} [crest_env_id]   preferred WSL distro ("" = first with CREST)
  */
 
 /**
@@ -171,7 +176,8 @@
  * @property {string} theme
  * @property {"conservative"|"eager"} eta_mode
  * @property {"all5"|"maxgrad"} geo_graph_mode
- * @property {"beginner"|"expert"|"mlip"} build_mode
+ * @property {"beginner"|"expert"|"mlip"|"crest"} build_mode
+ * @property {string} crest_distro     preferred WSL distro for CREST ("" = auto-detect)
  * @property {boolean} orca_valid
  */
 
@@ -203,6 +209,26 @@
  * @typedef {Object} MlipStatusPayload
  * @property {"unset"|"checking"|"ready"|"error"} state
  * @property {MlipEnvPayload[]} envs
+ */
+
+/**
+ * One WSL distro probed for CREST (backs the "CREST ready" indicator).
+ * @typedef {Object} CrestDistroPayload
+ * @property {string} distro      distro name (`wsl -d <distro>`)
+ * @property {boolean} ready      crest binary found + runnable
+ * @property {string} crest_bin   resolved binary path inside the distro, or ""
+ * @property {string} version     `crest --version` line, or ""
+ * @property {string} error       detail when not ready
+ */
+
+/**
+ * Mirror of Bridge.get_crest_status() / check_crest() / install_crest() /
+ * set_crest_distro(). Aggregate CREST picture: top-bar state + every usable WSL
+ * distro. wsl=false means wsl.exe is unavailable.
+ * @typedef {Object} CrestStatusPayload
+ * @property {"unset"|"checking"|"ready"|"error"} state
+ * @property {CrestDistroPayload[]} distros
+ * @property {boolean} wsl
  */
 
 /**
@@ -301,6 +327,16 @@
  */
 
 /**
+ * One CREST conformer for the Results ensemble list (geometry not sent — the
+ * batch "generate ORCA jobs" action re-reads it server-side).
+ * @typedef {Object} ConformerPayload
+ * @property {number} index      1-based rank (1 = lowest energy)
+ * @property {number} energy_eh  absolute energy (Hartree)
+ * @property {number} rel_kcal   energy relative to the best conformer (kcal/mol)
+ * @property {number} n_atoms
+ */
+
+/**
  * Parsed .out payload (parse_out_file / parse_out_path). On failure only
  * {error} is present; parse_out_file returns literally "{}" on a
  * cancelled file dialog, so every field is optional.
@@ -322,6 +358,8 @@
  * @property {TddftStatePayload[]} [tddft_states]
  * @property {string} [input_keywords]
  * @property {string} [input_block]
+ * @property {boolean} [is_conformer_search]     gates the CREST conformer list
+ * @property {ConformerPayload[]} [conformers]   CREST ensemble (ranked)
  * @property {string} [error]
  */
 

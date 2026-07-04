@@ -173,6 +173,16 @@ class StepConfig:
     mlip_model: str = ""                 # e.g. "MACE-OFF medium"
     mlip_env_id: str = ""                # registered MLIP env to run in ("" = first ready)
 
+    # CREST (conformer sampling, run via WSL) — used only when kind starts with
+    # "crest". These drive the separate pipeline in orcamgr/crest/, NOT ORCA:
+    # build_input() ignores them (ORCA never sees a CREST calc). Charge and
+    # multiplicity come from the Calculation (shared with ORCA), not from here.
+    crest_method: str = "gfn2"           # gfn2 | gfnff | gfn0 | gfn2//gfnff ...
+    crest_solvent: str = ""              # ALPB implicit-solvent name ("" = gas phase)
+    crest_ewin: float = 6.0              # ensemble energy window (kcal/mol)
+    crest_threads: int = 4               # CREST -T thread count
+    crest_env_id: str = ""               # registered CREST env to run in ("" = first ready)
+
     def to_dict(self) -> dict:
         d = asdict(self)
         return d

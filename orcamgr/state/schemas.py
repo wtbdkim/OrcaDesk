@@ -97,7 +97,8 @@ class SettingsPayload(TypedDict):
     theme: str
     eta_mode: str             # "conservative" | "eager"
     geo_graph_mode: str       # "all5" | "maxgrad"
-    build_mode: str           # "beginner" | "expert" | "mlip"
+    build_mode: str           # "beginner" | "expert" | "mlip" | "crest"
+    crest_distro: str         # preferred WSL distro for CREST ("" = auto-detect)
     orca_valid: bool
 
 
@@ -130,6 +131,26 @@ class MlipStatusPayload(TypedDict):
     else "unset"."""
     state: str                # "unset" | "checking" | "ready" | "error"
     envs: "list[MlipEnvPayload]"
+
+
+class CrestDistroPayload(TypedDict):
+    """One WSL distro probed for CREST (backs the "CREST ready" indicator)."""
+    distro: str               # distro name (pass to `wsl -d <distro>`)
+    ready: bool               # crest binary found + runnable
+    crest_bin: str            # resolved binary path inside the distro, or ""
+    version: str              # `crest --version` line, or ""
+    error: str                # human-readable detail when not ready
+
+
+class CrestStatusPayload(TypedDict):
+    """Bridge.get_crest_status() / check_crest() / install_crest() — the whole
+    CREST picture: an aggregate state for the top-bar pill plus every usable WSL
+    distro. Aggregate state is "ready" if any distro has CREST, "checking" while
+    probing, "error" if distros exist but none have CREST, "unset" if WSL/distros
+    are absent."""
+    state: str                # "unset" | "checking" | "ready" | "error"
+    distros: "list[CrestDistroPayload]"
+    wsl: bool                 # whether wsl.exe is available at all
 
 
 class ErrorPayload(TypedDict):
@@ -208,6 +229,16 @@ class TddftStatePayload(TypedDict):
     contributions: "list[tuple[str, str, float]]"
 
 
+class ConformerPayload(TypedDict):
+    """One CREST conformer for the Results tab's selectable ensemble list. The
+    geometry itself is NOT sent (it can be large × many conformers); the batch
+    "generate ORCA jobs" action re-reads it server-side from the parent calc."""
+    index: int                # 1-based rank (1 = lowest energy)
+    energy_eh: float          # absolute energy (Hartree)
+    rel_kcal: float           # energy relative to the best conformer (kcal/mol)
+    n_atoms: int
+
+
 class ParsePayload(TypedDict, total=False):
     """Successful parse of a .out. All keys optional on the wire because the
     failure branch sends ErrorPayload and parse_out_file returns "{}" on a
@@ -229,6 +260,8 @@ class ParsePayload(TypedDict, total=False):
     tddft_states: "list[TddftStatePayload]"   # excited-state composition
     input_keywords: str                       # echoed "!" simple-input line
     input_block: str                          # echoed input block (%-blocks etc.)
+    is_conformer_search: bool                 # gates the CREST conformer list
+    conformers: "list[ConformerPayload]"      # CREST ensemble (ranked)
 
 
 # ---- ok/error envelopes -------------------------------------------------------

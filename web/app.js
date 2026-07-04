@@ -23,6 +23,7 @@ const _resultExtras = {};       // name -> full parsed payload (everything but i
 let showAllResults = false;     // "Show all" toggle: ignore per-calc-type gating
 /** @type {ParsePayload|null} */
 let _currentResult = null;      // last-rendered payload, for re-render on toggle
+let _currentResultName = "";    // queue calc name of the shown result ("" for an external Open .out) — the CREST conformer->ORCA action needs it
 /** @type {Object<string, CalcInput|CalcFull>} */
 const localCalcs = {};          // name -> full calc (config/xyz/raw) added on THIS PC,
                                 // so editing keeps the details the store snapshot omits
@@ -30,10 +31,10 @@ const localCalcs = {};          // name -> full calc (config/xyz/raw) added on T
 let editIndex = -1;             // queue index being edited, or -1 for "new"
 let rawMode = false;            // is the current build form in raw mode?
 let rawText = "";               // current raw .inp text being edited
-let buildMode = "beginner";     // "beginner" (guided form), "expert" (paste a full .inp), or "mlip" (MACE pre-opt)
+let buildMode = "beginner";     // "beginner" (guided form), "expert" (paste a full .inp), "mlip" (MACE pre-opt), or "crest" (conformer search via WSL)
 // controls hidden in expert mode (the guided form, charge/mult, the raw button)
 const _EXPERT_HIDDEN = ["card-method", "field-charge", "field-mult", "raw-btn"];
-// the whole ORCA build UI — hidden in mlip mode (which shows card-mlip instead)
+// the whole ORCA build UI — hidden in mlip/crest mode (which show their own card)
 const _ORCA_BUILD = ["card-calc", "card-geometry", "card-method", "raw-card", "build-actions"];
 function _showIds(ids, on) {
   ids.forEach(id => { const e = document.getElementById(id); if (e) e.style.display = on ? "" : "none"; });
@@ -492,6 +493,8 @@ async function loadSettings() {
   // MLIP environments are managed in their own channel (a background probe per
   // env); render from get_mlip_status() and poll while any is still checking.
   pollMlipStatus();
+  // CREST readiness (WSL distro probe) is likewise its own background channel.
+  pollCrestStatus();
 }
 function updateOrcaStatus(valid) {
   const pill = document.getElementById("orca-status");
@@ -636,6 +639,107 @@ async function pickMlipPython() {
   const p = await bridge.pick_mlip_python();
   if (p) document.getElementById("set-mlip").value = p;
 }
+
+// ---------- CREST (WSL) status ----------
+let _crestPollTimer = 0;
+let _crestReady = false;   // some WSL distro has CREST — gates the CREST build card
+/** Grey out and lock the CREST build card when no distro has CREST. */
+function applyCrestLock() {
+  const card = document.getElementById("card-crest");
+  if (!card) return;
+  const locked = !_crestReady;
+  card.classList.toggle("locked", locked);
+  const note = document.getElementById("crest-lock-note");
+  if (note) note.style.display = locked ? "" : "none";
+  for (const id of ["crest-name", "crest-charge", "crest-mult", "crest-method",
+                    "crest-solvent", "crest-ewin", "crest-threads"]) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = locked;
+  }
+  card.querySelectorAll("button").forEach(b => { b.disabled = locked; });
+}
+/** Reflect a CrestStatusPayload on the top-bar pill and the Settings section.
+ *  @param {CrestStatusPayload} st */
+function renderCrest(st) {
+  const state = (st && st.state) || "unset";
+  const distros = (st && st.distros) || [];
+  _crestReady = (state === "ready");
+  applyCrestLock();
+  const pill = document.getElementById("crest-status");
+  if (pill) {
+    pill.classList.toggle("ok", state === "ready");
+    pill.classList.toggle("err", state === "error");
+    document.getElementById("crest-status-text").textContent =
+      state === "ready" ? "CREST ready"
+      : state === "checking" ? "CREST checking…"
+      : state === "error" ? "CREST error"
+      : "CREST not set";
+    pill.title = !st || !st.wsl ? "WSL not available — install WSL to run CREST"
+      : distros.length
+        ? distros.map(d => d.distro + ": " + (d.ready ? (d.version || "ready") : (d.error || "not installed"))).join("\n")
+        : "No usable WSL distribution found";
+  }
+  renderCrestSettings(st);
+}
+/** Fill the Settings distro dropdown + status detail. @param {CrestStatusPayload} [st] */
+function renderCrestSettings(st) {
+  const sel = document.getElementById("set-crest-distro");
+  const detail = document.getElementById("crest-detail");
+  const distros = (st && st.distros) || [];
+  if (sel) {
+    const prev = settings && settings.crest_distro || sel.value || "";
+    sel.innerHTML = `<option value="">auto-detect</option>`;
+    for (const d of distros) {
+      const o = document.createElement("option");
+      o.value = d.distro;
+      o.textContent = d.distro + (d.ready ? " ✓" : "");
+      sel.appendChild(o);
+    }
+    // include a saved distro even if it wasn't in the probe list (e.g. offline)
+    if (prev && !distros.some(d => d.distro === prev)) {
+      const o = document.createElement("option"); o.value = prev; o.textContent = prev; sel.appendChild(o);
+    }
+    sel.value = prev;
+  }
+  if (detail) {
+    if (st && !st.wsl) detail.textContent = "WSL is not available on this machine.";
+    else if (!distros.length) detail.textContent = "No usable WSL distribution found. Install one, e.g. `wsl --install -d Ubuntu`.";
+    else {
+      const ready = distros.filter(d => d.ready).map(d => d.distro);
+      detail.textContent = ready.length
+        ? "CREST found in: " + ready.join(", ")
+        : "CREST not installed in any distribution yet — pick one and click Install CREST.";
+    }
+  }
+}
+/** Poll get_crest_status() until the probe settles. */
+async function pollCrestStatus() {
+  const st = /** @type {CrestStatusPayload} */ (JSON.parse(await bridge.get_crest_status()));
+  renderCrest(st);
+  clearTimeout(_crestPollTimer);
+  if (st.state === "checking") _crestPollTimer = setTimeout(pollCrestStatus, 900);
+}
+async function checkCrest() {
+  const st = /** @type {CrestStatusPayload} */ (JSON.parse(await bridge.check_crest()));
+  renderCrest(st);
+  pollCrestStatus();
+}
+async function installCrest() {
+  const sel = document.getElementById("set-crest-distro");
+  const distro = sel ? sel.value : "";
+  toast("Installing CREST into WSL — this downloads ~8 MB…");
+  const st = /** @type {CrestStatusPayload} */ (JSON.parse(await bridge.install_crest(distro || "")));
+  renderCrest(st);
+  pollCrestStatus();
+}
+async function onCrestDistroChange() {
+  const sel = document.getElementById("set-crest-distro");
+  const st = /** @type {CrestStatusPayload} */ (JSON.parse(await bridge.set_crest_distro(sel ? sel.value : "")));
+  if (settings) settings.crest_distro = sel ? sel.value : "";
+  renderCrest(st);
+  pollCrestStatus();
+}
+
 async function saveSettings() {
   const etaEl = document.querySelector('input[name="eta-mode"]:checked');
   const geoEl = document.querySelector('input[name="geo-mode"]:checked');
@@ -1191,6 +1295,67 @@ async function addMlipCalcToQueue() {
   }
 }
 
+// ---------- CREST conformer-search build form ----------
+let crestXyz = "";              // last loaded .xyz coordinate block for the CREST form
+async function loadCrestXyz() {
+  const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
+  if (res.cancelled) return;
+  if (!res.ok) { failNotify("Could not read that .xyz."); return; }
+  crestXyz = parseXyzText(res.text);
+  const n = crestXyz ? crestXyz.split("\n").length : 0;
+  document.getElementById("crest-xyz-status").textContent =
+    n ? `loaded (${n} atoms)` : "No atoms in file.";
+}
+function resetCrestForm() {
+  document.getElementById("crest-name").value = "";
+  crestXyz = "";
+  document.getElementById("crest-xyz-status").textContent = "";
+}
+async function addCrestCalcToQueue() {
+  try {
+    if (!_crestReady) throw new Error("CREST in a WSL distribution required (see Settings → CREST).");
+    const name = document.getElementById("crest-name").value.trim();
+    if (!name) throw new Error("Name is required.");
+    if (/[\\/:*?"<>|]/.test(name))
+      throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
+    if (queue.some(c => c.name === name))
+      throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
+    if (!crestXyz) throw new Error("Load an .xyz file first.");
+    const charge = parseInt(document.getElementById("crest-charge").value, 10) || 0;
+    const mult = Math.max(1, parseInt(document.getElementById("crest-mult").value, 10) || 1);
+    const method = document.getElementById("crest-method").value;
+    const solvent = document.getElementById("crest-solvent").value;
+    const ewin = parseFloat(document.getElementById("crest-ewin").value) || 6.0;
+    const threads = Math.max(1, parseInt(document.getElementById("crest-threads").value, 10) || 4);
+    const calc = /** @type {CalcInput} */ ({
+      name, kind: "crest_conf",
+      charge, multiplicity: mult,
+      geometry_source: "direct",
+      xyz: crestXyz, ref_name: "",
+      is_raw: false, raw_text: "",
+      config: {
+        kind: "crest_conf", crest_method: method, crest_solvent: solvent,
+        crest_ewin: ewin, crest_threads: threads, crest_env_id: "",
+      },
+      state: "pending", message: "",
+    });
+    const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
+    if (!res.ok) {
+      appendLog("Could not add: " + res.error, "err");
+      toast(res.error);
+      await refreshQueue();
+      return;
+    }
+    localCalcs[calc.name] = calc;
+    appendLog(`"${calc.name}" (CREST ${method}) added to queue.`, "ok");
+    resetCrestForm();
+    await refreshQueue();
+    switchTab("queue");
+  } catch (e) {
+    appendLog(e.message, "err"); toast(e.message);
+  }
+}
+
 // ---------- editing existing calcs ----------
 async function editCalc(i) {
   const mirror = queue[i];
@@ -1199,8 +1364,9 @@ async function editCalc(i) {
   // MLIP calcs use the separate MLIP form, not the ORCA editor. In-place editing
   // isn't wired yet — remove and re-add from the MLIP build mode instead.
   if ((mirror.kind || "").startsWith("mlip")) { toast("No in-place editing of MLIP calculations yet — removal, then re-add from the MLIP build mode."); return; }
-  // a normal calc edits in the ORCA build form; leave MLIP mode if we're in it
-  if (buildMode === "mlip") setBuildMode(mirror.is_raw ? "expert" : "beginner", false);
+  if ((mirror.kind || "").startsWith("crest")) { toast("No in-place editing of CREST calculations yet — removal, then re-add from the CREST build mode."); return; }
+  // a normal calc edits in the ORCA build form; leave MLIP/CREST mode if we're in it
+  if (buildMode === "mlip" || buildMode === "crest") setBuildMode(mirror.is_raw ? "expert" : "beginner", false);
   // prefer the full local copy (has config/xyz/raw_text added on this PC)
   let c = localCalcs[mirror.name];
   if (!c) {
@@ -1438,22 +1604,27 @@ async function loadInpFile() {
 
 // Beginner (guided form) vs Expert (paste/load a complete .inp + pick the kind).
 function setBuildMode(mode, persist = true) {
-  if (mode !== "beginner" && mode !== "expert" && mode !== "mlip") return;
+  if (mode !== "beginner" && mode !== "expert" && mode !== "mlip" && mode !== "crest") return;
   if (mode === buildMode && editIndex === -1) return;   // re-click of active mode: keep form state
   if (editIndex !== -1) exitEditMode();                 // never carry an in-progress edit across a mode switch
   buildMode = mode;
-  for (const m of ["beginner", "expert", "mlip"])
+  for (const m of ["beginner", "expert", "mlip", "crest"])
     document.getElementById("bmode-" + m).classList.toggle("active", mode === m);
   const hint = document.getElementById("bmode-hint");
   const mlip = (mode === "mlip");
-  // MLIP mode swaps the entire ORCA build UI for the self-contained MLIP card.
-  _showIds(_ORCA_BUILD, !mlip);
+  const crest = (mode === "crest");
+  // MLIP / CREST modes swap the entire ORCA build UI for a self-contained card.
+  _showIds(_ORCA_BUILD, !(mlip || crest));
   _showIds(["card-mlip"], mlip);
+  _showIds(["card-crest"], crest);
   if (hint) hint.textContent = "";
   if (mlip) {
     rawMode = false; rawText = "";
     renderMlipForm();
     applyMlipLock();
+  } else if (crest) {
+    rawMode = false; rawText = "";
+    applyCrestLock();
   } else if (mode === "expert") {
     // always raw input: hide the method form + charge/mult + raw button, show the .inp editor
     _showIds(_EXPERT_HIDDEN, false);
@@ -1989,6 +2160,7 @@ function refreshResultSelect() {
 function showSelectedResult() {
   const name = document.getElementById("result-select").value;
   if (!name || name === "—") return;
+  _currentResultName = name;   // a queued calc — enables the conformer->ORCA action
   _currentResult = _resultExtras[name] || null;
   renderResult(_currentResult);
 }
@@ -2021,6 +2193,9 @@ function renderResultSections(d) {
   // present-only — they only exist for their kind, so no extra gating needed.
   const geom = showAllResults || d.is_optimization;
   const elec = showAllResults || d.show_elec;
+  // CREST conformer ensemble: a selectable list with a batch "re-optimize in
+  // ORCA" action. Present-only (only crest_conf results carry it).
+  if (d.is_conformer_search && d.conformers && d.conformers.length) renderConformers(d.conformers);
   if (geom && d.geometry && d.geometry.length) renderGeometry(d.geometry);
   if (elec && d.orbitals && d.orbitals.length) renderOrbitals(d.orbitals);
   if (elec && d.mulliken && d.mulliken.length) renderMulliken(d.mulliken);
@@ -2055,6 +2230,70 @@ function renderSummary(rows, d) {
   }
   html += `</div>`;
   body.innerHTML = html;
+}
+
+/** CREST conformer ensemble: a selectable list with a batch "re-optimize in
+ *  ORCA" action (generates one DIRECT-geometry opt/opt_freq calc per selected
+ *  conformer). @param {ConformerPayload[]} confs */
+function renderConformers(confs) {
+  const body = document.getElementById("result-body");
+  let rows = "";
+  for (const c of confs) {
+    rows += `<tr>
+      <td><input type="checkbox" class="conf-check" data-index="${c.index}" checked></td>
+      <td>${c.index}</td>
+      <td>${c.rel_kcal.toFixed(3)}</td>
+      <td>${c.energy_eh.toFixed(8)}</td>
+      <td>${c.n_atoms}</td></tr>`;
+  }
+  // The batch action needs a queued parent calc to read geometries from; an
+  // external "Open .out" has none, so the buttons are disabled there.
+  const canGen = !!_currentResultName;
+  const note = canGen ? "" :
+    `<div class="hint" style="margin-top:6px">Select this from a queued CREST calculation to generate ORCA jobs from its conformers.</div>`;
+  body.innerHTML += `
+    <div class="divider"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+      <div class="card-title">Conformers (${confs.length})</div>
+      <label class="hint" style="margin:0;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="conf-selall" checked onchange="toggleAllConformers(this.checked)"> select all
+      </label>
+    </div>
+    <div style="max-height:280px;overflow:auto">
+      <table class="data">
+        <thead><tr><th></th><th>#</th><th>ΔE (kcal/mol)</th><th>E (Eh)</th><th>atoms</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="btn-group" style="margin-top:10px">
+      <button class="btn btn-sm btn-primary" onclick="generateOrcaFromConformers('opt')" ${canGen ? "" : "disabled"}>→ ORCA opt jobs</button>
+      <button class="btn btn-sm" onclick="generateOrcaFromConformers('opt_freq')" ${canGen ? "" : "disabled"}>→ ORCA opt + freq jobs</button>
+    </div>${note}`;
+}
+/** @param {boolean} on */
+function toggleAllConformers(on) {
+  document.querySelectorAll(".conf-check").forEach(el => { el.checked = on; });
+}
+/** Create ORCA follow-up jobs from the checked conformers. @param {string} kind */
+async function generateOrcaFromConformers(kind) {
+  if (!_currentResultName) { toast("No queued CREST calculation selected."); return; }
+  /** @type {number[]} */
+  const indices = [];
+  document.querySelectorAll(".conf-check").forEach(el => {
+    if (el.checked) indices.push(parseInt(el.dataset.index || "0", 10));
+  });
+  if (!indices.length) { toast("Select at least one conformer."); return; }
+  try {
+    const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calcs_from_conformers(
+      JSON.stringify({ parent_name: _currentResultName, indices, kind }))));
+    if (!res.ok) { appendLog("Could not create ORCA jobs: " + res.error, "err"); toast(res.error); return; }
+    appendLog(`${indices.length} ORCA ${kind} job(s) created from ${_currentResultName}'s conformers.`, "ok");
+    toast(`${indices.length} ORCA ${kind} job(s) added to the queue.`);
+    await refreshQueue();
+    switchTab("queue");
+  } catch (e) {
+    appendLog(String(e), "err"); toast("Could not create ORCA jobs.");
+  }
 }
 
 let _lastGeomXyz = "";   // last rendered geometry, for the Copy .xyz button
@@ -2218,6 +2457,7 @@ async function openOutFile() {
   /** @type {ParsePayload} */
   let data; try { data = JSON.parse(raw); } catch { return; }
   if (!data.summary) { appendLog("Could not parse file.", "err"); return; }
+  _currentResultName = "";   // an external file, not a queued calc → no conformer->ORCA action
   _currentResult = data;
   renderResult(data);
   switchTab("results");

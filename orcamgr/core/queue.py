@@ -60,7 +60,9 @@ class GeometrySource(str, Enum):
 class Calculation:
     name: str                              # unique; used as folder name
     # opt | ts_opt | freq | ts_freq | opt_freq | ts_opt_freq | irc | tddft |
-    # sp | general | nmr | neb_ts | mlip_opt (mlip_* runs outside ORCA)
+    # sp | general | nmr | neb_ts | mlip_opt | crest_conf
+    # (mlip_* runs outside ORCA in the user's MACE env; crest_* runs outside ORCA
+    #  in WSL — see orcamgr/mlip/ and orcamgr/crest/)
     kind: str
     config: StepConfig
     charge: int = 0
@@ -119,13 +121,21 @@ def validate_result(calc: Calculation, result: ParseResult) -> None:
     imaginary modes; ts_freq exactly one; neb_ts (when freqs were computed)
     exactly one."""
     if not result.terminated_normally:
-        # MLIP jobs don't produce an ORCA .out; their failure reason comes from
-        # the parsed result's error_message directly.
+        # MLIP/CREST jobs don't produce an ORCA .out; their failure reason comes
+        # from the parsed result's error_message directly.
         if calc.kind.startswith("mlip"):
             raise OrcaRunError(result.error_message or "MLIP run did not finish.")
+        if calc.kind.startswith("crest"):
+            raise OrcaRunError(result.error_message or "CREST did not finish.")
         raise OrcaRunError(
             f"ORCA did not terminate normally. {result.error_message or 'Check the .out file.'}"
         )
+    # CREST conformer search: a valid result terminated normally and produced at
+    # least one conformer (no ORCA-style per-kind keyword checks).
+    if calc.kind.startswith("crest"):
+        if not result.conformers:
+            raise OrcaRunError("CREST produced no conformers.")
+        return
     # MLIP optimization: the only check is convergence (no ORCA-style keywords).
     if calc.kind.startswith("mlip"):
         if result.is_optimization and not result.opt_converged:
@@ -171,13 +181,17 @@ def validate_result(calc: Calculation, result: ParseResult) -> None:
 
 def result_from_output(calc: Calculation):
     """Parse a finished calc's on-disk output into a ParseResult, dispatching on
-    kind: MLIP calcs use the MLIP parser (a JSON result), ORCA calcs the ORCA
-    .out parser. Shared by the engine's reference resolution and the session
-    reconciliation in store.py so both stay consistent. The mlip import is lazy
-    to keep core/ importable without the mlip package."""
+    kind: MLIP calcs use the MLIP parser (a JSON result), CREST calcs the CREST
+    parser (crest_conformers.xyz + crest.energies), ORCA calcs the ORCA .out
+    parser. Shared by the engine's reference resolution and the session
+    reconciliation in store.py so both stay consistent. The mlip/crest imports
+    are lazy to keep core/ importable without those packages."""
     if calc.kind.startswith("mlip"):
         from ..mlip.parser import parse_mlip_result
         return parse_mlip_result(calc.output_path)
+    if calc.kind.startswith("crest"):
+        from ..crest.parser import parse_crest_result
+        return parse_crest_result(str(calc.output_path))
     return parse_file(str(calc.output_path))
 
 
@@ -187,7 +201,8 @@ class QueueEngine:
     def __init__(self, orca_path: str, workspace_root: str,
                  callbacks: Optional[QueueCallbacks] = None,
                  skip_names: Optional[set] = None,
-                 mlip_envs: Optional[list] = None):
+                 mlip_envs: Optional[list] = None,
+                 crest_distro: str = ""):
         self.runner = OrcaRunner(orca_path)
         # Registered MLIP environments [{id, name, python}], used to resolve which
         # interpreter runs a mlip_* calc. Empty if MLIP isn't configured.
@@ -195,6 +210,12 @@ class QueueEngine:
         # the MlipRunner of the in-flight MLIP job, so cancel()/detach() can reach
         # it (the ORCA runner and the MLIP runner are separate objects).
         self._mlip_runner = None
+        # Preferred WSL distro for CREST calcs ("" = auto-detect the first distro
+        # that has CREST). A crest_conf calc runs its Linux binary through WSL
+        # (see orcamgr/crest/), OUTSIDE the ORCA pipeline.
+        self.crest_distro = (crest_distro or "").strip()
+        # the CrestRunner of the in-flight CREST job, so cancel()/detach() reach it.
+        self._crest_runner = None
         self.workspace_root = Path(workspace_root)
         self.cb = callbacks or QueueCallbacks()
         # hard cancel: kill the current job and skip the rest (CANCELLED).
@@ -222,6 +243,8 @@ class QueueEngine:
         self.runner.cancel()
         if self._mlip_runner is not None:
             self._mlip_runner.cancel()
+        if self._crest_runner is not None:
+            self._crest_runner.cancel()
 
     def request_stop_after_current(self) -> None:
         """Stop processing once the in-flight job finishes; leave the remaining
@@ -236,6 +259,8 @@ class QueueEngine:
         self.runner.detach()
         if self._mlip_runner is not None:
             self._mlip_runner.detach()
+        if self._crest_runner is not None:
+            self._crest_runner.detach()
 
     # -- geometry resolution --
     def _resolve_geometry(self, calc: Calculation) -> str:
@@ -446,6 +471,123 @@ class QueueEngine:
         self.cb.log(f"[{calc.name}] done.", "ok")
         self.cb.calc_update(index, calc)
 
+    # -- single CREST conformer search (runs in WSL, OUTSIDE the ORCA pipeline) --
+    def _run_crest_calc(self, calc: Calculation, index: int) -> None:
+        """Run a crest_* calc: a CREST conformer search in WSL. Like ORCA it is
+        launched DETACHED (survives app close) and reattached across a restart;
+        the resolved WSL distro is stashed on config.crest_env_id so a reattach
+        knows where the job runs. Mirrors _run_calc's fresh-launch/reattach shape
+        but uses CrestRunner + parse_crest_result."""
+        from ..crest.runner import CrestRunner, write_crest_run_files, build_crest_argv
+        from ..crest.env import resolve_run_target
+
+        calc_dir = self.workspace_root / calc.name
+        out_path = calc_dir / f"{calc.name}.out"
+
+        # Reattach path: left RUNNING by a previous session. We only need the
+        # distro (persisted on config.crest_env_id) + pid/create_time to check
+        # liveness and resume tailing; the binary path isn't needed for monitoring.
+        if calc.state == CalcState.RUNNING and calc.pid:
+            distro = (getattr(calc.config, "crest_env_id", "") or self.crest_distro or "").strip()
+            runner = CrestRunner(distro, "") if distro else None
+            if runner is not None:
+                runner.adopt(calc.pid, calc.create_time)
+            if runner is not None and runner.is_alive():
+                self._crest_runner = runner
+                self.cb.log(f"[{calc.name}] reattaching to CREST still running "
+                            f"(pid {calc.pid})...", "info")
+                self.cb.calc_update(index, calc)
+                start_pos = runner.end_position(out_path)
+                try:
+                    self._crest_monitor_and_finish(calc, index, out_path,
+                                                   calc.name, start_pos=start_pos)
+                finally:
+                    self._crest_runner = None
+                return
+            # Not alive (or distro unknown): the job finished while we were away.
+            # The detached script already copied the ensemble back + wrote the .rc
+            # marker, so JUDGE it from those files — never relaunch (that would
+            # overwrite a completed result). A crash without an ensemble parses to
+            # zero conformers and validate_result fails it, as it should.
+            self.cb.log(f"[{calc.name}] CREST finished while the app was closed; "
+                        "reading results...", "info")
+            self._crest_monitor_and_finish(calc, index, out_path, calc.name,
+                                           already_done=True)
+            return
+
+        # Fresh launch.
+        calc.state = CalcState.RUNNING
+        calc.message = ""
+        self.cb.calc_update(index, calc)
+
+        xyz = self._resolve_geometry(calc)
+        if not xyz.strip():
+            raise OrcaRunError("No coordinates for CREST (geometry is empty).")
+
+        preferred = (getattr(calc.config, "crest_env_id", "") or self.crest_distro or "").strip()
+        try:
+            distro, crest_bin = resolve_run_target(preferred)
+        except RuntimeError as e:
+            raise OrcaRunError(str(e)) from e
+        # Persist the resolved distro so a reattach after restart knows where the
+        # job runs (session.json round-trips config).
+        try:
+            calc.config.crest_env_id = distro
+        except (AttributeError, TypeError):
+            pass
+
+        calc_dir.mkdir(parents=True, exist_ok=True)
+        argv = build_crest_argv(calc.config, calc.charge, calc.multiplicity)
+        script_path = write_crest_run_files(calc_dir, calc.name, xyz, crest_bin, argv)
+
+        method = getattr(calc.config, "crest_method", "") or "gfn2"
+        self.cb.log(f"[{calc.name}] (crest_conf) running CREST [{method}] "
+                    f"in WSL:{distro} ...", "info")
+        runner = CrestRunner(distro, crest_bin)
+        self._crest_runner = runner
+        try:
+            pid, create_time = runner.launch(script_path, calc.name, out_path)
+            calc.pid = pid
+            calc.create_time = create_time
+            # Persist pid + output_path immediately so a reattach (or a
+            # judge-from-files after the app was closed) works even if ORCAdesk is
+            # closed seconds after the job starts. The detached WSL script writes
+            # results + a .rc marker here regardless of whether we're watching.
+            calc.output_path = str(out_path)
+            self.cb.calc_update(index, calc)
+            self._crest_monitor_and_finish(calc, index, out_path, calc.name)
+        finally:
+            self._crest_runner = None
+
+    def _crest_monitor_and_finish(self, calc: Calculation, index: int, out_path,
+                                  name: str, start_pos: int = 0,
+                                  already_done: bool = False) -> None:
+        """Parse the CREST ensemble + validate + mark DONE. Normally tails the
+        output until the run finishes first; with ``already_done`` (the job ended
+        while the app was closed) it skips straight to parsing the files the
+        detached script left behind. OrcaCancelled / OrcaDetached propagate to
+        run_all."""
+        from ..crest.parser import parse_crest_result
+
+        if not already_done:
+            self._crest_runner.monitor(out_path, name,
+                                       on_line=lambda ln: self.cb.log(ln, "orca"),
+                                       start_pos=start_pos)
+
+        result = parse_crest_result(str(out_path))
+        calc.result = result
+        calc.output_path = str(out_path)
+
+        validate_result(calc, result)   # raises on failure / no conformers
+
+        calc.state = CalcState.DONE
+        calc.pid = None
+        calc.create_time = None
+        n = len(result.conformers)
+        calc.message = f"Completed — {n} conformer(s)."
+        self.cb.log(f"[{calc.name}] done — {n} conformer(s).", "ok")
+        self.cb.calc_update(index, calc)
+
     # -- dependency-scoped failure propagation --
     def _dependents_of(self, calcs: list[Calculation], failed_name: str) -> set[str]:
         """All calc names that depend on failed_name, directly or transitively."""
@@ -471,11 +613,11 @@ class QueueEngine:
         'Cancelled' passes through."""
         if "cancel" in runner_msg.lower():
             return runner_msg
-        # MLIP failures already carry a precise reason (worker error / non-
-        # convergence); their .out is a plain optimizer log, not an ORCA file, so
+        # MLIP/CREST failures already carry a precise reason (worker error / non-
+        # convergence / WSL launch failure); their .out is not an ORCA file, so
         # don't run it through the ORCA parser (it would invent an ORCA-style
         # message and clobber the real one).
-        if calc.kind.startswith("mlip"):
+        if calc.kind.startswith("mlip") or calc.kind.startswith("crest"):
             return runner_msg
         # Pre-launch failure (geometry resolution, input generation, the launch
         # itself): any .out in the folder predates this attempt, so its parsed
@@ -617,6 +759,11 @@ class QueueEngine:
                 # except-handlers below treat cancel/shutdown/failure identically.
                 if calc.kind.startswith("mlip"):
                     self._run_mlip_calc(calc, i)
+                elif calc.kind.startswith("crest"):
+                    # CREST runs its Linux binary through WSL (see orcamgr/crest/),
+                    # OUTSIDE the ORCA pipeline. Like ORCA (and unlike MLIP) it is
+                    # truly detachable and reattachable across an app restart.
+                    self._run_crest_calc(calc, i)
                 else:
                     self._run_calc(calc, i)
             except OrcaDetached:

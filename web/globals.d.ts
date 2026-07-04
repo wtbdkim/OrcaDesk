@@ -22,6 +22,12 @@ interface OrcaBridge {
   remove_mlip_env(id: string): Promise<string>;        // MlipStatusPayload JSON
   check_mlip(id: string): Promise<string>;             // MlipStatusPayload JSON ("" = all)
   get_mlip_status(): Promise<string>;          // MlipStatusPayload JSON
+  // CREST (runs in WSL; separate from ORCA)
+  get_crest_status(): Promise<string>;         // CrestStatusPayload JSON
+  check_crest(): Promise<string>;              // CrestStatusPayload JSON (re-probe)
+  install_crest(distro: string): Promise<string>;      // CrestStatusPayload JSON ("" = first distro)
+  list_crest_distros(): Promise<string>;       // {distros: string[]} JSON
+  set_crest_distro(distro: string): Promise<string>;   // CrestStatusPayload JSON
   // file pickers / loaders
   pick_orca_executable(): Promise<string>;     // raw path string
   pick_workspace(): Promise<string>;           // raw path string
@@ -37,6 +43,7 @@ interface OrcaBridge {
   build_inp_preview(calcJson: string): Promise<string>;
   // queue
   add_calc(calcJson: string): Promise<string>;
+  add_calcs_from_conformers(payloadJson: string): Promise<string>;  // MutationResult JSON
   remove_calc(name: string): Promise<string>;
   clear_queue(): Promise<string>;
   reorder_calc(fromIdx: number, toIdx: number): Promise<string>;

@@ -20,6 +20,7 @@ from typing import Optional
 
 # ---- physical constants -------------------------------------------------
 HARTREE_TO_EV = 27.211386245988
+HARTREE_TO_KCAL = 627.5094740631
 
 
 # ---- data containers ----------------------------------------------------
@@ -47,6 +48,17 @@ class Transition:
     energy_cm: float
     wavelength_nm: float
     fosc: float
+
+
+@dataclass
+class Conformer:
+    """One member of a CREST conformer ensemble. ``rel_kcal`` is relative to the
+    lowest-energy conformer. ``geometry`` is the full structure so a downstream
+    ORCA calc can reference this exact conformer."""
+    index: int              # 1-based rank (1 = lowest energy)
+    energy_eh: float        # absolute energy (Hartree), from the .xyz comment line
+    rel_kcal: float         # energy relative to the best conformer (kcal/mol)
+    geometry: list = field(default_factory=list)   # list[Atom]
 
 
 @dataclass
@@ -93,6 +105,14 @@ class ParseResult:
 
     # --- geometry (final) ---
     geometry: list[Atom] = field(default_factory=list)
+
+    # --- CREST conformer search (kind == 'crest_conf'; runs via orcamgr/crest/) ---
+    # A conformer search produces an ensemble rather than a single structure.
+    # geometry/final_energy_eh are set to the lowest-energy conformer (so the
+    # existing best-geometry reference path still works), and the full ranked
+    # ensemble is exposed here for the Results tab to list + select from.
+    is_conformer_search: bool = False
+    conformers: list = field(default_factory=list)   # list[Conformer], rank-sorted
 
     # --- orbitals ---
     orbitals: list[Orbital] = field(default_factory=list)
@@ -150,7 +170,8 @@ class ParseResult:
         only shown as results for single-point and optimization runs; specialty
         runs (freq / tddft / nmr / neb) show only their specialty result."""
         specialty = (self.has_frequencies or self.has_tddft
-                     or self.has_nmr or self.has_neb_path)
+                     or self.has_nmr or self.has_neb_path
+                     or self.is_conformer_search)
         return self.is_optimization or not specialty
 
     def summary_rows(self) -> list[tuple[str, str, str]]:

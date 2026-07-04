@@ -3,6 +3,53 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.0-beta] — 2026-07-04
+
+CREST conformer search as a third execution backend. CREST has no native
+Windows build, so ORCAdesk runs its statically-linked Linux binary through WSL —
+launched detached (it survives the app closing, like a detached ORCA run) and
+kept off ORCA's `/mnt` performance cliff by running in an ext4 scratch dir and
+copying results back. A finished search exposes its whole ranked conformer
+ensemble in the Results tab, from which selected conformers are re-optimized with
+ORCA in one action.
+
+### Added
+- **CREST backend** (`orcamgr/crest/`, kept off the ORCA pipeline like
+  `orcamgr/mlip/`): a `crest_conf` calc kind for conformer search (v1 scope).
+  `runner.py` launches CREST detached in WSL (`setsid`, ext4 scratch, results +
+  a `.rc` marker copied back to the Windows workspace folder), tails the `.out`
+  for live progress, and cancels via process-group kill / reattaches across a
+  restart using the Linux pid + start-time (the WSL analogue of psutil identity).
+  `parser.py` reads `crest_conformers.xyz` + `crest.energies` into the shared
+  `ParseResult` (new `conformers` ensemble + `Conformer`), so a chosen conformer
+  hands off to ORCA through the existing geometry path. Validated end to end
+  against a real CREST 3.0.2 install in WSL Ubuntu.
+- **CREST build mode** — a fourth Build-tab mode (`beginner` / `expert` / `mlip`
+  / `crest`) with a self-contained card (name, charge/multiplicity, method
+  `GFN2`/`GFN-FF`/`GFN0`, ALPB solvent, energy window, threads), locked until a
+  WSL distro with CREST is ready.
+- **"CREST ready" top-bar indicator** following the MLIP pill's four-state
+  standard, backed by a background WSL probe (`Bridge.get_crest_status` /
+  `check_crest`).
+- **Auto-install of CREST** into a WSL distro (`Bridge.install_crest` →
+  `crest/installer.py`): downloads the static release tarball, extracts, and
+  symlinks it — no user shell interaction (the one manual prerequisite is a WSL
+  distro existing). Distro selection + install live in **Settings → CREST**.
+- **Conformer → ORCA handoff** — the Results tab lists a CREST job's ranked
+  conformers (ΔE in kcal/mol) with checkboxes + "select all"; a
+  "Generate ORCA opt / opt + freq jobs" button batch-adds one DIRECT-geometry
+  ORCA calc per selected conformer (`Bridge.add_calcs_from_conformers` →
+  `store.make_conformer_followups`).
+- **Tests** — 25 CREST tests (now 262 pytest total): the ensemble parser against
+  a real ethanol corpus (`tests/crest/fixtures/`), CLI-flag building
+  (`--uhf = multiplicity − 1`), per-kind validation, the QueueEngine path via a
+  fake runner (no WSL needed), and the conformer→ORCA batch builder.
+
+### Notes
+- An all-CREST (or all-MLIP) queue runs with **no ORCA executable configured**
+  (`queue_needs_orca` excludes both) — the shared gate for the desktop and phone
+  run entry points.
+
 ## [0.4.3-beta] — 2026-07-03
 
 Constitution-compliance release: the amended failure-lock rule (PRINCIPLES.md

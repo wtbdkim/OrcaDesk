@@ -27,6 +27,9 @@
       <div id="mlip-status" class="status-pill" title="MLIP environments">
         <span class="dot"></span><span id="mlip-status-text">MLIP not set</span>
       </div>
+      <div id="crest-status" class="status-pill" title="CREST (runs in WSL)">
+        <span class="dot"></span><span id="crest-status-text">CREST not set</span>
+      </div>
     </div>
   </header>
 
@@ -50,6 +53,7 @@
         <button id="bmode-beginner" class="active" onclick="setBuildMode('beginner')">Beginner</button>
         <button id="bmode-expert" onclick="setBuildMode('expert')">Expert</button>
         <button id="bmode-mlip" onclick="setBuildMode('mlip')">MLIP</button>
+        <button id="bmode-crest" onclick="setBuildMode('crest')">CREST</button>
         <span class="hint" id="bmode-hint" style="margin:0 0 0 10px;align-self:center"></span>
       </div>
       <div class="card" id="card-calc">
@@ -149,6 +153,51 @@
         </div>
       </div>
 
+      <div class="card" id="card-crest" style="display:none">
+        <div class="card-title">CREST conformer search <span class="qstate raw" style="margin-left:6px">CREST</span></div>
+        <div class="card-desc">Explores low-energy conformers with the xTB tight-binding methods. Runs in WSL; the ensemble can then be re-optimized with ORCA from the Results tab.</div>
+        <div id="crest-lock-note" class="mlip-lock-note" style="display:none">CREST in a WSL distribution required (see Settings → CREST).</div>
+        <div class="field-row">
+          <div class="field"><label>Name</label><input id="crest-name" type="text" placeholder="e.g. mol-crest"></div>
+          <div class="field" style="flex:0 0 110px"><label>Charge</label><input id="crest-charge" type="number" value="0"></div>
+          <div class="field" style="flex:0 0 130px"><label>Multiplicity</label><input id="crest-mult" type="number" value="1" min="1"></div>
+        </div>
+        <div class="field-row">
+          <div class="field" style="flex:0 0 190px"><label>Method</label>
+            <select id="crest-method">
+              <option value="gfn2">GFN2-xTB</option>
+              <option value="gfnff">GFN-FF (fast)</option>
+              <option value="gfn0">GFN0-xTB</option>
+            </select>
+          </div>
+          <div class="field" style="flex:0 0 190px"><label>Solvent (ALPB)</label>
+            <select id="crest-solvent">
+              <option value="">gas phase</option>
+              <option value="water">water</option>
+              <option value="acetonitrile">acetonitrile</option>
+              <option value="chcl3">chloroform</option>
+              <option value="dmso">DMSO</option>
+              <option value="methanol">methanol</option>
+              <option value="thf">THF</option>
+              <option value="toluene">toluene</option>
+              <option value="acetone">acetone</option>
+              <option value="ether">ether</option>
+              <option value="hexane">hexane</option>
+            </select>
+          </div>
+          <div class="field" style="flex:0 0 160px"><label>Energy window (kcal/mol)</label><input id="crest-ewin" type="number" value="6" step="0.5" min="0.5"></div>
+          <div class="field" style="flex:0 0 110px"><label>Threads</label><input id="crest-threads" type="number" value="4" min="1"></div>
+        </div>
+        <div class="btn-group" style="margin-top:10px;margin-bottom:4px">
+          <button class="btn btn-sm" onclick="loadCrestXyz()">Load .xyz</button>
+          <span id="crest-xyz-status" class="hint" style="margin:0;align-self:center"></span>
+        </div>
+        <div class="btn-group" style="margin-top:14px">
+          <button class="btn btn-primary" onclick="addCrestCalcToQueue()">Add to queue →</button>
+          <button class="btn btn-ghost" onclick="resetCrestForm()">Reset</button>
+        </div>
+      </div>
+
       <div id="edit-banner" class="hint" style="display:none;margin-bottom:8px"></div>
       <div class="btn-group" id="build-actions">
         <button class="btn btn-primary" id="add-btn" onclick="addCalcToQueue()">Add to queue →</button>
@@ -245,6 +294,18 @@
           <div class="field"><input id="set-mlip" type="text" class="mono" placeholder="C:\path\to\mlip-env\Scripts\python.exe"></div>
           <button class="btn" onclick="pickMlipPython()">Browse</button>
           <button class="btn" onclick="addMlipEnv()">Add</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">CREST (WSL)</div>
+        <div class="card-desc">CREST has no native Windows build, so ORCAdesk runs its Linux binary through WSL. Pick the distribution to use; ORCAdesk can install the static CREST binary into it for you (one WSL distro must already be set up).</div>
+        <div id="crest-detail" class="hint" style="margin:0 0 8px"></div>
+        <div class="field-row" style="margin-top:4px">
+          <div class="field"><label>WSL distribution</label>
+            <select id="set-crest-distro" onchange="onCrestDistroChange()"><option value="">auto-detect</option></select>
+          </div>
+          <button class="btn btn-ghost" onclick="checkCrest()">Re-check</button>
+          <button class="btn" id="crest-install-btn" onclick="installCrest()">Install CREST</button>
         </div>
       </div>
       <div class="card">
