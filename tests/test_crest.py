@@ -105,6 +105,28 @@ def test_ensemble_present_without_out_file_is_inferred_successful(tmp_path):
     assert len(r.conformers) == 1
 
 
+def test_crash_exit_code_is_surfaced_not_hidden_as_no_ensemble(tmp_path):
+    # A CREST segfault (exit 139) must be reported as a crash, not a bland
+    # "no conformer ensemble" (the real user-reported case).
+    (tmp_path / "job.crest.rc").write_text("139\n", encoding="utf-8")
+    (tmp_path / "job.out").write_text(
+        "CREST banner...\nProgram received signal SIGSEGV: Segmentation fault.\n",
+        encoding="utf-8")
+    r = parse_crest_result(str(tmp_path / "job.out"))
+    assert r.terminated_normally is False
+    assert not r.conformers
+    assert "139" in r.error_message
+    assert "again" in r.error_message.lower()   # tells the user to retry
+
+
+def test_clean_exit_without_ensemble_is_reported_distinctly(tmp_path):
+    (tmp_path / "job.crest.rc").write_text("0\n", encoding="utf-8")
+    (tmp_path / "job.out").write_text("did nothing useful\n", encoding="utf-8")
+    r = parse_crest_result(str(tmp_path / "job.out"))
+    assert r.terminated_normally is False
+    assert "exit 0" in r.error_message.lower() or "no conformer" in r.error_message.lower()
+
+
 def test_conformers_are_ranked_by_energy(tmp_path):
     # deliberately out-of-order input; parser must sort ascending by energy
     (tmp_path / "crest_conformers.xyz").write_text(

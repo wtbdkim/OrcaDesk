@@ -88,6 +88,49 @@ def _first_float(s: str) -> float | None:
     return None
 
 
+def _failure_detail(folder: Path, out_p, fallback: str = "") -> str:
+    """Explain why a CREST run produced no ensemble, using the ``.crest.rc`` exit
+    code the run script wrote and the tail of the ``.out``. A non-zero exit is a
+    CREST crash/abort (139 = segmentation fault — an intermittent CREST 3.0.2
+    bug), which must be surfaced honestly rather than reported as a bland "no
+    conformers"."""
+    rc = None
+    if out_p is not None:
+        try:
+            rc_txt = (folder / f"{out_p.stem}.crest.rc").read_text(encoding="utf-8").strip()
+            rc = int(rc_txt)
+        except (OSError, ValueError):
+            rc = None
+    tail = ""
+    if out_p is not None and out_p.exists():
+        try:
+            lines = [ln.strip() for ln in
+                     out_p.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+            for ln in reversed(lines):
+                if any(k in ln for k in ("SIGSEGV", "Segmentation", "error", "ERROR",
+                                         "abort", "Abort", "terminated")):
+                    tail = ln
+                    break
+            if not tail and lines:
+                tail = lines[-1]
+        except OSError:
+            pass
+
+    if rc is not None and rc != 0:
+        if rc == 139:
+            # self-explanatory; the backtrace tail adds only noise
+            return ("CREST crashed (segmentation fault, exit 139) — an intermittent "
+                    "CREST 3.0.2 bug, not your input. Build the calculation again to retry.")
+        msg = f"CREST exited with an error (exit code {rc}); it produced no conformers."
+        return f"{msg} Last output: {tail}" if tail else msg
+    if rc == 0:
+        return ("CREST finished (exit 0) but wrote no conformer ensemble."
+                + (f" Last output: {tail}" if tail else ""))
+    # no .rc marker at all → the run was interrupted before it could finish
+    return (fallback or "CREST produced no conformer ensemble (crest_conformers.xyz not found)."
+            ) + (f" Last output: {tail}" if tail else "")
+
+
 def parse_crest_result(output_path: str) -> ParseResult:
     """Read a CREST run's output folder into a ParseResult.
 
@@ -111,8 +154,9 @@ def parse_crest_result(output_path: str) -> ParseResult:
         # Fall back to the single best structure if the ensemble file is absent.
         conf_p = folder / "crest_best.xyz"
     if not conf_p.exists():
-        r.error_message = ("CREST produced no conformer ensemble "
-                           "(crest_conformers.xyz not found).")
+        # No ensemble — explain WHY from the exit-code marker + output (a CREST
+        # crash must not be reported as a bland "no ensemble"; P2/A22).
+        r.error_message = _failure_detail(folder, out_p)
         return r
 
     try:
@@ -122,7 +166,8 @@ def parse_crest_result(output_path: str) -> ParseResult:
         return r
 
     if not frames:
-        r.error_message = "CREST ensemble file contained no structures."
+        r.error_message = _failure_detail(folder, out_p,
+                                          fallback="CREST ensemble file contained no structures.")
         return r
 
     # Rank by absolute energy (frames with a parsed energy first, ascending);

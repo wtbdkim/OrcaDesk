@@ -49,6 +49,9 @@ ORCA in one action.
 - An all-CREST (or all-MLIP) queue runs with **no ORCA executable configured**
   (`queue_needs_orca` excludes both) — the shared gate for the desktop and phone
   run entry points.
+- A failed CREST run reports the real cause from its exit-code marker: a crash
+  (e.g. segmentation fault, exit 139 — an intermittent CREST 3.0.2 bug) reads as
+  a crash with a "retry" hint, not a bland "no conformer ensemble".
 
 ## [0.4.3-beta] — 2026-07-03
 
