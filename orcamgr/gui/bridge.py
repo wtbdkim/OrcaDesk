@@ -83,6 +83,15 @@ _G_DOTS = re.compile(r"\.{5,}")
 _G_DONE = re.compile(r"\*\*\*\s*OPTIMIZATION RUN DONE\s*\*\*\*|THE OPTIMIZATION HAS CONVERGED|HURRAY", re.I)
 _G_POST = re.compile(
     r"VIBRATIONAL FREQUENCIES|ORCA SCF RESPONSE|GEOMETRIC PERTURBATIONS|CP-?SCF DRIVER|SCF HESSIAN|ANALYTICAL FREQUENCIES|NUMERICAL FREQUENCIES")
+# CREST iMTD-GC progress markers (mirror of web/scf_graph.js CrestTracker regexes)
+# so get_graph_lines can reseed a reattached CREST run's phase/energy graph. These
+# never appear in an ORCA .out (and vice versa), so matching them is additive/safe.
+_CREST_GRAPH = re.compile(
+    r"CREGEN>\s*E lowest|structures?\s+remain within|Meta-Dynamics Iteration|"
+    r"\(\d+\s*MTDs\)|\*MTD\s+\d+\s+completed successfully|CREST terminated normally|"
+    r"Change in topology detected|safety termination of CREST|"
+    r"number of unique conformers for further calc|Initial Geometry Optimization|"
+    r"iMTD-GC SAMPLING|Additional regular MDs|Final Geometry Optimization")
 
 
 class Bridge(QObject):
@@ -352,37 +361,51 @@ class Bridge(QObject):
         path = QFileDialog.getExistingDirectory(self.window, "Select workspace folder")
         return path or ""
 
-    @staticmethod
-    def _load_result(path: str) -> str:
+    def _load_result(self, path: str, set_workspace: bool = False) -> str:
         """Build the unified LoadResult envelope shared by every load_* slot.
         An empty path means the user cancelled the file dialog — a deliberate
         choice, reported as ok=True/cancelled=True so the front-end never
         surfaces it as an error; ok=False is reserved for real read failures
         (the old per-slot shapes conflated the two — A2). "name" is the file
-        stem, used to auto-fill the calculation name."""
+        stem, used to auto-fill the calculation name.
+
+        When ``set_workspace`` (the .xyz loaders), the loaded file's folder is
+        adopted as the workspace so a project's inputs and its calculation output
+        live together; the adopted folder is echoed back in "workspace" so the
+        front-end stays in sync (empty otherwise)."""
         if not path:
             return json.dumps(LoadResult(
-                ok=True, cancelled=True, text="", name="", error=""))
+                ok=True, cancelled=True, text="", name="", error="", workspace=""))
         try:
             p = Path(path)
             # errors="replace": a stray non-UTF-8 byte must degrade to a
             # visible replacement char, not escape the OSError handling as a
             # UnicodeDecodeError crossing the JS boundary.
-            return json.dumps(LoadResult(
-                ok=True, cancelled=False,
-                text=p.read_text(encoding="utf-8", errors="replace"),
-                name=p.stem, error=""))
+            text = p.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             return json.dumps(LoadResult(
-                ok=False, cancelled=False, text="", name="", error=str(e)))
+                ok=False, cancelled=False, text="", name="", error=str(e), workspace=""))
+        workspace = ""
+        if set_workspace:
+            try:
+                workspace = str(p.resolve().parent)
+                self.settings.workspace_root = workspace
+                self.settings.save()
+            except OSError:
+                workspace = ""   # never let a settings-save error fail the load
+        return json.dumps(LoadResult(
+            ok=True, cancelled=False, text=text, name=p.stem, error="", workspace=workspace))
 
     @pyqtSlot(result=str)
     def load_xyz_file(self) -> str:
-        """Pick a .xyz file; returns a LoadResult JSON."""
+        """Pick a .xyz file; returns a LoadResult JSON. The dialog opens at the
+        current workspace, and the chosen file's folder is adopted as the new
+        workspace (see _load_result)."""
         path, _ = QFileDialog.getOpenFileName(
-            self.window, "Load .xyz file", "", "XYZ file (*.xyz);;All files (*.*)"
+            self.window, "Load .xyz file", self.settings.workspace_root or "",
+            "XYZ file (*.xyz);;All files (*.*)"
         )
-        return self._load_result(path)
+        return self._load_result(path, set_workspace=True)
 
     @pyqtSlot(result=str)
     def load_inp_file(self) -> str:
@@ -402,8 +425,8 @@ class Bridge(QObject):
     @pyqtSlot(str, result=str)
     def load_xyz_path(self, path: str) -> str:
         """Load a .xyz by PATH (drag-and-drop). Same LoadResult as
-        load_xyz_file."""
-        return self._load_result(path)
+        load_xyz_file, including adopting the file's folder as the workspace."""
+        return self._load_result(path, set_workspace=True)
 
     # --- option lists ---
     @pyqtSlot(str, result=str)
@@ -519,17 +542,19 @@ class Bridge(QObject):
 
     @pyqtSlot(str, result=str)
     def add_calcs_from_conformers(self, payload_json: str) -> str:
-        """Batch-create ORCA follow-up calcs from selected CREST conformers.
+        """Batch-create follow-up calcs from selected CREST conformers.
 
-        Payload: {parent_name, indices:[1-based...], kind:"opt"|"opt_freq"}. Each
-        selected conformer becomes an independent DIRECT-geometry calc (its
-        coordinates + the parent's charge/multiplicity), so "re-optimize these
-        conformers with ORCA" is one action. Returns the updated snapshot."""
+        Payload: {parent_name, indices:[1-based...], kind, model?}. ``kind`` is
+        "opt"/"opt_freq" (ORCA) or "mlip_opt" (a MACE pre-optimization, with the
+        model in ``model``). Each selected conformer becomes an independent
+        DIRECT-geometry calc (its coordinates + the parent's charge/multiplicity),
+        so "re-optimize these conformers" is one action. Returns the updated snapshot."""
         try:
             d = json.loads(payload_json or "{}")
             parent_name = (d.get("parent_name") or "").strip()
             indices = [int(x) for x in (d.get("indices") or [])]
             kind = (d.get("kind") or "opt").strip()
+            model = (d.get("model") or "").strip()
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             return json.dumps(MutationResult(ok=False, error=f"Invalid request: {e}"))
 
@@ -547,7 +572,8 @@ class Bridge(QObject):
 
         existing = {c.name for c in self.store.list()}
         try:
-            new_calcs = make_conformer_followups(parent, result, indices, kind, existing)
+            new_calcs = make_conformer_followups(parent, result, indices, kind, existing,
+                                                 mlip_model=model)
         except ValueError as e:
             return json.dumps(MutationResult(ok=False, error=str(e)))
 
@@ -671,6 +697,10 @@ class Bridge(QObject):
                         # seeded graph flips to 100% / "running frequencies…"
                         lines.append(ln)
                     elif _G_ITER.match(ln):
+                        lines.append(ln)
+                    elif _CREST_GRAPH.search(ln):
+                        # CREST phase/energy markers (a CREST .out has no ORCA
+                        # SCF/geo lines, so this branch is reached cleanly)
                         lines.append(ln)
             return json.dumps(GraphLinesResult(ok=True, lines=lines))
         except Exception as e:

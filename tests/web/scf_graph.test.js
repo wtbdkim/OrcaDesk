@@ -499,6 +499,82 @@ test("renderFreqProgress floors the percentage so the 0.999 cap never displays a
   assert.ok(doneHtml.includes("100%"));
 });
 
+// ---------- CrestTracker (CREST conformer-search progress) ----------
+// Line formats are taken verbatim from a real CREST 3.0.2 iMTD-GC run.
+const CREST_LINES = [
+  " -----------------------------",
+  " Initial Geometry Optimization",
+  " Geometry successfully optimized.",
+  " Σ(t(MTD)) / ps :    70.0 (14 MTDs)",
+  " ------------------------------",
+  " Meta-Dynamics Iteration 1",
+  "*MTD   1 completed successfully ...        0 min,  2.289 sec",
+  "*MTD   2 completed successfully ...        0 min,  2.368 sec",
+  "CREGEN> E lowest :   -12.40772",
+  " 2 structures remain within    12.00 kcal/mol window",
+  " Meta-Dynamics Iteration 2",
+  "*MTD   1 completed successfully ...        0 min,  2.533 sec",
+  "CREGEN> E lowest :   -12.40773",
+  " 1 structures remain within     6.00 kcal/mol window",
+  " Additional regular MDs on lowest 1 conformer(s)",
+  "   ================================================",
+  "   |           Final Geometry Optimization        |",
+  " number of unique conformers for further calc            1",
+  " CREST terminated normally.",
+];
+
+test("CrestTracker tracks the phase chain, MTD count, energies and conformer count", function () {
+  const c = new SCFGraph.CrestTracker();
+  feed(c, CREST_LINES);
+  assert.ok(c.hasData());
+  assert.ok(c.finished, "CREST terminated normally -> finished");
+  assert.strictEqual(c.aStage, "final", "advanced through init/sample/md to final");
+  assert.strictEqual(c.mtdTotal, 14, "parsed '(14 MTDs)'");
+  assert.strictEqual(c.iter, 2, "latest Meta-Dynamics Iteration");
+  assert.strictEqual(c.nConf, 1, "unique conformers for further calc");
+  assert.strictEqual(c.windowCount, 1, "latest N-structures-in-window count");
+  assert.deepStrictEqual(c.energies, [-12.40772, -12.40773], "one E-lowest per CREGEN pass");
+});
+
+test("CrestTracker resets the per-iteration MTD count on a new Meta-Dynamics Iteration", function () {
+  const c = new SCFGraph.CrestTracker();
+  feed(c, [
+    " Meta-Dynamics Iteration 1",
+    "*MTD   1 completed successfully ...        0 min,  1.0 sec",
+    "*MTD   2 completed successfully ...        0 min,  1.0 sec",
+  ]);
+  assert.strictEqual(c.mtdDone, 2);
+  c.push(" Meta-Dynamics Iteration 2");
+  assert.strictEqual(c.mtdDone, 0, "new iteration restarts the MTD counter");
+  assert.strictEqual(c.iter, 2);
+});
+
+test("CrestTracker flags a topology-change safety termination as an error", function () {
+  const c = new SCFGraph.CrestTracker();
+  c.push(" Initial Geometry Optimization");
+  c.push(" *WARNING* Change in topology detected!");
+  c.push(" ERROR STOP safety termination of CREST");
+  assert.ok(c.error, "topology change / safety termination -> error");
+  assert.ok(!c.finished);
+  const html = SCFGraph.renderCrestProgress(c);
+  assert.ok(html.includes("STOPPED"), "the HUD status shows the run stopped");
+});
+
+test("renderCrestProgress shows the CREST phase HUD; renderCrestGraph plots E-lowest", function () {
+  const c = new SCFGraph.CrestTracker();
+  feed(c, CREST_LINES);
+  const prog = SCFGraph.renderCrestProgress(c);
+  assert.strictEqual(typeof prog, "string");
+  assert.ok(prog.includes("CREST CONFORMER SEARCH"), "panel title");
+  assert.ok(prog.includes("CREST COMPLETE"), "finished status");
+  const graph = SCFGraph.renderCrestGraph(c, { width: 320, height: 180 });
+  assert.ok(graph.includes("<path"), "energy polyline drawn");
+  assert.ok(graph.includes("lowest E (Eh)"), "y-axis title");
+  // empty tracker -> placeholder, not a crash
+  const empty = SCFGraph.renderCrestGraph(new SCFGraph.CrestTracker(), {});
+  assert.ok(empty.includes("waiting for data"));
+});
+
 // ---------- summary ----------
 console.log("");
 console.log(passed + " passed, " + failed + " failed");

@@ -88,12 +88,51 @@ def _first_float(s: str) -> float | None:
     return None
 
 
+# Specific, actionable CREST failure signatures, checked against the full .out
+# BEFORE the generic exit-code message so a known cause is named plainly. Each is
+# (substrings-any, message); the message should say what went wrong AND what to do.
+# Grounded in real CREST 3.0.2 output (P3): the topology-change / safety-termination
+# family was seen on a real planar-cyclohexane run (exit 1). The list is
+# intentionally extensible — add a signature when a new failure mode is observed
+# in an actual .out, never from guesswork.
+_CREST_ERROR_SIGNATURES: "list[tuple[tuple[str, ...], str]]" = [
+    (("Change in topology detected", "safety termination"),
+     "CREST stopped because the molecule's bonding topology changed during the "
+     "initial optimization — usually a strained or unphysical input geometry "
+     "(e.g. a flat ring, or bad bond lengths). Pre-optimize the structure first "
+     "(an ORCA or MLIP opt, then reference it), or switch the method to GFN-FF, "
+     "then retry."),
+]
+
+
+def _match_error_signature(out_text: str) -> str:
+    """Return the message for the first matching known-failure signature, else ""."""
+    if not out_text:
+        return ""
+    for keys, message in _CREST_ERROR_SIGNATURES:
+        if any(k in out_text for k in keys):
+            return message
+    return ""
+
+
+def _tail_signal_line(out_text: str) -> str:
+    """The last output line that looks like an error/termination signal (else the
+    very last non-blank line), for appending to a generic failure message."""
+    lines = [ln.strip() for ln in out_text.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        if any(k in ln for k in ("SIGSEGV", "Segmentation", "error", "ERROR",
+                                 "abort", "Abort", "terminated")):
+            return ln
+    return lines[-1] if lines else ""
+
+
 def _failure_detail(folder: Path, out_p, fallback: str = "") -> str:
     """Explain why a CREST run produced no ensemble, using the ``.crest.rc`` exit
-    code the run script wrote and the tail of the ``.out``. A non-zero exit is a
-    CREST crash/abort (139 = segmentation fault — an intermittent CREST 3.0.2
-    bug), which must be surfaced honestly rather than reported as a bland "no
-    conformers"."""
+    code the run script wrote and the ``.out``. Diagnosis is layered: a
+    segmentation fault (exit 139 — an intermittent CREST 3.0.2 bug) and known
+    failure signatures (e.g. a topology-change safety termination) are named with
+    an actionable message; otherwise fall back to the exit code + last output
+    line. Surfaced honestly rather than as a bland "no conformers"."""
     rc = None
     if out_p is not None:
         try:
@@ -101,26 +140,24 @@ def _failure_detail(folder: Path, out_p, fallback: str = "") -> str:
             rc = int(rc_txt)
         except (OSError, ValueError):
             rc = None
-    tail = ""
+    out_text = ""
     if out_p is not None and out_p.exists():
         try:
-            lines = [ln.strip() for ln in
-                     out_p.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
-            for ln in reversed(lines):
-                if any(k in ln for k in ("SIGSEGV", "Segmentation", "error", "ERROR",
-                                         "abort", "Abort", "terminated")):
-                    tail = ln
-                    break
-            if not tail and lines:
-                tail = lines[-1]
+            out_text = out_p.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            pass
+            out_text = ""
+    tail = _tail_signal_line(out_text)
 
+    if rc == 139:
+        # self-explanatory; the backtrace tail adds only noise
+        return ("CREST crashed (segmentation fault, exit 139) — an intermittent "
+                "CREST 3.0.2 bug, not your input. Build the calculation again to retry.")
+    # A named cause (topology change, etc.) beats the generic exit-code message.
+    signature = _match_error_signature(out_text)
+    if signature:
+        code = f" (CREST exit code {rc})" if rc not in (None, 0) else ""
+        return signature + code
     if rc is not None and rc != 0:
-        if rc == 139:
-            # self-explanatory; the backtrace tail adds only noise
-            return ("CREST crashed (segmentation fault, exit 139) — an intermittent "
-                    "CREST 3.0.2 bug, not your input. Build the calculation again to retry.")
         msg = f"CREST exited with an error (exit code {rc}); it produced no conformers."
         return f"{msg} Last output: {tail}" if tail else msg
     if rc == 0:

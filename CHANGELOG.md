@@ -3,7 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [0.5.0-beta] — 2026-07-04
+## [0.5.0-beta] — 2026-07-06
 
 CREST conformer search as a third execution backend. CREST has no native
 Windows build, so ORCAdesk runs its statically-linked Linux binary through WSL —
@@ -35,15 +35,62 @@ ORCA in one action.
   `crest/installer.py`): downloads the static release tarball, extracts, and
   symlinks it — no user shell interaction (the one manual prerequisite is a WSL
   distro existing). Distro selection + install live in **Settings → CREST**.
-- **Conformer → ORCA handoff** — the Results tab lists a CREST job's ranked
-  conformers (ΔE in kcal/mol) with checkboxes + "select all"; a
-  "Generate ORCA opt / opt + freq jobs" button batch-adds one DIRECT-geometry
-  ORCA calc per selected conformer (`Bridge.add_calcs_from_conformers` →
-  `store.make_conformer_followups`).
+- **Conformer → ORCA / MLIP handoff** — the Results tab lists a CREST job's
+  ranked conformers (ΔE in kcal/mol) with checkboxes + "select all"; the
+  "ORCA opt / opt + freq jobs" buttons batch-add one DIRECT-geometry ORCA calc
+  per selected conformer, and a **"MLIP opt jobs"** button (with a MACE-model
+  picker, enabled once a MACE environment is ready) does the same as `mlip_opt`
+  MACE pre-optimizations (`Bridge.add_calcs_from_conformers` →
+  `store.make_conformer_followups`, `kind="mlip_opt"`).
 - **Tests** — 25 CREST tests (now 262 pytest total): the ensemble parser against
   a real ethanol corpus (`tests/crest/fixtures/`), CLI-flag building
   (`--uhf = multiplicity − 1`), per-kind validation, the QueueEngine path via a
   fake runner (no WSL needed), and the conformer→ORCA batch builder.
+
+### Changed
+- **MLIP build card gains a geometry source selector** (`.xyz` file / from
+  another calculation), mirroring the ORCA build card. An `mlip_opt`
+  pre-optimization can now take its starting geometry from another queued calc's
+  optimized result (a CREST best conformer or an ORCA/MLIP opt), injected at run
+  time through the same `_resolve_geometry` reference path — the engine already
+  supported it; only the build UI had been `.xyz`-only.
+- **Settings → CREST: the Install CREST button is disabled once CREST is present
+  in the target distro** (auto-detect ⇒ any distro; a specific pick ⇒ that
+  distro), so a redundant re-install isn't offered.
+- **Loading a `.xyz` adopts its folder as the workspace.** Every `.xyz` loader
+  (ORCA / MLIP / CREST build cards, NEB product, drag-and-drop) opens the file
+  dialog at the current workspace and, on load, sets the workspace to the chosen
+  file's folder — so a project's inputs and its calculation output land together
+  without a manual Settings edit. The adopted path is echoed back on `LoadResult`
+  (new `workspace` field) to keep the Settings field in sync, with a toast.
+- **Queue rows show an execution-backend badge** — `MLIP` / `CREST` / `DFT`
+  (ORCA) — next to each calculation name, generalizing the former MLIP-only badge.
+- **Number inputs no longer show the native up/down spinner arrows** (global
+  style) — the value is typed, and the steppers only cluttered the field.
+- **Live CREST progress visualization in the Log → Graph tab.** A running CREST
+  conformer search now shows a phase-chain HUD (initial opt → metadynamics
+  sampling → additional MD → final opt → done, with the per-round MTD count, the
+  iMTD-GC iteration, and the conformer count) plus a graph of the lowest energy
+  per CREGEN sort pass — the CREST analogue of the SCF/optimization graph. A new
+  `CrestTracker` (`web/scf_graph.js`, unit-tested in `tests/web/scf_graph.test.js`)
+  parses the streamed `.out`; `bridge.get_graph_lines` also keeps CREST markers so
+  a reattached run rebuilds its graph. Validated against real CREST 3.0.2 output.
+- **Log tab: the graph toggle is renamed "SCF graph" → "Graph"** (it now also
+  serves optimization, frequency, TD-DFT and CREST views), and the empty-graph
+  placeholder reads "waiting for data…" instead of "waiting for SCF data…".
+
+- **CREST failure diagnosis is subdivided into named, actionable causes.**
+  Beyond the segfault case, a **topology-change safety termination** (CREST
+  stopping because the initial optimization changed the molecule's bonding — a
+  strained/unphysical input geometry, e.g. a flat ring) is now reported with the
+  cause and the fix (pre-optimize and reference it, or use GFN-FF), instead of a
+  generic exit-code message. The signature list (`crest/parser.py`) is extensible
+  as more real failure modes are observed.
+
+### Fixed
+- **The `.inp` button no longer appears on MLIP/CREST queue rows.** Those backends
+  produce no ORCA input, so the button fell through to a bogus generated ORCA
+  `.inp` preview; it is now ORCA-only.
 
 ### Notes
 - An all-CREST (or all-MLIP) queue runs with **no ORCA executable configured**

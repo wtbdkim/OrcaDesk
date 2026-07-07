@@ -121,6 +121,7 @@ window.onXyzDropped = async function (path) {
     const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_path(path)));
     if (res.cancelled) return;   // deliberate dismissal, never an error
     if (!res.ok) { failNotify("Could not read that .xyz."); return; }
+    maybeAdoptWorkspace(res);
     directXyz = parseXyzText(res.text);
     const n = directXyz ? directXyz.split("\n").length : 0;
     const st = document.getElementById("xyz-status");
@@ -184,6 +185,7 @@ async function pollTick() {
     // seed the graph from the full .out for a reattached / finished-while-closed
     // opt whose live stream didn't capture its history (see maybeSeedGraph)
     await maybeSeedGraph();
+    await maybeSeedCrestGraph();
     // small "~N s / SCF cycle" pace indicator — lives in the graph summary's
     // progress meta line, so the span only exists while the SCF panel is shown;
     // keep it fresh between (throttled) panel re-renders
@@ -217,6 +219,31 @@ async function maybeSeedGraph() {
       const g = new SCFGraph.GeoTracker();
       for (const ln of r.lines) { t.push(ln); g.push(ln); }   // offline: never via appendLog (no DOM flood)
       _scfTracker = t; _geoTracker = g; _scfDirty = true;
+    }
+  } catch (e) {
+    _seededGraph.delete(target.name);   // let a later tick retry
+  }
+}
+
+// CREST analogue of maybeSeedGraph: a conformer search reattached after a close
+// (or finished while ORCAdesk was closed) never streamed its history, so rebuild
+// the CrestTracker from the .out on disk. Fresh-launch CREST calcs are already in
+// _seededGraph (appendLog's start marker), so the live stream owns them.
+async function maybeSeedCrestGraph() {
+  if (!SCFGraph) return;
+  let target = (queue || []).find(c => c.state === "running" && (c.kind || "").startsWith("crest"));
+  if (!target && _crestTracker && !_crestTracker.hasData()) {
+    const dones = (queue || []).filter(c => c.state === "done" && (c.kind || "").startsWith("crest"));
+    target = dones.length ? dones[dones.length - 1] : null;
+  }
+  if (!target || _seededGraph.has(target.name)) return;
+  _seededGraph.add(target.name);
+  try {
+    const r = /** @type {GraphLinesResult} */ (JSON.parse(await bridge.get_graph_lines(target.name)));
+    if (r && r.ok && r.lines && r.lines.length) {
+      const c = new SCFGraph.CrestTracker();
+      for (const ln of r.lines) c.push(ln);   // offline: never via appendLog
+      _crestTracker = c; _scfDirty = true;
     }
   } catch (e) {
     _seededGraph.delete(target.name);   // let a later tick retry
@@ -512,7 +539,7 @@ function applyMlipLock() {
   card.classList.toggle("locked", locked);
   const note = document.getElementById("mlip-lock-note");
   if (note) note.style.display = locked ? "" : "none";
-  for (const id of ["mlip-name", "mlip-model"]) {
+  for (const id of ["mlip-name", "mlip-model", "mlip-ref-select"]) {
     const el = document.getElementById(id);
     if (el) el.disabled = locked;
   }
@@ -701,6 +728,17 @@ function renderCrestSettings(st) {
     }
     sel.value = prev;
   }
+  const btn = document.getElementById("crest-install-btn");
+  if (btn) {
+    // Installing is redundant once CREST is present in the target distro
+    // (auto-detect ⇒ any distro; a specific pick ⇒ that distro).
+    const target = sel ? sel.value : "";
+    const alreadyReady = target
+      ? distros.some(d => d.distro === target && d.ready)
+      : distros.some(d => d.ready);
+    btn.disabled = alreadyReady;
+    btn.title = alreadyReady ? "CREST is already installed here" : "";
+  }
   if (detail) {
     if (st && !st.wsl) detail.textContent = "WSL is not available on this machine.";
     else if (!distros.length) detail.textContent = "No usable WSL distribution found. Install one, e.g. `wsl --install -d Ubuntu`.";
@@ -844,10 +882,21 @@ function parseXyzText(content) {
   return coords.join("\n");
 }
 
+/** After a .xyz load, if the backend adopted the file's folder as the workspace,
+ *  sync the cached settings + the Settings field and tell the user. @param {LoadResult} res */
+function maybeAdoptWorkspace(res) {
+  const ws = res && res.workspace;
+  if (!ws) return;
+  if (settings) settings.workspace_root = ws;
+  const f = document.getElementById("set-ws");
+  if (f) f.value = ws;
+  toast(`Workspace set to ${ws}`);
+}
 async function loadXyz() {
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;   // deliberate dismissal, never an error
   if (!res.ok) { failNotify("Could not read that .xyz."); return; }
+  maybeAdoptWorkspace(res);
   directXyz = parseXyzText(res.text);
   const n = directXyz ? directXyz.split("\n").length : 0;
   const st = document.getElementById("xyz-status");
@@ -1050,6 +1099,7 @@ async function loadNebProduct() {
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;   // deliberate dismissal, never an error
   if (!res.ok) { failNotify("Could not read that .xyz."); return; }
+  maybeAdoptWorkspace(res);
   const xyz = parseXyzText(res.text);
   if (!xyz) { appendLog("No atoms in the product .xyz.", "warn"); return; }
   _nebProductXyz = xyz;
@@ -1248,6 +1298,7 @@ async function loadMlipXyz() {
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;   // deliberate dismissal, never an error
   if (!res.ok) { failNotify("Could not read that .xyz."); return; }
+  maybeAdoptWorkspace(res);
   mlipXyz = parseXyzText(res.text);
   const n = mlipXyz ? mlipXyz.split("\n").length : 0;
   document.getElementById("mlip-xyz-status").textContent =
@@ -1257,6 +1308,39 @@ function resetMlipForm() {
   document.getElementById("mlip-name").value = "";
   mlipXyz = "";
   document.getElementById("mlip-xyz-status").textContent = "";
+  const dr = document.querySelector('input[name="mlip-geomsrc"][value="direct"]');
+  if (dr) dr.checked = true;
+  onMlipGeomSourceChange();
+}
+/** @returns {string} the selected MLIP geometry source ("direct" | "reference"). */
+function currentMlipGeomSource() {
+  const r = document.querySelector('input[name="mlip-geomsrc"]:checked');
+  return r ? r.value : "direct";
+}
+/** Toggle the MLIP .xyz-loader vs reference-picker branch (mirror of onGeomSourceChange). */
+function onMlipGeomSourceChange() {
+  const src = currentMlipGeomSource();
+  document.getElementById("mlip-geom-direct").style.display = src === "direct" ? "block" : "none";
+  document.getElementById("mlip-geom-reference").style.display = src === "reference" ? "block" : "none";
+  if (src === "reference") refreshMlipRefSelect();
+}
+/** Fill the MLIP reference dropdown from the current queue (mirror of refreshRefSelect).
+ *  Lists every queued calc; the engine validates at run time that the ref produced a geometry. */
+function refreshMlipRefSelect() {
+  const sel = document.getElementById("mlip-ref-select");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = "";
+  if (!queue.length) {
+    sel.innerHTML = `<option value="">(no calculations in queue yet)</option>`;
+    return;
+  }
+  for (const c of queue) {
+    const o = document.createElement("option");
+    o.value = c.name; o.textContent = `${c.name}  (${c.kind})`;
+    sel.appendChild(o);
+  }
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
 }
 async function addMlipCalcToQueue() {
   try {
@@ -1267,13 +1351,22 @@ async function addMlipCalcToQueue() {
       throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
     if (queue.some(c => c.name === name))
       throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
-    if (!mlipXyz) throw new Error("Load an .xyz file first.");
     const model = document.getElementById("mlip-model").value;
+    const src = currentMlipGeomSource();
+    let xyz = "", ref_name = "";
+    if (src === "reference") {
+      ref_name = document.getElementById("mlip-ref-select").value;
+      if (!ref_name) throw new Error("Select a calculation to reference.");
+      if (ref_name === name) throw new Error("A calculation can't reference its own geometry.");
+    } else {
+      if (!mlipXyz) throw new Error("Load an .xyz file first.");
+      xyz = mlipXyz;
+    }
     const calc = /** @type {CalcInput} */ ({
       name, kind: "mlip_opt",
       charge: 0, multiplicity: 1,
-      geometry_source: "direct",
-      xyz: mlipXyz, ref_name: "",
+      geometry_source: src,
+      xyz, ref_name,
       is_raw: false, raw_text: "",
       config: { kind: "mlip_opt", mlip_model: model, mlip_env_id: "" },
       state: "pending", message: "",
@@ -1301,6 +1394,7 @@ async function loadCrestXyz() {
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;
   if (!res.ok) { failNotify("Could not read that .xyz."); return; }
+  maybeAdoptWorkspace(res);
   crestXyz = parseXyzText(res.text);
   const n = crestXyz ? crestXyz.split("\n").length : 0;
   document.getElementById("crest-xyz-status").textContent =
@@ -1717,8 +1811,11 @@ function renderQueue() {
     // ref_name is user-typed (a calc name) and lands in innerHTML — escape it
     const srcLabel = c.geometry_source === "reference" ? `ref → ${escapeHtml(c.ref_name)}` : "xyz";
     const isMlip = (c.kind || "").startsWith("mlip");
+    const isCrest = (c.kind || "").startsWith("crest");
     const rawBadge = c.is_raw ? `<span class="qstate raw">raw</span>` : "";
-    const mlipBadge = isMlip ? `<span class="qstate raw">MLIP</span>` : "";
+    // every row shows its execution backend: MLIP / CREST / DFT (ORCA)
+    const backendLabel = isMlip ? "MLIP" : isCrest ? "CREST" : "DFT";
+    const backendBadge = `<span class="qstate raw">${backendLabel}</span>`;
     // charge/mult are meaningless for MLIP; show them only for ORCA calcs
     const cmLabel = isMlip ? "" : ` · charge ${c.charge} · mult ${c.multiplicity}`;
     // a "Completed." note is redundant with the done badge — hide completion notices
@@ -1732,7 +1829,10 @@ function renderQueue() {
     const handle = editable
       ? `<span class="drag-handle" title="Reorder handle">≡</span>` : `<span class="drag-handle placeholder"></span>`;
     // view the input (.inp) — available for ANY state, incl. running/done
-    const viewBtn = `<button class="btn btn-sm btn-ghost" onclick="viewInp(${i})" title="Input (.inp)">.inp</button>`;
+    // .inp is ORCA-only: MLIP/CREST calcs produce no ORCA input, so showing it
+    // would fall back to a bogus generated preview — hide the button for them.
+    const viewBtn = (isMlip || isCrest) ? ""
+      : `<button class="btn btn-sm btn-ghost" onclick="viewInp(${i})" title="Input (.inp)">.inp</button>`;
     const editBtn = editable
       ? `<button class="btn btn-sm btn-ghost" onclick="editCalc(${i})">edit</button>` : "";
     const delBtn = removable
@@ -1740,7 +1840,7 @@ function renderQueue() {
     div.innerHTML = `
       ${handle}
       <div style="flex:1">
-        <div class="qname">${escapeHtml(c.name)}${rawBadge}${mlipBadge}</div>
+        <div class="qname">${escapeHtml(c.name)}${rawBadge}${backendBadge}</div>
         <div class="qsteps">${c.kind} · ${srcLabel}${cmLabel}</div>
         ${showMsg ? (
           c.state === "failed"
@@ -1963,6 +2063,7 @@ let _scfTracker = SCFGraph ? new SCFGraph.SCFTracker() : null;
 let _geoTracker = SCFGraph ? new SCFGraph.GeoTracker() : null;
 let _freqTracker = SCFGraph ? new SCFGraph.FreqTracker() : null;
 let _tddftTracker = SCFGraph ? new SCFGraph.TddftTracker() : null;
+let _crestTracker = SCFGraph ? new SCFGraph.CrestTracker() : null;
 let _seededGraph = new Set();   // calc names whose graph is already sourced (live stream or disk-seed)
 const _OPT_KINDS = ["opt", "ts_opt", "opt_freq", "ts_opt_freq"];
 let _scfIterTimes = [];         // arrival times (ms) of recent live SCF-iteration lines, for s/cycle pace
@@ -2015,6 +2116,25 @@ function setGraphKind(k) { _graphKind = k; renderSCFPanel(); }
 function renderSCFPanel() {
   if (!SCFGraph) return;
   const panel = document.getElementById("scf-panel");
+  // CREST run: a conformer search has no SCF/geo/freq curve, so it owns the whole
+  // panel with its phase-chain HUD + a lowest-energy-per-CREGEN-pass graph.
+  if (_crestTracker && _crestTracker.hasData()) {
+    panel.innerHTML =
+      `<div class="graph-summary">${SCFGraph.renderCrestProgress(_crestTracker)}</div>` +
+      `<div class="graph-divider"></div>` +
+      `<div class="graph-plot"></div>`;
+    const cplot = panel.querySelector(".graph-plot");
+    if (cplot) {
+      const innerW = cplot.clientWidth - 20;
+      const innerH = Math.max(window.innerHeight - cplot.getBoundingClientRect().top - 54, 220);
+      const gopts = innerW > 0
+        ? { width: 1100, height: Math.round(1100 * innerH / innerW) }
+        : { width: 1100, height: 360 };
+      cplot.innerHTML = SCFGraph.renderCrestGraph(_crestTracker, gopts);
+    }
+    _scfDirty = false;
+    return;
+  }
   // post-SCF stage panel on top: the frequency stage (analytical phase chain
   // or numerical displacement progress) or the TD-DFT phase chain — a run is
   // only ever one of the two, so freq wins if both somehow have data
@@ -2088,7 +2208,10 @@ function updateLogJump() {
   if (!btn) return;
   btn.hidden = !(_logMode === "raw" && !logAtBottom());
 }
-const _CALC_START_RE = /^\[(.+?)\]\s*\(.+\)\s*running ORCA/i;
+// every backend's per-calc start marker: ORCA "running ORCA…", CREST "running
+// CREST…", MLIP "optimizing with…". Matching all three resets the graph trackers
+// so a new job's graph never inherits the previous one's curve.
+const _CALC_START_RE = /^\[(.+?)\]\s*\([^)]*\)\s*(?:running ORCA|running CREST|optimizing)/i;
 function appendLog(msg, level) {
   // a new calculation is starting: reset the convergence trackers so the graph
   // reflects the new job (and not the previous opt/freq)
@@ -2098,6 +2221,7 @@ function appendLog(msg, level) {
     _geoTracker = new SCFGraph.GeoTracker();
     _freqTracker = new SCFGraph.FreqTracker();
     _tddftTracker = new SCFGraph.TddftTracker();
+    _crestTracker = new SCFGraph.CrestTracker();
     _graphKind = "auto";
     _scfDirty = true;
     _scfIterTimes = [];   // new job: restart the s/cycle pace estimate
@@ -2123,6 +2247,7 @@ function appendLog(msg, level) {
   if (_geoTracker && _geoTracker.push(msg)) changed = true;
   if (_freqTracker && _freqTracker.push(msg)) changed = true;
   if (_tddftTracker && _tddftTracker.push(msg)) changed = true;
+  if (_crestTracker && _crestTracker.push(msg)) changed = true;
   if (changed) _scfDirty = true;
   // record SCF-iteration arrival times for the s/cycle pace (live lines only;
   // disk-seeded lines bypass appendLog so they don't skew the timing)
@@ -2142,6 +2267,7 @@ function clearLog() {
     _geoTracker = new SCFGraph.GeoTracker();
     _freqTracker = new SCFGraph.FreqTracker();
     _tddftTracker = new SCFGraph.TddftTracker();
+    _crestTracker = new SCFGraph.CrestTracker();
     _seededGraph.clear();   // allow every calc's graph to re-seed
     if (_logMode === "graph") renderSCFPanel();
   }
@@ -2250,7 +2376,7 @@ function renderConformers(confs) {
   // external "Open .out" has none, so the buttons are disabled there.
   const canGen = !!_currentResultName;
   const note = canGen ? "" :
-    `<div class="hint" style="margin-top:6px">Select this from a queued CREST calculation to generate ORCA jobs from its conformers.</div>`;
+    `<div class="hint" style="margin-top:6px">Select this from a queued CREST calculation to generate ORCA or MLIP jobs from its conformers.</div>`;
   body.innerHTML += `
     <div class="divider"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
@@ -2266,33 +2392,50 @@ function renderConformers(confs) {
       </table>
     </div>
     <div class="btn-group" style="margin-top:10px">
-      <button class="btn btn-sm btn-primary" onclick="generateOrcaFromConformers('opt')" ${canGen ? "" : "disabled"}>→ ORCA opt jobs</button>
-      <button class="btn btn-sm" onclick="generateOrcaFromConformers('opt_freq')" ${canGen ? "" : "disabled"}>→ ORCA opt + freq jobs</button>
+      <button class="btn btn-sm btn-primary" onclick="generateFromConformers('opt')" ${canGen ? "" : "disabled"}>→ ORCA opt jobs</button>
+      <button class="btn btn-sm" onclick="generateFromConformers('opt_freq')" ${canGen ? "" : "disabled"}>→ ORCA opt + freq jobs</button>
+    </div>
+    <div class="btn-group" style="margin-top:8px;align-items:center;flex-wrap:wrap">
+      <select id="conf-mlip-model" style="max-width:220px" ${canGen && _mlipReady ? "" : "disabled"}></select>
+      <button class="btn btn-sm" onclick="generateFromConformers('mlip_opt')" ${canGen && _mlipReady ? "" : "disabled"}${_mlipReady ? "" : ' title="Needs a ready MACE environment (Settings → MLIP)"'}>→ MLIP opt jobs</button>
+      ${canGen && !_mlipReady ? `<span class="hint" style="margin:0">MLIP needs a ready MACE environment.</span>` : ""}
     </div>${note}`;
+  const msel = document.getElementById("conf-mlip-model");
+  if (msel && choicesCache.mace_models) fillGroupedSelect(msel, choicesCache.mace_models, "MACE-OFF medium");
 }
 /** @param {boolean} on */
 function toggleAllConformers(on) {
   document.querySelectorAll(".conf-check").forEach(el => { el.checked = on; });
 }
-/** Create ORCA follow-up jobs from the checked conformers. @param {string} kind */
-async function generateOrcaFromConformers(kind) {
+/** Create follow-up jobs from the checked conformers.
+ *  @param {string} kind "opt" | "opt_freq" (ORCA) | "mlip_opt" (MACE) */
+async function generateFromConformers(kind) {
   if (!_currentResultName) { toast("No queued CREST calculation selected."); return; }
+  const isMlip = kind === "mlip_opt";
+  if (isMlip && !_mlipReady) { toast("A ready MACE environment is required (Settings → MLIP)."); return; }
   /** @type {number[]} */
   const indices = [];
   document.querySelectorAll(".conf-check").forEach(el => {
     if (el.checked) indices.push(parseInt(el.dataset.index || "0", 10));
   });
   if (!indices.length) { toast("Select at least one conformer."); return; }
+  const label = isMlip ? "MLIP opt" : `ORCA ${kind}`;
+  /** @type {{parent_name:string, indices:number[], kind:string, model?:string}} */
+  const payload = { parent_name: _currentResultName, indices, kind };
+  if (isMlip) {
+    const msel = document.getElementById("conf-mlip-model");
+    payload.model = msel ? msel.value : "";
+  }
   try {
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calcs_from_conformers(
-      JSON.stringify({ parent_name: _currentResultName, indices, kind }))));
-    if (!res.ok) { appendLog("Could not create ORCA jobs: " + res.error, "err"); toast(res.error); return; }
-    appendLog(`${indices.length} ORCA ${kind} job(s) created from ${_currentResultName}'s conformers.`, "ok");
-    toast(`${indices.length} ORCA ${kind} job(s) added to the queue.`);
+      JSON.stringify(payload))));
+    if (!res.ok) { appendLog(`Could not create ${label} jobs: ` + res.error, "err"); toast(res.error); return; }
+    appendLog(`${indices.length} ${label} job(s) created from ${_currentResultName}'s conformers.`, "ok");
+    toast(`${indices.length} ${label} job(s) added to the queue.`);
     await refreshQueue();
     switchTab("queue");
   } catch (e) {
-    appendLog(String(e), "err"); toast("Could not create ORCA jobs.");
+    appendLog(String(e), "err"); toast(`Could not create ${label} jobs.`);
   }
 }
 

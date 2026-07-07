@@ -332,7 +332,45 @@ def test_crest_failure_blocks_dependent_not_whole_queue(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 7. make_conformer_followups: CREST conformers -> ORCA opt/opt_freq jobs
+# 6b. _failure_detail: subdivided, actionable no-ensemble diagnoses
+# ---------------------------------------------------------------------------
+
+def _write_failed_crest(tmp_path, rc, out_text):
+    """A run folder with an exit-code marker + .out but no ensemble files."""
+    (tmp_path / "t.crest.rc").write_text(f"{rc}\n", encoding="utf-8")
+    (tmp_path / "t.out").write_text(out_text, encoding="utf-8")
+    return str(tmp_path / "t.out")
+
+
+def test_failure_detail_names_topology_change(tmp_path):
+    # Real CREST failure mode (P3): the initial optimization changed the bonding
+    # topology and CREST safety-terminated (exit 1). The message must name the
+    # cause + the fix, not a bland "no conformers".
+    out = _write_failed_crest(tmp_path, 1,
+        " *WARNING* Change in topology detected!\n"
+        " ERROR STOP safety termination of CREST\n")
+    r = parse_crest_result(out)
+    assert not r.terminated_normally and not r.conformers
+    msg = r.error_message.lower()
+    assert "topology" in msg and "pre-optimize" in msg
+
+
+def test_failure_detail_segfault_is_flagged_as_intermittent(tmp_path):
+    out = _write_failed_crest(tmp_path, 139, " forrtl: severe\n Segmentation fault\n")
+    r = parse_crest_result(out)
+    assert "segmentation fault" in r.error_message.lower()
+    assert "139" in r.error_message
+
+
+def test_failure_detail_generic_exit_code_still_reported(tmp_path):
+    # An unknown non-zero exit falls back to the exit-code + last-output line.
+    out = _write_failed_crest(tmp_path, 2, " some progress\n ERROR: mystery abort\n")
+    r = parse_crest_result(out)
+    assert "exit code 2" in r.error_message
+
+
+# ---------------------------------------------------------------------------
+# 7. make_conformer_followups: CREST conformers -> ORCA opt/opt_freq/mlip jobs
 # ---------------------------------------------------------------------------
 
 def _result_with_conformers(n=2):
@@ -371,6 +409,25 @@ def test_make_followups_opt_freq_sets_combined_calculation_type():
                                      "opt_freq", existing_names=set())
     assert calcs[0].kind == "opt_freq"
     assert calcs[0].config.calculation_type == "TightOpt Freq"
+
+
+def test_make_followups_mlip_opt_builds_mace_calcs_with_model():
+    # conformer -> N MACE pre-optimizations: DIRECT geometry, model carried on
+    # StepConfig.mlip_model, parent charge/mult inherited (MLIP ignores them).
+    parent = _crest_calc("but")
+    parent.charge, parent.multiplicity = 0, 1
+    calcs = make_conformer_followups(parent, _result_with_conformers(3), [1, 2],
+                                     "mlip_opt", existing_names=set(),
+                                     mlip_model="MACE-OFF medium")
+
+    assert [c.name for c in calcs] == ["but_c1", "but_c2"]
+    for c in calcs:
+        assert c.kind == "mlip_opt"
+        assert c.config.kind == "mlip_opt"
+        assert c.config.mlip_model == "MACE-OFF medium"
+        assert c.geometry_source == GeometrySource.DIRECT
+        first = c.xyz.splitlines()[0].split()
+        assert first[0] == "O" and len(first) == 4
 
 
 def test_make_followups_names_are_unique_against_existing():

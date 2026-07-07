@@ -270,6 +270,7 @@
  * @property {string} text
  * @property {string} name    filename stem, for auto-filling the calc name ("" if none)
  * @property {string} error   "" except on the read-failure branch
+ * @property {string} workspace  folder auto-adopted as the workspace (xyz loads only), else ""
  */
 
 /**

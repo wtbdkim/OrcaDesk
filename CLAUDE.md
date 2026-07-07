@@ -39,8 +39,8 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 262 tests over the framework-free layers
-node tests/web/scf_graph.test.js       # 23 tracker/progress tests, no npm deps
+python -m pytest                       # 268 tests over the framework-free layers
+node tests/web/scf_graph.test.js       # 27 tracker/progress tests, no npm deps
 ```
 
 The **automated test suite** (`tests/`, pytest + one plain-Node script) covers the
@@ -246,9 +246,14 @@ and mirrored in `web/types.js`.
 — `mlip` (`Settings.build_mode`; the three-way toggle is `#bmode-*` in
 `index.html`, `setBuildMode` in `app.js`). MLIP mode hides the whole ORCA build
 UI (`_ORCA_BUILD`) and shows a self-contained `#card-mlip`: a name, a MACE-model
-dropdown (options in `data/mace_models.json`, served via `load_choices`), and an
-`.xyz` loader, which add a `mlip_opt` calc to the **shared queue** through the
-same `add_calc`/`calc_from_dict` path as ORCA calcs. The model lives on
+dropdown (options in `data/mace_models.json`, served via `load_choices`), and a
+**geometry source** selector (`.xyz` loader **or** reference another queued calc,
+mirroring the ORCA build card — `onMlipGeomSourceChange`/`refreshMlipRefSelect` in
+`app.js`), which add a `mlip_opt` calc to the **shared queue** through the
+same `add_calc`/`calc_from_dict` path as ORCA calcs. A referenced `mlip_opt`
+resolves through the very same `_resolve_geometry` path as an opt→freq handoff, so
+an MLIP pre-optimization can start from another calc's optimized geometry (e.g. a
+CREST best conformer). The model lives on
 `StepConfig.mlip_model` (+ `mlip_env_id`, `""` = first ready env); `build_input`
 ignores those — an MLIP calc never produces an ORCA `.inp`. `_meta_line` shows
 the model instead of charge/mult for `mlip*` kinds, and `editCalc` refuses
@@ -335,12 +340,16 @@ path. Charge/multiplicity come from the `Calculation` (shared with ORCA); CREST'
 multiplicity). The pipeline was validated end to end against a real CREST 3.0.2
 install in WSL Ubuntu (including the conformer→ORCA handoff).
 
-**Conformer → ORCA handoff.** A finished `crest_conf` result exposes its whole
-ranked ensemble in the Results tab (checkboxes + "select all"); the "Generate
-ORCA opt / opt + freq jobs" button calls `Bridge.add_calcs_from_conformers` →
-`store.make_conformer_followups`, which builds one **DIRECT-geometry** ORCA calc
-per selected conformer (its coordinates baked in, parent's charge/multiplicity),
-named `{parent}_c{i}`. This is the queue's first 1→N handoff.
+**Conformer → ORCA / MLIP handoff.** A finished `crest_conf` result exposes its
+whole ranked ensemble in the Results tab (checkboxes + "select all"); the
+"ORCA opt / opt + freq jobs" buttons — or the "MLIP opt jobs" button (with a
+MACE-model picker, gated on a ready MACE env like the Build-tab card) — call
+`Bridge.add_calcs_from_conformers` → `store.make_conformer_followups`, which
+builds one **DIRECT-geometry** calc per selected conformer (its coordinates
+baked in, parent's charge/multiplicity), named `{parent}_c{i}`. `kind` selects
+the target: `opt`/`opt_freq` → an ORCA optimization, `mlip_opt` → a MACE
+pre-optimization (`mlip_model` on the payload). This is the queue's first 1→N
+handoff, and the front-end handler is the shared `generateFromConformers(kind)`.
 
 **Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
 `list_crest_distros` / `set_crest_distro` / `add_calcs_from_conformers`) follow

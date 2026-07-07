@@ -242,18 +242,30 @@ def _unique_followup_name(base: str, taken: "set[str]") -> str:
 
 
 def make_conformer_followups(parent: Calculation, result, indices: "list[int]",
-                             kind: str, existing_names: "set[str]") -> "list[Calculation]":
-    """Build ORCA follow-up Calculations from selected CREST conformers.
+                             kind: str, existing_names: "set[str]",
+                             mlip_model: str = "") -> "list[Calculation]":
+    """Build follow-up Calculations from selected CREST conformers.
 
     Each selected conformer (1-based ``indices`` into ``result.conformers``)
-    becomes an independent DIRECT-geometry calc of ``kind`` ('opt' or 'opt_freq')
-    with that conformer's coordinates baked in and the parent's charge/multiplicity
-    — so "re-optimize these N conformers with ORCA" is one action. Names are
-    ``{parent}_c{i}``, made unique against ``existing_names``. Raises ValueError on
-    an unsupported kind or when nothing usable is selected."""
-    calc_type = {"opt": "TightOpt", "opt_freq": "TightOpt Freq"}.get(kind)
-    if calc_type is None:
-        raise ValueError("Follow-up kind must be 'opt' or 'opt_freq'.")
+    becomes an independent DIRECT-geometry calc of ``kind`` with that conformer's
+    coordinates baked in and the parent's charge/multiplicity — so "re-optimize
+    these N conformers" is one action. Supported kinds:
+
+      - ``'opt'`` / ``'opt_freq'`` → an ORCA optimization (TightOpt / TightOpt Freq)
+      - ``'mlip_opt'`` → a MACE pre-optimization (``mlip_model`` names the model)
+
+    Names are ``{parent}_c{i}``, made unique against ``existing_names``. Raises
+    ValueError on an unsupported kind or when nothing usable is selected."""
+    if kind == "mlip_opt":
+        def _make_config():
+            return StepConfig(kind="mlip_opt", mlip_model=(mlip_model or "").strip())
+    else:
+        calc_type = {"opt": "TightOpt", "opt_freq": "TightOpt Freq"}.get(kind)
+        if calc_type is None:
+            raise ValueError("Follow-up kind must be 'opt', 'opt_freq' or 'mlip_opt'.")
+
+        def _make_config():
+            return StepConfig(kind=kind, calculation_type=calc_type)
     conformers = getattr(result, "conformers", None) or []
     if not conformers:
         raise ValueError("The CREST calculation has no conformers to use.")
@@ -268,9 +280,8 @@ def make_conformer_followups(parent: Calculation, result, indices: "list[int]",
             continue
         name = _unique_followup_name(f"{parent.name}_c{i}", taken)
         taken.add(name)
-        cfg = StepConfig(kind=kind, calculation_type=calc_type)
         out.append(Calculation(
-            name=name, kind=kind, config=cfg,
+            name=name, kind=kind, config=_make_config(),
             charge=parent.charge, multiplicity=parent.multiplicity,
             geometry_source=GeometrySource.DIRECT, xyz=xyz,
         ))

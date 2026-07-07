@@ -458,7 +458,7 @@
     if (pts.length < 1 || tracker.startDE === null) {
       return `<svg viewBox="0 0 ${W} ${H}" class="scf-svg" xmlns="http://www.w3.org/2000/svg">
         <text x="${W / 2}" y="${H / 2}" text-anchor="middle" class="scf-empty-text">
-          waiting for SCF data…</text></svg>`;
+          waiting for data…</text></svg>`;
     }
 
     // y range (log10): from a bit above the max dE down to the target (or min)
@@ -1098,11 +1098,152 @@
     return out.join("");
   }
 
+  // ---------- CREST conformer-search progress ----------
+  // A CREST iMTD-GC run streams a fixed structure to its .out (verified on a real
+  // CREST 3.0.2 run, 663 lines): an initial optimization, then repeated
+  // "Meta-Dynamics Iteration N" cycles (each running a known number of MTDs and
+  // ending in a CREGEN sort that prints the lowest energy + ensemble size within
+  // a kcal window), additional MDs, and a final optimization, before
+  // "CREST terminated normally.". Unlike SCF/opt there is NO single monotone
+  // convergence quantity and the macro-iteration count is unknown up front, so
+  // this tracks a PHASE CHAIN (init -> sampling -> MD -> final) plus — within
+  // sampling — the MTD count and the CREGEN lowest-energy / conformer-count
+  // series that feed a small graph.
+  const CREST_STAGES = [
+    { key: "init",   re: /Initial Geometry Optimization/,            status: "INITIAL OPTIMIZATION" },
+    { key: "sample", re: /iMTD-GC SAMPLING|Meta-Dynamics Iteration/, status: "METADYNAMICS SAMPLING" },
+    { key: "md",     re: /Additional regular MDs/,                   status: "ADDITIONAL MD SAMPLING" },
+    { key: "final",  re: /Final Geometry Optimization/,              status: "FINAL OPTIMIZATION" },
+  ];
+  const CREST_ELOW_RE    = /CREGEN>\s*E lowest\s*:\s*(-?\d+\.\d+)/i;
+  const CREST_WINDOW_RE  = /(\d+)\s+structures?\s+remain within\s+([\d.]+)\s*kcal/i;
+  const CREST_ITER_RE    = /Meta-Dynamics Iteration\s+(\d+)/i;
+  const CREST_MTDTOT_RE  = /\((\d+)\s*MTDs\)/;
+  const CREST_MTDDONE_RE = /\*MTD\s+\d+\s+completed successfully/i;
+  const CREST_DONE_RE    = /CREST terminated normally\./;
+  const CREST_ERR_RE     = /Change in topology detected|safety termination of CREST/i;
+  const CREST_NCONF_RE   = /number of unique conformers for further calc\s+(\d+)/i;
+
+  function CrestTracker() {
+    this.active = false;    // any CREST progress marker seen
+    this.aIdx = -1;         // index into CREST_STAGES (-1 = none yet)
+    this.aStage = "";       // key of the current stage
+    this.iter = 0;          // latest "Meta-Dynamics Iteration N"
+    this.mtdTotal = 0;      // MTDs per iteration (from "(14 MTDs)")
+    this.mtdDone = 0;       // MTDs completed in the CURRENT iteration
+    this.energies = [];     // CREGEN "E lowest" series (Hartree), one per sort pass
+    this.windowCount = 0;   // latest "N structures remain within ... kcal" count
+    this.nConf = 0;         // final "number of unique conformers for further calc"
+    this.finished = false;  // "CREST terminated normally."
+    this.error = false;     // a known abort signature (topology change / safety stop)
+  }
+  // monotonic phase advance, like FreqTracker/TddftTracker
+  CrestTracker.prototype._advance = function (idx) {
+    this.active = true;
+    if (idx > this.aIdx) { this.aIdx = idx; this.aStage = CREST_STAGES[idx].key; }
+    return true;
+  };
+  CrestTracker.prototype.push = function (line) {
+    if (CREST_ERR_RE.test(line)) { this.error = true; this.active = true; return true; }
+    if (CREST_DONE_RE.test(line)) { this.finished = true; this.active = true; return true; }
+    const nc = line.match(CREST_NCONF_RE);
+    if (nc) { this.nConf = parseInt(nc[1], 10); this.active = true; return true; }
+    const mt = line.match(CREST_MTDTOT_RE);
+    if (mt) { this.mtdTotal = parseInt(mt[1], 10); this.active = true; return true; }
+    const it = line.match(CREST_ITER_RE);
+    if (it) { this.iter = parseInt(it[1], 10); this.mtdDone = 0; return this._advance(1); }
+    if (CREST_MTDDONE_RE.test(line)) { this.mtdDone++; this.active = true; return true; }
+    const el = line.match(CREST_ELOW_RE);
+    if (el) { const e = parseFloat(el[1]); if (isFinite(e)) this.energies.push(e); this.active = true; return true; }
+    const w = line.match(CREST_WINDOW_RE);
+    if (w) { this.windowCount = parseInt(w[1], 10); this.active = true; return true; }
+    for (let i = 0; i < CREST_STAGES.length; i++) {
+      if (CREST_STAGES[i].re.test(line)) return this._advance(i);
+    }
+    return false;
+  };
+  CrestTracker.prototype.hasData = function () { return this.active; };
+
+  // Phase-chain HUD (reuses the freq/TD-DFT panel builder).
+  function renderCrestProgress(cr) {
+    let value = "—", caption = "initializing";
+    if (cr.finished) {
+      value = cr.nConf ? String(cr.nConf) : (cr.windowCount ? String(cr.windowCount) : "✓");
+      caption = "conformers";
+    } else if (cr.error) {
+      value = "✕"; caption = "stopped";
+    } else if (cr.aStage === "sample") {
+      if (cr.mtdTotal) { value = `${Math.min(cr.mtdDone, cr.mtdTotal)}/${cr.mtdTotal}`; caption = "MTDs this round"; }
+      else caption = "metadynamics";
+    } else if (cr.aStage === "md" || cr.aStage === "final") {
+      if (cr.windowCount) { value = String(cr.windowCount); caption = "in window"; }
+      else caption = cr.aStage === "md" ? "regular MD" : "final opt";
+    } else if (cr.aStage === "init") {
+      caption = "initial opt";
+    }
+    let status;
+    if (cr.error) status = "STOPPED — CHECK THE LOG (topology change?)";
+    else if (cr.finished) status = "CREST COMPLETE";
+    else if (cr.aIdx < 0) status = "INITIALIZING";
+    else {
+      status = CREST_STAGES[cr.aIdx].status;
+      if (cr.aStage === "sample" && cr.iter) status += ` — ITERATION ${cr.iter}`;
+    }
+    return _phasePanelHtml("CREST CONFORMER SEARCH", CREST_STAGES, cr.aIdx, cr.finished, value, caption, status);
+  }
+
+  // Small graph: lowest energy (Eh) per CREGEN sort pass — the search settling on
+  // the global minimum. Auto-scaled linear y (absolute-energy differences are
+  // tiny). Placeholder until the first pass.
+  function renderCrestGraph(cr, opts) {
+    opts = opts || {};
+    const W = opts.width || 320;
+    const H = opts.height || 180;
+    const padL = 68, padR = 14, padT = 16, padB = 40;
+    const es = (cr.energies || []).filter(function (e) { return isFinite(e); });
+    if (es.length < 1) {
+      return `<svg viewBox="0 0 ${W} ${H}" class="scf-svg" xmlns="http://www.w3.org/2000/svg">
+        <text x="${W / 2}" y="${H / 2}" text-anchor="middle" class="scf-empty-text">
+          waiting for data…</text></svg>`;
+    }
+    let lo = Math.min.apply(null, es), hi = Math.max.apply(null, es);
+    if (lo === hi) { lo -= 1e-4; hi += 1e-4; }   // flat series: give the axis a hair of range
+    const xN = Math.max(es.length, 2);
+    function X(i) { return padL + (i / (xN - 1)) * (W - padL - padR); }
+    function Y(e) { const t = (hi - e) / (hi - lo); return padT + t * (H - padT - padB); }
+    let grid = "";
+    [hi, lo].forEach(function (e) {
+      const yy = Y(e);
+      grid += `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W - padR}" y2="${yy.toFixed(1)}" class="scf-grid"/>`;
+      grid += `<text x="${padL - 6}" y="${(yy + 3).toFixed(1)}" text-anchor="end" class="scf-axis">${e.toFixed(4)}</text>`;
+    });
+    let d = "";
+    es.forEach(function (e, i) { d += (i === 0 ? "M" : "L") + X(i).toFixed(1) + "," + Y(e).toFixed(1) + " "; });
+    const line = `<path d="${d.trim()}" class="scf-line" fill="none"/>`;
+    const startC = `<circle cx="${X(0).toFixed(1)}" cy="${Y(es[0]).toFixed(1)}" r="3.5" class="scf-start"/>`;
+    const li = es.length - 1;
+    const curC = `<circle cx="${X(li).toFixed(1)}" cy="${Y(es[li]).toFixed(1)}" r="4" class="scf-cur"/>`;
+    const baseY = padT + (H - padT - padB);
+    const stepEvery = Math.max(1, Math.ceil(xN / 8));
+    let xticks = "";
+    for (let i = 0; i < es.length; i += stepEvery) {
+      const xx = X(i);
+      xticks += `<line x1="${xx.toFixed(1)}" y1="${baseY}" x2="${xx.toFixed(1)}" y2="${(baseY + 4).toFixed(1)}" class="scf-grid"/>`;
+      xticks += `<text x="${xx.toFixed(1)}" y="${(baseY + 15).toFixed(1)}" text-anchor="middle" class="scf-axis">${i + 1}</text>`;
+    }
+    const midY = (padT + (H - padT - padB) / 2).toFixed(1);
+    const yTitle = `<text x="14" y="${midY}" text-anchor="middle" class="scf-axis-title" transform="rotate(-90 14 ${midY})">lowest E (Eh)</text>`;
+    const xTitle = `<text x="${((padL + W - padR) / 2).toFixed(1)}" y="${H - 4}" text-anchor="middle" class="scf-axis-title">CREGEN sort pass</text>`;
+    return `<svg viewBox="0 0 ${W} ${H}" class="scf-svg" xmlns="http://www.w3.org/2000/svg">
+      ${grid}${line}${startC}${curC}${xticks}${yTitle}${xTitle}</svg>`;
+  }
+
   const api = {
     SCFTracker: SCFTracker,
     GeoTracker: GeoTracker,
     FreqTracker: FreqTracker,
     TddftTracker: TddftTracker,
+    CrestTracker: CrestTracker,
     isScfIter: function (line) { return ITER_RE.test(line); },   // is this an SCF iteration row?
     targetFor: targetFor,
     renderSCFProgress: renderSCFProgress,
@@ -1111,6 +1252,8 @@
     renderGeoGraph: renderGeoGraph,
     renderFreqProgress: renderFreqProgress,
     renderTddftProgress: renderTddftProgress,
+    renderCrestProgress: renderCrestProgress,
+    renderCrestGraph: renderCrestGraph,
     setEtaMode: setEtaMode,
     setGeoMode: setGeoMode,
     SCF_TARGETS: SCF_TARGETS,

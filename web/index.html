@@ -143,9 +143,22 @@
           <div class="field"><label>Name</label><input id="mlip-name" type="text" placeholder="e.g. mol-mace-opt"></div>
           <div class="field" style="flex:0 0 240px"><label>MACE model</label><select id="mlip-model"></select></div>
         </div>
-        <div class="btn-group" style="margin-top:10px;margin-bottom:4px">
-          <button class="btn btn-sm" onclick="loadMlipXyz()">Load .xyz</button>
-          <span id="mlip-xyz-status" class="hint" style="margin:0;align-self:center"></span>
+        <div class="field-row" style="margin:12px 0 8px">
+          <label class="checkbox"><input type="radio" name="mlip-geomsrc" value="direct" checked onchange="onMlipGeomSourceChange()"> From .xyz file</label>
+          <label class="checkbox"><input type="radio" name="mlip-geomsrc" value="reference" onchange="onMlipGeomSourceChange()"> From another calculation</label>
+        </div>
+        <div id="mlip-geom-direct">
+          <div class="btn-group" style="margin-bottom:4px">
+            <button class="btn btn-sm" onclick="loadMlipXyz()">Load .xyz</button>
+            <span id="mlip-xyz-status" class="hint" style="margin:0;align-self:center"></span>
+          </div>
+        </div>
+        <div id="mlip-geom-reference" style="display:none">
+          <div class="field">
+            <label>Optimized geometry from</label>
+            <select id="mlip-ref-select"></select>
+          </div>
+          <div class="hint">Referenced calc's optimized geometry (e.g. a CREST best conformer or an ORCA/MLIP opt), injected here at run time (it runs first).</div>
         </div>
         <div class="btn-group" style="margin-top:14px">
           <button class="btn btn-primary" onclick="addMlipCalcToQueue()">Add to queue →</button>
@@ -225,7 +238,7 @@
     <section class="panel" data-panel="log">
       <div class="log-mode-toggle">
         <button id="logmode-raw" class="active" onclick="setLogMode('raw')">Raw</button>
-        <button id="logmode-graph" onclick="setLogMode('graph')">SCF graph</button>
+        <button id="logmode-graph" onclick="setLogMode('graph')">Graph</button>
         <!-- the "~N s / SCF cycle" pace chip lives in the SCF panel's progress
              meta line (scf_graph.js _paceSpan), not in this toolbar -->
         <button class="btn btn-sm btn-ghost" style="margin-left:auto" onclick="clearLog()">Clear</button>
