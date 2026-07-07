@@ -549,3 +549,37 @@ def test_calc_to_dict_meta_shows_model_not_charge_for_mlip():
     meta = calc_to_dict(calc)["meta"]
     assert "MACE-OFF medium" in meta
     assert "q0" not in meta
+
+
+# ---- substitute_calcs (per-conformer track expansion, engine-driven) ------
+
+def test_substitute_calcs_replaces_rows_at_position(store):
+    for n in ("a", "b", "c"):
+        store.add(make_calc(n))
+    ok = store.substitute_calcs(["b"], [make_calc("b_c1"), make_calc("b_c2")])
+    assert ok is True
+    assert [x.name for x in store.list()] == ["a", "b_c1", "b_c2", "c"]
+
+
+def test_substitute_calcs_refuses_name_collision_and_applies_nothing(store):
+    store.add(make_calc("a"))
+    store.add(make_calc("b"))
+    ok = store.substitute_calcs(["b"], [make_calc("b_c1"), make_calc("a")])
+    assert ok is False
+    assert [x.name for x in store.list()] == ["a", "b"]
+
+
+def test_substitute_calcs_is_allowed_while_running(store):
+    # unlike user mutations (add/remove/reorder are blocked mid-run), the
+    # engine-driven substitution must work while running: the engine applies
+    # the identical change to its executing snapshot, keeping the visible and
+    # executing queues in sync — the invariant the running guard protects.
+    store.add(make_calc("a"))
+    store.add(make_calc("b"))
+    store.set_running(True)
+    try:
+        ok = store.substitute_calcs(["b"], [make_calc("b_c1")])
+    finally:
+        store.set_running(False)
+    assert ok is True
+    assert [x.name for x in store.list()] == ["a", "b_c1"]

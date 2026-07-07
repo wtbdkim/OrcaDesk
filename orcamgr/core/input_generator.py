@@ -182,6 +182,26 @@ class StepConfig:
     crest_ewin: float = 6.0              # ensemble energy window (kcal/mol)
     crest_threads: int = 4               # CREST -T thread count
     crest_env_id: str = ""               # registered CREST env to run in ("" = first ready)
+    # Conformer handoff scope: which conformers downstream calcs get. "lowest" =
+    # a calc referencing this search receives only the best conformer (the
+    # classic single-geometry reference). "all" = when the search finishes with
+    # K>1 conformers, every PENDING calc chain referencing it is SUBSTITUTED by
+    # one clone per conformer ({name}_c1..cK) — see QueueEngine expansion.
+    crest_handoff: str = "lowest"        # lowest | all
+    # --- advanced conformer-search knobs (optional; 0/""/False = CREST default) ---
+    crest_preset: str = ""               # "" | quick | squick | mquick (--quick/--squick/--mquick)
+    crest_nci: bool = False              # --nci: ellipsoid wall, keeps a complex from dissociating
+    crest_solvent_model: str = "alpb"    # alpb | gbsa — implicit-solvent model for crest_solvent
+    crest_mdlen_mult: float = 0.0        # --mdlen x<mult> (0 = default MTD length)
+    crest_tstep_fs: float = 0.0          # --tstep <fs>    (0 = default MD/MTD timestep)
+    crest_tnmd_k: float = 0.0            # --tnmd <K>      (0 = default 400; regular-MD temperature)
+    crest_mddump_fs: int = 0             # --mddump <fs>   (0 = default 100; trajectory dump interval)
+    crest_vbdump_ps: float = 0.0         # --vbdump <ps>   (0 = default 1.0; Vbias dump interval)
+    crest_norotmd: bool = False          # --norotmd: skip the additional regular MDs
+    crest_cbonds: bool = False           # --cbonds: automatic bond constraints
+    crest_subrmsd: bool = False          # --subrmsd: exclude constrained atoms from the RMSD check
+    crest_cluster: bool = False          # --cluster: PCA + k-means (NOT for NCI complexes — doc warns)
+    crest_keepdir: bool = False          # --keepdir: keep the per-step generation subdirectories
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -232,6 +252,21 @@ class StepConfig:
         cfg.tddft_maxdim = _clamp_int(cfg.tddft_maxdim, 10, 1, 100_000)
         cfg.freq_temp_k = _clamp_float(cfg.freq_temp_k, 298.15, 0.0, 100_000.0)
         cfg.freq_pressure_atm = _clamp_float(cfg.freq_pressure_atm, 1.0, 0.0, 100_000.0)
+        # crest_handoff is a closed enum at the trust boundary: anything but the
+        # two known values degrades to the safe default (single-geometry handoff).
+        if cfg.crest_handoff not in ("lowest", "all"):
+            cfg.crest_handoff = "lowest"
+        # advanced CREST knobs: closed enums degrade to the default; numeric knobs
+        # are coerced+clamped (they're interpolated verbatim into the CLI argv).
+        if cfg.crest_preset not in ("", "quick", "squick", "mquick"):
+            cfg.crest_preset = ""
+        if cfg.crest_solvent_model not in ("alpb", "gbsa"):
+            cfg.crest_solvent_model = "alpb"
+        cfg.crest_mdlen_mult = _clamp_float(cfg.crest_mdlen_mult, 0.0, 0.0, 100.0)
+        cfg.crest_tstep_fs = _clamp_float(cfg.crest_tstep_fs, 0.0, 0.0, 1000.0)
+        cfg.crest_tnmd_k = _clamp_float(cfg.crest_tnmd_k, 0.0, 0.0, 100_000.0)
+        cfg.crest_mddump_fs = _clamp_int(cfg.crest_mddump_fs, 0, 0, 10_000_000)
+        cfg.crest_vbdump_ps = _clamp_float(cfg.crest_vbdump_ps, 0.0, 0.0, 100_000.0)
         return cfg
 
 

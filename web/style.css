@@ -295,6 +295,13 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   font-size: 13px; color: var(--foreground); cursor: pointer;
 }
 .checkbox input { width: 15px; height: 15px; accent-color: var(--foreground); cursor: pointer; }
+/* collapsible "Advanced settings" block (native <details>) */
+.adv-section { margin: 4px 0 8px; border-top: 1px solid var(--border); padding-top: 8px; }
+.adv-section > summary {
+  cursor: pointer; font-size: 12px; font-weight: 500;
+  color: var(--muted-foreground); list-style-position: inside; user-select: none;
+}
+.adv-section > summary:hover { color: var(--foreground); }
 .radio-row {
   display: flex; align-items: flex-start; gap: 10px;
   font-size: 13px; color: var(--muted-foreground); cursor: pointer;
@@ -528,31 +535,41 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 /* ETA is the uncertain part: keep it visually subordinate to the accurate signals */
 .scf-prog-eta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 3px; opacity: 0.72; font-style: italic; }
 
-/* ---- analytical-frequencies phase panel (HUD-style: hazard stripes, phase
-   label left, stage headline number center, 7-dot phase chain right) ---- */
-.freq-jump { font-family: var(--font-mono); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: var(--card); }
-.freq-jump-stripes {
-  height: 7px;
-  background: repeating-linear-gradient(135deg, var(--err-stripe) 0 6px, transparent 6px 12px);
-}
-.freq-jump-title { text-align: center; font-size: 13px; font-weight: 700; letter-spacing: 0.22em; margin-top: 8px; color: var(--foreground); }
-.freq-jump-row { display: flex; align-items: center; gap: 14px; padding: 2px 16px; }
-.freq-jump-phase { font-size: 13px; font-weight: 700; letter-spacing: 0.12em; color: var(--ok); white-space: nowrap; min-width: 92px; }
-.freq-jump-of { font-size: 10px; font-weight: 600; color: var(--muted-foreground); }
-.freq-jump-center { flex: 1; text-align: center; }
-.freq-jump-value { font-size: 26px; font-weight: 700; letter-spacing: 0.06em; line-height: 1.15; color: var(--foreground); font-variant-numeric: tabular-nums; }
-.freq-jump-caption { font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted-foreground); }
-.freq-jump-dots { display: flex; align-items: center; white-space: nowrap; min-width: 92px; justify-content: flex-end; }
-.freq-jump-dot { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--muted-foreground); box-sizing: border-box; flex: none; }
-.freq-jump-dot.done { background: var(--ok); border-color: var(--ok); }
-.freq-jump-dot.cur { border-color: var(--ok); animation: freq-dot-pulse 1.2s ease-in-out infinite; }
-.freq-jump-link { width: 7px; border-top: 1.5px solid var(--muted-foreground); opacity: 0.55; flex: none; }
-.freq-jump-link.done { border-color: var(--ok); opacity: 1; }
-.freq-jump-status { text-align: center; font-size: 10px; letter-spacing: 0.18em; color: var(--muted-foreground); padding: 0 16px 8px; }
-@keyframes freq-dot-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 var(--ok); opacity: 1; }
-  50%      { box-shadow: 0 0 6px 1px var(--ok); opacity: 0.55; }
-}
+/* ---- staged-pipeline timeline (CREST conformer search / analytical
+   frequencies / TD-DFT): a centered title + status badge over a full-width
+   horizontal rail whose fill is a black→green gradient (→red when stopped)
+   reaching the current stage; node markers alternate above/below, the current
+   one enlarged + pulsing. Fills the Graph panel width. ---- */
+.phase-track { width: 100%; font-family: var(--font-mono); padding: 6px 8px 4px; }
+.phase-track-head { display: flex; align-items: baseline; justify-content: center; gap: 14px; margin-bottom: 8px; }
+.phase-track-title { font-size: 15px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--foreground); }
+.phase-track-badge { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; padding: 3px 11px; border-radius: 999px; white-space: nowrap; }
+.phase-track-badge.ok { color: var(--ok); background: var(--ok-tint); }
+.phase-track-badge.err { color: var(--err); background: var(--err-tint); }
+.phase-track-badge.step { color: var(--muted-foreground); }
+/* the rail row: room above and below for the alternating labels */
+.phase-track-rail { position: relative; height: 6px; margin: 62px 0; }
+.phase-track-line { position: absolute; top: 0; height: 6px; border-radius: 3px; background: var(--border); }
+/* one solid band per traversed segment — a discontinuous (stepped) fill, shade
+   set per-band inline (opacity ramp over the dark rail = black→green / black→red) */
+.phase-track-seg { position: absolute; top: 0; height: 6px; border-radius: 3px; }
+.phase-track-seg.ok { background: var(--ok); }
+.phase-track-seg.err { background: var(--err); }
+.phase-node { position: absolute; top: 3px; transform: translate(-50%, -50%); }
+.phase-node-dot { display: block; width: 16px; height: 16px; box-sizing: border-box; border-radius: 50%; border: 2.5px solid var(--muted-foreground); background: var(--card); transition: width .2s, height .2s; }
+.phase-node.done .phase-node-dot { background: var(--ok); border-color: var(--ok); }
+.phase-node.cur .phase-node-dot { width: 22px; height: 22px; border-color: var(--ok); background: var(--ok); box-shadow: 0 0 0 6px var(--ok-tint); animation: phase-node-pulse 1.4s ease-in-out infinite; }
+.phase-node.err .phase-node-dot { border-color: var(--err); background: var(--err); }
+.phase-node.err.cur .phase-node-dot { box-shadow: 0 0 0 6px var(--err-tint); }
+.phase-node-text { position: absolute; left: 50%; transform: translateX(-50%); text-align: center; white-space: nowrap; }
+.phase-node.above .phase-node-text { bottom: calc(100% + 12px); }
+.phase-node.below .phase-node-text { top: calc(100% + 12px); }
+.phase-node-label { display: block; font-size: 13px; color: var(--foreground); }
+.phase-node.pending .phase-node-label { color: var(--muted-foreground); opacity: 0.6; }
+.phase-node.cur .phase-node-label { color: var(--ok); font-weight: 600; }
+.phase-node.err.cur .phase-node-label { color: var(--err); }
+.phase-node-detail { display: block; font-size: 11px; color: var(--muted-foreground); margin-top: 4px; }
+@keyframes phase-node-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 /* fill the graph box width; the viewBox height is computed per-render
    (renderSCFPanel) to match the space left below the plot, so height:auto
    lands the SVG flush with the bottom window gutter — no cap needed here. */

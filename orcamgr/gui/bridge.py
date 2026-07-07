@@ -47,7 +47,7 @@ from ..core.queue import GeometrySource, CalcState, result_from_output
 from ..core.parser import parse_file
 from ..state.store import (
     QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory,
-    load_choice_groups, queue_needs_orca, make_conformer_followups,
+    load_choice_groups, queue_needs_orca,
 )
 # Response payloads are CONSTRUCTED through these TypedDicts (plain dicts at
 # runtime, so the JSON wire format is unchanged) — schemas.py is the single
@@ -538,55 +538,6 @@ class Bridge(QObject):
             self.store.add(calc)
         except ValueError as e:
             return json.dumps(MutationResult(ok=False, error=str(e)))
-        return json.dumps(MutationResult(ok=True, snapshot=self.store.snapshot()))
-
-    @pyqtSlot(str, result=str)
-    def add_calcs_from_conformers(self, payload_json: str) -> str:
-        """Batch-create follow-up calcs from selected CREST conformers.
-
-        Payload: {parent_name, indices:[1-based...], kind, model?}. ``kind`` is
-        "opt"/"opt_freq" (ORCA) or "mlip_opt" (a MACE pre-optimization, with the
-        model in ``model``). Each selected conformer becomes an independent
-        DIRECT-geometry calc (its coordinates + the parent's charge/multiplicity),
-        so "re-optimize these conformers" is one action. Returns the updated snapshot."""
-        try:
-            d = json.loads(payload_json or "{}")
-            parent_name = (d.get("parent_name") or "").strip()
-            indices = [int(x) for x in (d.get("indices") or [])]
-            kind = (d.get("kind") or "opt").strip()
-            model = (d.get("model") or "").strip()
-        except (json.JSONDecodeError, ValueError, TypeError) as e:
-            return json.dumps(MutationResult(ok=False, error=f"Invalid request: {e}"))
-
-        parent = self.store.get(parent_name)
-        if parent is None:
-            return json.dumps(MutationResult(ok=False,
-                error=f"CREST calculation '{parent_name}' not found."))
-        result = parent.result
-        if result is None:
-            try:
-                result = result_from_output(parent)
-            except Exception as e:
-                return json.dumps(MutationResult(ok=False,
-                    error=f"Could not read the CREST result: {e}"))
-
-        existing = {c.name for c in self.store.list()}
-        try:
-            new_calcs = make_conformer_followups(parent, result, indices, kind, existing,
-                                                 mlip_model=model)
-        except ValueError as e:
-            return json.dumps(MutationResult(ok=False, error=str(e)))
-
-        added = 0
-        for c in new_calcs:
-            try:
-                self.store.add(c)
-                added += 1
-            except ValueError:
-                pass  # a race on the name; skip rather than abort the batch
-        if added == 0:
-            return json.dumps(MutationResult(ok=False,
-                error="Could not add any conformer follow-up calculations."))
         return json.dumps(MutationResult(ok=True, snapshot=self.store.snapshot()))
 
     @pyqtSlot(str, result=str)

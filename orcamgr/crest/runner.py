@@ -70,7 +70,8 @@ def build_crest_argv(config, charge: int, multiplicity: int) -> list[str]:
 
     solvent = (getattr(config, "crest_solvent", "") or "").strip()
     if solvent:
-        argv += ["--alpb", solvent]
+        model = (getattr(config, "crest_solvent_model", "alpb") or "alpb").strip().lower()
+        argv += ["--gbsa" if model == "gbsa" else "--alpb", solvent]
 
     try:
         ewin = float(getattr(config, "crest_ewin", 6.0) or 6.0)
@@ -83,6 +84,41 @@ def build_crest_argv(config, charge: int, multiplicity: int) -> list[str]:
         argv += ["-T", str(max(1, threads))]
     except (TypeError, ValueError):
         pass
+
+    # --- advanced knobs (each emitted only when set to a non-default value) ---
+    def _num(attr):
+        try:
+            return float(getattr(config, attr, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    preset = (getattr(config, "crest_preset", "") or "").strip().lower()
+    if preset in ("quick", "squick", "mquick"):
+        argv.append("--" + preset)
+    if getattr(config, "crest_nci", False):
+        argv.append("--nci")
+
+    mult = _num("crest_mdlen_mult")
+    if mult > 0:
+        argv += ["--mdlen", f"x{mult:g}"]     # CREST accepts a multiplier as "x<real>"
+    tstep = _num("crest_tstep_fs")
+    if tstep > 0:
+        argv += ["--tstep", f"{tstep:g}"]
+    tnmd = _num("crest_tnmd_k")
+    if tnmd > 0:
+        argv += ["--tnmd", f"{tnmd:g}"]
+    mddump = _num("crest_mddump_fs")
+    if mddump > 0:
+        argv += ["--mddump", str(int(mddump))]
+    vbdump = _num("crest_vbdump_ps")
+    if vbdump > 0:
+        argv += ["--vbdump", f"{vbdump:g}"]
+
+    for attr, flag in (("crest_norotmd", "--norotmd"), ("crest_cbonds", "--cbonds"),
+                       ("crest_subrmsd", "--subrmsd"), ("crest_cluster", "--cluster"),
+                       ("crest_keepdir", "--keepdir")):
+        if getattr(config, attr, False):
+            argv.append(flag)
 
     argv += ["--chrg", str(int(charge))]
     argv += ["--uhf", str(max(0, int(multiplicity) - 1))]

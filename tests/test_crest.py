@@ -25,14 +25,14 @@ import orcamgr.crest.runner as crest_runner_mod
 from orcamgr.core.input_generator import StepConfig
 from orcamgr.core.queue import (
     Calculation, CalcState, GeometrySource, QueueCallbacks, QueueEngine,
-    validate_result,
+    expand_conformer_tracks, validate_result,
 )
 from orcamgr.core.parser import ParseResult, Conformer, HARTREE_TO_KCAL
 from orcamgr.core.runner import OrcaRunError
 from orcamgr.core.parser import Atom
 from orcamgr.crest.parser import parse_crest_result, CREST_SUCCESS_MARKER
 from orcamgr.crest.runner import build_crest_argv
-from orcamgr.state.store import queue_needs_orca, make_conformer_followups
+from orcamgr.state.store import queue_needs_orca
 
 FIXTURES = Path(__file__).parent / "crest" / "fixtures" / "ethanol"
 
@@ -174,6 +174,47 @@ def test_build_crest_argv_unknown_method_is_prefixed():
     cfg = StepConfig(kind="crest_conf", crest_method="gfn2//gfnff")
     argv = build_crest_argv(cfg, 0, 1)
     assert argv[0] == "--gfn2//gfnff"
+
+
+def test_build_crest_argv_defaults_emit_no_advanced_flags():
+    argv = build_crest_argv(StepConfig(kind="crest_conf"), 0, 1)
+    for flag in ("--nci", "--quick", "--squick", "--mquick", "--mdlen", "--tstep",
+                 "--tnmd", "--mddump", "--vbdump", "--norotmd", "--cbonds",
+                 "--subrmsd", "--cluster", "--keepdir", "--gbsa"):
+        assert flag not in argv
+
+
+def test_build_crest_argv_advanced_flags_and_values():
+    cfg = StepConfig(
+        kind="crest_conf", crest_preset="quick", crest_nci=True,
+        crest_solvent="water", crest_solvent_model="gbsa",
+        crest_mdlen_mult=2.0, crest_tstep_fs=2.0, crest_tnmd_k=500.0,
+        crest_mddump_fs=200, crest_vbdump_ps=0.5,
+        crest_norotmd=True, crest_cbonds=True, crest_subrmsd=True,
+        crest_cluster=True, crest_keepdir=True)
+    argv = build_crest_argv(cfg, 0, 1)
+    assert "--quick" in argv and "--nci" in argv
+    # gbsa model switches the solvent flag; alpb must NOT also appear
+    assert argv[argv.index("--gbsa") + 1] == "water" and "--alpb" not in argv
+    assert argv[argv.index("--mdlen") + 1] == "x2"          # multiplier syntax
+    assert argv[argv.index("--tstep") + 1] == "2"
+    assert argv[argv.index("--tnmd") + 1] == "500"
+    assert argv[argv.index("--mddump") + 1] == "200"
+    assert argv[argv.index("--vbdump") + 1] == "0.5"
+    for flag in ("--norotmd", "--cbonds", "--subrmsd", "--cluster", "--keepdir"):
+        assert flag in argv
+
+
+def test_build_crest_argv_preset_and_model_reject_bad_values():
+    # from_dict is the trust boundary: bogus enum values degrade to defaults
+    cfg = StepConfig.from_dict({"kind": "crest_conf", "crest_preset": "turbo",
+                                "crest_solvent_model": "cosmo", "crest_solvent": "thf",
+                                "crest_mdlen_mult": "9e9"})
+    assert cfg.crest_preset == "" and cfg.crest_solvent_model == "alpb"
+    assert cfg.crest_mdlen_mult == 100.0                    # clamped to the max
+    argv = build_crest_argv(cfg, 0, 1)
+    assert "--quick" not in argv
+    assert argv[argv.index("--alpb") + 1] == "thf"          # bad model -> default alpb
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +411,7 @@ def test_failure_detail_generic_exit_code_still_reported(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 7. make_conformer_followups: CREST conformers -> ORCA opt/opt_freq/mlip jobs
+# 7. synthetic multi-conformer results (shared by the expansion tests below)
 # ---------------------------------------------------------------------------
 
 def _result_with_conformers(n=2):
@@ -384,75 +425,142 @@ def _result_with_conformers(n=2):
                        final_energy_eh=confs[0].energy_eh)
 
 
-def test_make_followups_creates_direct_opt_calcs_from_selected_conformers():
-    parent = _crest_calc("but")
-    parent.charge, parent.multiplicity = -1, 2
-    result = _result_with_conformers(3)
+# ---------------------------------------------------------------------------
+# 8. per-conformer track expansion (crest_handoff="all"):
+#    a queued reference chain crest <- opt <- freq fans out into one clone
+#    chain per conformer when the search finishes.
+# ---------------------------------------------------------------------------
 
-    calcs = make_conformer_followups(parent, result, [1, 3], "opt", existing_names=set())
-
-    assert [c.name for c in calcs] == ["but_c1", "but_c3"]
-    for c in calcs:
-        assert c.kind == "opt"
-        assert c.config.calculation_type == "TightOpt"
-        assert c.geometry_source == GeometrySource.DIRECT
-        # charge/multiplicity inherited from the parent CREST calc
-        assert c.charge == -1 and c.multiplicity == 2
-        # geometry baked in as a bare 'El x y z' block (no count/comment header)
-        first = c.xyz.splitlines()[0].split()
-        assert first[0] == "O" and len(first) == 4
+def _ref_calc(name, kind, ref, charge=0, mult=1):
+    return Calculation(name=name, kind=kind, config=StepConfig(kind=kind),
+                       charge=charge, multiplicity=mult,
+                       geometry_source=GeometrySource.REFERENCE, ref_name=ref)
 
 
-def test_make_followups_opt_freq_sets_combined_calculation_type():
-    parent = _crest_calc("mol")
-    calcs = make_conformer_followups(parent, _result_with_conformers(1), [1],
-                                     "opt_freq", existing_names=set())
-    assert calcs[0].kind == "opt_freq"
-    assert calcs[0].config.calculation_type == "TightOpt Freq"
+def _done_all_crest(name="cr", n=3):
+    c = _crest_calc(name)
+    c.config.crest_handoff = "all"
+    c.state = CalcState.DONE
+    c.result = _result_with_conformers(n)
+    return c
 
 
-def test_make_followups_mlip_opt_builds_mace_calcs_with_model():
-    # conformer -> N MACE pre-optimizations: DIRECT geometry, model carried on
-    # StepConfig.mlip_model, parent charge/mult inherited (MLIP ignores them).
-    parent = _crest_calc("but")
-    parent.charge, parent.multiplicity = 0, 1
-    calcs = make_conformer_followups(parent, _result_with_conformers(3), [1, 2],
-                                     "mlip_opt", existing_names=set(),
-                                     mlip_model="MACE-OFF medium")
+def test_expand_fans_reference_chain_out_track_major():
+    crest = _done_all_crest("cr", 3)
+    opt = _ref_calc("opt", "opt", "cr", charge=-1, mult=2)
+    freq = _ref_calc("freq", "freq", "opt")
+    calcs = [crest, opt, freq]
 
-    assert [c.name for c in calcs] == ["but_c1", "but_c2"]
-    for c in calcs:
-        assert c.kind == "mlip_opt"
-        assert c.config.kind == "mlip_opt"
-        assert c.config.mlip_model == "MACE-OFF medium"
-        assert c.geometry_source == GeometrySource.DIRECT
-        first = c.xyz.splitlines()[0].split()
-        assert first[0] == "O" and len(first) == 4
+    removed, added = expand_conformer_tracks(
+        crest, crest.result, calcs, taken_names={c.name for c in calcs})
 
-
-def test_make_followups_names_are_unique_against_existing():
-    parent = _crest_calc("job")
-    calcs = make_conformer_followups(parent, _result_with_conformers(1), [1], "opt",
-                                     existing_names={"job_c1"})
-    assert calcs[0].name == "job_c1_2"
-
-
-def test_make_followups_rejects_unknown_kind():
-    parent = _crest_calc("x")
-    with pytest.raises(ValueError):
-        make_conformer_followups(parent, _result_with_conformers(1), [1], "sp",
-                                 existing_names=set())
+    assert removed == ["opt", "freq"]
+    assert [c.name for c in added] == [
+        "opt_c1", "freq_c1", "opt_c2", "freq_c2", "opt_c3", "freq_c3"]
+    o1, f1 = added[0], added[1]
+    # 1-hop clone: the conformer is baked in as DIRECT geometry; the template's
+    # own charge/multiplicity are kept (the template IS the user's spec)
+    assert o1.geometry_source == GeometrySource.DIRECT and o1.ref_name == ""
+    row = o1.xyz.splitlines()[0].split()
+    assert row[0] == "O" and len(row) == 4
+    assert o1.charge == -1 and o1.multiplicity == 2
+    # deeper clone: REFERENCE re-pointed to the SAME-track parent clone
+    assert f1.geometry_source == GeometrySource.REFERENCE and f1.ref_name == "opt_c1"
+    assert added[3].ref_name == "opt_c2"
+    # tracks get independent config copies
+    o1.config.functional = "PBE0"
+    assert opt.config.functional != "PBE0"
+    # different conformers -> different baked geometries
+    assert added[0].xyz != added[2].xyz
 
 
-def test_make_followups_skips_out_of_range_indices():
-    parent = _crest_calc("x")
-    calcs = make_conformer_followups(parent, _result_with_conformers(2), [2, 5, 0], "opt",
-                                     existing_names=set())
-    assert [c.name for c in calcs] == ["x_c2"]
+def test_expand_noop_without_all_handoff_two_conformers_or_templates():
+    crest = _done_all_crest("cr", 3)
+    opt = _ref_calc("opt", "opt", "cr")
+    crest.config.crest_handoff = "lowest"
+    assert expand_conformer_tracks(crest, crest.result, [crest, opt], set()) is None
+    crest.config.crest_handoff = "all"
+    assert expand_conformer_tracks(crest, _result_with_conformers(1),
+                                   [crest, opt], set()) is None
+    unrelated = Calculation(name="x", kind="opt", config=StepConfig(kind="opt"),
+                            xyz="H 0 0 0")
+    assert expand_conformer_tracks(crest, crest.result, [crest, unrelated], set()) is None
 
 
-def test_make_followups_empty_selection_raises():
-    parent = _crest_calc("x")
-    with pytest.raises(ValueError):
-        make_conformer_followups(parent, _result_with_conformers(2), [], "opt",
-                                 existing_names=set())
+def test_expand_clones_only_pending_dependents_and_uniquifies_names():
+    crest = _done_all_crest("cr", 2)
+    done_dep = _ref_calc("old", "opt", "cr")
+    done_dep.state = CalcState.DONE           # finished earlier: never cloned
+    opt = _ref_calc("opt", "opt", "cr")
+    calcs = [crest, done_dep, opt]
+
+    removed, added = expand_conformer_tracks(
+        crest, crest.result, calcs,
+        taken_names={"cr", "old", "opt", "opt_c1"})
+
+    assert removed == ["opt"]
+    assert [c.name for c in added] == ["opt_c1_2", "opt_c2"]
+
+
+def test_queue_engine_expands_all_handoff_and_runs_the_tracks(tmp_path, monkeypatch):
+    # e2e on the fake runner (2-conformer ensemble): [crest(all), child(ref)]
+    # becomes [crest, child_c1, child_c2], all DONE, the store notified once.
+    _patch_runner(monkeypatch)
+    cb, _logs, _ = _recording_callbacks()
+    subs = []
+    cb.queue_substitute = lambda removed, added: (
+        subs.append((list(removed), list(added))) or True)
+    engine = QueueEngine("", str(tmp_path), cb)
+    parent = _crest_calc("par")
+    parent.config.crest_handoff = "all"
+    child = _crest_calc("child")
+    child.geometry_source = GeometrySource.REFERENCE
+    child.ref_name = "par"
+    calcs = [parent, child]
+
+    engine.run_all(calcs)
+
+    assert [c.name for c in calcs] == ["par", "child_c1", "child_c2"]
+    assert [c.state for c in calcs] == [CalcState.DONE] * 3
+    assert len(subs) == 1 and subs[0][0] == ["child"]
+    # the clones carry their conformer's coordinates as DIRECT geometry
+    assert all(c.geometry_source == GeometrySource.DIRECT for c in calcs[1:])
+
+
+def test_queue_engine_store_refusal_falls_back_to_single_geometry(tmp_path, monkeypatch):
+    # if the store refuses the substitution (name collision), the template stays
+    # and runs on the best conformer — never half a substitution.
+    _patch_runner(monkeypatch)
+    cb, logs, _ = _recording_callbacks()
+    cb.queue_substitute = lambda removed, added: False
+    engine = QueueEngine("", str(tmp_path), cb)
+    parent = _crest_calc("par")
+    parent.config.crest_handoff = "all"
+    child = _crest_calc("child")
+    child.geometry_source = GeometrySource.REFERENCE
+    child.ref_name = "par"
+    calcs = [parent, child]
+
+    engine.run_all(calcs)
+
+    assert [c.name for c in calcs] == ["par", "child"]
+    assert child.state == CalcState.DONE
+    assert any("could not expand" in m for _l, m in logs)
+
+
+def test_run_start_expansion_for_already_done_crest(tmp_path, monkeypatch):
+    # the search finished in a previous run; referencing templates added later
+    # are expanded by the DONE-skip branch when the next run starts.
+    _patch_runner(monkeypatch)
+    cb, _logs, _ = _recording_callbacks()
+    engine = QueueEngine("", str(tmp_path), cb)
+    parent = _done_all_crest("par", 2)
+    child = _crest_calc("child")
+    child.geometry_source = GeometrySource.REFERENCE
+    child.ref_name = "par"
+    calcs = [parent, child]
+
+    engine.run_all(calcs)
+
+    assert [c.name for c in calcs] == ["par", "child_c1", "child_c2"]
+    assert [c.state for c in calcs] == [CalcState.DONE] * 3

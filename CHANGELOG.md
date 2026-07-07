@@ -35,13 +35,20 @@ ORCA in one action.
   `crest/installer.py`): downloads the static release tarball, extracts, and
   symlinks it — no user shell interaction (the one manual prerequisite is a WSL
   distro existing). Distro selection + install live in **Settings → CREST**.
-- **Conformer → ORCA / MLIP handoff** — the Results tab lists a CREST job's
-  ranked conformers (ΔE in kcal/mol) with checkboxes + "select all"; the
-  "ORCA opt / opt + freq jobs" buttons batch-add one DIRECT-geometry ORCA calc
-  per selected conformer, and a **"MLIP opt jobs"** button (with a MACE-model
-  picker, enabled once a MACE environment is ready) does the same as `mlip_opt`
-  MACE pre-optimizations (`Bridge.add_calcs_from_conformers` →
-  `store.make_conformer_followups`, `kind="mlip_opt"`).
+- **Conformer → follow-up pipeline fan-out** — the CREST build card gains a
+  **Conformer handoff** scope: *lowest conformer only* (a reference receives the
+  best conformer, the classic single-geometry handoff) or *all conformers*.
+  Follow-up MLIP/ORCA calculations are built normally on the Build tab by
+  referencing the CREST search from their geometry source; with the "all"
+  scope, the moment the search finishes with K conformers every pending
+  calculation chain referencing it (e.g. opt → freq) is substituted by one
+  clone chain per conformer (`{name}_c1 … {name}_cK`, track by track), each
+  clone carrying its conformer's geometry (first hop) or a same-track
+  reference (deeper hops) — so a single queued template pipeline runs once per
+  conformer, with per-track failure isolation, editing, and session
+  save/restore behaving like ordinary queue rows. The Results tab's conformer
+  list is now **read-only**: results are for interpretation, building happens
+  on the Build tab.
 - **Tests** — 25 CREST tests (now 262 pytest total): the ensemble parser against
   a real ethanol corpus (`tests/crest/fixtures/`), CLI-flag building
   (`--uhf = multiplicity − 1`), per-kind validation, the QueueEngine path via a
@@ -68,13 +75,24 @@ ORCA in one action.
 - **Number inputs no longer show the native up/down spinner arrows** (global
   style) — the value is typed, and the steppers only cluttered the field.
 - **Live CREST progress visualization in the Log → Graph tab.** A running CREST
-  conformer search now shows a phase-chain HUD (initial opt → metadynamics
-  sampling → additional MD → final opt → done, with the per-round MTD count, the
-  iMTD-GC iteration, and the conformer count) plus a graph of the lowest energy
-  per CREGEN sort pass — the CREST analogue of the SCF/optimization graph. A new
-  `CrestTracker` (`web/scf_graph.js`, unit-tested in `tests/web/scf_graph.test.js`)
-  parses the streamed `.out`; `bridge.get_graph_lines` also keeps CREST markers so
-  a reattached run rebuilds its graph. Validated against real CREST 3.0.2 output.
+  conformer search shows a phase-chain HUD (initial opt → metadynamics sampling →
+  additional MD → final opt → done, with the per-round MTD count, the iMTD-GC
+  iteration, and the conformer count). A new `CrestTracker` (`web/scf_graph.js`,
+  unit-tested in `tests/web/scf_graph.test.js`) parses the streamed `.out`;
+  `bridge.get_graph_lines` also keeps CREST markers so a reattached run rebuilds
+  its progress. Validated against real CREST 3.0.2 output.
+- **The staged-pipeline display (CREST, analytical frequency, TD-DFT) is a clean
+  horizontal timeline** — a centered title + `STEP k/n` (or `DONE`/`STOPPED`)
+  badge over a full-width rail whose traversed portion is a **stepped fill**
+  (one band per stage, dark→bright green left→right; dark→red when stopped) up
+  to the enlarged, pulsing current stage; node labels alternate above/below with
+  an 11px live detail on the current stage. Replaces the old game-HUD panel (big
+  headline number, dot chain, hazard-stripe borders) and fills the Graph panel
+  width with no convergence curve or empty area below it.
+- **Per-conformer track clones show their provenance** in the queue — a track
+  clone whose geometry was baked in from a conformer search reads
+  `from {search} · conformer {k}` instead of a bare `xyz` (new display-only
+  `Calculation.conformer_origin`, persisted across restarts).
 - **Log tab: the graph toggle is renamed "SCF graph" → "Graph"** (it now also
   serves optimization, frequency, TD-DFT and CREST views), and the empty-graph
   placeholder reads "waiting for data…" instead of "waiting for SCF data…".
@@ -86,6 +104,16 @@ ORCA in one action.
   cause and the fix (pre-optimize and reference it, or use GFN-FF), instead of a
   generic exit-code message. The signature list (`crest/parser.py`) is extensible
   as more real failure modes are observed.
+
+- **More CREST conformer-search options.** The build card adds **GFN1-xTB** to
+  the method list, a **Search speed** preset (`--quick` / `--squick` / `--mquick`),
+  and an **NCI mode** toggle (`--nci` — an ellipsoid wall potential that keeps a
+  non-covalent complex from dissociating during sampling). An **Advanced settings**
+  section adds the solvent model (ALPB/GBSA), MD/MTD knobs (`--mdlen` multiplier,
+  `--tstep`, `--tnmd`, `--mddump`, `--vbdump`), and toggles for `--cbonds`,
+  `--subrmsd`, `--norotmd`, `--keepdir`, and `--cluster` (with the manual's
+  single-molecule-only caveat noted inline). All are optional (unset = CREST
+  default) and validated/clamped at the deserialization boundary.
 
 ### Fixed
 - **The `.inp` button no longer appears on MLIP/CREST queue rows.** Those backends

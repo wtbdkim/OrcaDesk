@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 268 tests over the framework-free layers
+python -m pytest                       # 273 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 27 tracker/progress tests, no npm deps
 ```
 
@@ -340,19 +340,44 @@ path. Charge/multiplicity come from the `Calculation` (shared with ORCA); CREST'
 multiplicity). The pipeline was validated end to end against a real CREST 3.0.2
 install in WSL Ubuntu (including the conformer→ORCA handoff).
 
-**Conformer → ORCA / MLIP handoff.** A finished `crest_conf` result exposes its
-whole ranked ensemble in the Results tab (checkboxes + "select all"); the
-"ORCA opt / opt + freq jobs" buttons — or the "MLIP opt jobs" button (with a
-MACE-model picker, gated on a ready MACE env like the Build-tab card) — call
-`Bridge.add_calcs_from_conformers` → `store.make_conformer_followups`, which
-builds one **DIRECT-geometry** calc per selected conformer (its coordinates
-baked in, parent's charge/multiplicity), named `{parent}_c{i}`. `kind` selects
-the target: `opt`/`opt_freq` → an ORCA optimization, `mlip_opt` → a MACE
-pre-optimization (`mlip_model` on the payload). This is the queue's first 1→N
-handoff, and the front-end handler is the shared `generateFromConformers(kind)`.
+`build_crest_argv` (`crest/runner.py`) maps `StepConfig.crest_*` to CLI flags:
+method (`--gfn2`/`--gfn1`/`--gfn0`/`--gfnff`, exact-map with an unknown-value
+`--<name>` fallback), solvent (`--alpb`/`--gbsa` by `crest_solvent_model`),
+`--ewin`, `-T`, plus the optional advanced knobs — `crest_preset`
+(`--quick`/`--squick`/`--mquick`), `crest_nci` (`--nci`), the MD/MTD numerics
+(`--mdlen x<mult>`, `--tstep`, `--tnmd`, `--mddump`, `--vbdump`), and the
+`--cbonds`/`--subrmsd`/`--norotmd`/`--keepdir`/`--cluster` toggles. Each advanced
+flag is emitted only when set to a non-default value; the enum/numeric fields are
+validated and clamped in `StepConfig.from_dict` (the trust boundary). File-based
+options (`--cinp` constraints) and standalone modes (`--cregen`) are intentionally
+out of scope. UI: the CREST build card + a collapsible "Advanced settings"
+(`.adv-section`).
+
+**Conformer → follow-up pipeline (per-conformer track expansion).** Follow-up
+MLIP/ORCA calculations are built on the **Build tab** by referencing the CREST
+calc through the normal geometry-source dropdown; the CREST build card's
+**Conformer handoff** scope (`StepConfig.crest_handoff`: `lowest` | `all`)
+decides what a reference receives. `lowest` (default) is the classic
+single-geometry handoff — the best conformer via `_resolve_geometry`. With
+`all`, the moment the search reaches DONE with K ≥ 2 conformers the engine
+**substitutes** every PENDING calc chain referencing it with one clone chain
+per conformer (`expand_conformer_tracks` in `core/queue.py`): clones are named
+`{name}_c{k}` in track-major order (c1's whole chain, then c2's, …); a 1-hop
+clone gets its conformer baked in as DIRECT geometry, deeper clones re-point
+their REFERENCE to the same-track parent clone — so a queued `crest ← opt ←
+freq` template fans out into K independent tracks and dependency-scoped
+failure blocking works per track. `run_all` walks a growable list for this,
+and the substitution is mirrored to the store through
+`QueueCallbacks.queue_substitute` → `QueueStore.substitute_calcs` — the one
+engine-driven structural mutation allowed mid-run (engine and store apply the
+identical change, preserving the visible-queue == executing-queue invariant
+that blocks user mutations during a run). Expansion also happens at run start
+when an already-DONE `all` search has pending referencing templates (built
+after it finished). The Results tab's conformer list is **read-only**: results
+are for interpretation; building happens on the Build tab.
 
 **Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
-`list_crest_distros` / `set_crest_distro` / `add_calcs_from_conformers`) follow
+`list_crest_distros` / `set_crest_distro`) follow
 the MLIP pattern: a background probe publishes to `Bridge._crest_status` (guarded
 by `_crest_lock`) and the UI polls `get_crest_status`. The Build tab gains a
 fourth mode (`crest`; `Settings.build_mode`), a locked `#card-crest` (until a

@@ -153,6 +153,7 @@ def calc_to_dict(c: Calculation) -> CalcSummary:
         geometry_source=c.geometry_source.value
         if isinstance(c.geometry_source, GeometrySource) else str(c.geometry_source),
         ref_name=c.ref_name,
+        conformer_origin=getattr(c, "conformer_origin", ""),
         is_raw=c.is_raw,
         state=c.state.value if isinstance(c.state, CalcState) else str(c.state),
         message=c.message,
@@ -173,10 +174,13 @@ def _meta_line(c: Calculation) -> str:
     if c.kind.startswith("mlip"):
         model = getattr(c.config, "mlip_model", "") if c.config else ""
         return f"{c.kind} · {src} · {model or 'MACE'}"
-    # CREST calcs use charge/multiplicity too; also show the tight-binding method.
+    # CREST calcs use charge/multiplicity too; also show the tight-binding method
+    # and (when set) the all-conformers handoff, since it changes queue behaviour.
     if c.kind.startswith("crest"):
         method = getattr(c.config, "crest_method", "") if c.config else ""
-        return f"{c.kind} · {src} · {method or 'gfn2'} · q{c.charge} m{c.multiplicity}"
+        handoff = getattr(c.config, "crest_handoff", "") if c.config else ""
+        tail = " · all conformers" if handoff == "all" else ""
+        return f"{c.kind} · {src} · {method or 'gfn2'} · q{c.charge} m{c.multiplicity}{tail}"
     return f"{c.kind} · {src} · q{c.charge} m{c.multiplicity}"
 
 
@@ -206,88 +210,10 @@ def calc_from_dict(d: dict) -> Calculation:
         geometry_source=GeometrySource(src),
         xyz=d.get("xyz", ""),
         ref_name=d.get("ref_name", ""),
+        conformer_origin=d.get("conformer_origin", ""),
         is_raw=bool(d.get("is_raw", False)),
         raw_text=d.get("raw_text", ""),
     )
-
-
-# ---- CREST conformer -> ORCA follow-up jobs -----------------------------
-
-def _bare_xyz_from_conformer(conf) -> str:
-    """A conformer's geometry as a bare 'El x y z' block (no count/comment
-    header) — the form build_input injects into the coordinate block, and the
-    form a DIRECT-geometry calc stores in calc.xyz. Handles both Conformer
-    dataclasses and plain dicts (a result round-tripped through JSON)."""
-    geom = conf.get("geometry", []) if isinstance(conf, dict) else getattr(conf, "geometry", [])
-    lines = []
-    for a in geom:
-        if isinstance(a, dict):
-            sym, x, y, z = a.get("symbol"), a.get("x"), a.get("y"), a.get("z")
-        else:
-            sym, x, y, z = a.symbol, a.x, a.y, a.z
-        if sym is None or x is None or y is None or z is None:
-            continue
-        lines.append(f"{sym} {float(x):.10f} {float(y):.10f} {float(z):.10f}")
-    return "\n".join(lines)
-
-
-def _unique_followup_name(base: str, taken: "set[str]") -> str:
-    """A queue-unique name derived from ``base`` (append _2, _3, ... on clash)."""
-    if base not in taken:
-        return base
-    i = 2
-    while f"{base}_{i}" in taken:
-        i += 1
-    return f"{base}_{i}"
-
-
-def make_conformer_followups(parent: Calculation, result, indices: "list[int]",
-                             kind: str, existing_names: "set[str]",
-                             mlip_model: str = "") -> "list[Calculation]":
-    """Build follow-up Calculations from selected CREST conformers.
-
-    Each selected conformer (1-based ``indices`` into ``result.conformers``)
-    becomes an independent DIRECT-geometry calc of ``kind`` with that conformer's
-    coordinates baked in and the parent's charge/multiplicity — so "re-optimize
-    these N conformers" is one action. Supported kinds:
-
-      - ``'opt'`` / ``'opt_freq'`` → an ORCA optimization (TightOpt / TightOpt Freq)
-      - ``'mlip_opt'`` → a MACE pre-optimization (``mlip_model`` names the model)
-
-    Names are ``{parent}_c{i}``, made unique against ``existing_names``. Raises
-    ValueError on an unsupported kind or when nothing usable is selected."""
-    if kind == "mlip_opt":
-        def _make_config():
-            return StepConfig(kind="mlip_opt", mlip_model=(mlip_model or "").strip())
-    else:
-        calc_type = {"opt": "TightOpt", "opt_freq": "TightOpt Freq"}.get(kind)
-        if calc_type is None:
-            raise ValueError("Follow-up kind must be 'opt', 'opt_freq' or 'mlip_opt'.")
-
-        def _make_config():
-            return StepConfig(kind=kind, calculation_type=calc_type)
-    conformers = getattr(result, "conformers", None) or []
-    if not conformers:
-        raise ValueError("The CREST calculation has no conformers to use.")
-
-    taken = set(existing_names)
-    out: list[Calculation] = []
-    for i in indices:
-        if not isinstance(i, int) or not (1 <= i <= len(conformers)):
-            continue
-        xyz = _bare_xyz_from_conformer(conformers[i - 1])
-        if not xyz.strip():
-            continue
-        name = _unique_followup_name(f"{parent.name}_c{i}", taken)
-        taken.add(name)
-        out.append(Calculation(
-            name=name, kind=kind, config=_make_config(),
-            charge=parent.charge, multiplicity=parent.multiplicity,
-            geometry_source=GeometrySource.DIRECT, xyz=xyz,
-        ))
-    if not out:
-        raise ValueError("No valid conformers were selected.")
-    return out
 
 
 # ---- session persistence (autosave / restore) --------------------------
@@ -313,6 +239,7 @@ def calc_to_session_dict(c: Calculation) -> CalcFull:
         geometry_source=gs,
         xyz=c.xyz,
         ref_name=c.ref_name,
+        conformer_origin=getattr(c, "conformer_origin", ""),
         is_raw=c.is_raw,
         raw_text=c.raw_text,
         state=st,
@@ -541,6 +468,34 @@ class QueueStore:
                 raise ValueError("Cannot clear the queue while it is running.")
             self._calcs.clear()
             self._bump_and_save()
+
+    def substitute_calcs(self, removed_names: "list[str]",
+                         new_calcs: "list[Calculation]") -> bool:
+        """Atomically replace the named calcs with ``new_calcs`` at the position
+        of the first removed row — the store side of the engine's per-conformer
+        track expansion (QueueEngine._maybe_expand_crest, crest_handoff="all").
+
+        Deliberately NOT guarded by the running flag: unlike a user edit, this
+        mutation is driven by the engine itself, which applies the identical
+        substitution to its own executing snapshot — so the visible queue and
+        the executing queue stay in sync (the invariant the running guard
+        protects). Returns False (applying nothing) if a new name collides with
+        a calc that is staying, so the engine can fall back to the untouched
+        templates instead of running half a substitution."""
+        removed = set(removed_names)
+        with self._lock:
+            staying = {c.name for c in self._calcs if c.name not in removed}
+            for nc in new_calcs:
+                if nc.name in staying:
+                    return False
+                staying.add(nc.name)
+            idxs = [i for i, c in enumerate(self._calcs) if c.name in removed]
+            insert_at = idxs[0] if idxs else len(self._calcs)
+            self._calcs = [c for c in self._calcs if c.name not in removed]
+            for off, nc in enumerate(new_calcs):
+                self._calcs.insert(insert_at + off, nc)
+            self._bump_and_save()
+        return True
 
     def replace(self, name: str, new_calc: Calculation) -> bool:
         """Replace an editable calculation in place (keeps its queue position).
@@ -821,6 +776,7 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
         cb = QueueCallbacks(
             log=lambda msg, level: store.append_log(msg, level),
             calc_update=lambda i, c: store.touch(),
+            queue_substitute=lambda removed, added: store.substitute_calcs(removed, added),
         )
         return QueueEngine(orca_path, workspace_root, cb, skip_names=skip,
                            mlip_envs=envs, crest_distro=crest_pref)

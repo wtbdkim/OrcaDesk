@@ -30,13 +30,14 @@ from typing import TypedDict
 # these names exist so snapshot/envelope schemas can reference the shapes.)
 
 class CalcSummary(TypedDict):
-    """Compact queue-row form — mirror of store.calc_to_dict (12 keys)."""
+    """Compact queue-row form — mirror of store.calc_to_dict (13 keys)."""
     name: str
     kind: str
     charge: int
     multiplicity: int
     geometry_source: str      # "direct" | "reference"
     ref_name: str
+    conformer_origin: str     # per-conformer clone provenance ("" for ordinary calcs)
     is_raw: bool
     state: str                # "pending"|"running"|"done"|"failed"|"blocked"|"cancelled"
     message: str
@@ -46,7 +47,7 @@ class CalcSummary(TypedDict):
 
 
 class CalcFull(TypedDict):
-    """Full-fidelity form — mirror of store.calc_to_session_dict (15 keys)."""
+    """Full-fidelity form — mirror of store.calc_to_session_dict (16 keys)."""
     name: str
     kind: str
     config: dict              # StepConfig.to_dict(), {} when absent
@@ -55,6 +56,7 @@ class CalcFull(TypedDict):
     geometry_source: str
     xyz: str
     ref_name: str
+    conformer_origin: str
     is_raw: bool
     raw_text: str
     state: str

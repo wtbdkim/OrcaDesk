@@ -65,9 +65,14 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   and ORCAdesk can install the (statically-linked) binary into it for you; the
   one manual prerequisite is having a WSL distro. A `crest_conf` job joins the
   same queue (it runs detached and survives the app closing, like an ORCA run);
-  its finished ensemble is listed in the **Results** tab, from which you select
-  conformers and generate ORCA `opt` / `opt+freq` jobs in one click. The CREST
-  build card stays **locked until a distro with CREST is ready**.
+  its finished ensemble is listed (read-only) in the **Results** tab. Follow-up
+  calculations reference the search from their geometry source on the Build
+  tab: with the card's **Conformer handoff** set to *all conformers*, a queued
+  pipeline referencing the search (e.g. MLIP opt → ORCA opt → freq) automatically
+  **fans out into one track per conformer** (`name_c1`, `name_c2`, …) when the
+  search finishes; with *lowest conformer only* it runs once, on the best
+  conformer. The CREST build card stays **locked until a distro with CREST is
+  ready**.
 - **Queue**: calculations run in order. If one fails, anything that references
   it (directly or transitively) is skipped (blocked); unrelated calculations
   continue. Each calculation gets its own folder `{workspace}/{name}/`. The

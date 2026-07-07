@@ -257,6 +257,7 @@ function mirrorCalc(c) {
     name: c.name, kind: c.kind, state: c.state, message: c.message,
     is_raw: c.is_raw, charge: c.charge, multiplicity: c.multiplicity,
     geometry_source: c.geometry_source, ref_name: c.ref_name,
+    conformer_origin: c.conformer_origin || "",
     output_path: c.output_path || "",
     scf_convergence: c.scf_convergence || "TightSCF",
     // config/xyz aren't returned by the snapshot; editing pulls from here only
@@ -1404,6 +1405,22 @@ function resetCrestForm() {
   document.getElementById("crest-name").value = "";
   crestXyz = "";
   document.getElementById("crest-xyz-status").textContent = "";
+  const ho = document.getElementById("crest-handoff");
+  if (ho) ho.value = "lowest";
+  // advanced knobs back to CREST defaults
+  for (const id of ["crest-preset", "crest-solvent-model"]) {
+    const el = document.getElementById(id);
+    if (el) el.value = id === "crest-solvent-model" ? "alpb" : "";
+  }
+  for (const id of ["crest-mdlen", "crest-tstep", "crest-tnmd", "crest-mddump", "crest-vbdump"]) {
+    const el = document.getElementById(id);
+    if (el) el.value = "";
+  }
+  for (const id of ["crest-nci", "crest-norotmd", "crest-cbonds", "crest-subrmsd",
+                    "crest-cluster", "crest-keepdir"]) {
+    const el = document.getElementById(id);
+    if (el) el.checked = false;
+  }
 }
 async function addCrestCalcToQueue() {
   try {
@@ -1421,6 +1438,10 @@ async function addCrestCalcToQueue() {
     const solvent = document.getElementById("crest-solvent").value;
     const ewin = parseFloat(document.getElementById("crest-ewin").value) || 6.0;
     const threads = Math.max(1, parseInt(document.getElementById("crest-threads").value, 10) || 4);
+    const handoff = document.getElementById("crest-handoff").value === "all" ? "all" : "lowest";
+    const numVal = id => parseFloat(document.getElementById(id).value) || 0;
+    const checked = id => document.getElementById(id).checked;
+    const preset = document.getElementById("crest-preset").value;
     const calc = /** @type {CalcInput} */ ({
       name, kind: "crest_conf",
       charge, multiplicity: mult,
@@ -1430,6 +1451,20 @@ async function addCrestCalcToQueue() {
       config: {
         kind: "crest_conf", crest_method: method, crest_solvent: solvent,
         crest_ewin: ewin, crest_threads: threads, crest_env_id: "",
+        crest_handoff: handoff,
+        crest_preset: ["quick", "squick", "mquick"].includes(preset) ? preset : "",
+        crest_nci: checked("crest-nci"),
+        crest_solvent_model: document.getElementById("crest-solvent-model").value === "gbsa" ? "gbsa" : "alpb",
+        crest_mdlen_mult: numVal("crest-mdlen"),
+        crest_tstep_fs: numVal("crest-tstep"),
+        crest_tnmd_k: numVal("crest-tnmd"),
+        crest_mddump_fs: Math.round(numVal("crest-mddump")),
+        crest_vbdump_ps: numVal("crest-vbdump"),
+        crest_norotmd: checked("crest-norotmd"),
+        crest_cbonds: checked("crest-cbonds"),
+        crest_subrmsd: checked("crest-subrmsd"),
+        crest_cluster: checked("crest-cluster"),
+        crest_keepdir: checked("crest-keepdir"),
       },
       state: "pending", message: "",
     });
@@ -1809,7 +1844,10 @@ function renderQueue() {
   el.innerHTML = "";
   queue.forEach((c, i) => {
     // ref_name is user-typed (a calc name) and lands in innerHTML — escape it
-    const srcLabel = c.geometry_source === "reference" ? `ref → ${escapeHtml(c.ref_name)}` : "xyz";
+    // a per-conformer track clone bakes its conformer's geometry in as DIRECT,
+    // so show its provenance ("from tt1 · conformer 2") instead of a bare "xyz"
+    const srcLabel = c.geometry_source === "reference" ? `ref → ${escapeHtml(c.ref_name)}`
+      : c.conformer_origin ? `from ${escapeHtml(c.conformer_origin)}` : "xyz";
     const isMlip = (c.kind || "").startsWith("mlip");
     const isCrest = (c.kind || "").startsWith("crest");
     const rawBadge = c.is_raw ? `<span class="qstate raw">raw</span>` : "";
@@ -2116,35 +2154,19 @@ function setGraphKind(k) { _graphKind = k; renderSCFPanel(); }
 function renderSCFPanel() {
   if (!SCFGraph) return;
   const panel = document.getElementById("scf-panel");
-  // CREST run: a conformer search has no SCF/geo/freq curve, so it owns the whole
-  // panel with its phase-chain HUD + a lowest-energy-per-CREGEN-pass graph.
-  if (_crestTracker && _crestTracker.hasData()) {
-    panel.innerHTML =
-      `<div class="graph-summary">${SCFGraph.renderCrestProgress(_crestTracker)}</div>` +
-      `<div class="graph-divider"></div>` +
-      `<div class="graph-plot"></div>`;
-    const cplot = panel.querySelector(".graph-plot");
-    if (cplot) {
-      const innerW = cplot.clientWidth - 20;
-      const innerH = Math.max(window.innerHeight - cplot.getBoundingClientRect().top - 54, 220);
-      const gopts = innerW > 0
-        ? { width: 1100, height: Math.round(1100 * innerH / innerW) }
-        : { width: 1100, height: 360 };
-      cplot.innerHTML = SCFGraph.renderCrestGraph(_crestTracker, gopts);
-    }
+  // A phase-chain run — a CREST conformer search, or the frequency / TD-DFT
+  // pipeline — has no meaningful convergence curve below it: its phase HUD fills
+  // the whole panel, no secondary graph. (CREST wins, then freq, then TD-DFT.)
+  let phaseHtml = "";
+  if (_crestTracker && _crestTracker.hasData()) phaseHtml = SCFGraph.renderCrestProgress(_crestTracker);
+  else if (_freqTracker && _freqTracker.hasData()) phaseHtml = SCFGraph.renderFreqProgress(_freqTracker);
+  else if (_tddftTracker && _tddftTracker.hasData()) phaseHtml = SCFGraph.renderTddftProgress(_tddftTracker);
+  if (phaseHtml) {
+    // the horizontal timeline sizes the panel to its own (short) height — no
+    // forced full-height wrapper, so there's no large empty area below it
+    panel.innerHTML = phaseHtml;
     _scfDirty = false;
     return;
-  }
-  // post-SCF stage panel on top: the frequency stage (analytical phase chain
-  // or numerical displacement progress) or the TD-DFT phase chain — a run is
-  // only ever one of the two, so freq wins if both somehow have data
-  let freqBlock = "";
-  if (_freqTracker && _freqTracker.hasData()) {
-    freqBlock = `<div class="graph-summary">${SCFGraph.renderFreqProgress(_freqTracker)}</div>` +
-                ((_geoTracker && _geoTracker.hasData()) ? `<div class="graph-divider"></div>` : "");
-  } else if (_tddftTracker && _tddftTracker.hasData()) {
-    freqBlock = `<div class="graph-summary">${SCFGraph.renderTddftProgress(_tddftTracker)}</div>` +
-                ((_geoTracker && _geoTracker.hasData()) ? `<div class="graph-divider"></div>` : "");
   }
   const kind = effectiveGraphKind();
   // sub-toggle (SCF vs geometry) — only meaningful for opt runs
@@ -2167,7 +2189,7 @@ function renderSCFPanel() {
            `<div class="graph-divider"></div>` +
            `<div class="graph-plot"></div>`;
   }
-  panel.innerHTML = freqBlock + head + body;
+  panel.innerHTML = head + body;
   // Two-pass render: the summary/legend above the plot varies in height, so
   // measure the plot box NOW and pick a viewBox height whose aspect ratio makes
   // the SVG (width:100%, height:auto) end flush with the bottom 16px gutter —
@@ -2358,85 +2380,30 @@ function renderSummary(rows, d) {
   body.innerHTML = html;
 }
 
-/** CREST conformer ensemble: a selectable list with a batch "re-optimize in
- *  ORCA" action (generates one DIRECT-geometry opt/opt_freq calc per selected
- *  conformer). @param {ConformerPayload[]} confs */
+/** CREST conformer ensemble: a read-only ranked list. The Results tab is for
+ *  interpreting results — follow-up calculations are built on the Build tab by
+ *  referencing the CREST search (its "Conformer handoff" scope decides whether
+ *  the referencing chain fans out per conformer). @param {ConformerPayload[]} confs */
 function renderConformers(confs) {
   const body = document.getElementById("result-body");
   let rows = "";
   for (const c of confs) {
     rows += `<tr>
-      <td><input type="checkbox" class="conf-check" data-index="${c.index}" checked></td>
       <td>${c.index}</td>
       <td>${c.rel_kcal.toFixed(3)}</td>
       <td>${c.energy_eh.toFixed(8)}</td>
       <td>${c.n_atoms}</td></tr>`;
   }
-  // The batch action needs a queued parent calc to read geometries from; an
-  // external "Open .out" has none, so the buttons are disabled there.
-  const canGen = !!_currentResultName;
-  const note = canGen ? "" :
-    `<div class="hint" style="margin-top:6px">Select this from a queued CREST calculation to generate ORCA or MLIP jobs from its conformers.</div>`;
   body.innerHTML += `
     <div class="divider"></div>
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
-      <div class="card-title">Conformers (${confs.length})</div>
-      <label class="hint" style="margin:0;display:flex;align-items:center;gap:6px">
-        <input type="checkbox" id="conf-selall" checked onchange="toggleAllConformers(this.checked)"> select all
-      </label>
-    </div>
+    <div class="card-title" style="margin-bottom:8px">Conformers (${confs.length})</div>
     <div style="max-height:280px;overflow:auto">
       <table class="data">
-        <thead><tr><th></th><th>#</th><th>ΔE (kcal/mol)</th><th>E (Eh)</th><th>atoms</th></tr></thead>
+        <thead><tr><th>#</th><th>ΔE (kcal/mol)</th><th>E (Eh)</th><th>atoms</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <div class="btn-group" style="margin-top:10px">
-      <button class="btn btn-sm btn-primary" onclick="generateFromConformers('opt')" ${canGen ? "" : "disabled"}>→ ORCA opt jobs</button>
-      <button class="btn btn-sm" onclick="generateFromConformers('opt_freq')" ${canGen ? "" : "disabled"}>→ ORCA opt + freq jobs</button>
-    </div>
-    <div class="btn-group" style="margin-top:8px;align-items:center;flex-wrap:wrap">
-      <select id="conf-mlip-model" style="max-width:220px" ${canGen && _mlipReady ? "" : "disabled"}></select>
-      <button class="btn btn-sm" onclick="generateFromConformers('mlip_opt')" ${canGen && _mlipReady ? "" : "disabled"}${_mlipReady ? "" : ' title="Needs a ready MACE environment (Settings → MLIP)"'}>→ MLIP opt jobs</button>
-      ${canGen && !_mlipReady ? `<span class="hint" style="margin:0">MLIP needs a ready MACE environment.</span>` : ""}
-    </div>${note}`;
-  const msel = document.getElementById("conf-mlip-model");
-  if (msel && choicesCache.mace_models) fillGroupedSelect(msel, choicesCache.mace_models, "MACE-OFF medium");
-}
-/** @param {boolean} on */
-function toggleAllConformers(on) {
-  document.querySelectorAll(".conf-check").forEach(el => { el.checked = on; });
-}
-/** Create follow-up jobs from the checked conformers.
- *  @param {string} kind "opt" | "opt_freq" (ORCA) | "mlip_opt" (MACE) */
-async function generateFromConformers(kind) {
-  if (!_currentResultName) { toast("No queued CREST calculation selected."); return; }
-  const isMlip = kind === "mlip_opt";
-  if (isMlip && !_mlipReady) { toast("A ready MACE environment is required (Settings → MLIP)."); return; }
-  /** @type {number[]} */
-  const indices = [];
-  document.querySelectorAll(".conf-check").forEach(el => {
-    if (el.checked) indices.push(parseInt(el.dataset.index || "0", 10));
-  });
-  if (!indices.length) { toast("Select at least one conformer."); return; }
-  const label = isMlip ? "MLIP opt" : `ORCA ${kind}`;
-  /** @type {{parent_name:string, indices:number[], kind:string, model?:string}} */
-  const payload = { parent_name: _currentResultName, indices, kind };
-  if (isMlip) {
-    const msel = document.getElementById("conf-mlip-model");
-    payload.model = msel ? msel.value : "";
-  }
-  try {
-    const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calcs_from_conformers(
-      JSON.stringify(payload))));
-    if (!res.ok) { appendLog(`Could not create ${label} jobs: ` + res.error, "err"); toast(res.error); return; }
-    appendLog(`${indices.length} ${label} job(s) created from ${_currentResultName}'s conformers.`, "ok");
-    toast(`${indices.length} ${label} job(s) added to the queue.`);
-    await refreshQueue();
-    switchTab("queue");
-  } catch (e) {
-    appendLog(String(e), "err"); toast(`Could not create ${label} jobs.`);
-  }
+    <div class="hint" style="margin-top:6px">Follow-up calculations are built on the Build tab: reference this search from a geometry source — its Conformer handoff setting decides whether the chain runs on the lowest conformer or fans out per conformer.</div>`;
 }
 
 let _lastGeomXyz = "";   // last rendered geometry, for the Copy .xyz button

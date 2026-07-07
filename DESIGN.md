@@ -514,13 +514,12 @@ Every piece of text is one of these roles. No sizes between the steps
 | Field label | 12px/500, `--muted-foreground` |
 | Descriptions (card-desc, hint, brand sub), log line (mono), table text (mono), small button, segmented toggle (600), status pill, env detail | 12px |
 | State badge (600, uppercase, +.03em), version badge (500, meta label), truncated paths (mono), progress meta/ETA/pace (mono) | 11px |
-| Type tag (600), combo group header (700, uppercase, +.04em), HUD captions (uppercase, +.18em), chart axis titles, static-chart tick labels | 10px |
+| Type tag (600), combo group header (700, uppercase, +.04em), chart axis titles, static-chart tick labels | 10px |
 | Live-graph tick labels (mono, `.scf-axis`) | 9px |
-| HUD title / phase label (700, uppercase, +.12–.22em) | 13px |
-| HUD headline value | 26px/700, `tabular-nums`, ls +.06em |
+| Pipeline-stepper title (700, uppercase, +.12em), stage label (13px), stage detail (11px muted) | 13px |
 
 Micro-label tracking scale: +.02em (version badge) / +.03em (badges) /
-+.04em (group headers) / +.12/.18/.22em (HUD only). Machine text is always
++.04em (group headers) / +.12em (pipeline-stepper title). Machine text is always
 `--font-mono` (D20); `.mono` marks it on any element. Icon glyphs rendered
 as text (`≡` 16px, `×` 14px, `☽/☀` 15px) size to their control and are
 exempt from the text scale.
@@ -684,12 +683,21 @@ column left; header muted/500; no row hover. Tables live in a
 Progress bar: track `--accent`, `height 8px, radius 4px`; fill `--ok`,
 width transition .3s. Label 13px/600 (`Optimization 62% · step 12`); meta
 line 11px mono muted (accurate signals; pace chip right-aligned via
-`margin-left:auto`); ETA line below at `opacity .72` italic (D2). HUD phase
-panel (`.freq-jump`): mono card with 7px hazard stripes
-(`repeating-linear-gradient(135deg, err-55% 0 6px, transparent 6px 12px)`),
-uppercase tracked title/status, 26px tabular-nums headline, 10px dot chain
-(done = `--ok` fill; current = `--ok` outline + 1.2s pulse). Reuse this
-exact panel for any staged pipeline display.
+`margin-left:auto`); ETA line below at `opacity .72` italic (D2). Staged
+pipeline (`.phase-track`): a horizontal timeline that fills the Graph-panel
+width (no forced full-height wrapper — sizes to itself, so no empty area
+below). Centered uppercase tracked title (15px/700, +.14em) + a status badge
+(`STEP k/n` muted, or a `DONE`/`STOPPED` pill in `--ok`/`--err` tint). Below
+it a full-width rail (`--border`, `6px, radius 3px`): the traversed portion is
+a **discontinuous (stepped) fill** — one solid band per inter-node segment
+(2px gap between bands, `radius 3px`), coloured `--ok` (`--err` when stopped)
+at a per-band opacity ramp `.34→1` left→right (over the dark rail this reads
+black→green). Node markers sit on the rail at even intervals, labels
+alternating above/below; done = 16px `--ok` dot, current = 22px `--ok` dot +
+`--ok-tint` ring + 1.4s pulse with a `--ok`-emphasised label, pending = hollow
+`opacity .6`, stopped current = `--err`. The current stage carries an 11px
+muted live detail (e.g. `iteration 2 · 14/14 MTDs`). Reuse this exact timeline
+for any staged pipeline display (CREST / analytical freq / TD-DFT).
 
 ### 11.16 Charts (SVG)
 
@@ -728,7 +736,8 @@ Tints are the semantic color at a fixed alpha ladder, implemented as the
 `.freq-warn`) · **10%** hover of danger actions (`--err-tint-hover`) ·
 **15%** badge/toggle fills (`--ok-tint`, `--warn-tint`, `--err-tint`,
 `--raw-tint`) · **22%** toggle hover (`--ok-tint-strong`) · **30%** warning
-outline (`--err-outline`) · **55%** hazard stripes (`--err-stripe`). Consume
+outline (`--err-outline`) · **55%** (`--err-stripe`, currently unused —
+retired with the old HUD's hazard stripes). Consume
 the token; adding a new tint means adding a token on this ladder first.
 
 ## 12. State → color matrix

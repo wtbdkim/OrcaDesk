@@ -560,19 +560,34 @@ test("CrestTracker flags a topology-change safety termination as an error", func
   assert.ok(html.includes("STOPPED"), "the HUD status shows the run stopped");
 });
 
-test("renderCrestProgress shows the CREST phase HUD; renderCrestGraph plots E-lowest", function () {
+test("renderCrestProgress renders the horizontal stage timeline", function () {
   const c = new SCFGraph.CrestTracker();
   feed(c, CREST_LINES);
   const prog = SCFGraph.renderCrestProgress(c);
   assert.strictEqual(typeof prog, "string");
-  assert.ok(prog.includes("CREST CONFORMER SEARCH"), "panel title");
-  assert.ok(prog.includes("CREST COMPLETE"), "finished status");
-  const graph = SCFGraph.renderCrestGraph(c, { width: 320, height: 180 });
-  assert.ok(graph.includes("<path"), "energy polyline drawn");
-  assert.ok(graph.includes("lowest E (Eh)"), "y-axis title");
-  // empty tracker -> placeholder, not a crash
-  const empty = SCFGraph.renderCrestGraph(new SCFGraph.CrestTracker(), {});
-  assert.ok(empty.includes("waiting for data"));
+  assert.ok(prog.includes("phase-track"), "the timeline container");
+  assert.ok(prog.includes("CREST conformer search"), "panel title");
+  assert.ok(prog.includes("Metadynamics sampling"), "a stage label");
+  assert.ok(prog.includes("phase-track-badge ok") && prog.includes("DONE"), "finished badge");
+  assert.ok(prog.includes("phase-track-seg ok"), "green (done) stepped fill bands");
+  assert.ok(prog.includes("1 conformer"), "the finished detail (nConf singular)");
+  assert.ok(!prog.includes("freq-jump") && !prog.includes("phase-steps"), "old markup is gone");
+  // an in-progress search: STEP k/n, an emphasized current node, live detail
+  const mid = new SCFGraph.CrestTracker();
+  feed(mid, [" Initial Geometry Optimization", " Σ(t(MTD)) / ps : 70.0 (14 MTDs)",
+             " Meta-Dynamics Iteration 1", "*MTD   1 completed successfully ... 1s"]);
+  const midHtml = SCFGraph.renderCrestProgress(mid);
+  assert.ok(midHtml.includes("STEP 2 / 4"), "current step indicator");
+  assert.ok(midHtml.includes("phase-node cur"), "a current-stage node");
+  assert.ok(midHtml.includes("iteration 1 · 1/14 MTDs"), "live current-stage detail");
+  // a stopped search past the first stage: red stepped band(s) + a badge
+  const err = new SCFGraph.CrestTracker();
+  err.push(" Initial Geometry Optimization");
+  err.push(" Meta-Dynamics Iteration 1");
+  err.push(" ERROR STOP safety termination of CREST");
+  const errHtml = SCFGraph.renderCrestProgress(err);
+  assert.ok(errHtml.includes("phase-track-seg err"), "red (stopped) stepped fill bands");
+  assert.ok(errHtml.includes("STOPPED") && errHtml.includes("phase-node err cur"), "stopped badge + red current node");
 });
 
 // ---------- summary ----------

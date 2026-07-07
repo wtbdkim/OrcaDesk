@@ -32,6 +32,7 @@
  * @property {number} multiplicity
  * @property {"direct"|"reference"} geometry_source
  * @property {string} ref_name          referenced calc name ("" for direct)
+ * @property {string} conformer_origin  per-conformer clone provenance ("" otherwise)
  * @property {boolean} is_raw
  * @property {"pending"|"running"|"done"|"failed"|"blocked"|"cancelled"} state
  * @property {string} message
@@ -102,6 +103,20 @@
  * @property {number} [crest_ewin]     conformer energy window (kcal/mol)
  * @property {number} [crest_threads]  CREST thread count (-T)
  * @property {string} [crest_env_id]   preferred WSL distro ("" = first with CREST)
+ * @property {string} [crest_handoff]  conformer handoff scope: "lowest" | "all"
+ * @property {string} [crest_preset]   search speed: "" | quick | squick | mquick
+ * @property {boolean} [crest_nci]     --nci ellipsoid wall (keep a complex intact)
+ * @property {string} [crest_solvent_model]  implicit-solvent model: "alpb" | "gbsa"
+ * @property {number} [crest_mdlen_mult]  --mdlen x<mult> (0 = default)
+ * @property {number} [crest_tstep_fs]    --tstep <fs> (0 = default)
+ * @property {number} [crest_tnmd_k]      --tnmd <K> (0 = default)
+ * @property {number} [crest_mddump_fs]   --mddump <fs> (0 = default)
+ * @property {number} [crest_vbdump_ps]   --vbdump <ps> (0 = default)
+ * @property {boolean} [crest_norotmd]  --norotmd (skip extra regular MD)
+ * @property {boolean} [crest_cbonds]   --cbonds (auto bond constraints)
+ * @property {boolean} [crest_subrmsd]  --subrmsd (exclude constrained from RMSD)
+ * @property {boolean} [crest_cluster]  --cluster (PCA+k-means; not for complexes)
+ * @property {boolean} [crest_keepdir]  --keepdir (keep per-step directories)
  */
 
 /**

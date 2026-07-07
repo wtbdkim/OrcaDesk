@@ -772,13 +772,13 @@
   // numerical-freq runs print the post-Hessian banners), so letting them
   // bootstrap showed the analytical-freq panel during plain NMR runs.
   const A_STAGES = [
-    { key: "integrals", re: /GEOMETRIC PERTURBATIONS/, boot: true,                status: "BUILDING DERIVATIVE INTEGRALS" },
-    { key: "cpscf",     re: /ORCA SCF RESPONSE CALCULATION|SHARK CP-?SCF DRIVER/, status: "SOLVING CP-SCF RESPONSE" },
-    { key: "hessian",   re: /\bSCF HESSIAN\b/, boot: true,                        status: "ASSEMBLING SCF HESSIAN" },
-    { key: "freq",      re: VFREQ_RE,                                             status: "COMPUTING VIBRATIONAL FREQUENCIES" },
-    { key: "modes",     re: /\bNORMAL MODES\b/,                                   status: "EXTRACTING NORMAL MODES" },
-    { key: "ir",        re: /\bIR SPECTRUM\b/,                                    status: "COMPUTING IR SPECTRUM" },
-    { key: "thermo",    re: /THERMOCHEMISTRY AT\s+([\d.]+)/,                      status: "THERMOCHEMISTRY ANALYSIS" },
+    { key: "integrals", re: /GEOMETRIC PERTURBATIONS/, boot: true,                status: "BUILDING DERIVATIVE INTEGRALS", label: "Derivative integrals" },
+    { key: "cpscf",     re: /ORCA SCF RESPONSE CALCULATION|SHARK CP-?SCF DRIVER/, status: "SOLVING CP-SCF RESPONSE",         label: "CP-SCF response" },
+    { key: "hessian",   re: /\bSCF HESSIAN\b/, boot: true,                        status: "ASSEMBLING SCF HESSIAN",          label: "SCF Hessian" },
+    { key: "freq",      re: VFREQ_RE,                                             status: "COMPUTING VIBRATIONAL FREQUENCIES", label: "Frequencies" },
+    { key: "modes",     re: /\bNORMAL MODES\b/,                                   status: "EXTRACTING NORMAL MODES",         label: "Normal modes" },
+    { key: "ir",        re: /\bIR SPECTRUM\b/,                                    status: "COMPUTING IR SPECTRUM",           label: "IR spectrum" },
+    { key: "thermo",    re: /THERMOCHEMISTRY AT\s+([\d.]+)/,                      status: "THERMOCHEMISTRY ANALYSIS",        label: "Thermochemistry" },
   ];
   const AFREQ_RE = /ANALYTICAL FREQUENC|Analytic(?:al)? Hessian/;  // other analytical markers (no stage)
   const ANUCLEI_RE = /GEOMETRIC PERTURBATIONS\s*\((\d+)\s*nuclei\)/; // banner carries the atom count
@@ -913,11 +913,11 @@
   // lines and a fixed "Number of roots" total) -> excited-state analysis ->
   // transition spectra -> final CIS/TD-DFT total energy.
   const TD_STAGES = [
-    { key: "setup",   re: /TD-DFT XC SETUP/,                              status: "BUILDING XC KERNEL" },
-    { key: "solver",  re: /RPA-DIAGONALIZATION|DAVIDSON-DIAGONALIZATION/, status: "ITERATIVE DIAGONALIZATION" },
-    { key: "states",  re: /TD-DFT(?:\/TDA)? EXCITED STATES/,              status: "ANALYZING EXCITED STATES" },
-    { key: "spectra", re: /ABSORPTION SPECTRUM VIA TRANSITION/,           status: "COMPUTING TRANSITION SPECTRA" },
-    { key: "energy",  re: /CIS\/TD-DFT TOTAL ENERGY/,                     status: "FINALIZING TOTAL ENERGY" },
+    { key: "setup",   re: /TD-DFT XC SETUP/,                              status: "BUILDING XC KERNEL",          label: "XC kernel" },
+    { key: "solver",  re: /RPA-DIAGONALIZATION|DAVIDSON-DIAGONALIZATION/, status: "ITERATIVE DIAGONALIZATION",   label: "Diagonalization" },
+    { key: "states",  re: /TD-DFT(?:\/TDA)? EXCITED STATES/,              status: "ANALYZING EXCITED STATES",    label: "Excited states" },
+    { key: "spectra", re: /ABSORPTION SPECTRUM VIA TRANSITION/,           status: "COMPUTING TRANSITION SPECTRA", label: "Transition spectra" },
+    { key: "energy",  re: /CIS\/TD-DFT TOTAL ENERGY/,                     status: "FINALIZING TOTAL ENERGY",     label: "Total energy" },
   ];
   const TD_ROOTS_RE = /Number of roots to be determined\s+\.+\s*(\d+)/;
   const TD_ITER_RE = /\*{4}\s*Iteration\s+(\d+)\s*\*{4}/;
@@ -968,106 +968,96 @@
   };
   TddftTracker.prototype.hasData = function () { return this.active; };
 
-  // HUD phase panel (shared by the analytical-freq and TD-DFT chains):
-  // hazard-striped border, title, PHASE k/n label, the stage's headline number
-  // where a countdown would sit, a connected dot chain (done = filled,
-  // current = pulsing), and an uppercase status line.
-  function _phasePanelHtml(title, stages, idx, finished, value, caption, status) {
+  // Horizontal stage timeline (shared by the CREST, analytical-freq and TD-DFT
+  // pipelines): a centered title + status badge over a full-width rail whose
+  // filled portion is a black→green gradient (black→red when stopped) reaching
+  // the current stage. Node markers sit on the rail, labels alternating
+  // above/below; the current node is enlarged/pulsing and its label emphasized.
+  // `detail` is a short live string for the current stage (attached to the last
+  // stage once finished). `state` is "running" | "done" | "error".
+  function _phasePanelHtml(title, stages, idx, state, detail) {
     const n = stages.length;
-    const at = finished ? n : idx;   // n = past the last dot (all done)
-    let dots = "";
-    for (let i = 0; i < n; i++) {
-      if (i) dots += `<span class="freq-jump-link${i <= at ? " done" : ""}"></span>`;
-      const cls = i < at ? " done" : (i === at ? " cur" : "");
-      dots += `<span class="freq-jump-dot${cls}" title="${stages[i].status.toLowerCase()}"></span>`;
+    const finished = state === "done";
+    const errored = state === "error";
+    const at = finished ? n - 1 : Math.max(idx, 0);   // current stage index
+    const INSET = 8;                                   // % edge margin so end labels fit
+    const span = 100 - 2 * INSET;
+    const pos = (i) => INSET + (n > 1 ? i * span / (n - 1) : span / 2);
+    // discrete ("stepped") fill: one solid band per traversed inter-node segment,
+    // stepping darkest→brightest left→right — a discontinuous black→green ramp
+    // (black→red when stopped), with a small gap between bands.
+    const nSeg = Math.max(n - 1, 1);
+    const travelled = finished ? nSeg : at;
+    let segs = "";
+    for (let j = 0; j < travelled; j++) {
+      const l = pos(j), w = pos(j + 1) - pos(j);
+      const op = nSeg > 1 ? (0.34 + 0.66 * j / (nSeg - 1)) : 1;
+      segs += `<div class="phase-track-seg ${errored ? "err" : "ok"}" ` +
+              `style="left:calc(${l.toFixed(2)}% + 2px);width:calc(${w.toFixed(2)}% - 4px);opacity:${op.toFixed(2)}"></div>`;
     }
-    const phase = finished ? "DONE" : `PHASE ${Math.max(at, 0) + 1}<span class="freq-jump-of">/${n}</span>`;
+    let badge;
+    if (finished) badge = `<span class="phase-track-badge ok">DONE</span>`;
+    else if (errored) badge = `<span class="phase-track-badge err">STOPPED</span>`;
+    else badge = `<span class="phase-track-badge step">STEP ${Math.min(at + 1, n)} / ${n}</span>`;
+    let nodes = "";
+    for (let i = 0; i < n; i++) {
+      let cls;
+      if (finished || i < at) cls = "done";
+      else if (i === at) cls = errored ? "err cur" : "cur";
+      else cls = "pending";
+      const side = (i % 2 === 0) ? "below" : "above";
+      const showDetail = detail && ((finished && i === n - 1) || (!finished && i === at));
+      const det = showDetail ? `<span class="phase-node-detail">${detail}</span>` : "";
+      nodes +=
+        `<div class="phase-node ${cls} ${side}" style="left:${pos(i).toFixed(2)}%">` +
+          `<span class="phase-node-dot"></span>` +
+          `<span class="phase-node-text"><span class="phase-node-label">${stages[i].label || stages[i].status}</span>${det}</span>` +
+        `</div>`;
+    }
     return (
-      `<div class="freq-jump">` +
-        `<div class="freq-jump-stripes"></div>` +
-        `<div class="freq-jump-title">${title}</div>` +
-        `<div class="freq-jump-row">` +
-          `<div class="freq-jump-phase">${phase}</div>` +
-          `<div class="freq-jump-center">` +
-            `<div class="freq-jump-value">${value}</div>` +
-            `<div class="freq-jump-caption">${caption}</div>` +
-          `</div>` +
-          `<div class="freq-jump-dots">${dots}</div>` +
+      `<div class="phase-track">` +
+        `<div class="phase-track-head">` +
+          `<span class="phase-track-title">${title}</span>` +
+          badge +
         `</div>` +
-        `<div class="freq-jump-status">${status}</div>` +
-        `<div class="freq-jump-stripes"></div>` +
+        `<div class="phase-track-rail">` +
+          `<div class="phase-track-line" style="left:${INSET}%;right:${INSET}%"></div>` +
+          segs +
+          nodes +
+        `</div>` +
       `</div>`
     );
   }
 
   function renderTddftProgress(td) {
-    // center display: the requested root count once known
-    let value = "—", caption = "initializing";
-    if (td.finished) {
-      value = "✓"; caption = "all stages complete";
-    } else if (td.aStage === "setup") {
-      caption = "xc kernel";
-    } else if (td.aStage === "solver") {
-      if (td.roots) { value = String(td.roots); caption = "roots"; }
-      else caption = "diagonalizing";
-    } else if (td.aStage === "states") {
-      if (td.roots) value = String(td.roots);
-      caption = "excited states";
-    } else if (td.aStage === "spectra") {
-      if (td.roots) value = String(td.roots);
-      caption = "transitions";
-    } else if (td.aStage === "energy") {
-      if (td.roots) value = String(td.roots);
-      caption = "total energy";
-    }
-    let status;
-    if (td.finished) status = "TD-DFT COMPLETE";
-    else if (td.aIdx < 0) status = "INITIALIZING";
-    else if (td.aStage === "solver") {
-      status = `${td.solver || "ITERATIVE"} DIAGONALIZATION`;
-      if (td.iter >= 0) status += ` — ITER ${td.iter}`;
-    } else status = TD_STAGES[td.aIdx].status;
-    return _phasePanelHtml("TD-DFT EXCITED STATES", TD_STAGES, td.aIdx, td.finished, value, caption, status);
+    let detail = "";
+    if (td.finished) detail = "complete";
+    else if (td.aStage === "solver") detail = td.roots
+      ? `${td.solver || "iterative"} · ${td.roots} roots${td.iter >= 0 ? ` · iter ${td.iter}` : ""}`
+      : "diagonalizing";
+    else if (td.aStage === "states" || td.aStage === "spectra" || td.aStage === "energy")
+      detail = td.roots ? `${td.roots} states` : "";
+    return _phasePanelHtml("TD-DFT excited states", TD_STAGES, td.aIdx,
+                           td.finished ? "done" : "running", detail);
   }
 
-  // Analytical-Hessian phase panel: per-stage headline number for the center
-  // (atoms -> K/N perturbations -> Hessian dimension -> mode count ->
-  // temperature), then the shared HUD builder.
+  // Analytical-Hessian stepper: the current stage's live detail (atoms -> K/N
+  // perturbations -> Hessian dimension -> mode count -> temperature).
   function _renderAnalyticalPanel(freq) {
     // dim3N: the true Hessian dimension / mode count (3 x atoms). The CP-SCF
     // perturbation count can differ from 3N (some runs solve extra
     // perturbations), so it is only the denominator of the cpscf counter.
     const dim3N = freq.nuclei ? 3 * freq.nuclei : freq.perturbTotal;
     const cpTotal = freq.perturbTotal || dim3N;
-
-    // center display (the reference design's timer slot)
-    let value = "—", caption = "initializing";
-    if (freq.finished) {
-      value = "✓"; caption = "all stages complete";
-    } else if (freq.aStage === "integrals") {
-      if (freq.nuclei) { value = String(freq.nuclei); caption = "nuclei"; }
-      else caption = "derivative integrals";
-    } else if (freq.aStage === "cpscf") {
-      value = `${freq.perturbDone}/${cpTotal || "?"}`; caption = "perturbations";
-    } else if (freq.aStage === "hessian") {
-      if (dim3N) value = `${dim3N}×${dim3N}`;
-      caption = "hessian";
-    } else if (freq.aStage === "freq" || freq.aStage === "modes" || freq.aStage === "ir") {
-      if (dim3N) value = String(dim3N);
-      caption = "normal modes";
-    } else if (freq.aStage === "thermo") {
-      if (freq.tempK) value = `${freq.tempK} K`;
-      caption = "thermochemistry";
-    }
-
-    let status;
-    if (freq.finished) status = "ANALYTICAL HESSIAN COMPLETE";
-    else if (freq.aIdx < 0) status = "INITIALIZING";
-    else {
-      status = A_STAGES[freq.aIdx].status;
-      if (freq.aStage === "cpscf" && freq.cpscfIter) status += ` — ITER ${freq.cpscfIter}`;
-    }
-    return _phasePanelHtml("ANALYTICAL FREQUENCIES", A_STAGES, freq.aIdx, freq.finished, value, caption, status);
+    let detail = "";
+    if (freq.finished) detail = "complete";
+    else if (freq.aStage === "integrals") detail = freq.nuclei ? `${freq.nuclei} nuclei` : "";
+    else if (freq.aStage === "cpscf") detail = `${freq.perturbDone}/${cpTotal || "?"} perturbations${freq.cpscfIter ? ` · iter ${freq.cpscfIter}` : ""}`;
+    else if (freq.aStage === "hessian") detail = dim3N ? `${dim3N}×${dim3N}` : "";
+    else if (freq.aStage === "freq" || freq.aStage === "modes" || freq.aStage === "ir") detail = dim3N ? `${dim3N} modes` : "";
+    else if (freq.aStage === "thermo") detail = freq.tempK ? `${freq.tempK} K` : "";
+    return _phasePanelHtml("Analytical frequencies", A_STAGES, freq.aIdx,
+                           freq.finished ? "done" : "running", detail);
   }
 
   function renderFreqProgress(freq) {
@@ -1110,10 +1100,10 @@
   // sampling — the MTD count and the CREGEN lowest-energy / conformer-count
   // series that feed a small graph.
   const CREST_STAGES = [
-    { key: "init",   re: /Initial Geometry Optimization/,            status: "INITIAL OPTIMIZATION" },
-    { key: "sample", re: /iMTD-GC SAMPLING|Meta-Dynamics Iteration/, status: "METADYNAMICS SAMPLING" },
-    { key: "md",     re: /Additional regular MDs/,                   status: "ADDITIONAL MD SAMPLING" },
-    { key: "final",  re: /Final Geometry Optimization/,              status: "FINAL OPTIMIZATION" },
+    { key: "init",   re: /Initial Geometry Optimization/,            status: "INITIAL OPTIMIZATION",   label: "Initial optimization" },
+    { key: "sample", re: /iMTD-GC SAMPLING|Meta-Dynamics Iteration/, status: "METADYNAMICS SAMPLING",  label: "Metadynamics sampling" },
+    { key: "md",     re: /Additional regular MDs/,                   status: "ADDITIONAL MD SAMPLING", label: "Regular MD" },
+    { key: "final",  re: /Final Geometry Optimization/,              status: "FINAL OPTIMIZATION",     label: "Final optimization" },
   ];
   const CREST_ELOW_RE    = /CREGEN>\s*E lowest\s*:\s*(-?\d+\.\d+)/i;
   const CREST_WINDOW_RE  = /(\d+)\s+structures?\s+remain within\s+([\d.]+)\s*kcal/i;
@@ -1164,78 +1154,17 @@
   };
   CrestTracker.prototype.hasData = function () { return this.active; };
 
-  // Phase-chain HUD (reuses the freq/TD-DFT panel builder).
+  // Vertical stage stepper for the CREST conformer search.
   function renderCrestProgress(cr) {
-    let value = "—", caption = "initializing";
-    if (cr.finished) {
-      value = cr.nConf ? String(cr.nConf) : (cr.windowCount ? String(cr.windowCount) : "✓");
-      caption = "conformers";
-    } else if (cr.error) {
-      value = "✕"; caption = "stopped";
-    } else if (cr.aStage === "sample") {
-      if (cr.mtdTotal) { value = `${Math.min(cr.mtdDone, cr.mtdTotal)}/${cr.mtdTotal}`; caption = "MTDs this round"; }
-      else caption = "metadynamics";
-    } else if (cr.aStage === "md" || cr.aStage === "final") {
-      if (cr.windowCount) { value = String(cr.windowCount); caption = "in window"; }
-      else caption = cr.aStage === "md" ? "regular MD" : "final opt";
-    } else if (cr.aStage === "init") {
-      caption = "initial opt";
-    }
-    let status;
-    if (cr.error) status = "STOPPED — CHECK THE LOG (topology change?)";
-    else if (cr.finished) status = "CREST COMPLETE";
-    else if (cr.aIdx < 0) status = "INITIALIZING";
-    else {
-      status = CREST_STAGES[cr.aIdx].status;
-      if (cr.aStage === "sample" && cr.iter) status += ` — ITERATION ${cr.iter}`;
-    }
-    return _phasePanelHtml("CREST CONFORMER SEARCH", CREST_STAGES, cr.aIdx, cr.finished, value, caption, status);
-  }
-
-  // Small graph: lowest energy (Eh) per CREGEN sort pass — the search settling on
-  // the global minimum. Auto-scaled linear y (absolute-energy differences are
-  // tiny). Placeholder until the first pass.
-  function renderCrestGraph(cr, opts) {
-    opts = opts || {};
-    const W = opts.width || 320;
-    const H = opts.height || 180;
-    const padL = 68, padR = 14, padT = 16, padB = 40;
-    const es = (cr.energies || []).filter(function (e) { return isFinite(e); });
-    if (es.length < 1) {
-      return `<svg viewBox="0 0 ${W} ${H}" class="scf-svg" xmlns="http://www.w3.org/2000/svg">
-        <text x="${W / 2}" y="${H / 2}" text-anchor="middle" class="scf-empty-text">
-          waiting for data…</text></svg>`;
-    }
-    let lo = Math.min.apply(null, es), hi = Math.max.apply(null, es);
-    if (lo === hi) { lo -= 1e-4; hi += 1e-4; }   // flat series: give the axis a hair of range
-    const xN = Math.max(es.length, 2);
-    function X(i) { return padL + (i / (xN - 1)) * (W - padL - padR); }
-    function Y(e) { const t = (hi - e) / (hi - lo); return padT + t * (H - padT - padB); }
-    let grid = "";
-    [hi, lo].forEach(function (e) {
-      const yy = Y(e);
-      grid += `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W - padR}" y2="${yy.toFixed(1)}" class="scf-grid"/>`;
-      grid += `<text x="${padL - 6}" y="${(yy + 3).toFixed(1)}" text-anchor="end" class="scf-axis">${e.toFixed(4)}</text>`;
-    });
-    let d = "";
-    es.forEach(function (e, i) { d += (i === 0 ? "M" : "L") + X(i).toFixed(1) + "," + Y(e).toFixed(1) + " "; });
-    const line = `<path d="${d.trim()}" class="scf-line" fill="none"/>`;
-    const startC = `<circle cx="${X(0).toFixed(1)}" cy="${Y(es[0]).toFixed(1)}" r="3.5" class="scf-start"/>`;
-    const li = es.length - 1;
-    const curC = `<circle cx="${X(li).toFixed(1)}" cy="${Y(es[li]).toFixed(1)}" r="4" class="scf-cur"/>`;
-    const baseY = padT + (H - padT - padB);
-    const stepEvery = Math.max(1, Math.ceil(xN / 8));
-    let xticks = "";
-    for (let i = 0; i < es.length; i += stepEvery) {
-      const xx = X(i);
-      xticks += `<line x1="${xx.toFixed(1)}" y1="${baseY}" x2="${xx.toFixed(1)}" y2="${(baseY + 4).toFixed(1)}" class="scf-grid"/>`;
-      xticks += `<text x="${xx.toFixed(1)}" y="${(baseY + 15).toFixed(1)}" text-anchor="middle" class="scf-axis">${i + 1}</text>`;
-    }
-    const midY = (padT + (H - padT - padB) / 2).toFixed(1);
-    const yTitle = `<text x="14" y="${midY}" text-anchor="middle" class="scf-axis-title" transform="rotate(-90 14 ${midY})">lowest E (Eh)</text>`;
-    const xTitle = `<text x="${((padL + W - padR) / 2).toFixed(1)}" y="${H - 4}" text-anchor="middle" class="scf-axis-title">CREGEN sort pass</text>`;
-    return `<svg viewBox="0 0 ${W} ${H}" class="scf-svg" xmlns="http://www.w3.org/2000/svg">
-      ${grid}${line}${startC}${curC}${xticks}${yTitle}${xTitle}</svg>`;
+    const state = cr.error ? "error" : cr.finished ? "done" : "running";
+    let detail = "";
+    if (cr.error) detail = "stopped — check the log (topology change?)";
+    else if (cr.finished) detail = cr.nConf ? `${cr.nConf} conformer${cr.nConf === 1 ? "" : "s"}` : "complete";
+    else if (cr.aStage === "sample") detail = cr.mtdTotal
+      ? `iteration ${cr.iter || 1} · ${Math.min(cr.mtdDone, cr.mtdTotal)}/${cr.mtdTotal} MTDs`
+      : `iteration ${cr.iter || 1}`;
+    else if (cr.aStage === "md" || cr.aStage === "final") detail = cr.windowCount ? `${cr.windowCount} in window` : "";
+    return _phasePanelHtml("CREST conformer search", CREST_STAGES, cr.aIdx, state, detail);
   }
 
   const api = {
@@ -1253,7 +1182,6 @@
     renderFreqProgress: renderFreqProgress,
     renderTddftProgress: renderTddftProgress,
     renderCrestProgress: renderCrestProgress,
-    renderCrestGraph: renderCrestGraph,
     setEtaMode: setEtaMode,
     setGeoMode: setGeoMode,
     SCF_TARGETS: SCF_TARGETS,

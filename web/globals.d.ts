@@ -43,7 +43,6 @@ interface OrcaBridge {
   build_inp_preview(calcJson: string): Promise<string>;
   // queue
   add_calc(calcJson: string): Promise<string>;
-  add_calcs_from_conformers(payloadJson: string): Promise<string>;  // MutationResult JSON
   remove_calc(name: string): Promise<string>;
   clear_queue(): Promise<string>;
   reorder_calc(fromIdx: number, toIdx: number): Promise<string>;
@@ -94,7 +93,6 @@ interface SCFGraphAPI {
   renderFreqProgress(...args: any[]): string;
   renderTddftProgress(...args: any[]): string;
   renderCrestProgress(...args: any[]): string;
-  renderCrestGraph(...args: any[]): string;
   setEtaMode(mode: string): void;
   setGeoMode(mode: string): void;
   SCF_TARGETS: Record<string, number>;
