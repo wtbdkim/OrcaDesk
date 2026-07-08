@@ -48,12 +48,20 @@
     <section class="panel active" data-panel="build">
       <!-- log-mode-toggle (not graph-subtoggle): at page level the subtoggle's
            --background buttons match the page color and the surface vanishes;
-           this variant sits on --card like the Log tab's Raw/graph toggle -->
+           this variant sits on --card like the Log tab's Raw/graph toggle.
+           Backends first (DFT / MLIP / CREST); the DFT sub-toggle (Beginner /
+           Expert) appears only while DFT is active. Content flows one way:
+           Beginner -> Expert converts the form to a generated .inp; raw text
+           never converts back (Expert -> Beginner confirms the discard). -->
       <div class="log-mode-toggle" style="margin-bottom:12px">
-        <button id="bmode-beginner" class="active" onclick="setBuildMode('beginner')">Beginner</button>
-        <button id="bmode-expert" onclick="setBuildMode('expert')">Expert</button>
+        <button id="bmode-dft" class="active" onclick="setBuildMode(_dftSub)">DFT</button>
         <button id="bmode-mlip" onclick="setBuildMode('mlip')">MLIP</button>
         <button id="bmode-crest" onclick="setBuildMode('crest')">CREST</button>
+        <span id="bsub-dft" class="bsub">
+          <span class="bmode-sep"></span>
+          <button id="bsub-beginner" class="active" onclick="setDftSub('beginner')">Beginner</button>
+          <button id="bsub-expert" onclick="setDftSub('expert')">Expert</button>
+        </span>
         <span class="hint" id="bmode-hint" style="margin:0 0 0 10px;align-self:center"></span>
       </div>
       <div class="card" id="card-calc">
@@ -270,10 +278,11 @@
       </div>
 
       <div id="edit-banner" class="hint" style="display:none;margin-bottom:8px"></div>
+      <!-- "Edit raw .inp" was absorbed by the DFT sub-toggle: switching
+           Beginner -> Expert is the form -> .inp conversion now -->
       <div class="btn-group" id="build-actions">
         <button class="btn btn-primary" id="add-btn" onclick="addCalcToQueue()">Add to queue →</button>
         <button class="btn" id="loadinp-btn" onclick="loadInpFile()">Load .inp file</button>
-        <button class="btn" id="raw-btn" onclick="enterRawMode()">Edit raw .inp</button>
         <button class="btn btn-ghost" onclick="resetBuild()">Reset</button>
       </div>
     </section>

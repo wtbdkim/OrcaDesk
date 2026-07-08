@@ -32,11 +32,16 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
 
 ## How it works
 
-- **Build**: create one calculation at a time in one of three modes —
-  **Beginner** (guided form), **Expert** (paste/load a complete `.inp`), or
-  **MLIP** (MACE pre-optimization, see below). Give it a unique name (used as its
-  folder), pick the type, set charge/multiplicity, choose a geometry source,
-  configure the method, and add it to the queue.
+- **Build**: create one calculation at a time, picking the execution backend
+  first — **DFT** (ORCA), **MLIP** (MACE pre-optimization, see below), or
+  **CREST** (conformer search, see below). DFT has two sub-modes: **Beginner**
+  (guided form) and **Expert** (edit the full `.inp`). Switching Beginner →
+  Expert converts your current form into a generated `.inp` you can keep
+  editing; the reverse conversion doesn't exist (raw text can't become a form
+  again), so switching back asks before discarding the editor text. Give the
+  calculation a unique name (used as its folder), pick the type, set
+  charge/multiplicity, choose a geometry source, configure the method, and add
+  it to the queue.
   - **Geometry source** is either an `.xyz` file, or a **reference** to another
     queued calculation — in which case that calculation's optimized geometry is
     injected automatically at run time.

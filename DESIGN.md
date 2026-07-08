@@ -287,8 +287,10 @@ destructive choice. Confirm only when something would be lost.
 
 ### D62 — Progressive disclosure
 
-Complexity is revealed in layers: four mutually-exclusive build modes
-(Beginner form / Expert raw / MLIP / CREST), form fields driven per calc-kind by
+Complexity is revealed in layers: three mutually-exclusive build backends
+(DFT / MLIP / CREST) with a Beginner/Expert sub-toggle revealed only inside
+DFT (the sub-choice is one-way for content: the form converts to a raw `.inp`,
+never back), form fields driven per calc-kind by
 `KIND_DEFS` flags, conditional fields appearing only after their premise
 (solvent model → solvent; InitHess=read → filename), Results gated per kind
 with **Show all** as the override. Hiding is filtering, never data removal —
@@ -590,6 +592,13 @@ Segmented toggle: `12px/600; padding 6px 12px; radius
 --radius-sm; border 1px --border; color --muted-foreground`; active:
 `background --accent; color --foreground`. Background is `--card` at page
 level, `--background` when nested inside a panel.
+
+Sub-level segmented toggle (a secondary choice nested in the same row as its
+parent toggle — the Build tab's DFT Beginner/Expert): one step smaller,
+`11.5px; padding 5px 10px` (`.bsub button`), separated from the parent group
+by a `1px × 20px --border` vertical rule (`.bmode-sep`), and shown only while
+its parent segment is active. Same size logic as the type tag vs the state
+badge (§11.7): the reduction marks it as subordinate, not a sibling.
 
 ### 11.6 Status pill and dots
 

@@ -245,9 +245,40 @@ env id, guarded by `Bridge._mlip_lock`); MLIP is **not** routed through
 any env is ready, else `checking`/`error`/`unset` — built by `aggregate_status`
 and mirrored in `web/types.js`.
 
-**Building MLIP jobs.** The Build tab has a third mode besides `beginner`/`expert`
-— `mlip` (`Settings.build_mode`; the three-way toggle is `#bmode-*` in
-`index.html`, `setBuildMode` in `app.js`). MLIP mode hides the whole ORCA build
+**Build-tab modes.** The Build tab's mode toggle is **backend-first**: `DFT` /
+`MLIP` / `CREST` (`#bmode-*` in `index.html`), with a **Beginner/Expert
+sub-toggle** (`#bsub-*`) shown only while DFT is active. Internally and in
+`Settings.build_mode` the mode is still one of the four historical values
+`beginner`/`expert`/`mlip`/`crest` (beginner/expert are the DFT sub-modes), so
+persisted settings are untouched; `setBuildMode` in `app.js` maps them onto the
+toggle and `setDftSub` handles the sub-switch. **The Beginner↔Expert linkage is
+one-way by design**: Beginner → Expert converts the current form to a generated
+`.inp` via `build_inp_preview` and puts it in the raw editor (this replaced the
+"Edit raw .inp" button / `enterRawMode`); raw text can never be converted back,
+so Expert → Beginner confirms discarding the editor content (the
+name/type/charge/mult/geometry cards persist outside the editor). Conversion
+failures never switch (the filled form stays visible); an empty name skips
+conversion and opens a plain empty editor (logged) for the paste workflow. Raw
+editing **is** the Expert sub-mode: `enterRawWithText` forces the Expert layout,
+editing a raw calc opens Expert, editing a form calc opens Beginner (the old
+"beginner with a dimmed locked form" hybrid and `lockFormForRaw` are gone);
+backing out of a **not-yet-saved** conversion of an edit confirms and reopens
+the form edit via `editCalc` — only a saved raw calc is locked to raw. Guard
+invariants: re-clicking the active mode button is a strict no-op in
+`setBuildMode` (never drops an edit or blanks the editor; `onInpDropped`
+therefore exits any in-progress edit itself before loading — a drop starts a
+NEW calc, never an overwrite of the edited one); the Beginner branch re-renders
+the method form only when `#calc-config` is empty or the Type select changed
+while the form was hidden (`_configKind`, re-rendered with the same field
+preservation as `onKindChange`), so the user's method setup survives
+Expert/MLIP/CREST excursions without ever going stale against the selected
+kind; the back-out path re-resolves the edited calc **by name** after its
+confirm modal (queue indices can shift during the await — conformer fan-out,
+phone edits); `collectCalcFromForm(forPreview)` relaxes the NEB-TS product
+requirement like the other geometry checks. `rawText` survives an MLIP/CREST
+excursion and is cleared only by an explicit discard, edit, or reset.
+
+**Building MLIP jobs.** MLIP mode hides the whole ORCA build
 UI (`_ORCA_BUILD`) and shows a self-contained `#card-mlip`: a name, a MACE-model
 dropdown (options in `data/mace_models.json`, served via `load_choices`),
 charge/multiplicity inputs (used only by charge/spin-aware models — OMol25 /
@@ -396,8 +427,9 @@ the run; this only reads/writes, never touches the queue.
 **Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
 `list_crest_distros` / `set_crest_distro`) follow
 the MLIP pattern: a background probe publishes to `Bridge._crest_status` (guarded
-by `_crest_lock`) and the UI polls `get_crest_status`. The Build tab gains a
-fourth mode (`crest`; `Settings.build_mode`), a locked `#card-crest` (until a
+by `_crest_lock`) and the UI polls `get_crest_status`. The Build tab gains the
+`crest` mode (`Settings.build_mode`; the CREST button on the backend toggle — see
+"Build-tab modes"), a locked `#card-crest` (until a
 distro has CREST), and a **Settings → CREST** distro picker + Install button. Wire
 shapes: `CrestStatusPayload` / `CrestDistroPayload` / `ConformerPayload` in
 `state/schemas.py`, mirrored in `web/types.js`.

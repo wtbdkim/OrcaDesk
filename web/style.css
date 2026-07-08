@@ -180,6 +180,11 @@ html, body {
 #mlip-status .dot { background: var(--muted-foreground); }
 #mlip-status.ok .dot { background: var(--ok); }
 #mlip-status.err .dot { background: var(--err); }
+/* CREST pill: same three states as the MLIP pill (renderCrest toggles .ok/.err);
+   the .err rule was missing, so an error pill kept a grey dot under red text */
+#crest-status .dot { background: var(--muted-foreground); }
+#crest-status.ok .dot { background: var(--ok); }
+#crest-status.err .dot { background: var(--err); }
 /* Registered MLIP environments list (Settings tab) */
 .mlip-env-list { display: flex; flex-direction: column; gap: 8px; }
 /* canonical list-row recipe (§11.9) — same box as .queue-item so registered
@@ -510,6 +515,12 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 
 /* ---- SCF live graph (Log tab graph mode) ---- */
 .log-mode-toggle { display: flex; gap: 6px; margin-bottom: 10px; align-items: center; }
+/* Build-tab DFT sub-toggle (Beginner / Expert), nested in the mode toggle row:
+   a thin vertical rule separates it from the backend buttons, and its buttons
+   are one step smaller so the backend choice reads as the primary level */
+.bsub { display: inline-flex; align-items: center; gap: 6px; }
+.bmode-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+.log-mode-toggle .bsub button { font-size: 11.5px; padding: 5px 10px; }
 .scf-pace { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); }
 .log-mode-toggle button {
   font-family: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px;

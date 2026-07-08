@@ -31,9 +31,14 @@ const localCalcs = {};          // name -> full calc (config/xyz/raw) added on T
 let editIndex = -1;             // queue index being edited, or -1 for "new"
 let rawMode = false;            // is the current build form in raw mode?
 let rawText = "";               // current raw .inp text being edited
-let buildMode = "beginner";     // "beginner" (guided form), "expert" (paste a full .inp), "mlip" (MACE pre-opt), or "crest" (conformer search via WSL)
-// controls hidden in expert mode (the guided form, charge/mult, the raw button)
-const _EXPERT_HIDDEN = ["card-method", "field-charge", "field-mult", "raw-btn"];
+// Build backends: DFT (with Beginner/Expert sub-modes), MLIP, CREST. The
+// persisted Settings.build_mode keeps the four historical values — "beginner"
+// and "expert" are the two DFT sub-modes, so old settings load unchanged.
+let buildMode = "beginner";     // "beginner"/"expert" (DFT sub-modes), "mlip" (MACE), or "crest" (conformer search via WSL)
+let _dftSub = "beginner";       // last DFT sub-mode — clicking the main DFT button restores it
+// controls hidden in expert mode (the guided method form + charge/mult; the
+// raw text carries its own "* xyz charge mult" line)
+const _EXPERT_HIDDEN = ["card-method", "field-charge", "field-mult"];
 // the whole ORCA build UI — hidden in mlip/crest mode (which show their own card)
 const _ORCA_BUILD = ["card-calc", "card-geometry", "card-method", "raw-card", "build-actions"];
 function _showIds(ids, on) {
@@ -68,6 +73,7 @@ const KIND_DEFS = {
 };
 
 let choicesCache = {};
+let _configKind = "";           // calc kind the method form was last rendered for (renderConfigForm)
 
 // ---------- bridge bootstrap ----------
 new QWebChannel(qt.webChannelTransport, async function(channel) {
@@ -106,6 +112,10 @@ window.onInpDropped = async function (path) {
     const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_inp_path(path)));
     if (res.cancelled) return;   // deliberate dismissal, never an error
     if (!res.ok) { failNotify("Could not read that .inp."); return; }
+    // a drop starts a NEW calc: never load into an in-progress edit (the
+    // same-mode no-op in setBuildMode would otherwise leave the edit active
+    // and Update would silently overwrite the edited calc with this file)
+    if (editIndex !== -1) exitEditMode();
     setBuildMode("expert");
     enterRawWithText(res.text);
     const nameEl = document.getElementById("calc-name");
@@ -972,6 +982,7 @@ function onKindChange() {
 
 function renderConfigForm(kind, preserve) {
   const def = KIND_DEFS[kind];
+  _configKind = kind;   // which kind the form's rows currently reflect
   const host = document.getElementById("calc-config");
   // Calc type field: form kinds use a filtered group; General lists every
   // run type from calculation_types.json; nmr/tddft are fixed (no selector).
@@ -1246,8 +1257,10 @@ function collectCalcFromForm(forPreview = false) {
   if (rawMode && src === "reference" && !rawText.includes("{{GEOMETRY}}"))
     throw new Error("Raw input references another calculation but is missing the {{GEOMETRY}} placeholder.");
 
-  // NEB-TS needs a product geometry (unless the user is hand-writing raw input)
-  if (!rawMode && kind === "neb_ts" && !_nebProductXyz)
+  // NEB-TS needs a product geometry (unless the user is hand-writing raw input).
+  // Relaxed for previews like the other geometry checks: the Beginner->Expert
+  // conversion must be able to generate the template before the product is loaded.
+  if (!forPreview && !rawMode && kind === "neb_ts" && !_nebProductXyz)
     throw new Error("NEB-TS needs a product geometry. Load a product .xyz first.");
 
   return {
@@ -1514,8 +1527,10 @@ async function editCalc(i) {
   // isn't wired yet — remove and re-add from the MLIP build mode instead.
   if ((mirror.kind || "").startsWith("mlip")) { toast("No in-place editing of MLIP calculations yet — removal, then re-add from the MLIP build mode."); return; }
   if ((mirror.kind || "").startsWith("crest")) { toast("No in-place editing of CREST calculations yet — removal, then re-add from the CREST build mode."); return; }
-  // a normal calc edits in the ORCA build form; leave MLIP/CREST mode if we're in it
-  if (buildMode === "mlip" || buildMode === "crest") setBuildMode(mirror.is_raw ? "expert" : "beginner", false);
+  // raw calcs edit in the Expert editor, form calcs in the Beginner form —
+  // align the mode (this also leaves MLIP/CREST mode if we're in it, and drops
+  // any previous in-progress edit; editIndex is set below, after the switch)
+  setBuildMode(mirror.is_raw ? "expert" : "beginner", false);
   // prefer the full local copy (has config/xyz/raw_text added on this PC)
   let c = localCalcs[mirror.name];
   if (!c) {
@@ -1533,10 +1548,6 @@ async function editCalc(i) {
     appendLog(`"${mirror.name}": full options couldn't be loaded; the edit may be incomplete.`, "warn");
   }
   editIndex = i;
-
-  // reveal the editor this calc needs, even if expert mode would hide the form
-  if (!c.is_raw) _showIds(["card-method", "field-charge", "field-mult"], true);
-  if (buildMode === "expert") _showIds(["raw-btn"], false);   // raw button stays hidden in expert
 
   document.getElementById("calc-name").value = c.name;
   document.getElementById("calc-charge").value = String(c.charge);
@@ -1556,19 +1567,17 @@ async function editCalc(i) {
   }
 
   if (c.is_raw) {
-    // raw calcs: form is locked; only the raw editor is shown
+    // raw calcs: only the raw editor is shown (Expert layout, set above)
     rawMode = true; rawText = c.raw_text || "";
-    renderConfigForm(c.kind);   // populate (will be hidden)
+    renderConfigForm(c.kind);   // populate (hidden behind the editor)
     fillConfigForm(c.config);
     showRawCard(true);
     document.getElementById("raw-text").value = rawText;
-    lockFormForRaw(true);
   } else {
     rawMode = false; rawText = "";
     renderConfigForm(c.kind);
     fillConfigForm(c.config);
     showRawCard(false);
-    lockFormForRaw(false);
   }
 
   updateEditUI();
@@ -1640,14 +1649,14 @@ function updateEditUI() {
 function exitEditMode() {
   editIndex = -1;
   if (buildMode === "expert") {
-    // back to the expert raw view: editor cleared, guided form + raw button re-hidden
+    // back to the plain Expert view: editor cleared, guided form re-hidden
     rawMode = true; rawText = "";
     const ta = document.getElementById("raw-text"); if (ta) ta.value = "";
     _showIds(_EXPERT_HIDDEN, false);
     showRawCard(true);
   } else {
     rawMode = false; rawText = "";
-    showRawCard(false); lockFormForRaw(false);
+    showRawCard(false);
   }
   updateEditUI();
 }
@@ -1681,56 +1690,27 @@ function insertSnippet(key) {
 }
 
 // ---------- raw mode ----------
-async function enterRawMode() {
-  if (rawMode) { switchTab("build"); return; }
-  const ok = await confirmModal({
-    title: "Switch to raw mode?",
-    body: "Direct edit of the ORCA .inp. After saving: no more form editing — " +
-          "raw text only, irreversibly.",
-    confirm: "Switch to raw", danger: true,
-  });
-  if (!ok) return;
+// (the form -> .inp conversion that lived here as enterRawMode() is now the
+// Beginner -> Expert sub-toggle switch — see setDftSub)
 
-  // Enter raw mode BEFORE collecting the form: raw input carries its own
-  // coordinates (typed directly into the .inp), so the "load an .xyz first"
-  // check must not fire here. If anything below fails, roll rawMode back.
-  rawMode = true;
-  let calc;
-  try {
-    calc = collectCalcFromForm(true);   // preview: geometry not required yet
-  } catch (e) {
-    rawMode = false;
-    toast(e.message);
-    return;
-  }
-
-  const res = /** @type {TextResult} */ (JSON.parse(await bridge.build_inp_preview(JSON.stringify(calc))));
-  if (!res.ok) {
-    rawMode = false;
-    failNotify("Could not generate .inp: " + res.error);
-    return;
-  }
-
-  enterRawWithText(res.text);
-  appendLog("Raw mode — .inp editable below (coordinates after the '* xyz' line), then Add/Update.", "info");
-}
-
-// shared raw-mode entry: show the raw editor populated with `text`. Used by the
-// generated-template path (enterRawMode), the file loader (loadInpFile), and
-// expert mode. In beginner the guided form is dimmed; in expert it is hidden.
+// shared raw-editor entry: put `text` in the editor and make sure the Expert
+// layout is showing (raw editing IS the Expert sub-mode — the old
+// "Beginner with a dimmed, locked form" hybrid state is gone). Used by the
+// Beginner->Expert conversion (setDftSub), the file loader (loadInpFile), and
+// the .inp drop handler.
 function enterRawWithText(text) {
-  rawMode = true;
   rawText = text || "";
+  if (buildMode !== "expert") setBuildMode("expert", true, editIndex !== -1);
+  rawMode = true;
   const ta = document.getElementById("raw-text");
   ta.value = rawText;
   ta.oninput = (e) => { rawText = /** @type {ORCAFormElement} */ (e.target).value; };
   showRawCard(true);
-  if (buildMode !== "expert") lockFormForRaw(true);
   updateEditUI();
 }
 
 // Load a complete ORCA .inp from disk straight into the raw editor (no form
-// generation). Works in both modes; in beginner it enters raw mode.
+// generation). Lands in the Expert sub-mode from anywhere.
 async function loadInpFile() {
   // converting an in-progress FORM edit to raw is irreversible — confirm first
   if (editIndex !== -1 && !rawMode) {
@@ -1751,41 +1731,173 @@ async function loadInpFile() {
   appendLog(".inp loaded into the editor. Next: calc type (plus Geometry source for {{GEOMETRY}}), then Add to queue.", "info");
 }
 
-// Beginner (guided form) vs Expert (paste/load a complete .inp + pick the kind).
-function setBuildMode(mode, persist = true) {
+// Build backends (DFT / MLIP / CREST) + the DFT Beginner/Expert sub-modes.
+// keepEdit=true preserves an in-progress edit across the switch — used only by
+// the Beginner->Expert conversion of an edited form calc (setDftSub) and by
+// enterRawWithText (loading an .inp into an edit), never by a backend switch.
+function setBuildMode(mode, persist = true, keepEdit = false) {
   if (mode !== "beginner" && mode !== "expert" && mode !== "mlip" && mode !== "crest") return;
-  if (mode === buildMode && editIndex === -1) return;   // re-click of active mode: keep form state
-  if (editIndex !== -1) exitEditMode();                 // never carry an in-progress edit across a mode switch
+  // Re-click of the active mode is a FULL no-op — never destructive. (It used
+  // to fall through while editing, silently dropping the edit and, in Expert,
+  // blanking the raw editor. editCalc doesn't need the fall-through: it fills
+  // the form/editor itself after switching.)
+  if (mode === buildMode) return;
+  if (editIndex !== -1 && !keepEdit) exitEditMode();    // a real mode switch drops an in-progress edit (unless converting it)
   buildMode = mode;
-  for (const m of ["beginner", "expert", "mlip", "crest"])
-    document.getElementById("bmode-" + m).classList.toggle("active", mode === m);
+  const dft = (mode === "beginner" || mode === "expert");
+  if (dft) _dftSub = mode;
+  document.getElementById("bmode-dft").classList.toggle("active", dft);
+  document.getElementById("bmode-mlip").classList.toggle("active", mode === "mlip");
+  document.getElementById("bmode-crest").classList.toggle("active", mode === "crest");
+  // the Beginner/Expert sub-toggle exists only inside DFT
+  const sub = document.getElementById("bsub-dft");
+  if (sub) sub.style.display = dft ? "" : "none";
+  document.getElementById("bsub-beginner").classList.toggle("active", mode === "beginner");
+  document.getElementById("bsub-expert").classList.toggle("active", mode === "expert");
   const hint = document.getElementById("bmode-hint");
   const mlip = (mode === "mlip");
   const crest = (mode === "crest");
   // MLIP / CREST modes swap the entire ORCA build UI for a self-contained card.
-  _showIds(_ORCA_BUILD, !(mlip || crest));
+  _showIds(_ORCA_BUILD, dft);
   _showIds(["card-mlip"], mlip);
   _showIds(["card-crest"], crest);
   if (hint) hint.textContent = "";
   if (mlip) {
-    rawMode = false; rawText = "";
+    // rawText survives the excursion — coming back to DFT-Expert restores it
+    rawMode = false;
     renderMlipForm();
     applyMlipLock();
   } else if (crest) {
-    rawMode = false; rawText = "";
+    rawMode = false;
     applyCrestLock();
   } else if (mode === "expert") {
-    // always raw input: hide the method form + charge/mult + raw button, show the .inp editor
+    // raw editor: hide the method form + charge/mult, show the .inp editor with
+    // the current raw text (a Beginner->Expert conversion fills it, see setDftSub)
     _showIds(_EXPERT_HIDDEN, false);
-    enterRawWithText(rawText);   // keep any pasted text; raw card shown
+    rawMode = true;
+    showRawCard(true);
+    const ta = document.getElementById("raw-text");
+    if (ta) ta.value = rawText;
   } else {
-    // guided form
+    // guided form. rawText is already empty on every path into Beginner (the
+    // discard confirm, editing a form calc, reset) — cleared defensively anyway.
     _showIds(_EXPERT_HIDDEN, true);
     rawMode = false; rawText = "";
-    showRawCard(false); lockFormForRaw(false);
-    renderConfigForm(document.getElementById("calc-kind").value);
+    showRawCard(false);
+    // Keep the user's method setup: the form DOM persists while hidden (Expert/
+    // MLIP/CREST excursions only hide the card), so re-rendering here would
+    // reset it to defaults. Render on the very first entry, or when the Type
+    // select changed while the form was hidden (it stays visible in Expert but
+    // onKindChange no-ops in raw mode) — then with the same field preservation
+    // onKindChange uses, so the kind-specific rows can never go stale against
+    // the selected kind (a stale cfg-calc would emit the wrong calc type).
+    const host = document.getElementById("calc-config");
+    const kindSel = document.getElementById("calc-kind").value;
+    if (host && !host.childElementCount) {
+      renderConfigForm(kindSel);
+    } else if (_configKind !== kindSel) {
+      renderConfigForm(kindSel, {
+        functional: comboValue("combo-functional"),
+        basis_set: comboValue("combo-basis"),
+        solvent: comboValue("combo-solvent"),
+        ri: (document.getElementById("cfg-ri") || {}).value,
+        solvmodel: (document.getElementById("cfg-solvmodel") || {}).value,
+        options: (document.getElementById("cfg-options") || {}).value,
+      });
+    }
   }
   if (persist && bridge && bridge.save_settings) bridge.save_settings(JSON.stringify({ build_mode: mode }));
+}
+
+// DFT sub-mode switch. The linkage is ONE-WAY by design: Beginner -> Expert
+// converts the current form to a generated .inp (build_inp_preview — what the
+// removed "Edit raw .inp" button used to do); raw text can never be converted
+// back into the form, so Expert -> Beginner only confirms discarding it (the
+// name/type/charge/mult/geometry cards persist — they live outside the editor).
+async function setDftSub(sub) {
+  if (sub !== "beginner" && sub !== "expert") return;
+  if (sub === buildMode && editIndex === -1) return;
+  const editing = editIndex !== -1;
+
+  if (sub === "expert") {
+    if (editing && !rawMode) {
+      // converting an in-progress FORM edit is irreversible for this calc
+      const ok = await confirmModal({
+        title: "Switch to raw input?",
+        body: "Direct edit of the ORCA .inp. After saving: no more form editing — " +
+              "raw text only, irreversibly.",
+        confirm: "Switch to raw", danger: true,
+      });
+      if (!ok) return;
+    }
+    // generate the .inp from the form when there is something to convert (a
+    // name is the minimum build_inp_preview needs); rawText is empty here in
+    // every non-edit flow, so a pasted .inp is never clobbered. A FAILED
+    // conversion never switches — the filled form stays visible (parity with
+    // the removed "Edit raw .inp" button, which rolled back and stayed).
+    let gen = "";
+    const converting = buildMode === "beginner" && !rawText.trim();
+    if (converting && document.getElementById("calc-name").value.trim()) {
+      try {
+        const calc = collectCalcFromForm(true);   // preview: geometry not required yet
+        const res = /** @type {TextResult} */ (JSON.parse(await bridge.build_inp_preview(JSON.stringify(calc))));
+        if (!res.ok) { failNotify("Could not generate .inp: " + res.error); return; }
+        gen = res.text;
+      } catch (e) {
+        toast(e.message);   // e.g. a duplicate name — fix it, then convert
+        return;
+      }
+    }
+    setBuildMode("expert", true, editing);
+    if (gen) {
+      enterRawWithText(gen);
+      appendLog("Form converted to .inp — editable below (coordinates after the '* xyz' line), then Add/Update.", "info");
+    } else if (converting) {
+      // nothing to convert (no name yet): a plain empty editor, said out loud
+      appendLog("Expert: nothing converted (no name in the form) — empty editor; paste or Load .inp file. The Beginner form is kept.", "info");
+    }
+    if (editing) updateEditUI();
+  } else {
+    if (editing && rawMode) {
+      const q = queue[editIndex];
+      if (q && !q.is_raw) {
+        // an UNSAVED Beginner->Expert conversion: the queued calc is still
+        // form-based, so backing out just re-opens the form edit (the modal
+        // scoped irreversibility to "after saving" — honor that)
+        const ok = await confirmModal({
+          title: "Back out of the raw conversion?",
+          body: "The editor text is <b>discarded</b> and the form edit of this " +
+                "calculation reopens (nothing was saved yet).",
+          confirm: "Discard & reopen form", danger: true,
+        });
+        if (!ok) return;
+        // the queue may have shifted during the modal (poll / conformer
+        // fan-out) — re-resolve by name, like editCalc's own await guard; if
+        // the calc vanished or left an editable state, just drop the edit
+        const idx = queue.findIndex(c => c.name === q.name);
+        if (idx === -1 || !isEditableState(queue[idx].state)) {
+          exitEditMode();
+          setBuildMode("beginner");
+          return;
+        }
+        await editCalc(idx);
+        return;
+      }
+      toast("Raw input can't go back to the form — this calculation stays raw.");
+      return;
+    }
+    if (buildMode === "expert" && rawText.trim()) {
+      const ok = await confirmModal({
+        title: "Back to the Beginner form?",
+        body: "The raw .inp text can't be converted back to the form and will be " +
+              "<b>discarded</b>. Name, type, charge/multiplicity, and geometry are kept.",
+        confirm: "Discard & switch", danger: true,
+      });
+      if (!ok) return;
+      rawText = "";
+    }
+    setBuildMode("beginner");
+  }
 }
 
 function showRawCard(show) {
@@ -1793,15 +1905,6 @@ function showRawCard(show) {
   if (show) {
     document.getElementById("raw-text").oninput = (e) => { rawText = /** @type {ORCAFormElement} */ (e.target).value; };
   }
-}
-
-function lockFormForRaw(locked) {
-  // disable the form controls so raw calcs aren't form-edited
-  document.getElementById("calc-config").style.opacity = locked ? "0.45" : "1";
-  document.getElementById("calc-config").style.pointerEvents = locked ? "none" : "auto";
-  const br = document.getElementById("basis-rows");
-  if (br) { br.style.opacity = locked ? "0.45" : "1"; br.style.pointerEvents = locked ? "none" : "auto"; }
-  document.getElementById("raw-btn").style.display = locked ? "none" : "inline-flex";
 }
 
 // ---------- queue ----------

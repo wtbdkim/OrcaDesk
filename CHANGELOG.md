@@ -80,6 +80,27 @@ ORCA in one action.
   fake runner (no WSL needed), and the conformer→ORCA batch builder.
 
 ### Changed
+- **The Build-tab mode toggle is now backend-first: `DFT / MLIP / CREST`, with a
+  `Beginner / Expert` sub-toggle inside DFT** (shown only while DFT is active;
+  the persisted `build_mode` values are unchanged, so saved settings load as-is).
+  Switching **Beginner → Expert converts the current form to a generated `.inp`**
+  in the editor (the former "Edit raw .inp" button, now removed, was this
+  conversion) — the linkage is deliberately one-way: raw text can never be
+  converted back to the form, so **Expert → Beginner asks to discard** the editor
+  content (name, type, charge/multiplicity, and geometry stay — they live outside
+  the editor). A failed conversion (duplicate name, generator error) stays on the
+  filled form instead of switching; with no name yet, Expert opens as a plain
+  empty editor (said in the log) for the paste/load workflow. The **method form
+  survives the round trip** — Expert/MLIP/CREST excursions only hide it, so
+  coming back never resets it to defaults — and re-clicking the already-active
+  mode button is a strict no-op (it used to silently drop an in-progress edit).
+  Editing a raw calculation opens the Expert editor; editing a form
+  calculation opens the Beginner form (the old "Beginner with a dimmed, locked
+  form" hybrid raw state is gone), and backing out of a not-yet-saved
+  Beginner → Expert conversion of an edit reopens the form edit (confirmed,
+  editor text discarded) — only a **saved** raw calc is locked to raw. Raw
+  `.inp` text now also survives an MLIP/CREST-mode excursion instead of being
+  silently cleared.
 - **MLIP build card gains a geometry source selector** (`.xyz` file / from
   another calculation), mirroring the ORCA build card. An `mlip_opt`
   pre-optimization can now take its starting geometry from another queued calc's
@@ -153,6 +174,9 @@ ORCA in one action.
   default) and validated/clamped at the deserialization boundary.
 
 ### Fixed
+- **The CREST top-bar pill's dot turns red on an error.** `renderCrest` toggles
+  the `.err` class like the MLIP pill, but the `#crest-status.err .dot` style
+  rule was missing — an error pill showed "CREST error" text over a grey dot.
 - **The option pickers no longer offer keywords ORCA 6.1.1 rejects.** Every
   keyword in `data/*.json` was probed against the real ORCA 6.1.1 simple-input
   parser (mirroring the app's own emission, including functional normalization);
@@ -175,7 +199,6 @@ ORCA in one action.
   - **RI**: `RIJ` (ORCA's RI-J for GGAs is `RI`).
   - **Functionals**: `MR-EOM-CC`, `INDO/1`, `INDO/2`, `CNDO/1`, `CNDO/2`
     (unsupported in 6.1.1; `ZINDO/1`, `ZINDO/2`, `ZINDO/S` remain).
-- **The geometry-reference dropdowns stay in sync with the queue.** They were
 - **The geometry-reference dropdowns stay in sync with the queue.** They were
   only rebuilt when the "From another calculation" radio was toggled, so a calc
   added while that source was already selected went missing from a stale list
