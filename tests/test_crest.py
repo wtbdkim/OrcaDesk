@@ -62,6 +62,37 @@ def test_parse_crest_result_reads_real_ethanol_ensemble():
     assert r.geometry[0].symbol == "C"
 
 
+def test_export_conformers_splits_ensemble_into_per_conformer_files(tmp_path):
+    from orcamgr.crest.export import export_conformers, split_conformer_frames
+    src = FIXTURES / "crest_conformers.xyz"
+    dest = tmp_path / "conformers"
+    written = export_conformers(src, dest, "ethanol")
+    # ethanol ensemble has 2 conformers -> ethanol_c1.xyz (best), ethanol_c2.xyz
+    assert [p.name for p in written] == ["ethanol_c1.xyz", "ethanol_c2.xyz"]
+    # c1 is the lowest-energy (best) conformer, verbatim from the ensemble
+    c1 = written[0].read_text(encoding="utf-8").splitlines()
+    assert c1[0].strip() == "9"                          # atom count
+    assert "-11.39433939" in c1[1]                       # its absolute energy (Hartree)
+    assert c1[2].split()[0] == "C" and len(c1) == 11     # 9 atoms + count + comment
+    # every split frame round-trips through the parser as one valid structure
+    frames = split_conformer_frames(src.read_text(encoding="utf-8"))
+    assert len(frames) == 2
+    assert all(f.splitlines()[0].strip() == "9" for f in frames)
+
+
+def test_export_conformers_zero_pads_and_reports_missing(tmp_path):
+    from orcamgr.crest.export import export_conformers, split_conformer_frames
+    # 12 frames -> two-digit zero-padded names (c01..c12), so a lexical sort matches rank
+    many = "\n".join(f"1\n{-1.0 - i:.5f}\nH 0 0 {i}" for i in range(12))
+    (tmp_path / "many.xyz").write_text(many, encoding="utf-8")
+    w = export_conformers(tmp_path / "many.xyz", tmp_path / "out", "mol")
+    assert w[0].name == "mol_c01.xyz" and w[-1].name == "mol_c12.xyz"
+    # a missing ensemble file is a clean error, not a crash
+    import pytest as _pt
+    with _pt.raises(FileNotFoundError):
+        export_conformers(tmp_path / "nope.xyz", tmp_path / "out2", "mol")
+
+
 def test_crest_relative_energy_matches_hartree_to_kcal_conversion():
     r = parse_crest_result(str(FIXTURES / "crest.out"))
     delta = (r.conformers[1].energy_eh - r.conformers[0].energy_eh) * HARTREE_TO_KCAL

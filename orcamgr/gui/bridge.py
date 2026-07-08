@@ -15,7 +15,7 @@ JS calls these slots:
   load_inp_path, load_xyz_path, load_choices,
   parse_out_file, parse_out_path, build_inp_preview,
   add_calc, remove_calc, clear_queue, reorder_calc, update_calc,
-  get_queue, get_calc, get_inp, get_log, get_graph_lines,
+  get_queue, get_calc, get_inp, get_log, get_graph_lines, export_conformers,
   get_free_energy_profile, check_overwrite_conflicts,
   run_queue, cancel_queue, stop_after_current,
   get_server_status, get_connect_qr, start_server, stop_server
@@ -656,6 +656,21 @@ class Bridge(QObject):
             return json.dumps(GraphLinesResult(ok=True, lines=lines))
         except Exception as e:
             return json.dumps(GraphLinesResult(ok=False, error=str(e), lines=[]))
+
+    @pyqtSlot(str, result=str)
+    def export_conformers(self, name: str) -> str:
+        """Split a finished CREST search's ensemble into per-conformer .xyz files
+        under {workspace}/{name}/conformers/ ({name}_c1.xyz = the best conformer,
+        …). No file dialog — the files land next to the run, in a conformers/
+        subfolder. Returns {ok, count, folder} or {ok:false, error}."""
+        from ..crest.export import export_conformers as _export
+        try:
+            folder = Path(self.settings.workspace_root) / name
+            dest = folder / "conformers"
+            written = _export(folder / "crest_conformers.xyz", dest, name)
+            return json.dumps({"ok": True, "count": len(written), "folder": str(dest)})
+        except Exception as e:
+            return json.dumps({"ok": False, "error": str(e)})
 
     # --- run / cancel ---
     @pyqtSlot(result=str)

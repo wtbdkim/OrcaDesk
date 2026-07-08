@@ -191,6 +191,13 @@ async function pollTick() {
     // keep it fresh between (throttled) panel re-renders
     const _paceEl = document.getElementById("scf-pace");
     if (_paceEl) _paceEl.textContent = scfPaceText();
+    // stepper clocks (current stage + total elapsed) tick in place between
+    // full re-renders, so they don't freeze while the log is silent
+    if (SCFGraph && _logMode === "graph") {
+      document.querySelectorAll("#scf-panel [data-clock]").forEach(function (el) {
+        el.textContent = SCFGraph.fmtClock((Date.now() - Number(el.getAttribute("data-clock"))) / 1000);
+      });
+    }
     // redraw SCF graph at most once per tick, only if new data arrived
     if (_logMode === "graph" && _scfDirty) renderSCFPanel();
   } catch (e) { /* transient; try again next tick */ }
@@ -243,6 +250,7 @@ async function maybeSeedCrestGraph() {
     if (r && r.ok && r.lines && r.lines.length) {
       const c = new SCFGraph.CrestTracker();
       for (const ln of r.lines) c.push(ln);   // offline: never via appendLog
+      c.noTimes = true;   // replayed in one burst — its wall-clock stamps are meaningless
       _crestTracker = c; _scfDirty = true;
     }
   } catch (e) {
@@ -271,6 +279,12 @@ async function refreshQueue() {
     _queueVersion = snap.version;
     queue = (snap.calculations || []).map(mirrorCalc);
     renderQueue();
+    // Keep the reference dropdowns live: they're only rebuilt when the geometry
+    // source is toggled, so a calc added while "From another calculation" was
+    // already selected would otherwise be missing from a stale list. Both
+    // refreshers preserve the current selection, so re-running them is safe.
+    if (document.getElementById("geom-reference")?.style.display === "block") refreshRefSelect();
+    if (document.getElementById("mlip-geom-reference")?.style.display === "block") refreshMlipRefSelect();
   } catch (e) { /* ignore */ }
 }
 
@@ -540,7 +554,7 @@ function applyMlipLock() {
   card.classList.toggle("locked", locked);
   const note = document.getElementById("mlip-lock-note");
   if (note) note.style.display = locked ? "" : "none";
-  for (const id of ["mlip-name", "mlip-model", "mlip-ref-select"]) {
+  for (const id of ["mlip-name", "mlip-task", "mlip-model", "mlip-charge", "mlip-mult", "mlip-ref-select"]) {
     const el = document.getElementById(id);
     if (el) el.disabled = locked;
   }
@@ -1307,6 +1321,9 @@ async function loadMlipXyz() {
 }
 function resetMlipForm() {
   document.getElementById("mlip-name").value = "";
+  document.getElementById("mlip-task").value = "opt";
+  document.getElementById("mlip-charge").value = "0";
+  document.getElementById("mlip-mult").value = "1";
   mlipXyz = "";
   document.getElementById("mlip-xyz-status").textContent = "";
   const dr = document.querySelector('input[name="mlip-geomsrc"][value="direct"]');
@@ -1363,13 +1380,16 @@ async function addMlipCalcToQueue() {
       if (!mlipXyz) throw new Error("Load an .xyz file first.");
       xyz = mlipXyz;
     }
+    const charge = parseInt(document.getElementById("mlip-charge").value, 10) || 0;
+    const mult = Math.max(1, parseInt(document.getElementById("mlip-mult").value, 10) || 1);
+    const kind = document.getElementById("mlip-task").value === "sp" ? "mlip_sp" : "mlip_opt";
     const calc = /** @type {CalcInput} */ ({
-      name, kind: "mlip_opt",
-      charge: 0, multiplicity: 1,
+      name, kind,
+      charge, multiplicity: mult,
       geometry_source: src,
       xyz, ref_name,
       is_raw: false, raw_text: "",
-      config: { kind: "mlip_opt", mlip_model: model, mlip_env_id: "" },
+      config: { kind, mlip_model: model, mlip_env_id: "" },
       state: "pending", message: "",
     });
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
@@ -1380,7 +1400,7 @@ async function addMlipCalcToQueue() {
       return;
     }
     localCalcs[calc.name] = calc;
-    appendLog(`"${calc.name}" (MLIP ${model}) added to queue.`, "ok");
+    appendLog(`"${calc.name}" (MLIP ${kind === "mlip_sp" ? "single point" : "opt"} · ${model}) added to queue.`, "ok");
     resetMlipForm();
     await refreshQueue();
     switchTab("queue");
@@ -1854,8 +1874,11 @@ function renderQueue() {
     // every row shows its execution backend: MLIP / CREST / DFT (ORCA)
     const backendLabel = isMlip ? "MLIP" : isCrest ? "CREST" : "DFT";
     const backendBadge = `<span class="qstate raw">${backendLabel}</span>`;
-    // charge/mult are meaningless for MLIP; show them only for ORCA calcs
-    const cmLabel = isMlip ? "" : ` · charge ${c.charge} · mult ${c.multiplicity}`;
+    // ORCA always shows charge/mult; MLIP shows them only when non-default,
+    // since OMol25 / multi-head MACE models use them (ions, radicals) while
+    // MACE-OFF/MP ignore them — a neutral singlet MLIP row stays clean.
+    const cmLabel = (!isMlip || c.charge !== 0 || c.multiplicity !== 1)
+      ? ` · charge ${c.charge} · mult ${c.multiplicity}` : "";
     // a "Completed." note is redundant with the done badge — hide completion notices
     const showMsg = !!c.message && !(c.state === "done" && /^Completed\b/.test(c.message));
     const editable = isEditableState(c.state);   // pending/cancelled/blocked: edit + drag
@@ -2155,15 +2178,19 @@ function renderSCFPanel() {
   if (!SCFGraph) return;
   const panel = document.getElementById("scf-panel");
   // A phase-chain run — a CREST conformer search, or the frequency / TD-DFT
-  // pipeline — has no meaningful convergence curve below it: its phase HUD fills
+  // pipeline — has no meaningful convergence curve below it: its stepper fills
   // the whole panel, no secondary graph. (CREST wins, then freq, then TD-DFT.)
+  // The stepper's rail follows the window height: pass the space left below
+  // the panel top (minus panel padding/border + the 16px window gutter); the
+  // renderer falls back to its compact strip when that can't fit the rows.
   let phaseHtml = "";
-  if (_crestTracker && _crestTracker.hasData()) phaseHtml = SCFGraph.renderCrestProgress(_crestTracker);
-  else if (_freqTracker && _freqTracker.hasData()) phaseHtml = SCFGraph.renderFreqProgress(_freqTracker);
-  else if (_tddftTracker && _tddftTracker.hasData()) phaseHtml = SCFGraph.renderTddftProgress(_tddftTracker);
+  const phaseOpts = {
+    height: Math.max(window.innerHeight - panel.getBoundingClientRect().top - 46, 0),
+  };
+  if (_crestTracker && _crestTracker.hasData()) phaseHtml = SCFGraph.renderCrestProgress(_crestTracker, phaseOpts);
+  else if (_freqTracker && _freqTracker.hasData()) phaseHtml = SCFGraph.renderFreqProgress(_freqTracker, phaseOpts);
+  else if (_tddftTracker && _tddftTracker.hasData()) phaseHtml = SCFGraph.renderTddftProgress(_tddftTracker, phaseOpts);
   if (phaseHtml) {
-    // the horizontal timeline sizes the panel to its own (short) height — no
-    // forced full-height wrapper, so there's no large empty area below it
     panel.innerHTML = phaseHtml;
     _scfDirty = false;
     return;
@@ -2231,9 +2258,9 @@ function updateLogJump() {
   btn.hidden = !(_logMode === "raw" && !logAtBottom());
 }
 // every backend's per-calc start marker: ORCA "running ORCA…", CREST "running
-// CREST…", MLIP "optimizing with…". Matching all three resets the graph trackers
-// so a new job's graph never inherits the previous one's curve.
-const _CALC_START_RE = /^\[(.+?)\]\s*\([^)]*\)\s*(?:running ORCA|running CREST|optimizing)/i;
+// CREST…", MLIP "optimizing with…" / "single-point energy with…". Matching them
+// resets the graph trackers so a new job's graph never inherits the previous curve.
+const _CALC_START_RE = /^\[(.+?)\]\s*\([^)]*\)\s*(?:running ORCA|running CREST|optimizing|single-point)/i;
 function appendLog(msg, level) {
   // a new calculation is starting: reset the convergence trackers so the graph
   // reflects the new job (and not the previous opt/freq)
@@ -2394,16 +2421,35 @@ function renderConformers(confs) {
       <td>${c.energy_eh.toFixed(8)}</td>
       <td>${c.n_atoms}</td></tr>`;
   }
+  // Export is only meaningful for a queued CREST calc (needs its workspace
+  // folder server-side); an externally opened .out has no _currentResultName.
+  const exportBtn = _currentResultName
+    ? `<button class="btn btn-sm btn-ghost" onclick="exportConformers()">Export as .xyz</button>` : "";
   body.innerHTML += `
     <div class="divider"></div>
-    <div class="card-title" style="margin-bottom:8px">Conformers (${confs.length})</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+      <div class="card-title">Conformers (${confs.length})</div>
+      ${exportBtn}
+    </div>
     <div style="max-height:280px;overflow:auto">
       <table class="data">
         <thead><tr><th>#</th><th>ΔE (kcal/mol)</th><th>E (Eh)</th><th>atoms</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <div class="hint" style="margin-top:6px">Follow-up calculations are built on the Build tab: reference this search from a geometry source — its Conformer handoff setting decides whether the chain runs on the lowest conformer or fans out per conformer.</div>`;
+    <div class="hint" style="margin-top:6px">Follow-up calculations are built on the Build tab: reference this search from a geometry source — its Conformer handoff setting decides whether the chain runs on the lowest conformer or fans out per conformer. <b>Export as .xyz</b> writes every conformer (c1 = the best) to a <code>conformers/</code> subfolder of the run.</div>`;
+}
+
+/** Split the shown CREST search's ensemble into per-conformer .xyz files
+ *  (in a conformers/ subfolder of the run folder). */
+async function exportConformers() {
+  if (!_currentResultName) return;
+  try {
+    const r = /** @type {ExportResult} */ (JSON.parse(await bridge.export_conformers(_currentResultName)));
+    if (!r.ok) { failNotify(r.error || "Could not export conformers."); return; }
+    toast(`Exported ${r.count} conformer${r.count === 1 ? "" : "s"} to ${r.folder}`);
+    appendLog(`Exported ${r.count} conformer .xyz files to ${r.folder}`, "ok");
+  } catch (e) { failNotify("Could not export conformers."); }
 }
 
 let _lastGeomXyz = "";   // last rendered geometry, for the Copy .xyz button

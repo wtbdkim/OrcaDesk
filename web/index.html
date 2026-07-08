@@ -141,7 +141,18 @@
         <div id="mlip-lock-note" class="mlip-lock-note" style="display:none">Ready MACE environment required.</div>
         <div class="field-row">
           <div class="field"><label>Name</label><input id="mlip-name" type="text" placeholder="e.g. mol-mace-opt"></div>
+          <div class="field" style="flex:0 0 175px"><label>Task</label>
+            <select id="mlip-task">
+              <option value="opt">Optimization</option>
+              <option value="sp">Single point</option>
+            </select>
+          </div>
           <div class="field" style="flex:0 0 240px"><label>MACE model</label><select id="mlip-model"></select></div>
+        </div>
+        <div class="field-row">
+          <div class="field" style="flex:0 0 110px"><label>Charge</label><input id="mlip-charge" type="number" value="0"></div>
+          <div class="field" style="flex:0 0 130px"><label>Multiplicity</label><input id="mlip-mult" type="number" value="1" min="1"></div>
+          <div class="field"><div class="hint" style="margin:0;align-self:end">Used by OMol25 / multi-head models (ions, radicals). MACE-OFF / MACE-MP ignore them.</div></div>
         </div>
         <div class="field-row" style="margin:12px 0 8px">
           <label class="checkbox"><input type="radio" name="mlip-geomsrc" value="direct" checked onchange="onMlipGeomSourceChange()"> From .xyz file</label>

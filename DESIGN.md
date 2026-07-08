@@ -684,20 +684,31 @@ Progress bar: track `--accent`, `height 8px, radius 4px`; fill `--ok`,
 width transition .3s. Label 13px/600 (`Optimization 62% · step 12`); meta
 line 11px mono muted (accurate signals; pace chip right-aligned via
 `margin-left:auto`); ETA line below at `opacity .72` italic (D2). Staged
-pipeline (`.phase-track`): a horizontal timeline that fills the Graph-panel
-width (no forced full-height wrapper — sizes to itself, so no empty area
-below). Centered uppercase tracked title (15px/700, +.14em) + a status badge
-(`STEP k/n` muted, or a `DONE`/`STOPPED` pill in `--ok`/`--err` tint). Below
-it a full-width rail (`--border`, `6px, radius 3px`): the traversed portion is
-a **discontinuous (stepped) fill** — one solid band per inter-node segment
-(2px gap between bands, `radius 3px`), coloured `--ok` (`--err` when stopped)
-at a per-band opacity ramp `.34→1` left→right (over the dark rail this reads
-black→green). Node markers sit on the rail at even intervals, labels
-alternating above/below; done = 16px `--ok` dot, current = 22px `--ok` dot +
-`--ok-tint` ring + 1.4s pulse with a `--ok`-emphasised label, pending = hollow
-`opacity .6`, stopped current = `--err`. The current stage carries an 11px
-muted live detail (e.g. `iteration 2 · 14/14 MTDs`). Reuse this exact timeline
-for any staged pipeline display (CREST / analytical freq / TD-DFT).
+pipeline (`.vstep`): a **vertical stepper** that fills the Graph panel. Header
+= mono title (17px/700) + a state pill (`▷ RUNNING`/`✓ DONE` in `--ok` tint,
+`■ STOPPED` in `--err` tint); a meta line below it, 12.5px mono muted, joins
+`method · cores · elapsed` (the last a live clock while running). Then one row
+per stage — everything mono, one typeface throughout: a 34px dot rail on the
+left (2px `--border` connector, turning `--ok` once a node is reached), the
+stage label (15px/600) with its **key result** beneath (12.5px mono muted —
+e.g. `1,204 structures collected`; frozen at the value the stage held when it
+ended, live for the current one), and the stage's **wall time** right-aligned
+(mono, tabular). Done row = 16px `--ok` dot; current = `--ok` dot + `--ok-tint`
+ring + 1.4s pulse with an `--ok` label; pending = hollow `opacity .75`; stopped
+current = `--err` dot + label (no pulse). A **skipped** stage — a conditional
+phase the pipeline jumped over (no entry stamp of its own but a later stage has
+one, e.g. CREST's Genetic crossing when there's nothing to cross) — keeps the
+rail `--ok` through it but shows a hollow dashed muted dot and an italic
+`skipped` result, so it never reads as a misleading instant "done". Rows are
+`flex:1` between `46–96px`, so **the rail follows the window height**. When the
+panel is too short to fit the rows
+(`< head + n·46px`) the renderer falls back to `.stepc` — the retired HUD
+frame minus its hazard stripes: centered title, `STEP k/n` (or `DONE`/
+`STOPPED`) left, the current stage's label + key result center, a dot chain
+right, meta line below. Reuse this exact stepper for any staged pipeline
+display (CREST / analytical freq / TD-DFT); per-stage times come from the
+tracker's stage-entry stamps and are suppressed on a disk-rebuilt tracker
+(`noTimes`, replayed in one burst).
 
 ### 11.16 Charts (SVG)
 

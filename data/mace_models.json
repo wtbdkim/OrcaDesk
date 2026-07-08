@@ -1,11 +1,15 @@
 {
-  "_source": "MACE foundation models. MACE-OFF: neutral organic molecules (H, C, N, O, F, P, S, Cl, Br, I). MACE-MP-0: inorganic / materials across the periodic table. Larger sizes trade speed for accuracy. The value (e.g. 'MACE-OFF medium') is stored on the calc; the MLIP runner maps it to the matching loader (mace_off / mace_mp) and model size.",
+  "_source": "MACE foundation models (mace-torch >= 0.3.16). MACE-OFF: neutral organic molecules (SPICE, wB97M-D3BJ). MACE-MP-0: inorganic / materials (MPtrj, PBE+U). MACE-OMOL: the OMol25 model (wB97M-V, 83 elements, CHARGED + open-shell) via mace_omol(). MACE-MH-1: multi-head (OMAT/OMol/OC20/MATPES) via mace_mp(model='mh-1'). The label is stored on the calc; parse_mace_model() maps it to (loader, model-arg). OMOL/MH models read the calc's charge + multiplicity (MACE total_spin = the spin multiplicity 2S+1, i.e. the multiplicity itself; default 1 = singlet); MACE-OFF/MP ignore them.",
   "MACE-OFF (organic)": {
-    "_note": "Organic molecules; loaded via mace_off(model=...).",
+    "_note": "Neutral organic molecules; loaded via mace_off(model=...).",
     "keywords": ["MACE-OFF small", "MACE-OFF medium", "MACE-OFF large"]
   },
   "MACE-MP-0 (materials)": {
     "_note": "Inorganic / periodic systems; loaded via mace_mp(model=...).",
     "keywords": ["MACE-MP-0 small", "MACE-MP-0 medium", "MACE-MP-0 large"]
+  },
+  "MACE-OMOL / MH (OMol25)": {
+    "_note": "OMol25-trained. MACE-OMOL = the dedicated OMol25 model (mace_omol, extra-large, ASL license); MACE-MH-1 = multi-head incl. OMol (mace_mp, mh-1). Both use charge + multiplicity — set them on the card for ions / radicals.",
+    "keywords": ["MACE-OMOL extra-large", "MACE-MH-1"]
   }
 }

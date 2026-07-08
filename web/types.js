@@ -423,6 +423,16 @@
  */
 
 /**
+ * export_conformers(name) result: how many per-conformer .xyz files were written
+ * and into which folder.
+ * @typedef {Object} ExportResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {number} [count]
+ * @property {string} [folder]
+ */
+
+/**
  * @typedef {Object} FepPoint
  * @property {string} name
  * @property {number} gibbs_eh

@@ -14,6 +14,31 @@ ensemble in the Results tab, from which selected conformers are re-optimized wit
 ORCA in one action.
 
 ### Added
+- **Export CREST conformers as separate `.xyz` files.** The Results tab's
+  conformer list gains an **Export as .xyz** button: it splits the run's
+  `crest_conformers.xyz` into one standalone file per conformer (verbatim — atom
+  count + the energy comment line + coordinates) in a `conformers/` subfolder of
+  the run folder, named `{name}_c{k}.xyz` (zero-padded; `c1` = the best
+  conformer). Verified against a real 100-conformer aspirin ensemble
+  (`crest/export.py`, `bridge.export_conformers`).
+- **MLIP single-point energy** (`mlip_sp`): the MLIP build card gains a **Task**
+  selector (Optimization / Single point). A single point evaluates the MACE
+  energy (and max force) at the given geometry with no relaxation — the worker
+  branches on a `task` field, `parse_mlip_result` marks it non-optimization (so
+  validation requires only that it finished), and it routes through the same
+  MLIP pipeline (`startswith("mlip")`) as `mlip_opt`. Useful for a quick MACE
+  energy on a fixed structure, or a MACE energy on an ORCA/CREST geometry via the
+  reference source.
+- **OMol25-based MACE models** in the MLIP model picker: **MACE-OMOL**
+  (the dedicated OMol25 model — ωB97M-V, 83 elements, charged + open-shell —
+  loaded via `mace_omol`) and **MACE-MH-1** (multi-head, includes an OMol head,
+  via `mace_mp(model='mh-1')`). `parse_mace_model` now maps a label to
+  `(loader, model_arg)` so these non-size models are expressible. The MLIP build
+  card gains **charge / multiplicity** inputs: they flow to the worker as
+  `atoms.info["charge"]`/`["spin"]` (spin = the multiplicity 2S+1, MACE's
+  convention) so OMol25 / multi-head models handle ions and radicals correctly;
+  MACE-OFF / MACE-MP ignore them. A non-neutral-singlet MLIP queue row now shows
+  its charge/mult.
 - **CREST backend** (`orcamgr/crest/`, kept off the ORCA pipeline like
   `orcamgr/mlip/`): a `crest_conf` calc kind for conformer search (v1 scope).
   `runner.py` launches CREST detached in WSL (`setsid`, ext4 scratch, results +
@@ -81,14 +106,26 @@ ORCA in one action.
   unit-tested in `tests/web/scf_graph.test.js`) parses the streamed `.out`;
   `bridge.get_graph_lines` also keeps CREST markers so a reattached run rebuilds
   its progress. Validated against real CREST 3.0.2 output.
-- **The staged-pipeline display (CREST, analytical frequency, TD-DFT) is a clean
-  horizontal timeline** — a centered title + `STEP k/n` (or `DONE`/`STOPPED`)
-  badge over a full-width rail whose traversed portion is a **stepped fill**
-  (one band per stage, dark→bright green left→right; dark→red when stopped) up
-  to the enlarged, pulsing current stage; node labels alternate above/below with
-  an 11px live detail on the current stage. Replaces the old game-HUD panel (big
-  headline number, dot chain, hazard-stripe borders) and fills the Graph panel
-  width with no convergence curve or empty area below it.
+- **The staged-pipeline display (CREST, analytical frequency, TD-DFT) is a
+  vertical stepper** — an all-mono title + `RUNNING`/`DONE`/`STOPPED` pill over a
+  meta line (`method · cores · elapsed`), then one row per stage showing the
+  stage label, its **key result** (e.g. `1,204 structures collected`, frozen as
+  each stage ends), and the stage's **wall time**, with a dot rail that fills
+  green as stages complete and the current stage pulsing. The rail **follows the
+  window height**; when the panel is too short to fit the rows it falls back to a
+  compact strip (the old HUD frame minus its hazard stripes, same text). Replaces
+  the earlier horizontal timeline; per-stage times come from the tracker's
+  stage-entry stamps (suppressed on a reattach-rebuilt tracker).
+- **CREST progress now tracks the full iMTD-GC pipeline** — the stepper's stages
+  are Initial optimization → Metadynamics sampling → Regular MD → **Genetic
+  crossing (GC)** → Final optimization → **Ensemble sorting (CREGEN)**, adding the
+  GC structure-crossing and terminal CREGEN sort phases that were previously
+  folded away. Genetic crossing is conditional (CREST skips it when there's
+  nothing to cross, e.g. a one-conformer molecule); a skipped stage now reads as
+  `skipped` (hollow dashed node) instead of a misleading instant "done". Stage
+  set verified against the real CREST 3.0.2 / ORCA 6.1.1 output corpus, which
+  also confirmed the analytical-frequency (7-stage) and TD-DFT (5-stage) chains
+  are complete.
 - **Per-conformer track clones show their provenance** in the queue — a track
   clone whose geometry was baked in from a conformer search reads
   `from {search} · conformer {k}` instead of a bare `xyz` (new display-only
@@ -116,6 +153,34 @@ ORCA in one action.
   default) and validated/clamped at the deserialization boundary.
 
 ### Fixed
+- **The option pickers no longer offer keywords ORCA 6.1.1 rejects.** Every
+  keyword in `data/*.json` was probed against the real ORCA 6.1.1 simple-input
+  parser (mirroring the app's own emission, including functional normalization);
+  48 tokens that abort with `UNRECOGNIZED OR DUPLICATED KEYWORD(S) IN SIMPLE
+  INPUT LINE` were removed so they can't be built into a failing `.inp`:
+  - **SCF**: `MediumSCF` (no such tier) — also mapped to `NormalSCF` at the trust
+    boundary (`StepConfig.from_dict`) for any calc/session still carrying it.
+  - **Grids**: the legacy `Grid3`–`Grid7` / `FinalGrid4`–`6` (removed in ORCA 6;
+    use `DefGrid1`–`3`).
+  - **Calc types**: `OptFreq` (write `Opt Freq`), `MECPOpt` (use `MECP-Opt`),
+    `ConicalIntersection`, `OvertonesFreq`, `QuasiRRHO`, `Gradient` (use
+    `EnGrad`), `MTD`, and the block-only excited-state / property tokens
+    `TDDFT`/`TDA`/`CIS`/`RPA`/`sTDA`/`sTDDFT`/`ROCIS`/`DFT-ROCIS` and
+    `EPR`/`EPRNMR`/`MOSSBAUER`/`POL`/`Polarizability`/`HFC`/`HFC_NMR`/`PNMR`
+    (these are configured in `%tddft`/`%cis`/`%eprnmr`/`%elprop` blocks — the
+    dedicated TD-DFT and NMR build modes still work; `NMR`, `MD`, `EOM-CCSD`,
+    `STEOM-CCSD`, `DLPNO-STEOM-CCSD`, `ADC2` remain, being valid on the `!` line).
+  - **Options**: `AutoTRAH`, `FullLshift`, `FlipSpin`, `NoZORA`, `NoDKH`,
+    `FC_ELECTRONS`/`FC_NONE`/`FC_EWIN`, `ReadGuess`, `ONIOM` (all block-only).
+  - **RI**: `RIJ` (ORCA's RI-J for GGAs is `RI`).
+  - **Functionals**: `MR-EOM-CC`, `INDO/1`, `INDO/2`, `CNDO/1`, `CNDO/2`
+    (unsupported in 6.1.1; `ZINDO/1`, `ZINDO/2`, `ZINDO/S` remain).
+- **The geometry-reference dropdowns stay in sync with the queue.** They were
+- **The geometry-reference dropdowns stay in sync with the queue.** They were
+  only rebuilt when the "From another calculation" radio was toggled, so a calc
+  added while that source was already selected went missing from a stale list
+  (and couldn't be picked as a reference). They now refresh on every queue update
+  (selection preserved).
 - **The `.inp` button no longer appears on MLIP/CREST queue rows.** Those backends
   produce no ORCA input, so the button fell through to a bogus generated ORCA
   `.inp` preview; it is now ORCA-only.

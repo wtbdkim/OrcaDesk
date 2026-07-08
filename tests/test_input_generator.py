@@ -258,6 +258,20 @@ def test_from_dict_coerces_numeric_strings_and_defaults_on_injection():
     assert StepConfig.from_dict({"maxcore_mb": None}).maxcore_mb == 2400
 
 
+def test_from_dict_maps_removed_mediumscf_to_a_valid_tier():
+    # ORCA has no MediumSCF tier (it aborts: "UNRECOGNIZED OR DUPLICATED
+    # KEYWORD(S) IN SIMPLE INPUT LINE"). A calc/session that still carries it is
+    # mapped to the nearest valid tier at the trust boundary, so the emitted
+    # '!' line never contains MediumSCF.
+    assert StepConfig.from_dict({"scf_convergence": "MediumSCF"}).scf_convergence == "NormalSCF"
+    assert StepConfig.from_dict({"scf_convergence": "mediumscf"}).scf_convergence == "NormalSCF"
+    cfg = StepConfig.from_dict({"scf_convergence": "MediumSCF", "functional": "PBE",
+                                "basis_set": "def2-SVP"})
+    assert "MediumSCF" not in build_input(cfg, WATER_XYZ)
+    # a valid tier is left untouched
+    assert StepConfig.from_dict({"scf_convergence": "TightSCF"}).scf_convergence == "TightSCF"
+
+
 def test_from_dict_nan_float_falls_back_to_default():
     cfg = StepConfig.from_dict({"freq_temp_k": float("nan"),
                                 "freq_pressure_atm": "nan"})

@@ -22,8 +22,6 @@
       "LOOSE-NEB-TS",
       "ZOOM-NEB-TS",
       "MECP-Opt",
-      "MECPOpt",
-      "ConicalIntersection",
       "GOAT",
       "DOCKER",
       "SOLVATOR"
@@ -37,9 +35,7 @@
       "AnFreq",
       "NumFreq",
       "NearIR",
-      "OvertonesFreq",
-      "VPT2",
-      "QuasiRRHO"
+      "VPT2"
     ]
   },
 
@@ -48,22 +44,13 @@
     "keywords": [
       "SP",
       "Energy",
-      "EnGrad",
-      "Gradient"
+      "EnGrad"
     ]
   },
 
   "calculation_types_excited_states": {
-    "_note": "Excited state methods.",
+    "_note": "Excited-state methods. NOTE: TD-DFT/TDA/CIS/RPA/sTDA/sTDDFT/ROCIS are configured in blocks (%tddft, %cis, %rocis), not on the '!' line — ORCA rejects them as simple-input keywords — so only the ones ORCA accepts on the '!' line are listed. Use the dedicated TD-DFT build mode for excited states.",
     "keywords": [
-      "TDDFT",
-      "TDA",
-      "CIS",
-      "RPA",
-      "sTDA",
-      "sTDDFT",
-      "ROCIS",
-      "DFT/ROCIS",
       "EOM-CCSD",
       "STEOM-CCSD",
       "DLPNO-STEOM-CCSD",
@@ -72,33 +59,22 @@
   },
 
   "calculation_types_properties": {
-    "_note": "Property calculations.",
+    "_note": "Property calculations. NOTE: EPR/NMR coupling, Mössbauer, polarizability, and hyperfine properties are requested in blocks (%eprnmr, %elprop), not on the '!' line — ORCA rejects those tokens there. Only 'NMR' is a valid '!'-line keyword.",
     "keywords": [
-      "NMR",
-      "EPRNMR",
-      "EPR",
-      "MOSSBAUER",
-      "POL",
-      "Polarizability",
-      "HFC",
-      "HFC_NMR",
-      "PNMR",
-      "ROCIS"
+      "NMR"
     ]
   },
 
   "calculation_types_md_dynamics": {
-    "_note": "Molecular dynamics and trajectory.",
+    "_note": "Molecular dynamics. 'MD' runs ORCA's ab-initio MD driver; metadynamics (MTD) is configured inside %md, not as a '!'-line keyword.",
     "keywords": [
-      "MD",
-      "MTD"
+      "MD"
     ]
   },
 
   "calculation_types_combined": {
-    "_note": "Common combinations (treated as compound keywords).",
+    "_note": "Common combinations. These are space-separated keyword sequences (ORCA has no single 'OptFreq' token — it rejects it; write 'Opt Freq').",
     "keywords": [
-      "OptFreq",
       "Opt Freq",
       "Opt Freq IRC",
       "OptTS Freq",

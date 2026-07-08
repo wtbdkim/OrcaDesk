@@ -252,6 +252,13 @@ class StepConfig:
         cfg.tddft_maxdim = _clamp_int(cfg.tddft_maxdim, 10, 1, 100_000)
         cfg.freq_temp_k = _clamp_float(cfg.freq_temp_k, 298.15, 0.0, 100_000.0)
         cfg.freq_pressure_atm = _clamp_float(cfg.freq_pressure_atm, 1.0, 0.0, 100_000.0)
+        # ORCA has no "MediumSCF" convergence tier — it aborts with "UNRECOGNIZED
+        # OR DUPLICATED KEYWORD(S) IN SIMPLE INPUT LINE". Older sessions/calcs may
+        # still carry it (it used to be offered in the picker), so map it to the
+        # nearest valid tier here — the trust boundary — rather than emitting an
+        # input ORCA rejects. New builds no longer offer it (data/scf_convergences.json).
+        if cfg.scf_convergence.strip().lower() == "mediumscf":
+            cfg.scf_convergence = "NormalSCF"
         # crest_handoff is a closed enum at the trust boundary: anything but the
         # two known values degrades to the safe default (single-geometry handoff).
         if cfg.crest_handoff not in ("lowest", "all"):

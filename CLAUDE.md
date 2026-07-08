@@ -192,10 +192,13 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   validation failure marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`,
   `freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `irc`, `tddft`, `sp`,
   `general` (free keyword combination; no per-kind validation), `nmr`,
-  `neb_ts`, `mlip_opt`, `crest_conf`. Kinds starting with `mlip` or `crest` run
-  **outside** the ORCA pipeline: `QueueEngine.run_all` routes `mlip*` to
-  `_run_mlip_calc` (a MACE relaxation in the user's env) and `crest*` to
+  `neb_ts`, `mlip_opt`, `mlip_sp`, `crest_conf`. Kinds starting with `mlip` or
+  `crest` run **outside** the ORCA pipeline: `QueueEngine.run_all` routes `mlip*`
+  to `_run_mlip_calc` (a MACE relaxation for `mlip_opt`, or a single-point energy
+  for `mlip_sp` — the worker branches on the `task` field) and `crest*` to
   `_run_crest_calc` (a conformer search in WSL) instead of `_run_calc`.
+  `mlip_sp` validation requires only normal termination (an SP has no
+  convergence — `parse_mlip_result` sets `is_optimization=False` from `task`).
   `crest_conf` validation requires normal termination + at least one conformer.
   See the MLIP and CREST sections.
 
@@ -246,7 +249,9 @@ and mirrored in `web/types.js`.
 — `mlip` (`Settings.build_mode`; the three-way toggle is `#bmode-*` in
 `index.html`, `setBuildMode` in `app.js`). MLIP mode hides the whole ORCA build
 UI (`_ORCA_BUILD`) and shows a self-contained `#card-mlip`: a name, a MACE-model
-dropdown (options in `data/mace_models.json`, served via `load_choices`), and a
+dropdown (options in `data/mace_models.json`, served via `load_choices`),
+charge/multiplicity inputs (used only by charge/spin-aware models — OMol25 /
+multi-head; MACE-OFF/MP ignore them), and a
 **geometry source** selector (`.xyz` loader **or** reference another queued calc,
 mirroring the ORCA build card — `onMlipGeomSourceChange`/`refreshMlipRefSelect` in
 `app.js`), which add a `mlip_opt` calc to the **shared queue** through the
@@ -270,9 +275,15 @@ reference) and the interpreter (`config.mlip_env_id`, else the first registered
 env, via `_resolve_mlip_python`), writes an input `.xyz` + a JSON config + the
 worker script into the run folder, then runs the user's interpreter on it. The
 worker — running in the **user's** env, so it may import `torch`/`mace`/`ase`
-(ORCAdesk's env need not) — loads a MACE calculator (`mace_off`/`mace_mp` by
-model+size from `parse_mace_model`), runs an ASE `LBFGS` relaxation (CPU,
-fmax 0.05), and writes the optimized geometry + energy + convergence to a JSON
+(ORCAdesk's env need not) — loads a MACE calculator via `parse_mace_model`,
+which maps the dropdown label to `(family, model_arg)`: `mace_off` (SPICE,
+organic), `mace_mp` (materials + the multi-head `mh-1`/`mh-0`), or `mace_omol`
+(the OMol25 model, `extra_large`). Charge/multiplicity flow from the
+`Calculation` into the worker as `atoms.info["charge"]` and `["spin"]` — where
+**`spin` is the spin multiplicity 2S+1 (the multiplicity itself, not
+`mult−1`)**; the OMol25 / multi-head models consume them (ions, radicals) while
+MACE-OFF/MP ignore them. It then runs an ASE `LBFGS` relaxation (CPU, fmax
+0.05), and writes the optimized geometry + energy + convergence to a JSON
 result; `MlipRunner` tails its stdout into the `.out` and the live log and is
 cancellable (`QueueEngine.cancel`/`detach` forward to the active `MlipRunner`).
 `parse_mlip_result` reads that JSON into the **shared `ParseResult`** (geometry,
@@ -373,8 +384,14 @@ engine-driven structural mutation allowed mid-run (engine and store apply the
 identical change, preserving the visible-queue == executing-queue invariant
 that blocks user mutations during a run). Expansion also happens at run start
 when an already-DONE `all` search has pending referencing templates (built
-after it finished). The Results tab's conformer list is **read-only**: results
-are for interpretation; building happens on the Build tab.
+after it finished). The Results tab's conformer list is **read-only** for
+building: results are for interpretation; building happens on the Build tab. It
+does offer one file action — **Export as .xyz** (`bridge.export_conformers` →
+`crest/export.py`) splits `crest_conformers.xyz` into one standalone `.xyz` per
+conformer (verbatim frames — count + energy comment + coords) under a
+`conformers/` subfolder of the run, named `{name}_c{k}.xyz` (zero-padded; `c1` =
+the best conformer, == `crest_best.xyz`). No file dialog — the files land next to
+the run; this only reads/writes, never touches the queue.
 
 **Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
 `list_crest_distros` / `set_crest_distro`) follow

@@ -52,6 +52,7 @@ interface OrcaBridge {
   get_log(since: number): Promise<string>;
   get_inp(name: string): Promise<string>;
   get_graph_lines(name: string): Promise<string>;
+  export_conformers(name: string): Promise<string>;
   // run / results
   get_free_energy_profile(): Promise<string>;
   check_overwrite_conflicts(): Promise<string>;
@@ -85,6 +86,7 @@ interface SCFGraphAPI {
   TddftTracker: new () => any;
   CrestTracker: new () => any;
   isScfIter(line: string): boolean;
+  fmtClock(sec: number): string;
   targetFor(scfConvergence: string): number;
   renderSCFProgress(...args: any[]): string;
   renderSCFGraph(...args: any[]): string;

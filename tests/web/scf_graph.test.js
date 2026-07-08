@@ -517,8 +517,10 @@ const CREST_LINES = [
   "CREGEN> E lowest :   -12.40773",
   " 1 structures remain within     6.00 kcal/mol window",
   " Additional regular MDs on lowest 1 conformer(s)",
+  "     |        Structure Crossing (GC)       |",
   "   ================================================",
   "   |           Final Geometry Optimization        |",
+  " Final Ensemble Information",
   " number of unique conformers for further calc            1",
   " CREST terminated normally.",
 ];
@@ -528,7 +530,7 @@ test("CrestTracker tracks the phase chain, MTD count, energies and conformer cou
   feed(c, CREST_LINES);
   assert.ok(c.hasData());
   assert.ok(c.finished, "CREST terminated normally -> finished");
-  assert.strictEqual(c.aStage, "final", "advanced through init/sample/md to final");
+  assert.strictEqual(c.aStage, "cregen", "advanced through init/sample/md/gc/final to the CREGEN sort");
   assert.strictEqual(c.mtdTotal, 14, "parsed '(14 MTDs)'");
   assert.strictEqual(c.iter, 2, "latest Meta-Dynamics Iteration");
   assert.strictEqual(c.nConf, 1, "unique conformers for further calc");
@@ -560,34 +562,109 @@ test("CrestTracker flags a topology-change safety termination as an error", func
   assert.ok(html.includes("STOPPED"), "the HUD status shows the run stopped");
 });
 
-test("renderCrestProgress renders the horizontal stage timeline", function () {
+test("renderCrestProgress renders the vertical stage stepper", function () {
   const c = new SCFGraph.CrestTracker();
   feed(c, CREST_LINES);
   const prog = SCFGraph.renderCrestProgress(c);
   assert.strictEqual(typeof prog, "string");
-  assert.ok(prog.includes("phase-track"), "the timeline container");
+  assert.ok(prog.includes("vstep-rows"), "the stepper container");
   assert.ok(prog.includes("CREST conformer search"), "panel title");
   assert.ok(prog.includes("Metadynamics sampling"), "a stage label");
-  assert.ok(prog.includes("phase-track-badge ok") && prog.includes("DONE"), "finished badge");
-  assert.ok(prog.includes("phase-track-seg ok"), "green (done) stepped fill bands");
-  assert.ok(prog.includes("1 conformer"), "the finished detail (nConf singular)");
-  assert.ok(!prog.includes("freq-jump") && !prog.includes("phase-steps"), "old markup is gone");
-  // an in-progress search: STEP k/n, an emphasized current node, live detail
+  assert.ok(prog.includes("vstep-pill ok") && prog.includes("DONE"), "finished pill");
+  assert.ok(prog.includes("1 conformer"), "the headline result on the final stage (nConf singular)");
+  assert.ok(!prog.includes("freq-jump") && !prog.includes("phase-track"), "old markup is gone");
+  // an in-progress search: RUNNING pill, an emphasized current row, live key result
   const mid = new SCFGraph.CrestTracker();
   feed(mid, [" Initial Geometry Optimization", " Σ(t(MTD)) / ps : 70.0 (14 MTDs)",
              " Meta-Dynamics Iteration 1", "*MTD   1 completed successfully ... 1s"]);
   const midHtml = SCFGraph.renderCrestProgress(mid);
-  assert.ok(midHtml.includes("STEP 2 / 4"), "current step indicator");
-  assert.ok(midHtml.includes("phase-node cur"), "a current-stage node");
-  assert.ok(midHtml.includes("iteration 1 · 1/14 MTDs"), "live current-stage detail");
-  // a stopped search past the first stage: red stepped band(s) + a badge
+  assert.ok(midHtml.includes("RUNNING"), "running pill");
+  assert.ok(midHtml.includes("vstep-row cur"), "a current-stage row");
+  assert.ok(midHtml.includes("vstep-row done"), "a completed row before it");
+  assert.ok(midHtml.includes("iteration 1 · 1/14 MTDs"), "live current-stage key result");
+  // a stopped search past the first stage: STOPPED pill + a red current row
   const err = new SCFGraph.CrestTracker();
   err.push(" Initial Geometry Optimization");
   err.push(" Meta-Dynamics Iteration 1");
   err.push(" ERROR STOP safety termination of CREST");
   const errHtml = SCFGraph.renderCrestProgress(err);
-  assert.ok(errHtml.includes("phase-track-seg err"), "red (stopped) stepped fill bands");
-  assert.ok(errHtml.includes("STOPPED") && errHtml.includes("phase-node err cur"), "stopped badge + red current node");
+  assert.ok(errHtml.includes("vstep-pill err") && errHtml.includes("STOPPED"), "stopped pill");
+  assert.ok(errHtml.includes("vstep-row cur err"), "red current row");
+  assert.ok(errHtml.includes("stopped — check the log"), "the stop hint as the current key result");
+});
+
+test("the stepper freezes each stage's key result and shows per-stage wall times", function () {
+  const c = new SCFGraph.CrestTracker();
+  feed(c, CREST_LINES);
+  assert.ok(/iteration 2/.test(c.subs[1]), "the sampling stage's key result was frozen on leaving it");
+  // deterministic clock: overwrite the wall-clock stamps (init/sample/md/gc/final/cregen)
+  c.stageT = [1000, 39000, 200000, 210000, 253000, 300000];
+  c.t0 = 1000; c.tEnd = 316000;
+  const html = SCFGraph.renderCrestProgress(c);
+  assert.ok(html.includes("0:38"), "init duration (entry-to-next-entry)");
+  assert.ok(html.includes("2:41"), "sampling duration");
+  assert.ok(html.includes("0:16"), "final CREGEN duration (entry to tEnd)");
+  assert.ok(html.includes("elapsed <span>5:15"), "total elapsed, static once finished");
+  // disk-rebuilt trackers suppress all wall times (the stamps are replay time)
+  c.noTimes = true;
+  const noT = SCFGraph.renderCrestProgress(c);
+  assert.ok(!noT.includes("0:38") && !noT.includes("elapsed"), "no times on a seeded tracker");
+});
+
+test("the stepper marks a conditionally-skipped stage (CREST GC when nothing to cross)", function () {
+  // a small-molecule run (like the real t2): reaches Final opt + CREGEN but the
+  // pipeline never runs Genetic crossing (GC) because there's nothing to cross
+  const c = new SCFGraph.CrestTracker();
+  feed(c, [
+    " Initial Geometry Optimization",
+    " CREST iMTD-GC SAMPLING",
+    " Meta-Dynamics Iteration 1",
+    " Additional regular MDs on lowest 1 conformer(s)",
+    "   |           Final Geometry Optimization        |",
+    " Final Ensemble Information",
+    " number of unique conformers for further calc            1",
+    " CREST terminated normally.",
+  ]);
+  assert.strictEqual(c.aStage, "cregen", "advanced to CREGEN without ever entering GC");
+  const html = SCFGraph.renderCrestProgress(c, { height: 600 });
+  assert.ok(html.includes("vstep-row skipped"), "a skipped row is rendered");
+  const gcRow = html.split("vstep-row").find(function (chunk) { return chunk.includes("Genetic crossing (GC)"); });
+  assert.ok(gcRow && gcRow.trimStart().startsWith("skipped"), "GC is the skipped stage");
+  assert.ok(gcRow.includes(">skipped<"), "the skipped row reads 'skipped'");
+  // a run that DID cross has no skipped rows
+  const full = new SCFGraph.CrestTracker();
+  feed(full, CREST_LINES);
+  assert.ok(!SCFGraph.renderCrestProgress(full, { height: 600 }).includes("vstep-row skipped"),
+            "a full run (GC ran) has no skipped rows");
+});
+
+test("the stepper picks up job meta echoed in the output", function () {
+  const c = new SCFGraph.CrestTracker();
+  c.push(" $ /home/u/.local/bin/crest input.xyz --gfn2 --ewin 100 -T 4 --chrg 0 --uhf 0");
+  assert.strictEqual(c.method, "GFN2-xTB");
+  assert.strictEqual(c.cores, 4);
+  const f = new SCFGraph.FreqTracker();
+  f.push("|  1> ! wB97X-D4 def2-SVP VeryTightSCF RIJCOSX Freq def2/J");
+  f.push("|  3> %pal nprocs 6 end");
+  assert.strictEqual(f.method, "wB97X-D4 def2-SVP");
+  assert.strictEqual(f.cores, 6);
+  f.push("                       GEOMETRIC PERTURBATIONS (4 nuclei)");
+  const html = SCFGraph.renderFreqProgress(f);
+  assert.ok(html.includes("wB97X-D4 def2-SVP · 6 cores"), "meta line carries method + cores");
+});
+
+test("the stepper falls back to the compact strip when the height cannot fit the rows", function () {
+  const mid = new SCFGraph.CrestTracker();
+  feed(mid, [" Initial Geometry Optimization", " Σ(t(MTD)) / ps : 70.0 (14 MTDs)",
+             " Meta-Dynamics Iteration 1", "*MTD   1 completed successfully ... 1s"]);
+  const tall = SCFGraph.renderCrestProgress(mid, { height: 600 });
+  assert.ok(tall.includes("vstep") && tall.includes('style="height:'), "tall window: full stepper sized to it");
+  const short = SCFGraph.renderCrestProgress(mid, { height: 140 });
+  assert.ok(short.includes("stepc") && !short.includes("vstep-rows"), "short window: compact strip");
+  assert.ok(short.includes("STEP 2<span class=\"stepc-of\">/6</span>"), "compact step indicator");
+  assert.ok(short.includes("Metadynamics sampling"), "compact carries the current stage label");
+  assert.ok(short.includes("iteration 1 · 1/14 MTDs"), "compact carries the live key result");
+  assert.ok(!short.includes("stripes"), "no hazard stripes on the compact strip");
 });
 
 // ---------- summary ----------

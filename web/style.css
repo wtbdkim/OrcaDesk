@@ -535,41 +535,69 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 /* ETA is the uncertain part: keep it visually subordinate to the accurate signals */
 .scf-prog-eta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 3px; opacity: 0.72; font-style: italic; }
 
-/* ---- staged-pipeline timeline (CREST conformer search / analytical
-   frequencies / TD-DFT): a centered title + status badge over a full-width
-   horizontal rail whose fill is a black→green gradient (→red when stopped)
-   reaching the current stage; node markers alternate above/below, the current
-   one enlarged + pulsing. Fills the Graph panel width. ---- */
-.phase-track { width: 100%; font-family: var(--font-mono); padding: 6px 8px 4px; }
-.phase-track-head { display: flex; align-items: baseline; justify-content: center; gap: 14px; margin-bottom: 8px; }
-.phase-track-title { font-size: 15px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--foreground); }
-.phase-track-badge { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; padding: 3px 11px; border-radius: 999px; white-space: nowrap; }
-.phase-track-badge.ok { color: var(--ok); background: var(--ok-tint); }
-.phase-track-badge.err { color: var(--err); background: var(--err-tint); }
-.phase-track-badge.step { color: var(--muted-foreground); }
-/* the rail row: room above and below for the alternating labels */
-.phase-track-rail { position: relative; height: 6px; margin: 62px 0; }
-.phase-track-line { position: absolute; top: 0; height: 6px; border-radius: 3px; background: var(--border); }
-/* one solid band per traversed segment — a discontinuous (stepped) fill, shade
-   set per-band inline (opacity ramp over the dark rail = black→green / black→red) */
-.phase-track-seg { position: absolute; top: 0; height: 6px; border-radius: 3px; }
-.phase-track-seg.ok { background: var(--ok); }
-.phase-track-seg.err { background: var(--err); }
-.phase-node { position: absolute; top: 3px; transform: translate(-50%, -50%); }
-.phase-node-dot { display: block; width: 16px; height: 16px; box-sizing: border-box; border-radius: 50%; border: 2.5px solid var(--muted-foreground); background: var(--card); transition: width .2s, height .2s; }
-.phase-node.done .phase-node-dot { background: var(--ok); border-color: var(--ok); }
-.phase-node.cur .phase-node-dot { width: 22px; height: 22px; border-color: var(--ok); background: var(--ok); box-shadow: 0 0 0 6px var(--ok-tint); animation: phase-node-pulse 1.4s ease-in-out infinite; }
-.phase-node.err .phase-node-dot { border-color: var(--err); background: var(--err); }
-.phase-node.err.cur .phase-node-dot { box-shadow: 0 0 0 6px var(--err-tint); }
-.phase-node-text { position: absolute; left: 50%; transform: translateX(-50%); text-align: center; white-space: nowrap; }
-.phase-node.above .phase-node-text { bottom: calc(100% + 12px); }
-.phase-node.below .phase-node-text { top: calc(100% + 12px); }
-.phase-node-label { display: block; font-size: 13px; color: var(--foreground); }
-.phase-node.pending .phase-node-label { color: var(--muted-foreground); opacity: 0.6; }
-.phase-node.cur .phase-node-label { color: var(--ok); font-weight: 600; }
-.phase-node.err.cur .phase-node-label { color: var(--err); }
-.phase-node-detail { display: block; font-size: 11px; color: var(--muted-foreground); margin-top: 4px; }
-@keyframes phase-node-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+/* ---- staged-pipeline vertical stepper (CREST conformer search / analytical
+   frequencies / TD-DFT): header (mono title + state pill) over a meta line
+   (name · method · cores · elapsed), then one row per stage — dot rail left,
+   stage label + its key result, per-stage wall time right-aligned. Rows
+   stretch to the given panel height (rail follows the window); the renderer
+   falls back to .stepc when the window is too short for the rows. ---- */
+.vstep { display: flex; flex-direction: column; }
+.vstep-head { display: flex; align-items: center; gap: 14px; }
+.vstep-title { font-family: var(--font-mono); font-size: 17px; font-weight: 700; color: var(--foreground); flex: 1; min-width: 0; }
+.vstep-pill { font-family: var(--font-mono); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; padding: 4px 12px; border-radius: 999px; white-space: nowrap; }
+.vstep-pill.ok  { color: var(--ok); background: var(--ok-tint); }
+.vstep-pill.err { color: var(--err); background: var(--err-tint); }
+.vstep-meta { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted-foreground); margin: 4px 0 10px; }
+.vstep-rows { flex: 1; display: flex; flex-direction: column; }
+.vstep-row { flex: 1; min-height: 46px; max-height: 96px; display: grid; grid-template-columns: 34px 1fr auto; column-gap: 14px; }
+.vstep-rail { position: relative; }
+.vstep-line { position: absolute; left: 50%; width: 2px; transform: translateX(-50%); background: var(--border); }
+.vstep-line.up   { top: 0; height: calc(50% - 11px); }
+.vstep-line.down { bottom: 0; height: calc(50% - 11px); }
+.vstep-line.on   { background: var(--ok); }
+.vstep-row.first .vstep-line.up, .vstep-row.last .vstep-line.down { display: none; }
+.vstep-dot { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 16px; height: 16px; border-radius: 50%; box-sizing: border-box; border: 2px solid var(--muted-foreground); background: var(--card); }
+.vstep-row.done .vstep-dot { background: var(--ok); border-color: var(--ok); }
+.vstep-row.cur .vstep-dot { background: var(--ok); border-color: var(--ok); box-shadow: 0 0 0 5px var(--ok-tint); animation: vstep-pulse 1.4s ease-in-out infinite; }
+.vstep-row.cur.err .vstep-dot { background: var(--err); border-color: var(--err); box-shadow: 0 0 0 5px var(--err-tint); animation: none; }
+/* a stage the pipeline jumped over (conditional phase that didn't run): the
+   rail stays green through it, but the node is a hollow dashed dot */
+.vstep-row.skipped .vstep-dot { background: var(--card); border-color: var(--muted-foreground); border-style: dashed; }
+.vstep-body { align-self: center; min-width: 0; padding: 6px 0; }
+.vstep-label { font-family: var(--font-mono); font-size: 15px; font-weight: 600; color: var(--foreground); }
+.vstep-row.pending .vstep-label, .vstep-row.skipped .vstep-label { color: var(--muted-foreground); opacity: 0.75; }
+.vstep-row.cur .vstep-label { color: var(--ok); }
+.vstep-row.cur.err .vstep-label { color: var(--err); }
+.vstep-sub { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted-foreground); margin-top: 3px; }
+.vstep-row.skipped .vstep-sub { font-style: italic; opacity: 0.7; }
+.vstep-row.cur.err .vstep-sub { color: var(--err); opacity: 0.85; }
+.vstep-time { font-family: var(--font-mono); font-size: 13px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; align-self: center; }
+.vstep-row.cur .vstep-time { color: var(--foreground); }
+@keyframes vstep-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+/* compact fallback (short window): the retired HUD frame minus its hazard
+   stripes — centered title, STEP k/n (or DONE/STOPPED) left, current stage
+   label + key result center, dot chain right, meta line below. */
+.stepc { font-family: var(--font-mono); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); padding: 8px 16px 9px; }
+.stepc-title { text-align: center; font-size: 13px; font-weight: 700; letter-spacing: 0.14em; color: var(--foreground); }
+.stepc-row { display: flex; align-items: center; gap: 14px; padding: 4px 0 2px; }
+.stepc-phase { font-size: 13px; font-weight: 700; letter-spacing: 0.12em; color: var(--ok); white-space: nowrap; min-width: 92px; }
+.stepc-phase.err { color: var(--err); }
+.stepc-of { font-size: 10px; font-weight: 600; color: var(--muted-foreground); }
+.stepc-center { flex: 1; text-align: center; min-width: 0; }
+.stepc-label { font-family: var(--font-mono); font-size: 14px; font-weight: 600; color: var(--foreground); }
+.stepc-sub { font-size: 11px; color: var(--muted-foreground); margin-top: 1px; }
+.stepc-dots { display: flex; align-items: center; white-space: nowrap; min-width: 92px; justify-content: flex-end; }
+.stepc-dot { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--muted-foreground); box-sizing: border-box; flex: none; }
+.stepc-dot.done { background: var(--ok); border-color: var(--ok); }
+.stepc-dot.cur { border-color: var(--ok); animation: stepc-pulse 1.2s ease-in-out infinite; }
+.stepc-dot.err { background: var(--err); border-color: var(--err); }
+.stepc-link { width: 7px; border-top: 1.5px solid var(--muted-foreground); opacity: 0.55; flex: none; }
+.stepc-link.done { border-color: var(--ok); opacity: 1; }
+.stepc-meta { text-align: center; font-size: 11px; color: var(--muted-foreground); }
+@keyframes stepc-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--ok); opacity: 1; }
+  50%      { box-shadow: 0 0 6px 1px var(--ok); opacity: 0.55; }
+}
 /* fill the graph box width; the viewBox height is computed per-render
    (renderSCFPanel) to match the space left below the plot, so height:auto
    lands the SVG flush with the bottom window gutter — no cap needed here. */

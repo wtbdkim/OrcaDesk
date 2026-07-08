@@ -27,6 +27,7 @@ import orcamgr.mlip.runner as mlip_runner_mod
 from orcamgr.core.input_generator import StepConfig
 from orcamgr.core.queue import (
     Calculation, CalcState, GeometrySource, QueueCallbacks, QueueEngine,
+    validate_result,
 )
 from orcamgr.core.runner import OrcaRunError
 from orcamgr.mlip.env import resolve_interpreter
@@ -121,6 +122,39 @@ def test_parse_mlip_result_converts_ev_to_hartree_and_reads_geometry(tmp_path):
     assert r.n_atoms == 2
     assert [a.symbol for a in r.geometry] == ["O", "H"]
     assert r.geometry[1].y == pytest.approx(0.75)
+
+
+def test_sp_task_result_is_not_an_optimization_and_needs_no_convergence(tmp_path):
+    # a single-point (mlip_sp) result: terminated fine, carries an energy +
+    # geometry, but is_optimization is False so validation doesn't require
+    # convergence (an SP has nothing to converge).
+    result_json = tmp_path / "sp.mlip.json"
+    result_json.write_text(json.dumps({
+        "task": "sp", "converged": True, "energy_ev": -3.0 * EV_PER_HARTREE,
+        "n_steps": 0, "fmax": 0.42,
+        "geometry": [["O", 0.0, 0.0, 0.1], ["H", 0.0, 0.75, -0.4]],
+        "error": None,
+    }), encoding="utf-8")
+    r = parse_mlip_result(str(result_json))
+    assert r.terminated_normally is True
+    assert r.is_optimization is False
+    assert r.final_energy_eh == pytest.approx(-3.0)
+    # validate_result must accept it even with opt_converged False (not checked for SP)
+    r.opt_converged = False
+    calc = Calculation(name="sp1", kind="mlip_sp",
+                       config=StepConfig(kind="mlip_sp", mlip_model="MACE-OFF medium"))
+    validate_result(calc, r)   # does not raise
+
+
+def test_write_mlip_run_files_encodes_the_task(tmp_path):
+    import json as _json
+    # separate run folders: write_mlip_run_files uses a fixed 'mlip_config.json' name
+    _, cp_sp = write_mlip_run_files(tmp_path / "sp", "sp", "MACE-OFF medium",
+                                    "H 0 0 0", tmp_path / "sp.json", task="sp")
+    _, cp_opt = write_mlip_run_files(tmp_path / "op", "op", "MACE-OFF medium",
+                                     "H 0 0 0", tmp_path / "op.json")
+    assert _json.loads(cp_sp.read_text(encoding="utf-8"))["task"] == "sp"
+    assert _json.loads(cp_opt.read_text(encoding="utf-8"))["task"] == "opt"
 
 
 def test_success_json_without_geometry_is_demoted_to_failure(tmp_path):
@@ -309,14 +343,40 @@ def test_mlip_failure_blocks_dependent_calc_not_whole_queue(tmp_path, monkeypatc
     ("MACE-MP small", ("mace_mp", "small")),
     ("MACE-MP-0 medium", ("mace_mp", "medium")),
     ("mace-mp large", ("mace_mp", "large")),
+    # OMol25 models: a dedicated loader / named model arg, not a size
+    ("MACE-OMOL extra-large", ("mace_omol", "extra_large")),
+    ("mace-omol", ("mace_omol", "extra_large")),
+    ("MACE-MH-1", ("mace_mp", "mh-1")),
+    ("MACE-MH-0", ("mace_mp", "mh-0")),
 ])
-def test_parse_mace_model_maps_family_and_size(label, expected):
+def test_parse_mace_model_maps_family_and_model_arg(label, expected):
     assert parse_mace_model(label) == expected
 
 
 @pytest.mark.parametrize("label", ["", None, "SomeUnknownModel", "MACE-OFF"])
 def test_parse_mace_model_unknown_label_falls_back_to_off_medium(label):
     assert parse_mace_model(label) == ("mace_off", "medium")
+
+
+def test_write_mlip_run_files_records_model_arg_and_charge_spin(tmp_path):
+    """The worker config carries the resolved loader + model arg and the calc's
+    charge/multiplicity (OMol25 / multi-head models read them; MACE-OFF/MP don't)."""
+    import json as _json
+    _, config_path = write_mlip_run_files(
+        tmp_path, "job", "MACE-OMOL extra-large",
+        "H 0 0 0\nH 0 0 0.74", tmp_path / "job.mlip.json",
+        charge=-1, multiplicity=2)
+    cfg = _json.loads(config_path.read_text(encoding="utf-8"))
+    assert cfg["family"] == "mace_omol"
+    assert cfg["model_arg"] == "extra_large"
+    assert cfg["charge"] == -1
+    assert cfg["multiplicity"] == 2   # worker sets atoms.info["spin"] = multiplicity (2S+1), i.e. 2 = doublet
+    # defaults when omitted (backward-compatible neutral singlet)
+    _, cp2 = write_mlip_run_files(tmp_path, "j2", "MACE-OFF medium",
+                                  "H 0 0 0", tmp_path / "j2.json")
+    cfg2 = _json.loads(cp2.read_text(encoding="utf-8"))
+    assert cfg2["charge"] == 0 and cfg2["multiplicity"] == 1
+    assert cfg2["family"] == "mace_off" and cfg2["model_arg"] == "medium"
 
 
 # ---------------------------------------------------------------------------

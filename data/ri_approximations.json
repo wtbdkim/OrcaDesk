@@ -6,7 +6,6 @@
     "_note": "Resolution-of-Identity for SCF acceleration. RI default for GGA, RIJCOSX default for hybrid DFT.",
     "keywords": [
       "RI",
-      "RIJ",
       "RIJONX",
       "RI-JK",
       "RIJK",

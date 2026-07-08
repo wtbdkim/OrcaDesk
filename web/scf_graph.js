@@ -29,7 +29,6 @@
     SloppySCF: 1e-5,
     LooseSCF: 3e-6,
     NormalSCF: 1e-6,
-    MediumSCF: 1e-7,
     StrongSCF: 1e-7,
     TightSCF: 1e-8,
     VeryTightSCF: 1e-9,
@@ -772,13 +771,13 @@
   // numerical-freq runs print the post-Hessian banners), so letting them
   // bootstrap showed the analytical-freq panel during plain NMR runs.
   const A_STAGES = [
-    { key: "integrals", re: /GEOMETRIC PERTURBATIONS/, boot: true,                status: "BUILDING DERIVATIVE INTEGRALS", label: "Derivative integrals" },
-    { key: "cpscf",     re: /ORCA SCF RESPONSE CALCULATION|SHARK CP-?SCF DRIVER/, status: "SOLVING CP-SCF RESPONSE",         label: "CP-SCF response" },
-    { key: "hessian",   re: /\bSCF HESSIAN\b/, boot: true,                        status: "ASSEMBLING SCF HESSIAN",          label: "SCF Hessian" },
-    { key: "freq",      re: VFREQ_RE,                                             status: "COMPUTING VIBRATIONAL FREQUENCIES", label: "Frequencies" },
-    { key: "modes",     re: /\bNORMAL MODES\b/,                                   status: "EXTRACTING NORMAL MODES",         label: "Normal modes" },
-    { key: "ir",        re: /\bIR SPECTRUM\b/,                                    status: "COMPUTING IR SPECTRUM",           label: "IR spectrum" },
-    { key: "thermo",    re: /THERMOCHEMISTRY AT\s+([\d.]+)/,                      status: "THERMOCHEMISTRY ANALYSIS",        label: "Thermochemistry" },
+    { key: "integrals", re: /GEOMETRIC PERTURBATIONS/, boot: true,                label: "Derivative integrals" },
+    { key: "cpscf",     re: /ORCA SCF RESPONSE CALCULATION|SHARK CP-?SCF DRIVER/, label: "CP-SCF response" },
+    { key: "hessian",   re: /\bSCF HESSIAN\b/, boot: true,                        label: "SCF Hessian" },
+    { key: "freq",      re: VFREQ_RE,                                             label: "Frequencies" },
+    { key: "modes",     re: /\bNORMAL MODES\b/,                                   label: "Normal modes" },
+    { key: "ir",        re: /\bIR SPECTRUM\b/,                                    label: "IR spectrum" },
+    { key: "thermo",    re: /THERMOCHEMISTRY AT\s+([\d.]+)/,                      label: "Thermochemistry" },
   ];
   const AFREQ_RE = /ANALYTICAL FREQUENC|Analytic(?:al)? Hessian/;  // other analytical markers (no stage)
   const ANUCLEI_RE = /GEOMETRIC PERTURBATIONS\s*\((\d+)\s*nuclei\)/; // banner carries the atom count
@@ -792,6 +791,17 @@
   // runs) — so the panel must clear instead of sitting stale through the
   // remaining cycles. Banners are uppercase; matched case-sensitively.
   const PHASE_RESET_RE = /GEOMETRY OPTIMIZATION CYCLE|FORWARD IRC|BACKWARD IRC/;
+
+  // Job meta echoed at the top of the .out, shown on the stepper's meta line
+  // (name · method · cores · elapsed): ORCA echoes the input file ("|  1> ! ..."
+  // carries the method, "%pal nprocs N" the cores); CREST echoes its command
+  // line ("$ .../crest input.xyz --gfn2 ... -T 4 ..."). First match wins.
+  const ORCA_BANG_RE = /^\|\s*\d+>\s*!\s*(\S+(?:\s+\S+)?)/;      // first two "!"-line tokens (method + basis)
+  const ORCA_NPROCS_RE = /^\|\s*\d+>\s*%pal\s+nprocs\s+(\d+)/i;
+  function _grabOrcaMeta(t, line) {
+    if (!t.method) { const m = line.match(ORCA_BANG_RE); if (m) t.method = m[1]; }
+    if (!t.cores) { const p = line.match(ORCA_NPROCS_RE); if (p) t.cores = parseInt(p[1], 10); }
+  }
 
   function FreqTracker() {
     this.mode = "";        // "" | "numerical" | "analytical"
@@ -808,14 +818,38 @@
     this.nuclei = 0;       // analytical: atom count (from the GEOMETRIC PERTURBATIONS banner)
     this.tempK = 0;        // analytical: thermochemistry temperature (K)
     this.finished = false; // analytical: ORCA TERMINATED NORMALLY seen — chain complete
+    this.stageT = [];      // ms wall clock when each stage index was first entered
+    this.subs = [];        // frozen key-result line per stage already left
+    this.t0 = 0;           // ms when the chain first advanced (total elapsed)
+    this.tEnd = 0;         // ms when the run finished (0 while running)
+    this.noTimes = false;  // rebuilt from disk — wall-clock stamps would be meaningless
+    this.method = "";      // echoed method ("!"-line, first two tokens)
+    this.cores = 0;        // echoed %pal nprocs
   }
   // advance the analytical phase chain — monotonic, so a re-seen banner (or a
-  // late "K/N done" line) can never move the chain backwards
+  // late "K/N done" line) can never move the chain backwards. Entering a new
+  // stage stamps its wall clock and freezes the key result of the stage left.
   FreqTracker.prototype._advance = function (idx) {
     this.mode = "analytical"; this.active = true;
-    if (idx > this.aIdx) { this.aIdx = idx; this.aStage = A_STAGES[idx].key; }
+    if (!this.t0) this.t0 = Date.now();
+    if (idx > this.aIdx) {
+      if (this.aIdx >= 0) this.subs[this.aIdx] = this._curSub();
+      this.aIdx = idx; this.aStage = A_STAGES[idx].key;
+      if (this.stageT[idx] == null) this.stageT[idx] = Date.now();
+    }
     if (this.aIdx >= 3) this.dispDone = true;   // "freq" and later: Hessian is done
     return true;
+  };
+  // the current stage's key-result line (frozen into subs[] when the stage ends)
+  FreqTracker.prototype._curSub = function () {
+    const dim3N = this.nuclei ? 3 * this.nuclei : this.perturbTotal;
+    const cpTotal = this.perturbTotal || dim3N;
+    if (this.aStage === "integrals") return this.nuclei ? `${this.nuclei} nuclei` : "";
+    if (this.aStage === "cpscf") return `${this.perturbDone}/${cpTotal || "?"} perturbations${this.cpscfIter ? ` · iter ${this.cpscfIter}` : ""}`;
+    if (this.aStage === "hessian") return dim3N ? `${dim3N}×${dim3N}` : "";
+    if (this.aStage === "freq" || this.aStage === "modes" || this.aStage === "ir") return dim3N ? `${dim3N} modes` : "";
+    if (this.aStage === "thermo") return this.tempK ? `${this.tempK} K` : "";
+    return "";
   };
   // back to a clean slate (a pre-step Hessian's chain is over, see PHASE_RESET_RE)
   FreqTracker.prototype._resetChain = function () {
@@ -824,8 +858,10 @@
     this.perturbTotal = 0; this.perturbDone = 0; this.cpscfIter = 0;
     this.aStage = ""; this.aIdx = -1; this.nuclei = 0; this.tempK = 0;
     this.finished = false;
+    this.stageT = []; this.subs = []; this.t0 = 0; this.tEnd = 0;   // meta (method/cores) survives: same job
   };
   FreqTracker.prototype.push = function (line) {
+    _grabOrcaMeta(this, line);
     if (PHASE_RESET_RE.test(line)) {
       const was = this.active;
       if (was) this._resetChain();
@@ -877,7 +913,7 @@
         this.cpscfIter++;
         return this._advance(1);   // "cpscf"
       }
-      if (ATERM_RE.test(line)) { this.finished = true; return true; }
+      if (ATERM_RE.test(line)) { this.finished = true; if (!this.tEnd) this.tEnd = Date.now(); return true; }
     }
     if (AFREQ_RE.test(line)) { this.mode = "analytical"; this.active = true; return true; }
     return false;
@@ -913,11 +949,11 @@
   // lines and a fixed "Number of roots" total) -> excited-state analysis ->
   // transition spectra -> final CIS/TD-DFT total energy.
   const TD_STAGES = [
-    { key: "setup",   re: /TD-DFT XC SETUP/,                              status: "BUILDING XC KERNEL",          label: "XC kernel" },
-    { key: "solver",  re: /RPA-DIAGONALIZATION|DAVIDSON-DIAGONALIZATION/, status: "ITERATIVE DIAGONALIZATION",   label: "Diagonalization" },
-    { key: "states",  re: /TD-DFT(?:\/TDA)? EXCITED STATES/,              status: "ANALYZING EXCITED STATES",    label: "Excited states" },
-    { key: "spectra", re: /ABSORPTION SPECTRUM VIA TRANSITION/,           status: "COMPUTING TRANSITION SPECTRA", label: "Transition spectra" },
-    { key: "energy",  re: /CIS\/TD-DFT TOTAL ENERGY/,                     status: "FINALIZING TOTAL ENERGY",     label: "Total energy" },
+    { key: "setup",   re: /TD-DFT XC SETUP/,                              label: "XC kernel" },
+    { key: "solver",  re: /RPA-DIAGONALIZATION|DAVIDSON-DIAGONALIZATION/, label: "Diagonalization" },
+    { key: "states",  re: /TD-DFT(?:\/TDA)? EXCITED STATES/,              label: "Excited states" },
+    { key: "spectra", re: /ABSORPTION SPECTRUM VIA TRANSITION/,           label: "Transition spectra" },
+    { key: "energy",  re: /CIS\/TD-DFT TOTAL ENERGY/,                     label: "Total energy" },
   ];
   const TD_ROOTS_RE = /Number of roots to be determined\s+\.+\s*(\d+)/;
   const TD_ITER_RE = /\*{4}\s*Iteration\s+(\d+)\s*\*{4}/;
@@ -930,15 +966,37 @@
     this.iter = -1;        // latest solver iteration (ORCA counts from 0)
     this.solver = "";      // "RPA" | "DAVIDSON" (which solver banner matched)
     this.finished = false; // ORCA TERMINATED NORMALLY seen — chain complete
+    this.stageT = [];      // ms wall clock when each stage index was first entered
+    this.subs = [];        // frozen key-result line per stage already left
+    this.t0 = 0;           // ms when the chain first advanced (total elapsed)
+    this.tEnd = 0;         // ms when the run finished (0 while running)
+    this.noTimes = false;  // rebuilt from disk — wall-clock stamps would be meaningless
+    this.method = "";      // echoed method ("!"-line, first two tokens)
+    this.cores = 0;        // echoed %pal nprocs
   }
   // monotonic, like FreqTracker._advance: a re-seen banner (the spectra stage
   // prints several "... SPECTRUM VIA TRANSITION ..." blocks) never moves back
   TddftTracker.prototype._advance = function (idx) {
     this.active = true;
-    if (idx > this.aIdx) { this.aIdx = idx; this.aStage = TD_STAGES[idx].key; }
+    if (!this.t0) this.t0 = Date.now();
+    if (idx > this.aIdx) {
+      if (this.aIdx >= 0) this.subs[this.aIdx] = this._curSub();
+      this.aIdx = idx; this.aStage = TD_STAGES[idx].key;
+      if (this.stageT[idx] == null) this.stageT[idx] = Date.now();
+    }
     return true;
   };
+  // the current stage's key-result line (frozen into subs[] when the stage ends)
+  TddftTracker.prototype._curSub = function () {
+    if (this.aStage === "solver") return this.roots
+      ? `${this.solver || "iterative"} · ${this.roots} roots${this.iter >= 0 ? ` · iter ${this.iter}` : ""}`
+      : "diagonalizing";
+    if (this.aStage === "states" || this.aStage === "spectra" || this.aStage === "energy")
+      return this.roots ? `${this.roots} states` : "";
+    return "";
+  };
   TddftTracker.prototype.push = function (line) {
+    _grabOrcaMeta(this, line);
     // same pre-step reset as FreqTracker: an excited-state optimization (raw
     // input) runs the TD-DFT module inside every cycle — show the chain while
     // it runs, clear it when the next cycle starts
@@ -947,6 +1005,7 @@
       if (was) {
         this.active = false; this.aStage = ""; this.aIdx = -1;
         this.roots = 0; this.iter = -1; this.solver = ""; this.finished = false;
+        this.stageT = []; this.subs = []; this.t0 = 0; this.tEnd = 0;
       }
       return was;
     }
@@ -963,105 +1022,200 @@
       const it = line.match(TD_ITER_RE);
       if (it) { this.iter = parseInt(it[1], 10); return true; }
     }
-    if (ATERM_RE.test(line)) { this.finished = true; return true; }
+    if (ATERM_RE.test(line)) { this.finished = true; if (!this.tEnd) this.tEnd = Date.now(); return true; }
     return false;
   };
   TddftTracker.prototype.hasData = function () { return this.active; };
 
-  // Horizontal stage timeline (shared by the CREST, analytical-freq and TD-DFT
-  // pipelines): a centered title + status badge over a full-width rail whose
-  // filled portion is a black→green gradient (black→red when stopped) reaching
-  // the current stage. Node markers sit on the rail, labels alternating
-  // above/below; the current node is enlarged/pulsing and its label emphasized.
-  // `detail` is a short live string for the current stage (attached to the last
-  // stage once finished). `state` is "running" | "done" | "error".
-  function _phasePanelHtml(title, stages, idx, state, detail) {
-    const n = stages.length;
-    const finished = state === "done";
-    const errored = state === "error";
-    const at = finished ? n - 1 : Math.max(idx, 0);   // current stage index
-    const INSET = 8;                                   // % edge margin so end labels fit
-    const span = 100 - 2 * INSET;
-    const pos = (i) => INSET + (n > 1 ? i * span / (n - 1) : span / 2);
-    // discrete ("stepped") fill: one solid band per traversed inter-node segment,
-    // stepping darkest→brightest left→right — a discontinuous black→green ramp
-    // (black→red when stopped), with a small gap between bands.
-    const nSeg = Math.max(n - 1, 1);
-    const travelled = finished ? nSeg : at;
-    let segs = "";
-    for (let j = 0; j < travelled; j++) {
-      const l = pos(j), w = pos(j + 1) - pos(j);
-      const op = nSeg > 1 ? (0.34 + 0.66 * j / (nSeg - 1)) : 1;
-      segs += `<div class="phase-track-seg ${errored ? "err" : "ok"}" ` +
-              `style="left:calc(${l.toFixed(2)}% + 2px);width:calc(${w.toFixed(2)}% - 4px);opacity:${op.toFixed(2)}"></div>`;
-    }
-    let badge;
-    if (finished) badge = `<span class="phase-track-badge ok">DONE</span>`;
-    else if (errored) badge = `<span class="phase-track-badge err">STOPPED</span>`;
-    else badge = `<span class="phase-track-badge step">STEP ${Math.min(at + 1, n)} / ${n}</span>`;
-    let nodes = "";
+  // ---------- staged-pipeline stepper (CREST / analytical freq / TD-DFT) ----------
+  // Vertical stepper: a header (mono title + RUNNING/DONE/STOPPED pill) over a
+  // meta line (name · method · cores · elapsed), then one row per stage — dot
+  // rail on the left, stage label with its key result under it, the stage's
+  // wall time right-aligned. Rows stretch between ROW_MIN and ROW_MAX so the
+  // rail follows the window height (opts.height, measured by the caller); when
+  // opts.height cannot fit every row without label overlap the compact strip
+  // (_stepCompactHtml — the retired HUD frame minus its hazard stripes, same
+  // text) is rendered instead. Live clocks (current stage + total elapsed)
+  // carry data-clock="<start ms>" and are re-stamped in place by the app's 1s
+  // poll, so they keep ticking while the log is silent.
+  const STEP_HEAD_PX = 88, STEP_ROW_MIN = 46, STEP_ROW_MAX = 96;
+
+  function _fmtClock(sec) {
+    sec = Math.max(0, Math.round(sec));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    const ss = (s < 10 ? "0" : "") + s;
+    if (!h) return `${m}:${ss}`;
+    return `${h}:${m < 10 ? "0" : ""}${m}:${ss}`;
+  }
+
+  // per-stage wall seconds from the tracker's stage-entry stamps: a stage ends
+  // when the next entered stage begins; the last entered stage ends at tEnd
+  // (finish/stop) or keeps running to `now`.
+  function _stageSecs(t, n, now) {
+    const out = new Array(n).fill(null);
     for (let i = 0; i < n; i++) {
+      const ti = t.stageT[i];
+      if (ti == null) continue;
+      let end = null;
+      for (let j = i + 1; j < n; j++) if (t.stageT[j] != null) { end = t.stageT[j]; break; }
+      if (end == null) end = t.tEnd || now;
+      out[i] = (end - ti) / 1000;
+    }
+    return out;
+  }
+
+  // shared row builder: label + key result (frozen for past stages, live for
+  // the current one) + per-stage seconds (suppressed on disk-rebuilt trackers).
+  // A stage the chain jumped over — no entry stamp of its own, but a later
+  // stage does have one — is flagged `skipped` (a conditional phase that didn't
+  // run this time, e.g. CREST's Genetic crossing when there's nothing to cross);
+  // it reads as skipped instead of a misleading instant "done".
+  function _stepRows(t, stages, state, curSub, now) {
+    const n = stages.length;
+    const secs = t.noTimes ? new Array(n).fill(null) : _stageSecs(t, n, now);
+    let lastStamped = -1;
+    for (let i = n - 1; i >= 0; i--) if (t.stageT[i] != null) { lastStamped = i; break; }
+    const rows = [];
+    for (let i = 0; i < n; i++) {
+      const cur = i === t.aIdx;
+      const skipped = t.stageT[i] == null && i < lastStamped;
+      rows.push({
+        label: stages[i].label,
+        sub: skipped ? "skipped" : (i < t.aIdx ? (t.subs[i] || "") : (cur ? curSub : "")),
+        secs: secs[i],
+        live: state === "running" && cur && t.stageT[i] != null,
+        startMs: t.stageT[i] || 0,
+        skipped: skipped,
+      });
+    }
+    return rows;
+  }
+
+  function _stepMetaParts(t) {
+    const parts = [];
+    if (t.method) parts.push(t.method);
+    if (t.cores) parts.push(`${t.cores} cores`);
+    return parts;
+  }
+
+  function _stepElapsed(t, now) {
+    if (t.noTimes || !t.t0) return null;
+    if (t.tEnd) return { sec: (t.tEnd - t.t0) / 1000, live: false, startMs: 0 };
+    return { sec: (now - t.t0) / 1000, live: true, startMs: t.t0 };
+  }
+
+  function _stepMetaHtml(m) {
+    const parts = m.meta.slice();
+    if (m.elapsed) {
+      parts.push(`elapsed <span${m.elapsed.live ? ` data-clock="${m.elapsed.startMs}"` : ""}>${_fmtClock(m.elapsed.sec)}</span>`);
+    }
+    return parts.join(" · ");
+  }
+
+  // m: {title, state: "running"|"done"|"error", at (n = all done),
+  //     rows: [{label, sub, secs, live, startMs}], meta: string[], elapsed}
+  function _stepPanelHtml(m, opts) {
+    const n = m.rows.length;
+    const avail = opts && opts.height ? opts.height : 0;
+    if (avail && avail < STEP_HEAD_PX + n * STEP_ROW_MIN) return _stepCompactHtml(m);
+    const style = avail ? ` style="height:${Math.round(Math.min(avail, STEP_HEAD_PX + n * STEP_ROW_MAX))}px"` : "";
+    let pill;
+    if (m.state === "done") pill = `<span class="vstep-pill ok">✓ DONE</span>`;
+    else if (m.state === "error") pill = `<span class="vstep-pill err">■ STOPPED</span>`;
+    else pill = `<span class="vstep-pill ok">▷ RUNNING</span>`;
+    let rows = "";
+    for (let i = 0; i < n; i++) {
+      const r = m.rows[i];
       let cls;
-      if (finished || i < at) cls = "done";
-      else if (i === at) cls = errored ? "err cur" : "cur";
+      if (r.skipped) cls = "skipped";
+      else if (i < m.at) cls = "done";
+      else if (i === m.at) cls = m.state === "error" ? "cur err" : "cur";
       else cls = "pending";
-      const side = (i % 2 === 0) ? "below" : "above";
-      const showDetail = detail && ((finished && i === n - 1) || (!finished && i === at));
-      const det = showDetail ? `<span class="phase-node-detail">${detail}</span>` : "";
-      nodes +=
-        `<div class="phase-node ${cls} ${side}" style="left:${pos(i).toFixed(2)}%">` +
-          `<span class="phase-node-dot"></span>` +
-          `<span class="phase-node-text"><span class="phase-node-label">${stages[i].label || stages[i].status}</span>${det}</span>` +
+      if (i === 0) cls += " first";
+      if (i === n - 1) cls += " last";
+      const time = r.secs == null ? "" :
+        `<div class="vstep-time"${r.live ? ` data-clock="${r.startMs}"` : ""}>${_fmtClock(r.secs)}</div>`;
+      rows +=
+        `<div class="vstep-row ${cls}">` +
+          `<div class="vstep-rail">` +
+            `<span class="vstep-line up${i <= m.at ? " on" : ""}"></span>` +
+            `<span class="vstep-dot"></span>` +
+            `<span class="vstep-line down${i < m.at ? " on" : ""}"></span>` +
+          `</div>` +
+          `<div class="vstep-body">` +
+            `<div class="vstep-label">${r.label}</div>` +
+            (r.sub ? `<div class="vstep-sub">${r.sub}</div>` : "") +
+          `</div>` +
+          (time || `<div class="vstep-time"></div>`) +
         `</div>`;
     }
     return (
-      `<div class="phase-track">` +
-        `<div class="phase-track-head">` +
-          `<span class="phase-track-title">${title}</span>` +
-          badge +
-        `</div>` +
-        `<div class="phase-track-rail">` +
-          `<div class="phase-track-line" style="left:${INSET}%;right:${INSET}%"></div>` +
-          segs +
-          nodes +
-        `</div>` +
+      `<div class="vstep"${style}>` +
+        `<div class="vstep-head"><div class="vstep-title">${m.title}</div>${pill}</div>` +
+        `<div class="vstep-meta">${_stepMetaHtml(m)}</div>` +
+        `<div class="vstep-rows">${rows}</div>` +
       `</div>`
     );
   }
 
-  function renderTddftProgress(td) {
-    let detail = "";
-    if (td.finished) detail = "complete";
-    else if (td.aStage === "solver") detail = td.roots
-      ? `${td.solver || "iterative"} · ${td.roots} roots${td.iter >= 0 ? ` · iter ${td.iter}` : ""}`
-      : "diagonalizing";
-    else if (td.aStage === "states" || td.aStage === "spectra" || td.aStage === "energy")
-      detail = td.roots ? `${td.roots} states` : "";
-    return _phasePanelHtml("TD-DFT excited states", TD_STAGES, td.aIdx,
-                           td.finished ? "done" : "running", detail);
+  // compact fallback for short windows: the retired HUD frame minus its hazard
+  // stripes — centered title, STEP k/n (or DONE/STOPPED) left, the current
+  // stage's label + key result center, the dot chain right, meta line below.
+  function _stepCompactHtml(m) {
+    const n = m.rows.length;
+    let dots = "";
+    for (let i = 0; i < n; i++) {
+      if (i) dots += `<span class="stepc-link${i <= m.at ? " done" : ""}"></span>`;
+      dots += `<span class="stepc-dot${i < m.at ? " done" : (i === m.at ? (m.state === "error" ? " err" : " cur") : "")}"></span>`;
+    }
+    let phase;
+    if (m.state === "done") phase = `<div class="stepc-phase">DONE</div>`;
+    else if (m.state === "error") phase = `<div class="stepc-phase err">STOPPED</div>`;
+    else phase = `<div class="stepc-phase">STEP ${Math.min(m.at + 1, n)}<span class="stepc-of">/${n}</span></div>`;
+    const cur = m.rows[Math.min(Math.max(m.at, 0), n - 1)];
+    return (
+      `<div class="stepc">` +
+        `<div class="stepc-title">${m.title}</div>` +
+        `<div class="stepc-row">` + phase +
+          `<div class="stepc-center">` +
+            `<div class="stepc-label">${cur.label}</div>` +
+            (cur.sub ? `<div class="stepc-sub">${cur.sub}</div>` : "") +
+          `</div>` +
+          `<div class="stepc-dots">${dots}</div>` +
+        `</div>` +
+        `<div class="stepc-meta">${_stepMetaHtml(m)}</div>` +
+      `</div>`
+    );
   }
 
-  // Analytical-Hessian stepper: the current stage's live detail (atoms -> K/N
-  // perturbations -> Hessian dimension -> mode count -> temperature).
-  function _renderAnalyticalPanel(freq) {
-    // dim3N: the true Hessian dimension / mode count (3 x atoms). The CP-SCF
-    // perturbation count can differ from 3N (some runs solve extra
-    // perturbations), so it is only the denominator of the cpscf counter.
-    const dim3N = freq.nuclei ? 3 * freq.nuclei : freq.perturbTotal;
-    const cpTotal = freq.perturbTotal || dim3N;
-    let detail = "";
-    if (freq.finished) detail = "complete";
-    else if (freq.aStage === "integrals") detail = freq.nuclei ? `${freq.nuclei} nuclei` : "";
-    else if (freq.aStage === "cpscf") detail = `${freq.perturbDone}/${cpTotal || "?"} perturbations${freq.cpscfIter ? ` · iter ${freq.cpscfIter}` : ""}`;
-    else if (freq.aStage === "hessian") detail = dim3N ? `${dim3N}×${dim3N}` : "";
-    else if (freq.aStage === "freq" || freq.aStage === "modes" || freq.aStage === "ir") detail = dim3N ? `${dim3N} modes` : "";
-    else if (freq.aStage === "thermo") detail = freq.tempK ? `${freq.tempK} K` : "";
-    return _phasePanelHtml("Analytical frequencies", A_STAGES, freq.aIdx,
-                           freq.finished ? "done" : "running", detail);
+  function renderTddftProgress(td, opts) {
+    const state = td.finished ? "done" : "running";
+    const now = Date.now();
+    return _stepPanelHtml({
+      title: "TD-DFT excited states",
+      state: state,
+      at: state === "done" ? TD_STAGES.length : Math.max(td.aIdx, 0),
+      rows: _stepRows(td, TD_STAGES, state, td._curSub(), now),
+      meta: _stepMetaParts(td),
+      elapsed: _stepElapsed(td, now),
+    }, opts);
   }
 
-  function renderFreqProgress(freq) {
-    if (freq.mode === "analytical") return _renderAnalyticalPanel(freq);
+  function _renderAnalyticalPanel(freq, opts) {
+    const state = freq.finished ? "done" : "running";
+    const now = Date.now();
+    return _stepPanelHtml({
+      title: "Analytical frequencies",
+      state: state,
+      at: state === "done" ? A_STAGES.length : Math.max(freq.aIdx, 0),
+      rows: _stepRows(freq, A_STAGES, state, freq._curSub(), now),
+      meta: _stepMetaParts(freq),
+      elapsed: _stepElapsed(freq, now),
+    }, opts);
+  }
+
+  function renderFreqProgress(freq, opts) {
+    if (freq.mode === "analytical") return _renderAnalyticalPanel(freq, opts);
     // floor, not round: progress() caps at 0.999 while the final displacement
     // is still running, and round() displayed a premature "100%" there
     const pct = Math.floor(freq.progress() * 100);
@@ -1099,12 +1253,23 @@
   // this tracks a PHASE CHAIN (init -> sampling -> MD -> final) plus — within
   // sampling — the MTD count and the CREGEN lowest-energy / conformer-count
   // series that feed a small graph.
+  // The iMTD-GC pipeline in order (verified on real CREST 3.0.2 output):
+  // initial opt -> metadynamics sampling -> additional regular MDs -> genetic
+  // structure crossing (GC) -> final opt -> final CREGEN ensemble sort. CREGEN
+  // sorting also runs after every intermediate optimization block, but the
+  // "Final Ensemble Information" block is the terminal, unambiguous one.
   const CREST_STAGES = [
-    { key: "init",   re: /Initial Geometry Optimization/,            status: "INITIAL OPTIMIZATION",   label: "Initial optimization" },
-    { key: "sample", re: /iMTD-GC SAMPLING|Meta-Dynamics Iteration/, status: "METADYNAMICS SAMPLING",  label: "Metadynamics sampling" },
-    { key: "md",     re: /Additional regular MDs/,                   status: "ADDITIONAL MD SAMPLING", label: "Regular MD" },
-    { key: "final",  re: /Final Geometry Optimization/,              status: "FINAL OPTIMIZATION",     label: "Final optimization" },
+    { key: "init",   re: /Initial Geometry Optimization/,            label: "Initial optimization" },
+    { key: "sample", re: /iMTD-GC SAMPLING|Meta-Dynamics Iteration/, label: "Metadynamics sampling" },
+    { key: "md",     re: /Additional regular MDs/,                   label: "Regular MD" },
+    { key: "gc",     re: /Structure Crossing \(GC\)/,                label: "Genetic crossing (GC)" },
+    { key: "final",  re: /Final Geometry Optimization/,              label: "Final optimization" },
+    { key: "cregen", re: /Final Ensemble Information/,               label: "Ensemble sorting (CREGEN)" },
   ];
+  // CREST echoes its command line ("$ /path/crest input.xyz --gfn2 ... -T 4"):
+  // the --gfn* flag and -T carry the stepper meta line's method + core count
+  const CREST_CMD_RE = /^\s*\$\s+\S*crest\S*\s+(.+)$/i;
+  const CREST_METHOD_NAMES = { gfn2: "GFN2-xTB", gfn1: "GFN1-xTB", gfn0: "GFN0-xTB", gfnff: "GFN-FF" };
   const CREST_ELOW_RE    = /CREGEN>\s*E lowest\s*:\s*(-?\d+\.\d+)/i;
   const CREST_WINDOW_RE  = /(\d+)\s+structures?\s+remain within\s+([\d.]+)\s*kcal/i;
   const CREST_ITER_RE    = /Meta-Dynamics Iteration\s+(\d+)/i;
@@ -1126,16 +1291,46 @@
     this.nConf = 0;         // final "number of unique conformers for further calc"
     this.finished = false;  // "CREST terminated normally."
     this.error = false;     // a known abort signature (topology change / safety stop)
+    this.stageT = [];       // ms wall clock when each stage index was first entered
+    this.subs = [];         // frozen key-result line per stage already left
+    this.t0 = 0;            // ms when the chain first advanced (total elapsed)
+    this.tEnd = 0;          // ms when the run finished/stopped (0 while running)
+    this.noTimes = false;   // rebuilt from disk — wall-clock stamps would be meaningless
+    this.method = "";       // echoed --gfn* flag, prettified ("GFN2-xTB")
+    this.cores = 0;         // echoed -T thread count
   }
   // monotonic phase advance, like FreqTracker/TddftTracker
   CrestTracker.prototype._advance = function (idx) {
     this.active = true;
-    if (idx > this.aIdx) { this.aIdx = idx; this.aStage = CREST_STAGES[idx].key; }
+    if (!this.t0) this.t0 = Date.now();
+    if (idx > this.aIdx) {
+      if (this.aIdx >= 0) this.subs[this.aIdx] = this._curSub();
+      this.aIdx = idx; this.aStage = CREST_STAGES[idx].key;
+      if (this.stageT[idx] == null) this.stageT[idx] = Date.now();
+    }
     return true;
   };
+  // the current stage's key-result line (frozen into subs[] when the stage ends)
+  CrestTracker.prototype._curSub = function () {
+    if (this.aStage === "sample") return this.mtdTotal
+      ? `iteration ${this.iter || 1} · ${Math.min(this.mtdDone, this.mtdTotal)}/${this.mtdTotal} MTDs`
+      : `iteration ${this.iter || 1}`;
+    if (this.aStage === "md" || this.aStage === "gc" || this.aStage === "final")
+      return this.windowCount ? `${this.windowCount} in window` : "";
+    return "";
+  };
   CrestTracker.prototype.push = function (line) {
-    if (CREST_ERR_RE.test(line)) { this.error = true; this.active = true; return true; }
-    if (CREST_DONE_RE.test(line)) { this.finished = true; this.active = true; return true; }
+    const cmd = line.match(CREST_CMD_RE);
+    if (cmd) {
+      const gm = cmd[1].match(/--(gfn\S*)/i);
+      if (gm) this.method = gm[1].toLowerCase().split("//")
+        .map(function (k) { return CREST_METHOD_NAMES[k] || k.toUpperCase(); }).join("//");
+      const th = cmd[1].match(/-T\s+(\d+)/);
+      if (th) this.cores = parseInt(th[1], 10);
+      return false;   // meta only — nothing to redraw yet
+    }
+    if (CREST_ERR_RE.test(line)) { this.error = true; this.active = true; if (!this.tEnd) this.tEnd = Date.now(); return true; }
+    if (CREST_DONE_RE.test(line)) { this.finished = true; this.active = true; if (!this.tEnd) this.tEnd = Date.now(); return true; }
     const nc = line.match(CREST_NCONF_RE);
     if (nc) { this.nConf = parseInt(nc[1], 10); this.active = true; return true; }
     const mt = line.match(CREST_MTDTOT_RE);
@@ -1154,17 +1349,22 @@
   };
   CrestTracker.prototype.hasData = function () { return this.active; };
 
-  // Vertical stage stepper for the CREST conformer search.
-  function renderCrestProgress(cr) {
+  function renderCrestProgress(cr, opts) {
     const state = cr.error ? "error" : cr.finished ? "done" : "running";
-    let detail = "";
-    if (cr.error) detail = "stopped — check the log (topology change?)";
-    else if (cr.finished) detail = cr.nConf ? `${cr.nConf} conformer${cr.nConf === 1 ? "" : "s"}` : "complete";
-    else if (cr.aStage === "sample") detail = cr.mtdTotal
-      ? `iteration ${cr.iter || 1} · ${Math.min(cr.mtdDone, cr.mtdTotal)}/${cr.mtdTotal} MTDs`
-      : `iteration ${cr.iter || 1}`;
-    else if (cr.aStage === "md" || cr.aStage === "final") detail = cr.windowCount ? `${cr.windowCount} in window` : "";
-    return _phasePanelHtml("CREST conformer search", CREST_STAGES, cr.aIdx, state, detail);
+    const now = Date.now();
+    const curSub = cr.error ? "stopped — check the log (topology change?)" : cr._curSub();
+    const rows = _stepRows(cr, CREST_STAGES, state, curSub, now);
+    // the search's headline result lands on the final stage once it's done
+    if (cr.finished) rows[rows.length - 1].sub = cr.nConf
+      ? `${cr.nConf} conformer${cr.nConf === 1 ? "" : "s"}` : "complete";
+    return _stepPanelHtml({
+      title: "CREST conformer search",
+      state: state,
+      at: state === "done" ? CREST_STAGES.length : Math.max(cr.aIdx, 0),
+      rows: rows,
+      meta: _stepMetaParts(cr),
+      elapsed: _stepElapsed(cr, now),
+    }, opts);
   }
 
   const api = {
@@ -1174,6 +1374,7 @@
     TddftTracker: TddftTracker,
     CrestTracker: CrestTracker,
     isScfIter: function (line) { return ITER_RE.test(line); },   // is this an SCF iteration row?
+    fmtClock: _fmtClock,   // m:ss / h:mm:ss — app.js re-stamps [data-clock] elements with it
     targetFor: targetFor,
     renderSCFProgress: renderSCFProgress,
     renderSCFGraph: renderSCFGraph,

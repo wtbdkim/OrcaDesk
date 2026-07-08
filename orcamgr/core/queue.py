@@ -536,11 +536,14 @@ class QueueEngine:
         calc_dir.mkdir(parents=True, exist_ok=True)
         out_path = calc_dir / f"{calc.name}.out"
         result_json = calc_dir / f"{calc.name}.mlip.json"
+        task = "sp" if calc.kind == "mlip_sp" else "opt"
         script_path, config_path = write_mlip_run_files(
-            calc_dir, calc.name, calc.config.mlip_model, xyz, result_json)
+            calc_dir, calc.name, calc.config.mlip_model, xyz, result_json,
+            charge=calc.charge, multiplicity=calc.multiplicity, task=task)
 
         model = calc.config.mlip_model or "MACE"
-        self.cb.log(f"[{calc.name}] (mlip_opt) optimizing with {model} via {python}...", "info")
+        verb = "single-point energy" if task == "sp" else "optimizing"
+        self.cb.log(f"[{calc.name}] ({calc.kind}) {verb} with {model} via {python}...", "info")
         runner = MlipRunner(python)
         self._mlip_runner = runner
         try:
