@@ -127,7 +127,7 @@
 
       <div class="card" id="raw-card" style="display:none">
         <div class="card-title">Raw .inp <span class="qstate raw" style="margin-left:6px">raw</span></div>
-        <div class="card-desc">Direct ORCA input editor. <span class="mono">{{GEOMETRY}}</span> placeholder (with <b>Geometry source</b> = <b>reference</b> and a chosen source job) for that job's optimized or MLIP pre-optimized geometry, filled in at run time.</div>
+        <div class="card-desc">Direct ORCA input editor. <span class="mono">{{GEOMETRY}}</span> placeholder (with <b>Geometry source</b> = <b>reference</b> and a chosen source calculation) for that calculation's optimized or MLIP pre-optimized geometry, filled in at run time.</div>
         <div class="btn-group" style="flex-wrap:wrap;margin-bottom:8px">
           <span class="hint" style="margin:0;align-self:center">Insertable blocks:</span>
           <button class="btn btn-sm btn-ghost" onclick="insertSnippet('geometry')" title="Placeholder for a referenced calculation's optimized geometry">{{GEOMETRY}}</button>
@@ -187,7 +187,7 @@
 
       <div class="card" id="card-crest" style="display:none">
         <div class="card-title">CREST conformer search <span class="qstate raw" style="margin-left:6px">CREST</span></div>
-        <div class="card-desc">Explores low-energy conformers with the xTB tight-binding methods. Runs in WSL; follow-up MLIP/ORCA calculations reference this search from their geometry source.</div>
+        <div class="card-desc">Low-energy conformer sampling with xTB tight-binding methods, in WSL; follow-up MLIP/ORCA calculations reference it as their geometry source.</div>
         <div id="crest-lock-note" class="mlip-lock-note" style="display:none">CREST in a WSL distribution required (see Settings → CREST).</div>
         <div class="field-row">
           <div class="field"><label>Name</label><input id="crest-name" type="text" placeholder="e.g. mol-crest"></div>
@@ -324,7 +324,7 @@
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
           <div>
             <div class="card-title">Results</div>
-            <div class="card-desc" style="margin:0">A completed job, or any .out file.</div>
+            <div class="card-desc" style="margin:0">A completed calculation, or any .out file.</div>
           </div>
           <div class="btn-group">
             <select id="result-select" style="width:auto" onchange="showSelectedResult()"></select>
@@ -368,7 +368,7 @@
       </div>
       <div class="card">
         <div class="card-title">MLIP environments</div>
-        <div class="card-desc">One Python environment per MLIP (each its own venv — different MLIPs pin conflicting dependencies). Not installed by ORCAdesk; the interpreter of an environment you set up yourself, with auto-detected backends.</div>
+        <div class="card-desc">One self-provided Python environment per MLIP — separate venvs (MLIPs pin conflicting dependencies), backends auto-detected.</div>
         <div id="mlip-env-list" class="mlip-env-list"></div>
         <div class="field-row" style="margin-top:8px">
           <div class="field"><input id="set-mlip" type="text" class="mono" placeholder="C:\path\to\mlip-env\Scripts\python.exe"></div>
@@ -378,7 +378,7 @@
       </div>
       <div class="card">
         <div class="card-title">CREST (WSL)</div>
-        <div class="card-desc">CREST has no native Windows build, so ORCAdesk runs its Linux binary through WSL. Pick the distribution to use; ORCAdesk can install the static CREST binary into it for you (one WSL distro must already be set up).</div>
+        <div class="card-desc">WSL-hosted Linux CREST binary (no native Windows build); ORCAdesk can install it into a distro you already have.</div>
         <div id="crest-detail" class="hint" style="margin:0 0 8px"></div>
         <div class="field-row" style="margin-top:4px">
           <div class="field"><label>WSL distribution</label>

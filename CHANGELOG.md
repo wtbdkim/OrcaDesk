@@ -207,6 +207,15 @@ ORCA in one action.
 - **The `.inp` button no longer appears on MLIP/CREST queue rows.** Those backends
   produce no ORCA input, so the button fell through to a bogus generated ORCA
   `.inp` preview; it is now ORCA-only.
+- **Copy conformance sweep on the new CREST/MLIP card descriptions (DESIGN
+  §14/§11.1).** Five `.card-desc` strings introduced with the 0.5.0 CREST/MLIP
+  work drifted from the copy spec: the raw-`.inp` and Results card descs called a
+  queued **calculation** a *job* (§14.2 reserves *job* for the running process),
+  and the CREST-build, MLIP-environment, and CREST-settings descs ran to
+  multiple/imperative sentences instead of a one-line noun-form fragment
+  (§11.1/D70). All five reworded to spec — the 0.4.3 copy sweep (B20) predates
+  this copy. Surfaced by a shadcn/DESIGN conformance review of the design
+  previews, which confirmed the rest of the preview set is clean.
 
 ### Notes
 - An all-CREST (or all-MLIP) queue runs with **no ORCA executable configured**
