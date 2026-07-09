@@ -174,6 +174,15 @@ ORCA in one action.
   default) and validated/clamped at the deserialization boundary.
 
 ### Fixed
+- **Loading a `.xyz` no longer moves the workspace.** The geometry loaders used
+  to adopt the loaded file's parent folder as the workspace. Because an
+  optimization writes its result `.opt.xyz` inside the calc's own run folder
+  (`{workspace}/{name}/`), reloading that geometry for a follow-up step silently
+  descended the workspace into that calc folder — and each further run nested
+  again (`{workspace}/{name}/{next}/…`). Loading a geometry is now fully
+  decoupled from the workspace: the workspace is set **only** from Settings.
+  (`LoadResult` drops its `workspace` field; the front-end no longer syncs or
+  toasts a "Workspace set to …".)
 - **The CREST top-bar pill's dot turns red on an error.** `renderCrest` toggles
   the `.err` class like the MLIP pill, but the `#crest-status.err .dot` style
   rule was missing — an error pill showed "CREST error" text over a grey dot.

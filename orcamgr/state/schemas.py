@@ -172,17 +172,18 @@ class AboutPayload(TypedDict):
 
 class LoadResult(TypedDict):
     """Unified envelope for the four file-loader slots (load_xyz_file /
-    load_xyz_path / load_inp_file / load_inp_path) — 6 keys, all always
+    load_xyz_path / load_inp_file / load_inp_path) — 5 keys, all always
     present. "cancelled" distinguishes the user closing the picker (a
     deliberate choice: ok=True, cancelled=True, no error) from a real read
     failure (ok=False, "error" filled) — the previous per-slot shapes
-    conflated the two, so the UI couldn't tell cancel from OSError (A2)."""
+    conflated the two, so the UI couldn't tell cancel from OSError (A2).
+    Loading a geometry never changes the workspace (that is a Settings-only
+    action), so there is no workspace field here."""
     ok: bool
     cancelled: bool
     text: str
     name: str                 # filename stem (auto-fills the calc name), "" if none
     error: str                # "" except on the read-failure branch
-    workspace: str            # folder auto-adopted as the workspace (xyz loads only), else ""
 
 
 # ---- parse results (Bridge._parse_path) --------------------------------------

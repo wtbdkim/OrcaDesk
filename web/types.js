@@ -278,14 +278,14 @@
  * Unified result of the four file-loader slots (load_xyz_file /
  * load_xyz_path / load_inp_file / load_inp_path) — 5 keys, all always
  * present. "cancelled" means the user closed the picker (a deliberate
- * choice, not an error); ok=false means a real read failure.
+ * choice, not an error); ok=false means a real read failure. Loading a
+ * geometry never changes the workspace (a Settings-only action).
  * @typedef {Object} LoadResult
  * @property {boolean} ok
  * @property {boolean} cancelled
  * @property {string} text
  * @property {string} name    filename stem, for auto-filling the calc name ("" if none)
  * @property {string} error   "" except on the read-failure branch
- * @property {string} workspace  folder auto-adopted as the workspace (xyz loads only), else ""
  */
 
 /**

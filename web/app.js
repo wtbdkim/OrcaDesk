@@ -131,7 +131,6 @@ window.onXyzDropped = async function (path) {
     const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_path(path)));
     if (res.cancelled) return;   // deliberate dismissal, never an error
     if (!res.ok) { failNotify("Could not read that .xyz."); return; }
-    maybeAdoptWorkspace(res);
     directXyz = parseXyzText(res.text);
     const n = directXyz ? directXyz.split("\n").length : 0;
     const st = document.getElementById("xyz-status");
@@ -907,22 +906,10 @@ function parseXyzText(content) {
   return coords.join("\n");
 }
 
-/** After a .xyz load, if the backend adopted the file's folder as the workspace,
- *  sync the cached settings + the Settings field and tell the user. @param {LoadResult} res */
-function maybeAdoptWorkspace(res) {
-  const ws = res && res.workspace;
-  if (!ws) return;
-  if (settings) settings.workspace_root = ws;
-  const f = document.getElementById("set-ws");
-  if (f) f.value = ws;
-  toast(`Workspace set to ${ws}`);
-}
 async function loadXyz() {
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;   // deliberate dismissal, never an error
-  if (!res.ok) { failNotify("Could not read that .xyz."); return; }
-  maybeAdoptWorkspace(res);
-  directXyz = parseXyzText(res.text);
+  if (!res.ok) { failNotify("Could not read that .xyz."); return; }  directXyz = parseXyzText(res.text);
   const n = directXyz ? directXyz.split("\n").length : 0;
   const st = document.getElementById("xyz-status");
   st.textContent = n ? `loaded (${n} atoms)` : "No atoms in file.";
@@ -1124,9 +1111,7 @@ function onIrcHessChange() {
 async function loadNebProduct() {
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;   // deliberate dismissal, never an error
-  if (!res.ok) { failNotify("Could not read that .xyz."); return; }
-  maybeAdoptWorkspace(res);
-  const xyz = parseXyzText(res.text);
+  if (!res.ok) { failNotify("Could not read that .xyz."); return; }  const xyz = parseXyzText(res.text);
   if (!xyz) { appendLog("No atoms in the product .xyz.", "warn"); return; }
   _nebProductXyz = xyz;
   const st = document.getElementById("cfg-neb-prod-status");
@@ -1325,9 +1310,7 @@ function renderMlipForm() {
 async function loadMlipXyz() {
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;   // deliberate dismissal, never an error
-  if (!res.ok) { failNotify("Could not read that .xyz."); return; }
-  maybeAdoptWorkspace(res);
-  mlipXyz = parseXyzText(res.text);
+  if (!res.ok) { failNotify("Could not read that .xyz."); return; }  mlipXyz = parseXyzText(res.text);
   const n = mlipXyz ? mlipXyz.split("\n").length : 0;
   document.getElementById("mlip-xyz-status").textContent =
     n ? `loaded (${n} atoms)` : "No atoms in file.";
@@ -1427,9 +1410,7 @@ let crestXyz = "";              // last loaded .xyz coordinate block for the CRE
 async function loadCrestXyz() {
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;
-  if (!res.ok) { failNotify("Could not read that .xyz."); return; }
-  maybeAdoptWorkspace(res);
-  crestXyz = parseXyzText(res.text);
+  if (!res.ok) { failNotify("Could not read that .xyz."); return; }  crestXyz = parseXyzText(res.text);
   const n = crestXyz ? crestXyz.split("\n").length : 0;
   document.getElementById("crest-xyz-status").textContent =
     n ? `loaded (${n} atoms)` : "No atoms in file.";

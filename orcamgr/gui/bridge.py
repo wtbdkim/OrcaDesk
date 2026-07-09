@@ -361,7 +361,7 @@ class Bridge(QObject):
         path = QFileDialog.getExistingDirectory(self.window, "Select workspace folder")
         return path or ""
 
-    def _load_result(self, path: str, set_workspace: bool = False) -> str:
+    def _load_result(self, path: str) -> str:
         """Build the unified LoadResult envelope shared by every load_* slot.
         An empty path means the user cancelled the file dialog — a deliberate
         choice, reported as ok=True/cancelled=True so the front-end never
@@ -369,13 +369,15 @@ class Bridge(QObject):
         (the old per-slot shapes conflated the two — A2). "name" is the file
         stem, used to auto-fill the calculation name.
 
-        When ``set_workspace`` (the .xyz loaders), the loaded file's folder is
-        adopted as the workspace so a project's inputs and its calculation output
-        live together; the adopted folder is echoed back in "workspace" so the
-        front-end stays in sync (empty otherwise)."""
+        Loading a geometry never changes the workspace — the workspace is set
+        only from Settings. (It previously adopted the loaded file's parent
+        folder as the workspace; reloading a prior run's optimized ``.xyz``,
+        which lives inside that calc's own run folder, then silently descended
+        the workspace into that folder and nested every later run — the bug
+        this removed.)"""
         if not path:
             return json.dumps(LoadResult(
-                ok=True, cancelled=True, text="", name="", error="", workspace=""))
+                ok=True, cancelled=True, text="", name="", error=""))
         try:
             p = Path(path)
             # errors="replace": a stray non-UTF-8 byte must degrade to a
@@ -384,28 +386,19 @@ class Bridge(QObject):
             text = p.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             return json.dumps(LoadResult(
-                ok=False, cancelled=False, text="", name="", error=str(e), workspace=""))
-        workspace = ""
-        if set_workspace:
-            try:
-                workspace = str(p.resolve().parent)
-                self.settings.workspace_root = workspace
-                self.settings.save()
-            except OSError:
-                workspace = ""   # never let a settings-save error fail the load
+                ok=False, cancelled=False, text="", name="", error=str(e)))
         return json.dumps(LoadResult(
-            ok=True, cancelled=False, text=text, name=p.stem, error="", workspace=workspace))
+            ok=True, cancelled=False, text=text, name=p.stem, error=""))
 
     @pyqtSlot(result=str)
     def load_xyz_file(self) -> str:
         """Pick a .xyz file; returns a LoadResult JSON. The dialog opens at the
-        current workspace, and the chosen file's folder is adopted as the new
-        workspace (see _load_result)."""
+        current workspace for convenience; loading does not change it."""
         path, _ = QFileDialog.getOpenFileName(
             self.window, "Load .xyz file", self.settings.workspace_root or "",
             "XYZ file (*.xyz);;All files (*.*)"
         )
-        return self._load_result(path, set_workspace=True)
+        return self._load_result(path)
 
     @pyqtSlot(result=str)
     def load_inp_file(self) -> str:
@@ -425,8 +418,8 @@ class Bridge(QObject):
     @pyqtSlot(str, result=str)
     def load_xyz_path(self, path: str) -> str:
         """Load a .xyz by PATH (drag-and-drop). Same LoadResult as
-        load_xyz_file, including adopting the file's folder as the workspace."""
-        return self._load_result(path, set_workspace=True)
+        load_xyz_file; loading does not change the workspace."""
+        return self._load_result(path)
 
     # --- option lists ---
     @pyqtSlot(str, result=str)
