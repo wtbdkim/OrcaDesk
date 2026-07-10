@@ -914,6 +914,85 @@ Before committing any UI change, confirm:
 
 ---
 
+## 16. Liquid Glass theme variant
+
+An optional second theme *variant* (Apple "Liquid Glass", WWDC25), orthogonal
+to light/dark: `html[data-theme-variant]` is `shadcn` (the flat default) or
+`liquidglass`; `theme`/`data-theme` stays the light/dark switch and both
+variants render in both. This is a **token swap that stays true to D10** — the
+Liquid-Glass layer in `style.css` keeps every shared token name and only adds a
+new `--lg-*` group (glass tint, edge, highlight, blur, saturation, lens,
+shadow), defined for both light and dark. The whole layer is gated on
+`[data-theme-variant="liquidglass"]`, so the shadcn look is byte-for-byte
+unchanged when the variant is off.
+
+**16.1 Glass is floating chrome; content stays opaque.** The governing rule
+(from the design research, and the reason iOS 26 walked its glass back): only
+the *chrome* — the top bar and the tab strip — refracts a wallpaper behind it;
+content surfaces (cards, forms, the queue list, the log terminal, parse tables,
+the plot canvas) stay opaque so a data-dense app stays legible. Refraction is a
+Chromium-only `backdrop-filter: url(#lgLens*) blur() saturate()` chain (the app
+is Qt WebEngine / Chromium); the wallpaper itself is a viewport-fixed
+`<canvas id="lgWall">` painted by `app.js` (six procedural presets +
+custom-image upload).
+
+**16.2 The intensity ladder.** `html[data-glass]` selects one of five levels
+(mapping to the design2..design6 previews) — rising blur, saturation, and
+refraction displacement, and progressively more glass surface:
+
+| level | blur | refraction | what glassifies |
+|-------|------|-----------|-----------------|
+| `restrained` | 13px | 6 | top bar only (tabs are a quiet frosted strip) |
+| `moderate` (default) | 18px | 11 | + tabs refract |
+| `bold` | 24px | 18 | + tabs become a floating rounded bar |
+| `vivid` | 30px | 24 | + top bar floats; **cards become glass** (native frost — see 16.5) |
+| `maximal` | 38px | 32 + chromatic | cards most transparent; RGB-dispersion lens on the chrome |
+
+`restrained`/`moderate`/`bold` honor 16.1 (content opaque) and are the
+recommended range for readability. `vivid`/`maximal` **deliberately cross the
+chrome-only line** by glassifying the card layer — an opt-in exploratory
+extreme, recorded as accepted deviation B25. Even there the *inner* data
+surfaces (`input`, `.log-box`, `.scf-panel`, `.queue-item`, `.raw-editor`,
+`.btn-primary`) stay opaque, so nothing becomes unreadable.
+
+**16.3 Accessibility.** `@media (prefers-reduced-transparency: reduce)` drops
+every backdrop blur to a near-solid tint (Chromium 118+ / Qt 6.7+; a harmless
+no-op below that). The light theme raises the glass tint per level so chrome
+stays legible over bright wallpapers.
+
+**16.4 Persistence & controls.** `Settings.theme_variant` / `glass_level` /
+`wallpaper` persist through the normal settings channel; the custom wallpaper
+image is kept out of `settings.json` (a file in `user_data_root`, via the
+`set/get_wallpaper_image` bridge slots) so the settings file stays small. The
+**Settings → Appearance** card holds the variant toggle, the intensity segmented
+control, and the wallpaper picker; the appearance controls persist on
+interaction (like the top-bar ☽ toggle), not through the "Save settings" button.
+
+**16.5 Compositor resilience (binding).** Qt WebEngine's Windows compositor
+drops whole promoted layers from the **on-screen** composite when too many
+`backdrop-filter` surfaces are live at once — reproduced deterministically
+(0.5.0-beta, Settings tab at `maximal`: 6 card lenses + ~15 frosted buttons +
+both chrome bars → the top bar and tab strip rendered fully invisible, tint,
+border and labels included, while offscreen captures stayed correct; a dropped
+bar never healed because nothing re-invalidated it). A repeated-run pixel
+benchmark pinned the budget, giving three rules any Liquid-Glass change must
+keep:
+
+1. **The SVG lens is chrome-only.** `url(#lgLens*)` may appear on exactly two
+   surfaces: the top bar and the tab strip. Cards frost with native
+   `blur()/saturate()` only (8 concurrent lens surfaces still dropped layers
+   in 3/6 runs; 2 is stable at 12/12).
+2. **Layer budget.** Only the top bar, the tab strip, and (at vivid/maximal)
+   cards carry any backdrop chain. Buttons and other small, numerous controls
+   get a translucent tint — never `backdrop-filter`.
+3. **Chains live on `::before` overlays,** never on the load-bearing element:
+   a failed filter pass then costs the frost/refraction, not the bar's
+   tint/border/text. (Corollary: the whole chain moves to the overlay — an
+   element with `backdrop-filter` is a backdrop root, so a lens left on its
+   child overlay would sample the element's flat tint and refract nothing.)
+
+---
+
 ## Appendix B — Known deviations
 
 Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
@@ -945,3 +1024,4 @@ Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
 | B22 | `renderSummary`'s value-coloring used three sequential non-exclusive regex `if`s, so the later `/converged\|Normal/i` re-matched the substrings of `NOT converged` and `ABNORMAL / incomplete` — **both failure verdicts rendered green (.ok)** instead of red | D2, §12 | resolved (0.4.3-beta — exclusive else-if chain, failure patterns first) |
 | B23 | Feedback-channel conformance (§13.2): many failure call sites were single-channel — toast-only (`Couldn't read that .inp`, `Drop failed`, `Could not save settings/theme: …`, `Could not add environment: …`, reorder/remove constraints, `Copy failed`) or log-only (`Could not start: …`, `Could not generate .inp: …`); `clearQueue` failure logged at `warn` instead of `err` | §13.2, D65 | resolved (0.4.3-beta — failures route through the shared `failNotify` helper: toast + `err` log) |
 | B24 | Five 0.5.0-beta CREST/MLIP `.card-desc` strings drifted from the copy spec: the raw-`.inp` and Results descs used *job* for a queued **calculation** (§14.2 reserves *job* for the running process); the CREST-build, MLIP-environment, and CREST-settings descs were multi-sentence/imperative rather than a one-line noun-form fragment (§11.1/D70). The B20 sweep (0.4.3-beta) predates this copy. | §14, D70, §11.1 | resolved (0.5.0-beta — reworded to spec; found by a conformance review of the design previews, which confirmed the rest of the preview set is clean) |
+| B25 | The Liquid-Glass `vivid`/`maximal` intensity levels glassify the `.card` layer, crossing the "glass = chrome only; content opaque" rule (§16.1) | §16.1 | accepted (0.5.0-beta — opt-in exploratory extremes at the top of the intensity ladder; the recommended `restrained`/`moderate`/`bold` levels keep content opaque, and inner data surfaces stay opaque even at `maximal`) |

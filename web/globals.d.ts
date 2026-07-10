@@ -15,6 +15,8 @@ interface OrcaBridge {
   get_about(): Promise<string>;
   get_settings(): Promise<string>;
   save_settings(payloadJson: string): Promise<string>;
+  set_wallpaper_image(dataUri: string): Promise<string>;   // {ok, stored} JSON; stored=false when ""/invalid/oversize (cleared)
+  get_wallpaper_image(): Promise<string>;                   // bare data-URI string ("" = none)
   autodetect_orca(): Promise<string>;          // AutodetectResult JSON (mutates settings on success)
   // MLIP environments (separate from ORCA; one env per MLIP)
   pick_mlip_python(): Promise<string>;         // raw path string

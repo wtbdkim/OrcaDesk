@@ -14,6 +14,21 @@ ensemble in the Results tab, from which selected conformers are re-optimized wit
 ORCA in one action.
 
 ### Added
+- **Liquid Glass theme.** A second theme *style*, selectable in **Settings →
+  Appearance** alongside the default **shadcn (flat)** look: **Liquid Glass**
+  (Apple "Liquid Glass", WWDC25) floats a refracting frosted top bar and tab
+  strip — and, at the top intensities, cards — over a wallpaper. It is
+  orthogonal to light/dark (both work in either). A **Glass intensity** control
+  offers five levels — **Restrained → Moderate → Bold → Vivid → Maximal** (rising
+  blur / refraction, mapping to the design2..design6 previews); Restrained→Bold
+  keep content opaque (recommended for readability), Vivid/Maximal also glassify
+  cards and add chromatic dispersion. A **Wallpaper** picker offers six
+  procedural presets (aurora / aqua / sunset / grape / graphite / ocean) plus a
+  custom-image upload; the glass chrome refracts it. shadcn stays the default and
+  is untouched (the whole Liquid-Glass CSS layer is gated on the variant). Honors
+  `prefers-reduced-transparency`. New settings `theme_variant` / `glass_level` /
+  `wallpaper` (the custom image is stored beside the app, not in `settings.json`).
+  See DESIGN.md §16.
 - **Export CREST conformers as separate `.xyz` files.** The Results tab's
   conformer list gains an **Export as .xyz** button: it splits the run's
   `crest_conformers.xyz` into one standalone file per conformer (verbatim — atom
@@ -174,6 +189,18 @@ ORCA in one action.
   default) and validated/clamped at the deserialization boundary.
 
 ### Fixed
+- **Liquid Glass no longer loses the top bar / tab strip.** With enough
+  backdrop-filter surfaces on one tab (the Settings or Build tab at
+  Vivid/Maximal: card lenses + frosted buttons + both chrome bars), Qt
+  WebEngine's Windows compositor dropped whole promoted layers from the
+  on-screen composite — the tab strip (and sometimes the top bar) rendered
+  fully invisible and stayed that way, since nothing re-invalidated it.
+  Reproduced deterministically and fixed by a layer-budget redesign
+  (DESIGN.md §16.5): the SVG refraction lens is now chrome-only (cards frost
+  with native blur), buttons get a glass tint instead of a backdrop filter,
+  and every backdrop chain moved to a decorative `::before` overlay so a
+  failed filter pass can no longer take a bar's tint/border/text with it.
+  Verified 12/12 clean runs on the previously 6/6-failing reproducer.
 - **Loading a `.xyz` no longer moves the workspace.** The geometry loaders used
   to adopt the loaded file's parent folder as the workspace. Because an
   optimization writes its result `.opt.xyz` inside the calc's own run folder

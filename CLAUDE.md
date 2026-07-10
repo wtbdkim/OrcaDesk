@@ -468,6 +468,25 @@ them there.
   declares the Qt/bridge environment (incl. every slot's signature). When you add
   or change a payload or slot, update both, and keep
   `npx -p typescript tsc --noEmit -p jsconfig.json` at zero errors.
+- **Theme variants (shadcn / Liquid Glass).** Orthogonal to light/dark, the UI
+  has a second *variant* selected by `html[data-theme-variant]` (`shadcn`, the
+  flat default, or `liquidglass`) plus an intensity `html[data-glass]`
+  (`restrained`/`moderate`/`bold`/`vivid`/`maximal`, mapping to the design2..6
+  previews). `applyThemeVariant` in `app.js` flips those attributes; the whole
+  Liquid-Glass CSS layer (an `--lg-*` token group + refracting `backdrop-filter:
+  url(#lgLens*)` chrome over a `<canvas id="lgWall">` wallpaper) is **gated on
+  those attributes**, so shadcn is untouched when off. Persisted as
+  `Settings.theme_variant` / `glass_level` / `wallpaper`; the custom wallpaper
+  image is stored outside `settings.json` (a `user_data_root` file via the
+  `set_wallpaper_image` / `get_wallpaper_image` bridge slots) to keep the settings
+  file small. Controls live in **Settings → Appearance** and persist on
+  interaction (like the ☽ light/dark toggle). **Compositor resilience is
+  binding** (DESIGN.md §16.5): the SVG lens is chrome-only (top bar + tab strip;
+  cards frost with native blur), small/numerous controls never get
+  `backdrop-filter` (tint only), and every backdrop chain lives on a `::before`
+  overlay, not the load-bearing element — too many backdrop layers made Qt
+  WebEngine drop the chrome bars from the on-screen composite (the 0.5.0-beta
+  invisible-tab-strip bug). Full spec: DESIGN.md §16.
 - ORCA defaults (functional `wB97X-D4`, basis `def2-TZVP`, `RIJCOSX`, aux `def2/J`)
   live in `input_generator.py`.
 - Option lists in `data/*.json` are sourced from the ORCA 6.1.1 manual; method fields

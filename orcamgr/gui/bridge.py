@@ -8,7 +8,8 @@ QTimer in JS — this keeps the store's worker thread and Qt's UI thread cleanly
 separated (no cross-thread Qt signal juggling).
 
 JS calls these slots:
-  get_about, get_settings, save_settings, autodetect_orca,
+  get_about, get_settings, save_settings,
+  set_wallpaper_image, get_wallpaper_image, autodetect_orca,
   pick_orca_executable, pick_mlip_python, add_mlip_env, remove_mlip_env,
   check_mlip, get_mlip_status,
   pick_workspace, load_xyz_file, load_inp_file,
@@ -41,7 +42,7 @@ from ..crest.env import (
     probe_all as crest_probe_all, aggregate_status as crest_aggregate_status,
 )
 from ..crest.wsl import list_distros as crest_list_distros
-from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL
+from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL, user_data_root
 from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import GeometrySource, CalcState, result_from_output
 from ..core.parser import parse_file
@@ -137,6 +138,9 @@ class Bridge(QObject):
             default_nprocs=self.settings.default_nprocs,
             default_maxcore_mb=self.settings.default_maxcore_mb,
             theme=self.settings.theme,
+            theme_variant=self.settings.theme_variant,
+            glass_level=self.settings.glass_level,
+            wallpaper=self.settings.wallpaper,
             eta_mode=self.settings.eta_mode,
             geo_graph_mode=self.settings.geo_graph_mode,
             build_mode=self.settings.build_mode,
@@ -163,10 +167,75 @@ class Bridge(QObject):
             # build-tab mode: only accept known values
             if "build_mode" in data and data["build_mode"] in ("beginner", "expert", "mlip", "crest"):
                 self.settings.build_mode = data["build_mode"]
+            # theme variant: shadcn (flat default) or liquidglass
+            if "theme_variant" in data and data["theme_variant"] in ("shadcn", "liquidglass"):
+                self.settings.theme_variant = data["theme_variant"]
+            # Liquid-Glass intensity
+            if "glass_level" in data and data["glass_level"] in (
+                    "restrained", "moderate", "bold", "vivid", "maximal"):
+                self.settings.glass_level = data["glass_level"]
+            # Liquid-Glass wallpaper key (preset or "custom"); the custom image
+            # itself is written separately via set_wallpaper_image
+            if "wallpaper" in data and data["wallpaper"] in (
+                    "aurora", "aqua", "sunset", "grape", "graphite", "ocean", "custom"):
+                self.settings.wallpaper = data["wallpaper"]
             self.settings.save()
             return self.get_settings()
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             return json.dumps(ErrorPayload(error=str(e)))
+
+    # --- Liquid-Glass custom wallpaper ---
+    # The custom wallpaper image is kept OUT of settings.json (which is rewritten
+    # on every queue mutation and would otherwise carry a multi-MB base64 blob).
+    # It lives as a verbatim data-URI text file in user_data_root, robustly
+    # persisted across restarts (unlike the WebEngine profile's localStorage,
+    # whose persistence depends on the profile being on-the-record).
+    _WALLPAPER_MAX = 24 * 1024 * 1024   # 24 MB data-URI ceiling (~18 MB image)
+
+    def _wallpaper_file(self) -> Path:
+        return user_data_root() / "wallpaper_custom.dat"
+
+    @pyqtSlot(str, result=str)
+    def set_wallpaper_image(self, data_uri: str) -> str:
+        """Persist (or, with ""/oversize input, clear) the Liquid-Glass custom
+        wallpaper image as a data URI. Does not touch settings.wallpaper — the
+        caller also save_settings({wallpaper:"custom"}). Returns {"ok": true,
+        "stored": bool}: `stored` is False when the input was empty / not an
+        image / over the size cap (so the file was cleared, not written) — the
+        front-end uses it to warn that an oversize image won't persist rather
+        than losing it silently at the next launch."""
+        try:
+            path = self._wallpaper_file()
+            text = data_uri or ""
+            if not text.startswith("data:image/") or len(text) > self._WALLPAPER_MAX:
+                # empty / invalid / too large -> clear any stored image
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                return json.dumps({"ok": True, "stored": False})
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(path)
+            return json.dumps({"ok": True, "stored": True})
+        except OSError as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+
+    @pyqtSlot(result=str)
+    def get_wallpaper_image(self) -> str:
+        """The stored custom-wallpaper data URI, or "" if none. Returned as a
+        bare string (not a JSON envelope) — the front-end feeds it straight to
+        an Image src, and "" simply means 'fall back to a preset'."""
+        try:
+            path = self._wallpaper_file()
+            if path.exists():
+                return path.read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            # ValueError covers UnicodeDecodeError (a corrupt/non-UTF-8 file from
+            # external tampering) — degrade to "" like Settings.load(), never let
+            # it escape the slot across the Qt boundary.
+            pass
+        return ""
 
     @pyqtSlot(result=str)
     def autodetect_orca(self) -> str:

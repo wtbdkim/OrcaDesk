@@ -100,8 +100,11 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   spectra); numerical frequencies keep a displacement progress bar. A
   `s / SCF cycle` pace readout and a "jump to latest" button keep long runs
   readable.
-- **Theme**: toggle **dark / light** from the top bar (☀/☽); the choice is
-  remembered across launches.
+- **Theme**: toggle **dark / light** from the top bar (☀/☽), and pick a theme
+  *style* in **Settings → Appearance** — the default **shadcn (flat)** look or
+  **Liquid Glass** (a refracting frosted top bar / tabs over a wallpaper, five
+  intensity levels + six wallpaper presets or a custom image). Both styles work
+  in dark and light; the choice is remembered across launches.
 - **Results**: per-calculation summary plus every value the parser extracts —
   final geometry (with *Copy .xyz*), orbital energies (HOMO/LUMO), Mulliken &
   Löwdin charges, Mayer bond orders/valences, dipole moment, rotational

@@ -96,7 +96,10 @@ class SettingsPayload(TypedDict):
     workspace_root: str
     default_nprocs: int
     default_maxcore_mb: int
-    theme: str
+    theme: str                # "dark" | "light"
+    theme_variant: str        # "shadcn" | "liquidglass"
+    glass_level: str          # restrained|moderate|bold|vivid|maximal (liquidglass)
+    wallpaper: str            # aurora|aqua|sunset|grape|graphite|ocean|custom
     eta_mode: str             # "conservative" | "eager"
     geo_graph_mode: str       # "all5" | "maxgrad"
     build_mode: str           # "beginner" | "expert" | "mlip" | "crest"

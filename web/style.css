@@ -678,3 +678,253 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
   max-height: 60vh; overflow: auto; white-space: pre; tab-size: 2;
 }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+
+/* ============================================================
+   Liquid Glass theme variant  (Apple "Liquid Glass" — WWDC25)
+
+   A second *variant* of the theme, orthogonal to light/dark: the flat "shadcn"
+   look is the default; "liquidglass" renders a refracting frosted top bar / tab
+   strip (and, at the extreme levels, cards) floating over a wallpaper the glass
+   chrome refracts. Governing rule (from the design research): glass = floating
+   CHROME only; content stays opaque so a data-dense app stays legible — honored
+   at restrained/moderate/bold. vivid/maximal deliberately glassify the card
+   layer too (the exploratory extreme), but inner data surfaces (inputs, the log
+   terminal, queue rows, the plot canvas) stay opaque regardless.
+
+   ENTIRELY gated on html[data-theme-variant="liquidglass"] — under the default
+   shadcn variant not one rule below applies, so that look is untouched. The five
+   intensities map to the design2..design6 previews and are selected with
+   html[data-glass="restrained|moderate|bold|vivid|maximal"]. The refraction
+   itself is a Chromium-only backdrop-filter: url(#lgLens*) chain (the app IS Qt
+   WebEngine / Chromium); prefers-reduced-transparency drops it. Tokens keep the
+   shared names and add an --lg-* group for both light and dark. See DESIGN.md §16.
+
+   RESILIENCE RULES (§16.5) — from a reproduced QtWebEngine compositor failure
+   (the reported "tab strip invisible" bug): when a tab showed enough
+   backdrop-filter surfaces at once (6+ card lenses + 10-20 frosted buttons +
+   the two chrome bars, Settings at maximal), the on-screen composite DROPPED
+   whole promoted layers — top bar and tab strip gone: tint, border, labels —
+   while offscreen captures stayed correct; a dropped layer never healed
+   because nothing re-invalidated the bars. Deterministic repro; same failure
+   family as Anki #4470 (QtWebEngine Windows, backdrop-filter layers corrupt
+   under GPU contention), and the SVG-reference chain is Chromium's "may
+   render some cases" path (w3c/svgwg#1142). Hence three binding rules,
+   validated by a repeated-run benchmark (6/6 broken before; 6/6 clean after):
+   1. THE SVG LENS IS CHROME-ONLY: url(#lgLens*) may appear on exactly two
+      surfaces — the top bar and the tab strip. Cards frost with native
+      blur()/saturate() only; with the lens on 8 surfaces the compositor
+      dropped whole layers (3/6 runs even after the other two rules).
+   2. BACKDROP-FILTER LAYER BUDGET: only the top bar, the tab strip, and (at
+      vivid/maximal) cards may carry a backdrop chain at all. Buttons and other
+      small/numerous controls get translucent tint only — never backdrop-filter.
+   3. A chain never sits on the load-bearing element itself — always on its
+      decorative ::before overlay — so a failed filter pass costs the
+      frost/refraction, not the bar's tint/border/text.
+   ============================================================ */
+
+/* ---- Liquid-Glass tokens (dark base) ---- */
+html[data-theme-variant="liquidglass"] {
+  --lg-rgb: 34 40 56;                       /* the glass tint color, space-separated for rgb( / a) */
+  --lg-edge: rgba(255,255,255,.17);         /* hairline rim */
+  --lg-hi: rgba(255,255,255,.52);           /* inner top highlight */
+  --lg-shadow: 0 15px 43px rgba(0,0,0,.48); /* floating drop shadow */
+  /* defaults == moderate; each [data-glass] below overrides the varying four */
+  --lg-tint: .56; --lg-blur: 18px; --lg-sat: 180%; --lg-lens: url(#lgLens3);
+  --lg-cardtint: .60;
+  /* a deep page color BEHIND the wallpaper canvas — prevents a flash before the
+     canvas paints, and shows if the canvas ever fails to render */
+  background: #07080c;
+}
+html[data-theme-variant="liquidglass"][data-theme="light"] {
+  --lg-rgb: 255 255 255;
+  --lg-edge: rgba(255,255,255,.72);
+  --lg-hi: rgba(255,255,255,.88);
+  --lg-shadow: 0 12px 38px rgba(20,28,50,.18);
+  background: #e9ebf1;
+}
+
+/* ---- per-intensity: the four varying knobs (tint / blur / saturation / lens) ---- */
+html[data-theme-variant="liquidglass"][data-glass="restrained"] { --lg-tint:.50; --lg-blur:13px; --lg-sat:170%; --lg-lens:url(#lgLens2); }
+html[data-theme-variant="liquidglass"][data-glass="moderate"]   { --lg-tint:.56; --lg-blur:18px; --lg-sat:180%; --lg-lens:url(#lgLens3); }
+html[data-theme-variant="liquidglass"][data-glass="bold"]       { --lg-tint:.62; --lg-blur:24px; --lg-sat:188%; --lg-lens:url(#lgLens4); }
+html[data-theme-variant="liquidglass"][data-glass="vivid"]      { --lg-tint:.66; --lg-blur:30px; --lg-sat:195%; --lg-lens:url(#lgLens5); --lg-cardtint:.72; }
+html[data-theme-variant="liquidglass"][data-glass="maximal"]    { --lg-tint:.72; --lg-blur:38px; --lg-sat:205%; --lg-lens:url(#lgLensD); --lg-cardtint:.50; }
+/* light wallpapers need a touch more tint to keep chrome legible (design light values) */
+html[data-theme-variant="liquidglass"][data-theme="light"][data-glass="restrained"] { --lg-tint:.58; }
+html[data-theme-variant="liquidglass"][data-theme="light"][data-glass="moderate"]   { --lg-tint:.63; }
+html[data-theme-variant="liquidglass"][data-theme="light"][data-glass="bold"]       { --lg-tint:.68; }
+html[data-theme-variant="liquidglass"][data-theme="light"][data-glass="vivid"]      { --lg-tint:.72; --lg-cardtint:.78; }
+html[data-theme-variant="liquidglass"][data-theme="light"][data-glass="maximal"]    { --lg-tint:.78; --lg-cardtint:.60; }
+
+/* ---- wallpaper canvas: a viewport-fixed layer BEHIND everything, painted by
+   app.js (procedural presets or a custom image). In the DOM always, but shown
+   only under liquidglass. ---- */
+#lgWall {
+  position: fixed; inset: 0; width: 100vw; height: 100vh;
+  /* z-index 0 (NOT -1): a z-index:-1 fixed background is a known Qt WebEngine /
+     Chromium GPU-compositing hazard — on some GPUs the negative layer is
+     mis-ordered and paints OVER the content (offscreen capture composites it
+     correctly, so it only shows on-screen). Instead the canvas sits at 0 and
+     the app content is lifted to its own layer at z-index 1 below. */
+  z-index: 0; display: none; pointer-events: none;
+}
+html[data-theme-variant="liquidglass"] #lgWall { display: block; }
+/* let the canvas show through the app shell (chrome + gutters); content cards
+   keep their own opaque surface at restrained/moderate/bold */
+html[data-theme-variant="liquidglass"] body,
+html[data-theme-variant="liquidglass"] .tab-content { background: transparent; }
+/* content in its OWN stacking layer explicitly ABOVE the wallpaper canvas, so
+   the GPU compositor always paints it over the canvas (transparent, so the
+   canvas still shows through the gutters and refracts under the glass chrome) */
+html[data-theme-variant="liquidglass"] .app {
+  position: relative; z-index: 1; background: transparent;
+}
+
+/* ---- resilience: the backdrop chain lives on a ::before overlay, never on
+   the chrome element itself. A promoted backdrop-filter layer can compose
+   EMPTY on screen (GPU raster failure under load — observed once on Intel Arc
+   as a fully invisible tab strip; offscreen capture was correct, and the layer
+   never healed because nothing re-invalidated it). With the chain on a
+   decorative overlay, that failure mode costs the frost/refraction only — the
+   element's tint/border/text paint in the main content layer and survive.
+   The WHOLE chain moves (not just the lens): an element with backdrop-filter
+   is itself a backdrop root, so a lens left on a child overlay would sample
+   the element's flat tint instead of the wallpaper and refract nothing. ---- */
+html[data-theme-variant="liquidglass"] .topbar::before,
+html[data-theme-variant="liquidglass"] .tabs::before,
+html[data-theme-variant="liquidglass"]:is([data-glass="vivid"],[data-glass="maximal"]) .card::before {
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  border-radius: inherit;
+}
+
+/* ---- glass top bar (all levels) ---- */
+html[data-theme-variant="liquidglass"] .topbar {
+  position: relative; z-index: 2;
+  background: rgb(var(--lg-rgb) / var(--lg-tint));
+  border-bottom: 1px solid var(--lg-edge);
+}
+html[data-theme-variant="liquidglass"] .topbar::before {
+  -webkit-backdrop-filter: var(--lg-lens) blur(var(--lg-blur)) saturate(var(--lg-sat));
+          backdrop-filter: var(--lg-lens) blur(var(--lg-blur)) saturate(var(--lg-sat));
+}
+/* top bar floats (rounded, inset from the edges) at the vivid/maximal end */
+html[data-theme-variant="liquidglass"]:is([data-glass="vivid"],[data-glass="maximal"]) .topbar {
+  border: 1px solid var(--lg-edge); border-radius: 18px; margin: 8px 12px 0;
+  box-shadow: var(--lg-shadow), inset 0 1px 0 var(--lg-hi);
+}
+
+/* ---- glass tab strip: a quiet frosted blur at restrained; the refracting lens
+   (+ inset highlight) from moderate up; a floating rounded bar from bold up ---- */
+html[data-theme-variant="liquidglass"] .tabs {
+  position: relative; z-index: 2;
+  background: rgb(var(--lg-rgb) / .52);
+  border-bottom: 1px solid var(--lg-edge);
+}
+html[data-theme-variant="liquidglass"] .tabs::before {
+  -webkit-backdrop-filter: blur(11px) saturate(160%);
+          backdrop-filter: blur(11px) saturate(160%);
+}
+html[data-theme-variant="liquidglass"]:is([data-glass="moderate"],[data-glass="bold"],[data-glass="vivid"],[data-glass="maximal"]) .tabs {
+  box-shadow: inset 0 1px 0 var(--lg-hi);
+}
+html[data-theme-variant="liquidglass"]:is([data-glass="moderate"],[data-glass="bold"],[data-glass="vivid"],[data-glass="maximal"]) .tabs::before {
+  -webkit-backdrop-filter: var(--lg-lens) blur(var(--lg-blur)) saturate(var(--lg-sat));
+          backdrop-filter: var(--lg-lens) blur(var(--lg-blur)) saturate(var(--lg-sat));
+}
+html[data-theme-variant="liquidglass"]:is([data-glass="bold"],[data-glass="vivid"],[data-glass="maximal"]) .tabs {
+  border: 1px solid var(--lg-edge); border-radius: 16px; margin: 8px 14px 2px;
+  box-shadow: var(--lg-shadow), inset 0 1px 0 var(--lg-hi);
+}
+
+/* ---- content becomes glass ONLY at vivid/maximal (crosses the recommended
+   chrome-only line). Cards + secondary buttons glassify; primary buttons and
+   inner data surfaces (inputs, .log-box, .scf-panel, .queue-item, .raw-editor)
+   deliberately stay opaque so the app never turns unreadable. ---- */
+html[data-theme-variant="liquidglass"]:is([data-glass="vivid"],[data-glass="maximal"]) .card {
+  /* isolation makes the card a stacking context so its glass overlay (z -1)
+     stays above the card's own tint and can't slip under sibling panels */
+  position: relative; isolation: isolate;
+  background: rgb(var(--lg-rgb) / var(--lg-cardtint));
+  border: 1px solid var(--lg-edge);
+  box-shadow: var(--lg-shadow), inset 0 1px 0 var(--lg-hi);
+}
+/* cards frost with NATIVE blur only — no --lg-lens. The SVG displacement lens
+   is the compositor's fragile path: with the lens on 8 surfaces (chrome + 6
+   cards) the on-screen composite dropped whole layers (benchmarked 6/6 broken
+   pre-fix, 3/6 with 8 lens layers, 6/6 clean with the lens confined to the two
+   chrome bars). Refraction is the chrome's signature anyway; cards keep frost. */
+html[data-theme-variant="liquidglass"]:is([data-glass="vivid"],[data-glass="maximal"]) .card::before {
+  -webkit-backdrop-filter: blur(22px) saturate(var(--lg-sat));
+          backdrop-filter: blur(22px) saturate(var(--lg-sat));
+}
+/* secondary buttons: glass TINT only — deliberately NO backdrop-filter. Every
+   backdrop-filter is a composited render pass, and a busy tab (Settings/Build)
+   has 10-20 secondary buttons; together with the card lenses that blew past the
+   compositor's render-pass budget and QtWebEngine dropped whole promoted layers
+   from the on-screen composite (the top bar + tab strip — the reported bug,
+   reproduced deterministically on the Settings tab at maximal). Buttons sit on
+   already-frosted cards, so per-button frost is imperceptible anyway. */
+html[data-theme-variant="liquidglass"]:is([data-glass="vivid"],[data-glass="maximal"]) .btn:not(.btn-primary) {
+  background: rgb(var(--lg-rgb) / .55);
+  border: 1px solid var(--lg-edge); box-shadow: inset 0 1px 0 var(--lg-hi);
+}
+
+/* ---- accessibility: honor prefers-reduced-transparency (Chromium 118+ / Qt
+   6.7+; harmless no-op below that). Drop every backdrop blur to a near-solid
+   tint so nothing depends on translucency. ---- */
+@media (prefers-reduced-transparency: reduce) {
+  /* chrome glassifies at every level -> flatten at every level */
+  html[data-theme-variant="liquidglass"] .topbar,
+  html[data-theme-variant="liquidglass"] .tabs,
+  /* cards + secondary buttons glassify ONLY at vivid/maximal, so flatten only
+     there — restrained/moderate/bold keep their normal opaque shadcn surfaces
+     (else the accessibility flag alone would repaint every card the glass tint) */
+  html[data-theme-variant="liquidglass"]:is([data-glass="vivid"],[data-glass="maximal"]) .card,
+  html[data-theme-variant="liquidglass"]:is([data-glass="vivid"],[data-glass="maximal"]) .btn:not(.btn-primary) {
+    -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+    background: rgb(var(--lg-rgb) / .96) !important;
+  }
+  /* the backdrop chains live on the ::before overlays — drop those too */
+  html[data-theme-variant="liquidglass"] .topbar::before,
+  html[data-theme-variant="liquidglass"] .tabs::before,
+  html[data-theme-variant="liquidglass"]:is([data-glass="vivid"],[data-glass="maximal"]) .card::before {
+    display: none !important;
+  }
+}
+
+/* ---- Settings → Appearance: theme-variant + intensity + wallpaper controls ---- */
+.appearance-variant { display: flex; gap: 8px; margin-bottom: 4px; }
+.appearance-variant .btn { flex: 1; justify-content: center; }
+.appearance-variant .btn.on {
+  background: var(--accent); color: var(--foreground); border-color: var(--ring);
+}
+/* rows shown only while liquidglass is the chosen variant */
+.lg-only { margin-top: 16px; }
+.lg-level-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.lg-level-row button {
+  flex: 1 1 0; min-width: 84px;
+  font-family: inherit; font-size: 12px; font-weight: 600; padding: 7px 8px;
+  border: 1px solid var(--border); background: var(--card); color: var(--muted-foreground);
+  border-radius: var(--radius-sm); cursor: pointer; transition: background .12s, color .12s;
+}
+.lg-level-row button:hover { color: var(--foreground); background: var(--accent); }
+.lg-level-row button.on { background: var(--accent); color: var(--foreground); border-color: var(--ring); }
+.lg-wall-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+.lg-wall-sw {
+  width: 74px; height: 46px; border-radius: var(--radius-sm); cursor: pointer;
+  border: 1px solid var(--border); padding: 0;
+  background-size: cover; background-position: center;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22);
+  position: relative;
+}
+.lg-wall-sw.on { outline: 2px solid var(--ring); outline-offset: 2px; }
+.lg-wall-sw.up {
+  display: grid; place-items: center; font-size: 20px; line-height: 1;
+  color: var(--muted-foreground); border-style: dashed; background-color: var(--input-bg);
+}
+.lg-wall-label {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  font-size: 9px; font-weight: 600; text-align: center; padding: 2px 0;
+  color: #fff; background: rgba(0,0,0,.35); border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  text-transform: capitalize; letter-spacing: .02em;
+}

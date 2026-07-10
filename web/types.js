@@ -189,6 +189,9 @@
  * @property {number} default_nprocs
  * @property {number} default_maxcore_mb
  * @property {string} theme
+ * @property {"shadcn"|"liquidglass"} theme_variant
+ * @property {"restrained"|"moderate"|"bold"|"vivid"|"maximal"} glass_level
+ * @property {string} wallpaper     aurora|aqua|sunset|grape|graphite|ocean|custom
  * @property {"conservative"|"eager"} eta_mode
  * @property {"all5"|"maxgrad"} geo_graph_mode
  * @property {"beginner"|"expert"|"mlip"|"crest"} build_mode

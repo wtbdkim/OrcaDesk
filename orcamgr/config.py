@@ -91,6 +91,24 @@ class Settings:
     default_nprocs: int = 6
     default_maxcore_mb: int = 2400
     theme: str = "dark"
+    # Theme *variant*, orthogonal to `theme` (light/dark): "shadcn" is the flat
+    # default; "liquidglass" renders the Apple Liquid-Glass chrome (a refracting
+    # frosted top bar / tabs over a wallpaper). Each variant works in both light
+    # and dark. The whole Liquid-Glass CSS layer is gated on this — shadcn users
+    # are untouched. See web/style.css and DESIGN.md §16.
+    theme_variant: str = "shadcn"
+    # Liquid-Glass intensity, meaningful only when theme_variant=="liquidglass":
+    # restrained|moderate|bold|vivid|maximal — rising blur / refraction / glass
+    # surface count (maps to the design2..design6 previews). restrained/moderate/
+    # bold keep content opaque (glass = chrome only); vivid/maximal also glassify
+    # the card layer (the exploratory extreme).
+    glass_level: str = "moderate"
+    # Liquid-Glass wallpaper key: one of the built-in procedural presets
+    # (aurora|aqua|sunset|grape|graphite|ocean) or "custom". The custom image
+    # itself is NOT stored here (it would bloat settings.json, which is rewritten
+    # on every queue mutation) — it lives in a dedicated file in user_data_root,
+    # written/read via the Bridge's set/get_wallpaper_image slots.
+    wallpaper: str = "aurora"
     # opt ETA prediction mode: "conservative" (predict only when confident) or
     # "eager" (predict earlier / more often, may be less accurate)
     eta_mode: str = "conservative"
