@@ -189,6 +189,63 @@ ORCA in one action.
   default) and validated/clamped at the deserialization boundary.
 
 ### Fixed
+- **Changing the calculation Type no longer silently resets fields the user
+  set.** The method form re-render now preserves the kind-independent
+  resources (**maxcore**, **nprocs**) and the numeric fields shared between
+  kinds (**MaxIter** across the opt kinds; **Temperature/Pressure** across the
+  freq kinds — previously e.g. freq → opt+freq quietly dropped a 310.15 K
+  setting back to 298.15 K, and since the default omits the `%freq` block the
+  loss was invisible in the `.inp`). **SCF convergence** and **Extra options**
+  are preserved kind-awarely: an explicit user override survives every switch,
+  while an untouched default still follows the new kind — so switching to
+  NEB-TS regains its default `FREQ` option (previously it was clobbered by the
+  old kind's empty options, silently skipping the one-imaginary-frequency TS
+  validation) and opt → freq still bumps TightSCF → VeryTightSCF.
+- **Raw NEB-TS runs get the same pre-launch guards as form runs.** A raw
+  calc whose text keeps the generated `NEB_End_XYZFile "product.xyz"`
+  reference but has no stored product geometry now fails fast with a clear
+  message instead of launching ORCA doomed (or silently reusing a stale
+  `product.xyz` left in the folder by an earlier same-named run; pointing the
+  file at your own path remains allowed). When a product *is* stored, the
+  reactant/product atom-order check now runs for raw calcs too — against the
+  coordinate block that actually executes (the rendered text).
+- **NEB product state can no longer desync from the UI.** Editing a calc
+  syncs the stored product unconditionally, so a product-less calc can't
+  silently inherit the previously handled calc's product on Update; a kind
+  round-trip (NEB-TS → other → NEB-TS) no longer shows "no product loaded"
+  while a loaded product silently stays in effect; and re-loading the
+  *reactant* re-runs the reactant/product match check, so a stale green
+  "✓ match" can't survive a mismatched replacement. Adding a raw NEB-TS that
+  references `product.xyz` without a loaded product is refused at Add time.
+- **"Keep existing (skip these)" no longer adopts a foreign result.**
+  Workspace folders are never deleted, so a new calc reusing a removed calc's
+  name could be stamped DONE with the *old* calc's energies/geometry. The
+  keep-existing path now verifies the on-disk result structurally belongs to
+  the calc (atom element sequence) and falls back to running on mismatch.
+- **IRC "read from .hess file" is honored, staged, or refused — never
+  silently substituted.** A blank filename used to silently generate
+  `InitHess calc_anfreq` (a different, potentially far more expensive method);
+  it is now refused at Add time and at the generator. A named `.hess` that
+  isn't in the run folder is auto-copied from the referenced calc's folder
+  before launch; if it can't be found, the run fails fast with the paths it
+  looked in, instead of a cryptic ORCA abort.
+- **The queue's "view input" shows the input that will actually run.** For a
+  still-editable calc (pending/cancelled/blocked) the preview is now built
+  from the calc itself first — previously a leftover `.inp` from a removed
+  same-named calc was shown as if it were this calc's input. Running/finished
+  calcs still show the on-disk file that actually launched.
+- **Raw-mode geometry can no longer silently desync from the text.** Loading
+  a `.xyz` while editing raw input without a `{{GEOMETRY}}` placeholder is
+  refused (the embedded `* xyz` block runs verbatim — the loaded file was
+  stored but ignored); editing a *reference*-geometry calc clears the leftover
+  direct-geometry state, so flipping the edit to Direct can't silently adopt
+  another calc's coordinates; and a raw calc's queue row now shows the
+  charge/multiplicity from its own `* xyz C M` (or `* xyzfile C M`) line,
+  not the hidden form fields' 0/1.
+- **A frequency Temperature/Pressure of exactly 0 is no longer coerced back
+  to the default.** The form reader treated 0 as "unset" (falsy), so a 0 K
+  request (ZPE-only thermochemistry) silently became 298.15 K with no trace
+  in the `.inp`.
 - **Liquid Glass no longer loses the top bar / tab strip.** With enough
   backdrop-filter surfaces on one tab (the Settings or Build tab at
   Vivid/Maximal: card lenses + frosted buttons + both chrome bars), Qt

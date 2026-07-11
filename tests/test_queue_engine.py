@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from orcamgr.core.input_generator import StepConfig
 from orcamgr.core.parser import ParseResult
 from orcamgr.core.queue import (
@@ -287,6 +289,9 @@ def _write_out(tmp_path, name: str, text: str) -> Path:
 def test_keep_existing_valid_output_is_kept_without_running(tmp_path):
     harness = EngineHarness(tmp_path, skip_names={"keepme"})
     calc = make_calc("keepme", kind="opt")
+    # the kept result must structurally belong to this calc (identity check):
+    # match the H2 geometry the synthetic .out reports
+    calc.xyz = "H 0.0 0.0 0.0\nH 0.0 0.0 0.74"
     out_path = _write_out(tmp_path, "keepme", PASSING_OPT_OUT)
 
     harness.engine.run_all([calc])
@@ -333,6 +338,22 @@ def test_keep_existing_missing_output_falls_back_to_running(tmp_path):
     assert harness.calls == ["keepme"]
     assert calc.state is CalcState.DONE
     assert "no existing result found" in harness.log_text()
+
+
+def test_keep_existing_result_for_different_structure_reruns(tmp_path):
+    # Workspace folders are never deleted and names are only unique within the
+    # current queue: a NEW calc reusing a removed calc's name must not adopt
+    # the old .out as its own result. Identity = atom element sequence.
+    harness = EngineHarness(tmp_path, skip_names={"keepme"})
+    calc = make_calc("keepme", kind="opt")
+    calc.xyz = "O 0.0 0.0 0.0"                    # a different molecule than the .out's H2
+    _write_out(tmp_path, "keepme", PASSING_OPT_OUT)
+
+    harness.engine.run_all([calc])
+
+    assert harness.calls == ["keepme"]            # honest fallback: it ran
+    assert calc.state is CalcState.DONE
+    assert "different structure" in harness.log_text()
 
 
 # ---- failure diagnosis: a stale .out must not mask a pre-launch error (A22) -------
@@ -431,3 +452,187 @@ def test_mlip_kind_routes_to_mlip_pipeline_not_orca(tmp_path):
     assert harness.calls == ["orca_job"]          # ORCA pipeline
     assert mlip_calls == ["mlip_job"]             # MLIP pipeline
     assert mlip_job.state is CalcState.DONE
+
+
+# ---- real _run_calc pre-launch guards (NEB-TS side files, IRC hessian) -------------
+# These exercise the REAL _run_calc up to (but never past) runner.launch: the
+# sentinel runner turns any launch attempt into a distinct exception, so a test
+# can assert both "failed before launch" and "got past the guards".
+class _LaunchAttempted(Exception):
+    """Sentinel: _run_calc passed its pre-launch guards and tried to launch."""
+
+
+class _SentinelRunner:
+    def launch(self, inp_path, out_path):
+        raise _LaunchAttempted()
+
+
+def _real_engine(tmp_path) -> QueueEngine:
+    engine = QueueEngine(orca_path="orca-not-needed-in-tests",
+                         workspace_root=str(tmp_path))
+    engine.runner = _SentinelRunner()
+    return engine
+
+
+RAW_NEB_TEMPLATE = """\
+! wB97X-D4 def2-TZVP NEB-TS
+%neb
+  NEB_End_XYZFile "product.xyz"
+  Nimages 8
+end
+* xyz 0 1
+{coords}
+*
+"""
+
+
+def _raw_neb_calc(name: str, coords: str = "H 0.0 0.0 0.0\nO 0.0 0.0 1.0",
+                  product: str = "") -> Calculation:
+    calc = Calculation(name=name, kind="neb_ts",
+                       config=StepConfig(kind="neb_ts", neb_product_xyz=product))
+    calc.is_raw = True
+    calc.raw_text = RAW_NEB_TEMPLATE.format(coords=coords)
+    calc.xyz = ""   # hand-pasted raw input: coordinates live only in the text
+    calc.state = CalcState.PENDING
+    return calc
+
+
+def test_raw_neb_without_stored_product_fails_before_launch(tmp_path):
+    # The raw text keeps the generated "product.xyz" reference but no product
+    # geometry is stored: launching would fail cryptically inside ORCA — or
+    # silently reuse a stale product.xyz left by an earlier same-named run.
+    engine = _real_engine(tmp_path)
+    calc = _raw_neb_calc("rawneb")
+    with pytest.raises(OrcaRunError, match='references "product.xyz"'):
+        engine._run_calc(calc, 0)
+
+
+def test_raw_neb_with_custom_product_path_still_launches(tmp_path):
+    # A hand-written NEB pointing NEB_End_XYZFile at the user's own file is the
+    # raw power-user path: no stored product, but no generated reference either.
+    engine = _real_engine(tmp_path)
+    calc = _raw_neb_calc("rawneb2")
+    calc.raw_text = calc.raw_text.replace('"product.xyz"', '"my_product.xyz"')
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+
+
+def test_raw_neb_atom_order_mismatch_fails_before_launch(tmp_path):
+    # Raw calcs get the same reactant/product order guard as form calcs; the
+    # reactant is read from the coordinate block that actually runs (the text).
+    engine = _real_engine(tmp_path)
+    calc = _raw_neb_calc("rawneb3",
+                         coords="H 0.0 0.0 0.0\nO 0.0 0.0 1.0",
+                         product="O 0.0 0.0 0.0\nH 0.0 0.0 1.0")  # swapped order
+    with pytest.raises(OrcaRunError, match="Atom order differs"):
+        engine._run_calc(calc, 0)
+
+
+def test_raw_neb_matching_product_writes_side_file_and_launches(tmp_path):
+    engine = _real_engine(tmp_path)
+    calc = _raw_neb_calc("rawneb4",
+                         coords="H 0.0 0.0 0.0\nO 0.0 0.0 1.0",
+                         product="H 0.0 0.0 0.5\nO 0.0 0.0 1.5")
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+    assert (tmp_path / "rawneb4" / "product.xyz").exists()
+
+
+def test_irc_read_hess_missing_fails_before_launch(tmp_path):
+    engine = _real_engine(tmp_path)
+    calc = Calculation(name="irc1", kind="irc",
+                       config=StepConfig(kind="irc", irc_init_hess="read",
+                                         irc_hess_file="TS2.hess"))
+    calc.xyz = "H 0.0 0.0 0.0"
+    with pytest.raises(OrcaRunError, match="TS2.hess"):
+        engine._run_calc(calc, 0)
+
+
+def test_irc_read_hess_staged_from_referenced_calc_folder(tmp_path):
+    # The .hess of a reference-geometry IRC is auto-copied from the referenced
+    # calc's folder into the run folder before launch.
+    engine = _real_engine(tmp_path)
+    (tmp_path / "ts").mkdir()
+    (tmp_path / "ts" / "TS2.hess").write_text("$hessian\n", encoding="utf-8")
+    calc = Calculation(name="irc2", kind="irc",
+                       config=StepConfig(kind="irc", irc_init_hess="read",
+                                         irc_hess_file="TS2.hess"))
+    calc.geometry_source = GeometrySource.REFERENCE
+    calc.ref_name = "ts"
+    engine._resolve_geometry = lambda c: "H 0.0 0.0 0.0"   # ref resolution not under test
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+    assert (tmp_path / "irc2" / "TS2.hess").exists()
+
+
+def test_raw_neb_custom_end_file_ignores_stale_stored_product(tmp_path):
+    # A stored product is dead state for a raw text that points NEB_End_XYZFile
+    # at its own file (the _nebProductXyz global survives excursions): no
+    # atom-order check against it, no product.xyz side file written.
+    engine = _real_engine(tmp_path)
+    calc = _raw_neb_calc("rawneb5",
+                         coords="H 0.0 0.0 0.0\nO 0.0 0.0 1.0",
+                         product="C 0.0 0.0 0.0")   # mismatched leftover
+    calc.raw_text = calc.raw_text.replace('"product.xyz"', '"my_product.xyz"')
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+    assert not (tmp_path / "rawneb5" / "product.xyz").exists()
+
+
+# ---- keep-existing identity: raw calcs are judged by their raw text ---------------
+def test_keep_existing_raw_calc_judged_by_its_raw_text_not_stale_xyz(tmp_path):
+    # A converted raw calc keeps calc.xyz from before the editor edit; the
+    # coordinate block in the TEXT is what ran and must drive the identity check.
+    harness = EngineHarness(tmp_path, skip_names={"keepme"})
+    calc = make_calc("keepme", kind="opt")
+    calc.is_raw = True
+    calc.raw_text = "! Opt\n* xyz 0 1\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n*\n"
+    calc.xyz = "O 0.0 0.0 0.0"                    # stale pre-edit molecule
+    _write_out(tmp_path, "keepme", PASSING_OPT_OUT)   # H2 result on disk
+
+    harness.engine.run_all([calc])
+
+    assert harness.calls == []                    # kept, not recomputed
+    assert calc.state is CalcState.DONE
+
+
+def test_keep_existing_raw_calc_rejects_result_matching_only_stale_xyz(tmp_path):
+    harness = EngineHarness(tmp_path, skip_names={"keepme"})
+    calc = make_calc("keepme", kind="opt")
+    calc.is_raw = True
+    calc.raw_text = "! Opt\n* xyz 0 1\nO 0.0 0.0 0.0\n*\n"   # what runs: one O
+    calc.xyz = "H 0.0 0.0 0.0\nH 0.0 0.0 0.74"               # stale: matches the .out
+    _write_out(tmp_path, "keepme", PASSING_OPT_OUT)          # H2 on disk (foreign)
+
+    harness.engine.run_all([calc])
+
+    assert harness.calls == ["keepme"]            # the foreign result was not adopted
+    assert "different structure" in harness.log_text()
+
+
+def test_keep_existing_element_case_difference_is_not_a_mismatch(tmp_path):
+    # ORCA accepts "h"/"CL" and echoes canonical symbols — casing alone must
+    # never make a genuinely-matching kept result read as foreign.
+    harness = EngineHarness(tmp_path, skip_names={"keepme"})
+    calc = make_calc("keepme", kind="opt")
+    calc.xyz = "h 0.0 0.0 0.0\nH 0.0 0.0 0.74"
+    _write_out(tmp_path, "keepme", PASSING_OPT_OUT)
+
+    harness.engine.run_all([calc])
+
+    assert harness.calls == []
+    assert calc.state is CalcState.DONE
+
+
+def test_keep_existing_same_count_mismatch_names_the_element_sequence(tmp_path):
+    # equal atom counts with a different sequence must not log the nonsensical
+    # "N atoms on disk vs N in this calculation"
+    harness = EngineHarness(tmp_path, skip_names={"keepme"})
+    calc = make_calc("keepme", kind="opt")
+    calc.xyz = "H 0.0 0.0 0.0\nO 0.0 0.0 1.0"
+    _write_out(tmp_path, "keepme", PASSING_OPT_OUT)   # H2 on disk
+
+    harness.engine.run_all([calc])
+
+    assert harness.calls == ["keepme"]
+    assert "element sequence differs at atom #2" in harness.log_text()

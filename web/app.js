@@ -127,6 +127,7 @@ window.onInpDropped = async function (path) {
 
 window.onXyzDropped = async function (path) {
   if (!bridge) return;
+  if (rawBlocksXyzLoad()) return;
   try {
     const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_path(path)));
     if (res.cancelled) return;   // deliberate dismissal, never an error
@@ -137,6 +138,7 @@ window.onXyzDropped = async function (path) {
     if (st) st.textContent = n ? `loaded (${n} atoms)` : "No atoms in file.";
     switchTab("build");
     appendLog(`Dropped .xyz loaded (${n} atoms).`, n ? "ok" : "warn");
+    nebAtomCheck();   // a replaced reactant must never leave a stale ✓/⚠ verdict
   } catch (e) { failNotify("Could not load the dropped file."); }
 };
 
@@ -1163,7 +1165,21 @@ function parseXyzText(content) {
   return coords.join("\n");
 }
 
+// In raw mode the text runs verbatim: without a {{GEOMETRY}} placeholder a
+// loaded .xyz would be stored on the calc but silently IGNORED at run time
+// (the embedded "* xyz" block wins) — refuse instead of desyncing. An EMPTY
+// editor is exempt: nothing can desync yet, and the load-geometry-first
+// paste-a-{{GEOMETRY}}-template workflow must keep working.
+function rawBlocksXyzLoad() {
+  if (rawMode && rawText.trim() && !rawText.includes("{{GEOMETRY}}")) {
+    failNotify("Raw input runs its own coordinates — edit the '* xyz' block in the editor, or insert the {{GEOMETRY}} snippet first.");
+    return true;
+  }
+  return false;
+}
+
 async function loadXyz() {
+  if (rawBlocksXyzLoad()) return;
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;   // deliberate dismissal, never an error
   if (!res.ok) { failNotify("Could not read that .xyz."); return; }  directXyz = parseXyzText(res.text);
@@ -1171,6 +1187,7 @@ async function loadXyz() {
   const st = document.getElementById("xyz-status");
   st.textContent = n ? `loaded (${n} atoms)` : "No atoms in file.";
   appendLog(`${n} atoms loaded from .xyz.`, n ? "ok" : "warn");
+  nebAtomCheck();   // a replaced reactant must never leave a stale ✓/⚠ verdict
 }
 
 // ---------- per-element basis / ECP ----------
@@ -1209,19 +1226,45 @@ function fillBasisRows(list) {
 }
 
 // ---------- config form ----------
-function onKindChange() {
-  if (rawMode) return;  // raw calcs are locked to their text; kind change ignored
-  // keep the method-related fields the user already set; only the kind-specific
-  // rows (opt/freq/tddft/nmr options) should change
-  const preserve = {
+// Snapshot the method-form fields that must survive a kind re-render: the
+// kind-specific rows (tddft/irc/neb/...) deliberately reset, but everything
+// the user set that still applies to the new kind is carried over — including
+// the kind-independent resources (maxcore/nprocs) and the numeric fields
+// shared by several kinds (MaxIter across the opt kinds, Temp/Pressure across
+// the freq kinds). options and SCF are kind-AWARE: an untouched kind default
+// must not shadow the NEW kind's default (switching to NEB-TS must regain its
+// FREQ option; opt→freq must still bump TightSCF→VeryTightSCF), while an
+// explicit user override always survives.
+function collectPreserve(newKind) {
+  const val = (id) => { const e = document.getElementById(id); return e ? e.value : null; };
+  const oldDef = KIND_DEFS[_configKind] || null;
+  const newDef = KIND_DEFS[newKind] || null;
+  const p = {
     functional: comboValue("combo-functional"),
     basis_set: comboValue("combo-basis"),
     solvent: comboValue("combo-solvent"),
-    ri: (document.getElementById("cfg-ri") || {}).value,
-    solvmodel: (document.getElementById("cfg-solvmodel") || {}).value,
-    options: (document.getElementById("cfg-options") || {}).value,
+    ri: val("cfg-ri"),
+    solvmodel: val("cfg-solvmodel"),
+    maxcore: val("cfg-maxcore"),
+    nprocs: val("cfg-nprocs"),
+    max_iter: val("cfg-maxiter"),
+    freq_temp: val("cfg-temp"),
+    freq_pressure: val("cfg-pressure"),
+    options: /** @type {string|null} */ (null),
+    scf: /** @type {string|null} */ (null),
   };
-  renderConfigForm(document.getElementById("calc-kind").value, preserve);
+  const opts = val("cfg-options");
+  if (opts != null && (!oldDef || opts !== oldDef.options)) p.options = opts;
+  const scf = val("cfg-scf");
+  if (scf && oldDef && newDef
+      && (scf !== oldDef.scfDefault || oldDef.scfDefault === newDef.scfDefault)) p.scf = scf;
+  return p;
+}
+
+function onKindChange() {
+  if (rawMode) return;  // raw calcs are locked to their text; kind change ignored
+  const kind = document.getElementById("calc-kind").value;
+  renderConfigForm(kind, collectPreserve(kind));
 }
 
 function renderConfigForm(kind, preserve) {
@@ -1271,7 +1314,7 @@ function renderConfigForm(kind, preserve) {
       <div class="field" style="flex:0 0 130px"><label>MaxIter</label><input id="cfg-irc-maxiter" type="number" value="100" min="1"></div>
     </div>
     <div class="field-row" id="cfg-irc-hessfile-row" style="display:none">
-      <div class="field"><label>.hess filename</label><input id="cfg-irc-hessfile" type="text" class="mono" placeholder="e.g. TS2.hess (in this calc's folder)"></div>
+      <div class="field"><label>.hess filename</label><input id="cfg-irc-hessfile" type="text" class="mono" placeholder="e.g. TS2.hess (auto-copied from the referenced calc's folder)"></div>
     </div>
     <div class="hint">IRC start point: a TS geometry — Geometry below to <b>reference</b> a TS calc. Fastest with a .hess from that TS's freq run, else recomputed here.</div>` : "";
   const nebRows = def.showNeb ? `
@@ -1333,7 +1376,7 @@ function renderConfigForm(kind, preserve) {
 
   setupCombo("combo-functional", choicesCache.functionals, (preserve && preserve.functional) || "wB97X-D4");
   setupCombo("combo-basis", choicesCache.basis_sets, (preserve && preserve.basis_set) || "def2-TZVP");
-  fillSelect(document.getElementById("cfg-scf"), flatItems(choicesCache.scf_convergences), def.scfDefault);
+  fillSelect(document.getElementById("cfg-scf"), flatItems(choicesCache.scf_convergences), (preserve && preserve.scf) || def.scfDefault);
   fillSelect(document.getElementById("cfg-ri"), flatItems(choicesCache.ri_approximations), (preserve && preserve.ri) || "RIJCOSX");
   if (def.allTypes) {
     fillSelect(document.getElementById("cfg-calc"), flatItems(choicesCache.calculation_types), "SP");
@@ -1341,10 +1384,22 @@ function renderConfigForm(kind, preserve) {
     fillSelect(document.getElementById("cfg-calc"), flatItems(choicesCache.calculation_types, def.calcGroup), def.calcDefault);
   }
   setupCombo("combo-solvent", choicesCache.solvents, (preserve && preserve.solvent) || "Water");
-  // restore solvation model + extra options if preserved
+  // restore the preserved kind-independent fields (see collectPreserve)
   if (preserve) {
     const sm = document.getElementById("cfg-solvmodel"); if (sm && preserve.solvmodel != null) sm.value = preserve.solvmodel;
     const op = document.getElementById("cfg-options"); if (op && preserve.options != null) op.value = preserve.options;
+    const mc = document.getElementById("cfg-maxcore"); if (mc && preserve.maxcore != null) mc.value = preserve.maxcore;
+    const np = document.getElementById("cfg-nprocs"); if (np && preserve.nprocs != null) np.value = preserve.nprocs;
+    const mi = document.getElementById("cfg-maxiter"); if (mi && preserve.max_iter != null) mi.value = preserve.max_iter;
+    const tp = document.getElementById("cfg-temp"); if (tp && preserve.freq_temp != null) tp.value = preserve.freq_temp;
+    const pr = document.getElementById("cfg-pressure"); if (pr && preserve.freq_pressure != null) pr.value = preserve.freq_pressure;
+  }
+  // freshly rendered NEB rows: reflect a product that is still loaded (the
+  // global survives a kind round-trip — the label must not claim otherwise)
+  if (def.showNeb && _nebProductXyz) {
+    const nst = document.getElementById("cfg-neb-prod-status");
+    if (nst) nst.textContent = `loaded (${countAtoms(_nebProductXyz)} atoms)`;
+    nebAtomCheck();
   }
   onSolvChange();  // hide solvent if gas phase
 }
@@ -1425,7 +1480,9 @@ function collectConfig(kind) {
   const def = KIND_DEFS[kind];
   const v = (id) => { const e = document.getElementById(id); return e ? e.value : ""; };
   const num = (id, d) => { const e = document.getElementById(id); return e ? (parseInt(e.value,10) || d) : d; };
-  const fnum = (id, d) => { const e = document.getElementById(id); return e ? (parseFloat(e.value) || d) : d; };
+  // NOT `parseFloat(...) || d`: an explicit 0 (e.g. 0 K thermochemistry) is
+  // falsy and would silently become the default — only blank/garbage falls back
+  const fnum = (id, d) => { const e = document.getElementById(id); if (!e) return d; const x = parseFloat(e.value); return Number.isFinite(x) ? x : d; };
   const chk = (id) => { const e = document.getElementById(id); return e ? e.checked : false; };
   // calc type: use the selector if present (form-group or general), else the
   // kind's fixed default (e.g. nmr -> "NMR", tddft -> "")
@@ -1504,11 +1561,35 @@ function collectCalcFromForm(forPreview = false) {
   // conversion must be able to generate the template before the product is loaded.
   if (!forPreview && !rawMode && kind === "neb_ts" && !_nebProductXyz)
     throw new Error("NEB-TS needs a product geometry. Load a product .xyz first.");
+  // A raw NEB-TS that keeps the generated "product.xyz" reference still needs
+  // the stored product — the engine writes that side file from it at run time
+  // (the engine re-checks this too; this is the early, Add-time feedback).
+  if (!forPreview && rawMode && kind === "neb_ts" && !_nebProductXyz && rawText.includes('"product.xyz"'))
+    throw new Error('The raw input references "product.xyz" but no product geometry is loaded. ' +
+                    "Load a product .xyz first (Beginner form), or point NEB_End_XYZFile at your own file.");
+  // IRC "read from .hess file" without a filename would silently run a
+  // different method — the generator refuses it; this is the early check.
+  if (!forPreview && !rawMode && kind === "irc") {
+    const ih = document.getElementById("cfg-irc-inithess");
+    const hf = document.getElementById("cfg-irc-hessfile");
+    if (ih && ih.value === "read" && (!hf || !hf.value.trim()))
+      throw new Error("IRC 'read from .hess file' needs a .hess filename.");
+  }
+
+  // a raw calc runs its own "* xyz C M" line verbatim — mirror those values on
+  // the stored calc so the queue row shows the charge state that actually runs
+  let charge = parseInt(document.getElementById("calc-charge").value, 10) || 0;
+  let multiplicity = parseInt(document.getElementById("calc-mult").value, 10) || 1;
+  if (rawMode) {
+    // both coordinate forms: "* xyz C M" (embedded) and "* xyzfile C M file.xyz"
+    const cm = rawText.match(/^\s*\*\s*xyz(?:file)?\s+([+-]?\d+)\s+(\d+)/im);
+    if (cm) { charge = parseInt(cm[1], 10); multiplicity = parseInt(cm[2], 10); }
+  }
 
   return {
     name, kind,
-    charge: parseInt(document.getElementById("calc-charge").value, 10) || 0,
-    multiplicity: parseInt(document.getElementById("calc-mult").value, 10) || 1,
+    charge,
+    multiplicity,
     geometry_source: /** @type {"direct"|"reference"} */ (src),
     xyz, ref_name,
     is_raw: rawMode,
@@ -1792,14 +1873,16 @@ async function editCalc(i) {
   document.getElementById("calc-mult").value = String(c.multiplicity);
   document.getElementById("calc-kind").value = c.kind;
 
-  // geometry source
+  // geometry source. directXyz/label sync is unconditional: a reference calc
+  // must clear any coordinates left over from a previous build/edit, or
+  // flipping this edit to "direct" would silently adopt another calc's
+  // geometry behind a plausible-looking "loaded (N atoms)" label.
   document.querySelector(`input[name="geomsrc"][value="${c.geometry_source}"]`).checked = true;
   onGeomSourceChange();
-  if (c.geometry_source === "direct") {
-    directXyz = c.xyz || "";
-    document.getElementById("xyz-status").textContent =
-      directXyz ? `loaded (${directXyz.split("\n").filter(Boolean).length} atoms)` : "";
-  } else {
+  directXyz = c.xyz || "";
+  document.getElementById("xyz-status").textContent =
+    directXyz ? `loaded (${directXyz.split("\n").filter(Boolean).length} atoms)` : "";
+  if (c.geometry_source !== "direct") {
     refreshRefSelect();
     document.getElementById("ref-select").value = c.ref_name;
   }
@@ -1850,16 +1933,17 @@ function fillConfigForm(cfg) {
   set("cfg-irc-maxiter", cfg.irc_maxiter);
   set("cfg-irc-hessfile", cfg.irc_hess_file);
   if (document.getElementById("cfg-irc-inithess")) onIrcHessChange();
-  // NEB-TS fields
+  // NEB-TS fields. The product sync is UNCONDITIONAL: a leftover product from
+  // a previously built/edited calc must never leak into this one (a calc with
+  // no product would otherwise silently inherit it on Update).
   set("cfg-neb-nimages", cfg.neb_nimages);
   const preopt = document.getElementById("cfg-neb-preopt");
   if (preopt && cfg.neb_preopt_ends != null) preopt.checked = cfg.neb_preopt_ends;
-  if (cfg.neb_product_xyz) {
-    _nebProductXyz = cfg.neb_product_xyz;
-    const st = document.getElementById("cfg-neb-prod-status");
-    if (st) st.textContent = `loaded (${countAtoms(cfg.neb_product_xyz)} atoms)`;
-    nebAtomCheck();
-  }
+  _nebProductXyz = cfg.neb_product_xyz || "";
+  const nst = document.getElementById("cfg-neb-prod-status");
+  if (nst) nst.textContent = _nebProductXyz
+    ? `loaded (${countAtoms(_nebProductXyz)} atoms)` : "no product loaded";
+  nebAtomCheck();
   if (cfg.solvation) {
     set("cfg-solvmodel", cfg.solvation.model);
     setCombo("combo-solvent", cfg.solvation.solvent);
@@ -2034,14 +2118,7 @@ function setBuildMode(mode, persist = true, keepEdit = false) {
     if (host && !host.childElementCount) {
       renderConfigForm(kindSel);
     } else if (_configKind !== kindSel) {
-      renderConfigForm(kindSel, {
-        functional: comboValue("combo-functional"),
-        basis_set: comboValue("combo-basis"),
-        solvent: comboValue("combo-solvent"),
-        ri: (document.getElementById("cfg-ri") || {}).value,
-        solvmodel: (document.getElementById("cfg-solvmodel") || {}).value,
-        options: (document.getElementById("cfg-options") || {}).value,
-      });
+      renderConfigForm(kindSel, collectPreserve(kindSel));
     }
   }
   if (persist && bridge && bridge.save_settings) bridge.save_settings(JSON.stringify({ build_mode: mode }));
@@ -2171,24 +2248,33 @@ function failNotify(msg) {
   appendLog(msg, "err");
 }
 
-// view the on-disk ORCA .inp (read-only) for any calc, including a running one.
-// Running/finished jobs have the real .inp on disk; a pending one shows a preview.
+// view the ORCA .inp (read-only) for any calc, including a running one.
+// Which source is the truth depends on the state: an EDITABLE calc has never
+// produced this attempt's on-disk input — the calc itself (raw text or a
+// preview) is authoritative, and the disk may hold a previous same-named
+// calc's .inp (workspace folders are never deleted). For running/finished
+// calcs the on-disk file is what actually launched.
 async function viewInp(i) {
   const c = queue[i];
   if (!c) return;
-  let text = null;
-  try {
-    const res = /** @type {TextResult} */ (JSON.parse(await bridge.get_inp(c.name)));
-    if (res.ok && res.text) text = res.text;
-  } catch (e) { /* fall through to preview */ }
-  if (text == null) {
+  const fromDisk = async () => {
+    try {
+      const res = /** @type {TextResult} */ (JSON.parse(await bridge.get_inp(c.name)));
+      return (res.ok && res.text) ? res.text : null;
+    } catch (e) { return null; }
+  };
+  const fromCalc = async () => {
     let full = localCalcs[c.name];
     if (!full) { try { const r = /** @type {GetCalcResult} */ (JSON.parse(await bridge.get_calc(c.name))); if (r.ok) full = r.calc; } catch (e) { } }
-    if (full && full.is_raw && full.raw_text) { text = full.raw_text; }
-    else if (full) {
-      try { const pv = /** @type {TextResult} */ (JSON.parse(await bridge.build_inp_preview(JSON.stringify(full)))); if (pv.ok) { text = pv.text; } } catch (e) { }
+    if (full && full.is_raw && full.raw_text) return full.raw_text;
+    if (full) {
+      try { const pv = /** @type {TextResult} */ (JSON.parse(await bridge.build_inp_preview(JSON.stringify(full)))); if (pv.ok) return pv.text; } catch (e) { }
     }
-  }
+    return null;
+  };
+  const text = isEditableState(c.state)
+    ? (await fromCalc()) ?? (await fromDisk())
+    : (await fromDisk()) ?? (await fromCalc());
   if (text == null) { toast("Input not available yet (queue run needed first)."); return; }
   await showModal(`Input · ${escapeHtml(c.name)}`, `<pre class="inp-view">${escapeHtml(text)}</pre>`, [{ label: "Close", value: null }]);
 }

@@ -483,9 +483,17 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         if direction in ("forward", "backward"):
             lines.append(f"  Direction {direction}")
         init = (cfg.irc_init_hess or "calc_anfreq").strip()
-        if init == "read" and cfg.irc_hess_file.strip():
+        if init == "read":
+            hess = cfg.irc_hess_file.strip()
+            if not hess:
+                # Silently substituting calc_anfreq for an explicit "read"
+                # selection would run a different (and possibly far more
+                # expensive) method than the user chose. Refuse here — the
+                # trust boundary — so phone/API payloads that bypass the
+                # form check fail loudly too.
+                raise ValueError("IRC InitHess 'read' requires a .hess filename.")
             lines.append("  InitHess read")
-            lines.append(f'  Hess_Filename "{cfg.irc_hess_file.strip()}"')
+            lines.append(f'  Hess_Filename "{hess}"')
         else:
             # calc_anfreq (analytic) or calc_numfreq (numerical)
             lines.append(f"  InitHess {init if init in ('calc_anfreq', 'calc_numfreq') else 'calc_anfreq'}")

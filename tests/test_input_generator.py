@@ -18,6 +18,8 @@ isolation is needed here.
 import math
 import re
 
+import pytest
+
 from orcamgr.core.input_generator import (
     DEFAULT_AUX,
     GEOMETRY_PLACEHOLDER,
@@ -365,3 +367,19 @@ def test_from_dict_coerces_non_string_str_fields_to_defaults():
     # and the config must survive input generation end to end
     text = build_input(cfg, "H 0.0 0.0 0.0")
     assert "* xyz" in text
+
+
+# ---- IRC: an explicit "read" Hessian selection is never silently replaced ----
+def test_irc_inithess_read_requires_a_filename():
+    # Falling back to calc_anfreq would run a different (and possibly far more
+    # expensive) method than the one the user chose — the generator refuses.
+    cfg = StepConfig(kind="irc", irc_init_hess="read", irc_hess_file="")
+    with pytest.raises(ValueError, match="requires a .hess filename"):
+        build_input(cfg, WATER_XYZ)
+
+
+def test_irc_inithess_read_with_filename_emits_read_block():
+    cfg = StepConfig(kind="irc", irc_init_hess="read", irc_hess_file="TS2.hess")
+    text = build_input(cfg, WATER_XYZ)
+    assert "InitHess read" in text
+    assert 'Hess_Filename "TS2.hess"' in text

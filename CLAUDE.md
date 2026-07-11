@@ -184,7 +184,27 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   stays editable so a dependent can be re-pointed after its failed parent
   is removed. The keep-existing ("skip") run option parses the kept output
   through `result_from_output` and stamps `DONE` only if `validate_result`
-  passes; otherwise the calc runs.
+  passes **and** the result structurally belongs to the calc
+  (`_kept_result_matches`: case-insensitive atom element sequence; a
+  no-placeholder raw calc is judged by its raw text's coordinate block, not
+  the possibly-stale `calc.xyz` — folders survive removal, so a new calc
+  reusing a removed calc's name must not adopt the old output); otherwise
+  the calc runs.
+- **Pre-launch guards run for raw calcs too.** The engine writes NEB-TS side
+  files (`product.xyz` / `ts_guess.xyz`) from config at run time in both form
+  and raw mode — but for a raw calc **only when its text actually uses the
+  generated `"product.xyz"` reference**: a custom `NEB_End_XYZFile` path is
+  the power-user escape, and the stored product is dead state for it (the
+  `_nebProductXyz` global survives excursions, so it must trigger neither
+  the side-file write nor the checks). With the reference present, a missing
+  stored product is refused pre-launch, and the reactant/product atom-order
+  check runs against the coordinate block of the **rendered** text
+  (`_raw_coordinate_block` — the reactant that actually executes). An `irc`
+  with `InitHess read` stages the
+  named `.hess` from the referenced calc's folder when it isn't in the run
+  folder, and fails fast when it can't be found; a blank filename is refused
+  by `build_input` itself (`ValueError` — the trust boundary, so phone/API
+  payloads fail loudly too).
 - **Result validation is per-kind**: `opt`/`ts_opt` (and the combined
   `opt_freq`/`ts_opt_freq`) must converge; `freq`/`opt_freq` must have zero
   imaginary frequencies; `ts_freq`/`ts_opt_freq` must have exactly one;
@@ -270,13 +290,20 @@ therefore exits any in-progress edit itself before loading — a drop starts a
 NEW calc, never an overwrite of the edited one); the Beginner branch re-renders
 the method form only when `#calc-config` is empty or the Type select changed
 while the form was hidden (`_configKind`, re-rendered with the same field
-preservation as `onKindChange`), so the user's method setup survives
-Expert/MLIP/CREST excursions without ever going stale against the selected
+preservation as `onKindChange` — `collectPreserve`, which also carries
+maxcore/nprocs and the kind-shared numerics, and is kind-AWARE for Extra
+options and SCF: an untouched kind default follows the new kind, an explicit
+user override survives), so the user's method setup survives Expert/MLIP/CREST
+excursions without ever going stale against the selected
 kind; the back-out path re-resolves the edited calc **by name** after its
 confirm modal (queue indices can shift during the await — conformer fan-out,
 phone edits); `collectCalcFromForm(forPreview)` relaxes the NEB-TS product
 requirement like the other geometry checks. `rawText` survives an MLIP/CREST
-excursion and is cleared only by an explicit discard, edit, or reset.
+excursion and is cleared only by an explicit discard, edit, or reset. Raw-mode
+geometry can't desync from the text: loading a `.xyz` in raw mode is refused
+unless the text has a `{{GEOMETRY}}` placeholder (embedded coords run
+verbatim), and a raw calc's stored charge/multiplicity mirror its own
+`* xyz C M` line, not the hidden form fields.
 
 **Building MLIP jobs.** MLIP mode hides the whole ORCA build
 UI (`_ORCA_BUILD`) and shows a self-contained `#card-mlip`: a name, a MACE-model
