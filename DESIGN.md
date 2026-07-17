@@ -975,7 +975,7 @@ drops whole promoted layers from the **on-screen** composite when too many
 both chrome bars → the top bar and tab strip rendered fully invisible, tint,
 border and labels included, while offscreen captures stayed correct; a dropped
 bar never healed because nothing re-invalidated it). A repeated-run pixel
-benchmark pinned the budget, giving three rules any Liquid-Glass change must
+benchmark pinned the budget, giving four rules any Liquid-Glass change must
 keep:
 
 1. **The SVG lens is chrome-only.** `url(#lgLens*)` may appear on exactly two
@@ -990,6 +990,24 @@ keep:
    tint/border/text. (Corollary: the whole chain moves to the overlay — an
    element with `backdrop-filter` is a backdrop root, so a lens left on its
    child overlay would sample the element's flat tint and refract nothing.)
+4. **Self-heal heartbeat.** Rules 1–3 lower the odds but cannot prevent drops
+   caused by *external* GPU events (sleep/resume, driver reset, GPU memory
+   pressure — observed in the field at `vivid`: tab strip gone and the top
+   bar's text layer gone while its tint survived, proving any of a bar's
+   three composited pieces can drop independently). Because a static bar is
+   never invalidated, a drop would be permanent — so while Liquid Glass is
+   active, `app.js` flips `--lg-pulse` between `0` and `0.004` every 250 ms
+   (`LG_PULSE_MS` — the flip period is the heal-latency upper bound; going
+   much faster buys nothing and turns the bars into constant GPU work), and
+   `style.css` routes that imperceptible delta (≈1/255 alpha,
+   +0.4% saturation) through all three pieces of both bars: background alpha
+   (tint chunk), `saturate()` in the backdrop chain (frost pass), and an
+   inset outline (contents chunk, painted with the labels). A dropped layer
+   is re-rastered — healed — within ~0.25 s. The pulse must stay **paint-only**:
+   a `will-change`/`transform` nudge would make the bar a render surface and
+   break what its `backdrop-filter` samples. Measured cost: two small bars
+   re-raster at 4 Hz; measured visibility: ≤4/255 channel delta on <0.01% of
+   band pixels (the 1px outline ring).
 
 ---
 

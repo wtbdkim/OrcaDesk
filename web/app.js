@@ -599,7 +599,8 @@ function applyThemeVariant(variant, level) {
   if (opts) opts.style.display = v === "liquidglass" ? "" : "none";
   document.querySelectorAll("#lg-level-row button").forEach(b =>
     b.classList.toggle("on", b.getAttribute("data-level") === lv));
-  if (v === "liquidglass") renderWallpaper();
+  if (v === "liquidglass") { renderWallpaper(); _lgPulseStart(); }
+  else _lgPulseStop();
 }
 
 /** Persist a settings patch; refresh the mirror. Returns false on backend error. */
@@ -632,7 +633,11 @@ async function setWallpaper(key) {
   await _persistAppearance({ wallpaper: key });
 }
 
-/** Build the wallpaper swatch grid once (presets + the custom-image tile). */
+/** Build the wallpaper swatch grid once: presets + a custom-image swatch
+ * (hidden until an image exists) + the upload tile. The custom image gets its
+ * OWN swatch so the ＋ tile stays visible after an upload — turning the ＋
+ * tile itself into the thumbnail removed the only affordance for picking a
+ * different image (the "＋ disappears" bug). */
 function buildWallpaperSwatches() {
   const grid = document.getElementById("lg-wall-grid");
   if (!grid || grid.dataset.built) return;
@@ -647,8 +652,16 @@ function buildWallpaperSwatches() {
     b.onclick = () => setWallpaper(k);
     grid.appendChild(b);
   });
+  const cust = document.createElement("button");
+  cust.className = "lg-wall-sw custom"; cust.dataset.k = "custom";
+  cust.title = "Custom image"; cust.style.display = "none";
+  const clab = document.createElement("span");
+  clab.className = "lg-wall-label"; clab.textContent = "custom";
+  cust.appendChild(clab);
+  cust.onclick = () => setWallpaper("custom");
+  grid.appendChild(cust);
   const up = document.createElement("button");
-  up.className = "lg-wall-sw up"; up.dataset.k = "custom";
+  up.className = "lg-wall-sw up";   // no data-k: it's an action, never "selected"
   up.title = "Upload image"; up.textContent = "＋";
   up.onclick = () => onWallpaperUpload();
   grid.appendChild(up);
@@ -662,21 +675,21 @@ function _markWallpaperSel() {
     b.classList.toggle("on", b.getAttribute("data-k") === cur));
 }
 
-/** Reflect a loaded custom image onto the upload swatch (thumbnail). */
+/** Reflect a loaded custom image onto its own swatch (thumbnail) and show it. */
 function _applyCustomSwatch() {
   const grid = document.getElementById("lg-wall-grid");
   if (!grid) return;
-  const up = /** @type {HTMLElement|null} */ (grid.querySelector(".lg-wall-sw.up"));
-  if (up && _lgCustomData) {
-    up.textContent = "";
-    up.style.background = "center/cover url(" + _lgCustomData + ")";
+  const cust = /** @type {HTMLElement|null} */ (grid.querySelector(".lg-wall-sw.custom"));
+  if (cust && _lgCustomData) {
+    cust.style.display = "";
+    cust.style.background = "center/cover url(" + _lgCustomData + ")";
   }
 }
 
 function onWallpaperUpload() {
-  // an already-loaded custom image that just isn't selected → re-select it;
-  // otherwise open the OS file picker
-  if (_lgCustomImg && settings.wallpaper !== "custom") { setWallpaper("custom"); return; }
+  // always opens the OS picker — selecting the existing custom image is the
+  // custom swatch's job (the old re-select-first behavior made the ＋ tile
+  // need two clicks to actually replace the image)
   let fi = /** @type {HTMLInputElement|null} */ (/** @type {unknown} */ (document.getElementById("lg-wall-file")));
   if (!fi) {
     fi = document.createElement("input");
@@ -805,6 +818,36 @@ function renderWallpaper() {
 window.addEventListener("resize", () => {
   if (settings.theme_variant === "liquidglass") renderWallpaper();
 });
+
+// ---- compositor self-heal heartbeat (DESIGN.md §16.5 rule 4) ----
+// The §16.5 layer rules make compositor drops unlikely but can't prevent the
+// ones caused by EXTERNAL GPU events (sleep/resume, driver reset, GPU memory
+// pressure) — and a static chrome bar is never re-invalidated, so a dropped
+// layer would stay gone until restart. While Liquid Glass is active we flip
+// --lg-pulse between 0 and 0.004 every LG_PULSE_MS; style.css routes that
+// imperceptible delta through all three composited pieces of both bars
+// (tint alpha, saturate() in the backdrop chain, an inset outline painted
+// with the labels), so any dropped piece is re-rastered — healed — within
+// one period. The pulse must stay PAINT-ONLY: a will-change/transform nudge
+// would make the bar its own render surface and break what its
+// backdrop-filter samples.
+const LG_PULSE_MS = 250;  // heal-latency upper bound; cost per tick is re-rastering two thin bars
+let _lgPulseTimer = 0;
+let _lgPulseOn = false;
+
+function _lgPulseStart() {
+  if (_lgPulseTimer) return;
+  _lgPulseTimer = window.setInterval(() => {
+    _lgPulseOn = !_lgPulseOn;
+    document.documentElement.style.setProperty("--lg-pulse", _lgPulseOn ? "0.004" : "0");
+  }, LG_PULSE_MS);
+}
+
+function _lgPulseStop() {
+  if (_lgPulseTimer) { clearInterval(_lgPulseTimer); _lgPulseTimer = 0; }
+  _lgPulseOn = false;
+  document.documentElement.style.removeProperty("--lg-pulse");
+}
 
 function updateOrcaStatus(valid) {
   const pill = document.getElementById("orca-status");

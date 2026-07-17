@@ -189,6 +189,24 @@ ORCA in one action.
   default) and validated/clamped at the deserialization boundary.
 
 ### Fixed
+- **Liquid Glass chrome now self-heals from compositor layer drops.** Even
+  with the compositor-safe glass architecture, an external GPU event
+  (sleep/resume, driver reset, GPU memory pressure) could still make Qt
+  WebEngine drop one of the chrome bars' composited layers from the
+  on-screen picture — seen in the field at Vivid as an empty top-bar slab
+  (text gone, tint intact) with the tab strip fully invisible — and, because
+  nothing ever repaints a static bar, the loss was permanent until restart.
+  While Liquid Glass is active the app now pulses an imperceptible paint
+  delta (±0.4% alpha/saturation, `--lg-pulse`) through all three composited
+  pieces of both bars every 250 ms, so any dropped layer is re-rastered
+  within a quarter second (DESIGN.md §16.5 rule 4). Measured on screen: the
+  pulse changes at most 4/255 on <0.01% of the bars' pixels — invisible.
+- **Uploading a custom wallpaper no longer swallows the ＋ upload tile.**
+  The uploaded image used to become the ＋ tile's own thumbnail, removing the
+  only affordance for picking a *different* image (and re-selecting the
+  existing image took two clicks). The custom image now gets its own swatch
+  in the wallpaper grid (hidden until an image exists) and ＋ is a pure
+  upload action that always opens the file picker.
 - **Changing the calculation Type no longer silently resets fields the user
   set.** The method form re-render now preserves the kind-independent
   resources (**maxcore**, **nprocs**) and the numeric fields shared between

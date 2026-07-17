@@ -510,10 +510,15 @@ them there.
   interaction (like the ☽ light/dark toggle). **Compositor resilience is
   binding** (DESIGN.md §16.5): the SVG lens is chrome-only (top bar + tab strip;
   cards frost with native blur), small/numerous controls never get
-  `backdrop-filter` (tint only), and every backdrop chain lives on a `::before`
+  `backdrop-filter` (tint only), every backdrop chain lives on a `::before`
   overlay, not the load-bearing element — too many backdrop layers made Qt
   WebEngine drop the chrome bars from the on-screen composite (the 0.5.0-beta
-  invisible-tab-strip bug). Full spec: DESIGN.md §16.
+  invisible-tab-strip bug) — and, because external GPU events (sleep/resume,
+  driver reset) can still drop a bar's layer permanently (a static bar is never
+  re-invalidated), `app.js` pulses an imperceptible `--lg-pulse` paint delta
+  through both bars every 250 ms so any dropped layer re-rasters within ~0.25 s
+  (§16.5 rule 4; the pulse must stay paint-only — never `will-change`/
+  `transform`, which would break backdrop sampling). Full spec: DESIGN.md §16.
 - ORCA defaults (functional `wB97X-D4`, basis `def2-TZVP`, `RIJCOSX`, aux `def2/J`)
   live in `input_generator.py`.
 - Option lists in `data/*.json` are sourced from the ORCA 6.1.1 manual; method fields
