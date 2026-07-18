@@ -95,6 +95,14 @@ ORCA in one action.
   fake runner (no WSL needed), and the conformer→ORCA batch builder.
 
 ### Changed
+- **Lower idle footprint from the embedded browser.** The WebEngine view now
+  disables web-platform features the UI never uses (WebGL — the wallpaper canvas
+  is 2D — and Chromium's built-in PDF viewer), and **minimizing the window
+  freezes the page** so Chromium runs its memory-pressure GC and drops raster
+  layers while ORCAdesk sits in the taskbar during a long run (measured: main
+  process ~750 → ~600 MB, renderer ~135 → ~123 MB while minimized; restore is
+  instant and the log/queue catch up from where they left off). No behavior
+  change while the window is visible.
 - **The Build-tab mode toggle is now backend-first: `DFT / MLIP / CREST`, with a
   `Beginner / Expert` sub-toggle inside DFT** (shown only while DFT is active;
   the persisted `build_mode` values are unchanged, so saved settings load as-is).

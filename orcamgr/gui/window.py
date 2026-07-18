@@ -15,11 +15,11 @@ import json
 import sys
 import time
 
-from PyQt6.QtCore import QUrl, QEvent
+from PyQt6.QtCore import QUrl, QEvent, QTimer
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QApplication
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEnginePage
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PyQt6.QtWebChannel import QWebChannel
 
 from ..paths import web_dir, resource_path, config_file, default_workspace_root, APP_VERSION
@@ -116,6 +116,14 @@ class MainWindow(QMainWindow):
         # the channel lands on the page that actually serves the UI.
         self._page = _ConsoleCapturePage(self.store, self.view)
         self.view.setPage(self._page)
+
+        # Web-platform features this local single-page UI never uses; the
+        # wallpaper canvas is 2D, so WebGL only costs idle GPU/driver state.
+        # (No cache/cookie tuning needed: the Qt 6 default profile is already
+        # off-the-record — in-memory cache, no persistent cookies.)
+        ws = self._page.settings()
+        ws.setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, False)
+        ws.setAttribute(QWebEngineSettings.WebAttribute.PdfViewerEnabled, False)
 
         # Bridge owns all backend logic; register it on the channel.
         self.bridge = Bridge(self, self.store, self.server_ctl)
@@ -259,6 +267,30 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
         else:
             super().dropEvent(event)
+
+    # ------------------------------------------------- renderer lifecycle
+    def changeEvent(self, event):
+        # Minimized -> Frozen lets Chromium run its memory-pressure GC and drop
+        # raster layers while the app sits in the taskbar during a long ORCA
+        # run. Deferred so Chromium registers the visibility change first (a
+        # visible page cannot be frozen); JS timers stop while frozen, which is
+        # safe — the poll loop already skips hidden ticks and catches up from
+        # its last log sequence number on resume.
+        if event.type() == QEvent.Type.WindowStateChange and getattr(self, "_page", None):
+            if self.isMinimized():
+                QTimer.singleShot(500, self._freeze_if_minimized)
+            else:
+                self._page.setLifecycleState(QWebEnginePage.LifecycleState.Active)
+        super().changeEvent(event)
+
+    def _freeze_if_minimized(self):
+        # recommendedState stays Active when something must keep the page live
+        # (e.g. attached devtools via ORCADESK_REMOTE_DEBUG) — respect that.
+        if (
+            self.isMinimized()
+            and self._page.recommendedState() != QWebEnginePage.LifecycleState.Active
+        ):
+            self._page.setLifecycleState(QWebEnginePage.LifecycleState.Frozen)
 
     def closeEvent(self, event):
         self.shutdown()

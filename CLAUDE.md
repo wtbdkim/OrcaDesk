@@ -70,6 +70,12 @@ The view's page is `_ConsoleCapturePage` (`window.py`), which forwards JS consol
 output into the shared log buffer as `[web] ...` lines (rate-limited per identical
 message) — so front-end errors are visible in the Log tab even in a deployed build;
 `ORCADESK_REMOTE_DEBUG` (handled in `main.py`) remains the dev-time tool.
+`window.py` also trims the embedded browser: WebGL and Chromium's built-in PDF
+viewer are disabled (the UI uses neither), and minimizing the window sets the
+page's lifecycle state to Frozen so Chromium releases memory while ORCAdesk sits
+in the taskbar — safe because the JS side polls and already skips hidden ticks,
+catching up on restore. (No profile/cache tuning: the Qt 6 default profile is
+already off-the-record.)
 
 `orcamgr/gui/bridge.py` is the **entire backend API surface for the desktop**: every
 `@pyqtSlot` is callable from JS (the slot list is documented at the top of `bridge.py`).
