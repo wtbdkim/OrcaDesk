@@ -41,6 +41,13 @@ npx -p typescript tsc --noEmit -p jsconfig.json
 # Run the automated test suite (pip install -r requirements-dev.txt once)
 python -m pytest                       # 273 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 27 tracker/progress tests, no npm deps
+
+# Real-backend smoke matrix (opt-in): one answer-known input per calc kind,
+# run through the real QueueEngine against YOUR installed ORCA/MACE/CREST.
+# Skips itself without the env var; each backend section auto-skips when its
+# backend is absent. Wall-clock: ~1.5 h for the ORCA section (IRC and NEB
+# dominate); MLIP + CREST add ~2 min. Run it before a release cut.
+ORCADESK_SMOKE=1 python -m pytest tests/smoke -v
 ```
 
 The **automated test suite** (`tests/`, pytest + one plain-Node script) covers the
@@ -57,6 +64,19 @@ machine. There is no linter configured. Parser/input-generator *evidence* still
 comes from manual validation against real ORCA 6.1.1 output (P3); the
 `orcamgr/server/STAGE*_TEST_KR.md` files are manual server-test checklists
 (Korean), not runnable tests.
+
+A second, opt-in tier lives in `tests/smoke/` (`ORCADESK_SMOKE=1`, see the
+command above): a **real-backend smoke matrix** that runs one minimal
+answer-known input per calc kind through the real `QueueEngine` — H₂O/H₂CO for
+the plain kinds, HCN⇌HNC for the ts/neb/irc chain, ethanol for CREST — so a
+pass proves generation → real execution → parse → per-kind validation per kind,
+including the reference handoffs (opt→freq, ts_opt_freq→ts_freq/irc,
+mlip_opt→sp, crest_conf→sp). The asserts lean on `validate_result`'s own
+scientific pass bar (DONE requires convergence / the right imaginary-mode
+count / ≥1 conformer), so the matrix stays honest without duplicating the
+rules. Option combinatorics are deliberately out of scope (unit suite + P3
+targeted validation cover those). Intended cadence: run it before a release
+cut, on the release machine.
 
 ## Architecture
 
