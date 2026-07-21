@@ -109,6 +109,11 @@ class Bridge(QObject):
         # goes through this lock.
         self._mlip_lock = threading.Lock()
         self._mlip_envs_status: dict[str, dict] = {}
+        # Per-env probe generation: a probe publishes only if it is still the
+        # LATEST probe for its env — otherwise a slow older probe (e.g. one
+        # hanging toward its subprocess timeout) that finishes late would
+        # overwrite a newer probe's fresher result.
+        self._mlip_probe_seq: dict[str, int] = {}
         for env in self.settings.mlip_envs:
             self._start_mlip_probe(env["id"], env.get("name", ""), env.get("python", ""))
         # Live CREST status (WSL distro probe). Like MLIP the probe is slow (it
@@ -117,6 +122,8 @@ class Bridge(QObject):
         self._crest_lock = threading.Lock()
         self._crest_status: dict = {"state": "checking", "distros": [], "wsl": True}
         self._crest_installing = False
+        # CREST probe generation (same stale-overwrite guard as MLIP's).
+        self._crest_probe_seq = 0
         self._start_crest_probe()
 
     # --- about / metadata ---
@@ -274,14 +281,17 @@ class Bridge(QObject):
         """Probe one registered MLIP interpreter in a background thread (importing
         torch is slow and must not block the Qt UI thread). Publishes the result on
         self._mlip_envs_status[env_id] for get_mlip_status() to serve. A probe that
-        finishes after its env was removed is discarded."""
+        finishes after its env was removed — or after a NEWER probe of the same
+        env started (the generation check) — is discarded."""
         with self._mlip_lock:
             self._mlip_envs_status[env_id] = env_payload_checking(env_id, name, python)
+            self._mlip_probe_seq[env_id] = seq = self._mlip_probe_seq.get(env_id, 0) + 1
 
         def _worker() -> None:
             result = env_payload_from_probe(env_id, name, probe_env(python))
             with self._mlip_lock:
-                if self.settings.mlip_env(env_id) is not None:
+                if (self.settings.mlip_env(env_id) is not None
+                        and self._mlip_probe_seq.get(env_id) == seq):
                     self._mlip_envs_status[env_id] = result
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -352,12 +362,16 @@ class Bridge(QObject):
             prev = self._crest_status.get("distros", [])
             self._crest_status = {"state": "checking", "distros": prev,
                                   "wsl": self._crest_status.get("wsl", True)}
+            self._crest_probe_seq += 1
+            seq = self._crest_probe_seq
 
         def _worker() -> None:
             status = crest_aggregate_status(crest_probe_all())
             with self._crest_lock:
-                # don't clobber a status set by an in-flight install
-                if not self._crest_installing:
+                # don't clobber a status set by an in-flight install, or a
+                # NEWER probe's result (the generation check — a slow older
+                # probe must not overwrite a fresher one)
+                if not self._crest_installing and self._crest_probe_seq == seq:
                     self._crest_status = status
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -503,7 +517,10 @@ class Bridge(QObject):
             self.window, "Open ORCA .out", "", "ORCA output (*.out);;All files (*.*)"
         )
         if not path:
-            return "{}"
+            # closing the picker is a deliberate choice, not a parse failure —
+            # a bare "{}" was indistinguishable from a bad parse and made the
+            # UI log a spurious error on every cancel (A2)
+            return json.dumps(ParsePayload(cancelled=True))
         return self._parse_path(path)
 
     @pyqtSlot(str, result=str)
@@ -688,12 +705,24 @@ class Bridge(QObject):
     def get_log(self, since: int) -> str:
         return json.dumps(self.store.log_since(since))
 
+    def _calc_run_dir(self, name: str) -> Path:
+        """The run folder for a queued calc: derived from its persisted
+        output_path when it has one (a session-restored calc may live in a
+        DIFFERENT workspace than the currently-configured one — parse_calc_output
+        already resolves through output_path, so the .inp viewer, graph reseed
+        and conformer export must too, or the same calc renders its result but
+        fails these three), else {current workspace}/{name}."""
+        calc = self.store.get(name)
+        if calc is not None and calc.output_path:
+            return Path(calc.output_path).parent
+        return Path(self.settings.workspace_root) / name
+
     @pyqtSlot(str, result=str)
     def get_inp(self, name: str) -> str:
         """Return the on-disk ORCA .inp for a calculation, so a running or finished
         job's actual input can be viewed read-only (not only editable ones)."""
         try:
-            p = Path(self.settings.workspace_root) / name / f"{name}.inp"
+            p = self._calc_run_dir(name) / f"{name}.inp"
             if not p.exists():
                 return json.dumps(TextResult(ok=False, error="no input on disk yet"))
             return json.dumps(TextResult(ok=True, text=p.read_text(encoding="utf-8", errors="replace")))
@@ -706,12 +735,12 @@ class Bridge(QObject):
         calculation's .out, in file order, so the UI can rebuild the full live
         SCF/optimization graph history — independent of the capped log buffer.
 
-        Takes the calc NAME and resolves {workspace}/{name}/{name}.out
-        server-side (state-independent — works mid-run and for restored
-        sessions alike). Reads line-by-line
+        Takes the calc NAME and resolves the run folder server-side via
+        _calc_run_dir (state-independent — works mid-run and for restored
+        sessions alike, even from an old workspace). Reads line-by-line
         and keeps a few hundred relevant lines even from a huge .out."""
         try:
-            out_path = Path(self.settings.workspace_root) / name / f"{name}.out"
+            out_path = self._calc_run_dir(name) / f"{name}.out"
             if not out_path.exists():
                 return json.dumps(GraphLinesResult(ok=False, error="no output", lines=[]))
             lines = []
@@ -757,7 +786,7 @@ class Bridge(QObject):
         subfolder. Returns {ok, count, folder} or {ok:false, error}."""
         from ..crest.export import export_conformers as _export
         try:
-            folder = Path(self.settings.workspace_root) / name
+            folder = self._calc_run_dir(name)
             dest = folder / "conformers"
             written = _export(folder / "crest_conformers.xyz", dest, name)
             return json.dumps({"ok": True, "count": len(written), "folder": str(dest)})

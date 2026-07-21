@@ -329,6 +329,29 @@ def test_duplicate_name_add_rejected(store):
     assert store.names() == ["dup"]
 
 
+def test_duplicate_name_add_rejected_case_insensitive(store):
+    # calc.name is an on-disk folder name and Windows resolves "water" and
+    # "Water" to the SAME folder — both being accepted would silently share
+    # one .out between two calculations.
+    store.add(make_calc("water"))
+    with pytest.raises(ValueError):
+        store.add(make_calc("Water"))
+    with pytest.raises(ValueError):
+        store.add(make_calc("WATER"))
+    assert store.names() == ["water"]
+
+
+def test_replace_rename_collision_rejected_case_insensitive(store):
+    store.add(make_calc("water"))
+    store.add(make_calc("other"))
+    with pytest.raises(ValueError):
+        store.replace("other", make_calc("WATER"))
+    # renaming only by case is a collision with itself? No — the target IS the
+    # entry being replaced, so a case-only rename of the same row is allowed
+    store.replace("other", make_calc("Other"))
+    assert store.names() == ["water", "Other"]
+
+
 def test_version_increases_on_every_mutation(store):
     versions = [store.version()]
 
@@ -398,6 +421,17 @@ def test_corrupt_session_json_degrades_to_empty_queue(session_root):
 def test_missing_session_file_is_a_noop(session_root):
     store = QueueStore()
     store.load_session()
+    assert store.names() == []
+
+
+@pytest.mark.parametrize("content", ["null", "[]", "42", '"a string"'])
+def test_valid_json_non_dict_session_degrades_to_empty_queue(session_root, content):
+    # valid JSON that isn't an object used to raise AttributeError on
+    # data.get() — a self-perpetuating startup crash until the user deleted
+    # session.json by hand (P32; same guard as Settings.load)
+    (session_root / "session.json").write_text(content, encoding="utf-8")
+    store = QueueStore()
+    store.load_session()  # must not raise
     assert store.names() == []
 
 
@@ -679,3 +713,21 @@ def test_find_dangling_reference_shared_helper():
     msg = store_mod.find_dangling_reference([a, c])
     assert msg is not None
     assert "ghost" in msg and "'c'" in msg
+
+
+# ---- phone auth token --------------------------------------------------------
+
+def test_check_token_matches_only_the_pin(store):
+    pin = store.token
+    assert store.check_token(pin) is True
+    assert store.check_token("000000" if pin != "000000" else "111111") is False
+    assert store.check_token("") is False
+    assert store.check_token(None) is False
+
+
+def test_check_token_non_ascii_is_denied_not_a_crash(store):
+    # hmac.compare_digest on str raises TypeError for non-ASCII input; the
+    # token comes straight from an HTTP header/query param, so a stray
+    # non-ASCII char must be an auth failure, not an HTTP 500.
+    assert store.check_token("한글토큰") is False
+    assert store.check_token("pin·123") is False

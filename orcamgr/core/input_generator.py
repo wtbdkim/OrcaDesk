@@ -322,8 +322,13 @@ def _auto_aux(cfg: "StepConfig") -> str:
     - Plain hybrids/GGAs with an RI-J method just need /J; for def2 orbital
       bases that is the universal def2/J. Other bases are left to the user."""
     opts = (cfg.options or "").upper()
-    if "/J" in opts or "AUTOAUX" in opts:
-        return ""  # user already supplied an aux (or AutoAux)
+    ri_raw = (cfg.ri_approximation or "").upper()
+    if "/J" in opts or "AUTOAUX" in opts or "/J" in ri_raw or "AUTOAUX" in ri_raw:
+        # user already supplied an aux — in extra options OR as the RI picker
+        # choice itself ("AutoAux" is in data/ri_approximations.json, and it
+        # goes on the ! line verbatim; adding another would emit a duplicated
+        # keyword, which ORCA aborts on)
+        return ""
 
     if _needs_auxc(cfg.functional):
         # double hybrid / MP2: /C (and /J) needed unless RI is off

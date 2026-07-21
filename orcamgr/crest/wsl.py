@@ -70,11 +70,17 @@ def list_distros(include_infra: bool = False) -> list[str]:
     return names
 
 
-def run_bash(distro: str, bash_cmd: str, timeout: float = 20.0) -> Tuple[int, str, str]:
+def run_bash(distro: str, bash_cmd: str, timeout: float = 20.0,
+             login: bool = False) -> Tuple[int, str, str]:
     """Run ``bash -c <bash_cmd>`` in ``distro``; return (rc, stdout, stderr).
-    ``-e bash`` execs bash directly (no login shell). Never raises on nonzero rc;
-    returns (127, "", "wsl-not-found") if wsl.exe is missing, (124, ...) on timeout."""
-    cmd = ["wsl.exe", "-d", distro, "-e", "bash", "-c", bash_cmd]
+    ``-e bash`` execs bash directly (NOT a login shell by default — fast, no
+    profile side effects); ``login=True`` adds ``-l`` so /etc/profile and
+    ~/.profile are sourced, which the CREST probe needs to see a user-managed
+    PATH (conda, ~/.local/bin on distros that add it there). Never raises on
+    nonzero rc; returns (127, "", "wsl-not-found") if wsl.exe is missing,
+    (124, ...) on timeout."""
+    argv = ["bash", "-lc", bash_cmd] if login else ["bash", "-c", bash_cmd]
+    cmd = ["wsl.exe", "-d", distro, "-e", *argv]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=timeout,

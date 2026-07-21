@@ -444,6 +444,31 @@ class QueueEngine:
             )
         raise OrcaRunError(f"Referenced calculation '{calc.ref_name}' has no usable geometry yet.")
 
+    def _judge_dead_running(self, calc: Calculation, index: int, out_path) -> None:
+        """A calc restored as RUNNING whose detached ORCA is no longer alive:
+        judge it from the .out it left behind (DONE if terminated normally and
+        valid), NEVER relaunch. Mirrors reconcile_calcs' judgment; the failure
+        branches raise OrcaRunError so run_all stamps FAILED and blocks the
+        dependents exactly like a live failure."""
+        calc.pid = None
+        calc.create_time = None
+        path = calc.output_path or str(out_path)
+        result = None
+        if path and Path(path).exists():
+            try:
+                result = parse_file(path)
+            except Exception:
+                result = None
+        if result is None or not result.terminated_normally:
+            raise OrcaRunError("Interrupted while ORCAdesk was closed.")
+        calc.result = result
+        calc.output_path = path
+        validate_result(calc, result)   # raises OrcaRunError on a bad result
+        calc.state = CalcState.DONE
+        calc.message = "Completed (finished while ORCAdesk was closed)."
+        self.cb.log(f"[{calc.name}] finished while unmonitored — result adopted.", "ok")
+        self.cb.calc_update(index, calc)
+
     # -- single calculation --
     def _run_calc(self, calc: Calculation, index: int) -> None:
         out_path = self.workspace_root / calc.name / f"{calc.name}.out"
@@ -451,6 +476,17 @@ class QueueEngine:
         # Reattach path: this calc was left RUNNING by a previous session and its
         # ORCA process is genuinely still alive — don't relaunch, just resume
         # monitoring the live process and tailing its .out.
+        if calc.state == CalcState.RUNNING and calc.pid and not process_matches(
+                calc.pid, calc.create_time):
+            # The process is GONE (it exited while the calc sat RUNNING with no
+            # monitor — e.g. reconcile saw it alive at startup but the auto-
+            # resume was declined over an invalid ORCA path, and the job later
+            # finished). Judge it from its output like reconcile_calcs would —
+            # falling through to a fresh launch would TRUNCATE the completed
+            # .out and recompute it (the CREST path at _run_crest_calc has the
+            # same never-relaunch branch).
+            self._judge_dead_running(calc, index, out_path)
+            return
         if (calc.state == CalcState.RUNNING and calc.pid
                 and process_matches(calc.pid, calc.create_time)):
             self.runner.adopt(calc.pid, calc.create_time)
@@ -666,13 +702,32 @@ class QueueEngine:
         # launch's reconcile can still judge it DONE from the JSON on disk.
         calc.output_path = str(result_json)
         self.cb.calc_update(index, calc)
+        # Remove a stale result JSON before launching: folders survive removal,
+        # so a removed same-named calc's JSON could otherwise be adopted as THIS
+        # calc's DONE result if the new worker dies without writing one (e.g. a
+        # torch native crash — the exit-code check below has nothing to read
+        # a fresh result from).
+        try:
+            result_json.unlink()
+        except OSError:
+            pass
         runner = MlipRunner(python)
         self._mlip_runner = runner
         try:
-            runner.run(script_path, [str(config_path)], out_path,
-                       cwd=calc_dir, on_line=lambda ln: self.cb.log(ln, "orca"))
+            # forward a Stop/shutdown that landed BEFORE the runner was
+            # registered (cancel()/detach() signal only the registered runner)
+            if self._cancel_event.is_set():
+                runner.cancel()
+            if self._detach_event.is_set():
+                runner.detach()
+            rc = runner.run(script_path, [str(config_path)], out_path,
+                            cwd=calc_dir, on_line=lambda ln: self.cb.log(ln, "orca"))
         finally:
             self._mlip_runner = None
+        if not result_json.exists():
+            raise OrcaRunError(
+                f"MLIP worker exited (code {rc}) without writing a result — "
+                "see the run log / .out for the underlying error.")
 
         result = parse_mlip_result(str(result_json))
         calc.result = result
@@ -710,6 +765,11 @@ class QueueEngine:
                 runner.adopt(calc.pid, calc.create_time)
             if runner is not None and runner.is_alive():
                 self._crest_runner = runner
+                # forward a Stop/shutdown that landed before registration
+                if self._cancel_event.is_set():
+                    runner.cancel()
+                if self._detach_event.is_set():
+                    runner.detach()
                 self.cb.log(f"[{calc.name}] reattaching to CREST still running "
                             f"(pid {calc.pid})...", "info")
                 self.cb.calc_update(index, calc)
@@ -762,6 +822,12 @@ class QueueEngine:
         runner = CrestRunner(distro, crest_bin)
         self._crest_runner = runner
         try:
+            # forward a Stop/shutdown that landed before the runner was
+            # registered (cancel()/detach() signal only the registered runner)
+            if self._cancel_event.is_set():
+                runner.cancel()
+            if self._detach_event.is_set():
+                runner.detach()
             pid, create_time = runner.launch(script_path, calc.name, out_path)
             calc.pid = pid
             calc.create_time = create_time
@@ -946,9 +1012,14 @@ class QueueEngine:
                 # keeps its "Skipped: a dependency failed." diagnosis too —
                 # only rows whose diagnosis is still TRUE reach here (stale
                 # BLOCKED rows with a clean ancestry were normalized to
-                # PENDING at run start).
+                # PENDING at run start). RUNNING is exempt as well: a row still
+                # RUNNING here is a reattach-pending job from a previous
+                # session that this walk never reached — its process is (or may
+                # be) alive, and stamping it CANCELLED would drop the pid (the
+                # only handle to it) without killing anything, orphaning a live
+                # ORCA. Leave it RUNNING; the next Run reattaches or judges it.
                 if calc.state not in (CalcState.DONE, CalcState.FAILED,
-                                      CalcState.BLOCKED):
+                                      CalcState.BLOCKED, CalcState.RUNNING):
                     calc.state = CalcState.CANCELLED
                     calc.message = "Cancelled."
                     calc.pid = None

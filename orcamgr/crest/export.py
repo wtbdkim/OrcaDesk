@@ -67,6 +67,15 @@ def export_conformers(conformers_xyz: Path, dest_dir: Path, base_name: str) -> l
         raise ValueError("no conformers found in the ensemble file")
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
+    # Remove a previous export first: the zero-pad width depends on the frame
+    # count, so a re-export of a smaller ensemble ({base}_c1..c9 over an old
+    # _c01.._c12) would otherwise leave the old tail (_c10.._c12) looking like
+    # current conformers.
+    for stale in dest_dir.glob(f"{base_name}_c*.xyz"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
     width = len(str(len(frames)))
     written: list[Path] = []
     for k, frame in enumerate(frames, start=1):

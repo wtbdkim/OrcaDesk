@@ -207,8 +207,9 @@ class MlipRunner:
         if not py or not Path(py).exists():
             raise OrcaRunError(f"MLIP interpreter not found: '{py}'. "
                                "Check Settings → MLIP environments.")
-        self._cancel.clear()
-        self._detach.clear()
+        # No event clearing: the runner is created fresh per calc, and the
+        # engine forwards a Stop/shutdown that landed before it was registered
+        # — clearing would erase exactly that signal.
         cmd = [str(py), str(script_path), *[str(a) for a in (args or [])]]
         creationflags = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
                          if sys.platform.startswith("win") else 0)
@@ -226,6 +227,22 @@ class MlipRunner:
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        # The read loop blocks in readline, so a cancel/detach while the worker
+        # is SILENT (model download, a long optimizer step) would otherwise be
+        # acted on only when the next stdout line arrives — possibly minutes
+        # later, and past shutdown's bounded wait. This watcher terminates the
+        # process on the signal itself; the read loop then unblocks at EOF and
+        # the post-loop event checks raise the right exception.
+        watcher_stop = threading.Event()
+
+        def _watch() -> None:
+            while not watcher_stop.wait(0.3):
+                if self._cancel.is_set() or self._detach.is_set():
+                    self._terminate(proc)
+                    return
+
+        watcher = threading.Thread(target=_watch, daemon=True)
+        watcher.start()
         try:
             with open(output_path, "w", encoding="utf-8", errors="replace") as outf:
                 for line in (proc.stdout or ()):
@@ -241,6 +258,7 @@ class MlipRunner:
                         self._terminate(proc)
                         raise OrcaDetached("MLIP run terminated on shutdown.")
         finally:
+            watcher_stop.set()
             try:
                 if proc.stdout:
                     proc.stdout.close()

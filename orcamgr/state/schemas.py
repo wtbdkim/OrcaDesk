@@ -254,8 +254,10 @@ class ConformerPayload(TypedDict):
 
 class ParsePayload(TypedDict, total=False):
     """Successful parse of a .out. All keys optional on the wire because the
-    failure branch sends ErrorPayload and parse_out_file returns "{}" on a
-    cancelled dialog; a successful parse emits every data key it has."""
+    failure branch sends ErrorPayload and parse_out_file's cancelled dialog
+    sends only {"cancelled": true}; a successful parse emits every data key
+    it has."""
+    cancelled: bool           # True only for a cancelled Open-.out dialog (A2)
     summary: "list[tuple[str, str, str]]"     # label/value/category rows
     is_optimization: bool                     # gates "Final geometry" (front-end)
     show_elec: bool                           # gates electronic-structure sections

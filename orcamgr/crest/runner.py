@@ -45,6 +45,11 @@ LogCallback = Callable[[str], None]
 
 _TAIL_POLL = 0.5        # seconds between .out re-reads
 _LIVENESS_EVERY = 6.0   # seconds between WSL liveness checks (keep wsl.exe spawns rare)
+# Consecutive INDETERMINATE liveness checks (wsl.exe itself failing, not the
+# process being gone) before monitor gives up the tail — ~2 min of continuous
+# WSL outage, so the distro-deleted-mid-run case still terminates while a single
+# transient hiccup can never condemn a healthy run.
+_MAX_INDETERMINATE = 20
 _PID_WAIT = 10.0        # seconds to wait for the launched script to write its .pid
 _WSL_CALL_TIMEOUT = 20.0
 
@@ -202,8 +207,9 @@ class CrestRunner:
         the launch fails or no PID appears."""
         if not self.distro:
             raise OrcaRunError("No WSL distro configured for CREST. Set one in Settings.")
-        self._cancel_event.clear()
-        self._detach_event.clear()
+        # No event clearing (here or in adopt): the runner is created fresh per
+        # calc, and the engine forwards a Stop/shutdown that landed before the
+        # runner was registered — clearing would erase exactly that signal.
 
         script_path = Path(script_path)
         out_path = Path(out_path)
@@ -273,9 +279,8 @@ class CrestRunner:
         return pid, float(start_time or 0)
 
     def adopt(self, pid: int, create_time: Optional[float]) -> None:
-        """Reattach to a CREST process launched in a previous session."""
-        self._cancel_event.clear()
-        self._detach_event.clear()
+        """Reattach to a CREST process launched in a previous session. No event
+        clearing — see launch()."""
         with self._lock:
             self._pid = int(pid)
             self._start_time = int(create_time) if create_time else None
@@ -303,6 +308,7 @@ class CrestRunner:
         pos = int(start_pos)
         buf = ""
         last_liveness = time.monotonic()
+        indeterminate = 0   # consecutive liveness checks WSL couldn't answer
 
         def _drain() -> None:
             nonlocal pos, buf
@@ -328,7 +334,7 @@ class CrestRunner:
         while True:
             _drain()
             if self._cancel_event.is_set():
-                self._kill()
+                self._kill(scratch_name=name)
                 raise OrcaCancelled("Cancelled by user.")
             if self._detach_event.is_set():
                 # True detach: leave CREST running in WSL for reattach next launch.
@@ -339,11 +345,21 @@ class CrestRunner:
                     on_line(buf.rstrip("\r\n"))
                 break
             # Safety net for a job killed without writing its .rc (e.g. WSL shut
-            # down): check liveness occasionally so we don't tail forever.
+            # down): check liveness occasionally so we don't tail forever. Only
+            # a DEFINITIVE "gone" (or a long unbroken run of failed checks —
+            # e.g. the distro was deleted mid-run) ends the tail: a single
+            # transient wsl.exe failure (timeout, service hiccup) must not
+            # abandon a healthy run — the resulting no-ensemble parse would
+            # FAILED-lock it (P24) while CREST keeps producing a good result.
             now = time.monotonic()
             if now - last_liveness >= _LIVENESS_EVERY:
                 last_liveness = now
-                if not self._is_alive():
+                alive = self._liveness()
+                if alive is None:
+                    indeterminate += 1
+                else:
+                    indeterminate = 0
+                if alive is False or indeterminate >= _MAX_INDETERMINATE:
                     time.sleep(0.5)   # give a just-finishing script time to flush .rc
                     _drain()
                     if rc_path.exists():
@@ -360,32 +376,43 @@ class CrestRunner:
 
     # ---- helpers ----
     def is_alive(self) -> bool:
-        return self._is_alive()
+        """True unless the process is DEFINITIVELY gone. An indeterminate check
+        (wsl.exe timed out / WSL service hiccup) reports alive: the callers'
+        not-alive branches are one-way doors (reconcile judges from files;
+        monitor gives up the tail), so a transient probe failure must never
+        condemn a healthy multi-hour run."""
+        return self._liveness() is not False
 
-    def _is_alive(self) -> bool:
+    def _liveness(self) -> Optional[bool]:
+        """Three-state liveness: True (alive), False (definitively gone —
+        kill -0 said so), None (could not ask WSL: timeout, wsl.exe missing,
+        or a Wsl/ service error)."""
         with self._lock:
             pid = self._pid
             start = self._start_time
         if not pid:
             return False
-        # kill -0 tests existence; the start-time comparison guards against PID
-        # reuse (the WSL analogue of procutil's create_time check).
+        # kill -0 tests existence (its failure exits 1 — the only DEFINITIVE
+        # "gone"); the start-time comparison guards against PID reuse (the WSL
+        # analogue of procutil's create_time check).
         cmd = (f"kill -0 {pid} 2>/dev/null || exit 1; "
                f"awk '{{print $22}}' /proc/{pid}/stat 2>/dev/null")
-        rc, out, _ = run_bash(self.distro, cmd, timeout=_WSL_CALL_TIMEOUT)
-        if rc != 0:
-            return False
-        if start is not None:
-            got = out.strip().split()
-            if got:
-                try:
-                    if int(got[0]) != int(start):
-                        return False   # PID was reused by a different process
-                except ValueError:
-                    pass
-        return True
+        rc, out, err = run_bash(self.distro, cmd, timeout=_WSL_CALL_TIMEOUT)
+        if rc == 0:
+            if start is not None:
+                got = out.strip().split()
+                if got:
+                    try:
+                        if int(got[0]) != int(start):
+                            return False   # PID was reused by a different process
+                    except ValueError:
+                        pass
+            return True
+        if rc == 1 and "Wsl/" not in (err or ""):
+            return False                    # kill -0 failed: the process is gone
+        return None                         # wsl.exe itself failed — unknown
 
-    def _kill(self) -> None:
+    def _kill(self, scratch_name: str = "") -> None:
         with self._lock:
             pid = self._pid
         if not pid:
@@ -394,4 +421,11 @@ class CrestRunner:
         # and its xtb/OpenMP children all die; then the leader PID as a fallback.
         cmd = (f"kill -TERM -{pid} 2>/dev/null; kill -TERM {pid} 2>/dev/null; "
                f"sleep 0.3; kill -KILL -{pid} 2>/dev/null; kill -KILL {pid} 2>/dev/null; true")
+        if scratch_name:
+            # run_crest.sh only removes its ext4 scratch dir on a normal finish;
+            # a kill would otherwise leak MD trajectories (hundreds of MB per
+            # cancelled run) inside the WSL VHD forever. (Adjacent-string
+            # concatenation: "$HOME/..." expands, the quoted name doesn't.)
+            cmd += (f'; rm -rf "$HOME/.orcadesk/scratch/"'
+                    f'{shlex.quote(scratch_name)} 2>/dev/null; true')
         run_bash(self.distro, cmd, timeout=_WSL_CALL_TIMEOUT)

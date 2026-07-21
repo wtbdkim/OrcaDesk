@@ -203,6 +203,30 @@ def test_cancel_marks_pending_cancelled_but_preserves_terminal_states(tmp_path):
     assert blocked_prev.message == "Skipped: a dependency failed."
 
 
+def test_cancel_leaves_reattach_pending_running_row_untouched(tmp_path):
+    # a row still RUNNING when the cancel sweep reaches it is a reattach-
+    # pending job from a previous session (its process may be alive);
+    # stamping it CANCELLED would drop the pid — the only handle to the
+    # process — without killing anything, orphaning a live detached ORCA.
+    harness = EngineHarness(tmp_path)
+
+    def cancel_and_abort(_calc: Calculation) -> None:
+        harness.engine.cancel()
+        raise OrcaCancelled("Cancelled by user.")
+
+    harness.behaviors["inflight"] = cancel_and_abort
+    inflight = make_calc("inflight")
+    reattach_pending = make_calc("reattach_pending", state=CalcState.RUNNING)
+    reattach_pending.pid = 4242
+    reattach_pending.create_time = 123.0
+
+    harness.engine.run_all([inflight, reattach_pending])
+
+    assert inflight.state is CalcState.CANCELLED
+    assert reattach_pending.state is CalcState.RUNNING   # left for reattach
+    assert reattach_pending.pid == 4242                  # handle preserved
+
+
 # ---- graceful drain -------------------------------------------------------------
 def test_stop_after_current_finishes_current_and_leaves_rest_pending(tmp_path):
     harness = EngineHarness(tmp_path)
@@ -289,6 +313,54 @@ def _write_out(tmp_path, name: str, text: str) -> Path:
     out_path = out_dir / f"{name}.out"
     out_path.write_text(text, encoding="utf-8")
     return out_path
+
+
+def test_running_calc_with_dead_process_is_judged_not_relaunched(tmp_path, monkeypatch):
+    # A calc restored as RUNNING whose detached ORCA has since exited (e.g.
+    # the startup auto-resume was declined and the job finished later) must
+    # be judged from the .out it left behind — a fresh launch would TRUNCATE
+    # the completed output and recompute it. The engine here has no fake and
+    # no valid ORCA path, so falling through to a relaunch would FAIL loudly.
+    import orcamgr.core.queue as queue_mod
+    monkeypatch.setattr(queue_mod, "process_matches", lambda pid, ct: False)
+    logs: list = []
+    engine = QueueEngine(
+        orca_path="orca-not-needed-in-tests", workspace_root=str(tmp_path),
+        callbacks=QueueCallbacks(log=lambda m, l: logs.append(m),
+                                 calc_update=lambda i, c: None))
+    calc = make_calc("orphan", kind="opt", state=CalcState.RUNNING)
+    calc.xyz = "H 0.0 0.0 0.0\nH 0.0 0.0 0.74"
+    calc.pid = 4242
+    calc.create_time = 123.0
+    out_path = _write_out(tmp_path, "orphan", PASSING_OPT_OUT)
+    calc.output_path = str(out_path)
+
+    engine.run_all([calc])
+
+    assert calc.state is CalcState.DONE
+    assert calc.pid is None
+    assert "finished while ORCAdesk was closed" in calc.message
+    # the completed .out was adopted verbatim, never truncated by a relaunch
+    assert out_path.read_text(encoding="utf-8") == PASSING_OPT_OUT
+
+
+def test_running_calc_dead_without_output_fails_and_blocks_dependents(tmp_path, monkeypatch):
+    import orcamgr.core.queue as queue_mod
+    monkeypatch.setattr(queue_mod, "process_matches", lambda pid, ct: False)
+    engine = QueueEngine(
+        orca_path="orca-not-needed-in-tests", workspace_root=str(tmp_path),
+        callbacks=QueueCallbacks(log=lambda m, l: None,
+                                 calc_update=lambda i, c: None))
+    calc = make_calc("orphan", kind="opt", state=CalcState.RUNNING)
+    calc.pid = 4242
+    calc.create_time = 123.0        # no .out anywhere
+    dep = make_calc("dep", kind="freq", ref="orphan")
+
+    engine.run_all([calc, dep])
+
+    assert calc.state is CalcState.FAILED
+    assert "Interrupted" in calc.message
+    assert dep.state is CalcState.BLOCKED
 
 
 def test_keep_existing_valid_output_is_kept_without_running(tmp_path):

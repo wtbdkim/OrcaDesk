@@ -156,6 +156,21 @@ def test_auto_aux_user_supplied_aux_suppresses_auto():
     assert _auto_aux(autoaux) == ""
 
 
+def test_auto_aux_ri_picker_autoaux_not_duplicated():
+    # "AutoAux" is a selectable RI-approximation choice
+    # (data/ri_approximations.json) and goes on the ! line verbatim; _auto_aux
+    # adding a second one would emit a duplicated simple-input keyword, which
+    # ORCA aborts on.
+    mp2 = StepConfig(functional="MP2", basis_set="def2-TZVP",
+                     ri_approximation="AutoAux")
+    assert _auto_aux(mp2) == ""
+    line = _keyword_line(build_input(mp2, WATER_XYZ))
+    assert line.upper().count("AUTOAUX") == 1
+    dh = StepConfig(functional="B2PLYP", basis_set="def2-TZVP",
+                    ri_approximation="AutoAux")
+    assert _auto_aux(dh) == ""
+
+
 def test_auto_aux_nori_adds_nothing():
     plain = StepConfig(functional="wB97X-D4", basis_set="def2-TZVP",
                        ri_approximation="NoRI")

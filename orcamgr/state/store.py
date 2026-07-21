@@ -401,7 +401,11 @@ class QueueStore:
             return False
         import hmac
         with self._lock:
-            return hmac.compare_digest(str(supplied), self._token)
+            # compare as bytes: compare_digest on str requires ASCII and raises
+            # TypeError otherwise — a non-ASCII token pasted on the phone must
+            # be an auth failure, not an HTTP 500.
+            return hmac.compare_digest(
+                str(supplied).encode("utf-8"), self._token.encode("utf-8"))
 
     # ---- connected clients (phones) ----
     def heartbeat(self, client_id: str) -> None:
@@ -457,7 +461,11 @@ class QueueStore:
                 # mid-run would never execute, so the visible and executing
                 # queues would silently diverge.
                 raise ValueError("Cannot add to the queue while it is running.")
-            if any(c.name == calc.name for c in self._calcs):
+            # case-insensitive: calc.name is an on-disk folder name and Windows
+            # (the primary target) resolves "water" and "Water" to the SAME
+            # folder — accepting both would silently share one .out between two
+            # calculations.
+            if any(c.name.casefold() == calc.name.casefold() for c in self._calcs):
                 raise ValueError(f"A calculation named '{calc.name}' already exists.")
             self._calcs.append(calc)
             self._bump_and_save()
@@ -501,11 +509,14 @@ class QueueStore:
         templates instead of running half a substitution."""
         removed = set(removed_names)
         with self._lock:
-            staying = {c.name for c in self._calcs if c.name not in removed}
+            # collision check is case-insensitive (names are Windows folder
+            # names, see add()); removal filtering stays exact — the engine
+            # passes the actual queued names.
+            staying = {c.name.casefold() for c in self._calcs if c.name not in removed}
             for nc in new_calcs:
-                if nc.name in staying:
+                if nc.name.casefold() in staying:
                     return False
-                staying.add(nc.name)
+                staying.add(nc.name.casefold())
             idxs = [i for i, c in enumerate(self._calcs) if c.name in removed]
             insert_at = idxs[0] if idxs else len(self._calcs)
             self._calcs = [c for c in self._calcs if c.name not in removed]
@@ -533,8 +544,10 @@ class QueueStore:
             if self._calcs[idx].state not in EDITABLE_STATES:
                 raise ValueError("Only pending, cancelled, or blocked calculations can be edited.")
             # if renaming, the new name must not collide with a DIFFERENT entry
+            # (case-insensitive — names are Windows folder names, see add())
             if new_calc.name != name and any(
-                c.name == new_calc.name for j, c in enumerate(self._calcs) if j != idx
+                c.name.casefold() == new_calc.name.casefold()
+                for j, c in enumerate(self._calcs) if j != idx
             ):
                 raise ValueError(f"A calculation named '{new_calc.name}' already exists.")
             # a freshly edited calc is always pending again, with no stale result
@@ -736,6 +749,12 @@ class QueueStore:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            return
+        # Valid JSON that isn't an object (a list, null, a bare number — e.g. a
+        # hand-repaired or externally-truncated file) must degrade like corrupt
+        # JSON does: .get() on a non-dict would crash EVERY startup until the
+        # user deletes session.json by hand (same guard as Settings.load, P32).
+        if not isinstance(data, dict):
             return
         restored = []
         for d in data.get("calculations", []):

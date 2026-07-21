@@ -360,9 +360,10 @@
 
 /**
  * Parsed .out payload (parse_out_file / parse_out_path). On failure only
- * {error} is present; parse_out_file returns literally "{}" on a
+ * {error} is present; parse_out_file returns {cancelled: true} on a
  * cancelled file dialog, so every field is optional.
  * @typedef {Object} ParsePayload
+ * @property {boolean} [cancelled]   true only for a cancelled Open-.out dialog
  * @property {[string, string, string][]} [summary]   label/value/category rows
  * @property {boolean} [is_optimization]         gates "Final geometry"
  * @property {boolean} [show_elec]               gates electronic-structure sections

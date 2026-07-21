@@ -179,10 +179,11 @@ class MainWindow(QMainWindow):
 
     def shutdown(self):
         """Idempotent teardown. The in-flight ORCA is deliberately LEFT RUNNING
-        so closing ORCAdesk doesn't stop a calculation: we only PAUSE the queue
-        (stop monitoring, no kill), wait — bounded — for the worker to unwind,
-        persist the queue (incl. the running pid) so it can be reattached next
-        launch, then stop the phone server. Safe to call multiple times and from
+        so closing ORCAdesk doesn't stop a calculation: we stop the phone
+        server (so no new run can start on the shared store mid-teardown),
+        PAUSE the queue (stop monitoring, no kill), wait — bounded — for the
+        worker to unwind, then persist the queue (incl. the running pid) so it
+        can be reattached next launch. Safe to call multiple times and from
         any exit path (closeEvent, aboutToQuit, atexit). Errors are logged, not
         swallowed — this is the one moment cleanup matters.
 
@@ -191,6 +192,13 @@ class MainWindow(QMainWindow):
         if self._shutdown_done:
             return
         self._shutdown_done = True
+        try:
+            # stop the phone server FIRST: until it is down, /api/run on the
+            # shared store could start a fresh run that pause_run no longer
+            # monitors and wait_for_run no longer waits on
+            self.server_ctl.stop()
+        except Exception as e:
+            print(f"[shutdown] server stop failed: {e}", file=sys.stderr)
         try:
             self.store.pause_run()      # stop monitoring; do NOT kill ORCA
         except Exception as e:
@@ -203,10 +211,6 @@ class MainWindow(QMainWindow):
             self.store.save_session()   # persist queue + running pid for reattach
         except Exception as e:
             print(f"[shutdown] save_session failed: {e}", file=sys.stderr)
-        try:
-            self.server_ctl.stop()
-        except Exception as e:
-            print(f"[shutdown] server stop failed: {e}", file=sys.stderr)
 
     # ------------------------------------------------------------- drag & drop
     def _drop_path(self, mime):

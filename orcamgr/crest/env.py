@@ -16,9 +16,10 @@ from __future__ import annotations
 
 from .wsl import list_distros, run_bash, wsl_available
 
-# Candidate locations, checked in order. ``command -v`` (login shell) first so a
-# user-managed install (conda, apt, custom PATH) is honoured, then the paths our
-# installer uses.
+# Candidate locations, checked in order. ``command -v`` first — run through a
+# LOGIN shell (run_bash(login=True): plain ``wsl -e bash -c`` sources no
+# profile, so a user-managed install visible only via ~/.profile / conda PATH
+# would be missed) — then the paths our installer uses.
 _RESOLVE_SCRIPT = (
     'p="$(command -v crest 2>/dev/null)"; '
     '[ -z "$p" ] && [ -x "$HOME/.local/bin/crest" ] && p="$HOME/.local/bin/crest"; '
@@ -31,7 +32,7 @@ def resolve_crest_bin(distro: str, timeout: float = 30.0) -> tuple[str, str]:
     """Return (crest_bin_path, version_line) for ``distro`` — ("", "") if CREST
     isn't found. version_line is the first line of ``crest --version`` mentioning
     a version, if any."""
-    rc, out, _ = run_bash(distro, _RESOLVE_SCRIPT, timeout=timeout)
+    rc, out, _ = run_bash(distro, _RESOLVE_SCRIPT, timeout=timeout, login=True)
     if rc != 0 or "CREST_BIN=" not in out:
         return "", ""
     path = ""

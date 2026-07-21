@@ -4,15 +4,17 @@ A desktop GUI for building, queuing, running, and parsing ORCA computational
 chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark **or light** UI),
 Python core.
 
-> **Status: 0.4.2 beta** (`0.4.2-beta`). Desktop app: build → queue → run →
+> **Status: 0.5.0 beta** (`0.5.0-beta`). Desktop app: build → queue → run →
 > parse, validated against real ORCA 6.1.1 output. A running calculation
 > **survives closing the app** and is reattached on the next launch; the UI ships
-> with both a **dark and a light theme**; you can **drag a `.inp`/`.xyz`/`.out`
-> onto the window** to load it; and the Log graph shows **live progress for
-> optimizations and frequency runs** (numerical *and* analytical/CP-SCF). You can
-> also **pre-optimize a structure with a MACE model (MLIP)** and hand the result
-> off to an ORCA job, using your own Python environment. Run from source, or build
-> a standalone Windows app with `build.bat`. (Phone-sync is in development and not
+> with both a **dark and a light theme** (plus an optional **Liquid Glass**
+> style); you can **drag a `.inp`/`.xyz`/`.out` onto the window** to load it; and
+> the Log graph shows **live progress for optimizations and frequency runs**
+> (numerical *and* analytical/CP-SCF). Beyond ORCA, you can **pre-optimize a
+> structure with a MACE model (MLIP)** in your own Python environment, and run a
+> **CREST conformer search through WSL** — both hand their geometries off to ORCA
+> jobs through the normal reference mechanism. Run from source, or build a
+> standalone Windows app with `build.bat`. (Phone-sync is in development and not
 > part of this build.) See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Requirements

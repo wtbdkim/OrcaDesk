@@ -693,8 +693,13 @@ class OrcaOutParser:
                     fosc=float(m.group(5)),
                 ))
             elif trans and ln.strip() == "":
-                if len(trans) > 1:
-                    break
+                # rows are contiguous (verified on real ORCA 6.x output), so
+                # the first blank after any row ends the table. Breaking only
+                # when >1 row was parsed let a single-root run (nroots 1) fall
+                # through into the VELOCITY dipole table right below — whose
+                # rows match the same regex — double-counting state 1 with the
+                # velocity-gauge fosc.
+                break
         r.transitions = trans
 
     def _parse_tddft_states(self, lines, r):
@@ -717,14 +722,24 @@ class OrcaOutParser:
                   if "EXCITED STATES" in ln]
         if not starts:
             return
-        start = starts[-1]
+        # With triplets requested ORCA prints TWO blocks — "... EXCITED STATES
+        # (SINGLETS)" then "(TRIPLETS)" — and plain last-wins would keep only
+        # the triplet compositions while the absorption table above pairs with
+        # the SINGLET states. Prefer the last SINGLETS-tagged block when one
+        # exists; untagged headers (every corpus file) keep exact last-wins.
+        singlet_starts = [i for i in starts if "SINGLET" in lines[i].upper()]
+        start = singlet_starts[-1] if singlet_starts else starts[-1]
+        # bound the scan at the NEXT excited-states header (the TRIPLETS block)
+        # so the singlet scan can't run into it and mix the two state lists
+        following = [i for i in starts if i > start]
+        end = min(following[0] if following else len(lines), start + 4000)
         state_re = re.compile(
             r"STATE\s+(\d+):\s*E=\s*[\d.]+\s*au\s+([\d.]+)\s*eV")
         contrib_re = re.compile(
             r"(\d+[ab]?)\s*->\s*(\d+[ab]?)\s*:\s*([\d.]+)")
         states: list = []
         cur = None
-        for ln in lines[start:start + 4000]:
+        for ln in lines[start:end]:
             ms = state_re.search(ln)
             if ms:
                 cur = {"state": int(ms.group(1)),
@@ -791,8 +806,12 @@ class OrcaOutParser:
             return
         path_kind = "irc" if "IRC" in lines[start].upper() else "neb"
         path = []
-        # scan forward from the header; rows look like "<label> <float> <float> ..."
-        for ln in lines[start: start + 200]:
+        # scan forward from the header; rows look like "<label> <float> <float> ...".
+        # The blank line after the table is the real terminator — the slice cap
+        # only guards a malformed file. It must comfortably exceed the longest
+        # real table: a both-direction IRC prints one row per step and easily
+        # passes 200 rows, which the old cap of 200 silently truncated.
+        for ln in lines[start: start + 20000]:
             s = ln.strip()
             if not s:
                 # stop on a blank line only after we've collected some rows

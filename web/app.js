@@ -3180,6 +3180,7 @@ async function openOutFile() {
   const raw = await bridge.parse_out_file();
   /** @type {ParsePayload} */
   let data; try { data = JSON.parse(raw); } catch { return; }
+  if (data.cancelled) return; // user closed the picker — not an error
   if (!data.summary) { appendLog("Could not parse file.", "err"); return; }
   _currentResultName = "";   // an external file, not a queued calc → no conformer->ORCA action
   _currentResult = data;

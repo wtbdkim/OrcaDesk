@@ -39,8 +39,8 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 273 tests over the framework-free layers
-node tests/web/scf_graph.test.js       # 27 tracker/progress tests, no npm deps
+python -m pytest                       # 326 tests over the framework-free layers
+node tests/web/scf_graph.test.js       # 31 tracker/progress tests, no npm deps
 
 # Real-backend smoke matrix (opt-in): one answer-known input per calc kind,
 # run through the real QueueEngine against YOUR installed ORCA/MACE/CREST.
@@ -195,7 +195,9 @@ The `core/` pipeline:
 
 These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 - **Calculation `name` is unique and is used as the on-disk folder name**
-  (`{workspace}/{name}/`). Uniqueness is enforced in the store.
+  (`{workspace}/{name}/`). Uniqueness is enforced in the store,
+  **case-insensitively** — Windows resolves `water` and `Water` to the same
+  folder, so accepting both would share one `.out` between two calcs.
 - **The queue autosaves to `%APPDATA%\ORCAdesk\session.json`** on every mutation
   (`QueueStore._bump_and_save`) and is restored on startup (`load_session`). A
   `RUNNING` calc persists its detached ORCA's `(pid, create_time)` **and its
@@ -204,7 +206,11 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   launch, `reconcile_calcs` checks that identity: still alive → stays `RUNNING`
   and is **reattached** (`OrcaRunner.adopt` + `monitor`, continuing the queue);
   gone → judged from its output (`DONE` if terminated normally + valid, else
-  `FAILED`). Closing ORCAdesk does **not** kill the running job — `shutdown()`
+  `FAILED`). The engine applies the **same judgment mid-run**
+  (`_judge_dead_running`): a RUNNING calc whose process died while unmonitored
+  (e.g. the startup reattach was declined and the job finished later) is
+  adopted from its `.out`, never relaunched — a relaunch would truncate the
+  completed output. Closing ORCAdesk does **not** kill the running job — `shutdown()`
   calls `store.pause_run()` (engine `detach()`), not cancel. **MLIP is the
   exception**: its worker has no detach/reattach machinery and is terminated on
   shutdown, so a mid-run mlip calc is stamped `CANCELLED` ("Stopped on

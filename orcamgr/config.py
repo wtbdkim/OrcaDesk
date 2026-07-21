@@ -139,6 +139,15 @@ class Settings:
         else:
             s = cls()
 
+        # mlip_envs is iterated (and .get()-ed) at startup by the Bridge, so a
+        # wrong-typed value in a hand-edited/corrupted settings.json would crash
+        # EVERY launch until the file is fixed (P32). Coerce to the expected
+        # shape: a list of dict entries; anything else degrades to [].
+        if not isinstance(s.mlip_envs, list):
+            s.mlip_envs = []
+        else:
+            s.mlip_envs = [e for e in s.mlip_envs if isinstance(e, dict)]
+
         # fill in sensible defaults on first run
         if not s.orca_path:
             s.orca_path = autodetect_orca()

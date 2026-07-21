@@ -307,6 +307,55 @@ def test_tddft_states_survive_lowercase_lookalike_after_real_block(tmp_path):
     assert st["contributions"] == [("4a", "5a", pytest.approx(0.987654))]
 
 
+TDDFT_VELOCITY_TABLE = """
+-----------------------------------------------------------------------------
+         ABSORPTION SPECTRUM VIA TRANSITION VELOCITY DIPOLE MOMENTS
+-----------------------------------------------------------------------------
+      Transition      Energy     Energy  Wavelength fosc(P2)      P2
+                       (eV)      (cm-1)    (nm)                 (au**2)
+-----------------------------------------------------------------------------
+  0-1A  ->  1-1A    4.036000   32555.4   307.2   0.099000000   0.44000
+"""
+
+
+def test_single_root_tddft_does_not_absorb_velocity_table(tmp_path):
+    # nroots 1: the electric-dipole table has exactly ONE row, and the velocity
+    # table right below has the same row shape. The blank line after the single
+    # row must end the scan — previously it only broke after >1 rows, so state
+    # 1 was double-counted with the velocity-gauge fosc.
+    text = (_header(SP_KEYWORDS) + _geometry(0.1173) + _energy(FINAL_ENERGY)
+            + TDDFT_BLOCKS + TDDFT_VELOCITY_TABLE + TERMINATION)
+    r = parse_file(_write_out(tmp_path, text))
+    assert len(r.transitions) == 1
+    assert r.transitions[0].fosc == pytest.approx(0.052)  # electric, not P2
+
+
+TDDFT_TRIPLET_BLOCK = """
+------------------------------------
+TD-DFT/TDA EXCITED STATES (TRIPLETS)
+------------------------------------
+
+the weight of the individual excitations are printed if larger than 1.0e-02
+
+STATE  1:  E=   0.110000 au      2.993 eV    24140.0 cm**-1
+     4a ->   6a  :     0.911111 (c=  0.95452672)
+"""
+
+
+def test_triplets_enabled_keeps_singlet_state_compositions(tmp_path):
+    # with triplets requested ORCA prints a SINGLETS block then a TRIPLETS
+    # block; plain last-wins kept only the triplet compositions while the
+    # absorption table pairs with the singlets. The singlet block must win,
+    # and its scan must stop at the triplet header (no mixed state list).
+    text = (_header(SP_KEYWORDS) + _geometry(0.1173) + _energy(FINAL_ENERGY)
+            + TDDFT_BLOCKS + TDDFT_TRIPLET_BLOCK + TERMINATION)
+    r = parse_file(_write_out(tmp_path, text))
+    assert len(r.tddft_states) == 1
+    st = r.tddft_states[0]
+    assert st["ev"] == pytest.approx(4.036)          # the singlet state
+    assert st["contributions"] == [("4a", "5a", pytest.approx(0.987654))]
+
+
 # ---------------------------------------------------------------------------
 # error diagnosis (P28)
 # ---------------------------------------------------------------------------

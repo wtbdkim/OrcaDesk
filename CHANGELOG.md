@@ -3,7 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [0.5.0-beta] — 2026-07-06
+## [0.5.0-beta] — 2026-07-21
 
 CREST conformer search as a third execution backend. CREST has no native
 Windows build, so ORCAdesk runs its statically-linked Linux binary through WSL —
@@ -197,6 +197,77 @@ ORCA in one action.
   default) and validated/clamped at the deserialization boundary.
 
 ### Fixed
+- **Backend-pass fixes** (a bug-hunt sweep over the Python layers, mirroring
+  the earlier GUI passes):
+  - *Queue names are now unique case-insensitively.* `water` and `Water` are
+    the same folder on Windows, so both being accepted made two calculations
+    silently share one on-disk `.out` — the first calc's Results tab,
+    geometry handoff, and keep-existing check all served the second calc's
+    numbers.
+  - *A restored RUNNING calculation whose detached ORCA already exited is
+    judged from its output, never relaunched.* If the startup reattach was
+    declined (e.g. invalid ORCA path) and the job finished later, the next
+    Run would truncate the completed `.out` and recompute it from scratch;
+    it now adopts the result (DONE if terminated normally + valid, FAILED
+    otherwise), exactly like the startup reconcile and the CREST path.
+  - *Stop pressed in the pre-launch window is no longer swallowed.* The
+    runners cleared their cancel/detach signals at launch/adopt, so a Stop
+    that landed while the engine was still resolving geometry / writing the
+    input let that calculation run to completion anyway. Events are now
+    sticky for the run, and the engine forwards a Stop to a CREST/MLIP
+    runner registered after the signal.
+  - *Stop now reaches a silent MLIP worker.* Cancel/shutdown were only acted
+    on when the worker printed a line, so a worker busy downloading a model
+    or inside a long optimizer step ignored Stop indefinitely (and could
+    outlive the app as an orphan). A watcher thread now terminates it on the
+    signal itself.
+  - *A crashed MLIP worker can no longer resurrect a removed same-named
+    calc's result.* The stale `{name}.mlip.json` is deleted before launch
+    and a worker that exits without writing a fresh result fails the calc
+    (folders survive removal, so the old JSON used to be adopted as DONE —
+    wrong molecule included).
+  - *The cancel sweep leaves a reattach-pending RUNNING row alone.* Stamping
+    it CANCELLED dropped the pid — the only handle to the live detached
+    ORCA — without killing anything, orphaning the process and inviting a
+    second launch into the same folder.
+  - *A transient WSL hiccup can no longer FAILED-lock a healthy CREST run.*
+    One failed `wsl.exe` liveness call (timeout, service restart) made the
+    monitor give up tailing; the resulting no-ensemble parse locked the calc
+    FAILED while CREST later delivered a good result. Only a definitive
+    "process gone" (or ~2 min of continuous WSL failure) ends the tail now.
+  - *The CREST probe now searches a login-shell PATH*, so a user-managed
+    install (conda, `~/.profile` PATH) is found — the probe claimed to but
+    ran a non-login shell.
+  - *Cancelling a CREST run cleans its WSL scratch directory* (previously
+    each cancelled search leaked its MD trajectories — easily hundreds of
+    MB — inside the WSL disk forever), and *re-exporting a smaller conformer
+    ensemble removes the previous export first* (mixed zero-padding used to
+    leave stale `_c10..` files that looked current).
+  - *A corrupted `session.json`/`settings.json` can no longer crash every
+    startup.* Valid-JSON-but-not-an-object session files (and wrong-typed
+    `mlip_envs` settings entries) now degrade to defaults instead of raising
+    before the window exists — a crash loop only deleting the file by hand
+    could break.
+  - *Environment-probe results can no longer go stale-over-fresh.* A slow
+    MLIP/CREST probe finishing late overwrote a newer probe's result (the
+    indicator flipped back to error and re-locked the build card); probes
+    now carry a generation and late results are discarded.
+  - *Cancelling the "Open ORCA .out" dialog no longer logs a parse error*,
+    and the `.inp` viewer, graph reseed, and conformer export now resolve a
+    restored calc's folder through its persisted output path (after a
+    workspace change they failed for a calc whose results still displayed
+    fine).
+  - *Shutdown stops the phone server first*, closing the window where
+    `/api/run` could start a run on the already-paused store mid-teardown.
+  - *Input generation: choosing AutoAux as the RI approximation no longer
+    emits the keyword twice* for MP2/double-hybrid methods (ORCA aborts on
+    duplicated simple-input keywords).
+  - *Parser: a single-root TD-DFT run no longer double-counts state 1* (the
+    velocity-gauge table below was absorbed into the transitions list);
+    *with Triplets enabled the singlet excited-state compositions are kept*
+    (last-wins used to keep only the triplet block, mislabeled against the
+    singlet absorption table); *long IRC profiles are no longer truncated*
+    at ~200 path rows.
 - **An ORCA job that finishes while ORCAdesk is closed is now restored as
   DONE.** The reconcile step always had a "terminated normally + valid →
   DONE" branch, but it was unreachable: the output path it judges from was
