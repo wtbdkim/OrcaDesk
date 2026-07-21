@@ -8,15 +8,18 @@ QTimer in JS — this keeps the store's worker thread and Qt's UI thread cleanly
 separated (no cross-thread Qt signal juggling).
 
 JS calls these slots:
-  get_about, get_settings, save_settings, autodetect_orca,
+  get_about, get_settings, save_settings,
+  set_wallpaper_image, get_wallpaper_image, autodetect_orca,
   pick_orca_executable, pick_mlip_python, add_mlip_env, remove_mlip_env,
   check_mlip, get_mlip_status,
   pick_workspace, load_xyz_file, load_inp_file,
   load_inp_path, load_xyz_path, load_choices,
-  parse_out_file, build_inp_preview,
-  add_calc, remove_calc, clear_queue, get_queue, get_calc, get_inp, get_log, get_graph_lines,
+  parse_out_file, parse_out_path, parse_calc_output, build_inp_preview,
+  add_calc, remove_calc, clear_queue, reorder_calc, update_calc,
+  get_queue, get_calc, get_inp, get_log, get_graph_lines, export_conformers,
+  get_free_energy_profile, check_overwrite_conflicts,
   run_queue, cancel_queue, stop_after_current,
-  get_server_status, start_server, stop_server
+  get_server_status, get_connect_qr, start_server, stop_server
 """
 
 from __future__ import annotations
@@ -35,22 +38,28 @@ from ..mlip.env import (
     probe_env, new_env_id, resolve_interpreter,
     env_payload_checking, env_payload_from_probe, aggregate_status,
 )
-from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL
+from ..crest.env import (
+    probe_all as crest_probe_all, aggregate_status as crest_aggregate_status,
+)
+from ..crest.wsl import list_distros as crest_list_distros
+from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL, user_data_root
 from ..core.input_generator import StepConfig, build_input_template
-from ..core.queue import GeometrySource, CalcState
+from ..core.queue import GeometrySource, CalcState, result_from_output
 from ..core.parser import parse_file
 from ..state.store import (
-    QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory, load_choice_groups,
+    QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory,
+    load_choice_groups, queue_needs_orca, find_dangling_reference,
 )
 # Response payloads are CONSTRUCTED through these TypedDicts (plain dicts at
 # runtime, so the JSON wire format is unchanged) — schemas.py is the single
 # source of truth, mirrored for the front-end by web/types.js.
 from ..state.schemas import (
-    AboutPayload, ConflictsResult, ErrorPayload, FepPoint, FepResult,
-    GeomAtomPayload, GetCalcResult, GraphLinesResult, InpFilePayload,
+    AboutPayload, AutodetectResult, ConflictsResult, ErrorPayload, FepPoint,
+    FepResult, GeomAtomPayload, GetCalcResult, GraphLinesResult, LoadResult,
     MlipStatusPayload, MutationResult, NmrPayload, OkResult, OrbitalPayload,
     ParsePayload, QrResult, ServerStatusPayload, SettingsPayload,
     StartServerResult, TextResult, TransitionPayload,
+    CrestStatusPayload, ConformerPayload,
 )
 
 
@@ -75,6 +84,15 @@ _G_DOTS = re.compile(r"\.{5,}")
 _G_DONE = re.compile(r"\*\*\*\s*OPTIMIZATION RUN DONE\s*\*\*\*|THE OPTIMIZATION HAS CONVERGED|HURRAY", re.I)
 _G_POST = re.compile(
     r"VIBRATIONAL FREQUENCIES|ORCA SCF RESPONSE|GEOMETRIC PERTURBATIONS|CP-?SCF DRIVER|SCF HESSIAN|ANALYTICAL FREQUENCIES|NUMERICAL FREQUENCIES")
+# CREST iMTD-GC progress markers (mirror of web/scf_graph.js CrestTracker regexes)
+# so get_graph_lines can reseed a reattached CREST run's phase/energy graph. These
+# never appear in an ORCA .out (and vice versa), so matching them is additive/safe.
+_CREST_GRAPH = re.compile(
+    r"CREGEN>\s*E lowest|structures?\s+remain within|Meta-Dynamics Iteration|"
+    r"\(\d+\s*MTDs\)|\*MTD\s+\d+\s+completed successfully|CREST terminated normally|"
+    r"Change in topology detected|safety termination of CREST|"
+    r"number of unique conformers for further calc|Initial Geometry Optimization|"
+    r"iMTD-GC SAMPLING|Additional regular MDs|Final Geometry Optimization")
 
 
 class Bridge(QObject):
@@ -91,8 +109,22 @@ class Bridge(QObject):
         # goes through this lock.
         self._mlip_lock = threading.Lock()
         self._mlip_envs_status: dict[str, dict] = {}
+        # Per-env probe generation: a probe publishes only if it is still the
+        # LATEST probe for its env — otherwise a slow older probe (e.g. one
+        # hanging toward its subprocess timeout) that finishes late would
+        # overwrite a newer probe's fresher result.
+        self._mlip_probe_seq: dict[str, int] = {}
         for env in self.settings.mlip_envs:
             self._start_mlip_probe(env["id"], env.get("name", ""), env.get("python", ""))
+        # Live CREST status (WSL distro probe). Like MLIP the probe is slow (it
+        # spawns wsl.exe + runs `crest --version`), so it runs in a background
+        # thread and the UI polls get_crest_status(). Guarded by its own lock.
+        self._crest_lock = threading.Lock()
+        self._crest_status: dict = {"state": "checking", "distros": [], "wsl": True}
+        self._crest_installing = False
+        # CREST probe generation (same stale-overwrite guard as MLIP's).
+        self._crest_probe_seq = 0
+        self._start_crest_probe()
 
     # --- about / metadata ---
     @pyqtSlot(result=str)
@@ -113,9 +145,13 @@ class Bridge(QObject):
             default_nprocs=self.settings.default_nprocs,
             default_maxcore_mb=self.settings.default_maxcore_mb,
             theme=self.settings.theme,
+            theme_variant=self.settings.theme_variant,
+            glass_level=self.settings.glass_level,
+            wallpaper=self.settings.wallpaper,
             eta_mode=self.settings.eta_mode,
             geo_graph_mode=self.settings.geo_graph_mode,
             build_mode=self.settings.build_mode,
+            crest_distro=self.settings.crest_distro,
             orca_valid=self.settings.orca_is_valid(),
         ))
 
@@ -123,7 +159,7 @@ class Bridge(QObject):
     def save_settings(self, payload_json: str) -> str:
         try:
             data = json.loads(payload_json or "{}")
-            for k in ("orca_path", "workspace_root", "theme"):
+            for k in ("orca_path", "workspace_root", "theme", "crest_distro"):
                 if k in data:
                     setattr(self.settings, k, data[k])
             for k in ("default_nprocs", "default_maxcore_mb"):
@@ -136,20 +172,94 @@ class Bridge(QObject):
             if "geo_graph_mode" in data and data["geo_graph_mode"] in ("all5", "maxgrad"):
                 self.settings.geo_graph_mode = data["geo_graph_mode"]
             # build-tab mode: only accept known values
-            if "build_mode" in data and data["build_mode"] in ("beginner", "expert", "mlip"):
+            if "build_mode" in data and data["build_mode"] in ("beginner", "expert", "mlip", "crest"):
                 self.settings.build_mode = data["build_mode"]
+            # theme variant: shadcn (flat default) or liquidglass
+            if "theme_variant" in data and data["theme_variant"] in ("shadcn", "liquidglass"):
+                self.settings.theme_variant = data["theme_variant"]
+            # Liquid-Glass intensity
+            if "glass_level" in data and data["glass_level"] in (
+                    "restrained", "moderate", "bold", "vivid", "maximal"):
+                self.settings.glass_level = data["glass_level"]
+            # Liquid-Glass wallpaper key (preset or "custom"); the custom image
+            # itself is written separately via set_wallpaper_image
+            if "wallpaper" in data and data["wallpaper"] in (
+                    "aurora", "aqua", "sunset", "grape", "graphite", "ocean", "custom"):
+                self.settings.wallpaper = data["wallpaper"]
             self.settings.save()
             return self.get_settings()
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             return json.dumps(ErrorPayload(error=str(e)))
 
+    # --- Liquid-Glass custom wallpaper ---
+    # The custom wallpaper image is kept OUT of settings.json (which is rewritten
+    # on every queue mutation and would otherwise carry a multi-MB base64 blob).
+    # It lives as a verbatim data-URI text file in user_data_root, robustly
+    # persisted across restarts (unlike the WebEngine profile's localStorage,
+    # whose persistence depends on the profile being on-the-record).
+    _WALLPAPER_MAX = 24 * 1024 * 1024   # 24 MB data-URI ceiling (~18 MB image)
+
+    def _wallpaper_file(self) -> Path:
+        return user_data_root() / "wallpaper_custom.dat"
+
+    @pyqtSlot(str, result=str)
+    def set_wallpaper_image(self, data_uri: str) -> str:
+        """Persist (or, with ""/oversize input, clear) the Liquid-Glass custom
+        wallpaper image as a data URI. Does not touch settings.wallpaper — the
+        caller also save_settings({wallpaper:"custom"}). Returns {"ok": true,
+        "stored": bool}: `stored` is False when the input was empty / not an
+        image / over the size cap (so the file was cleared, not written) — the
+        front-end uses it to warn that an oversize image won't persist rather
+        than losing it silently at the next launch."""
+        try:
+            path = self._wallpaper_file()
+            text = data_uri or ""
+            if not text.startswith("data:image/") or len(text) > self._WALLPAPER_MAX:
+                # empty / invalid / too large -> clear any stored image
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                return json.dumps({"ok": True, "stored": False})
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(path)
+            return json.dumps({"ok": True, "stored": True})
+        except OSError as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+
+    @pyqtSlot(result=str)
+    def get_wallpaper_image(self) -> str:
+        """The stored custom-wallpaper data URI, or "" if none. Returned as a
+        bare string (not a JSON envelope) — the front-end feeds it straight to
+        an Image src, and "" simply means 'fall back to a preset'."""
+        try:
+            path = self._wallpaper_file()
+            if path.exists():
+                return path.read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            # ValueError covers UnicodeDecodeError (a corrupt/non-UTF-8 file from
+            # external tampering) — degrade to "" like Settings.load(), never let
+            # it escape the slot across the Qt boundary.
+            pass
+        return ""
+
     @pyqtSlot(result=str)
     def autodetect_orca(self) -> str:
-        path = autodetect_orca()
+        """Scan PATH + common install roots for the ORCA executable and return
+        an AutodetectResult JSON. Despite the getter-ish name this is a
+        MUTATION slot: a found path is written to settings.orca_path and saved
+        immediately (A3) — the JSON envelope (rather than a bare path string)
+        exists so the outcome, including failure, is explicit on the wire."""
+        try:
+            path = autodetect_orca()
+        except Exception as e:
+            return json.dumps(AutodetectResult(ok=False, path="", error=str(e)))
         if path:
             self.settings.orca_path = path
             self.settings.save()
-        return path
+            return json.dumps(AutodetectResult(ok=True, path=path))
+        return json.dumps(AutodetectResult(ok=False, path=""))
 
     # --- file pickers ---
     @pyqtSlot(result=str)
@@ -171,14 +281,17 @@ class Bridge(QObject):
         """Probe one registered MLIP interpreter in a background thread (importing
         torch is slow and must not block the Qt UI thread). Publishes the result on
         self._mlip_envs_status[env_id] for get_mlip_status() to serve. A probe that
-        finishes after its env was removed is discarded."""
+        finishes after its env was removed — or after a NEWER probe of the same
+        env started (the generation check) — is discarded."""
         with self._mlip_lock:
             self._mlip_envs_status[env_id] = env_payload_checking(env_id, name, python)
+            self._mlip_probe_seq[env_id] = seq = self._mlip_probe_seq.get(env_id, 0) + 1
 
         def _worker() -> None:
             result = env_payload_from_probe(env_id, name, probe_env(python))
             with self._mlip_lock:
-                if self.settings.mlip_env(env_id) is not None:
+                if (self.settings.mlip_env(env_id) is not None
+                        and self._mlip_probe_seq.get(env_id) == seq):
                     self._mlip_envs_status[env_id] = result
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -240,56 +353,156 @@ class Bridge(QObject):
                 envs.append(st)
         return json.dumps(MlipStatusPayload(**aggregate_status(envs)))
 
+    # --- CREST environment (WSL-backed, kept separate from ORCA) ---
+    def _start_crest_probe(self) -> None:
+        """Probe every usable WSL distro for CREST in a background thread (spawning
+        wsl.exe + running `crest --version` must not block the Qt UI thread).
+        Publishes the aggregate on self._crest_status for get_crest_status()."""
+        with self._crest_lock:
+            prev = self._crest_status.get("distros", [])
+            self._crest_status = {"state": "checking", "distros": prev,
+                                  "wsl": self._crest_status.get("wsl", True)}
+            self._crest_probe_seq += 1
+            seq = self._crest_probe_seq
+
+        def _worker() -> None:
+            status = crest_aggregate_status(crest_probe_all())
+            with self._crest_lock:
+                # don't clobber a status set by an in-flight install, or a
+                # NEWER probe's result (the generation check — a slow older
+                # probe must not overwrite a fresher one)
+                if not self._crest_installing and self._crest_probe_seq == seq:
+                    self._crest_status = status
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @pyqtSlot(result=str)
+    def get_crest_status(self) -> str:
+        """The latest aggregate CrestStatusPayload (state + per-distro probes).
+        The probe runs in the background; the UI polls this."""
+        with self._crest_lock:
+            status = dict(self._crest_status)
+        status.setdefault("state", "checking")
+        status.setdefault("distros", [])
+        status.setdefault("wsl", True)
+        return json.dumps(CrestStatusPayload(**status))
+
+    @pyqtSlot(result=str)
+    def check_crest(self) -> str:
+        """Re-probe WSL distros for CREST. Returns the current status immediately;
+        the UI polls get_crest_status() for the refreshed result."""
+        self._start_crest_probe()
+        return self.get_crest_status()
+
+    @pyqtSlot(str, result=str)
+    def install_crest(self, distro: str = "") -> str:
+        """Auto-install the static CREST binary into ``distro`` (or the first
+        usable distro) in a background thread. Returns the current status
+        immediately; the UI polls get_crest_status(). No-op if already installing."""
+        with self._crest_lock:
+            if self._crest_installing:
+                return self.get_crest_status()
+            self._crest_installing = True
+            self._crest_status = {"state": "checking",
+                                  "distros": self._crest_status.get("distros", []),
+                                  "wsl": True}
+
+        def _worker() -> None:
+            from ..crest.installer import install_crest as do_install
+            target = (distro or "").strip()
+            if not target:
+                distros = crest_list_distros()
+                target = distros[0] if distros else ""
+            if target:
+                try:
+                    do_install(target)
+                except Exception:
+                    pass  # the re-probe below reports the real readiness
+            status = crest_aggregate_status(crest_probe_all())
+            with self._crest_lock:
+                self._crest_installing = False
+                self._crest_status = status
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return self.get_crest_status()
+
+    @pyqtSlot(result=str)
+    def list_crest_distros(self) -> str:
+        """Usable (non-infrastructure) WSL distro names, for the Settings picker."""
+        return json.dumps({"distros": crest_list_distros()})
+
+    @pyqtSlot(str, result=str)
+    def set_crest_distro(self, distro: str) -> str:
+        """Persist the preferred WSL distro for CREST and re-probe."""
+        self.settings.crest_distro = (distro or "").strip()
+        self.settings.save()
+        self._start_crest_probe()
+        return self.get_crest_status()
+
     @pyqtSlot(result=str)
     def pick_workspace(self) -> str:
         path = QFileDialog.getExistingDirectory(self.window, "Select workspace folder")
         return path or ""
 
+    def _load_result(self, path: str) -> str:
+        """Build the unified LoadResult envelope shared by every load_* slot.
+        An empty path means the user cancelled the file dialog — a deliberate
+        choice, reported as ok=True/cancelled=True so the front-end never
+        surfaces it as an error; ok=False is reserved for real read failures
+        (the old per-slot shapes conflated the two — A2). "name" is the file
+        stem, used to auto-fill the calculation name.
+
+        Loading a geometry never changes the workspace — the workspace is set
+        only from Settings. (It previously adopted the loaded file's parent
+        folder as the workspace; reloading a prior run's optimized ``.xyz``,
+        which lives inside that calc's own run folder, then silently descended
+        the workspace into that folder and nested every later run — the bug
+        this removed.)"""
+        if not path:
+            return json.dumps(LoadResult(
+                ok=True, cancelled=True, text="", name="", error=""))
+        try:
+            p = Path(path)
+            # errors="replace": a stray non-UTF-8 byte must degrade to a
+            # visible replacement char, not escape the OSError handling as a
+            # UnicodeDecodeError crossing the JS boundary.
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            return json.dumps(LoadResult(
+                ok=False, cancelled=False, text="", name="", error=str(e)))
+        return json.dumps(LoadResult(
+            ok=True, cancelled=False, text=text, name=p.stem, error=""))
+
     @pyqtSlot(result=str)
     def load_xyz_file(self) -> str:
+        """Pick a .xyz file; returns a LoadResult JSON. The dialog opens at the
+        current workspace for convenience; loading does not change it."""
         path, _ = QFileDialog.getOpenFileName(
-            self.window, "Load .xyz file", "", "XYZ file (*.xyz);;All files (*.*)"
+            self.window, "Load .xyz file", self.settings.workspace_root or "",
+            "XYZ file (*.xyz);;All files (*.*)"
         )
-        if not path:
-            return ""
-        try:
-            return Path(path).read_text(encoding="utf-8")
-        except OSError:
-            return ""
+        return self._load_result(path)
 
     @pyqtSlot(result=str)
     def load_inp_file(self) -> str:
-        """Pick a complete ORCA .inp; return its text PLUS the file's base name
-        so expert/raw mode can auto-fill the calculation name. JSON:
-        {"text": "<.inp contents>", "name": "<filename without .inp>"}."""
+        """Pick a complete ORCA .inp; returns a LoadResult JSON (its "name"
+        lets expert/raw mode auto-fill the calculation name)."""
         path, _ = QFileDialog.getOpenFileName(
             self.window, "Load ORCA .inp file", "", "ORCA input (*.inp);;All files (*.*)"
         )
-        if not path:
-            return json.dumps(InpFilePayload(text="", name=""))
-        try:
-            p = Path(path)
-            return json.dumps(InpFilePayload(text=p.read_text(encoding="utf-8"), name=p.stem))
-        except OSError:
-            return json.dumps(InpFilePayload(text="", name=""))
+        return self._load_result(path)
 
     @pyqtSlot(str, result=str)
     def load_inp_path(self, path: str) -> str:
-        """Load a .inp by PATH (drag-and-drop). Same {text, name} shape as
+        """Load a .inp by PATH (drag-and-drop). Same LoadResult as
         load_inp_file, so the JS side is identical."""
-        try:
-            p = Path(path)
-            return json.dumps(InpFilePayload(text=p.read_text(encoding="utf-8", errors="replace"), name=p.stem))
-        except OSError as e:
-            return json.dumps(InpFilePayload(text="", name="", error=str(e)))
+        return self._load_result(path)
 
     @pyqtSlot(str, result=str)
     def load_xyz_path(self, path: str) -> str:
-        """Load a .xyz by PATH (drag-and-drop). Returns raw text like load_xyz_file."""
-        try:
-            return Path(path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return ""
+        """Load a .xyz by PATH (drag-and-drop). Same LoadResult as
+        load_xyz_file; loading does not change the workspace."""
+        return self._load_result(path)
 
     # --- option lists ---
     @pyqtSlot(str, result=str)
@@ -304,7 +517,10 @@ class Bridge(QObject):
             self.window, "Open ORCA .out", "", "ORCA output (*.out);;All files (*.*)"
         )
         if not path:
-            return "{}"
+            # closing the picker is a deliberate choice, not a parse failure —
+            # a bare "{}" was indistinguishable from a bad parse and made the
+            # UI log a spurious error on every cancel (A2)
+            return json.dumps(ParsePayload(cancelled=True))
         return self._parse_path(path)
 
     @pyqtSlot(str, result=str)
@@ -314,18 +530,62 @@ class Bridge(QObject):
             return json.dumps(ErrorPayload(error="file not found"))
         return self._parse_path(path)
 
+    @pyqtSlot(str, result=str)
+    def parse_calc_output(self, name: str) -> str:
+        """Parse a QUEUED calc's finished output by NAME, dispatching on its
+        KIND (result_from_output) — never the external-file folder heuristic in
+        _parse_path, which can mis-fire for a calc reusing a removed calc's
+        name (workspace folders survive removal, so e.g. a leftover
+        crest_conformers.xyz would route a new ORCA .out to the CREST parser)."""
+        calc = next((c for c in self.store.list() if c.name == name), None)
+        if calc is None:
+            return json.dumps(ErrorPayload(error=f"'{name}' is not in the queue."))
+        if not calc.output_path or not Path(calc.output_path).exists():
+            return json.dumps(ErrorPayload(error="no output file on disk"))
+        try:
+            return self._payload_json(result_from_output(calc))
+        except Exception as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+
     def _parse_path(self, path: str) -> str:
         try:
-            r = parse_file(path)
-            # Send everything that was parsed plus the two gating flags; the
+            # Per-backend dispatch for EXTERNAL files (the path-based mirror of
+            # result_from_output's kind dispatch — queued calcs use
+            # parse_calc_output's kind dispatch instead): an MLIP result is the
+            # engine-written "{name}.mlip.json" (core/queue.py), so route it by
+            # suffix — the ORCA text parser would render its JSON as ABNORMAL.
+            # A CREST conformer search stores its data in sibling files
+            # (crest_conformers.xyz), not the .out itself, so dispatch on their
+            # presence to the CREST parser; otherwise the ORCA .out parser.
+            folder = Path(path).parent
+            if path.endswith(".mlip.json"):
+                from ..mlip.parser import parse_mlip_result
+                r = parse_mlip_result(path)
+            elif (folder / "crest_conformers.xyz").exists() or (folder / "crest_best.xyz").exists():
+                from ..crest.parser import parse_crest_result
+                r = parse_crest_result(path)
+            else:
+                r = parse_file(path)
+            return self._payload_json(r)
+        except Exception as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+
+    def _payload_json(self, r) -> str:
+            # Send everything that was parsed plus the gating flags; the
             # front-end decides what to show per calc kind (and "Show all"
             # overrides it). is_optimization gates "Final geometry"; show_elec
-            # gates general electronic-structure sections (orbitals, charges,
-            # Mayer, dipole, SCF decomposition).
+            # gates general electronic-structure sections; is_conformer_search
+            # gates the CREST ensemble list.
             return json.dumps(ParsePayload(
                 summary=r.summary_rows(),
                 is_optimization=r.is_optimization,
                 show_elec=r.shows_electronic_props,
+                is_conformer_search=r.is_conformer_search,
+                conformers=[
+                    ConformerPayload(index=c.index, energy_eh=c.energy_eh,
+                                     rel_kcal=c.rel_kcal, n_atoms=len(c.geometry))
+                    for c in getattr(r, "conformers", [])
+                ],
                 transitions=[
                     TransitionPayload(state=t.state, ev=t.energy_ev,
                                       nm=t.wavelength_nm, fosc=t.fosc)
@@ -339,6 +599,7 @@ class Bridge(QObject):
                     for (i, el, iso, an) in r.nmr_shieldings
                 ],
                 neb_path=r.neb_path,
+                neb_path_kind=r.neb_path_kind,
                 geometry=[
                     GeomAtomPayload(el=a.symbol, x=a.x, y=a.y, z=a.z)
                     for a in r.geometry
@@ -354,8 +615,6 @@ class Bridge(QObject):
                 input_keywords=r.input_keywords,
                 input_block=r.input_block,
             ))
-        except Exception as e:
-            return json.dumps(ErrorPayload(error=str(e)))
 
     # --- raw .inp preview (for entering raw-edit mode) ---
     @pyqtSlot(str, result=str)
@@ -446,12 +705,24 @@ class Bridge(QObject):
     def get_log(self, since: int) -> str:
         return json.dumps(self.store.log_since(since))
 
+    def _calc_run_dir(self, name: str) -> Path:
+        """The run folder for a queued calc: derived from its persisted
+        output_path when it has one (a session-restored calc may live in a
+        DIFFERENT workspace than the currently-configured one — parse_calc_output
+        already resolves through output_path, so the .inp viewer, graph reseed
+        and conformer export must too, or the same calc renders its result but
+        fails these three), else {current workspace}/{name}."""
+        calc = self.store.get(name)
+        if calc is not None and calc.output_path:
+            return Path(calc.output_path).parent
+        return Path(self.settings.workspace_root) / name
+
     @pyqtSlot(str, result=str)
     def get_inp(self, name: str) -> str:
         """Return the on-disk ORCA .inp for a calculation, so a running or finished
         job's actual input can be viewed read-only (not only editable ones)."""
         try:
-            p = Path(self.settings.workspace_root) / name / f"{name}.inp"
+            p = self._calc_run_dir(name) / f"{name}.inp"
             if not p.exists():
                 return json.dumps(TextResult(ok=False, error="no input on disk yet"))
             return json.dumps(TextResult(ok=True, text=p.read_text(encoding="utf-8", errors="replace")))
@@ -464,11 +735,12 @@ class Bridge(QObject):
         calculation's .out, in file order, so the UI can rebuild the full live
         SCF/optimization graph history — independent of the capped log buffer.
 
-        Takes the calc NAME (a still-RUNNING calc has no output_path yet) and
-        resolves {workspace}/{name}/{name}.out server-side. Reads line-by-line
+        Takes the calc NAME and resolves the run folder server-side via
+        _calc_run_dir (state-independent — works mid-run and for restored
+        sessions alike, even from an old workspace). Reads line-by-line
         and keeps a few hundred relevant lines even from a huge .out."""
         try:
-            out_path = Path(self.settings.workspace_root) / name / f"{name}.out"
+            out_path = self._calc_run_dir(name) / f"{name}.out"
             if not out_path.exists():
                 return json.dumps(GraphLinesResult(ok=False, error="no output", lines=[]))
             lines = []
@@ -498,9 +770,28 @@ class Bridge(QObject):
                         lines.append(ln)
                     elif _G_ITER.match(ln):
                         lines.append(ln)
+                    elif _CREST_GRAPH.search(ln):
+                        # CREST phase/energy markers (a CREST .out has no ORCA
+                        # SCF/geo lines, so this branch is reached cleanly)
+                        lines.append(ln)
             return json.dumps(GraphLinesResult(ok=True, lines=lines))
         except Exception as e:
             return json.dumps(GraphLinesResult(ok=False, error=str(e), lines=[]))
+
+    @pyqtSlot(str, result=str)
+    def export_conformers(self, name: str) -> str:
+        """Split a finished CREST search's ensemble into per-conformer .xyz files
+        under {workspace}/{name}/conformers/ ({name}_c1.xyz = the best conformer,
+        …). No file dialog — the files land next to the run, in a conformers/
+        subfolder. Returns {ok, count, folder} or {ok:false, error}."""
+        from ..crest.export import export_conformers as _export
+        try:
+            folder = self._calc_run_dir(name)
+            dest = folder / "conformers"
+            written = _export(folder / "crest_conformers.xyz", dest, name)
+            return json.dumps({"ok": True, "count": len(written), "folder": str(dest)})
+        except Exception as e:
+            return json.dumps({"ok": False, "error": str(e)})
 
     # --- run / cancel ---
     @pyqtSlot(result=str)
@@ -516,9 +807,18 @@ class Bridge(QObject):
             # Parse-on-miss: DONE calcs restored from a previous session aren't
             # eagerly re-parsed at startup, so read the .out on demand here (only
             # when the user actually opens the free-energy profile).
+            # Writing c.result WITHOUT the store lock is safe only via the
+            # DONE-frozen invariant (P24): the engine never touches a DONE calc
+            # again, and this loop reads DONE calcs exclusively, so no other
+            # thread writes this field concurrently (A4). If DONE calcs ever
+            # become mutable elsewhere, this must take the store lock.
             if not c.result and c.output_path:
                 try:
-                    c.result = parse_file(c.output_path)
+                    # kind dispatch, NOT parse_file: a DONE mlip/crest calc's
+                    # output must go through its own parser — caching a wrong
+                    # ORCA parse here would poison ref.result for the engine's
+                    # reference resolution (which only parses on a miss).
+                    c.result = result_from_output(c)
                 except Exception:
                     pass
             if not c.result:
@@ -538,13 +838,21 @@ class Bridge(QObject):
     def check_overwrite_conflicts(self) -> str:
         """Return the names of queued calculations that would overwrite an
         existing result on disk (a {name}.out already in the workspace), so the
-        UI can warn before a run clobbers earlier work. DONE calcs are excluded
-        because the run loop skips them anyway."""
+        UI can warn before a run clobbers earlier work. Excluded states:
+        DONE is skipped by the run loop anyway; FAILED is locked (P24) — it
+        never runs again, so it has nothing to overwrite; and a CANCELLED calc
+        overwriting its own partial .out is the whole point of a retry, not a
+        loss worth warning about. The warning exists for PENDING/BLOCKED name
+        reuse — a fresh calc whose name would clobber an earlier good result."""
         try:
             ws = Path(self.settings.workspace_root)
             conflicts = []
+            # RUNNING is excluded too: a reattached (or reattachable) detached
+            # job keeps appending to its own .out — that is not an overwrite.
+            skip = {CalcState.DONE, CalcState.FAILED, CalcState.CANCELLED,
+                    CalcState.RUNNING}
             for c in self.store.list():
-                if c.state == CalcState.DONE:
+                if c.state in skip:
                     continue
                 out_path = ws / c.name / f"{c.name}.out"
                 if out_path.exists():
@@ -556,26 +864,25 @@ class Bridge(QObject):
     @pyqtSlot(str, result=str)
     def run_queue(self, skip_names_json: str = "") -> str:
         calcs = self.store.list()
-        # ORCA is required only if a non-MLIP calc will actually run — an all-MLIP
-        # queue runs through the user's MACE env without ORCA configured.
-        needs_orca = any(not c.kind.startswith("mlip") and c.state != CalcState.DONE
-                         for c in calcs)
-        if needs_orca and not self.settings.orca_is_valid():
+        # ORCA is required only if a non-MLIP calc will actually run — an
+        # all-MLIP queue runs through the user's MACE env without ORCA
+        # configured. Shared helper so this decision cannot drift from the
+        # phone's /api/run (P4, A18).
+        if queue_needs_orca(calcs) and not self.settings.orca_is_valid():
             return json.dumps(OkResult(ok=False, error="ORCA path is not set or invalid. Check Settings."))
         # names the user chose to skip (e.g. to preserve existing results)
         try:
             skip_names = set(json.loads(skip_names_json)) if skip_names_json else set()
         except Exception:
             skip_names = set()
-        # validate references resolve to existing names
-        names = {c.name for c in calcs}
-        for c in calcs:
-            if c.geometry_source == GeometrySource.REFERENCE and c.ref_name not in names:
-                return json.dumps(OkResult(ok=False,
-                    error=f"'{c.name}' references '{c.ref_name}', which is not in the queue."))
+        # validate references resolve to existing names (shared with /api/run)
+        ref_err = find_dangling_reference(calcs)
+        if ref_err:
+            return json.dumps(OkResult(ok=False, error=ref_err))
         factory = make_engine_factory(self.store, self.settings.orca_path,
                                       self.settings.workspace_root, skip_names,
-                                      mlip_envs=self.settings.mlip_envs)
+                                      mlip_envs=self.settings.mlip_envs,
+                                      crest_distro=self.settings.crest_distro)
         try:
             self.store.start_run(factory)
         except RuntimeError as e:
@@ -602,14 +909,17 @@ class Bridge(QObject):
         store has already restored + reconciled the queue in load_session()."""
         if not self.store.has_live_running():
             return
-        if not self.settings.orca_is_valid():
+        # Only ORCA calcs need a valid ORCA path; an all-CREST/MLIP queue can
+        # reattach with no ORCA configured (P4, same gate as run_queue).
+        if queue_needs_orca(self.store.list()) and not self.settings.orca_is_valid():
             self.store.append_log(
                 "A calculation from the previous session is still running, but the "
                 "ORCA path is invalid — cannot reattach. Fix it in Settings.", "warn")
             return
         factory = make_engine_factory(self.store, self.settings.orca_path,
                                       self.settings.workspace_root,
-                                      mlip_envs=self.settings.mlip_envs)
+                                      mlip_envs=self.settings.mlip_envs,
+                                      crest_distro=self.settings.crest_distro)
         try:
             self.store.start_run(factory)
             self.store.append_log(
@@ -621,7 +931,10 @@ class Bridge(QObject):
     # --- server control (phone sync) ---
     @pyqtSlot(result=str)
     def get_server_status(self) -> str:
-        if not self.server_ctl:
+        # "available" must mean "start_server would work": the controller
+        # object alone is not enough — an install without fastapi/uvicorn
+        # would otherwise show the feature as available and fail on use (A9).
+        if not self.server_ctl or not self.server_ctl.is_available():
             return json.dumps(ServerStatusPayload(available=False, running=False))
         return json.dumps(ServerStatusPayload(
             available=True,

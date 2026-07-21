@@ -7,8 +7,8 @@ be unit-tested on its own. It wraps a list of Calculation objects with a
 threading.RLock so concurrent access (Qt UI thread + server worker thread) is
 safe.
 
-This is the "길 1" design we agreed on: one in-memory queue object, shared via
-a lock, no SQLite.
+This is the option-1 design we agreed on: one in-memory queue object, shared
+via a lock, no SQLite.
 """
 
 from __future__ import annotations
@@ -33,12 +33,16 @@ from ..paths import data_dir, user_data_root
 # contract with web/types.js)
 from .schemas import CalcFull, CalcSummary, LogLine, LogPayload, QueueSnapshot
 
-# States whose calculations the user may still edit / remove / reorder.
-# PENDING: never run yet. FAILED / CANCELLED: finished unsuccessfully, so the
-# user can fix and retry them. DONE is intentionally excluded (a completed
-# result is frozen — make a new calculation to rerun). RUNNING/BLOCKED are
-# excluded too (in-flight or dependency-gated).
-EDITABLE_STATES = {CalcState.PENDING, CalcState.FAILED, CalcState.CANCELLED}
+# States whose calculations the user may still edit / reorder.
+# PENDING: never run yet. CANCELLED: a deliberate user stop, not a failure, so
+# it can be fixed and retried. BLOCKED: must stay editable because after its
+# failed parent is removed the user has to re-point the reference at another
+# calculation — locking it would strand it forever. FAILED is deliberately NOT
+# editable (P24 revision): a failure locks the calc at the moment it fails —
+# no edit, no re-run; the only remaining interaction is removal (×). DONE is
+# excluded too (a completed result is frozen — make a new calculation to
+# rerun), and RUNNING is in flight.
+EDITABLE_STATES = {CalcState.PENDING, CalcState.CANCELLED, CalcState.BLOCKED}
 
 
 def _new_pin() -> str:
@@ -149,6 +153,7 @@ def calc_to_dict(c: Calculation) -> CalcSummary:
         geometry_source=c.geometry_source.value
         if isinstance(c.geometry_source, GeometrySource) else str(c.geometry_source),
         ref_name=c.ref_name,
+        conformer_origin=getattr(c, "conformer_origin", ""),
         is_raw=c.is_raw,
         state=c.state.value if isinstance(c.state, CalcState) else str(c.state),
         message=c.message,
@@ -157,6 +162,15 @@ def calc_to_dict(c: Calculation) -> CalcSummary:
         scf_convergence=getattr(c.config, "scf_convergence", "") if c.config else "",
         # a compact one-line summary for list rows
         meta=_meta_line(c),
+        # backend-specific row detail as EXPLICIT fields (not just inside meta):
+        # the desktop escapes user-facing strings before innerHTML, so it needs
+        # the raw values, not the pre-joined line
+        mlip_model=(getattr(c.config, "mlip_model", "") if c.config else "")
+        if c.kind.startswith("mlip") else "",
+        crest_method=(getattr(c.config, "crest_method", "") if c.config else "")
+        if c.kind.startswith("crest") else "",
+        crest_handoff=(getattr(c.config, "crest_handoff", "") if c.config else "")
+        if c.kind.startswith("crest") else "",
     )
 
 
@@ -169,6 +183,13 @@ def _meta_line(c: Calculation) -> str:
     if c.kind.startswith("mlip"):
         model = getattr(c.config, "mlip_model", "") if c.config else ""
         return f"{c.kind} · {src} · {model or 'MACE'}"
+    # CREST calcs use charge/multiplicity too; also show the tight-binding method
+    # and (when set) the all-conformers handoff, since it changes queue behaviour.
+    if c.kind.startswith("crest"):
+        method = getattr(c.config, "crest_method", "") if c.config else ""
+        handoff = getattr(c.config, "crest_handoff", "") if c.config else ""
+        tail = " · all conformers" if handoff == "all" else ""
+        return f"{c.kind} · {src} · {method or 'gfn2'} · q{c.charge} m{c.multiplicity}{tail}"
     return f"{c.kind} · {src} · q{c.charge} m{c.multiplicity}"
 
 
@@ -183,15 +204,22 @@ def calc_from_dict(d: dict) -> Calculation:
     if not name:
         raise ValueError("Calculation name is required.")
     _validate_calc_name(name)
+    # charge/multiplicity are f-string-interpolated into the .inp's
+    # "* xyz {charge} {multiplicity}" line. int() already blocks string
+    # injection, but not absurd magnitudes — clamp to physically generous
+    # ranges so a bogus client payload can't emit a nonsense input file.
+    charge = max(-100, min(100, int(d.get("charge", 0))))
+    multiplicity = max(1, min(200, int(d.get("multiplicity", 1))))
     return Calculation(
         name=name,
         kind=d.get("kind", cfg.kind),
         config=cfg,
-        charge=int(d.get("charge", 0)),
-        multiplicity=int(d.get("multiplicity", 1)),
+        charge=charge,
+        multiplicity=multiplicity,
         geometry_source=GeometrySource(src),
         xyz=d.get("xyz", ""),
         ref_name=d.get("ref_name", ""),
+        conformer_origin=d.get("conformer_origin", ""),
         is_raw=bool(d.get("is_raw", False)),
         raw_text=d.get("raw_text", ""),
     )
@@ -220,6 +248,7 @@ def calc_to_session_dict(c: Calculation) -> CalcFull:
         geometry_source=gs,
         xyz=c.xyz,
         ref_name=c.ref_name,
+        conformer_origin=getattr(c, "conformer_origin", ""),
         is_raw=c.is_raw,
         raw_text=c.raw_text,
         state=st,
@@ -248,19 +277,43 @@ def calc_from_session_dict(d: dict) -> Calculation:
 
 def _parse_if_exists(calc):
     """Parse a calc's on-disk output if present, dispatching on kind (MLIP uses
-    its JSON parser, ORCA the .out parser). Returns None on any read/parse error
-    so reconciliation can fall back to FAILED rather than crash."""
+    its JSON parser, CREST its ensemble parser, ORCA the .out parser). Returns
+    None on any read/parse error so reconciliation can fall back to FAILED rather
+    than crash."""
     from pathlib import Path
     path = getattr(calc, "output_path", "") or ""
     if not (path and Path(path).exists()):
         return None
     try:
-        if getattr(calc, "kind", "").startswith("mlip"):
+        kind = getattr(calc, "kind", "")
+        if kind.startswith("mlip"):
             from ..mlip.parser import parse_mlip_result
             return parse_mlip_result(path)
+        if kind.startswith("crest"):
+            from ..crest.parser import parse_crest_result
+            return parse_crest_result(path)
         return parse_file(path)
     except Exception:
         return None
+
+
+def _crest_calc_alive(calc) -> bool:
+    """WSL-aware liveness for a RUNNING crest_* calc. psutil (process_matches)
+    can't see inside WSL, so ask the CrestRunner (kill -0 + start-time guard) in
+    the distro persisted on config.crest_env_id. Lazy import keeps state/ free of
+    the crest package at import time."""
+    if not getattr(calc, "pid", None):
+        return False
+    distro = (getattr(calc.config, "crest_env_id", "") or "").strip() if calc.config else ""
+    if not distro:
+        return False
+    try:
+        from ..crest.runner import CrestRunner
+        runner = CrestRunner(distro, "")
+        runner.adopt(calc.pid, calc.create_time)
+        return runner.is_alive()
+    except Exception:
+        return False
 
 
 def reconcile_calcs(calcs: "list[Calculation]") -> None:
@@ -279,7 +332,13 @@ def reconcile_calcs(calcs: "list[Calculation]") -> None:
     """
     for c in calcs:
         if c.state == CalcState.RUNNING:
-            if c.pid and process_matches(c.pid, c.create_time):
+            # CREST runs in WSL (Linux pid), so psutil can't judge it — use the
+            # WSL-aware check. Everything else (ORCA) uses psutil process_matches.
+            if c.kind.startswith("crest"):
+                alive = _crest_calc_alive(c)
+            else:
+                alive = bool(c.pid and process_matches(c.pid, c.create_time))
+            if alive:
                 continue  # genuinely still running — reattach on resume
             c.pid = None
             c.create_time = None
@@ -293,6 +352,14 @@ def reconcile_calcs(calcs: "list[Calculation]") -> None:
                 except OrcaRunError as e:
                     c.state = CalcState.FAILED
                     c.message = str(e)
+            elif c.kind.startswith("mlip"):
+                # An MLIP worker never survives shutdown (detach terminates it —
+                # mlip/runner.py), so a still-RUNNING mlip calc here was stopped
+                # deliberately with the app: CANCELLED (re-runnable), not
+                # FAILED-locked. (The engine stamps this at detach too; this
+                # covers the race where the app exits before that lands.)
+                c.state = CalcState.CANCELLED
+                c.message = "Stopped when ORCAdesk closed."
             else:
                 c.state = CalcState.FAILED
                 c.message = "Interrupted while ORCAdesk was closed."
@@ -314,7 +381,9 @@ class QueueStore:
         # the background engine + thread while a run is in progress
         self._engine = None
         self._thread: Optional[threading.Thread] = None
-        # access token (6-digit PIN), generated fresh per server start
+        # access token (6-digit PIN), generated once per app launch (at store
+        # construction) — it lives for the whole app session, across server
+        # stop/starts
         self._token = _new_pin()
         # connected phone clients: {client_id: last_seen_epoch}
         self._clients: dict[str, float] = {}
@@ -326,18 +395,17 @@ class QueueStore:
         with self._lock:
             return self._token
 
-    def regenerate_token(self) -> str:
-        with self._lock:
-            self._token = _new_pin()
-            return self._token
-
     def check_token(self, supplied: Optional[str]) -> bool:
         """Constant-time-ish comparison of a supplied token against the PIN."""
         if not supplied:
             return False
         import hmac
         with self._lock:
-            return hmac.compare_digest(str(supplied), self._token)
+            # compare as bytes: compare_digest on str requires ASCII and raises
+            # TypeError otherwise — a non-ASCII token pasted on the phone must
+            # be an auth failure, not an HTTP 500.
+            return hmac.compare_digest(
+                str(supplied).encode("utf-8"), self._token.encode("utf-8"))
 
     # ---- connected clients (phones) ----
     def heartbeat(self, client_id: str) -> None:
@@ -393,7 +461,11 @@ class QueueStore:
                 # mid-run would never execute, so the visible and executing
                 # queues would silently diverge.
                 raise ValueError("Cannot add to the queue while it is running.")
-            if any(c.name == calc.name for c in self._calcs):
+            # case-insensitive: calc.name is an on-disk folder name and Windows
+            # (the primary target) resolves "water" and "Water" to the SAME
+            # folder — accepting both would silently share one .out between two
+            # calculations.
+            if any(c.name.casefold() == calc.name.casefold() for c in self._calcs):
                 raise ValueError(f"A calculation named '{calc.name}' already exists.")
             self._calcs.append(calc)
             self._bump_and_save()
@@ -422,10 +494,42 @@ class QueueStore:
             self._calcs.clear()
             self._bump_and_save()
 
+    def substitute_calcs(self, removed_names: "list[str]",
+                         new_calcs: "list[Calculation]") -> bool:
+        """Atomically replace the named calcs with ``new_calcs`` at the position
+        of the first removed row — the store side of the engine's per-conformer
+        track expansion (QueueEngine._maybe_expand_crest, crest_handoff="all").
+
+        Deliberately NOT guarded by the running flag: unlike a user edit, this
+        mutation is driven by the engine itself, which applies the identical
+        substitution to its own executing snapshot — so the visible queue and
+        the executing queue stay in sync (the invariant the running guard
+        protects). Returns False (applying nothing) if a new name collides with
+        a calc that is staying, so the engine can fall back to the untouched
+        templates instead of running half a substitution."""
+        removed = set(removed_names)
+        with self._lock:
+            # collision check is case-insensitive (names are Windows folder
+            # names, see add()); removal filtering stays exact — the engine
+            # passes the actual queued names.
+            staying = {c.name.casefold() for c in self._calcs if c.name not in removed}
+            for nc in new_calcs:
+                if nc.name.casefold() in staying:
+                    return False
+                staying.add(nc.name.casefold())
+            idxs = [i for i, c in enumerate(self._calcs) if c.name in removed]
+            insert_at = idxs[0] if idxs else len(self._calcs)
+            self._calcs = [c for c in self._calcs if c.name not in removed]
+            for off, nc in enumerate(new_calcs):
+                self._calcs.insert(insert_at + off, nc)
+            self._bump_and_save()
+        return True
+
     def replace(self, name: str, new_calc: Calculation) -> bool:
         """Replace an editable calculation in place (keeps its queue position).
-        Editable = pending, failed, or cancelled. Editing resets the entry to
-        PENDING (and clears the old result/message) so it runs on the next Run.
+        Editable = pending, cancelled, or blocked (see EDITABLE_STATES). Editing
+        resets the entry to PENDING (and clears the old result/message) so it
+        runs on the next Run.
         Raises ValueError if the target isn't editable, or on a name clash."""
         with self._lock:
             if self._running:
@@ -438,10 +542,12 @@ class QueueStore:
             if idx is None:
                 raise ValueError(f"No calculation named '{name}'.")
             if self._calcs[idx].state not in EDITABLE_STATES:
-                raise ValueError("Only pending, failed, or cancelled calculations can be edited.")
+                raise ValueError("Only pending, cancelled, or blocked calculations can be edited.")
             # if renaming, the new name must not collide with a DIFFERENT entry
+            # (case-insensitive — names are Windows folder names, see add())
             if new_calc.name != name and any(
-                c.name == new_calc.name for j, c in enumerate(self._calcs) if j != idx
+                c.name.casefold() == new_calc.name.casefold()
+                for j, c in enumerate(self._calcs) if j != idx
             ):
                 raise ValueError(f"A calculation named '{new_calc.name}' already exists.")
             # a freshly edited calc is always pending again, with no stale result
@@ -455,8 +561,8 @@ class QueueStore:
 
     def reorder(self, from_idx: int, to_idx: int) -> bool:
         """Move an editable calculation to a new position. Both endpoints must
-        be editable (pending/failed/cancelled) so running/done items keep their
-        place. Returns True on move."""
+        be editable (see EDITABLE_STATES) so running/done/failed items keep
+        their place. Returns True on move."""
         with self._lock:
             if self._running:
                 raise ValueError("Cannot reorder while the queue is running.")
@@ -466,7 +572,7 @@ class QueueStore:
             if from_idx == to_idx:
                 return False
             if self._calcs[from_idx].state not in EDITABLE_STATES:
-                raise ValueError("Only pending, failed, or cancelled calculations can be moved.")
+                raise ValueError("Only pending, cancelled, or blocked calculations can be moved.")
             if self._calcs[to_idx].state not in EDITABLE_STATES:
                 raise ValueError("Can only reorder within editable calculations.")
             item = self._calcs.pop(from_idx)
@@ -499,9 +605,18 @@ class QueueStore:
         with self._lock:
             self._log_seq += 1
             self._log.append((self._log_seq, level, message))
-            # cap buffer so a long run doesn't grow memory without bound
+            # cap buffer so a long run doesn't grow memory without bound.
+            # Preferential retention for "[web] " lines: ORCA stdout floods this
+            # ring (a single run emits thousands of lines) and would evict the
+            # rate-limited console-capture lines whose whole purpose is post-hoc
+            # front-end diagnosis (window.py _ConsoleCapturePage) — keep the
+            # newest 4000 lines plus up to 500 older [web] lines (seq order is
+            # preserved: every retained [web] seq predates the tail's).
             if len(self._log) > 5000:
-                self._log = self._log[-4000:]
+                tail = self._log[-4000:]
+                web_keep = [t for t in self._log[:-4000]
+                            if t[2].startswith("[web] ")][-500:]
+                self._log = web_keep + tail
 
     def log_since(self, since: int = 0) -> LogPayload:
         """Return log lines with seq > since, plus the latest seq."""
@@ -512,10 +627,9 @@ class QueueStore:
             ]
             return LogPayload(lines=lines, latest=self._log_seq)
 
-    def clear_log(self) -> None:
-        with self._lock:
-            self._log.clear()
-            self._log_seq = 0
+    # (No backend log-clear: the Log tab's Clear is deliberately view-only on
+    # every client. If one is ever added, it must keep _log_seq monotonic —
+    # resetting it would corrupt every client's since-cursor.)
 
     # ---- run management ----
     def start_run(self, engine_factory) -> None:
@@ -636,6 +750,12 @@ class QueueStore:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return
+        # Valid JSON that isn't an object (a list, null, a bare number — e.g. a
+        # hand-repaired or externally-truncated file) must degrade like corrupt
+        # JSON does: .get() on a non-dict would crash EVERY startup until the
+        # user deletes session.json by hand (same guard as Settings.load, P32).
+        if not isinstance(data, dict):
+            return
         restored = []
         for d in data.get("calculations", []):
             try:
@@ -656,9 +776,48 @@ class QueueStore:
             return any(c.state == CalcState.RUNNING for c in self._calcs)
 
 
+def queue_needs_orca(calcs: "list[Calculation]") -> bool:
+    """True if running these calculations would launch ORCA at least once —
+    i.e. some calc is not DONE and its kind is neither an mlip_* nor a crest_*
+    kind (both run outside ORCA: mlip in the user's MACE env, crest via WSL).
+
+    Single shared decision (P4) for both run entry points (the desktop bridge
+    and the phone server): an all-MLIP or all-CREST queue must be runnable with
+    no ORCA executable configured, so requiring a valid ORCA path is gated on
+    this instead of being unconditional. DONE calcs are never recomputed and
+    FAILED calcs are locked (P24) — neither will ever launch ORCA, so they don't
+    count (a stale FAILED ORCA calc must not force an ORCA path onto an otherwise
+    all-MLIP/CREST queue).
+    """
+    return any(
+        c.state not in (CalcState.DONE, CalcState.FAILED)
+        and not c.kind.startswith("mlip")
+        and not c.kind.startswith("crest")
+        for c in calcs
+    )
+
+
+def find_dangling_reference(calcs: "list[Calculation]") -> "str | None":
+    """First error message for a REFERENCE geometry that resolves to no queued
+    calc name, else None. Like queue_needs_orca, a single shared pre-run check
+    (P4) for both run entry points — the desktop bridge and the phone's
+    /api/run — so a dangling reference is refused up front with the same
+    message everywhere instead of failing mid-run with a murkier one."""
+    names = {c.name for c in calcs}
+    for c in calcs:
+        src = c.geometry_source
+        is_ref = src == GeometrySource.REFERENCE or str(
+            getattr(src, "value", src)) == "reference"
+        if is_ref and c.ref_name not in names:
+            return (f"'{c.name}' references '{c.ref_name}', "
+                    "which is not in the queue.")
+    return None
+
+
 def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str,
                         skip_names: "set[str] | None" = None,
-                        mlip_envs: "list | None" = None):
+                        mlip_envs: "list | None" = None,
+                        crest_distro: str = ""):
     """
     Returns a zero-arg factory that builds a QueueEngine whose callbacks feed
     the given store (log buffer + version bumps). Used by start_run().
@@ -667,15 +826,19 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
     overwriting existing results on disk).
     mlip_envs: registered MLIP environments [{id, name, python}], so the engine
     can run mlip_* calcs in the user's MACE interpreter. None/empty disables MLIP.
+    crest_distro: preferred WSL distro for crest_* calcs ("" = auto-detect the
+    first distro that has CREST).
     """
     skip = set(skip_names or ())
     envs = list(mlip_envs or [])
+    crest_pref = (crest_distro or "").strip()
 
     def factory() -> QueueEngine:
         cb = QueueCallbacks(
             log=lambda msg, level: store.append_log(msg, level),
             calc_update=lambda i, c: store.touch(),
+            queue_substitute=lambda removed, added: store.substitute_calcs(removed, added),
         )
         return QueueEngine(orca_path, workspace_root, cb, skip_names=skip,
-                           mlip_envs=envs)
+                           mlip_envs=envs, crest_distro=crest_pref)
     return factory

@@ -13,7 +13,7 @@ Each step produces a complete .inp text given an XYZ coordinate block.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields as dataclass_fields, asdict
 from typing import Optional
 
 
@@ -119,10 +119,12 @@ class StepConfig:
     """
     One ORCA calculation step.
 
-    ``kind`` is a label ('opt' | 'ts_opt' | 'freq' | 'ts_freq' | 'tddft' |
-    'nmr' | 'sp' | 'general') used by the queue to decide ordering and result
-    handling. The actual ORCA behaviour is driven by the keyword fields, so
-    custom combinations are possible.
+    ``kind`` is a label ('opt' | 'ts_opt' | 'freq' | 'ts_freq' | 'opt_freq' |
+    'ts_opt_freq' | 'irc' | 'tddft' | 'sp' | 'general' | 'nmr' | 'neb_ts' |
+    'mlip_opt') used by the queue to decide ordering and result handling.
+    The actual ORCA behaviour is driven by the keyword fields, so custom
+    combinations are possible. 'mlip_*' kinds never reach build_input (they
+    run through orcamgr/mlip/, not ORCA).
     """
     kind: str = "opt"
     functional: str = DEFAULT_FUNCTIONAL
@@ -171,6 +173,36 @@ class StepConfig:
     mlip_model: str = ""                 # e.g. "MACE-OFF medium"
     mlip_env_id: str = ""                # registered MLIP env to run in ("" = first ready)
 
+    # CREST (conformer sampling, run via WSL) — used only when kind starts with
+    # "crest". These drive the separate pipeline in orcamgr/crest/, NOT ORCA:
+    # build_input() ignores them (ORCA never sees a CREST calc). Charge and
+    # multiplicity come from the Calculation (shared with ORCA), not from here.
+    crest_method: str = "gfn2"           # gfn2 | gfnff | gfn0 | gfn2//gfnff ...
+    crest_solvent: str = ""              # ALPB implicit-solvent name ("" = gas phase)
+    crest_ewin: float = 6.0              # ensemble energy window (kcal/mol)
+    crest_threads: int = 4               # CREST -T thread count
+    crest_env_id: str = ""               # registered CREST env to run in ("" = first ready)
+    # Conformer handoff scope: which conformers downstream calcs get. "lowest" =
+    # a calc referencing this search receives only the best conformer (the
+    # classic single-geometry reference). "all" = when the search finishes with
+    # K>1 conformers, every PENDING calc chain referencing it is SUBSTITUTED by
+    # one clone per conformer ({name}_c1..cK) — see QueueEngine expansion.
+    crest_handoff: str = "lowest"        # lowest | all
+    # --- advanced conformer-search knobs (optional; 0/""/False = CREST default) ---
+    crest_preset: str = ""               # "" | quick | squick | mquick (--quick/--squick/--mquick)
+    crest_nci: bool = False              # --nci: ellipsoid wall, keeps a complex from dissociating
+    crest_solvent_model: str = "alpb"    # alpb | gbsa — implicit-solvent model for crest_solvent
+    crest_mdlen_mult: float = 0.0        # --mdlen x<mult> (0 = default MTD length)
+    crest_tstep_fs: float = 0.0          # --tstep <fs>    (0 = default MD/MTD timestep)
+    crest_tnmd_k: float = 0.0            # --tnmd <K>      (0 = default 400; regular-MD temperature)
+    crest_mddump_fs: int = 0             # --mddump <fs>   (0 = default 100; trajectory dump interval)
+    crest_vbdump_ps: float = 0.0         # --vbdump <ps>   (0 = default 1.0; Vbias dump interval)
+    crest_norotmd: bool = False          # --norotmd: skip the additional regular MDs
+    crest_cbonds: bool = False           # --cbonds: automatic bond constraints
+    crest_subrmsd: bool = False          # --subrmsd: exclude constrained atoms from the RMSD check
+    crest_cluster: bool = False          # --cluster: PCA + k-means (NOT for NCI complexes — doc warns)
+    crest_keepdir: bool = False          # --keepdir: keep the per-step generation subdirectories
+
     def to_dict(self) -> dict:
         d = asdict(self)
         return d
@@ -191,8 +223,22 @@ class StepConfig:
                     basis=str(b.get("basis", "")).strip(),
                     ecp=str(b.get("ecp", "")).strip(),
                 )
-                for b in basis_list if isinstance(b, dict) and b.get("element", "").strip()
+                # str() in the filter too: a non-string element value (e.g. an
+                # int from a malformed phone payload) must be filtered, not
+                # crash .strip() at the trust boundary.
+                for b in basis_list
+                if isinstance(b, dict) and str(b.get("element", "") or "").strip()
             ]
+        # Coerce untrusted string fields: a non-string value for a str-typed
+        # field (kind=123, options=42) would pass deserialization silently and
+        # crash later inside build_input (e.g. .upper() in _auto_aux) — the
+        # trust boundary is here, so degrade to the field's default here.
+        for f in dataclass_fields(cfg):
+            if isinstance(f.default, str) and not isinstance(getattr(cfg, f.name), str):
+                setattr(cfg, f.name, f.default)
+        for f in dataclass_fields(cfg.solvation):
+            if isinstance(f.default, str) and not isinstance(getattr(cfg.solvation, f.name), str):
+                setattr(cfg.solvation, f.name, f.default)
         # Coerce/clamp untrusted numeric fields. A phone-API payload reaches here
         # via calc_from_dict, and these values are interpolated verbatim into
         # %pal/%maxcore/%geom/%tddft — so a string (line injection) or an absurd
@@ -206,6 +252,28 @@ class StepConfig:
         cfg.tddft_maxdim = _clamp_int(cfg.tddft_maxdim, 10, 1, 100_000)
         cfg.freq_temp_k = _clamp_float(cfg.freq_temp_k, 298.15, 0.0, 100_000.0)
         cfg.freq_pressure_atm = _clamp_float(cfg.freq_pressure_atm, 1.0, 0.0, 100_000.0)
+        # ORCA has no "MediumSCF" convergence tier — it aborts with "UNRECOGNIZED
+        # OR DUPLICATED KEYWORD(S) IN SIMPLE INPUT LINE". Older sessions/calcs may
+        # still carry it (it used to be offered in the picker), so map it to the
+        # nearest valid tier here — the trust boundary — rather than emitting an
+        # input ORCA rejects. New builds no longer offer it (data/scf_convergences.json).
+        if cfg.scf_convergence.strip().lower() == "mediumscf":
+            cfg.scf_convergence = "NormalSCF"
+        # crest_handoff is a closed enum at the trust boundary: anything but the
+        # two known values degrades to the safe default (single-geometry handoff).
+        if cfg.crest_handoff not in ("lowest", "all"):
+            cfg.crest_handoff = "lowest"
+        # advanced CREST knobs: closed enums degrade to the default; numeric knobs
+        # are coerced+clamped (they're interpolated verbatim into the CLI argv).
+        if cfg.crest_preset not in ("", "quick", "squick", "mquick"):
+            cfg.crest_preset = ""
+        if cfg.crest_solvent_model not in ("alpb", "gbsa"):
+            cfg.crest_solvent_model = "alpb"
+        cfg.crest_mdlen_mult = _clamp_float(cfg.crest_mdlen_mult, 0.0, 0.0, 100.0)
+        cfg.crest_tstep_fs = _clamp_float(cfg.crest_tstep_fs, 0.0, 0.0, 1000.0)
+        cfg.crest_tnmd_k = _clamp_float(cfg.crest_tnmd_k, 0.0, 0.0, 100_000.0)
+        cfg.crest_mddump_fs = _clamp_int(cfg.crest_mddump_fs, 0, 0, 10_000_000)
+        cfg.crest_vbdump_ps = _clamp_float(cfg.crest_vbdump_ps, 0.0, 0.0, 100_000.0)
         return cfg
 
 
@@ -254,8 +322,13 @@ def _auto_aux(cfg: "StepConfig") -> str:
     - Plain hybrids/GGAs with an RI-J method just need /J; for def2 orbital
       bases that is the universal def2/J. Other bases are left to the user."""
     opts = (cfg.options or "").upper()
-    if "/J" in opts or "AUTOAUX" in opts:
-        return ""  # user already supplied an aux (or AutoAux)
+    ri_raw = (cfg.ri_approximation or "").upper()
+    if "/J" in opts or "AUTOAUX" in opts or "/J" in ri_raw or "AUTOAUX" in ri_raw:
+        # user already supplied an aux — in extra options OR as the RI picker
+        # choice itself ("AutoAux" is in data/ri_approximations.json, and it
+        # goes on the ! line verbatim; adding another would emit a duplicated
+        # keyword, which ORCA aborts on)
+        return ""
 
     if _needs_auxc(cfg.functional):
         # double hybrid / MP2: /C (and /J) needed unless RI is off
@@ -415,9 +488,17 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         if direction in ("forward", "backward"):
             lines.append(f"  Direction {direction}")
         init = (cfg.irc_init_hess or "calc_anfreq").strip()
-        if init == "read" and cfg.irc_hess_file.strip():
+        if init == "read":
+            hess = cfg.irc_hess_file.strip()
+            if not hess:
+                # Silently substituting calc_anfreq for an explicit "read"
+                # selection would run a different (and possibly far more
+                # expensive) method than the user chose. Refuse here — the
+                # trust boundary — so phone/API payloads that bypass the
+                # form check fail loudly too.
+                raise ValueError("IRC InitHess 'read' requires a .hess filename.")
             lines.append("  InitHess read")
-            lines.append(f'  Hess_Filename "{cfg.irc_hess_file.strip()}"')
+            lines.append(f'  Hess_Filename "{hess}"')
         else:
             # calc_anfreq (analytic) or calc_numfreq (numerical)
             lines.append(f"  InitHess {init if init in ('calc_anfreq', 'calc_numfreq') else 'calc_anfreq'}")

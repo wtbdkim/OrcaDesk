@@ -2,21 +2,11 @@
   "_source": "ORCA 6.1.1 Manual sections 2.6 (SCF), 2.8 (RI), 3.4 (Dispersion), 4.1 (Optimizations), 6 (Calculations)",
 
   "integration_grid": {
-    "_note": "Grid for DFT numerical integration. defGrid2 is default.",
+    "_note": "Grid for DFT numerical integration. DefGrid2 is default. The legacy Grid1-7/FinalGridN keywords were REMOVED in ORCA 6 (it rejects them as unrecognized) — use DefGrid1-3.",
     "keywords_modern": [
       "DefGrid1",
       "DefGrid2",
       "DefGrid3"
-    ],
-    "keywords_legacy": [
-      "Grid3",
-      "Grid4",
-      "Grid5",
-      "Grid6",
-      "Grid7",
-      "FinalGrid4",
-      "FinalGrid5",
-      "FinalGrid6"
     ]
   },
 
@@ -27,12 +17,10 @@
       "KDIIS",
       "SOSCF",
       "TRAH",
-      "AutoTRAH",
       "NoTRAH",
       "DAMP",
       "NoDAMP",
       "LeanSCF",
-      "FullLshift",
       "SlowConv",
       "VerySlowConv"
     ]
@@ -47,31 +35,25 @@
       "RHF",
       "UHF",
       "ROHF",
-      "AllowRHF",
-      "FlipSpin"
+      "AllowRHF"
     ]
   },
 
   "relativistic_options": {
-    "_note": "Relativistic Hamiltonians (require matching basis set).",
+    "_note": "Relativistic Hamiltonians (require matching basis set). To disable, simply omit — ORCA has no NoZORA/NoDKH '!'-line keywords.",
     "keywords": [
       "ZORA",
       "DKH",
       "DKH2",
-      "X2C",
-      "NoZORA",
-      "NoDKH"
+      "X2C"
     ]
   },
 
   "frozen_core_options": {
-    "_note": "Frozen core for post-HF methods.",
+    "_note": "Frozen core for post-HF methods. The FC_ELECTRONS/FC_NONE/FC_EWIN selectors live in %method, not on the '!' line (ORCA rejects them there).",
     "keywords": [
       "FrozenCore",
-      "NoFrozenCore",
-      "FC_ELECTRONS",
-      "FC_NONE",
-      "FC_EWIN"
+      "NoFrozenCore"
     ]
   },
 
@@ -84,7 +66,6 @@
       "PAtom",
       "AutoStart",
       "NoAutoStart",
-      "ReadGuess",
       "MOREAD"
     ]
   },
@@ -99,12 +80,11 @@
 
 
   "external_methods": {
-    "_note": "External program / interface keywords.",
+    "_note": "External program / interface keywords. (ONIOM is set up via its own block, not a bare '!'-line keyword.)",
     "keywords": [
       "ExtOpt",
       "QM/MM",
-      "QMMM",
-      "ONIOM"
+      "QMMM"
     ]
   }
 }

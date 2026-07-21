@@ -10,11 +10,21 @@ shells out to the user's installed `orca` executable; it does not do the chemist
 itself. Status is beta; the current version is `APP_VERSION` in `orcamgr/paths.py`
 (also the top entry of `CHANGELOG.md`). Windows is the primary tested target.
 
+Two normative companion documents govern how this codebase is written:
+**`PRINCIPLES.md`** (development principles, cited as `P1`, `P10`, …) and
+**`DESIGN.md`** (visual/UX principles + the design-token reference, cited as
+`D1`, `D10`, …). They are binding: follow them when writing code or UI, and
+when a change introduces or amends a principle, update the relevant document
+in the same commit; a deliberate deviation is justified in the commit body
+and recorded in the appendices (with a disposition) if it is kept. This file
+stays the operational guide;
+where they overlap, the principles documents are the norm.
+
 ## Commands
 
 ```bash
 # Develop (desktop app)
-pip install -r requirements.txt        # PyQt6 + PyQt6-WebEngine
+pip install -r requirements.txt        # PyQt6 + PyQt6-WebEngine + psutil
 python main.py
 
 # Optional phone-sync server, standalone (for API testing on localhost)
@@ -27,12 +37,46 @@ python -m PyInstaller build.spec --noconfirm
 
 # Type-check the web/ front-end (plain JS + JSDoc, no build step; needs Node)
 npx -p typescript tsc --noEmit -p jsconfig.json
+
+# Run the automated test suite (pip install -r requirements-dev.txt once)
+python -m pytest                       # 326 tests over the framework-free layers
+node tests/web/scf_graph.test.js       # 31 tracker/progress tests, no npm deps
+
+# Real-backend smoke matrix (opt-in): one answer-known input per calc kind,
+# run through the real QueueEngine against YOUR installed ORCA/MACE/CREST.
+# Skips itself without the env var; each backend section auto-skips when its
+# backend is absent. Wall-clock: ~1.5 h for the ORCA section (IRC and NEB
+# dominate); MLIP + CREST add ~2 min. Run it before a release cut.
+ORCADESK_SMOKE=1 python -m pytest tests/smoke -v
 ```
 
-There is **no automated test suite** and no linter configured. The parser and input
-generator were validated manually against real ORCA 6.1.1 output. The
-`orcamgr/server/STAGE*_TEST_KR.md` files are manual server-test checklists (Korean),
-not runnable tests.
+The **automated test suite** (`tests/`, pytest + one plain-Node script) covers the
+framework-free layers: `state/` (store, schemas, session persistence), `core/`
+(queue-engine semantics with a fake runner, per-kind validation, input generator,
+parser on synthetic fixtures), `mlip/` (with a stdlib-only stub worker — no MACE
+env needed), `crest/` (ensemble parser against a real ethanol corpus in
+`tests/crest/fixtures/`, CLI-flag building, and the QueueEngine path via a fake
+runner — no WSL/CREST needed), `config`, `procutil` (real child processes), and
+the phone HTTP API via `fastapi.testclient` (auto-skips without fastapi). The Qt bridge/window layers
+are thin adapters and are exercised manually. Tests that read the real ORCA output
+corpus auto-skip when the corpus directory is absent, so the suite is green on any
+machine. There is no linter configured. Parser/input-generator *evidence* still
+comes from manual validation against real ORCA 6.1.1 output (P3); the
+`orcamgr/server/STAGE*_TEST_KR.md` files are manual server-test checklists
+(Korean), not runnable tests.
+
+A second, opt-in tier lives in `tests/smoke/` (`ORCADESK_SMOKE=1`, see the
+command above): a **real-backend smoke matrix** that runs one minimal
+answer-known input per calc kind through the real `QueueEngine` — H₂O/H₂CO for
+the plain kinds, HCN⇌HNC for the ts/neb/irc chain, ethanol for CREST — so a
+pass proves generation → real execution → parse → per-kind validation per kind,
+including the reference handoffs (opt→freq, ts_opt_freq→ts_freq/irc,
+mlip_opt→sp, crest_conf→sp). The asserts lean on `validate_result`'s own
+scientific pass bar (DONE requires convergence / the right imaginary-mode
+count / ≥1 conformer), so the matrix stays honest without duplicating the
+rules. Option combinatorics are deliberately out of scope (unit suite + P3
+targeted validation cover those). Intended cadence: run it before a release
+cut, on the release machine.
 
 ## Architecture
 
@@ -44,8 +88,16 @@ The entire UI lives in `web/` (HTML/CSS/JS, shadcn-style dark theme). `main.py` 
 
 The view's page is `_ConsoleCapturePage` (`window.py`), which forwards JS console
 output into the shared log buffer as `[web] ...` lines (rate-limited per identical
-message) — so front-end errors are visible in the Log tab even in a deployed build;
+message) — so front-end errors are visible in the Log tab even in a deployed build
+(the log ring's trim retains older `[web] ` lines preferentially, so ORCA's stdout
+flood can't evict them — `QueueStore.append_log`);
 `ORCADESK_REMOTE_DEBUG` (handled in `main.py`) remains the dev-time tool.
+`window.py` also trims the embedded browser: WebGL and Chromium's built-in PDF
+viewer are disabled (the UI uses neither), and minimizing the window sets the
+page's lifecycle state to Frozen so Chromium releases memory while ORCAdesk sits
+in the taskbar — safe because the JS side polls and already skips hidden ticks,
+catching up on restore. (No profile/cache tuning: the Qt 6 default profile is
+already off-the-record.)
 
 `orcamgr/gui/bridge.py` is the **entire backend API surface for the desktop**: every
 `@pyqtSlot` is callable from JS (the slot list is documented at the top of `bridge.py`).
@@ -81,8 +133,16 @@ the front-end. Don't annotate FastAPI endpoints with these TypedDicts as return 
 — FastAPI would infer a response_model and put pydantic between the dict and the wire;
 endpoints keep `-> dict` and only *construct* through the schema types.
 
-The **Results tab** is purely presentational over `ParsePayload`: `bridge._parse_path`
-sends the *whole* `ParseResult` (every section the parser found) plus two gating flags
+The **Results tab** is purely presentational over `ParsePayload`. A QUEUED
+calc's result is fetched by NAME through `bridge.parse_calc_output`, which
+dispatches on the calc's **kind** (`result_from_output`); external files
+(drag-drop / Open .out) go through `bridge._parse_path`, which has no kind and
+dispatches per backend heuristically (an engine-written `*.mlip.json` → the MLIP
+parser; `crest_conformers.xyz`/`crest_best.xyz` siblings → the CREST parser; else
+the ORCA parser). Keep the heuristic OFF the queued path: workspace folders
+survive removal, so a calc reusing a removed CREST calc's name would otherwise
+parse as a conformer search. Both paths
+send the *whole* `ParseResult` (every section the parser found) plus two gating flags
 — `is_optimization` and `show_elec` (`= ParseResult.shows_electronic_props`) — and the
 front-end (`web/app.js` `renderResultSections` / `renderSummary`) decides what to show
 per calc kind. Final geometry shows only for opt jobs; general electronic-structure
@@ -122,7 +182,9 @@ The `core/` pipeline:
   decomposition, geometry, orbitals/HOMO-LUMO, Mulliken & Löwdin charges, Mayer
   population (bond orders + valences), dipole moment, rotational constants,
   frequencies, full thermochemistry (U/H/G/ZPE/T·S/temp/pressure), TD-DFT
-  transitions + excited-state composition, NMR, NEB path). Marker-based,
+  transitions + excited-state composition, NMR, NEB/IRC path — both print a
+  `PATH SUMMARY` table; `neb_path_kind` records which, so the Results tab titles
+  an IRC profile as an IRC). Marker-based,
   tolerant of `\r\n`; when a value recurs (e.g. across opt steps) the **last**
   occurrence wins. `ParseResult.summary_rows()` returns `(label, value, category)`
   rows where `category="elec"` tags general electronic-structure rows; the
@@ -133,15 +195,29 @@ The `core/` pipeline:
 
 These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 - **Calculation `name` is unique and is used as the on-disk folder name**
-  (`{workspace}/{name}/`). Uniqueness is enforced in the store.
+  (`{workspace}/{name}/`). Uniqueness is enforced in the store,
+  **case-insensitively** — Windows resolves `water` and `Water` to the same
+  folder, so accepting both would share one `.out` between two calcs.
 - **The queue autosaves to `%APPDATA%\ORCAdesk\session.json`** on every mutation
   (`QueueStore._bump_and_save`) and is restored on startup (`load_session`). A
-  `RUNNING` calc persists its detached ORCA's `(pid, create_time)`. On the next
+  `RUNNING` calc persists its detached ORCA's `(pid, create_time)` **and its
+  output path** (recorded at launch — without it the finished-while-closed →
+  DONE judgment below has nothing to read). On the next
   launch, `reconcile_calcs` checks that identity: still alive → stays `RUNNING`
   and is **reattached** (`OrcaRunner.adopt` + `monitor`, continuing the queue);
-  gone → judged from its `.out` (`DONE` if terminated normally + valid, else
-  `FAILED`). Closing ORCAdesk does **not** kill the running job — `shutdown()`
-  calls `store.pause_run()` (engine `detach()`), not cancel.
+  gone → judged from its output (`DONE` if terminated normally + valid, else
+  `FAILED`). The engine applies the **same judgment mid-run**
+  (`_judge_dead_running`): a RUNNING calc whose process died while unmonitored
+  (e.g. the startup reattach was declined and the job finished later) is
+  adopted from its `.out`, never relaunched — a relaunch would truncate the
+  completed output. Closing ORCAdesk does **not** kill the running job — `shutdown()`
+  calls `store.pause_run()` (engine `detach()`), not cancel. **MLIP is the
+  exception**: its worker has no detach/reattach machinery and is terminated on
+  shutdown, so a mid-run mlip calc is stamped `CANCELLED` ("Stopped on
+  shutdown." — re-runnable, never the locked FAILED) at detach, and
+  `reconcile_calcs` applies the same judgment to a session persisted before the
+  stamp landed (a worker that raced to completion still restores `DONE` from
+  its result JSON).
 - **Geometry source** is `DIRECT` (coords supplied, e.g. from `.xyz`) or `REFERENCE`
   (another queued calc by name). For a reference, the engine injects that calc's
   **optimized final geometry** at run time — so opt → freq reuses the optimized
@@ -150,16 +226,53 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   every calc that references it (transitively) is marked `BLOCKED` and skipped;
   unrelated calcs continue.
 - **`DONE` calcs are never recomputed** on a re-run (the result is frozen);
-  `FAILED`/`CANCELLED` calcs *do* re-run so the user can retry. Only
-  `PENDING`/`FAILED`/`CANCELLED` are editable/reorderable (`EDITABLE_STATES`).
+  **`FAILED` calcs are locked** at the moment of failure (P24): no re-run,
+  no edit, no reorder — a re-run skips them and blocks their dependents up
+  front; retrying means building a new calculation. Their remaining
+  interactions are read-only diagnosis and × removal, which is
+  queue-list-only — workspace folders are never deleted (no file-deletion
+  code exists; a binding rule). Only `CANCELLED` (a deliberate user stop)
+  re-runs. `EDITABLE_STATES` is `PENDING`/`CANCELLED`/`BLOCKED` — BLOCKED
+  stays editable so a dependent can be re-pointed after its failed parent
+  is removed. The keep-existing ("skip") run option parses the kept output
+  through `result_from_output` and stamps `DONE` only if `validate_result`
+  passes **and** the result structurally belongs to the calc
+  (`_kept_result_matches`: case-insensitive atom element sequence; a
+  no-placeholder raw calc is judged by its raw text's coordinate block, not
+  the possibly-stale `calc.xyz` — folders survive removal, so a new calc
+  reusing a removed calc's name must not adopt the old output); otherwise
+  the calc runs.
+- **Pre-launch guards run for raw calcs too.** The engine writes NEB-TS side
+  files (`product.xyz` / `ts_guess.xyz`) from config at run time in both form
+  and raw mode — but for a raw calc **only when its text actually uses the
+  generated `"product.xyz"` reference**: a custom `NEB_End_XYZFile` path is
+  the power-user escape, and the stored product is dead state for it (the
+  `_nebProductXyz` global survives excursions, so it must trigger neither
+  the side-file write nor the checks). With the reference present, a missing
+  stored product is refused pre-launch, and the reactant/product atom-order
+  check runs against the coordinate block of the **rendered** text
+  (`_raw_coordinate_block` — the reactant that actually executes). An `irc`
+  with `InitHess read` stages the
+  named `.hess` from the referenced calc's folder when it isn't in the run
+  folder, and fails fast when it can't be found; a blank filename is refused
+  by `build_input` itself (`ValueError` — the trust boundary, so phone/API
+  payloads fail loudly too).
 - **Result validation is per-kind**: `opt`/`ts_opt` (and the combined
   `opt_freq`/`ts_opt_freq`) must converge; `freq`/`opt_freq` must have zero
-  imaginary frequencies; `ts_freq`/`ts_opt_freq` must have exactly one. A
+  imaginary frequencies; `ts_freq`/`ts_opt_freq` must have exactly one;
+  `neb_ts` must have exactly one when frequencies were computed. A
   validation failure marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`,
-  `freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `irc`, `tddft`, `sp`, `nmr`,
-  `neb_ts`, `mlip_opt`. Kinds starting with `mlip` run **outside** the ORCA
-  pipeline: `QueueEngine.run_all` routes them to `_run_mlip_calc` (a MACE
-  relaxation in the user's env) instead of `_run_calc`. See the MLIP section.
+  `freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `irc`, `tddft`, `sp`,
+  `general` (free keyword combination; no per-kind validation), `nmr`,
+  `neb_ts`, `mlip_opt`, `mlip_sp`, `crest_conf`. Kinds starting with `mlip` or
+  `crest` run **outside** the ORCA pipeline: `QueueEngine.run_all` routes `mlip*`
+  to `_run_mlip_calc` (a MACE relaxation for `mlip_opt`, or a single-point energy
+  for `mlip_sp` — the worker branches on the `task` field) and `crest*` to
+  `_run_crest_calc` (a conformer search in WSL) instead of `_run_calc`.
+  `mlip_sp` validation requires only normal termination (an SP has no
+  convergence — `parse_mlip_result` sets `is_optimization=False` from `task`).
+  `crest_conf` validation requires normal termination + at least one conformer.
+  See the MLIP and CREST sections.
 
 ### Optional phone-sync server
 
@@ -183,8 +296,9 @@ because different MLIPs pin conflicting dependencies (MACE and SevenNet pin
 different `e3nn`), so they cannot share a venv. The legacy single
 `mlip_python` setting is auto-migrated to one env entry on load.
 
-Currently the package holds only `env.py` (environment detection backing the
-"MLIP ready" top-bar indicator). Unlike `orca_is_valid()` (a file-exists check),
+The package holds `env.py` (environment detection backing the "MLIP ready"
+top-bar indicator) plus the run pipeline (`runner.py`, `parser.py` — see
+"Running MLIP jobs" below). Unlike `orca_is_valid()` (a file-exists check),
 MLIP readiness is an **import probe**: `probe_env()` runs each registered
 interpreter and **auto-detects** which backends import. The backend registry is
 `MLIP_BACKENDS` (key → import-package name; MACE/SevenNet seeded, extensible);
@@ -203,16 +317,65 @@ env id, guarded by `Bridge._mlip_lock`); MLIP is **not** routed through
 any env is ready, else `checking`/`error`/`unset` — built by `aggregate_status`
 and mirrored in `web/types.js`.
 
-**Building MLIP jobs.** The Build tab has a third mode besides `beginner`/`expert`
-— `mlip` (`Settings.build_mode`; the three-way toggle is `#bmode-*` in
-`index.html`, `setBuildMode` in `app.js`). MLIP mode hides the whole ORCA build
+**Build-tab modes.** The Build tab's mode toggle is **backend-first**: `DFT` /
+`MLIP` / `CREST` (`#bmode-*` in `index.html`), with a **Beginner/Expert
+sub-toggle** (`#bsub-*`) shown only while DFT is active. Internally and in
+`Settings.build_mode` the mode is still one of the four historical values
+`beginner`/`expert`/`mlip`/`crest` (beginner/expert are the DFT sub-modes), so
+persisted settings are untouched; `setBuildMode` in `app.js` maps them onto the
+toggle and `setDftSub` handles the sub-switch. **The Beginner↔Expert linkage is
+one-way by design**: Beginner → Expert converts the current form to a generated
+`.inp` via `build_inp_preview` and puts it in the raw editor (this replaced the
+"Edit raw .inp" button / `enterRawMode`); raw text can never be converted back,
+so Expert → Beginner confirms discarding the editor content (the
+name/type/charge/mult/geometry cards persist outside the editor). Conversion
+failures never switch (the filled form stays visible); an empty name skips
+conversion and opens a plain empty editor (logged) for the paste workflow. Raw
+editing **is** the Expert sub-mode: `enterRawWithText` forces the Expert layout,
+editing a raw calc opens Expert, editing a form calc opens Beginner (the old
+"beginner with a dimmed locked form" hybrid and `lockFormForRaw` are gone);
+backing out of a **not-yet-saved** conversion of an edit confirms and reopens
+the form edit via `editCalc` — only a saved raw calc is locked to raw. Guard
+invariants: re-clicking the active mode button is a strict no-op in
+`setBuildMode` (never drops an edit or blanks the editor; `onInpDropped`
+therefore exits any in-progress edit itself before loading — a drop starts a
+NEW calc, never an overwrite of the edited one); the Beginner branch re-renders
+the method form only when `#calc-config` is empty or the Type select changed
+while the form was hidden (`_configKind`, re-rendered with the same field
+preservation as `onKindChange` — `collectPreserve`, which also carries
+maxcore/nprocs and the kind-shared numerics, and is kind-AWARE for Extra
+options and SCF: an untouched kind default follows the new kind, an explicit
+user override survives), so the user's method setup survives Expert/MLIP/CREST
+excursions without ever going stale against the selected
+kind; the back-out path re-resolves the edited calc **by name** after its
+confirm modal (queue indices can shift during the await — conformer fan-out,
+phone edits); `collectCalcFromForm(forPreview)` relaxes the NEB-TS product
+requirement like the other geometry checks. `rawText` survives an MLIP/CREST
+excursion and is cleared only by an explicit discard, edit, or reset. Raw-mode
+geometry can't desync from the text: loading a `.xyz` in raw mode is refused
+unless the text has a `{{GEOMETRY}}` placeholder (embedded coords run
+verbatim), and a raw calc's stored charge/multiplicity mirror its own
+`* xyz C M` line, not the hidden form fields.
+
+**Building MLIP jobs.** MLIP mode hides the whole ORCA build
 UI (`_ORCA_BUILD`) and shows a self-contained `#card-mlip`: a name, a MACE-model
-dropdown (options in `data/mace_models.json`, served via `load_choices`), and an
-`.xyz` loader, which add a `mlip_opt` calc to the **shared queue** through the
-same `add_calc`/`calc_from_dict` path as ORCA calcs. The model lives on
+dropdown (options in `data/mace_models.json`, served via `load_choices`),
+charge/multiplicity inputs (used only by charge/spin-aware models — OMol25 /
+multi-head; MACE-OFF/MP ignore them), and a
+**geometry source** selector (`.xyz` loader **or** reference another queued calc,
+mirroring the ORCA build card — `onMlipGeomSourceChange`/`refreshMlipRefSelect` in
+`app.js`), which add a `mlip_opt` **or** `mlip_sp` calc (per the card's Task
+selector, `#mlip-task`) to the **shared queue** through the
+same `add_calc`/`calc_from_dict` path as ORCA calcs. A referenced `mlip_opt`
+resolves through the very same `_resolve_geometry` path as an opt→freq handoff, so
+an MLIP pre-optimization can start from another calc's optimized geometry (e.g. a
+CREST best conformer). The model lives on
 `StepConfig.mlip_model` (+ `mlip_env_id`, `""` = first ready env); `build_input`
 ignores those — an MLIP calc never produces an ORCA `.inp`. `_meta_line` shows
-the model instead of charge/mult for `mlip*` kinds, and `editCalc` refuses
+the model instead of charge/mult for `mlip*` kinds, and `CalcSummary` also carries
+the model/method as **explicit fields** (`mlip_model`, `crest_method`,
+`crest_handoff`) so the desktop queue row can render them escaped (never innerHTML
+the pre-joined `meta` — it embeds user-typed ref names); `editCalc` refuses
 in-place editing of MLIP calcs for now (remove + re-add). The card is **locked**
 (greyed, inputs/buttons disabled, `#mlip-lock-note` shown) until some MLIP env is
 ready — `applyMlipLock` in `app.js`, driven by the `get_mlip_status` poll
@@ -226,9 +389,15 @@ reference) and the interpreter (`config.mlip_env_id`, else the first registered
 env, via `_resolve_mlip_python`), writes an input `.xyz` + a JSON config + the
 worker script into the run folder, then runs the user's interpreter on it. The
 worker — running in the **user's** env, so it may import `torch`/`mace`/`ase`
-(ORCAdesk's env need not) — loads a MACE calculator (`mace_off`/`mace_mp` by
-model+size from `parse_mace_model`), runs an ASE `LBFGS` relaxation (CPU,
-fmax 0.05), and writes the optimized geometry + energy + convergence to a JSON
+(ORCAdesk's env need not) — loads a MACE calculator via `parse_mace_model`,
+which maps the dropdown label to `(family, model_arg)`: `mace_off` (SPICE,
+organic), `mace_mp` (materials + the multi-head `mh-1`/`mh-0`), or `mace_omol`
+(the OMol25 model, `extra_large`). Charge/multiplicity flow from the
+`Calculation` into the worker as `atoms.info["charge"]` and `["spin"]` — where
+**`spin` is the spin multiplicity 2S+1 (the multiplicity itself, not
+`mult−1`)**; the OMol25 / multi-head models consume them (ions, radicals) while
+MACE-OFF/MP ignore them. It then runs an ASE `LBFGS` relaxation (CPU, fmax
+0.05), and writes the optimized geometry + energy + convergence to a JSON
 result; `MlipRunner` tails its stdout into the `.out` and the live log and is
 cancellable (`QueueEngine.cancel`/`detach` forward to the active `MlipRunner`).
 `parse_mlip_result` reads that JSON into the **shared `ParseResult`** (geometry,
@@ -236,14 +405,117 @@ cancellable (`QueueEngine.cancel`/`detach` forward to the active `MlipRunner`).
 MLIP-optimized geometry through the **same** `_resolve_geometry` path an opt→freq
 handoff uses. `validate_result` checks `mlip_opt` convergence; `_failure_reason`
 skips the ORCA `.out` parse for mlip kinds. The engine gets the env list via
-`make_engine_factory(..., mlip_envs=settings.mlip_envs)`; `run_queue` only
-requires a valid ORCA path when a non-MLIP calc will run (an all-MLIP queue runs
-without ORCA). Output parsing dispatches on kind through the module-level
+`make_engine_factory(..., mlip_envs=settings.mlip_envs)`; a valid ORCA path is
+required only when a non-MLIP calc will actually run — that decision is the
+shared `queue_needs_orca` (`state/store.py`), used by **both** run entry points
+(the desktop bridge's `run_queue` and the phone's `/api/run`), so an all-MLIP
+queue runs without ORCA from either client. Output parsing dispatches on kind through the module-level
 `result_from_output` (used by reference resolution and session reconciliation),
 so a DONE `mlip_opt` referenced **after a restart** is parsed by the MLIP parser,
 not the ORCA one. The pipeline was validated end to end against a real MACE
-environment (MACE-OFF), including the MLIP→ORCA geometry handoff; the automated
-tests use a stdlib-only stub for `MACE_WORKER_SCRIPT` since CI has no MACE env.
+environment (MACE-OFF), including the MLIP→ORCA geometry handoff; those
+validation runs were performed locally — there is no checked-in test suite
+or CI (see the Commands section).
+
+### CREST environment (a WSL-backed third backend)
+
+`orcamgr/crest/` is a dedicated package, kept **out of** the ORCA pipeline in
+`core/` like `mlip/`. CREST is a conformer-sampling tool with **no native
+Windows build**, so ORCAdesk runs its statically-linked Linux binary through
+**WSL** — it never installs a chemistry toolchain, it shells out (here, into a
+distro). v1 scope is conformer search only (`crest_conf`).
+
+The package: `wsl.py` (low-level `wsl.exe` helpers — distro enumeration with
+infrastructure distros like `docker-desktop` filtered out, `WSL_UTF8=1`, always
+`-d <distro>` explicitly), `env.py` (probe each distro for the `crest` binary,
+backing the "CREST ready" top-bar indicator; `aggregate_status` mirrors the MLIP
+four-state pill), `installer.py` (download the static release tarball into a
+distro + symlink — fully scriptable, so ORCAdesk auto-installs CREST; the one
+manual prerequisite is a WSL distro existing), plus the run pipeline
+(`runner.py`, `parser.py`).
+
+**Running CREST jobs** mirrors the *ORCA* runner (not the MLIP one) because a
+CREST run is long and must survive ORCAdesk closing. `QueueEngine._run_crest_calc`
+resolves the distro (`config.crest_env_id`, else `settings.crest_distro`, else
+the first distro with CREST — persisted back onto `config.crest_env_id` so a
+reattach knows where the job runs) and writes a self-contained `run_crest.sh`
+into the Windows workspace folder. `CrestRunner.launch` starts it **detached**
+(`setsid`) in WSL: the script records its own Linux pid + start-time, runs CREST
+in an **ext4 scratch dir** (`~/.orcadesk/scratch/<name>`, never `/mnt` — 9P is
+5–300× slower and CREST is I/O-heavy), redirects CREST's stdout to the Windows
+`<name>.out` for live tailing, then copies the ensemble results back and writes a
+`<name>.crest.rc` marker. The launcher **waits (inside WSL) until the `.pid`
+appears** before returning — without that, `wsl.exe` closes the pty before
+`setsid` finishes detaching and the child is killed (a real bug found by
+end-to-end testing). Because it's a true detach, `monitor` tails the `.out` +
+watches for `.rc`, `cancel` does a process-group kill (`kill -- -PID`, reaching
+xtb/OpenMP children), and reattach after a restart uses the pid + start-time (the
+WSL analogue of `procutil.process_matches`; `reconcile_calcs` special-cases
+`crest*` via `_crest_calc_alive`).
+
+`parse_crest_result` reads `crest_conformers.xyz` (comment line = absolute energy
+in Hartree, energy-sorted) + `crest.energies` into the shared `ParseResult` — new
+`conformers: list[Conformer]` + `is_conformer_search`, with `geometry` /
+`final_energy_eh` set to the lowest conformer so the existing best-geometry
+reference path still works. `validate_result` requires normal termination
+(marker `"CREST terminated normally."`, matched as a substring) + ≥1 conformer.
+`queue_needs_orca` excludes `crest*` too, so an all-CREST queue runs with no ORCA
+path. Charge/multiplicity come from the `Calculation` (shared with ORCA); CREST's
+`--uhf` is the **number of unpaired electrons = multiplicity − 1** (not the
+multiplicity). The pipeline was validated end to end against a real CREST 3.0.2
+install in WSL Ubuntu (including the conformer→ORCA handoff).
+
+`build_crest_argv` (`crest/runner.py`) maps `StepConfig.crest_*` to CLI flags:
+method (`--gfn2`/`--gfn1`/`--gfn0`/`--gfnff`, exact-map with an unknown-value
+`--<name>` fallback), solvent (`--alpb`/`--gbsa` by `crest_solvent_model`),
+`--ewin`, `-T`, plus the optional advanced knobs — `crest_preset`
+(`--quick`/`--squick`/`--mquick`), `crest_nci` (`--nci`), the MD/MTD numerics
+(`--mdlen x<mult>`, `--tstep`, `--tnmd`, `--mddump`, `--vbdump`), and the
+`--cbonds`/`--subrmsd`/`--norotmd`/`--keepdir`/`--cluster` toggles. Each advanced
+flag is emitted only when set to a non-default value; the enum/numeric fields are
+validated and clamped in `StepConfig.from_dict` (the trust boundary). File-based
+options (`--cinp` constraints) and standalone modes (`--cregen`) are intentionally
+out of scope. UI: the CREST build card + a collapsible "Advanced settings"
+(`.adv-section`).
+
+**Conformer → follow-up pipeline (per-conformer track expansion).** Follow-up
+MLIP/ORCA calculations are built on the **Build tab** by referencing the CREST
+calc through the normal geometry-source dropdown; the CREST build card's
+**Conformer handoff** scope (`StepConfig.crest_handoff`: `lowest` | `all`)
+decides what a reference receives. `lowest` (default) is the classic
+single-geometry handoff — the best conformer via `_resolve_geometry`. With
+`all`, the moment the search reaches DONE with K ≥ 2 conformers the engine
+**substitutes** every PENDING calc chain referencing it with one clone chain
+per conformer (`expand_conformer_tracks` in `core/queue.py`): clones are named
+`{name}_c{k}` in track-major order (c1's whole chain, then c2's, …); a 1-hop
+clone gets its conformer baked in as DIRECT geometry, deeper clones re-point
+their REFERENCE to the same-track parent clone — so a queued `crest ← opt ←
+freq` template fans out into K independent tracks and dependency-scoped
+failure blocking works per track. `run_all` walks a growable list for this,
+and the substitution is mirrored to the store through
+`QueueCallbacks.queue_substitute` → `QueueStore.substitute_calcs` — the one
+engine-driven structural mutation allowed mid-run (engine and store apply the
+identical change, preserving the visible-queue == executing-queue invariant
+that blocks user mutations during a run). Expansion also happens at run start
+when an already-DONE `all` search has pending referencing templates (built
+after it finished). The Results tab's conformer list is **read-only** for
+building: results are for interpretation; building happens on the Build tab. It
+does offer one file action — **Export as .xyz** (`bridge.export_conformers` →
+`crest/export.py`) splits `crest_conformers.xyz` into one standalone `.xyz` per
+conformer (verbatim frames — count + energy comment + coords) under a
+`conformers/` subfolder of the run, named `{name}_c{k}.xyz` (zero-padded; `c1` =
+the best conformer, == `crest_best.xyz`). No file dialog — the files land next to
+the run; this only reads/writes, never touches the queue.
+
+**Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
+`list_crest_distros` / `set_crest_distro`) follow
+the MLIP pattern: a background probe publishes to `Bridge._crest_status` (guarded
+by `_crest_lock`) and the UI polls `get_crest_status`. The Build tab gains the
+`crest` mode (`Settings.build_mode`; the CREST button on the backend toggle — see
+"Build-tab modes"), a locked `#card-crest` (until a
+distro has CREST), and a **Settings → CREST** distro picker + Install button. Wire
+shapes: `CrestStatusPayload` / `CrestDistroPayload` / `ConformerPayload` in
+`state/schemas.py`, mirrored in `web/types.js`.
 
 ### Paths: dev vs PyInstaller-frozen
 
@@ -279,6 +551,30 @@ them there.
   declares the Qt/bridge environment (incl. every slot's signature). When you add
   or change a payload or slot, update both, and keep
   `npx -p typescript tsc --noEmit -p jsconfig.json` at zero errors.
+- **Theme variants (shadcn / Liquid Glass).** Orthogonal to light/dark, the UI
+  has a second *variant* selected by `html[data-theme-variant]` (`shadcn`, the
+  flat default, or `liquidglass`) plus an intensity `html[data-glass]`
+  (`restrained`/`moderate`/`bold`/`vivid`/`maximal`, mapping to the design2..6
+  previews). `applyThemeVariant` in `app.js` flips those attributes; the whole
+  Liquid-Glass CSS layer (an `--lg-*` token group + refracting `backdrop-filter:
+  url(#lgLens*)` chrome over a `<canvas id="lgWall">` wallpaper) is **gated on
+  those attributes**, so shadcn is untouched when off. Persisted as
+  `Settings.theme_variant` / `glass_level` / `wallpaper`; the custom wallpaper
+  image is stored outside `settings.json` (a `user_data_root` file via the
+  `set_wallpaper_image` / `get_wallpaper_image` bridge slots) to keep the settings
+  file small. Controls live in **Settings → Appearance** and persist on
+  interaction (like the ☽ light/dark toggle). **Compositor resilience is
+  binding** (DESIGN.md §16.5): the SVG lens is chrome-only (top bar + tab strip;
+  cards frost with native blur), small/numerous controls never get
+  `backdrop-filter` (tint only), every backdrop chain lives on a `::before`
+  overlay, not the load-bearing element — too many backdrop layers made Qt
+  WebEngine drop the chrome bars from the on-screen composite (the 0.5.0-beta
+  invisible-tab-strip bug) — and, because external GPU events (sleep/resume,
+  driver reset) can still drop a bar's layer permanently (a static bar is never
+  re-invalidated), `app.js` pulses an imperceptible `--lg-pulse` paint delta
+  through both bars every 250 ms so any dropped layer re-rasters within ~0.25 s
+  (§16.5 rule 4; the pulse must stay paint-only — never `will-change`/
+  `transform`, which would break backdrop sampling). Full spec: DESIGN.md §16.
 - ORCA defaults (functional `wB97X-D4`, basis `def2-TZVP`, `RIJCOSX`, aux `def2/J`)
   live in `input_generator.py`.
 - Option lists in `data/*.json` are sourced from the ORCA 6.1.1 manual; method fields
@@ -367,8 +663,21 @@ that are stale — include those updates in the same commit:
   (normalization rules, defaults), paths/build layout, or the git workflow itself.
 - `README.md` — update when commands, install steps, requirements, or user-facing
   features described there change.
+- `PRINCIPLES.md` / `DESIGN.md` — update when the change introduces or amends a
+  convention/principle, deliberately deviates from one (if the deviation is
+  kept, record it in the appendix with a disposition), or resolves a deviation
+  already listed there.
+  `DESIGN.md` §8 (tokens) and Part II (§9–§15: scales, component recipes,
+  state matrix, copy templates) mirror the implementation — keep them in sync,
+  and run the §15 checklist for any UI change.
 - Other docs (`INSTALLER_GUIDE_KR.md`, `orcamgr/server/STAGE*_TEST_KR.md`, etc.) —
   update when the procedure they describe changes.
 
 If nothing in the docs is affected, no doc edit is needed — but the check itself is
 not optional: confirm it before committing, every time.
+
+Alongside the doc check, run the test suite before every commit that touches
+Python or `web/scf_graph.js` (`python -m pytest` and, for scf_graph changes,
+`node tests/web/scf_graph.test.js`) — the suite is fast (~3 s) and pins the
+principle contracts (P56). A red test is either a test bug or a product bug;
+never adjust a test to make wrong behavior pass.

@@ -20,6 +20,7 @@ from typing import Optional
 
 # ---- physical constants -------------------------------------------------
 HARTREE_TO_EV = 27.211386245988
+HARTREE_TO_KCAL = 627.5094740631
 
 
 # ---- data containers ----------------------------------------------------
@@ -47,6 +48,17 @@ class Transition:
     energy_cm: float
     wavelength_nm: float
     fosc: float
+
+
+@dataclass
+class Conformer:
+    """One member of a CREST conformer ensemble. ``rel_kcal`` is relative to the
+    lowest-energy conformer. ``geometry`` is the full structure so a downstream
+    ORCA calc can reference this exact conformer."""
+    index: int              # 1-based rank (1 = lowest energy)
+    energy_eh: float        # absolute energy (Hartree), from the .xyz comment line
+    rel_kcal: float         # energy relative to the best conformer (kcal/mol)
+    geometry: list = field(default_factory=list)   # list[Atom]
 
 
 @dataclass
@@ -94,6 +106,14 @@ class ParseResult:
     # --- geometry (final) ---
     geometry: list[Atom] = field(default_factory=list)
 
+    # --- CREST conformer search (kind == 'crest_conf'; runs via orcamgr/crest/) ---
+    # A conformer search produces an ensemble rather than a single structure.
+    # geometry/final_energy_eh are set to the lowest-energy conformer (so the
+    # existing best-geometry reference path still works), and the full ranked
+    # ensemble is exposed here for the Results tab to list + select from.
+    is_conformer_search: bool = False
+    conformers: list = field(default_factory=list)   # list[Conformer], rank-sorted
+
     # --- orbitals ---
     orbitals: list[Orbital] = field(default_factory=list)
     homo_index: Optional[int] = None
@@ -134,10 +154,13 @@ class ParseResult:
     # list of (nucleus_index, element, isotropic_ppm, anisotropy_ppm)
     nmr_shieldings: list[tuple[int, str, float, float]] = field(default_factory=list)
 
-    # --- NEB-TS reaction path (PATH SUMMARY table) ---
+    # --- NEB-TS / IRC reaction path (PATH SUMMARY table) ---
     has_neb_path: bool = False
     # list of dicts: {label (e.g. "0","TS","9"), e_eh, de_kcal, is_ts}
     neb_path: list = field(default_factory=list)
+    # which table the path came from: "neb" (PATH SUMMARY FOR NEB-TS) or "irc"
+    # (IRC PATH SUMMARY) — the Results tab titles/captions the profile per kind
+    neb_path_kind: str = "neb"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -150,7 +173,8 @@ class ParseResult:
         only shown as results for single-point and optimization runs; specialty
         runs (freq / tddft / nmr / neb) show only their specialty result."""
         specialty = (self.has_frequencies or self.has_tddft
-                     or self.has_nmr or self.has_neb_path)
+                     or self.has_nmr or self.has_neb_path
+                     or self.is_conformer_search)
         return self.is_optimization or not specialty
 
     def summary_rows(self) -> list[tuple[str, str, str]]:
@@ -165,7 +189,10 @@ class ParseResult:
             rows.append((label, value, cat))
 
         add("File", self.filename)
-        add("ORCA version", self.orca_version or "?")
+        # only when a version was actually parsed — MLIP/CREST results (and
+        # non-ORCA files) have none, and a "?" row is just noise for them
+        if self.orca_version:
+            add("ORCA version", self.orca_version)
         add("Termination",
             "Normal" if self.terminated_normally else "ABNORMAL / incomplete")
         if self.error_message:
@@ -215,22 +242,26 @@ class ParseResult:
         if self.has_frequencies:
             add("Frequencies", f"{len(self.frequencies)} modes")
             add("Imaginary modes", str(self.n_imaginary))
-            if self.gibbs_eh is not None:
-                add("Final Gibbs G", f"{self.gibbs_eh:.8f} Eh")
-            if self.total_thermal_eh is not None:
-                add("Inner energy U", f"{self.total_thermal_eh:.8f} Eh")
-            if self.enthalpy_eh is not None:
-                add("Enthalpy H", f"{self.enthalpy_eh:.8f} Eh")
-            if self.entropy_term_eh is not None:
-                add("Entropy term T·S", f"{self.entropy_term_eh:.8f} Eh")
-            if self.zpe_eh is not None:
-                add("ZPE", f"{self.zpe_eh:.8f} Eh")
-            if self.g_minus_e_el_eh is not None:
-                add("G - E(el)", f"{self.g_minus_e_el_eh:.8f} Eh")
-            if self.temperature_k is not None:
-                add("Temperature", f"{self.temperature_k:.2f} K")
-            if self.pressure_atm is not None:
-                add("Pressure", f"{self.pressure_atm:.2f} atm")
+        # Thermochemistry can exist WITHOUT a frequencies table (e.g. an IRC job
+        # reading a Hessian prints a full GIBBS FREE ENERGY block), so each row
+        # is emitted on its own presence — never gated behind has_frequencies,
+        # per the "all rows are always emitted" contract above.
+        if self.gibbs_eh is not None:
+            add("Final Gibbs G", f"{self.gibbs_eh:.8f} Eh")
+        if self.total_thermal_eh is not None:
+            add("Inner energy U", f"{self.total_thermal_eh:.8f} Eh")
+        if self.enthalpy_eh is not None:
+            add("Enthalpy H", f"{self.enthalpy_eh:.8f} Eh")
+        if self.entropy_term_eh is not None:
+            add("Entropy term T·S", f"{self.entropy_term_eh:.8f} Eh")
+        if self.zpe_eh is not None:
+            add("ZPE", f"{self.zpe_eh:.8f} Eh")
+        if self.g_minus_e_el_eh is not None:
+            add("G - E(el)", f"{self.g_minus_e_el_eh:.8f} Eh")
+        if self.temperature_k is not None:
+            add("Temperature", f"{self.temperature_k:.2f} K")
+        if self.pressure_atm is not None:
+            add("Pressure", f"{self.pressure_atm:.2f} atm")
         if self.has_tddft:
             add("TD-DFT states", str(len(self.transitions)))
             bright = self.brightest_transition()
@@ -662,27 +693,53 @@ class OrcaOutParser:
                     fosc=float(m.group(5)),
                 ))
             elif trans and ln.strip() == "":
-                if len(trans) > 1:
-                    break
+                # rows are contiguous (verified on real ORCA 6.x output), so
+                # the first blank after any row ends the table. Breaking only
+                # when >1 row was parsed let a single-root run (nroots 1) fall
+                # through into the VELOCITY dipole table right below — whose
+                # rows match the same regex — double-counting state 1 with the
+                # velocity-gauge fosc.
+                break
         r.transitions = trans
 
     def _parse_tddft_states(self, lines, r):
         """Excited-state composition from the 'TD-DFT/TDA EXCITED STATES' block:
         each STATE lists the dominant occupied->virtual orbital pairs and their
-        weights. NOTE: validated against the ORCA 6.1 format spec but not yet
-        against a real TD-DFT .out in this workspace (none available)."""
+        weights.
+
+        The marker match is CASE-SENSITIVE on purpose: every freq
+        thermochemistry section prints "(2) There are no thermally accessible
+        electronically excited states" (observed in 62 real non-TDDFT outputs
+        in the corpus), which a case-folded match treats as the section header
+        - and combined with last-wins it would land AFTER the real block in a
+        TD-DFT+Freq run and miss the states. The LAST occurrence wins, per the
+        parser-wide rule (a recurring section's final block is the definitive
+        one). Validated against 9 real TD-DFT .out files (ORCA 6.x): the
+        uppercase header appears exactly once per file, so first-vs-last is
+        identical on this corpus; a genuinely recurring block remains
+        unvalidated."""
         starts = [i for i, ln in enumerate(lines)
-                  if "EXCITED STATES" in ln.upper()]
+                  if "EXCITED STATES" in ln]
         if not starts:
             return
-        start = starts[0]
+        # With triplets requested ORCA prints TWO blocks — "... EXCITED STATES
+        # (SINGLETS)" then "(TRIPLETS)" — and plain last-wins would keep only
+        # the triplet compositions while the absorption table above pairs with
+        # the SINGLET states. Prefer the last SINGLETS-tagged block when one
+        # exists; untagged headers (every corpus file) keep exact last-wins.
+        singlet_starts = [i for i in starts if "SINGLET" in lines[i].upper()]
+        start = singlet_starts[-1] if singlet_starts else starts[-1]
+        # bound the scan at the NEXT excited-states header (the TRIPLETS block)
+        # so the singlet scan can't run into it and mix the two state lists
+        following = [i for i in starts if i > start]
+        end = min(following[0] if following else len(lines), start + 4000)
         state_re = re.compile(
             r"STATE\s+(\d+):\s*E=\s*[\d.]+\s*au\s+([\d.]+)\s*eV")
         contrib_re = re.compile(
             r"(\d+[ab]?)\s*->\s*(\d+[ab]?)\s*:\s*([\d.]+)")
         states: list = []
         cur = None
-        for ln in lines[start:start + 4000]:
+        for ln in lines[start:end]:
             ms = state_re.search(ln)
             if ms:
                 cur = {"state": int(ms.group(1)),
@@ -738,15 +795,23 @@ class OrcaOutParser:
         #     TS  -1626.94483     8.10         ...        <= TS
         # The label is an integer image index or "TS"; we keep label, absolute
         # energy, relative dE (kcal/mol), and whether the row is the TS.
+        # ORCA's "IRC PATH SUMMARY" table has the same row shape and matches
+        # the same header scan; record WHICH table matched so the Results tab
+        # can title an IRC profile as an IRC, not a NEB-TS.
         start = None
         for i, ln in enumerate(lines):
             if "PATH SUMMARY" in ln.upper():
                 start = i
         if start is None:
             return
+        path_kind = "irc" if "IRC" in lines[start].upper() else "neb"
         path = []
-        # scan forward from the header; rows look like "<label> <float> <float> ..."
-        for ln in lines[start: start + 200]:
+        # scan forward from the header; rows look like "<label> <float> <float> ...".
+        # The blank line after the table is the real terminator — the slice cap
+        # only guards a malformed file. It must comfortably exceed the longest
+        # real table: a both-direction IRC prints one row per step and easily
+        # passes 200 rows, which the old cap of 200 silently truncated.
+        for ln in lines[start: start + 20000]:
             s = ln.strip()
             if not s:
                 # stop on a blank line only after we've collected some rows
@@ -773,6 +838,7 @@ class OrcaOutParser:
         if path:
             r.has_neb_path = True
             r.neb_path = path
+            r.neb_path_kind = path_kind
 
 
 def parse_file(path: str) -> ParseResult:

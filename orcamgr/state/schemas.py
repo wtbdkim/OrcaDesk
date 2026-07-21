@@ -30,23 +30,30 @@ from typing import TypedDict
 # these names exist so snapshot/envelope schemas can reference the shapes.)
 
 class CalcSummary(TypedDict):
-    """Compact queue-row form — mirror of store.calc_to_dict (12 keys)."""
+    """Compact queue-row form — mirror of store.calc_to_dict (16 keys)."""
     name: str
     kind: str
     charge: int
     multiplicity: int
     geometry_source: str      # "direct" | "reference"
     ref_name: str
+    conformer_origin: str     # per-conformer clone provenance ("" for ordinary calcs)
     is_raw: bool
     state: str                # "pending"|"running"|"done"|"failed"|"blocked"|"cancelled"
     message: str
     output_path: str
     scf_convergence: str
     meta: str
+    # backend-specific row detail, "" when not applicable — explicit fields so
+    # the desktop can render them ESCAPED (meta embeds user-typed ref names, so
+    # it must never land in innerHTML)
+    mlip_model: str           # mlip* kinds: the MACE model label
+    crest_method: str         # crest* kinds: the tight-binding method
+    crest_handoff: str        # crest* kinds: "lowest" | "all"
 
 
 class CalcFull(TypedDict):
-    """Full-fidelity form — mirror of store.calc_to_session_dict (15 keys)."""
+    """Full-fidelity form — mirror of store.calc_to_session_dict (16 keys)."""
     name: str
     kind: str
     config: dict              # StepConfig.to_dict(), {} when absent
@@ -55,6 +62,7 @@ class CalcFull(TypedDict):
     geometry_source: str
     xyz: str
     ref_name: str
+    conformer_origin: str
     is_raw: bool
     raw_text: str
     state: str
@@ -94,10 +102,14 @@ class SettingsPayload(TypedDict):
     workspace_root: str
     default_nprocs: int
     default_maxcore_mb: int
-    theme: str
+    theme: str                # "dark" | "light"
+    theme_variant: str        # "shadcn" | "liquidglass"
+    glass_level: str          # restrained|moderate|bold|vivid|maximal (liquidglass)
+    wallpaper: str            # aurora|aqua|sunset|grape|graphite|ocean|custom
     eta_mode: str             # "conservative" | "eager"
     geo_graph_mode: str       # "all5" | "maxgrad"
-    build_mode: str           # "beginner" | "expert" | "mlip"
+    build_mode: str           # "beginner" | "expert" | "mlip" | "crest"
+    crest_distro: str         # preferred WSL distro for CREST ("" = auto-detect)
     orca_valid: bool
 
 
@@ -132,6 +144,26 @@ class MlipStatusPayload(TypedDict):
     envs: "list[MlipEnvPayload]"
 
 
+class CrestDistroPayload(TypedDict):
+    """One WSL distro probed for CREST (backs the "CREST ready" indicator)."""
+    distro: str               # distro name (pass to `wsl -d <distro>`)
+    ready: bool               # crest binary found + runnable
+    crest_bin: str            # resolved binary path inside the distro, or ""
+    version: str              # `crest --version` line, or ""
+    error: str                # human-readable detail when not ready
+
+
+class CrestStatusPayload(TypedDict):
+    """Bridge.get_crest_status() / check_crest() / install_crest() — the whole
+    CREST picture: an aggregate state for the top-bar pill plus every usable WSL
+    distro. Aggregate state is "ready" if any distro has CREST, "checking" while
+    probing, "error" if distros exist but none have CREST, "unset" if WSL/distros
+    are absent."""
+    state: str                # "unset" | "checking" | "ready" | "error"
+    distros: "list[CrestDistroPayload]"
+    wsl: bool                 # whether wsl.exe is available at all
+
+
 class ErrorPayload(TypedDict):
     """Bare {"error": ...} (no "ok" key): save_settings failure and the
     parse slots' failure branch."""
@@ -147,13 +179,20 @@ class AboutPayload(TypedDict):
 
 # ---- file loaders ------------------------------------------------------------
 
-class _InpFileBase(TypedDict):
+class LoadResult(TypedDict):
+    """Unified envelope for the four file-loader slots (load_xyz_file /
+    load_xyz_path / load_inp_file / load_inp_path) — 5 keys, all always
+    present. "cancelled" distinguishes the user closing the picker (a
+    deliberate choice: ok=True, cancelled=True, no error) from a real read
+    failure (ok=False, "error" filled) — the previous per-slot shapes
+    conflated the two, so the UI couldn't tell cancel from OSError (A2).
+    Loading a geometry never changes the workspace (that is a Settings-only
+    action), so there is no workspace field here."""
+    ok: bool
+    cancelled: bool
     text: str
-    name: str                 # filename stem, auto-fills the calc name
-
-
-class InpFilePayload(_InpFileBase, total=False):
-    error: str                # only on load_inp_path's OSError branch
+    name: str                 # filename stem (auto-fills the calc name), "" if none
+    error: str                # "" except on the read-failure branch
 
 
 # ---- parse results (Bridge._parse_path) --------------------------------------
@@ -203,10 +242,22 @@ class TddftStatePayload(TypedDict):
     contributions: "list[tuple[str, str, float]]"
 
 
+class ConformerPayload(TypedDict):
+    """One CREST conformer for the Results tab's selectable ensemble list. The
+    geometry itself is NOT sent (it can be large × many conformers); the batch
+    "generate ORCA jobs" action re-reads it server-side from the parent calc."""
+    index: int                # 1-based rank (1 = lowest energy)
+    energy_eh: float          # absolute energy (Hartree)
+    rel_kcal: float           # energy relative to the best conformer (kcal/mol)
+    n_atoms: int
+
+
 class ParsePayload(TypedDict, total=False):
     """Successful parse of a .out. All keys optional on the wire because the
-    failure branch sends ErrorPayload and parse_out_file returns "{}" on a
-    cancelled dialog; a successful parse emits every data key it has."""
+    failure branch sends ErrorPayload and parse_out_file's cancelled dialog
+    sends only {"cancelled": true}; a successful parse emits every data key
+    it has."""
+    cancelled: bool           # True only for a cancelled Open-.out dialog (A2)
     summary: "list[tuple[str, str, str]]"     # label/value/category rows
     is_optimization: bool                     # gates "Final geometry" (front-end)
     show_elec: bool                           # gates electronic-structure sections
@@ -219,11 +270,14 @@ class ParsePayload(TypedDict, total=False):
     mayer_bonds: "list[tuple[str, str, float]]"      # (atom_i, atom_j, bond order)
     nmr: "list[NmrPayload]"
     neb_path: "list[NebPointPayload]"
+    neb_path_kind: str                        # "neb" | "irc" — titles the path profile
     geometry: "list[GeomAtomPayload]"         # final/optimized coordinates (A)
     orbitals: "list[OrbitalPayload]"          # orbital energies (eV) + occupations
     tddft_states: "list[TddftStatePayload]"   # excited-state composition
     input_keywords: str                       # echoed "!" simple-input line
     input_block: str                          # echoed input block (%-blocks etc.)
+    is_conformer_search: bool                 # gates the CREST conformer list
+    conformers: "list[ConformerPayload]"      # CREST ensemble (ranked)
 
 
 # ---- ok/error envelopes -------------------------------------------------------
@@ -279,6 +333,16 @@ class ConflictsResult(_Ok, total=False):
     """check_overwrite_conflicts — "conflicts" is present on every branch."""
     error: str
     conflicts: "list[str]"
+
+
+class AutodetectResult(_Ok, total=False):
+    """autodetect_orca — "path" is present on every branch ("" when nothing
+    was found); "error" only when detection itself raised. NOTE: despite the
+    getter-ish name this is a MUTATION slot — a found path is also written to
+    settings.orca_path and saved (A3), which the envelope makes explicit
+    instead of returning a bare string."""
+    path: str
+    error: str
 
 
 # ---- phone-sync server (bridge slots + HTTP endpoints) ------------------------

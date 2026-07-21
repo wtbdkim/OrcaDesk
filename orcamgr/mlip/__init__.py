@@ -8,8 +8,10 @@ ORCA executable, and never installs that toolchain itself. Keeping the MLIP
 code in its own package makes the ORCA / MLIP split explicit at the module
 level.
 
-Currently this holds only environment detection (:mod:`orcamgr.mlip.env`),
-which backs the "MLIP ready" status indicator. The run pipeline (a dedicated
-runner/parser mirroring ``core/runner.py`` and ``core/parser.py``) is a later
-addition.
+Contents: environment detection (:mod:`orcamgr.mlip.env`, backing the
+"MLIP ready" status indicator) plus the run pipeline mirroring
+``core/runner.py`` / ``core/parser.py`` — :mod:`orcamgr.mlip.runner` (writes
+the run files and drives the user's interpreter on the MACE worker script)
+and :mod:`orcamgr.mlip.parser` (reads the worker's JSON result into the
+shared ``ParseResult``).
 """

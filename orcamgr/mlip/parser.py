@@ -25,6 +25,8 @@ def parse_mlip_result(path: str) -> ParseResult:
     """Read the worker's result JSON into a ParseResult. A missing file, a read
     error, or a worker-reported error all yield ``terminated_normally = False``
     with an ``error_message``, so the engine/validation treat it as a failure."""
+    # is_optimization is refined from the result's "task" once read (below); an
+    # unreadable/old result defaults to optimization (the original mlip_opt kind).
     r = ParseResult(path=str(path), is_optimization=True)
     p = Path(path) if path else None
     if r.path:
@@ -44,6 +46,9 @@ def parse_mlip_result(path: str) -> ParseResult:
         return r   # terminated_normally stays False
 
     r.terminated_normally = True
+    # a single-point ("sp") task isn't an optimization: this gates validation
+    # (no convergence requirement) and the Results tab's final-geometry section
+    r.is_optimization = str(data.get("task", "opt")) != "sp"
     r.opt_converged = bool(data.get("converged"))
 
     e_ev = data.get("energy_ev")

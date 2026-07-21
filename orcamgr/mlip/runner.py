@@ -52,33 +52,54 @@ import sys, json, traceback
 def main():
     with open(sys.argv[1], "r", encoding="utf-8") as f:
         cfg = json.load(f)
-    result = {"converged": False, "energy_ev": None, "n_steps": None,
+    task = cfg.get("task", "opt")
+    result = {"converged": False, "energy_ev": None, "n_steps": None, "task": task,
               "model": cfg.get("model", ""), "geometry": [], "error": None}
     try:
         from ase.io import read, write
-        from ase.optimize import LBFGS
         if cfg["family"] == "mace_off":
             from mace.calculators import mace_off as load_mace
+        elif cfg["family"] == "mace_omol":
+            from mace.calculators import mace_omol as load_mace
         else:
             from mace.calculators import mace_mp as load_mace
         print("[mlip] loading " + str(cfg["model"]) + " (device=" + str(cfg["device"]) + ")", flush=True)
-        calc = load_mace(model=cfg["size"], device=cfg["device"], default_dtype="float64")
+        calc = load_mace(model=cfg["model_arg"], device=cfg["device"], default_dtype="float64")
         atoms = read(cfg["input_xyz"])
+        # OMol25 / multi-head models are charge- and spin-aware: MACECalculator
+        # reads atoms.info["charge"] and ["spin"], where "spin" is the SPIN
+        # MULTIPLICITY (2S+1) — MACE's own default total_spin is 1.0 (singlet)
+        # and its electrostatics use (total_spin - 1) = 2S. So pass the calc's
+        # multiplicity directly, NOT multiplicity-1. MACE-OFF/MP ignore both, so
+        # setting them unconditionally is harmless and keeps the worker uniform.
+        atoms.info["charge"] = int(cfg.get("charge", 0))
+        atoms.info["spin"] = max(1, int(cfg.get("multiplicity", 1)))
         atoms.calc = calc
-        print("[mlip] optimizing " + str(len(atoms)) + " atoms, fmax=" + str(cfg["fmax"]), flush=True)
-        opt = LBFGS(atoms, logfile="-")
-        converged = bool(opt.run(fmax=cfg["fmax"], steps=cfg["max_steps"]))
-        energy = float(atoms.get_potential_energy())
+        if task == "sp":
+            # single point: energy (+ forces) at the given geometry, no relaxation
+            print("[mlip] single point on " + str(len(atoms)) + " atoms", flush=True)
+            energy = float(atoms.get_potential_energy())
+            import numpy as _np
+            fmax = float(_np.linalg.norm(atoms.get_forces(), axis=1).max()) if len(atoms) else 0.0
+            result["converged"] = True     # an SP has nothing to converge
+            result["n_steps"] = 0
+            result["fmax"] = fmax
+            print("[mlip] done: energy=" + repr(energy) + " eV  fmax=" + repr(fmax) + " eV/A", flush=True)
+        else:
+            from ase.optimize import LBFGS
+            print("[mlip] optimizing " + str(len(atoms)) + " atoms, fmax=" + str(cfg["fmax"]), flush=True)
+            opt = LBFGS(atoms, logfile="-")
+            result["converged"] = bool(opt.run(fmax=cfg["fmax"], steps=cfg["max_steps"]))
+            result["n_steps"] = int(opt.get_number_of_steps())
+            energy = float(atoms.get_potential_energy())
+            print("[mlip] done: converged=" + str(result["converged"]) + " energy=" + repr(energy) +
+                  " eV steps=" + str(result["n_steps"]), flush=True)
         write(cfg["output_xyz"], atoms)
         syms = atoms.get_chemical_symbols()
         pos = atoms.get_positions()
         result["geometry"] = [[syms[i], float(pos[i][0]), float(pos[i][1]), float(pos[i][2])]
                               for i in range(len(atoms))]
-        result["converged"] = converged
         result["energy_ev"] = energy
-        result["n_steps"] = int(opt.get_number_of_steps())
-        print("[mlip] done: converged=" + str(converged) + " energy=" + repr(energy) +
-              " eV steps=" + str(result["n_steps"]), flush=True)
     except Exception as e:
         result["error"] = type(e).__name__ + ": " + str(e)
         traceback.print_exc()
@@ -89,11 +110,29 @@ main()
 '''
 
 
+# Special models whose loader/model-arg can't be expressed as a size heuristic:
+# a label containing the key maps to (loader family, model= argument). Checked
+# before the small/medium/large heuristic. mace_omol is the dedicated OMol25
+# model; mh-0/mh-1 are the multi-head models (which include an OMol head) and
+# load through mace_mp. Order matters only in that these win over the heuristic.
+_SPECIAL_MODELS = {
+    "omol": ("mace_omol", "extra_large"),
+    "mh-1": ("mace_mp", "mh-1"),
+    "mh-0": ("mace_mp", "mh-0"),
+}
+
+
 def parse_mace_model(model: str) -> tuple[str, str]:
-    """Map a dropdown label like 'MACE-OFF medium' to (family, size) for the
-    worker: family in {'mace_off','mace_mp'}, size in {'small','medium','large'}.
-    Unknown labels default to MACE-OFF medium."""
+    """Map a dropdown label to (family, model_arg) for the worker. family is one
+    of {'mace_off','mace_mp','mace_omol'} (the loader function); model_arg is
+    passed verbatim to that loader (a size 'small'/'medium'/'large', or a named
+    model like 'extra_large'/'mh-1'). 'MACE-OFF medium' -> ('mace_off','medium'),
+    'MACE-OMOL extra-large' -> ('mace_omol','extra_large'), 'MACE-MH-1' ->
+    ('mace_mp','mh-1'). Unknown labels default to MACE-OFF medium."""
     m = (model or "").strip().lower()
+    for key, fam_arg in _SPECIAL_MODELS.items():
+        if key in m:
+            return fam_arg
     family = "mace_mp" if "mp" in m else "mace_off"
     size = next((s for s in ("small", "medium", "large") if s in m), "medium")
     return family, size
@@ -110,9 +149,14 @@ def _as_xyz_file(coords: str) -> str:
     return f"{n}\ngenerated by ORCAdesk\n" + "\n".join(lines) + "\n"
 
 
-def write_mlip_run_files(calc_dir, name: str, model: str, xyz: str, result_json) -> tuple[Path, Path]:
+def write_mlip_run_files(calc_dir, name: str, model: str, xyz: str, result_json,
+                         charge: int = 0, multiplicity: int = 1,
+                         task: str = "opt") -> tuple[Path, Path]:
     """Write the input .xyz, the JSON config, and the worker script into the run
-    folder. Returns (script_path, config_path) for MlipRunner.run()."""
+    folder. Returns (script_path, config_path) for MlipRunner.run(). charge and
+    multiplicity are passed to the worker for charge/spin-aware models (OMol25 /
+    multi-head); MACE-OFF/MP ignore them. task is "opt" (LBFGS relaxation) or
+    "sp" (single-point energy at the given geometry)."""
     calc_dir = Path(calc_dir)
     calc_dir.mkdir(parents=True, exist_ok=True)
     input_xyz = calc_dir / f"{name}.xyz"
@@ -121,10 +165,12 @@ def write_mlip_run_files(calc_dir, name: str, model: str, xyz: str, result_json)
     script_path = calc_dir / "mlip_opt.py"
 
     input_xyz.write_text(_as_xyz_file(xyz), encoding="utf-8")
-    family, size = parse_mace_model(model)
+    family, model_arg = parse_mace_model(model)
     cfg = {
         "model": model or "MACE-OFF medium",
-        "family": family, "size": size, "device": DEFAULT_DEVICE,
+        "family": family, "model_arg": model_arg, "device": DEFAULT_DEVICE,
+        "charge": int(charge), "multiplicity": int(multiplicity),
+        "task": "sp" if str(task).lower() == "sp" else "opt",
         "fmax": DEFAULT_FMAX, "max_steps": DEFAULT_MAX_STEPS,
         "input_xyz": str(input_xyz), "output_xyz": str(output_xyz),
         "result_json": str(result_json),
@@ -161,8 +207,9 @@ class MlipRunner:
         if not py or not Path(py).exists():
             raise OrcaRunError(f"MLIP interpreter not found: '{py}'. "
                                "Check Settings → MLIP environments.")
-        self._cancel.clear()
-        self._detach.clear()
+        # No event clearing: the runner is created fresh per calc, and the
+        # engine forwards a Stop/shutdown that landed before it was registered
+        # — clearing would erase exactly that signal.
         cmd = [str(py), str(script_path), *[str(a) for a in (args or [])]]
         creationflags = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
                          if sys.platform.startswith("win") else 0)
@@ -180,6 +227,22 @@ class MlipRunner:
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        # The read loop blocks in readline, so a cancel/detach while the worker
+        # is SILENT (model download, a long optimizer step) would otherwise be
+        # acted on only when the next stdout line arrives — possibly minutes
+        # later, and past shutdown's bounded wait. This watcher terminates the
+        # process on the signal itself; the read loop then unblocks at EOF and
+        # the post-loop event checks raise the right exception.
+        watcher_stop = threading.Event()
+
+        def _watch() -> None:
+            while not watcher_stop.wait(0.3):
+                if self._cancel.is_set() or self._detach.is_set():
+                    self._terminate(proc)
+                    return
+
+        watcher = threading.Thread(target=_watch, daemon=True)
+        watcher.start()
         try:
             with open(output_path, "w", encoding="utf-8", errors="replace") as outf:
                 for line in (proc.stdout or ()):
@@ -195,6 +258,7 @@ class MlipRunner:
                         self._terminate(proc)
                         raise OrcaDetached("MLIP run terminated on shutdown.")
         finally:
+            watcher_stop.set()
             try:
                 if proc.stdout:
                     proc.stdout.close()

@@ -4,15 +4,17 @@ A desktop GUI for building, queuing, running, and parsing ORCA computational
 chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark **or light** UI),
 Python core.
 
-> **Status: 0.4.2 beta** (`0.4.2-beta`). Desktop app: build → queue → run →
+> **Status: 0.5.0 beta** (`0.5.0-beta`). Desktop app: build → queue → run →
 > parse, validated against real ORCA 6.1.1 output. A running calculation
 > **survives closing the app** and is reattached on the next launch; the UI ships
-> with both a **dark and a light theme**; you can **drag a `.inp`/`.xyz`/`.out`
-> onto the window** to load it; and the Log graph shows **live progress for
-> optimizations and frequency runs** (numerical *and* analytical/CP-SCF). You can
-> also **pre-optimize a structure with a MACE model (MLIP)** and hand the result
-> off to an ORCA job, using your own Python environment. Run from source, or build
-> a standalone Windows app with `build.bat`. (Phone-sync is in development and not
+> with both a **dark and a light theme** (plus an optional **Liquid Glass**
+> style); you can **drag a `.inp`/`.xyz`/`.out` onto the window** to load it; and
+> the Log graph shows **live progress for optimizations and frequency runs**
+> (numerical *and* analytical/CP-SCF). Beyond ORCA, you can **pre-optimize a
+> structure with a MACE model (MLIP)** in your own Python environment, and run a
+> **CREST conformer search through WSL** — both hand their geometries off to ORCA
+> jobs through the normal reference mechanism. Run from source, or build a
+> standalone Windows app with `build.bat`. (Phone-sync is in development and not
 > part of this build.) See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Requirements
@@ -32,11 +34,16 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
 
 ## How it works
 
-- **Build**: create one calculation at a time in one of three modes —
-  **Beginner** (guided form), **Expert** (paste/load a complete `.inp`), or
-  **MLIP** (MACE pre-optimization, see below). Give it a unique name (used as its
-  folder), pick the type, set charge/multiplicity, choose a geometry source,
-  configure the method, and add it to the queue.
+- **Build**: create one calculation at a time, picking the execution backend
+  first — **DFT** (ORCA), **MLIP** (MACE pre-optimization, see below), or
+  **CREST** (conformer search, see below). DFT has two sub-modes: **Beginner**
+  (guided form) and **Expert** (edit the full `.inp`). Switching Beginner →
+  Expert converts your current form into a generated `.inp` you can keep
+  editing; the reverse conversion doesn't exist (raw text can't become a form
+  again), so switching back asks before discarding the editor text. Give the
+  calculation a unique name (used as its folder), pick the type, set
+  charge/multiplicity, choose a geometry source, configure the method, and add
+  it to the queue.
   - **Geometry source** is either an `.xyz` file, or a **reference** to another
     queued calculation — in which case that calculation's optimized geometry is
     injected automatically at run time.
@@ -51,14 +58,29 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   - **Expert (raw `.inp`)** mode lets you hand-edit the full input for anything the
     form doesn't cover (e.g. per-element basis/ECP via `%basis newgto/newecp`,
     `%plots`, custom blocks). Use `{{GEOMETRY}}` where coordinates go.
-- **MLIP pre-optimization**: optionally relax a structure with a **MACE** model
-  (MLIP) before handing it to ORCA — fast, and a good starting geometry for the
-  DFT job. It runs in **your own** Python environment (PyTorch + mace-torch + ASE),
+- **MLIP calculations**: relax a structure (or get a quick single-point energy)
+  with a **MACE** model (MLIP) — fast, and a relaxed structure is a good starting
+  geometry for the DFT job. It runs in **your own** Python environment
+  (PyTorch + mace-torch + ASE),
   registered under **Settings → MLIP environments**; ORCAdesk shells out to it and
   never installs the toolchain. The MLIP build card stays **locked until a MACE
-  environment is ready**. An `mlip_opt` job joins the same queue, and its optimized
-  geometry can be referenced by a downstream ORCA calculation just like an
-  opt→freq handoff.
+  environment is ready**. An `mlip_opt`/`mlip_sp` calculation joins the same queue,
+  and an optimized geometry can be referenced by a downstream ORCA calculation
+  just like an opt→freq handoff.
+- **CREST conformer search**: explore low-energy conformers with the xTB
+  tight-binding methods. CREST has no native Windows build, so ORCAdesk runs its
+  Linux binary through **WSL** — pick a distribution under **Settings → CREST**
+  and ORCAdesk can install the (statically-linked) binary into it for you; the
+  one manual prerequisite is having a WSL distro. A `crest_conf` job joins the
+  same queue (it runs detached and survives the app closing, like an ORCA run);
+  its finished ensemble is listed (read-only) in the **Results** tab. Follow-up
+  calculations reference the search from their geometry source on the Build
+  tab: with the card's **Conformer handoff** set to *all conformers*, a queued
+  pipeline referencing the search (e.g. MLIP opt → ORCA opt → freq) automatically
+  **fans out into one track per conformer** (`name_c1`, `name_c2`, …) when the
+  search finishes; with *lowest conformer only* it runs once, on the best
+  conformer. The CREST build card stays **locked until a distro with CREST is
+  ready**.
 - **Queue**: calculations run in order. If one fails, anything that references
   it (directly or transitively) is skipped (blocked); unrelated calculations
   continue. Each calculation gets its own folder `{workspace}/{name}/`. The
@@ -81,8 +103,11 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   spectra); numerical frequencies keep a displacement progress bar. A
   `s / SCF cycle` pace readout and a "jump to latest" button keep long runs
   readable.
-- **Theme**: toggle **dark / light** from the top bar (☀/☽); the choice is
-  remembered across launches.
+- **Theme**: toggle **dark / light** from the top bar (☀/☽), and pick a theme
+  *style* in **Settings → Appearance** — the default **shadcn (flat)** look or
+  **Liquid Glass** (a refracting frosted top bar / tabs over a wallpaper, five
+  intensity levels + six wallpaper presets or a custom image). Both styles work
+  in dark and light; the choice is remembered across launches.
 - **Results**: per-calculation summary plus every value the parser extracts —
   final geometry (with *Copy .xyz*), orbital energies (HOMO/LUMO), Mulliken &
   Löwdin charges, Mayer bond orders/valences, dipole moment, rotational
@@ -140,6 +165,7 @@ orcamgr/
   state/
     store.py                  shared queue (single source of truth) + session autosave
   mlip/                       MLIP (MACE) env detection + relaxation runner/parser
+  crest/                      CREST conformer search via WSL (env/installer/runner/parser)
   server/                     optional phone-sync HTTP layer (FastAPI; not in the build)
   gui/
     window.py                 QMainWindow + WebEngine

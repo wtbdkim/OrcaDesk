@@ -81,19 +81,43 @@ class Settings:
     # packages import? which backends?) is probed in orcamgr/mlip/env.py, not
     # stored here.
     mlip_envs: list = field(default_factory=list)
+    # Preferred WSL distro for CREST conformer searches ("" = auto-detect the
+    # first distro that has the crest binary). CREST has no native Windows build,
+    # so ORCAdesk runs its Linux binary through WSL (see orcamgr/crest/); the
+    # binary is detected/installed per-distro, not stored here.
+    crest_distro: str = ""
     workspace_root: str = ""
     # default compute resources (used to seed the GUI)
     default_nprocs: int = 6
     default_maxcore_mb: int = 2400
     theme: str = "dark"
+    # Theme *variant*, orthogonal to `theme` (light/dark): "shadcn" is the flat
+    # default; "liquidglass" renders the Apple Liquid-Glass chrome (a refracting
+    # frosted top bar / tabs over a wallpaper). Each variant works in both light
+    # and dark. The whole Liquid-Glass CSS layer is gated on this — shadcn users
+    # are untouched. See web/style.css and DESIGN.md §16.
+    theme_variant: str = "shadcn"
+    # Liquid-Glass intensity, meaningful only when theme_variant=="liquidglass":
+    # restrained|moderate|bold|vivid|maximal — rising blur / refraction / glass
+    # surface count (maps to the design2..design6 previews). restrained/moderate/
+    # bold keep content opaque (glass = chrome only); vivid/maximal also glassify
+    # the card layer (the exploratory extreme).
+    glass_level: str = "moderate"
+    # Liquid-Glass wallpaper key: one of the built-in procedural presets
+    # (aurora|aqua|sunset|grape|graphite|ocean) or "custom". The custom image
+    # itself is NOT stored here (it would bloat settings.json, which is rewritten
+    # on every queue mutation) — it lives in a dedicated file in user_data_root,
+    # written/read via the Bridge's set/get_wallpaper_image slots.
+    wallpaper: str = "aurora"
     # opt ETA prediction mode: "conservative" (predict only when confident) or
     # "eager" (predict earlier / more often, may be less accurate)
     eta_mode: str = "conservative"
     # optimization graph style: "all5" (all five convergence criteria as
     # value/tolerance ratios sharing one goal line) or "maxgrad" (MAX gradient only)
     geo_graph_mode: str = "all5"
-    # build-tab mode: "beginner" (the guided form) or "expert" (paste/load a
-    # complete .inp and only pick the calc kind, for parsing/validation)
+    # build-tab mode: "beginner" (the guided form), "expert" (paste/load a
+    # complete .inp and only pick the calc kind), "mlip" (MACE relaxation), or
+    # "crest" (conformer search via WSL)
     build_mode: str = "beginner"
 
     @classmethod
@@ -103,12 +127,26 @@ class Settings:
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
+                # Valid JSON that isn't an object (a list, a string, a bare
+                # number) must degrade to defaults like corrupt JSON does
+                # (P32) — data.items() on a non-dict would crash startup.
+                if not isinstance(data, dict):
+                    data = {}
                 s = cls(**{k: v for k, v in data.items()
                            if k in cls.__dataclass_fields__})
             except (json.JSONDecodeError, TypeError, OSError):
                 data, s = {}, cls()
         else:
             s = cls()
+
+        # mlip_envs is iterated (and .get()-ed) at startup by the Bridge, so a
+        # wrong-typed value in a hand-edited/corrupted settings.json would crash
+        # EVERY launch until the file is fixed (P32). Coerce to the expected
+        # shape: a list of dict entries; anything else degrades to [].
+        if not isinstance(s.mlip_envs, list):
+            s.mlip_envs = []
+        else:
+            s.mlip_envs = [e for e in s.mlip_envs if isinstance(e, dict)]
 
         # fill in sensible defaults on first run
         if not s.orca_path:
@@ -126,9 +164,18 @@ class Settings:
         return s
 
     def save(self) -> None:
-        config_file().write_text(
-            json.dumps(asdict(self), indent=2), encoding="utf-8"
-        )
+        """Persist settings atomically (same tmp + os.replace pattern as
+        QueueStore.save_session). Writing settings.json in place could leave a
+        half-written file on a crash/power loss, which the next session's
+        load() would reject — silently losing every setting. Best-effort: a
+        save failure must never break the running app."""
+        path = config_file()
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
 
     def orca_is_valid(self) -> bool:
         return bool(self.orca_path) and Path(self.orca_path).exists()

@@ -15,24 +15,34 @@ interface OrcaBridge {
   get_about(): Promise<string>;
   get_settings(): Promise<string>;
   save_settings(payloadJson: string): Promise<string>;
-  autodetect_orca(): Promise<string>;          // raw path string, not JSON
+  set_wallpaper_image(dataUri: string): Promise<string>;   // {ok, stored} JSON; stored=false when ""/invalid/oversize (cleared)
+  get_wallpaper_image(): Promise<string>;                   // bare data-URI string ("" = none)
+  autodetect_orca(): Promise<string>;          // AutodetectResult JSON (mutates settings on success)
   // MLIP environments (separate from ORCA; one env per MLIP)
   pick_mlip_python(): Promise<string>;         // raw path string
   add_mlip_env(payloadJson: string): Promise<string>;  // MlipStatusPayload | {error}
   remove_mlip_env(id: string): Promise<string>;        // MlipStatusPayload JSON
   check_mlip(id: string): Promise<string>;             // MlipStatusPayload JSON ("" = all)
   get_mlip_status(): Promise<string>;          // MlipStatusPayload JSON
+  // CREST (runs in WSL; separate from ORCA)
+  get_crest_status(): Promise<string>;         // CrestStatusPayload JSON
+  check_crest(): Promise<string>;              // CrestStatusPayload JSON (re-probe)
+  install_crest(distro: string): Promise<string>;      // CrestStatusPayload JSON ("" = first distro)
+  list_crest_distros(): Promise<string>;       // {distros: string[]} JSON
+  set_crest_distro(distro: string): Promise<string>;   // CrestStatusPayload JSON
   // file pickers / loaders
   pick_orca_executable(): Promise<string>;     // raw path string
   pick_workspace(): Promise<string>;           // raw path string
-  load_xyz_file(): Promise<string>;            // raw file text
-  load_xyz_path(path: string): Promise<string>; // raw file text
-  load_inp_file(): Promise<string>;
-  load_inp_path(path: string): Promise<string>;
+  // all four loaders share one LoadResult JSON envelope (cancel vs failure)
+  load_xyz_file(): Promise<string>;            // LoadResult JSON
+  load_xyz_path(path: string): Promise<string>; // LoadResult JSON
+  load_inp_file(): Promise<string>;            // LoadResult JSON
+  load_inp_path(path: string): Promise<string>; // LoadResult JSON
   load_choices(name: string): Promise<string>;
   // parsing
   parse_out_file(): Promise<string>;
   parse_out_path(path: string): Promise<string>;
+  parse_calc_output(name: string): Promise<string>;
   build_inp_preview(calcJson: string): Promise<string>;
   // queue
   add_calc(calcJson: string): Promise<string>;
@@ -45,6 +55,7 @@ interface OrcaBridge {
   get_log(since: number): Promise<string>;
   get_inp(name: string): Promise<string>;
   get_graph_lines(name: string): Promise<string>;
+  export_conformers(name: string): Promise<string>;
   // run / results
   get_free_energy_profile(): Promise<string>;
   check_overwrite_conflicts(): Promise<string>;
@@ -76,7 +87,9 @@ interface SCFGraphAPI {
   GeoTracker: new () => any;
   FreqTracker: new () => any;
   TddftTracker: new () => any;
+  CrestTracker: new () => any;
   isScfIter(line: string): boolean;
+  fmtClock(sec: number): string;
   targetFor(scfConvergence: string): number;
   renderSCFProgress(...args: any[]): string;
   renderSCFGraph(...args: any[]): string;
@@ -84,6 +97,7 @@ interface SCFGraphAPI {
   renderGeoGraph(...args: any[]): string;
   renderFreqProgress(...args: any[]): string;
   renderTddftProgress(...args: any[]): string;
+  renderCrestProgress(...args: any[]): string;
   setEtaMode(mode: string): void;
   setGeoMode(mode: string): void;
   SCF_TARGETS: Record<string, number>;

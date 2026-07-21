@@ -99,8 +99,13 @@ class OrcaRunner:
                 f"ORCA executable not found: '{self.orca_path}'. "
                 "Set the correct path in Settings."
             )
-        self._cancel_event.clear()
-        self._detach_event.clear()
+        # Deliberately NO event clearing here (nor in adopt): the runner lives
+        # for one engine run, and once cancel/detach fire the engine launches
+        # nothing further — so the only signal a clear could erase is a Stop
+        # that landed in the pre-launch window (geometry resolution, input
+        # writing), which used to be silently swallowed and let the calc run
+        # to completion. Keeping the events sticky lets monitor() honor it on
+        # its first tick.
         input_path = Path(input_path)
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,9 +151,8 @@ class OrcaRunner:
 
     def adopt(self, pid: int, create_time: Optional[float]) -> None:
         """Reattach to an ORCA process started in a previous session (we have no
-        Popen handle for it — liveness is checked via psutil)."""
-        self._cancel_event.clear()
-        self._detach_event.clear()
+        Popen handle for it — liveness is checked via psutil). No event clearing
+        — see launch()."""
         with self._lock:
             self._proc = None
             self._pid = int(pid)

@@ -2,11 +2,10 @@
   "_source": "ORCA 6.1.1 Manual sections 2.6 (SCF), 2.8 (RI), 3.4 (Dispersion), 4.1 (Optimizations), 6 (Calculations)",
 
   "scf_convergence": {
-    "_note": "SCF convergence tightness. Default is between Medium and Strong for SP, TightSCF for Opt.",
+    "_note": "SCF convergence tightness (ORCA simple-input tiers). ORCAdesk defaults: TightSCF for Opt, VeryTightSCF for Freq, TightSCF otherwise. NOTE: ORCA has no 'MediumSCF' tier — it rejects it as an unrecognized keyword — so it is not offered.",
     "keywords": [
       "SloppySCF",
       "LooseSCF",
-      "MediumSCF",
       "NormalSCF",
       "StrongSCF",
       "TightSCF",
