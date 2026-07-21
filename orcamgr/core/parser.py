@@ -154,10 +154,13 @@ class ParseResult:
     # list of (nucleus_index, element, isotropic_ppm, anisotropy_ppm)
     nmr_shieldings: list[tuple[int, str, float, float]] = field(default_factory=list)
 
-    # --- NEB-TS reaction path (PATH SUMMARY table) ---
+    # --- NEB-TS / IRC reaction path (PATH SUMMARY table) ---
     has_neb_path: bool = False
     # list of dicts: {label (e.g. "0","TS","9"), e_eh, de_kcal, is_ts}
     neb_path: list = field(default_factory=list)
+    # which table the path came from: "neb" (PATH SUMMARY FOR NEB-TS) or "irc"
+    # (IRC PATH SUMMARY) — the Results tab titles/captions the profile per kind
+    neb_path_kind: str = "neb"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -186,7 +189,10 @@ class ParseResult:
             rows.append((label, value, cat))
 
         add("File", self.filename)
-        add("ORCA version", self.orca_version or "?")
+        # only when a version was actually parsed — MLIP/CREST results (and
+        # non-ORCA files) have none, and a "?" row is just noise for them
+        if self.orca_version:
+            add("ORCA version", self.orca_version)
         add("Termination",
             "Normal" if self.terminated_normally else "ABNORMAL / incomplete")
         if self.error_message:
@@ -236,22 +242,26 @@ class ParseResult:
         if self.has_frequencies:
             add("Frequencies", f"{len(self.frequencies)} modes")
             add("Imaginary modes", str(self.n_imaginary))
-            if self.gibbs_eh is not None:
-                add("Final Gibbs G", f"{self.gibbs_eh:.8f} Eh")
-            if self.total_thermal_eh is not None:
-                add("Inner energy U", f"{self.total_thermal_eh:.8f} Eh")
-            if self.enthalpy_eh is not None:
-                add("Enthalpy H", f"{self.enthalpy_eh:.8f} Eh")
-            if self.entropy_term_eh is not None:
-                add("Entropy term T·S", f"{self.entropy_term_eh:.8f} Eh")
-            if self.zpe_eh is not None:
-                add("ZPE", f"{self.zpe_eh:.8f} Eh")
-            if self.g_minus_e_el_eh is not None:
-                add("G - E(el)", f"{self.g_minus_e_el_eh:.8f} Eh")
-            if self.temperature_k is not None:
-                add("Temperature", f"{self.temperature_k:.2f} K")
-            if self.pressure_atm is not None:
-                add("Pressure", f"{self.pressure_atm:.2f} atm")
+        # Thermochemistry can exist WITHOUT a frequencies table (e.g. an IRC job
+        # reading a Hessian prints a full GIBBS FREE ENERGY block), so each row
+        # is emitted on its own presence — never gated behind has_frequencies,
+        # per the "all rows are always emitted" contract above.
+        if self.gibbs_eh is not None:
+            add("Final Gibbs G", f"{self.gibbs_eh:.8f} Eh")
+        if self.total_thermal_eh is not None:
+            add("Inner energy U", f"{self.total_thermal_eh:.8f} Eh")
+        if self.enthalpy_eh is not None:
+            add("Enthalpy H", f"{self.enthalpy_eh:.8f} Eh")
+        if self.entropy_term_eh is not None:
+            add("Entropy term T·S", f"{self.entropy_term_eh:.8f} Eh")
+        if self.zpe_eh is not None:
+            add("ZPE", f"{self.zpe_eh:.8f} Eh")
+        if self.g_minus_e_el_eh is not None:
+            add("G - E(el)", f"{self.g_minus_e_el_eh:.8f} Eh")
+        if self.temperature_k is not None:
+            add("Temperature", f"{self.temperature_k:.2f} K")
+        if self.pressure_atm is not None:
+            add("Pressure", f"{self.pressure_atm:.2f} atm")
         if self.has_tddft:
             add("TD-DFT states", str(len(self.transitions)))
             bright = self.brightest_transition()
@@ -770,12 +780,16 @@ class OrcaOutParser:
         #     TS  -1626.94483     8.10         ...        <= TS
         # The label is an integer image index or "TS"; we keep label, absolute
         # energy, relative dE (kcal/mol), and whether the row is the TS.
+        # ORCA's "IRC PATH SUMMARY" table has the same row shape and matches
+        # the same header scan; record WHICH table matched so the Results tab
+        # can title an IRC profile as an IRC, not a NEB-TS.
         start = None
         for i, ln in enumerate(lines):
             if "PATH SUMMARY" in ln.upper():
                 start = i
         if start is None:
             return
+        path_kind = "irc" if "IRC" in lines[start].upper() else "neb"
         path = []
         # scan forward from the header; rows look like "<label> <float> <float> ..."
         for ln in lines[start: start + 200]:
@@ -805,6 +819,7 @@ class OrcaOutParser:
         if path:
             r.has_neb_path = True
             r.neb_path = path
+            r.neb_path_kind = path_kind
 
 
 def parse_file(path: str) -> ParseResult:

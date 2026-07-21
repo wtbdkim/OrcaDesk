@@ -188,7 +188,7 @@
 
       <!-- MLIP mode: self-contained form (shown only when build mode = mlip) -->
       <div class="card" id="card-mlip" style="display:none">
-        <div class="card-title">MLIP pre-optimization <span class="qstate raw" style="margin-left:6px">MLIP</span></div>
+        <div class="card-title">MLIP calculation <span class="qstate raw" style="margin-left:6px">MLIP</span></div>
         <div id="mlip-lock-note" class="mlip-lock-note" style="display:none">Ready MACE environment required.</div>
         <div class="field-row">
           <div class="field"><label>Name</label><input id="mlip-name" type="text" placeholder="e.g. mol-mace-opt"></div>
@@ -394,7 +394,7 @@
             <button class="btn btn-sm" onclick="renderFreeEnergyProfile()">Refresh</button>
           </div>
         </div>
-        <div id="fep-body"><div class="hint">No finished frequency calculations yet — FREQ jobs build the profile.</div></div>
+        <div id="fep-body"><div class="hint">No finished frequency calculations yet — Freq calculations build the profile.</div></div>
       </div>
     </section>
 
@@ -402,28 +402,28 @@
     <section class="panel" data-panel="settings">
       <div class="card">
         <div class="card-title">Appearance</div>
-        <div class="card-desc">Theme style. Light / dark is the ☽ button in the top bar; it works with either style.</div>
+        <div class="card-desc">Theme style — light / dark via the ☽ top-bar toggle, in either style.</div>
         <div class="appearance-variant">
           <button id="variant-shadcn" class="btn" onclick="setThemeVariant('shadcn')">shadcn (flat)</button>
           <button id="variant-liquidglass" class="btn" onclick="setThemeVariant('liquidglass')">Liquid Glass</button>
         </div>
-        <div class="hint" style="margin-top:6px">Liquid Glass floats a refracting frosted top bar and tabs over a wallpaper (Qt WebEngine / Chromium).</div>
+        <div class="hint" style="margin-top:6px">Liquid Glass — a refracting frosted top bar and tabs over a wallpaper (Qt WebEngine / Chromium).</div>
 
         <!-- shown only while Liquid Glass is the chosen variant -->
         <div id="lg-options" class="lg-only" style="display:none">
           <label style="margin-bottom:8px">Glass intensity</label>
           <div class="lg-level-row" id="lg-level-row">
             <button data-level="restrained" onclick="setGlassLevel('restrained')" title="Glass on the top bar only; content crisp">Restrained</button>
-            <button data-level="moderate" onclick="setGlassLevel('moderate')" title="Tabs refract too">Moderate</button>
+            <button data-level="moderate" onclick="setGlassLevel('moderate')" title="Glass on the tabs too">Moderate</button>
             <button data-level="bold" onclick="setGlassLevel('bold')" title="Floating glass tab bar">Bold</button>
-            <button data-level="vivid" onclick="setGlassLevel('vivid')" title="Top bar + tabs float; cards become translucent glass">Vivid</button>
+            <button data-level="vivid" onclick="setGlassLevel('vivid')" title="Floating top bar + tabs; translucent glass cards">Vivid</button>
             <button data-level="maximal" onclick="setGlassLevel('maximal')" title="Extreme blur/refraction + chromatic dispersion; cards most transparent">Maximal</button>
           </div>
-          <div class="hint" style="margin-top:6px">Restrained → Bold keep content opaque (recommended for readability). Vivid / Maximal also glassify cards.</div>
+          <div class="hint" style="margin-top:6px">Content opaque through Restrained → Bold (recommended for readability); glass cards at Vivid / Maximal.</div>
 
           <label style="margin:16px 0 8px">Wallpaper</label>
           <div class="lg-wall-grid" id="lg-wall-grid"></div>
-          <div class="hint" style="margin-top:8px">The glass chrome refracts this. Custom images are stored with the app and persist across restarts.</div>
+          <div class="hint" style="margin-top:8px">The backdrop the glass chrome refracts; custom images stored with the app, persisted across restarts.</div>
         </div>
       </div>
       <div class="card">

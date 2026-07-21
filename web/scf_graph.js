@@ -137,6 +137,9 @@
   // geometric perturbations:", "SCF Hessian ... NO"). A case-insensitive match
   // here showed "running frequencies…" (and the freq banner) on plain opts.
   const POST_OPT_RE = /VIBRATIONAL FREQUENCIES|ORCA SCF RESPONSE|GEOMETRIC PERTURBATIONS|CP-?SCF DRIVER|SCF HESSIAN|ANALYTICAL FREQUENCIES|NUMERICAL FREQUENCIES/;
+  // job end: the post-opt stage (and the whole run) is over — a graph re-seeded
+  // from a finished .out must not label a DONE calc "running frequencies / …"
+  const OPT_TERM_RE = /ORCA TERMINATED NORMALLY/;
 
   // the (up to) five geometry-convergence criteria ORCA prints each step. Colors
   // come from CSS vars (--crit-*) so they adapt to the theme — dark keeps the
@@ -173,6 +176,7 @@
     this._secByCycle = {};    // cycle number -> real ORCA wall seconds for that cycle
     this.done = false;        // geometry optimization has finished (converged / RUN DONE)
     this.postStage = "";      // post-opt stage now running (e.g. "frequencies"), for the label
+    this.postDone = false;    // ORCA TERMINATED NORMALLY seen — the post-opt stage completed
   }
   GeoTracker.prototype.push = function (line) {
     // Track the real ORCA optimization cycle number. Steps are keyed by this
@@ -184,6 +188,7 @@
     if (ts) { if (this.curCycle > 0) this._secByCycle[this.curCycle] = parseFloat(ts[1]); return false; }
     if (OPT_DONE_RE.test(line)) { this.done = true; return true; }   // -> 100%, stop the ETA
     if (this.done && !this.postStage && POST_OPT_RE.test(line)) { this.postStage = "frequencies / properties"; return false; }
+    if (this.done && OPT_TERM_RE.test(line)) { this.postDone = true; return false; }
     if (GEO_TABLE_RE.test(line)) {
       this._inTable = true;
       this._sawItem = false;
@@ -547,7 +552,9 @@
     // optimization finished -> jump to 100% and announce the next stage, instead
     // of staying stuck at 99% (the last criteria table can read 4/5 met)
     if (geo.done) {
-      const tail = geo.postStage ? `, running ${geo.postStage}` : "";
+      const tail = geo.postStage
+        ? (geo.postDone ? `, ${geo.postStage} complete` : `, running ${geo.postStage}`)
+        : "";
       return (
         `<div class="scf-prog-label">Optimization complete · 100% · step ${stepN}</div>` +
         `<div class="scf-prog-bar"><span style="width:100%"></span></div>` +

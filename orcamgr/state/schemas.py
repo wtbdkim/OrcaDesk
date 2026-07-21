@@ -30,7 +30,7 @@ from typing import TypedDict
 # these names exist so snapshot/envelope schemas can reference the shapes.)
 
 class CalcSummary(TypedDict):
-    """Compact queue-row form — mirror of store.calc_to_dict (13 keys)."""
+    """Compact queue-row form — mirror of store.calc_to_dict (16 keys)."""
     name: str
     kind: str
     charge: int
@@ -44,6 +44,12 @@ class CalcSummary(TypedDict):
     output_path: str
     scf_convergence: str
     meta: str
+    # backend-specific row detail, "" when not applicable — explicit fields so
+    # the desktop can render them ESCAPED (meta embeds user-typed ref names, so
+    # it must never land in innerHTML)
+    mlip_model: str           # mlip* kinds: the MACE model label
+    crest_method: str         # crest* kinds: the tight-binding method
+    crest_handoff: str        # crest* kinds: "lowest" | "all"
 
 
 class CalcFull(TypedDict):
@@ -262,6 +268,7 @@ class ParsePayload(TypedDict, total=False):
     mayer_bonds: "list[tuple[str, str, float]]"      # (atom_i, atom_j, bond order)
     nmr: "list[NmrPayload]"
     neb_path: "list[NebPointPayload]"
+    neb_path_kind: str                        # "neb" | "irc" — titles the path profile
     geometry: "list[GeomAtomPayload]"         # final/optimized coordinates (A)
     orbitals: "list[OrbitalPayload]"          # orbital energies (eV) + occupations
     tddft_states: "list[TddftStatePayload]"   # excited-state composition

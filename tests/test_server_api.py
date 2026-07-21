@@ -219,3 +219,26 @@ def test_run_with_empty_queue_is_rejected(store, tmp_path, monkeypatch):
     # which the endpoint converts to a 400 (P16: domain raises, boundary converts)
     assert r.status_code == 400
     assert store.running is False
+
+
+def test_run_with_dangling_reference_is_rejected_400(store, tmp_path, monkeypatch):
+    # Shared pre-run check (P4): the phone entry point must refuse a dangling
+    # REFERENCE up front with the same message as the desktop bridge, instead
+    # of letting the run fail mid-queue.
+    _stub_settings(monkeypatch, tmp_path,
+                   mlip_envs=[{"id": "e1", "name": "stub", "python": sys.executable}])
+    payload = _calc_payload("orphan", kind="mlip_opt")
+    payload["config"] = {"kind": "mlip_opt", "mlip_model": "MACE-OFF medium"}
+    payload["geometry_source"] = "reference"
+    payload["ref_name"] = "ghost"
+    payload["xyz"] = ""
+    store.add(calc_from_dict(payload))
+
+    started = []
+    monkeypatch.setattr(store, "start_run", lambda factory: started.append(factory))
+
+    client = _client(create_app(store, bind_host="127.0.0.1"))
+    r = client.post("/api/run")
+    assert r.status_code == 400
+    assert "ghost" in r.json()["detail"]
+    assert started == []

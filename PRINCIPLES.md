@@ -482,7 +482,10 @@ controlled by change gates (queue `version`, log `seq`, dirty flags, at most
 one graph redraw per tick) rather than by partial-update logic. The one
 exception is the log: incremental append with a DOM node cap (2000 lines —
 "this was the lag"). The log pipeline is bounded end-to-end — the store trims
-its buffer at 5000 → 4000 lines — and a derived view that must outlive the
+its buffer at 5000 → the newest 4000 lines plus up to 500 older `[web] `
+console-capture lines retained preferentially (still a hard ~4500 bound;
+without the exemption a single ORCA run's stdout would evict every front-end
+error before it was read) — and a derived view that must outlive the
 buffer (graph history on reattach) is rebuilt from the `.out` on disk
 (`get_graph_lines`), never from the capped stream. When the document is
 hidden, DOM/SVG work is skipped

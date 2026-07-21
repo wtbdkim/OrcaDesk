@@ -439,8 +439,9 @@ never a hand-mixed rgba (D13).
   0.3s; pulse/shimmer 1.2–1.4s (in-progress only).
 - Timing constants: poll 1000ms; MLIP status re-poll 800ms; toast 2200ms;
   "Saved." 2000ms; log DOM cap 2000 lines; backend log buffer trim
-  5000 → 4000 lines; `[web]` console rate-limit 5s/signature; log
-  auto-follow threshold 40px.
+  5000 → 4000 lines + up to 500 retained older `[web]` lines (so ORCA's
+  stdout flood can't evict the console captures); `[web]` console
+  rate-limit 5s/signature; log auto-follow threshold 40px.
 - ETA buckets: under a minute (<45s) / a few minutes (<8m) / tens of minutes
   (<50m) / a few hours (<5h) / many hours (<24h) / a day or more.
 
@@ -1043,3 +1044,4 @@ Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
 | B23 | Feedback-channel conformance (§13.2): many failure call sites were single-channel — toast-only (`Couldn't read that .inp`, `Drop failed`, `Could not save settings/theme: …`, `Could not add environment: …`, reorder/remove constraints, `Copy failed`) or log-only (`Could not start: …`, `Could not generate .inp: …`); `clearQueue` failure logged at `warn` instead of `err` | §13.2, D65 | resolved (0.4.3-beta — failures route through the shared `failNotify` helper: toast + `err` log) |
 | B24 | Five 0.5.0-beta CREST/MLIP `.card-desc` strings drifted from the copy spec: the raw-`.inp` and Results descs used *job* for a queued **calculation** (§14.2 reserves *job* for the running process); the CREST-build, MLIP-environment, and CREST-settings descs were multi-sentence/imperative rather than a one-line noun-form fragment (§11.1/D70). The B20 sweep (0.4.3-beta) predates this copy. | §14, D70, §11.1 | resolved (0.5.0-beta — reworded to spec; found by a conformance review of the design previews, which confirmed the rest of the preview set is clean) |
 | B25 | The Liquid-Glass `vivid`/`maximal` intensity levels glassify the `.card` layer, crossing the "glass = chrome only; content opaque" rule (§16.1) | §16.1 | accepted (0.5.0-beta — opt-in exploratory extremes at the top of the intensity ladder; the recommended `restrained`/`moderate`/`bold` levels keep content opaque, and inner data surfaces stay opaque even at `maximal`) |
+| B26 | Second 0.5.0-beta copy sweep (post-B24 strings, mostly the Appearance card): the free-energy-profile placeholder said *FREQ jobs* (§14.2 job/calculation + kind-label casing); the Appearance `.card-desc` and three hints were multi-sentence verb-form (§11.1/§14.1 noun-form one-liners); two glass-intensity tooltips were subject-verb clauses among noun-phrase siblings (§14.1); and the `#card-mlip` title "MLIP pre-optimization" misdescribed the card's `mlip_sp` single-point task (§14.1 accurate noun phrase / D2) | §11.1, §14.1, §14.2, D2 | resolved (0.5.0-beta — all eight strings rewritten to conform; card retitled "MLIP calculation") |

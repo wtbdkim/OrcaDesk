@@ -88,7 +88,9 @@ The entire UI lives in `web/` (HTML/CSS/JS, shadcn-style dark theme). `main.py` 
 
 The view's page is `_ConsoleCapturePage` (`window.py`), which forwards JS console
 output into the shared log buffer as `[web] ...` lines (rate-limited per identical
-message) — so front-end errors are visible in the Log tab even in a deployed build;
+message) — so front-end errors are visible in the Log tab even in a deployed build
+(the log ring's trim retains older `[web] ` lines preferentially, so ORCA's stdout
+flood can't evict them — `QueueStore.append_log`);
 `ORCADESK_REMOTE_DEBUG` (handled in `main.py`) remains the dev-time tool.
 `window.py` also trims the embedded browser: WebGL and Chromium's built-in PDF
 viewer are disabled (the UI uses neither), and minimizing the window sets the
@@ -131,8 +133,16 @@ the front-end. Don't annotate FastAPI endpoints with these TypedDicts as return 
 — FastAPI would infer a response_model and put pydantic between the dict and the wire;
 endpoints keep `-> dict` and only *construct* through the schema types.
 
-The **Results tab** is purely presentational over `ParsePayload`: `bridge._parse_path`
-sends the *whole* `ParseResult` (every section the parser found) plus two gating flags
+The **Results tab** is purely presentational over `ParsePayload`. A QUEUED
+calc's result is fetched by NAME through `bridge.parse_calc_output`, which
+dispatches on the calc's **kind** (`result_from_output`); external files
+(drag-drop / Open .out) go through `bridge._parse_path`, which has no kind and
+dispatches per backend heuristically (an engine-written `*.mlip.json` → the MLIP
+parser; `crest_conformers.xyz`/`crest_best.xyz` siblings → the CREST parser; else
+the ORCA parser). Keep the heuristic OFF the queued path: workspace folders
+survive removal, so a calc reusing a removed CREST calc's name would otherwise
+parse as a conformer search. Both paths
+send the *whole* `ParseResult` (every section the parser found) plus two gating flags
 — `is_optimization` and `show_elec` (`= ParseResult.shows_electronic_props`) — and the
 front-end (`web/app.js` `renderResultSections` / `renderSummary`) decides what to show
 per calc kind. Final geometry shows only for opt jobs; general electronic-structure
@@ -172,7 +182,9 @@ The `core/` pipeline:
   decomposition, geometry, orbitals/HOMO-LUMO, Mulliken & Löwdin charges, Mayer
   population (bond orders + valences), dipole moment, rotational constants,
   frequencies, full thermochemistry (U/H/G/ZPE/T·S/temp/pressure), TD-DFT
-  transitions + excited-state composition, NMR, NEB path). Marker-based,
+  transitions + excited-state composition, NMR, NEB/IRC path — both print a
+  `PATH SUMMARY` table; `neb_path_kind` records which, so the Results tab titles
+  an IRC profile as an IRC). Marker-based,
   tolerant of `\r\n`; when a value recurs (e.g. across opt steps) the **last**
   occurrence wins. `ParseResult.summary_rows()` returns `(label, value, category)`
   rows where `category="elec"` tags general electronic-structure rows; the
@@ -186,12 +198,20 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   (`{workspace}/{name}/`). Uniqueness is enforced in the store.
 - **The queue autosaves to `%APPDATA%\ORCAdesk\session.json`** on every mutation
   (`QueueStore._bump_and_save`) and is restored on startup (`load_session`). A
-  `RUNNING` calc persists its detached ORCA's `(pid, create_time)`. On the next
+  `RUNNING` calc persists its detached ORCA's `(pid, create_time)` **and its
+  output path** (recorded at launch — without it the finished-while-closed →
+  DONE judgment below has nothing to read). On the next
   launch, `reconcile_calcs` checks that identity: still alive → stays `RUNNING`
   and is **reattached** (`OrcaRunner.adopt` + `monitor`, continuing the queue);
-  gone → judged from its `.out` (`DONE` if terminated normally + valid, else
+  gone → judged from its output (`DONE` if terminated normally + valid, else
   `FAILED`). Closing ORCAdesk does **not** kill the running job — `shutdown()`
-  calls `store.pause_run()` (engine `detach()`), not cancel.
+  calls `store.pause_run()` (engine `detach()`), not cancel. **MLIP is the
+  exception**: its worker has no detach/reattach machinery and is terminated on
+  shutdown, so a mid-run mlip calc is stamped `CANCELLED` ("Stopped on
+  shutdown." — re-runnable, never the locked FAILED) at detach, and
+  `reconcile_calcs` applies the same judgment to a session persisted before the
+  stamp landed (a worker that raced to completion still restores `DONE` from
+  its result JSON).
 - **Geometry source** is `DIRECT` (coords supplied, e.g. from `.xyz`) or `REFERENCE`
   (another queued calc by name). For a reference, the engine injects that calc's
   **optimized final geometry** at run time — so opt → freq reuses the optimized
@@ -338,14 +358,18 @@ charge/multiplicity inputs (used only by charge/spin-aware models — OMol25 /
 multi-head; MACE-OFF/MP ignore them), and a
 **geometry source** selector (`.xyz` loader **or** reference another queued calc,
 mirroring the ORCA build card — `onMlipGeomSourceChange`/`refreshMlipRefSelect` in
-`app.js`), which add a `mlip_opt` calc to the **shared queue** through the
+`app.js`), which add a `mlip_opt` **or** `mlip_sp` calc (per the card's Task
+selector, `#mlip-task`) to the **shared queue** through the
 same `add_calc`/`calc_from_dict` path as ORCA calcs. A referenced `mlip_opt`
 resolves through the very same `_resolve_geometry` path as an opt→freq handoff, so
 an MLIP pre-optimization can start from another calc's optimized geometry (e.g. a
 CREST best conformer). The model lives on
 `StepConfig.mlip_model` (+ `mlip_env_id`, `""` = first ready env); `build_input`
 ignores those — an MLIP calc never produces an ORCA `.inp`. `_meta_line` shows
-the model instead of charge/mult for `mlip*` kinds, and `editCalc` refuses
+the model instead of charge/mult for `mlip*` kinds, and `CalcSummary` also carries
+the model/method as **explicit fields** (`mlip_model`, `crest_method`,
+`crest_handoff`) so the desktop queue row can render them escaped (never innerHTML
+the pre-joined `meta` — it embeds user-typed ref names); `editCalc` refuses
 in-place editing of MLIP calcs for now (remove + re-add). The card is **locked**
 (greyed, inputs/buttons disabled, `#mlip-lock-note` shown) until some MLIP env is
 ready — `applyMlipLock` in `app.js`, driven by the `get_mlip_status` poll

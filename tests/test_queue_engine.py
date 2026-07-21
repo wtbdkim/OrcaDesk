@@ -182,7 +182,12 @@ def test_cancel_marks_pending_cancelled_but_preserves_terminal_states(tmp_path):
     done_prev = make_calc("done_prev", state=CalcState.DONE)
     failed_prev = make_calc("failed_prev", state=CalcState.FAILED)
     failed_prev.message = "SCF did not converge."
-    blocked_prev = make_calc("blocked_prev", state=CalcState.BLOCKED)
+    # a REAL blocked row references its failed parent — its diagnosis is still
+    # true, so it must survive the cancel untouched. (A BLOCKED row with a
+    # CLEAN ancestry is normalized to PENDING at run start instead — see
+    # test_stale_blocked_with_clean_ancestry_is_normalized_at_run_start.)
+    blocked_prev = make_calc("blocked_prev", ref="failed_prev",
+                             state=CalcState.BLOCKED)
     blocked_prev.message = "Skipped: a dependency failed."
 
     harness.engine.run_all([first, inflight, pending_tail,
@@ -636,3 +641,87 @@ def test_keep_existing_same_count_mismatch_names_the_element_sequence(tmp_path):
 
     assert harness.calls == ["keepme"]
     assert "element sequence differs at atom #2" in harness.log_text()
+
+
+# ---- shutdown (OrcaDetached) semantics --------------------------------------
+from orcamgr.core.runner import OrcaDetached
+
+
+class _DetachingRunner:
+    """launch succeeds (fake pid), monitor immediately reports app shutdown."""
+    def launch(self, inp_path, out_path):
+        return 4321, 1234.5
+
+    def end_position(self, out_path):
+        return 0
+
+    def monitor(self, out_path, on_line=None, start_pos=0):
+        raise OrcaDetached("Monitoring stopped; ORCA left running.")
+
+
+def test_orca_launch_persists_output_path_before_detach(tmp_path):
+    # A job that keeps running (or even finishes) while ORCAdesk is closed can
+    # only be judged DONE by reconcile_calcs if its output path was persisted
+    # AT LAUNCH — not only after a successful monitor. Without that, the
+    # "finished while closed -> DONE" branch is unreachable and a successful
+    # run gets locked FAILED on the next start.
+    updates = []
+    engine = QueueEngine(
+        orca_path="orca-not-needed-in-tests",
+        workspace_root=str(tmp_path),
+        callbacks=QueueCallbacks(
+            log=lambda m, level: None,
+            calc_update=lambda i, c: updates.append((c.output_path, c.state)),
+        ),
+    )
+    engine.runner = _DetachingRunner()
+    calc = make_calc("shutme", kind="sp")
+
+    engine.run_all([calc])
+
+    assert calc.state is CalcState.RUNNING           # left for reattach
+    assert calc.pid == 4321
+    assert calc.output_path.endswith("shutme.out")   # persisted at launch
+    # and the persist callback saw the path BEFORE monitor raised
+    assert any(p.endswith("shutme.out") and s is CalcState.RUNNING
+               for (p, s) in updates)
+
+
+def test_mlip_detach_is_stamped_cancelled_not_left_running(tmp_path):
+    # The MLIP worker is TERMINATED on shutdown (mlip/runner.py) — leaving the
+    # calc RUNNING would let the next launch's reconcile lock it FAILED; a
+    # deliberate shutdown stop is CANCELLED (re-runnable).
+    harness = EngineHarness(tmp_path)
+    mlip = make_calc("mace1", kind="mlip_opt")
+    after = make_calc("after")
+
+    def _detach(calc, index):
+        raise OrcaDetached("MLIP run terminated on shutdown.")
+
+    harness.engine._run_mlip_calc = _detach
+    harness.engine.run_all([mlip, after])
+
+    assert mlip.state is CalcState.CANCELLED
+    assert mlip.message == "Stopped on shutdown."
+    assert mlip.pid is None
+    assert after.state is CalcState.PENDING          # shutdown stops the walk
+
+
+def test_stale_blocked_with_clean_ancestry_is_normalized_at_run_start(tmp_path):
+    # A BLOCKED row whose ancestry is now clean (failed parent removed /
+    # reference re-pointed) WILL run this pass — the stale "Skipped: a
+    # dependency failed." must be reset UP FRONT, not when the walk happens to
+    # reach the row (the queue would visibly label a will-run row as skipped).
+    harness = EngineHarness(tmp_path)
+    ok = make_calc("ok")
+    stale = make_calc("stale", ref="ok", state=CalcState.BLOCKED)
+    stale.message = "Skipped: a dependency failed."
+
+    seen_at_first_run = []
+    harness.behaviors["ok"] = lambda c: seen_at_first_run.append(
+        (stale.state, stale.message))
+
+    harness.engine.run_all([ok, stale])
+
+    assert seen_at_first_run == [(CalcState.PENDING, "")]
+    assert stale.state is CalcState.DONE

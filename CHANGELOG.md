@@ -197,6 +197,117 @@ ORCA in one action.
   default) and validated/clamped at the deserialization boundary.
 
 ### Fixed
+- **An ORCA job that finishes while ORCAdesk is closed is now restored as
+  DONE.** The reconcile step always had a "terminated normally + valid →
+  DONE" branch, but it was unreachable: the output path it judges from was
+  only recorded after a *monitored* finish, so a detached job that completed
+  while the app was closed came back as a locked FAILED ("Interrupted while
+  ORCAdesk was closed") despite a perfect result on disk. The output path is
+  now persisted at launch (and on reattach), like the CREST runner always did.
+- **Closing the app mid-MLIP-run no longer locks the calculation FAILED on
+  the next start.** Shutdown deliberately terminates the MLIP worker (it has
+  no detach/reattach machinery), but the calc stayed RUNNING in the saved
+  session, so the next launch judged it "interrupted" and locked it. It is
+  now stamped CANCELLED ("Stopped on shutdown.") at detach — and the
+  reconcile step applies the same judgment for sessions where the app exited
+  before the stamp landed (a worker that raced to completion still restores
+  as DONE from its result file).
+- **Reusing a removed calculation's name no longer shows the removed
+  calculation's results.** The Results tab's per-name cache was never
+  invalidated (and a cache hit suppressed re-fetching), so after remove →
+  re-add-same-name → run, the tab kept serving the OLD molecule's numbers for
+  the new DONE calc until an app restart — and the Results picker kept listing
+  long-removed calcs. Removing a calc (or clearing the queue) now drops its
+  cached result too.
+- **Queued results are now parsed by calculation kind, not folder contents.**
+  The Results tab routed a queued calc's output through the same folder
+  heuristic used for externally dropped files, so an ORCA calc reusing a
+  removed CREST calc's folder (leftover `crest_conformers.xyz`) was parsed as
+  a conformer search. Queued results now go through a name-based bridge call
+  that dispatches on the calc's kind (the heuristic remains for external
+  files, which have no kind).
+- **"Export as .xyz" no longer targets the wrong calculation after a drag-and-
+  dropped .out.** Dropping an external `.out` kept the previously viewed
+  queued calc's identity, so exporting from a dropped CREST result wrote the
+  *queued* calc's conformers instead. The drop path now clears the queued-calc
+  association exactly like the Open-.out dialog path.
+- **Reference dropdowns stay live on poll-delivered queue changes.** A calc
+  added by a phone client or created by the conformer fan-out never appeared
+  in the "From another calculation" selects until a local add/remove — making
+  dangling references easy to queue (they were only refused at run start).
+  The poll's queue-change branch now refreshes both selects like local
+  mutations do; the phone's `/api/run` also validates references up front now,
+  through the same shared check as the desktop Run.
+- **Dropping a `.xyz` on the DFT form now switches the geometry source to
+  "From .xyz file".** With the form on "From another calculation" the dropped
+  coordinates were loaded invisibly (the status label lives in the hidden
+  branch) and silently discarded on Add — inconsistent with the MLIP card's
+  drop behavior.
+- **A stale "Skipped: a dependency failed." row is reset at run start.** After
+  re-pointing a BLOCKED calc's reference (or removing its failed parent), a
+  re-run left the old BLOCKED badge on rows that were about to run, until the
+  engine's walk happened to reach them. Rows whose ancestry is clean are now
+  normalized to PENDING up front.
+- **Clearing the log mid-run no longer replaces the live graph with a
+  finished CREST search.** Clear resets the graph trackers; the disk re-seed
+  fallback then picked the most recent DONE conformer search even while an
+  ORCA/MLIP job was running, and its tracker took over the graph panel for
+  the rest of the run. The done-calc fallback now only fires while nothing is
+  running. Also, a graph re-seeded from a finished opt+freq output no longer
+  reads "running frequencies / properties" — the stage is labelled complete
+  once the output's termination banner is seen.
+- **CREST card Reset now restores the basic fields too** (charge,
+  multiplicity, method, solvent, energy window, threads) — previously only
+  the geometry, handoff, and advanced knobs were reset, unlike the MLIP and
+  DFT cards.
+- **MLIP results now open with the MLIP parser in the Results tab.** A finished
+  MLIP calculation's result file (`{name}.mlip.json`) was fed to the ORCA text
+  parser, so the Results tab showed **ABNORMAL / incomplete** (red) plus the raw
+  JSON dumped as an Error row — for a successfully converged calculation whose
+  queue row said DONE. `bridge._parse_path` now dispatches per backend
+  (`.mlip.json` → the MLIP parser), the path-based mirror of the engine's
+  `result_from_output` kind dispatch. The free-energy profile's parse-on-miss
+  now uses that same dispatch too — previously it could cache a wrong ORCA
+  parse onto a restored MLIP/CREST calc's `result`, which the engine's
+  reference resolution would then trust.
+- **Dropping a `.xyz` while the MLIP or CREST build card is shown now loads
+  that card.** The drop used to write the hidden DFT card's geometry: the log
+  said "Dropped .xyz loaded" while the visible card stayed empty and **Add to
+  queue** refused with "Load an .xyz file first." The drop now routes to the
+  card the user is looking at (selecting the direct-geometry branch on the
+  MLIP card), and a locked card explains itself at drop time instead of at Add.
+- **Queue rows now show the MLIP model and CREST method.** The backend always
+  sent them, but the desktop row rendered only kind/source/charge — with MLIP
+  in-place editing unsupported and no `.inp` view, the chosen MACE model was
+  invisible anywhere on desktop. MLIP rows now append the model, CREST rows the
+  tight-binding method plus an "all conformers" tag when that handoff is set
+  (new explicit `CalcSummary` fields, rendered escaped).
+- **IRC outputs are no longer titled "NEB-TS reaction path".** ORCA's
+  `IRC PATH SUMMARY` table matches the same parser scan as the NEB-TS one; the
+  parser now records which table it read (`neb_path_kind`) and the Results tab
+  titles an IRC profile **"IRC path (N steps)"**, dropping the
+  reactant/product endpoint captions and the NEB-specific barrier/reaction-energy
+  hint that don't apply to an IRC.
+- **Thermochemistry parsed from an output without a frequencies table now shows.**
+  Gibbs/enthalpy/entropy rows were gated behind the `VIBRATIONAL FREQUENCIES`
+  table, so e.g. an IRC job reading a Hessian had its parsed **Final Gibbs G**
+  silently dropped from the summary — invisible even with **Show all** (the
+  gate was server-side, violating the "all rows always emitted" contract). Each
+  thermo row is now emitted whenever its value was parsed.
+- **Front-end `[web]` log lines now survive long runs.** ORCA's stdout flows
+  into the same capped log ring (trim to the newest 4 000 lines), so a single
+  long run could evict every console-captured `[web]` error before it was ever
+  read — defeating the capture's diagnostic purpose. The trim now retains older
+  `[web]` lines preferentially (up to 500) alongside the newest 4 000.
+- **CREST/MLIP results no longer show an "ORCA version: ?" row.** The row is
+  emitted only when a version was actually parsed — it is meaningless for
+  non-ORCA backends.
+- **Copy sweep (second 0.5.0 pass, DESIGN.md B26).** Eight strings brought onto
+  the copy spec: the free-energy-profile placeholder ("FREQ jobs" → "Freq
+  calculations"), the Appearance card description and three hints (multi-sentence
+  → one-line noun form), two glass-intensity tooltips (verb clauses → noun
+  phrases), and the MLIP build card title — **"MLIP pre-optimization" →
+  "MLIP calculation"**, since the card also runs single points (`mlip_sp`).
 - **Liquid Glass chrome now self-heals from compositor layer drops.** Even
   with the compositor-safe glass architecture, an external GPU event
   (sleep/resume, driver reset, GPU memory pressure) could still make Qt

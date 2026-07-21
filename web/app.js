@@ -127,6 +127,14 @@ window.onInpDropped = async function (path) {
 
 window.onXyzDropped = async function (path) {
   if (!bridge) return;
+  // The OS drop is window-level and mode-agnostic (window.py routes by
+  // extension only), so deliver the geometry to the card the user is looking
+  // at: in MLIP/CREST mode the DFT card is hidden — writing directXyz there
+  // would log success while the visible card stays empty and Add refuses.
+  if (buildMode === "mlip" || buildMode === "crest") {
+    await dropXyzIntoBackendCard(path);
+    return;
+  }
   if (rawBlocksXyzLoad()) return;
   try {
     const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_path(path)));
@@ -136,11 +144,51 @@ window.onXyzDropped = async function (path) {
     const n = directXyz ? directXyz.split("\n").length : 0;
     const st = document.getElementById("xyz-status");
     if (st) st.textContent = n ? `loaded (${n} atoms)` : "No atoms in file.";
+    // a dropped file means direct geometry (mirror of the MLIP branch) — but
+    // only for the FORM: in raw mode the radio is hidden form state, and a raw
+    // {{GEOMETRY}} calc legitimately takes a drop while set to reference
+    if (!rawMode) {
+      const dr = document.querySelector('input[name="geomsrc"][value="direct"]');
+      if (dr && !dr.checked) { dr.checked = true; onGeomSourceChange(); }
+    }
     switchTab("build");
     appendLog(`Dropped .xyz loaded (${n} atoms).`, n ? "ok" : "warn");
     nebAtomCheck();   // a replaced reactant must never leave a stale ✓/⚠ verdict
   } catch (e) { failNotify("Could not load the dropped file."); }
 };
+
+/** Route a dropped .xyz into the visible MLIP or CREST card (mirror of
+ *  loadMlipXyz / loadCrestXyz, which the native-dialog buttons use).
+ *  @param {string} path */
+async function dropXyzIntoBackendCard(path) {
+  const isMlip = buildMode === "mlip";
+  // a locked card's Add would refuse anyway — surface the reason at drop time
+  if (isMlip ? !_mlipReady : !_crestReady) {
+    failNotify(isMlip ? "Ready MACE environment required (see Settings)."
+      : "CREST in a WSL distribution required (see Settings → CREST).");
+    return;
+  }
+  try {
+    const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_path(path)));
+    if (res.cancelled) return;   // deliberate dismissal, never an error
+    if (!res.ok) { failNotify("Could not read that .xyz."); return; }
+    const coords = parseXyzText(res.text);
+    const n = coords ? coords.split("\n").length : 0;
+    if (isMlip) mlipXyz = coords; else crestXyz = coords;
+    const st = document.getElementById(isMlip ? "mlip-xyz-status" : "crest-xyz-status");
+    if (st) st.textContent = n ? `loaded (${n} atoms)` : "No atoms in file.";
+    if (isMlip) {
+      // a dropped file means direct geometry — reveal the branch that shows it
+      const dr = document.querySelector('input[name="mlip-geomsrc"][value="direct"]');
+      if (dr && !dr.checked) {
+        dr.checked = true;
+        onMlipGeomSourceChange();
+      }
+    }
+    switchTab("build");
+    appendLog(`Dropped .xyz loaded into the ${isMlip ? "MLIP" : "CREST"} card (${n} atoms).`, n ? "ok" : "warn");
+  } catch (e) { failNotify("Could not load the dropped file."); }
+}
 
 window.onOutDropped = async function (path) {
   if (!bridge) return;
@@ -149,6 +197,9 @@ window.onOutDropped = async function (path) {
     /** @type {ParsePayload} */
     let data; try { data = JSON.parse(raw); } catch { toast("Could not parse that .out."); return; }
     if (!data || !data.summary) { toast("Could not parse that .out."); return; }
+    // an external file, not a queued calc (mirror openOutFile): a stale queued
+    // name here would route Export-as-.xyz to the WRONG calc's ensemble
+    _currentResultName = "";
     _currentResult = data;
     renderResult(data);
     switchTab("results");
@@ -184,6 +235,12 @@ async function pollTick() {
       _queueVersion = snap.version;
       queue = (snap.calculations || []).map(mirrorCalc);
       renderQueue();
+      // Poll-delivered queue changes (a phone client's add, the engine's
+      // conformer fan-out substitution) must keep the reference dropdowns live
+      // too — same visibility-gated refresh as refreshQueue, both refreshers
+      // preserve the current selection so re-running them is safe.
+      if (document.getElementById("geom-reference")?.style.display === "block") refreshRefSelect();
+      if (document.getElementById("mlip-geom-reference")?.style.display === "block") refreshMlipRefSelect();
       _running = !!snap.running;
       setRunUI(_running);
       // auto-load results for any finished calculation
@@ -223,7 +280,12 @@ async function pollTick() {
 async function maybeSeedGraph() {
   if (!SCFGraph) return;
   let target = (queue || []).find(c => c.state === "running" && _OPT_KINDS.includes(c.kind));
-  if (!target && _geoTracker && !_geoTracker.hasData()) {
+  // The done-calc fallback only fires while NOTHING is running: a live
+  // non-opt job (MLIP, CREST) must never have a finished calc's replayed
+  // graph seeded over its stream (e.g. a mid-run log Clear resets the
+  // trackers and would otherwise trigger exactly that).
+  const anyRunning = (queue || []).some(c => c.state === "running");
+  if (!target && !anyRunning && _geoTracker && !_geoTracker.hasData()) {
     // no live opt running: fill an empty graph from the most recent done opt
     const dones = (queue || []).filter(c => c.state === "done" && _OPT_KINDS.includes(c.kind));
     target = dones.length ? dones[dones.length - 1] : null;
@@ -250,7 +312,11 @@ async function maybeSeedGraph() {
 async function maybeSeedCrestGraph() {
   if (!SCFGraph) return;
   let target = (queue || []).find(c => c.state === "running" && (c.kind || "").startsWith("crest"));
-  if (!target && _crestTracker && !_crestTracker.hasData()) {
+  // same running-gate as maybeSeedGraph: a DONE search must not take the
+  // graph panel over from a live non-CREST job (CrestTracker with data wins
+  // the panel priority in renderSCFPanel)
+  const anyRunning = (queue || []).some(c => c.state === "running");
+  if (!target && !anyRunning && _crestTracker && !_crestTracker.hasData()) {
     const dones = (queue || []).filter(c => c.state === "done" && (c.kind || "").startsWith("crest"));
     target = dones.length ? dones[dones.length - 1] : null;
   }
@@ -279,6 +345,9 @@ function mirrorCalc(c) {
     conformer_origin: c.conformer_origin || "",
     output_path: c.output_path || "",
     scf_convergence: c.scf_convergence || "TightSCF",
+    mlip_model: c.mlip_model || "",
+    crest_method: c.crest_method || "",
+    crest_handoff: c.crest_handoff || "",
     // config/xyz aren't returned by the snapshot; editing pulls from here only
     // for display. (Full re-edit of phone-added calcs is a later refinement.)
   };
@@ -1800,6 +1869,14 @@ function resetCrestForm() {
   document.getElementById("crest-name").value = "";
   crestXyz = "";
   document.getElementById("crest-xyz-status").textContent = "";
+  // basics back to their index.html defaults too — Reset restores defaults on
+  // every build card (MLIP, DFT), so CREST must not keep e.g. a typed mult
+  document.getElementById("crest-charge").value = "0";
+  document.getElementById("crest-mult").value = "1";
+  document.getElementById("crest-method").value = "gfn2";
+  document.getElementById("crest-solvent").value = "";
+  document.getElementById("crest-ewin").value = "6";
+  document.getElementById("crest-threads").value = "4";
   const ho = document.getElementById("crest-handoff");
   if (ho) ho.value = "lowest";
   // advanced knobs back to CREST defaults
@@ -2349,6 +2426,12 @@ function renderQueue() {
     // MACE-OFF/MP ignore them — a neutral singlet MLIP row stays clean.
     const cmLabel = (!isMlip || c.charge !== 0 || c.multiplicity !== 1)
       ? ` · charge ${c.charge} · mult ${c.multiplicity}` : "";
+    // backend detail (explicit CalcSummary fields, escaped): the MACE model is
+    // otherwise invisible on desktop (MLIP calcs have no edit and no .inp view);
+    // the CREST method + all-conformers handoff change what a run will do.
+    const backendDetail = isMlip && c.mlip_model ? ` · ${escapeHtml(c.mlip_model)}`
+      : isCrest ? `${c.crest_method ? " · " + escapeHtml(c.crest_method) : ""}${c.crest_handoff === "all" ? " · all conformers" : ""}`
+      : "";
     // a "Completed." note is redundant with the done badge — hide completion notices
     const showMsg = !!c.message && !(c.state === "done" && /^Completed\b/.test(c.message));
     const editable = isEditableState(c.state);   // pending/cancelled/blocked: edit + drag
@@ -2372,7 +2455,7 @@ function renderQueue() {
       ${handle}
       <div style="flex:1">
         <div class="qname">${escapeHtml(c.name)}${rawBadge}${backendBadge}</div>
-        <div class="qsteps">${c.kind} · ${srcLabel}${cmLabel}</div>
+        <div class="qsteps">${c.kind} · ${srcLabel}${backendDetail}${cmLabel}</div>
         ${showMsg ? (
           c.state === "failed"
             ? `<div class="qerror">⚠ ${escapeHtml(c.message)}</div>`
@@ -2439,6 +2522,13 @@ async function removeCalc(i) {
       body: `Remove <b>${escapeHtml(c.name)}</b> from the queue?`, confirm: "Remove", danger: true })) return;
   await bridge.remove_calc(c.name);
   delete localCalcs[c.name];
+  // The name is free for reuse now: a kept display-cache entry would keep
+  // serving the REMOVED calc's result under a reused name for the rest of the
+  // session (maybeFetchResult early-returns on a cache hit), so invalidate.
+  delete calcResults[c.name];
+  delete _resultExtras[c.name];
+  if (_currentResultName === c.name) _currentResultName = "";
+  refreshResultSelect();
   await refreshQueue();
 }
 async function clearQueue() {
@@ -2450,6 +2540,11 @@ async function clearQueue() {
   const res = /** @type {MutationResult} */ (JSON.parse(await bridge.clear_queue()));
   if (!res.ok) { failNotify(res.error || "Could not clear queue."); return; }
   for (const k of Object.keys(localCalcs)) delete localCalcs[k];
+  // every name is free for reuse — drop the display caches too (see removeCalc)
+  for (const k of Object.keys(calcResults)) delete calcResults[k];
+  for (const k of Object.keys(_resultExtras)) delete _resultExtras[k];
+  _currentResultName = "";
+  refreshResultSelect();
   await refreshQueue();
 }
 
@@ -2579,7 +2674,10 @@ function setRunUI(running) {
 async function maybeFetchResult(name, outputPath) {
   if (!outputPath || calcResults[name]) return;
   try {
-    const raw = await bridge.parse_out_path(outputPath);
+    // by NAME so the backend dispatches on the calc's KIND — the path-based
+    // parse_out_path uses a folder heuristic meant for external files, which
+    // can mis-fire when this name's folder holds a removed calc's leftovers
+    const raw = await bridge.parse_calc_output(name);
     const data = /** @type {ParsePayload} */ (JSON.parse(raw));
     if (data && data.summary) {
       calcResults[name] = data.summary;
@@ -2851,7 +2949,7 @@ function renderResultSections(d) {
   if (d.transitions && d.transitions.length) renderSpectrum(d.transitions);
   if (d.tddft_states && d.tddft_states.length) renderTddftStates(d.tddft_states);
   if (d.nmr && d.nmr.length) renderNmr(d.nmr);
-  if (d.neb_path && d.neb_path.length) renderNebPath(d.neb_path);
+  if (d.neb_path && d.neb_path.length) renderNebPath(d.neb_path, d.neb_path_kind || "neb");
   if (d.input_keywords || d.input_block) renderInputEcho(d.input_keywords, d.input_block);
 }
 /** @param {[string, string, string][]} rows @param {ParsePayload} [d] */
@@ -3179,10 +3277,14 @@ function renderNmr(nmr) {
     <div class="hint">Absolute shieldings — reference subtraction (e.g. TMS) for chemical shifts.</div>`;
 }
 
-/** @param {NebPointPayload[]} path */
-function renderNebPath(path) {
+/** @param {NebPointPayload[]} path @param {string} [kind] "neb" | "irc" */
+function renderNebPath(path, kind) {
   const body = document.getElementById("result-body");
   if (!path || !path.length) return;
+  // Both NEB-TS and IRC print a PATH SUMMARY table; the parser records which
+  // one matched. An IRC profile is not made of NEB "images", and (for a one-
+  // sided IRC) its endpoints aren't reactant/product — label per kind.
+  const isIrc = kind === "irc";
 
   const de = path.map(p => p.de_kcal);
   const lo = Math.min(...de, 0), hi = Math.max(...de, 0);
@@ -3204,10 +3306,11 @@ function renderNebPath(path) {
       dots += `<circle cx="${cx}" cy="${cy}" r="3.5" fill="var(--foreground)"/>`;
     }
   });
-  // reactant / product labels (first and last)
+  // reactant / product labels (first and last) — NEB only: an IRC's endpoints
+  // depend on its direction (a forward- or backward-only IRC starts at the TS)
   const first = path[0], last = path[n - 1];
-  const reactLbl = `<text x="${x(0).toFixed(1)}" y="${H-padB+16}" fill="var(--muted-foreground)" font-size="10" text-anchor="middle">reactant</text>`;
-  const prodLbl  = `<text x="${x(n-1).toFixed(1)}" y="${H-padB+16}" fill="var(--muted-foreground)" font-size="10" text-anchor="middle">product</text>`;
+  const reactLbl = isIrc ? "" : `<text x="${x(0).toFixed(1)}" y="${H-padB+16}" fill="var(--muted-foreground)" font-size="10" text-anchor="middle">reactant</text>`;
+  const prodLbl  = isIrc ? "" : `<text x="${x(n-1).toFixed(1)}" y="${H-padB+16}" fill="var(--muted-foreground)" font-size="10" text-anchor="middle">product</text>`;
   // zero baseline
   const zeroY = y(0).toFixed(1);
 
@@ -3217,7 +3320,7 @@ function renderNebPath(path) {
 
   body.innerHTML += `
     <div class="divider"></div>
-    <div class="card-title">NEB-TS reaction path (${n} images)</div>
+    <div class="card-title">${isIrc ? `IRC path (${n} steps)` : `NEB-TS reaction path (${n} images)`}</div>
     <svg class="spectrum" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
       <line x1="${padL}" y1="${zeroY}" x2="${W-padR}" y2="${zeroY}" stroke="var(--border)" stroke-dasharray="3 3"/>
       <polyline points="${pts}" fill="none" stroke="var(--muted-foreground)" stroke-width="1.5"/>
@@ -3227,7 +3330,9 @@ function renderNebPath(path) {
       <text x="14" y="${H/2}" fill="var(--muted-foreground)" font-size="10" transform="rotate(-90 14 ${H/2})" text-anchor="middle">ΔE (kcal/mol)</text>
       ${reactLbl}${prodLbl}
     </svg>
-    <div class="hint">Forward barrier ≈ <b>${barrier.toFixed(1)} kcal/mol</b>; reaction energy ΔE ≈ <b>${dErxn.toFixed(1)} kcal/mol</b>. Energies are from the NEB path summary (electronic, not free energies).</div>`;
+    <div class="hint">${isIrc
+      ? `Relative energies along the intrinsic reaction coordinate (electronic, not free energies).`
+      : `Forward barrier ≈ <b>${barrier.toFixed(1)} kcal/mol</b>; reaction energy ΔE ≈ <b>${dErxn.toFixed(1)} kcal/mol</b>. Energies are from the NEB path summary (electronic, not free energies).`}</div>`;
 }
 
 // ---- free energy profile (Results tab) ----
@@ -3255,7 +3360,7 @@ function renderFreeEnergyProfile() {
   const body = document.getElementById("fep-body");
   if (!body) return;
   if (!_fepPoints.length) {
-    body.innerHTML = `<div class="hint">No finished frequency calculations yet — FREQ jobs build the profile.</div>`;
+    body.innerHTML = `<div class="hint">No finished frequency calculations yet — Freq calculations build the profile.</div>`;
     return;
   }
   const units = (document.getElementById("fep-units") || {}).value || "kcal";

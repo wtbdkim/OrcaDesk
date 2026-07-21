@@ -457,6 +457,10 @@ class QueueEngine:
             # The adopted process owns the on-disk .out, so a failure diagnosis
             # may trust it (see _failure_reason).
             self._orca_launched = True
+            # Persist the output path too (sessions from before it was recorded
+            # at launch lack it): if the app closes again and the job finishes
+            # while closed, reconcile_calcs can only judge DONE from a path.
+            calc.output_path = str(out_path)
             self.cb.log(f"[{calc.name}] reattaching to ORCA still running "
                         f"(pid {calc.pid})...", "info")
             self.cb.calc_update(index, calc)
@@ -573,8 +577,12 @@ class QueueEngine:
         self._orca_launched = True
         calc.pid = pid
         calc.create_time = create_time
-        # persist the pid immediately so a reattach is possible even if ORCAdesk
-        # is closed seconds after the job starts.
+        # persist the pid AND the output path immediately so the next launch can
+        # deal with this job even if ORCAdesk is closed seconds after it starts:
+        # the pid enables a live reattach, and the path lets reconcile_calcs
+        # judge a job that FINISHED while closed as DONE from its .out — without
+        # it that branch is unreachable and a successful run gets locked FAILED.
+        calc.output_path = str(out_path)
         self.cb.calc_update(index, calc)
 
         self._monitor_and_finish(calc, index, out_path)
@@ -653,6 +661,11 @@ class QueueEngine:
         model = calc.config.mlip_model or "MACE"
         verb = "single-point energy" if task == "sp" else "optimizing"
         self.cb.log(f"[{calc.name}] ({calc.kind}) {verb} with {model} via {python}...", "info")
+        # Persist the result path up front (mirror of the ORCA launch path): if
+        # the worker races to completion just as the app shuts down, the next
+        # launch's reconcile can still judge it DONE from the JSON on disk.
+        calc.output_path = str(result_json)
+        self.cb.calc_update(index, calc)
         runner = MlipRunner(python)
         self._mlip_runner = runner
         try:
@@ -902,6 +915,17 @@ class QueueEngine:
             if c.state == CalcState.FAILED:
                 blocked_names |= self._dependents_of(calcs, c.name)
 
+        # The symmetric normalization: a row still BLOCKED from a previous run
+        # whose ancestry is now clean (its failed parent was removed, or its
+        # reference re-pointed) WILL run this pass — reset it up front so the
+        # visible queue never shows a will-run row labelled with the stale
+        # "Skipped: a dependency failed." until the walk happens to reach it.
+        for idx, c in enumerate(calcs):
+            if c.state == CalcState.BLOCKED and c.name not in blocked_names:
+                c.state = CalcState.PENDING
+                c.message = ""
+                self.cb.calc_update(idx, c)
+
         # A growable walk (not `for … in enumerate`): a finished "all"-handoff
         # conformer search substitutes template rows further down the list with
         # per-conformer clones (see _maybe_expand_crest), and those inserted
@@ -919,7 +943,10 @@ class QueueEngine:
                 # Never stamp over a terminal state: DONE is frozen and FAILED
                 # is locked (P24) — re-stamping them CANCELLED would make them
                 # re-runnable and lose the result / failure diagnosis. BLOCKED
-                # keeps its "Skipped: a dependency failed." diagnosis too.
+                # keeps its "Skipped: a dependency failed." diagnosis too —
+                # only rows whose diagnosis is still TRUE reach here (stale
+                # BLOCKED rows with a clean ancestry were normalized to
+                # PENDING at run start).
                 if calc.state not in (CalcState.DONE, CalcState.FAILED,
                                       CalcState.BLOCKED):
                     calc.state = CalcState.CANCELLED
@@ -1045,9 +1072,16 @@ class QueueEngine:
                 # going headless; pid is persisted) and stop processing so it can
                 # be reattached on the next launch. Do not touch its state.
                 # An MLIP job has no detach/reattach machinery and was
-                # TERMINATED by detach (mlip/runner.py); claiming it is still
-                # running would be a false log line (P2).
+                # TERMINATED by detach (mlip/runner.py) — leaving it RUNNING
+                # would make the next launch's reconcile lock it FAILED
+                # ("interrupted"); a deliberate shutdown stop is a cancel
+                # (re-runnable), not a failure.
                 if calc.kind.startswith("mlip"):
+                    calc.state = CalcState.CANCELLED
+                    calc.message = "Stopped on shutdown."
+                    calc.pid = None
+                    calc.create_time = None
+                    self.cb.calc_update(i, calc)
                     self.cb.log(f"[{calc.name}] stopped on shutdown.", "info")
                 else:
                     self.cb.log(f"[{calc.name}] left running in the background.", "info")

@@ -359,3 +359,78 @@ def test_corpus_smoke_real_outputs_parse_without_exception():
         assert isinstance(r, ParseResult), path
         assert isinstance(r.terminated_normally, bool), path
         assert r.filename == path.name
+
+
+# ---------------------------------------------------------------------------
+# PATH SUMMARY table kind (NEB-TS vs IRC) + ungated thermochemistry rows
+# ---------------------------------------------------------------------------
+
+NEB_PATH_BLOCK = """
+                              PATH SUMMARY FOR NEB-TS
+              ---------------------------------------------------------
+All forces in Eh/Bohr.
+
+Image     E(Eh)   dE(kcal/mol)  max(|Fp|)  RMS(Fp)
+   0   -76.100000     0.00       0.00012   0.00005
+   1   -76.090000     6.27       0.00034   0.00011
+  TS   -76.089000     6.90       0.00021   0.00008   <= TS
+   2   -76.099000     0.63       0.00013   0.00006
+"""
+
+IRC_PATH_BLOCK = """
+                                 IRC PATH SUMMARY
+              ---------------------------------------------------------
+Step        E(Eh)     dE(kcal/mol)   max(|F|)    RMS(F)
+   1    -76.089000      6.90         0.00121    0.00043
+   2    -76.095000      3.14         0.00098    0.00031
+   3    -76.100000      0.00         0.00011    0.00004
+"""
+
+GIBBS_BLOCK = """
+-------------------------
+GIBBS FREE ENERGY
+-------------------------
+
+Final Gibbs free energy         ...     -76.15000000 Eh
+"""
+
+
+def test_neb_path_kind_recorded_for_neb_ts_table(tmp_path):
+    out = (_header(OPT_KEYWORDS) + _geometry(0.1) + _energy(FINAL_ENERGY)
+           + NEB_PATH_BLOCK + TERMINATION)
+    r = parse_file(_write_out(tmp_path, out))
+    assert r.has_neb_path is True
+    assert r.neb_path_kind == "neb"
+    assert any(p["is_ts"] for p in r.neb_path)
+
+
+def test_irc_path_summary_recorded_as_irc(tmp_path):
+    out = (_header(SP_KEYWORDS) + _geometry(0.1) + _energy(FINAL_ENERGY)
+           + IRC_PATH_BLOCK + TERMINATION)
+    r = parse_file(_write_out(tmp_path, out))
+    assert r.has_neb_path is True
+    assert r.neb_path_kind == "irc"
+    assert len(r.neb_path) == 3
+
+
+def test_thermochemistry_without_frequencies_table_is_still_summarized(tmp_path):
+    # A real ORCA shape: an IRC job reading a Hessian prints the GIBBS FREE
+    # ENERGY block with no VIBRATIONAL FREQUENCIES table. The parsed value must
+    # reach the summary rows — the freq-count rows alone stay gated.
+    out = (_header(SP_KEYWORDS) + _geometry(0.1) + _energy(FINAL_ENERGY)
+           + GIBBS_BLOCK + TERMINATION)
+    r = parse_file(_write_out(tmp_path, out))
+    assert r.has_frequencies is False
+    assert r.gibbs_eh == pytest.approx(-76.15)
+    labels = [label for (label, _v, _c) in r.summary_rows()]
+    assert "Final Gibbs G" in labels
+    assert "Frequencies" not in labels
+
+
+def test_orca_version_row_only_when_parsed():
+    # MLIP/CREST results (and non-ORCA files) have no version — no "?" noise row.
+    r = ParseResult()
+    labels = [label for (label, _v, _c) in r.summary_rows()]
+    assert "ORCA version" not in labels
+    r.orca_version = "6.1.1"
+    assert ("ORCA version", "6.1.1", "") in r.summary_rows()

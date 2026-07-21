@@ -671,3 +671,15 @@ test("the stepper falls back to the compact strip when the height cannot fit the
 console.log("");
 console.log(passed + " passed, " + failed + " failed");
 if (failed > 0) process.exitCode = 1;
+
+test("geo tracker: post-opt stage reads complete after ORCA TERMINATED NORMALLY (re-seeded DONE calc)", function () {
+  const g = new SCFGraph.GeoTracker();
+  feed(g, geoCycleBlock(1, fiveRows("0.0140882096")));
+  g.push("                    ***  OPTIMIZATION RUN DONE  ***");
+  g.push("-----------------------");
+  g.push("VIBRATIONAL FREQUENCIES");
+  assert.strictEqual(g.postStage, "frequencies / properties");
+  assert.strictEqual(g.postDone, false, "still running until the termination banner");
+  g.push("                             ****ORCA TERMINATED NORMALLY****");
+  assert.strictEqual(g.postDone, true, "terminated -> the post-opt stage is complete");
+});

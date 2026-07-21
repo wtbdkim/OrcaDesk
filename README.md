@@ -56,14 +56,15 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   - **Expert (raw `.inp`)** mode lets you hand-edit the full input for anything the
     form doesn't cover (e.g. per-element basis/ECP via `%basis newgto/newecp`,
     `%plots`, custom blocks). Use `{{GEOMETRY}}` where coordinates go.
-- **MLIP pre-optimization**: optionally relax a structure with a **MACE** model
-  (MLIP) before handing it to ORCA — fast, and a good starting geometry for the
-  DFT job. It runs in **your own** Python environment (PyTorch + mace-torch + ASE),
+- **MLIP calculations**: relax a structure (or get a quick single-point energy)
+  with a **MACE** model (MLIP) — fast, and a relaxed structure is a good starting
+  geometry for the DFT job. It runs in **your own** Python environment
+  (PyTorch + mace-torch + ASE),
   registered under **Settings → MLIP environments**; ORCAdesk shells out to it and
   never installs the toolchain. The MLIP build card stays **locked until a MACE
-  environment is ready**. An `mlip_opt` job joins the same queue, and its optimized
-  geometry can be referenced by a downstream ORCA calculation just like an
-  opt→freq handoff.
+  environment is ready**. An `mlip_opt`/`mlip_sp` calculation joins the same queue,
+  and an optimized geometry can be referenced by a downstream ORCA calculation
+  just like an opt→freq handoff.
 - **CREST conformer search**: explore low-energy conformers with the xTB
   tight-binding methods. CREST has no native Windows build, so ORCAdesk runs its
   Linux binary through **WSL** — pick a distribution under **Settings → CREST**

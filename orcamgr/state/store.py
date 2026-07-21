@@ -162,6 +162,15 @@ def calc_to_dict(c: Calculation) -> CalcSummary:
         scf_convergence=getattr(c.config, "scf_convergence", "") if c.config else "",
         # a compact one-line summary for list rows
         meta=_meta_line(c),
+        # backend-specific row detail as EXPLICIT fields (not just inside meta):
+        # the desktop escapes user-facing strings before innerHTML, so it needs
+        # the raw values, not the pre-joined line
+        mlip_model=(getattr(c.config, "mlip_model", "") if c.config else "")
+        if c.kind.startswith("mlip") else "",
+        crest_method=(getattr(c.config, "crest_method", "") if c.config else "")
+        if c.kind.startswith("crest") else "",
+        crest_handoff=(getattr(c.config, "crest_handoff", "") if c.config else "")
+        if c.kind.startswith("crest") else "",
     )
 
 
@@ -343,6 +352,14 @@ def reconcile_calcs(calcs: "list[Calculation]") -> None:
                 except OrcaRunError as e:
                     c.state = CalcState.FAILED
                     c.message = str(e)
+            elif c.kind.startswith("mlip"):
+                # An MLIP worker never survives shutdown (detach terminates it —
+                # mlip/runner.py), so a still-RUNNING mlip calc here was stopped
+                # deliberately with the app: CANCELLED (re-runnable), not
+                # FAILED-locked. (The engine stamps this at detach too; this
+                # covers the race where the app exits before that lands.)
+                c.state = CalcState.CANCELLED
+                c.message = "Stopped when ORCAdesk closed."
             else:
                 c.state = CalcState.FAILED
                 c.message = "Interrupted while ORCAdesk was closed."
@@ -575,9 +592,18 @@ class QueueStore:
         with self._lock:
             self._log_seq += 1
             self._log.append((self._log_seq, level, message))
-            # cap buffer so a long run doesn't grow memory without bound
+            # cap buffer so a long run doesn't grow memory without bound.
+            # Preferential retention for "[web] " lines: ORCA stdout floods this
+            # ring (a single run emits thousands of lines) and would evict the
+            # rate-limited console-capture lines whose whole purpose is post-hoc
+            # front-end diagnosis (window.py _ConsoleCapturePage) — keep the
+            # newest 4000 lines plus up to 500 older [web] lines (seq order is
+            # preserved: every retained [web] seq predates the tail's).
             if len(self._log) > 5000:
-                self._log = self._log[-4000:]
+                tail = self._log[-4000:]
+                web_keep = [t for t in self._log[:-4000]
+                            if t[2].startswith("[web] ")][-500:]
+                self._log = web_keep + tail
 
     def log_since(self, since: int = 0) -> LogPayload:
         """Return log lines with seq > since, plus the latest seq."""
@@ -588,10 +614,9 @@ class QueueStore:
             ]
             return LogPayload(lines=lines, latest=self._log_seq)
 
-    def clear_log(self) -> None:
-        with self._lock:
-            self._log.clear()
-            self._log_seq = 0
+    # (No backend log-clear: the Log tab's Clear is deliberately view-only on
+    # every client. If one is ever added, it must keep _log_seq monotonic —
+    # resetting it would corrupt every client's since-cursor.)
 
     # ---- run management ----
     def start_run(self, engine_factory) -> None:
@@ -751,6 +776,23 @@ def queue_needs_orca(calcs: "list[Calculation]") -> bool:
         and not c.kind.startswith("crest")
         for c in calcs
     )
+
+
+def find_dangling_reference(calcs: "list[Calculation]") -> "str | None":
+    """First error message for a REFERENCE geometry that resolves to no queued
+    calc name, else None. Like queue_needs_orca, a single shared pre-run check
+    (P4) for both run entry points — the desktop bridge and the phone's
+    /api/run — so a dangling reference is refused up front with the same
+    message everywhere instead of failing mid-run with a murkier one."""
+    names = {c.name for c in calcs}
+    for c in calcs:
+        src = c.geometry_source
+        is_ref = src == GeometrySource.REFERENCE or str(
+            getattr(src, "value", src)) == "reference"
+        if is_ref and c.ref_name not in names:
+            return (f"'{c.name}' references '{c.ref_name}', "
+                    "which is not in the queue.")
+    return None
 
 
 def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str,

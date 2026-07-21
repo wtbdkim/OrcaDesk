@@ -14,7 +14,7 @@ JS calls these slots:
   check_mlip, get_mlip_status,
   pick_workspace, load_xyz_file, load_inp_file,
   load_inp_path, load_xyz_path, load_choices,
-  parse_out_file, parse_out_path, build_inp_preview,
+  parse_out_file, parse_out_path, parse_calc_output, build_inp_preview,
   add_calc, remove_calc, clear_queue, reorder_calc, update_calc,
   get_queue, get_calc, get_inp, get_log, get_graph_lines, export_conformers,
   get_free_energy_profile, check_overwrite_conflicts,
@@ -48,7 +48,7 @@ from ..core.queue import GeometrySource, CalcState, result_from_output
 from ..core.parser import parse_file
 from ..state.store import (
     QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory,
-    load_choice_groups, queue_needs_orca,
+    load_choice_groups, queue_needs_orca, find_dangling_reference,
 )
 # Response payloads are CONSTRUCTED through these TypedDicts (plain dicts at
 # runtime, so the JSON wire format is unchanged) — schemas.py is the single
@@ -513,17 +513,47 @@ class Bridge(QObject):
             return json.dumps(ErrorPayload(error="file not found"))
         return self._parse_path(path)
 
+    @pyqtSlot(str, result=str)
+    def parse_calc_output(self, name: str) -> str:
+        """Parse a QUEUED calc's finished output by NAME, dispatching on its
+        KIND (result_from_output) — never the external-file folder heuristic in
+        _parse_path, which can mis-fire for a calc reusing a removed calc's
+        name (workspace folders survive removal, so e.g. a leftover
+        crest_conformers.xyz would route a new ORCA .out to the CREST parser)."""
+        calc = next((c for c in self.store.list() if c.name == name), None)
+        if calc is None:
+            return json.dumps(ErrorPayload(error=f"'{name}' is not in the queue."))
+        if not calc.output_path or not Path(calc.output_path).exists():
+            return json.dumps(ErrorPayload(error="no output file on disk"))
+        try:
+            return self._payload_json(result_from_output(calc))
+        except Exception as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+
     def _parse_path(self, path: str) -> str:
         try:
+            # Per-backend dispatch for EXTERNAL files (the path-based mirror of
+            # result_from_output's kind dispatch — queued calcs use
+            # parse_calc_output's kind dispatch instead): an MLIP result is the
+            # engine-written "{name}.mlip.json" (core/queue.py), so route it by
+            # suffix — the ORCA text parser would render its JSON as ABNORMAL.
             # A CREST conformer search stores its data in sibling files
             # (crest_conformers.xyz), not the .out itself, so dispatch on their
             # presence to the CREST parser; otherwise the ORCA .out parser.
             folder = Path(path).parent
-            if (folder / "crest_conformers.xyz").exists() or (folder / "crest_best.xyz").exists():
+            if path.endswith(".mlip.json"):
+                from ..mlip.parser import parse_mlip_result
+                r = parse_mlip_result(path)
+            elif (folder / "crest_conformers.xyz").exists() or (folder / "crest_best.xyz").exists():
                 from ..crest.parser import parse_crest_result
                 r = parse_crest_result(path)
             else:
                 r = parse_file(path)
+            return self._payload_json(r)
+        except Exception as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+
+    def _payload_json(self, r) -> str:
             # Send everything that was parsed plus the gating flags; the
             # front-end decides what to show per calc kind (and "Show all"
             # overrides it). is_optimization gates "Final geometry"; show_elec
@@ -552,6 +582,7 @@ class Bridge(QObject):
                     for (i, el, iso, an) in r.nmr_shieldings
                 ],
                 neb_path=r.neb_path,
+                neb_path_kind=r.neb_path_kind,
                 geometry=[
                     GeomAtomPayload(el=a.symbol, x=a.x, y=a.y, z=a.z)
                     for a in r.geometry
@@ -567,8 +598,6 @@ class Bridge(QObject):
                 input_keywords=r.input_keywords,
                 input_block=r.input_block,
             ))
-        except Exception as e:
-            return json.dumps(ErrorPayload(error=str(e)))
 
     # --- raw .inp preview (for entering raw-edit mode) ---
     @pyqtSlot(str, result=str)
@@ -677,8 +706,9 @@ class Bridge(QObject):
         calculation's .out, in file order, so the UI can rebuild the full live
         SCF/optimization graph history — independent of the capped log buffer.
 
-        Takes the calc NAME (a still-RUNNING calc has no output_path yet) and
-        resolves {workspace}/{name}/{name}.out server-side. Reads line-by-line
+        Takes the calc NAME and resolves {workspace}/{name}/{name}.out
+        server-side (state-independent — works mid-run and for restored
+        sessions alike). Reads line-by-line
         and keeps a few hundred relevant lines even from a huge .out."""
         try:
             out_path = Path(self.settings.workspace_root) / name / f"{name}.out"
@@ -755,7 +785,11 @@ class Bridge(QObject):
             # become mutable elsewhere, this must take the store lock.
             if not c.result and c.output_path:
                 try:
-                    c.result = parse_file(c.output_path)
+                    # kind dispatch, NOT parse_file: a DONE mlip/crest calc's
+                    # output must go through its own parser — caching a wrong
+                    # ORCA parse here would poison ref.result for the engine's
+                    # reference resolution (which only parses on a miss).
+                    c.result = result_from_output(c)
                 except Exception:
                     pass
             if not c.result:
@@ -812,12 +846,10 @@ class Bridge(QObject):
             skip_names = set(json.loads(skip_names_json)) if skip_names_json else set()
         except Exception:
             skip_names = set()
-        # validate references resolve to existing names
-        names = {c.name for c in calcs}
-        for c in calcs:
-            if c.geometry_source == GeometrySource.REFERENCE and c.ref_name not in names:
-                return json.dumps(OkResult(ok=False,
-                    error=f"'{c.name}' references '{c.ref_name}', which is not in the queue."))
+        # validate references resolve to existing names (shared with /api/run)
+        ref_err = find_dangling_reference(calcs)
+        if ref_err:
+            return json.dumps(OkResult(ok=False, error=ref_err))
         factory = make_engine_factory(self.store, self.settings.orca_path,
                                       self.settings.workspace_root, skip_names,
                                       mlip_envs=self.settings.mlip_envs,

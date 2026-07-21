@@ -551,6 +551,42 @@ def test_calc_to_dict_meta_shows_model_not_charge_for_mlip():
     assert "q0" not in meta
 
 
+def test_calc_to_dict_backend_detail_fields_are_explicit_and_kind_scoped():
+    # The desktop renders these escaped — they must arrive as raw fields, not
+    # only inside the pre-joined meta line (which embeds user-typed ref names).
+    mlip = calc_to_dict(make_calc(
+        "mace2", kind="mlip_opt",
+        config={"kind": "mlip_opt", "mlip_model": "MACE-OFF small"}))
+    assert mlip["mlip_model"] == "MACE-OFF small"
+    assert mlip["crest_method"] == "" and mlip["crest_handoff"] == ""
+
+    crest = calc_to_dict(make_calc(
+        "conf", kind="crest_conf",
+        config={"kind": "crest_conf", "crest_method": "gfnff",
+                "crest_handoff": "all"}))
+    assert crest["crest_method"] == "gfnff"
+    assert crest["crest_handoff"] == "all"
+    assert crest["mlip_model"] == ""
+
+    orca = calc_to_dict(make_calc("plain", kind="opt", config={"kind": "opt"}))
+    assert orca["mlip_model"] == ""
+    assert orca["crest_method"] == "" and orca["crest_handoff"] == ""
+
+
+def test_log_trim_preferentially_retains_web_lines(store):
+    # ORCA stdout floods the ring; console-captured "[web] ..." lines are the
+    # diagnostic channel and must survive the 5000 -> 4000 trim.
+    store.append_log("[web] level=error TypeError: boom", "err")
+    for i in range(5100):
+        store.append_log(f"orca stdout line {i}")
+    payload = store.log_since(0)
+    msgs = [ln["msg"] for ln in payload["lines"]]
+    assert any(m.startswith("[web] ") for m in msgs), "web line was evicted"
+    assert len(msgs) <= 4501          # still bounded (4000 tail + <=500 web + growth)
+    seqs = [ln["seq"] for ln in payload["lines"]]
+    assert seqs == sorted(seqs)       # retention must preserve seq order
+
+
 # ---- substitute_calcs (per-conformer track expansion, engine-driven) ------
 
 def test_substitute_calcs_replaces_rows_at_position(store):
@@ -583,3 +619,63 @@ def test_substitute_calcs_is_allowed_while_running(store):
         store.set_running(False)
     assert ok is True
     assert [x.name for x in store.list()] == ["a", "b_c1"]
+
+
+# ---- reconcile: finished / stopped while ORCAdesk was closed -----------------
+
+def test_reconcile_running_orca_with_complete_out_is_judged_done(tmp_path):
+    # The DONE branch requires output_path — persisted at launch since the
+    # queue.py fix; without it every finished-while-closed run locked FAILED.
+    calc = make_calc("ghost", kind="sp")
+    calc.state = CalcState.RUNNING
+    calc.pid = None                       # process gone
+    out = tmp_path / "ghost" / "ghost.out"
+    out.parent.mkdir(parents=True)
+    out.write_text(
+        "FINAL SINGLE POINT ENERGY       -1.000000000000\n"
+        "                             ****ORCA TERMINATED NORMALLY****\n",
+        encoding="utf-8")
+    calc.output_path = str(out)
+    store_mod.reconcile_calcs([calc])
+    assert calc.state == CalcState.DONE
+    assert "finished while ORCAdesk was closed" in calc.message
+
+
+def test_reconcile_running_mlip_without_result_is_cancelled_not_failed():
+    # An MLIP worker never survives shutdown (detach terminates it), so a
+    # RUNNING mlip calc in a restored session was stopped deliberately:
+    # CANCELLED (re-runnable), never the locked FAILED.
+    calc = make_calc("mace", kind="mlip_opt",
+                     config={"kind": "mlip_opt", "mlip_model": "MACE-OFF medium"})
+    calc.state = CalcState.RUNNING
+    store_mod.reconcile_calcs([calc])
+    assert calc.state == CalcState.CANCELLED
+    assert calc.message == "Stopped when ORCAdesk closed."
+
+
+def test_reconcile_running_mlip_with_complete_result_is_done(tmp_path):
+    # the worker raced to completion just as the app closed — judge DONE
+    calc = make_calc("mace2", kind="mlip_opt",
+                     config={"kind": "mlip_opt", "mlip_model": "MACE-OFF medium"})
+    calc.state = CalcState.RUNNING
+    rj = tmp_path / "mace2" / "mace2.mlip.json"
+    rj.parent.mkdir(parents=True)
+    rj.write_text(json.dumps({
+        "converged": True, "task": "opt", "energy_ev": -100.0,
+        "geometry": [["O", 0.0, 0.0, 0.0], ["H", 0.0, 0.0, 0.96]],
+    }), encoding="utf-8")
+    calc.output_path = str(rj)
+    store_mod.reconcile_calcs([calc])
+    assert calc.state == CalcState.DONE
+
+
+# ---- find_dangling_reference (shared pre-run check, P4) ----------------------
+
+def test_find_dangling_reference_shared_helper():
+    a = make_calc("a")
+    b = make_calc("b", geometry_source="reference", ref_name="a", xyz="")
+    assert store_mod.find_dangling_reference([a, b]) is None
+    c = make_calc("c", geometry_source="reference", ref_name="ghost", xyz="")
+    msg = store_mod.find_dangling_reference([a, c])
+    assert msg is not None
+    assert "ghost" in msg and "'c'" in msg

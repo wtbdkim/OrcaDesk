@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse, FileResponse
 
 from ..state.store import (
     QueueStore, calc_from_dict, make_engine_factory, load_all_choices,
-    queue_needs_orca,
+    queue_needs_orca, find_dangling_reference,
 )
 from ..state.schemas import (
     HealthPayload, HeartbeatResult, MutationResult, OkResult, PingPayload,
@@ -160,6 +160,12 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
                 status_code=400,
                 detail="ORCA executable is not set. Configure it in the desktop app's Settings.",
             )
+        # Same shared pre-run reference check as the desktop bridge (P4, A18):
+        # a dangling REFERENCE is refused up front with the same message, not
+        # left to fail mid-run.
+        ref_err = find_dangling_reference(store.list())
+        if ref_err:
+            raise HTTPException(status_code=400, detail=ref_err)
         # mlip_envs must ride along or a phone-started MLIP calc would find
         # no interpreter and fail even with a ready env registered (A18);
         # crest_distro likewise so a phone-started CREST calc resolves its WSL distro.

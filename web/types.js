@@ -23,7 +23,7 @@
 
 /**
  * One calculation as it appears in the polled queue snapshot.
- * Mirror of calc_to_dict() in orcamgr/state/store.py — 12 keys, all
+ * Mirror of calc_to_dict() in orcamgr/state/store.py — 16 keys, all
  * always present.
  * @typedef {Object} CalcSummary
  * @property {string} name              unique; doubles as the on-disk folder name
@@ -39,6 +39,9 @@
  * @property {string} output_path
  * @property {string} scf_convergence   from the config; "" when no config
  * @property {string} meta              one-line list-row summary, built server-side
+ * @property {string} mlip_model        mlip* kinds: MACE model label; "" otherwise
+ * @property {string} crest_method      crest* kinds: tight-binding method; "" otherwise
+ * @property {string} crest_handoff     crest* kinds: "lowest" | "all"; "" otherwise
  */
 
 /**
@@ -372,6 +375,7 @@
  * @property {[string, string, number][]} [mayer_bonds]      [atom_i, atom_j, order]
  * @property {NmrPayload[]} [nmr]
  * @property {NebPointPayload[]} [neb_path]
+ * @property {string} [neb_path_kind]         "neb" | "irc" — titles the path profile
  * @property {GeomAtomPayload[]} [geometry]
  * @property {OrbitalPayload[]} [orbitals]
  * @property {TddftStatePayload[]} [tddft_states]

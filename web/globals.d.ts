@@ -42,6 +42,7 @@ interface OrcaBridge {
   // parsing
   parse_out_file(): Promise<string>;
   parse_out_path(path: string): Promise<string>;
+  parse_calc_output(name: string): Promise<string>;
   build_inp_preview(calcJson: string): Promise<string>;
   // queue
   add_calc(calcJson: string): Promise<string>;
