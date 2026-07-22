@@ -36,7 +36,7 @@ from PyQt6.QtWidgets import QFileDialog
 from ..config import Settings, autodetect_orca
 from ..mlip.env import (
     probe_env, new_env_id, resolve_interpreter,
-    env_payload_checking, env_payload_from_probe, aggregate_status,
+    env_payload_checking, env_payload_error, env_payload_from_probe, aggregate_status,
 )
 from ..crest.env import (
     probe_all as crest_probe_all, aggregate_status as crest_aggregate_status,
@@ -161,6 +161,10 @@ class Bridge(QObject):
             data = json.loads(payload_json or "{}")
             for k in ("orca_path", "workspace_root", "theme", "crest_distro"):
                 if k in data:
+                    if not isinstance(data[k], str):
+                        # a non-string would be persisted and then poison
+                        # Path(orca_path) on every later call, every session
+                        raise ValueError(f"{k} must be a string.")
                     setattr(self.settings, k, data[k])
             for k in ("default_nprocs", "default_maxcore_mb"):
                 if k in data:
@@ -288,7 +292,14 @@ class Bridge(QObject):
             self._mlip_probe_seq[env_id] = seq = self._mlip_probe_seq.get(env_id, 0) + 1
 
         def _worker() -> None:
-            result = env_payload_from_probe(env_id, name, probe_env(python))
+            try:
+                result = env_payload_from_probe(env_id, name, probe_env(python))
+            except Exception as e:
+                # a probe crash must still publish: a silently dead worker
+                # would pin the env at "Checking…" (and the build card locked)
+                # forever, with re-checks restarting the same failing probe
+                result = env_payload_error(env_id, name, python,
+                                           f"Probe failed: {e}")
             with self._mlip_lock:
                 if (self.settings.mlip_env(env_id) is not None
                         and self._mlip_probe_seq.get(env_id) == seq):
@@ -414,10 +425,25 @@ class Bridge(QObject):
                 distros = crest_list_distros()
                 target = distros[0] if distros else ""
             if target:
+                # The installer computes actionable diagnostics ("xz missing —
+                # sudo apt install xz-utils", download failures); discarding
+                # them left only the generic post-probe "CREST not found",
+                # with no way to learn WHY the install failed.
                 try:
-                    do_install(target)
-                except Exception:
-                    pass  # the re-probe below reports the real readiness
+                    res = do_install(target)
+                except Exception as e:
+                    res = {"ok": False, "error": str(e)}
+                if res.get("ok"):
+                    self.store.append_log(
+                        f"CREST {res.get('version', '')} installed into "
+                        f"'{target}'.".replace("  ", " "), "ok")
+                else:
+                    self.store.append_log(
+                        f"CREST install failed in '{target}': "
+                        f"{res.get('error') or 'unknown error'}", "err")
+            else:
+                self.store.append_log(
+                    "CREST install failed: no usable WSL distro found.", "err")
             status = crest_aggregate_status(crest_probe_all())
             with self._crest_lock:
                 self._crest_installing = False

@@ -233,3 +233,32 @@ def test_load_with_valid_json_non_object_degrades_to_defaults(tmp_path, monkeypa
                             lambda: tmp_path / "ws")
         s = Settings.load()
         assert s.build_mode == "beginner"  # a default, not a crash
+
+
+# ---- wrong-typed scalar / env entries in settings.json (P32) ---------------
+
+def test_load_coerces_wrong_typed_scalar_fields_to_defaults(settings_file):
+    # a non-string orca_path would persist itself and then crash every
+    # get_settings/run via Path(orca_path) — every session until hand-fixed
+    write_settings(settings_file, {"orca_path": 123, "workspace_root": ["x"],
+                                   "theme": None, "crest_distro": 7})
+    s = Settings.load()
+    assert isinstance(s.orca_path, str)
+    assert isinstance(s.workspace_root, str)
+    assert isinstance(s.theme, str)
+    assert isinstance(s.crest_distro, str)
+    s.orca_is_valid()          # must not raise
+
+
+def test_load_drops_mlip_env_entries_without_a_string_id(settings_file):
+    # the Bridge hard-indexes env["id"] at startup: an id-less dict entry was
+    # a KeyError crash loop on every launch
+    write_settings(settings_file, {"mlip_envs": [
+        {},                                        # no keys at all
+        {"python": "C:/x/python.exe"},             # missing id
+        {"id": 3, "python": "C:/x/python.exe"},    # wrong-typed id
+        {"id": "ok1", "python": 5},                # wrong-typed python
+        {"id": "ok2", "name": "MACE", "python": "C:/y/python.exe"},
+    ]})
+    s = Settings.load()
+    assert [e["id"] for e in s.mlip_envs] == ["ok2"]

@@ -149,6 +149,11 @@ def probe_env(python_path: str, timeout: float = 30.0) -> dict:
         msg = (proc.stderr or "").strip() or "Interpreter did not return a valid probe result."
         base["error"] = msg[:500]
         return base
+    if not isinstance(data, dict):
+        # valid JSON but not the probe's object (a wrapper script or
+        # sitecustomize printing after our line) — treat like unparseable
+        base["error"] = "Interpreter did not return a valid probe result."
+        return base
 
     packages = data.get("packages", {}) or {}
     common_missing = [p for p in COMMON_PACKAGES if not packages.get(p)]
@@ -177,6 +182,17 @@ def env_payload_checking(env_id: str, name: str, python: str) -> dict:
         "id": env_id, "name": name, "python": python,
         "state": "checking", "version": "", "backends": [],
         "message": "Checking environment…",
+    }
+
+
+def env_payload_error(env_id: str, name: str, python: str, message: str) -> dict:
+    """MlipEnvPayload for a probe that crashed (rather than reporting a
+    not-ready env) — the bridge publishes this so the env never sticks at
+    "Checking…" with a dead worker behind it."""
+    return {
+        "id": env_id, "name": name, "python": python,
+        "state": "error", "version": "", "backends": [],
+        "message": message[:500],
     }
 
 

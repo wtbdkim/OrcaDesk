@@ -346,8 +346,15 @@ class OrcaOutParser:
         self.filename = os.path.basename(path)
 
     def parse(self) -> ParseResult:
-        with open(self.path, "r", encoding="utf-8", errors="replace") as f:
-            text = f.read()
+        # ORCA itself writes 8-bit output, but externally produced files can be
+        # UTF-16 (PowerShell 5.1's `orca job.inp > job.out` redirects that way);
+        # decoded as utf-8 every marker would miss, so sniff the BOM first.
+        with open(self.path, "rb") as f:
+            raw = f.read()
+        if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            text = raw.decode("utf-16", errors="replace")
+        else:
+            text = raw.decode("utf-8", errors="replace")
         lines = _clean_lines(text)
 
         r = ParseResult(filename=self.filename, path=self.path)
@@ -806,6 +813,22 @@ class OrcaOutParser:
             return
         path_kind = "irc" if "IRC" in lines[start].upper() else "neb"
         path = []
+        # Column layout varies by table: the plain NEB/NEB-CI "PATH SUMMARY"
+        # (also printed during every NEB-TS run) has an extra Dist.(Ang.)
+        # column before E(Eh) — "Image  Dist.(Ang.)  E(Eh)  dE(kcal/mol)" —
+        # while the final NEB-TS table and the IRC table go straight from the
+        # label to E(Eh). Read the position of E(Eh) from the header row so a
+        # distance is never mistaken for an energy.
+        e_idx = 1
+        for ln in lines[start: start + 8]:
+            toks = ln.split()
+            for j, tok in enumerate(toks):
+                if "E(Eh)" in tok:
+                    e_idx = j
+                    break
+            else:
+                continue
+            break
         # scan forward from the header; rows look like "<label> <float> <float> ...".
         # The blank line after the table is the real terminator — the slice cap
         # only guards a malformed file. It must comfortably exceed the longest
@@ -819,15 +842,15 @@ class OrcaOutParser:
                     break
                 continue
             parts = s.split()
-            if len(parts) < 3:
+            if len(parts) < e_idx + 2:
                 continue
             label = parts[0]
             is_ts = label.upper() == "TS"
             if not (is_ts or label.lstrip("-").isdigit()):
                 continue  # skip header / non-data lines
             try:
-                e_eh = float(parts[1])
-                de_kcal = float(parts[2])
+                e_eh = float(parts[e_idx])
+                de_kcal = float(parts[e_idx + 1])
             except (ValueError, IndexError):
                 continue
             # a row may be flagged with "<= CI" / "<= TS"

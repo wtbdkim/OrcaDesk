@@ -797,3 +797,39 @@ def test_stale_blocked_with_clean_ancestry_is_normalized_at_run_start(tmp_path):
 
     assert seen_at_first_run == [(CalcState.PENDING, "")]
     assert stale.state is CalcState.DONE
+
+
+def test_reattach_prefers_persisted_output_path_over_current_workspace(tmp_path, monkeypatch):
+    # A RUNNING calc restored from a previous session may have been launched
+    # under a DIFFERENT workspace root. The reattach must tail (and keep) the
+    # persisted output_path — deriving it from the current setting tailed a
+    # nonexistent file, FAILED-locked the finished job at process exit, and
+    # clobbered the pointer the finished-while-closed judgment depends on.
+    import orcamgr.core.queue as queue_mod
+    monkeypatch.setattr(queue_mod, "process_matches", lambda pid, ct: True)
+    engine = QueueEngine(
+        orca_path="orca-not-needed-in-tests",
+        workspace_root=str(tmp_path / "NEW_WS"),
+        callbacks=QueueCallbacks(log=lambda m, l: None,
+                                 calc_update=lambda i, c: None))
+    old_out = tmp_path / "OLD_WS" / "job" / "job.out"
+    old_out.parent.mkdir(parents=True)
+    old_out.write_text(PASSING_OPT_OUT, encoding="utf-8")
+    calc = make_calc("job", kind="opt", state=CalcState.RUNNING)
+    calc.pid = 4242
+    calc.create_time = 123.0
+    calc.output_path = str(old_out)
+
+    seen = {}
+    monkeypatch.setattr(engine.runner, "adopt", lambda pid, ct: None)
+    monkeypatch.setattr(engine.runner, "end_position", lambda p: 0)
+
+    def fake_monitor(calc_, index, out_path, start_pos=0):
+        seen["path"] = str(out_path)
+        calc_.state = CalcState.DONE
+
+    monkeypatch.setattr(engine, "_monitor_and_finish", fake_monitor)
+    engine.run_all([calc])
+
+    assert seen["path"] == str(old_out)
+    assert calc.output_path == str(old_out)

@@ -187,10 +187,13 @@ def _bare_xyz_from_atoms(atoms) -> str:
 
 
 def _unique_track_name(base: str, taken: "set[str]") -> str:
-    if base not in taken:
+    """taken holds CASEFOLDED names: uniqueness must match the store's
+    case-insensitive rule (substitute_calcs), or a case-colliding queued name
+    would slip past here only to abort the whole substitution there."""
+    if base.casefold() not in taken:
         return base
     n = 2
-    while f"{base}_{n}" in taken:
+    while f"{base}_{n}".casefold() in taken:
         n += 1
     return f"{base}_{n}"
 
@@ -239,14 +242,21 @@ def expand_conformer_tracks(crest: Calculation, result: ParseResult,
     order = {id(c): i for i, c in enumerate(calcs)}
     templates.sort(key=lambda c: order[id(c)])
 
-    taken = set(taken_names)
+    taken = {n.casefold() for n in taken_names}
     clone_name: dict = {}          # (template_name, k) -> clone name
     added: list[Calculation] = []
     for k, conf in enumerate(conformers, start=1):
+        # name every clone of this track BEFORE building any: the re-pointing
+        # below needs the parent template's clone name, and a child template
+        # can precede its parent in queue order (refs are free-form at add
+        # time) — filling the map lazily left such a child pointing at the
+        # parent's ORIGINAL name, which is removed by the substitution
         for t in templates:
             name = _unique_track_name(f"{t.name}_c{k}", taken)
-            taken.add(name)
+            taken.add(name.casefold())
             clone_name[(t.name, k)] = name
+        for t in templates:
+            name = clone_name[(t.name, k)]
             if t.ref_name == crest.name:
                 src, xyz, ref = GeometrySource.DIRECT, _bare_xyz_from_atoms(conf.geometry), ""
                 origin = f"{crest.name} · conformer {k}"
@@ -454,7 +464,7 @@ class QueueEngine:
         calc.create_time = None
         path = calc.output_path or str(out_path)
         result = None
-        if path and Path(path).exists():
+        if path and Path(path).is_file():
             try:
                 result = parse_file(path)
             except Exception:
@@ -472,6 +482,14 @@ class QueueEngine:
     # -- single calculation --
     def _run_calc(self, calc: Calculation, index: int) -> None:
         out_path = self.workspace_root / calc.name / f"{calc.name}.out"
+        # A RUNNING calc restored from a previous session may have been
+        # launched under a DIFFERENT workspace root: its persisted output_path
+        # is where the detached ORCA is actually writing. Deriving from the
+        # current setting would tail a nonexistent file and then FAILED-lock a
+        # successfully finished job at process exit (and clobber the one
+        # pointer the finished-while-closed → DONE judgment depends on).
+        if calc.state == CalcState.RUNNING and calc.output_path:
+            out_path = Path(calc.output_path)
 
         # Reattach path: this calc was left RUNNING by a previous session and its
         # ORCA process is genuinely still alive — don't relaunch, just resume

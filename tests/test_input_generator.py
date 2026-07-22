@@ -23,6 +23,7 @@ import pytest
 from orcamgr.core.input_generator import (
     DEFAULT_AUX,
     GEOMETRY_PLACEHOLDER,
+    Solvation,
     StepConfig,
     _auto_aux,
     build_input,
@@ -398,3 +399,90 @@ def test_irc_inithess_read_with_filename_emits_read_block():
     text = build_input(cfg, WATER_XYZ)
     assert "InitHess read" in text
     assert 'Hess_Filename "TS2.hess"' in text
+
+
+# ---------------------------------------------------------------------------
+# Solvation: name normalization + %cpcm block routing for space-named solvents
+# ---------------------------------------------------------------------------
+
+def test_solvent_alias_maps_picker_label_to_orca_name():
+    # picker labels ORCA's own solvent table spells differently are mapped
+    # (exact dict, case-insensitive), unknown names pass through verbatim
+    cfg = StepConfig(kind="sp", solvation=Solvation(model="SMD",
+                                                    solvent="Ethylene Glycol"))
+    line = _keyword_line(build_input(cfg, WATER_XYZ))
+    assert "SMD(1,2-ethanediol)" in line
+    cfg2 = StepConfig(kind="sp", solvation=Solvation(model="SMD",
+                                                     solvent="2-Butanone"))
+    assert "SMD(butanone)" in _keyword_line(build_input(cfg2, WATER_XYZ))
+    passthru = StepConfig(kind="sp", solvation=Solvation(model="CPCM",
+                                                         solvent="Water"))
+    assert "CPCM(Water)" in _keyword_line(build_input(passthru, WATER_XYZ))
+
+
+def test_space_named_solvent_routes_through_cpcm_block():
+    # ORCA's simple-input parser splits on whitespace: CPCM(Diethyl Ether) is
+    # an INPUT ERROR. Space-named solvents carry only the activation keyword
+    # on the ! line and select the solvent in a quoted %cpcm block.
+    cpcm = StepConfig(kind="sp", solvation=Solvation(model="CPCM",
+                                                     solvent="Diethyl Ether"))
+    text = build_input(cpcm, WATER_XYZ)
+    line = _keyword_line(text)
+    assert "CPCM" in line and "(" not in line.split("CPCM")[1][:1]
+    assert 'solvent "Diethyl Ether"' in text
+    assert "Ether)" not in line
+
+    smd = StepConfig(kind="sp", solvation=Solvation(model="SMD",
+                                                    solvent="Carbon Tetrachloride"))
+    text2 = build_input(smd, WATER_XYZ)
+    line2 = _keyword_line(text2)
+    assert "SMD(" not in line2       # activation via CPCM keyword + block
+    assert "smd true" in text2
+    assert 'smdsolvent "Carbon Tetrachloride"' in text2
+
+
+def test_gas_phase_emits_no_cpcm_block():
+    cfg = StepConfig(kind="sp")
+    text = build_input(cfg, WATER_XYZ)
+    assert "%cpcm" not in text
+
+
+# ---------------------------------------------------------------------------
+# _auto_aux: correlated wavefunction methods beyond MP2 need /C too
+# ---------------------------------------------------------------------------
+
+def test_auto_aux_correlated_wavefunction_methods_get_autoaux():
+    # a /J-only aux makes ORCA abort AFTER the full SCF for CC/QCISD/NEVPT2/
+    # CASPT2/ADC2 methods — same family as the MP2 case
+    for method in ("CCSD", "CCSD(T)", "DLPNO-CCSD(T)", "QCISD(T)",
+                   "NEVPT2", "CASPT2", "STEOM-CCSD", "ADC2"):
+        cfg = StepConfig(functional=method, basis_set="def2-SVP",
+                         ri_approximation="RIJCOSX")
+        assert _auto_aux(cfg) == "AutoAux", method
+    # NoRI still means the conventional path — nothing added
+    nori = StepConfig(functional="CCSD(T)", basis_set="def2-SVP",
+                      ri_approximation="NoRI")
+    assert _auto_aux(nori) == ""
+
+
+# ---------------------------------------------------------------------------
+# NEB atom-order check: element symbols compare case-insensitively
+# ---------------------------------------------------------------------------
+
+def test_neb_atom_order_element_case_insensitive():
+    # legacy tools write "CL"; ORCA itself is case-insensitive, so the check
+    # must not refuse chemically identical, correctly ordered structures
+    res = check_neb_atom_order("Cl 0 0 0\nH 1 0 0", "CL 0 0 1\nH 1 0 1")
+    assert res["ok"] is True
+    # a REAL order mismatch still reports, with normalized symbols
+    bad = check_neb_atom_order("Cl 0 0 0\nH 1 0 0", "H 0 0 1\nCL 1 0 1")
+    assert bad["ok"] is False and bad["mismatch_index"] == 0
+
+
+def test_clamp_int_infinite_value_degrades_to_default():
+    # JSON 1e999 parses to float("inf"); int(inf) raises OverflowError which
+    # must degrade like any other non-numeric, not escape the trust boundary
+    cfg = StepConfig.from_dict({"nprocs": float("inf"),
+                                "maxcore_mb": float("-inf")})
+    assert cfg.nprocs == StepConfig().nprocs
+    assert cfg.maxcore_mb == StepConfig().maxcore_mb

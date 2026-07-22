@@ -420,3 +420,25 @@ def test_resolve_interpreter_strips_quotes_and_passes_files_through(tmp_path):
     f.write_text("", encoding="utf-8")
     assert resolve_interpreter(f'"{f}"') == str(f)
     assert resolve_interpreter("") == ""
+
+
+def test_probe_env_non_dict_json_is_error_not_a_crash(monkeypatch, tmp_path):
+    # an interpreter whose last stdout line is valid JSON but not an object
+    # (a wrapper script / sitecustomize printing last) crashed probe_env with
+    # AttributeError — killing the bridge's probe worker thread silently and
+    # pinning the env at "Checking…" forever
+    import subprocess
+    import orcamgr.mlip.env as env_mod
+
+    fake_exe = tmp_path / "python.exe"
+    fake_exe.write_text("")
+
+    class _Proc:
+        stdout = "42\n"
+        stderr = ""
+
+    monkeypatch.setattr(env_mod.subprocess, "run",
+                        lambda *a, **k: _Proc())
+    res = env_mod.probe_env(str(fake_exe))
+    assert res["ready"] is False
+    assert res["error"]

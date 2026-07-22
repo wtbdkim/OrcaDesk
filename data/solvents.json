@@ -1,6 +1,6 @@
 {
   "_source": "ORCA 6.1.1 Manual section 2.13 (Implicit Solvation), Table 2.56 (SMD library, 179 solvents)",
-  "_note": "Both CPCM(solvent) and SMD(solvent) accept these solvent names. Names are case-insensitive in ORCA but conventionally lowercase or first-cap.",
+  "_note": "Every name here exists in ORCA 6.1.1's solvent table (verified against the binary's embedded list). Labels ORCA spells differently are mapped by input_generator._SOLVENT_ALIASES; names containing spaces are routed through the %cpcm block (solvent/smdsolvent) because the simple-input keyword cannot carry them. Names are case-insensitive in ORCA.",
   "_full_smd_list_size": 179,
   "_full_smd_list_reference": "ORCA 6.1.1 Manual Table 2.56 — https://orca-manual.mpi-muelheim.mpg.de/contents/essentialelements/solvationmodels.html",
 
@@ -17,8 +17,6 @@
     "1-Heptanol",
     "1-Octanol",
     "1-Decanol",
-    "tert-Butanol",
-    "Glycerol",
     "Ethylene Glycol"
   ],
 
@@ -28,10 +26,8 @@
     "DMSO",
     "DMF",
     "DMA",
-    "NMP",
     "Sulfolane",
-    "Pyridine",
-    "Hexamethylphosphoramide"
+    "Pyridine"
   ],
 
   "common_ethers": [
@@ -39,10 +35,8 @@
     "1,4-Dioxane",
     "Diethyl Ether",
     "Diisopropyl Ether",
-    "Methyl tert-Butyl Ether",
     "Anisole",
-    "Tetrahydrofuran",
-    "1,2-Dimethoxyethane"
+    "Tetrahydrofuran"
   ],
 
   "common_halogenated": [
@@ -50,7 +44,6 @@
     "Carbon Tetrachloride",
     "Dichloromethane",
     "1,2-Dichloroethane",
-    "1,1-Dichloroethane",
     "Tetrachloroethene",
     "Trichloroethene",
     "Bromobenzene",
@@ -93,7 +86,6 @@
     "Ethyl Acetate",
     "Methyl Acetate",
     "Butyl Acetate",
-    "Ethyl Benzoate",
     "Methyl Formate",
     "Acetic Acid",
     "Formic Acid",
@@ -105,13 +97,11 @@
     "Triethylamine",
     "Pyridine",
     "Aniline",
-    "Pyrrole",
     "DMF",
     "DMA",
     "Formamide",
     "N-Methylformamide",
-    "N,N-Dimethylformamide",
-    "Acetamide"
+    "N,N-Dimethylformamide"
   ],
 
   "common_nitriles": [
@@ -123,9 +113,7 @@
 
   "common_other_polar": [
     "Carbon Disulfide",
-    "Hydrazine",
     "Ammonia",
-    "Hydrogen Fluoride",
     "Liquid Ammonia"
   ],
 
@@ -133,7 +121,6 @@
     "Acetone",
     "2-Butanone",
     "Cyclohexanone",
-    "Acetaldehyde",
     "Benzaldehyde",
     "Methyl Ethyl Ketone"
   ],

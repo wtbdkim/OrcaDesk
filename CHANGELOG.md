@@ -3,6 +3,99 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **NEB/IRC reaction-path parsing: a path distance can no longer be read as an
+  energy.** The plain `PATH SUMMARY` table (NEB/NEB-CI, and printed during
+  every NEB-TS run) has an extra `Dist.(Ang.)` column before `E(Eh)`; the
+  parser assumed the energy sat right after the image label, so any NEB-TS
+  run inspected before its final table (cancelled, crashed, unconverged), any
+  plain NEB/NEB-CI job, and any such drag-dropped `.out` plotted distances
+  (0.0, 3.7, …) as energies and absolute energies as ΔE. Column positions are
+  now read from the table header. Verified against real corpus files.
+- **Multi-word solvent names now generate input ORCA accepts.** ORCA's
+  simple-input parser splits on whitespace, so `CPCM(Diethyl Ether)` was an
+  instant `INPUT ERROR` — every job with such a solvent failed at launch.
+  Space-named solvents are now selected through the quoted `%cpcm` block
+  (`solvent "..."`, or `smd true` + `smdsolvent "..."` for SMD) with only the
+  activation keyword on the `!` line. Verified by live ORCA 6.1.1 runs.
+- **Solvent picker names ORCA doesn't know are aliased or removed.** Verified
+  against ORCA 6.1.1's own embedded solvent table: 10 picker labels are now
+  mapped to the spelling ORCA accepts (e.g. `Ethylene Glycol` →
+  `1,2-ethanediol`, `Methyl Ethyl Ketone` → `butanone`, `DMA` →
+  `n,n-dimethylacetamide`; `input_generator.normalize_solvent`), and 13 names
+  with no ORCA equivalent (e.g. Glycerol, NMP, Pyrrole, tert-Butanol) are
+  dropped from `data/solvents.json` — each previously aborted the run at
+  start with "Solvent name not found".
+- **Correlated wavefunction methods get a correlation-fitting aux basis.**
+  CCSD, CCSD(T), DLPNO-CCSD(T), QCISD(T), NEVPT2, CASPT2, STEOM/EOM-CCSD,
+  ADC2 … under the default RIJCOSX received only `def2/J`, which ORCA rejects
+  *after* paying for the full SCF ("A /J-Basis is not an appropriate auxiliary
+  basis set for correlated methods"). They now get `AutoAux` like MP2 and the
+  double hybrids (the 0.5.0-beta fix stopped at MP2/MP3). Verified by a live
+  DLPNO-CCSD(T) run.
+- **UTF-16 `.out` files parse instead of silently reading as empty.** ORCA
+  itself writes 8-bit output, but `orca job.inp > job.out` under Windows
+  PowerShell 5.1 redirects as UTF-16 — such a file (2 of 273 real outputs in
+  the validation corpus) parsed to an empty result labeled "did not terminate
+  normally" with no hint why. The parser now sniffs the BOM.
+- **The NEB reactant/product check compares element symbols
+  case-insensitively.** A product `.xyz` written in caps (`CL`, common from
+  legacy tools) was refused with a confusing "composition differs — C1, Cl1 vs
+  C1, CL1" message for chemically identical, correctly ordered structures.
+  ORCA itself is case-insensitive.
+- **A corrupt frame mid-way through a CREST ensemble no longer swallows the
+  conformers after it.** When a frame declared more atoms than it had, the
+  multi-XYZ scanners (`crest/parser.py`, `crest/export.py`) skipped it but
+  advanced the cursor by the *declared* count — jumping into the next frame's
+  header and silently dropping every remaining valid conformer.
+- **Reattaching after a workspace change no longer destroys a finished run.**
+  A RUNNING calc restored from a previous session was tailed at a path derived
+  from the *current* workspace root; if the workspace setting changed while
+  the detached ORCA kept running elsewhere, the monitor tailed a nonexistent
+  file, the finished job came back FAILED-locked, and the reattach overwrote
+  the one `output_path` pointer the finished-while-closed → DONE judgment
+  needs. The persisted path now wins.
+- **Session restore upholds the case-insensitive name-uniqueness invariant.**
+  A `session.json` written by a pre-0.5.0 build (or merged externally) could
+  hold `water` and `Water` — one on-disk folder on Windows; the restore path
+  now dedups (first occurrence wins), so the shared-folder corruption the
+  0.5.0-beta uniqueness fix closed can't be resurrected through restore.
+- **Conformer fan-out: a follow-up chain queued child-before-parent expands
+  correctly.** With a queue like `crest ← freq(ref=opt) ← opt(ref=crest)` (the
+  dependent added before its parent), expansion re-pointed the child clones at
+  the parent's *original* name — which the substitution removes — leaving K
+  clones FAILED on a dangling reference. Clone names are now assigned for a
+  whole track before any re-pointing. The clone uniquifier also matches the
+  store's case-insensitive collision rule (a case-colliding queued name used
+  to abort the entire substitution instead of suffixing).
+- **A dangling geometry reference on a DONE/FAILED calc no longer vetoes the
+  whole run.** `find_dangling_reference` skips locked states — neither will
+  ever run again, but their stale reference used to refuse every subsequent
+  Run (desktop and phone) until the rows were removed by hand.
+- **Trust-boundary hardening (P32).** Wrong-typed payloads and corrupted
+  files now degrade instead of crashing: a non-string calc `name` or an
+  infinite `charge`/`multiplicity`/numeric-config value from the phone API or
+  a bridge call returns the standard `{"error"}`/400 envelope (previously an
+  uncaught `AttributeError`/`OverflowError` — HTTP 500); a `session.json`
+  with a wrong-typed `pid`/`create_time` or a device `output_path` like `CON`
+  no longer crash-loops (or hangs) every startup; `settings.json` with
+  wrong-typed scalar fields (e.g. a numeric `orca_path`) or `mlip_envs`
+  entries missing a string `id` self-heals to defaults — the latter was a
+  guaranteed `KeyError` crash loop at launch.
+- **MLIP environment probes can't die silently anymore.** A probe crash (e.g.
+  an interpreter whose last stdout line is valid JSON but not the probe
+  object) killed the worker thread without publishing, pinning the env at
+  "Checking…" — and the build card locked — forever. The probe guards the
+  JSON shape, and the bridge worker publishes an error payload on any
+  unexpected failure.
+- **CREST install failures now say why.** The auto-installer computes
+  actionable diagnostics ("xz missing — sudo apt install xz-utils", download
+  failed, …) that the bridge silently discarded, leaving only the generic
+  "CREST not found in this distro." after a failed install. The result (or
+  the success + version) now lands in the log.
+
 ## [0.5.0-beta] — 2026-07-21
 
 CREST conformer search as a third execution backend. CREST has no native

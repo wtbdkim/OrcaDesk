@@ -200,7 +200,13 @@ def calc_from_dict(d: dict) -> Calculation:
     """
     cfg = StepConfig.from_dict(d.get("config", {}))
     src = d.get("geometry_source", "direct")
-    name = d.get("name", "").strip()
+    # This is the trust boundary for phone/HTTP payloads too: wrong-typed
+    # values must surface as ValueError (the callers' 400/{"error"} path),
+    # never as AttributeError/OverflowError escaping the slot or endpoint.
+    raw_name = d.get("name", "")
+    if not isinstance(raw_name, str):
+        raise ValueError("Calculation name must be a string.")
+    name = raw_name.strip()
     if not name:
         raise ValueError("Calculation name is required.")
     _validate_calc_name(name)
@@ -208,20 +214,29 @@ def calc_from_dict(d: dict) -> Calculation:
     # "* xyz {charge} {multiplicity}" line. int() already blocks string
     # injection, but not absurd magnitudes — clamp to physically generous
     # ranges so a bogus client payload can't emit a nonsense input file.
-    charge = max(-100, min(100, int(d.get("charge", 0))))
-    multiplicity = max(1, min(200, int(d.get("multiplicity", 1))))
+    try:
+        charge = max(-100, min(100, int(d.get("charge", 0))))
+        multiplicity = max(1, min(200, int(d.get("multiplicity", 1))))
+    except OverflowError:                    # int(float("inf")) from JSON 1e999
+        raise ValueError("charge/multiplicity must be finite integers.")
+
+    def _s(key: str) -> str:
+        v = d.get(key, "")
+        return v if isinstance(v, str) else ""
+
+    kind = d.get("kind", cfg.kind)
     return Calculation(
         name=name,
-        kind=d.get("kind", cfg.kind),
+        kind=kind if isinstance(kind, str) else cfg.kind,
         config=cfg,
         charge=charge,
         multiplicity=multiplicity,
         geometry_source=GeometrySource(src),
-        xyz=d.get("xyz", ""),
-        ref_name=d.get("ref_name", ""),
-        conformer_origin=d.get("conformer_origin", ""),
+        xyz=_s("xyz"),
+        ref_name=_s("ref_name"),
+        conformer_origin=_s("conformer_origin"),
         is_raw=bool(d.get("is_raw", False)),
-        raw_text=d.get("raw_text", ""),
+        raw_text=_s("raw_text"),
     )
 
 
@@ -269,9 +284,21 @@ def calc_from_session_dict(d: dict) -> Calculation:
     except ValueError:
         c.state = CalcState.PENDING
     c.message = d.get("message", "")
-    c.output_path = d.get("output_path", "") or ""
-    c.pid = d.get("pid")
-    c.create_time = d.get("create_time")
+    out = d.get("output_path", "") or ""
+    c.output_path = out if isinstance(out, str) else ""
+    # pid/create_time flow into psutil.Process(int(pid)) during reconciliation;
+    # a wrong-typed value (hand-edited/corrupted session) must degrade to
+    # "no recorded process", not crash every startup (P32)
+    pid = d.get("pid")
+    try:
+        c.pid = int(pid) if pid is not None else None
+    except (TypeError, ValueError, OverflowError):
+        c.pid = None
+    ct = d.get("create_time")
+    try:
+        c.create_time = float(ct) if ct is not None else None
+    except (TypeError, ValueError):
+        c.create_time = None
     return c
 
 
@@ -282,7 +309,13 @@ def _parse_if_exists(calc):
     than crash."""
     from pathlib import Path
     path = getattr(calc, "output_path", "") or ""
-    if not (path and Path(path).exists()):
+    try:
+        # is_file(), not exists(): Windows resolves device names like "CON" to
+        # the console, which exists() passes and open() then blocks on forever
+        # — a corrupted session.json must not hang startup (P32)
+        if not (path and Path(path).is_file()):
+            return None
+    except OSError:
         return None
     try:
         kind = getattr(calc, "kind", "")
@@ -757,11 +790,21 @@ class QueueStore:
         if not isinstance(data, dict):
             return
         restored = []
+        seen_names: set[str] = set()
         for d in data.get("calculations", []):
             try:
-                restored.append(calc_from_session_dict(d))
+                c = calc_from_session_dict(d)
             except Exception:
                 continue  # skip a corrupt entry rather than lose the whole queue
+            # The restore path must uphold the same case-insensitive name
+            # uniqueness add() enforces (Windows folder identity): a session
+            # written by an older build (or edited/merged externally) could
+            # otherwise resurrect two calcs sharing one on-disk folder.
+            key = c.name.casefold()
+            if key in seen_names:
+                continue  # first occurrence wins, matching store.get()
+            seen_names.add(key)
+            restored.append(c)
         if not restored:
             return
         reconcile_calcs(restored)
@@ -805,6 +848,12 @@ def find_dangling_reference(calcs: "list[Calculation]") -> "str | None":
     message everywhere instead of failing mid-run with a murkier one."""
     names = {c.name for c in calcs}
     for c in calcs:
+        # DONE results are frozen and FAILED calcs are locked (P24) — neither
+        # will ever run again, so a dangling reference on them must not veto
+        # the whole run (e.g. FAILED conformer clones whose template parent
+        # was substituted away would otherwise lock the Run button for good).
+        if c.state in (CalcState.DONE, CalcState.FAILED):
+            continue
         src = c.geometry_source
         is_ref = src == GeometrySource.REFERENCE or str(
             getattr(src, "value", src)) == "reference"

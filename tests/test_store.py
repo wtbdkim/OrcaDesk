@@ -731,3 +731,88 @@ def test_check_token_non_ascii_is_denied_not_a_crash(store):
     # non-ASCII char must be an auth failure, not an HTTP 500.
     assert store.check_token("한글토큰") is False
     assert store.check_token("pin·123") is False
+
+
+# ---- calc_from_dict trust boundary: wrong-typed payload values ---------------
+
+def test_calc_from_dict_non_string_name_is_valueerror():
+    # every caller (bridge add_calc / POST /api/queue) catches ValueError and
+    # turns it into an {"error"} envelope / HTTP 400 — an AttributeError from
+    # .strip() would escape the slot instead
+    for bad in (123, None, ["x"], {"n": 1}):
+        with pytest.raises(ValueError):
+            calc_from_dict({"name": bad, "kind": "sp"})
+
+
+def test_calc_from_dict_infinite_charge_is_valueerror():
+    # JSON 1e999 parses to float("inf"); int(inf) raises OverflowError which
+    # no caller catches — it must surface as the standard ValueError instead
+    with pytest.raises(ValueError):
+        calc_from_dict({"name": "x", "charge": float("inf")})
+    with pytest.raises(ValueError):
+        calc_from_dict({"name": "x", "multiplicity": float("-inf")})
+
+
+def test_calc_from_dict_non_string_passthrough_fields_degrade():
+    c = calc_from_dict({"name": "x", "kind": 7, "xyz": 1,
+                        "ref_name": ["a"], "raw_text": {"t": 1}})
+    assert isinstance(c.kind, str)
+    assert c.xyz == "" and c.ref_name == "" and c.raw_text == ""
+
+
+# ---- session restore: wrong-typed runtime fields + name dedup (P32) ----------
+
+def test_session_wrong_typed_pid_restores_and_reconciles(session_root):
+    d = calc_to_session_dict(make_calc("weird", kind="opt"))
+    d["state"] = "running"
+    d["pid"] = [1]              # wrong-typed (hand-edited/corrupted session)
+    d["create_time"] = "soon"
+    (session_root / "session.json").write_text(
+        json.dumps({"schema": 1, "calculations": [d]}), encoding="utf-8")
+    store = QueueStore()
+    store.load_session()        # must not raise (TypeError used to escape
+    #                             process_matches via reconcile_calcs)
+    assert store.names() == ["weird"]
+    assert store.get("weird").state == CalcState.FAILED
+
+
+def test_session_device_output_path_does_not_hang_startup(session_root):
+    # Path("CON").exists() is True on Windows and open("CON") blocks on the
+    # console forever — reconciliation must skip non-regular files
+    d = calc_to_session_dict(make_calc("dev", kind="opt"))
+    d["state"] = "running"
+    d["pid"] = 999999997
+    d["create_time"] = 1.0
+    d["output_path"] = "CON"
+    (session_root / "session.json").write_text(
+        json.dumps({"schema": 1, "calculations": [d]}), encoding="utf-8")
+    store = QueueStore()
+    store.load_session()        # must return, not hang
+    assert store.get("dev").state == CalcState.FAILED
+
+
+def test_session_restore_dedups_case_colliding_names(session_root):
+    # a session written by a pre-uniqueness build (or merged externally) may
+    # hold "water" and "Water" — one on-disk folder on Windows; the restore
+    # path must uphold the same case-insensitive invariant add() enforces
+    d1 = calc_to_session_dict(make_calc("water", kind="sp"))
+    d2 = calc_to_session_dict(make_calc("Water", kind="opt"))
+    d3 = calc_to_session_dict(make_calc("water", kind="freq"))
+    (session_root / "session.json").write_text(
+        json.dumps({"schema": 1, "calculations": [d1, d2, d3]}), encoding="utf-8")
+    store = QueueStore()
+    store.load_session()
+    assert store.names() == ["water"]          # first occurrence wins
+    assert store.get("water").kind == "sp"
+
+
+def test_find_dangling_reference_skips_locked_states():
+    # FAILED calcs are locked (P24) and DONE results are frozen — neither will
+    # run again, so a dangling ref on them must not veto the whole run (e.g.
+    # FAILED conformer clones whose template parent was substituted away)
+    dead = make_calc("dead", geometry_source="reference", ref_name="gone", xyz="")
+    dead.state = CalcState.FAILED
+    ok = make_calc("ok")
+    assert store_mod.find_dangling_reference([dead, ok]) is None
+    pending = make_calc("pend", geometry_source="reference", ref_name="gone", xyz="")
+    assert store_mod.find_dangling_reference([pending, ok]) is not None

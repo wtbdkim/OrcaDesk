@@ -49,7 +49,12 @@ def split_conformer_frames(text: str) -> list[str]:
             coord_lines.append(lines[j].rstrip())
         if len(coord_lines) == natoms:
             frames.append(f"{natoms}\n{comment.rstrip()}\n" + "\n".join(coord_lines) + "\n")
-        i = base + natoms
+            i = base + natoms
+        else:
+            # short frame: resume at the line that failed the coordinate scan —
+            # advancing by the DECLARED count would jump into (or past) the next
+            # frame's header and silently swallow valid frames after it
+            i = base + len(coord_lines)
     return frames
 
 

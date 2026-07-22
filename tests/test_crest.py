@@ -595,3 +595,60 @@ def test_run_start_expansion_for_already_done_crest(tmp_path, monkeypatch):
 
     assert [c.name for c in calcs] == ["par", "child_c1", "child_c2"]
     assert [c.state for c in calcs] == [CalcState.DONE] * 3
+
+
+def test_corrupt_mid_file_frame_does_not_swallow_following_frames(tmp_path):
+    # a frame declaring more atoms than it has must be skipped WITHOUT the
+    # cursor overshooting into the next frame's header (which silently
+    # swallowed every valid conformer after the corrupt one)
+    from orcamgr.crest.export import split_conformer_frames
+    from orcamgr.crest.parser import _parse_multi_xyz
+    corrupt_then_valid = (
+        "4\n"
+        " -155.0 corrupt frame: declares 4, has 2\n"
+        "C 0.0 0.0 0.0\n"
+        "H 1.0 0.0 0.0\n"
+        "3\n"
+        " -155.1\n"
+        "O 0.0 0.0 0.0\n"
+        "H 0.0 0.0 0.96\n"
+        "H 0.93 0.0 -0.24\n"
+    )
+    frames = _parse_multi_xyz(corrupt_then_valid)
+    assert len(frames) == 1
+    energy, atoms = frames[0]
+    assert energy == -155.1 and len(atoms) == 3
+    split = split_conformer_frames(corrupt_then_valid)
+    assert len(split) == 1 and split[0].startswith("3\n")
+
+
+def test_expand_repoints_child_template_that_precedes_its_parent():
+    # refs are free-form at add time, so a child template can sit BEFORE its
+    # parent in queue order (freq added first, then opt). The re-pointing must
+    # still target the parent's clone — a lazy fill left the child pointing at
+    # the parent's ORIGINAL name, which the substitution removes (K clones
+    # FAILED on a dangling ref).
+    crest = _done_all_crest("cr", 2)
+    freq = _ref_calc("freq", "freq", "opt")   # child first in queue order
+    opt = _ref_calc("opt", "opt", "cr")
+    calcs = [crest, freq, opt]
+
+    removed, added = expand_conformer_tracks(
+        crest, crest.result, calcs, taken_names={c.name for c in calcs})
+
+    assert set(removed) == {"freq", "opt"}
+    by_name = {c.name: c for c in added}
+    assert by_name["freq_c1"].ref_name == "opt_c1"
+    assert by_name["freq_c2"].ref_name == "opt_c2"
+
+
+def test_expand_uniquifier_is_case_insensitive_like_the_store():
+    # the store's substitute_calcs collision check casefolds; the uniquifier
+    # must too, or a case-colliding queued name ("Opt_c1" vs generated
+    # "opt_c1") passes here only to abort the whole substitution there
+    crest = _done_all_crest("cr", 2)
+    opt = _ref_calc("opt", "opt", "cr")
+    removed, added = expand_conformer_tracks(
+        crest, crest.result, [crest, opt],
+        taken_names={"cr", "opt", "Opt_c1"})
+    assert [c.name for c in added] == ["opt_c1_2", "opt_c2"]

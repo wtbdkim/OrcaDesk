@@ -197,7 +197,9 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 - **Calculation `name` is unique and is used as the on-disk folder name**
   (`{workspace}/{name}/`). Uniqueness is enforced in the store,
   **case-insensitively** — Windows resolves `water` and `Water` to the same
-  folder, so accepting both would share one `.out` between two calcs.
+  folder, so accepting both would share one `.out` between two calcs. The
+  invariant holds on every entry path: `add`/`replace`, `substitute_calcs`,
+  **and session restore** (`load_session` dedups, first occurrence wins).
 - **The queue autosaves to `%APPDATA%\ORCAdesk\session.json`** on every mutation
   (`QueueStore._bump_and_save`) and is restored on startup (`load_session`). A
   `RUNNING` calc persists its detached ORCA's `(pid, create_time)` **and its
@@ -592,10 +594,22 @@ them there.
   combined `FUNC-D3` tokens (it wants the dispersion as a separate keyword). So combined
   tokens like `B3LYP-D3`/`B3LYP-D3BJ` are normalized to `B3LYP D3BJ`. Use `D3BJ` (or
   `D4`) explicitly everywhere.
-- **Double hybrids / MP2 need a `/C` correlation-fitting aux.** `_auto_aux` adds
-  `AutoAux` (generates `/J` and `/C`) for those methods when RI is on; if the user sets
-  the RI approximation to `NoRI` it adds nothing (conventional path). Plain hybrids/GGAs
+- **Double hybrids / MP2 / correlated wavefunction methods need a `/C`
+  correlation-fitting aux.** `_auto_aux` adds `AutoAux` (generates `/J` and `/C`)
+  for those methods when RI is on — the correlated set covers the CC/QCISD/
+  NEVPT2/CASPT2/ADC2 families via `_CORRELATED_MARKERS`, not just mp2/mp3; a
+  `/J`-only aux makes ORCA abort *after* the full SCF. If the user sets the RI
+  approximation to `NoRI` it adds nothing (conventional path). Plain hybrids/GGAs
   with an RI-J method get `def2/J` for def2 bases as before.
+- **Solvent-name normalization + `%cpcm` block routing.** Like functionals,
+  solvent picker labels go through an exact map (`normalize_solvent` /
+  `_SOLVENT_ALIASES`) to the spelling ORCA's solvent table accepts (e.g.
+  `Ethylene Glycol`→`1,2-ethanediol`); unknown names pass through verbatim.
+  A resolved name containing spaces cannot ride the simple keyword (ORCA's
+  parser splits on whitespace) — `Solvation.keyword()` then emits only the
+  `CPCM` activation keyword and `Solvation.block()` selects the solvent in a
+  quoted `%cpcm` block (`solvent "..."`; SMD: `smd true` + `smdsolvent "..."`).
+  Every name in `data/solvents.json` is verified to exist in ORCA 6.1.1.
 
 ## Git workflow
 
