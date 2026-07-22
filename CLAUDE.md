@@ -283,7 +283,9 @@ from the desktop by `ServerController` (`controller.py`) running uvicorn in a da
 thread on the shared store. It serves the mobile PWA from `web_mobile/` at `/` and the
 queue API under `/api/`. fastapi/uvicorn are **optional** — `ServerController.is_available()`
 gates the whole feature, and the desktop app works fine without them. Per `CHANGELOG.md`
-phone-sync is in development and **not part of the packaged build**.
+phone-sync is in development and **not part of the packaged build** — enforced by
+`build.spec`'s `excludes` (fastapi/uvicorn/starlette/pydantic/anyio/qrcode/PIL),
+which must be dropped deliberately when phone-sync ships.
 
 ### MLIP environment (deliberately separate from ORCA)
 

@@ -46,6 +46,19 @@ hiddenimports += [
     "PyQt6.QtNetwork",
 ]
 
+# Phone-sync is NOT part of the packaged build (CHANGELOG/CLAUDE.md): the
+# feature is optional at runtime (ServerController.is_available()), but
+# PyInstaller's bytecode scan follows the function-level fastapi/uvicorn/
+# qrcode imports, so whether the whole server stack landed in the bundle
+# depended on the build machine's site-packages — nondeterministic packaging
+# and, when present, an unreviewed LAN-binding feature live in the shipped
+# exe. Exclude it explicitly; drop these lines deliberately when phone-sync
+# ships for real.
+excludes = [
+    "fastapi", "uvicorn", "starlette", "pydantic", "pydantic_core",
+    "anyio", "qrcode", "PIL",
+]
+
 
 a = Analysis(
     ["main.py"],
@@ -56,7 +69,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excludes,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

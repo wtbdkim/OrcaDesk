@@ -5,6 +5,17 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **The packaged build now really excludes phone-sync.** The docs have always
+  said phone-sync is not part of the packaged build, but nothing enforced it:
+  PyInstaller follows the optional fastapi/uvicorn/qrcode imports, so whether
+  the whole server stack (and its LAN-binding Server toggle) shipped depended
+  on the build machine's site-packages — the shipped 0.5.0-beta actually
+  contains it. `build.spec` now excludes `fastapi`/`uvicorn`/`starlette`/
+  `pydantic`/`anyio`/`qrcode`/`PIL` explicitly; the app degrades exactly as
+  on a machine without those packages (`ServerController.is_available()`).
+  Drop the excludes deliberately when phone-sync ships for real.
+
 ### Fixed
 - **NEB/IRC reaction-path parsing: a path distance can no longer be read as an
   energy.** The plain `PATH SUMMARY` table (NEB/NEB-CI, and printed during
