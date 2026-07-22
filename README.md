@@ -81,6 +81,21 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   search finishes; with *lowest conformer only* it runs once, on the best
   conformer. The CREST build card stays **locked until a distro with CREST is
   ready**.
+
+  > **WSL memory note:** a CREST run is I/O-heavy, and by default WSL2 keeps
+  > every byte it caches — its `Vmmem WSL` process can balloon to many GB
+  > (up to 50 % of your RAM) and **not give the memory back** after the run.
+  > That is WSL's design, not a leak in CREST or ORCAdesk. To make WSL return
+  > cached memory when idle, create `C:\Users\<you>\.wslconfig` containing:
+  >
+  > ```ini
+  > [experimental]
+  > autoMemoryReclaim=gradual
+  > ```
+  >
+  > and run `wsl --shutdown` once while **no CREST job is running** (it would
+  > kill the job). Optionally add `memory=8GB` under a `[wsl2]` section to cap
+  > the VM outright.
 - **Queue**: calculations run in order. If one fails, anything that references
   it (directly or transitively) is skipped (blocked); unrelated calculations
   continue. Each calculation gets its own folder `{workspace}/{name}/`. The

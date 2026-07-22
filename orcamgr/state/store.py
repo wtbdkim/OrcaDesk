@@ -442,12 +442,19 @@ class QueueStore:
 
     # ---- connected clients (phones) ----
     def heartbeat(self, client_id: str) -> None:
-        """Record that a client is alive right now."""
+        """Record that a client is alive right now (prunes stale ones — without
+        this, clients minting fresh ids per page load would grow the dict for as
+        long as the server runs when nothing polls active_clients())."""
         import time
+        now = time.time()
         if not client_id:
             return
         with self._lock:
-            self._clients[client_id] = time.time()
+            stale = [cid for cid, t in self._clients.items()
+                     if now - t > self._client_ttl]
+            for cid in stale:
+                del self._clients[cid]
+            self._clients[client_id] = now
 
     def active_clients(self) -> int:
         """Number of clients seen within the TTL window (prunes stale ones)."""

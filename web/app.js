@@ -246,6 +246,18 @@ async function pollTick() {
       if (document.getElementById("geom-reference")?.style.display === "block") refreshRefSelect();
       if (document.getElementById("mlip-geom-reference")?.style.display === "block") refreshMlipRefSelect();
       if (document.getElementById("crest-geom-reference")?.style.display === "block") refreshCrestRefSelect();
+      // Names that left the queue via a non-desktop path (the engine's conformer
+      // fan-out substitution, a phone client's remove) never pass through
+      // removeCalc/clearQueue's invalidation — sweep the display caches here so
+      // a freed name can't serve the old calc's data if reused, and the maps
+      // can't grow for the life of the session.
+      const _live = new Set(queue.map(c => c.name));
+      let _sweptResults = false;
+      for (const k of Object.keys(localCalcs)) if (!_live.has(k)) delete localCalcs[k];
+      for (const k of Object.keys(calcResults)) if (!_live.has(k)) { delete calcResults[k]; _sweptResults = true; }
+      for (const k of Object.keys(_resultExtras)) if (!_live.has(k)) delete _resultExtras[k];
+      if (_currentResultName && !_live.has(_currentResultName)) _currentResultName = "";
+      if (_sweptResults) refreshResultSelect();
       _running = !!snap.running;
       setRunUI(_running);
       // auto-load results for any finished calculation
@@ -675,7 +687,14 @@ function applyThemeVariant(variant, level) {
   document.querySelectorAll("#lg-level-row button").forEach(b =>
     b.classList.toggle("on", b.getAttribute("data-level") === lv));
   if (v === "liquidglass") { renderWallpaper(); _lgPulseStart(); }
-  else _lgPulseStop();
+  else {
+    _lgPulseStop();
+    // The hidden canvas keeps its full viewport×DPR backing store (~tens of MB)
+    // unless shrunk — the CSS display:none alone releases nothing. renderWallpaper
+    // re-sizes it on the way back to liquidglass.
+    const cv = /** @type {HTMLCanvasElement|null} */ (/** @type {unknown} */ (document.getElementById("lgWall")));
+    if (cv && cv.width > 1) { cv.width = 1; cv.height = 1; }
+  }
 }
 
 /** Persist a settings patch; refresh the mirror. Returns false on backend error. */
@@ -2659,9 +2678,17 @@ async function clearQueue() {
 
 function isRunning() { return _running; }
 
+/** @type {((v: any) => void)|null} */
+let _activeModalClose = null;   // close() of the modal currently shown, so a
+                                // second showModal dismisses it first — otherwise
+                                // the first modal's document keydown listener +
+                                // pending Promise leak, and its stale Escape
+                                // handler would hide the NEW modal.
+
 // generic modal: buttons = [{label, value, primary?, danger?}], returns chosen value (or null if dismissed)
 function showModal(title, bodyHtml, buttons) {
   return new Promise((resolve) => {
+    if (_activeModalClose) _activeModalClose(null);
     const overlay = document.getElementById("modal-overlay");
     document.getElementById("modal-title").textContent = title;
     document.getElementById("modal-body").innerHTML = bodyHtml;
@@ -2669,11 +2696,13 @@ function showModal(title, bodyHtml, buttons) {
     actions.innerHTML = "";
     let onKey;
     const close = (v) => {
+      if (_activeModalClose === close) _activeModalClose = null;
       overlay.style.display = "none";
       overlay.onclick = null;
       document.removeEventListener("keydown", onKey);
       resolve(v);
     };
+    _activeModalClose = close;
     // dismiss (= null) on Escape or a click on the backdrop, so the themed modal
     // behaves like a normal dialog
     onKey = (e) => { if (e.key === "Escape") close(null); };

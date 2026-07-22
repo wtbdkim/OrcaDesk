@@ -28,6 +28,7 @@ import json
 import re
 import sys
 import threading
+from collections import deque
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSlot
@@ -94,6 +95,10 @@ _CREST_GRAPH = re.compile(
     r"Change in topology detected|safety termination of CREST|"
     r"number of unique conformers for further calc|Initial Geometry Optimization|"
     r"iMTD-GC SAMPLING|Additional regular MDs|Final Geometry Optimization")
+# get_graph_lines keeps only this many most-recent relevant lines (~130 full
+# opt cycles' worth of graph history) so a pathological many-thousand-cycle
+# .out can't balloon the payload/JSON string.
+_GRAPH_LINES_MAX = 2000
 
 
 class Bridge(QObject):
@@ -337,6 +342,7 @@ class Bridge(QObject):
             self.settings.mlip_envs = [
                 e for e in self.settings.mlip_envs if e.get("id") != env_id]
             self._mlip_envs_status.pop(env_id, None)
+            self._mlip_probe_seq.pop(env_id, None)
         self.settings.save()
         return self.get_mlip_status()
 
@@ -764,13 +770,16 @@ class Bridge(QObject):
 
         Takes the calc NAME and resolves the run folder server-side via
         _calc_run_dir (state-independent — works mid-run and for restored
-        sessions alike, even from an old workspace). Reads line-by-line
-        and keeps a few hundred relevant lines even from a huge .out."""
+        sessions alike, even from an old workspace). Reads line-by-line and
+        keeps only the most recent _GRAPH_LINES_MAX relevant lines, so even a
+        many-thousand-cycle .out yields a bounded payload (the trackers only
+        need the recent history; dropped oldest cycles just shorten the
+        seeded graph's tail)."""
         try:
             out_path = self._calc_run_dir(name) / f"{name}.out"
             if not out_path.exists():
                 return json.dumps(GraphLinesResult(ok=False, error="no output", lines=[]))
-            lines = []
+            lines: deque[str] = deque(maxlen=_GRAPH_LINES_MAX)
             in_table = False
             saw_item = False
             with open(out_path, "r", encoding="utf-8", errors="replace") as f:
@@ -801,7 +810,7 @@ class Bridge(QObject):
                         # CREST phase/energy markers (a CREST .out has no ORCA
                         # SCF/geo lines, so this branch is reached cleanly)
                         lines.append(ln)
-            return json.dumps(GraphLinesResult(ok=True, lines=lines))
+            return json.dumps(GraphLinesResult(ok=True, lines=list(lines)))
         except Exception as e:
             return json.dumps(GraphLinesResult(ok=False, error=str(e), lines=[]))
 

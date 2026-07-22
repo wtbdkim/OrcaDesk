@@ -3,6 +3,24 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Memory-leak audit fixes.** A pass over the long-session memory behavior
+  closed several small leaks/retentions: display caches in the UI are now
+  swept when a calculation leaves the queue through a non-desktop path
+  (conformer fan-out substitution, a phone remove) — this also stops a
+  reused name from serving the removed calc's cached result; opening a
+  modal over an unresolved one now dismisses the first (its Escape handler
+  and pending promise used to linger and could close the new modal);
+  switching Liquid Glass back to shadcn releases the wallpaper canvas's
+  backing store (~tens of MB); `get_graph_lines` now really caps its
+  payload as documented; removed MLIP environments drop their probe
+  bookkeeping; a force-killed MLIP worker is reaped; the phone-client
+  heartbeat prunes stale entries; and a server thread that ignores a stop
+  is kept tracked instead of leaked untracked. (For the WSL/CREST
+  multi-GB memory growth, see the `.wslconfig` note in the README.)
+
 ## [0.5.1-beta] — 2026-07-22
 
 ### Added

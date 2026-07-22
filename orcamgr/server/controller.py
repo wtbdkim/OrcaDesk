@@ -102,5 +102,11 @@ class ServerController:
         if t is not None and t.is_alive():
             # wait briefly so the port is released before any restart
             t.join(timeout=5.0)
+            if t.is_alive():
+                # uvicorn didn't honour should_exit in time: keep the refs so
+                # is_running() stays True and start() refuses to spawn a second
+                # server thread over the zombie one (which still holds the
+                # socket) — dropping them here would leak the thread untracked.
+                return
         self._thread = None
         self._server = None

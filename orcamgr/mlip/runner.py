@@ -280,5 +280,6 @@ class MlipRunner:
         except (subprocess.TimeoutExpired, OSError, ValueError):
             try:
                 proc.kill()
-            except OSError:
+                proc.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
                 pass
