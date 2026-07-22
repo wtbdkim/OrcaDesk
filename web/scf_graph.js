@@ -507,7 +507,11 @@
     for (let i = 0; i < pts.length; i += stepEvery) {
       const xx = X(i);
       xticks += `<line x1="${xx.toFixed(1)}" y1="${baseY}" x2="${xx.toFixed(1)}" y2="${(baseY + 4).toFixed(1)}" class="scf-grid"/>`;
-      xticks += `<text x="${xx.toFixed(1)}" y="${(baseY + 15).toFixed(1)}" text-anchor="middle" class="scf-axis">${i + 1}</text>`;
+      // label with the point's real SCF iteration, not the filtered-array
+      // index — the ΔE=0 first row is filtered out above, so `i + 1` would
+      // read one cycle off against the raw log (cf. _renderGeoMaxGrad, which
+      // labels with pts[i].step for the same reason)
+      xticks += `<text x="${xx.toFixed(1)}" y="${(baseY + 15).toFixed(1)}" text-anchor="middle" class="scf-axis">${pts[i].iter}</text>`;
     }
 
     // axis titles: y = what we plot (energy change per cycle), x = cycle count

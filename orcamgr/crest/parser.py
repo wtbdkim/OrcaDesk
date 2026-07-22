@@ -75,7 +75,12 @@ def _parse_multi_xyz(text: str) -> list[tuple[float | None, list[Atom]]]:
                 break
         if len(atoms) == natoms:
             frames.append((energy, atoms))
-        i = base + natoms
+            i = base + natoms
+        else:
+            # short frame: resume at the line that failed the coordinate scan —
+            # advancing by the DECLARED count would jump into (or past) the next
+            # frame's header and silently swallow valid conformers after it
+            i = base + len(atoms)
     return frames
 
 

@@ -76,33 +76,90 @@ _DOUBLE_HYBRIDS = frozenset({
 })
 
 
+# Correlated wavefunction methods beyond MP2/MP3 (CC/QCISD/NEVPT2/CASPT2/ADC2
+# families as offered in functionals.json). Under the app's default RIJCOSX a
+# /J-only aux makes ORCA abort AFTER the full SCF ("A /J-Basis is not an
+# appropriate auxiliary basis set for correlated methods"), so they need the
+# same AutoAux treatment as MP2. Substring markers, lowercase.
+_CORRELATED_MARKERS = ("ccsd", "bccd", "cisd", "nevpt", "caspt", "mrci", "adc2")
+
+
 def _needs_auxc(functional: str) -> bool:
     """True if the method needs a correlation-fitting (/C) aux basis: any MP2/MP3
-    method or a double hybrid (the MP2-like correlation step needs AuxC)."""
+    or coupled-cluster/multireference-PT method, or a double hybrid (the
+    correlated step needs AuxC)."""
     norm = normalize_functional(functional).lower()
     if "mp2" in norm or "mp3" in norm:
+        return True
+    if any(m in norm for m in _CORRELATED_MARKERS):
         return True
     base = norm.split()[0] if norm.strip() else ""   # strip a trailing " d3bj"
     return base in _DOUBLE_HYBRIDS
 
 
 # ---- solvation ----------------------------------------------------------
+# Solvent-name normalization: several picker labels (solvents.json) are not the
+# spelling ORCA's own solvent table uses; unaliased they abort the run at start
+# ("Solvent name not found"). Exact map, case-insensitive — verified against
+# ORCA 6.1.1 by live runs and the binary's embedded name table. Unknown names
+# pass through verbatim (the lists are not closed enums).
+_SOLVENT_ALIASES = {
+    "ethylene glycol": "1,2-ethanediol",
+    "2-butanone": "butanone",
+    "methyl ethyl ketone": "butanone",
+    "butanenitrile": "butanonitrile",
+    "propanenitrile": "propanonitrile",
+    "1,2-dichlorobenzene": "o-dichlorobenzene",
+    "dma": "n,n-dimethylacetamide",
+    "methyl acetate": "methyl ethanoate",
+    "methyl formate": "methyl methanoate",
+    "liquid ammonia": "ammonia",
+}
+
+
+def normalize_solvent(name: str) -> str:
+    token = (name or "").strip()
+    return _SOLVENT_ALIASES.get(token.lower(), token)
+
+
 @dataclass
 class Solvation:
     """Implicit solvation. model is one of: '', 'CPCM', 'SMD'."""
     model: str = ""        # empty = gas phase
     solvent: str = "Water"
 
+    def _resolved(self) -> str:
+        # double quotes would terminate the %cpcm block string early
+        return normalize_solvent(self.solvent).replace('"', "")
+
     def keyword(self) -> str:
         """Simple-input keyword fragment, e.g. 'CPCM(Water)'. Empty if gas phase."""
         if not self.model:
             return ""
-        solv = (self.solvent or "").strip()
+        solv = self._resolved()
         if not solv:
             # CPCM alone = infinite dielectric (a valid ORCA shortcut);
             # SMD requires a named solvent, so without one we emit nothing.
             return "CPCM" if self.model.upper() == "CPCM" else ""
+        if any(ch.isspace() for ch in solv):
+            # ORCA's simple-input parser splits on whitespace, so CPCM(Diethyl
+            # Ether) is an INPUT ERROR; space-named solvents go through the
+            # quoted %cpcm block (see block()) with only the activation keyword
+            # on the ! line. Verified in ORCA 6.1.1 for both models.
+            return "CPCM"
         return f"{self.model}({solv})"
+
+    def block(self) -> str:
+        """%cpcm block for solvents the simple keyword can't express (names
+        with spaces). Empty when keyword() already carries the selection."""
+        if not self.model:
+            return ""
+        solv = self._resolved()
+        if not solv or not any(ch.isspace() for ch in solv):
+            return ""
+        if self.model.upper() == "SMD":
+            return f'%cpcm\n  smd true\n  smdsolvent "{solv}"\nend'
+        return f'%cpcm\n  solvent "{solv}"\nend'
 
 
 # ---- per-step configuration ---------------------------------------------
@@ -281,7 +338,7 @@ def _clamp_int(v, default: int, lo: int, hi: int) -> int:
     """Coerce v to an int and clamp to [lo, hi]; fall back to default if not numeric."""
     try:
         n = int(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # Overflow: int(float("inf"))
         return default
     return max(lo, min(n, hi))
 
@@ -398,8 +455,11 @@ def check_neb_atom_order(reactant_xyz: str, product_xyz: str) -> dict:
     Returns {"ok": bool, "error": str, "mismatch_index": int|None}. On success
     error is "" and mismatch_index is None.
     """
-    r = _xyz_elements(reactant_xyz)
-    p = _xyz_elements(product_xyz)
+    # Element symbols compare case-insensitively (ORCA itself is
+    # case-insensitive, and legacy tools write "CL"): normalize to
+    # capitalized form for both the comparison and the messages.
+    r = [el.capitalize() for el in _xyz_elements(reactant_xyz)]
+    p = [el.capitalize() for el in _xyz_elements(product_xyz)]
     if not r or not p:
         return {"ok": False, "error": "Could not read coordinates from reactant or product.", "mismatch_index": None}
     if len(r) != len(p):
@@ -432,6 +492,10 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
     lines = [_keyword_line(cfg)]
     lines.append(f"%maxcore {cfg.maxcore_mb}")
     lines.append(f"%pal nprocs {cfg.nprocs} end")
+
+    solv_block = cfg.solvation.block()
+    if solv_block:
+        lines.append(solv_block)
 
     # per-element basis / ECP assignments
     basis_lines = []

@@ -43,7 +43,7 @@ def process_matches(pid: Optional[int], create_time: Optional[float]) -> bool:
         if create_time:
             return abs(p.create_time() - float(create_time)) < _CREATE_TIME_TOL
         return True
-    except (psutil.Error, OSError, ValueError):
+    except (psutil.Error, OSError, ValueError, TypeError, OverflowError):
         return False
 
 
@@ -58,7 +58,7 @@ def kill_tree(pid: Optional[int], create_time: Optional[float] = None,
         p = psutil.Process(int(pid))
         if create_time and abs(p.create_time() - float(create_time)) >= _CREATE_TIME_TOL:
             return  # PID was reused — this is not our process, leave it alone
-    except (psutil.Error, OSError, ValueError):
+    except (psutil.Error, OSError, ValueError, TypeError, OverflowError):
         return
 
     try:

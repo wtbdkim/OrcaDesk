@@ -12,6 +12,9 @@ fake, so these tests pin the queue-level invariants in isolation:
   run never masks it (A22); post-launch, the .out diagnosis still wins
 * an unexpected exception fails one calc and blocks its dependents, but
   never kills the queue
+* P29 -- the walked queue is LIVE: rows added/removed/edited/reordered
+  mid-run take effect in the same run (the walk picks the first unhandled
+  row of the shared list each iteration)
 
 Everything runs against a tmp_path workspace; no ORCA executable, no user
 data directories, no network.
@@ -797,3 +800,133 @@ def test_stale_blocked_with_clean_ancestry_is_normalized_at_run_start(tmp_path):
 
     assert seen_at_first_run == [(CalcState.PENDING, "")]
     assert stale.state is CalcState.DONE
+
+
+def test_reattach_prefers_persisted_output_path_over_current_workspace(tmp_path, monkeypatch):
+    # A RUNNING calc restored from a previous session may have been launched
+    # under a DIFFERENT workspace root. The reattach must tail (and keep) the
+    # persisted output_path — deriving it from the current setting tailed a
+    # nonexistent file, FAILED-locked the finished job at process exit, and
+    # clobbered the pointer the finished-while-closed judgment depends on.
+    import orcamgr.core.queue as queue_mod
+    monkeypatch.setattr(queue_mod, "process_matches", lambda pid, ct: True)
+    engine = QueueEngine(
+        orca_path="orca-not-needed-in-tests",
+        workspace_root=str(tmp_path / "NEW_WS"),
+        callbacks=QueueCallbacks(log=lambda m, l: None,
+                                 calc_update=lambda i, c: None))
+    old_out = tmp_path / "OLD_WS" / "job" / "job.out"
+    old_out.parent.mkdir(parents=True)
+    old_out.write_text(PASSING_OPT_OUT, encoding="utf-8")
+    calc = make_calc("job", kind="opt", state=CalcState.RUNNING)
+    calc.pid = 4242
+    calc.create_time = 123.0
+    calc.output_path = str(old_out)
+
+    seen = {}
+    monkeypatch.setattr(engine.runner, "adopt", lambda pid, ct: None)
+    monkeypatch.setattr(engine.runner, "end_position", lambda p: 0)
+
+    def fake_monitor(calc_, index, out_path, start_pos=0):
+        seen["path"] = str(out_path)
+        calc_.state = CalcState.DONE
+
+    monkeypatch.setattr(engine, "_monitor_and_finish", fake_monitor)
+    engine.run_all([calc])
+
+    assert seen["path"] == str(old_out)
+    assert calc.output_path == str(old_out)
+
+
+# ---- P29: the walked queue is LIVE ------------------------------------------
+# run_all picks the first unhandled row of the (shared) list each iteration,
+# so structural mutations that land mid-run take effect in the SAME run:
+# an appended row executes, a removed pending row never does, an edited row
+# (a new object under the same list slot) runs in its edited form, and a
+# mid-run add referencing an already-failed parent is blocked, not FAILED.
+
+def test_calc_added_mid_run_executes_in_same_run(tmp_path):
+    harness = EngineHarness(tmp_path)
+    calcs = [make_calc("first")]
+    late = make_calc("late")
+    harness.behaviors["first"] = lambda _c: calcs.append(late)
+
+    harness.engine.run_all(calcs)
+
+    assert harness.calls == ["first", "late"]
+    assert late.state is CalcState.DONE
+
+
+def test_pending_calc_removed_mid_run_never_executes(tmp_path):
+    harness = EngineHarness(tmp_path)
+    first = make_calc("first")
+    doomed = make_calc("doomed")
+    tail = make_calc("tail")
+    calcs = [first, doomed, tail]
+    harness.behaviors["first"] = lambda _c: calcs.remove(doomed)
+
+    harness.engine.run_all(calcs)
+
+    assert harness.calls == ["first", "tail"]
+    assert doomed.state is CalcState.PENDING   # untouched, just never picked
+
+
+def test_calc_edited_mid_run_runs_the_edited_object(tmp_path):
+    harness = EngineHarness(tmp_path)
+    first = make_calc("first")
+    original = make_calc("target")
+    edited = make_calc("target", kind="opt")   # same name, NEW object
+    calcs = [first, original]
+    harness.behaviors["first"] = lambda _c: calcs.__setitem__(1, edited)
+
+    harness.engine.run_all(calcs)
+
+    assert harness.calls == ["first", "target"]
+    assert edited.state is CalcState.DONE
+    assert original.state is CalcState.PENDING   # the stale object never ran
+
+
+def test_mid_run_add_referencing_failed_parent_is_blocked_not_failed(tmp_path):
+    harness = EngineHarness(tmp_path)
+    boom = make_calc("boom")
+    dep = make_calc("dep", ref="boom")
+    calcs = [boom]
+
+    def fail_and_spawn_dependent(_c):
+        calcs.append(dep)   # lands before the failure is even stamped
+        raise OrcaRunError("simulated failure")
+
+    harness.behaviors["boom"] = fail_and_spawn_dependent
+    harness.engine.run_all(calcs)
+
+    assert boom.state is CalcState.FAILED
+    assert dep.state is CalcState.BLOCKED
+    assert dep.message == "Skipped: a dependency failed."
+    assert harness.calls == ["boom"]
+
+
+def test_rows_reordered_mid_run_execute_in_new_order(tmp_path):
+    harness = EngineHarness(tmp_path)
+    first = make_calc("first")
+    second = make_calc("second")
+    third = make_calc("third")
+    calcs = [first, second, third]
+    # move "third" ahead of "second" while "first" runs — the walk follows
+    # live list order for the rows it hasn't reached yet
+    harness.behaviors["first"] = lambda _c: calcs.insert(1, calcs.pop(2))
+
+    harness.engine.run_all(calcs)
+
+    assert harness.calls == ["first", "third", "second"]
+
+
+def test_active_name_is_exposed_while_a_calc_is_handled(tmp_path):
+    harness = EngineHarness(tmp_path)
+    seen: list = []
+    harness.behaviors["only"] = lambda _c: seen.append(
+        harness.engine.active_name)
+
+    harness.engine.run_all([make_calc("only")])
+
+    assert seen == ["only"]                       # set while handling
+    assert harness.engine.active_name is None     # cleared when the run ends

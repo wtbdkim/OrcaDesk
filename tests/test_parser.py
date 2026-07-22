@@ -462,6 +462,41 @@ def test_irc_path_summary_recorded_as_irc(tmp_path):
     assert len(r.neb_path) == 3
 
 
+# The plain "PATH SUMMARY" table (NEB/NEB-CI, and printed during every NEB-TS
+# run) has an extra Dist.(Ang.) column before E(Eh); the energy columns must be
+# read from the header position, never assumed to sit right after the label.
+NEB_DIST_PATH_BLOCK = """
+                         PATH SUMMARY
+---------------------------------------------------------------
+All forces in Eh/Bohr.
+
+Image Dist.(Ang.)    E(Eh)   dE(kcal/mol)  max(|Fp|)  RMS(Fp)
+  0     0.000    -76.100000      0.00       0.07189   0.01533
+  1     3.731    -76.090000      6.27       0.00439   0.00130
+  2     4.174    -76.099000      0.63       0.00376   0.00111
+"""
+
+
+def test_plain_neb_path_summary_dist_column_not_read_as_energy(tmp_path):
+    out = (_header(SP_KEYWORDS) + _geometry(0.1) + _energy(FINAL_ENERGY)
+           + NEB_DIST_PATH_BLOCK + TERMINATION)
+    r = parse_file(_write_out(tmp_path, out))
+    assert r.has_neb_path is True
+    assert [p["e_eh"] for p in r.neb_path] == [-76.1, -76.09, -76.099]
+    assert [p["de_kcal"] for p in r.neb_path] == [0.0, 6.27, 0.63]
+
+
+def test_utf16_encoded_out_is_decoded(tmp_path):
+    # PowerShell 5.1's `orca job.inp > job.out` writes UTF-16LE with a BOM;
+    # decoded as utf-8 every marker would miss and the file parsed to nothing.
+    text = _header(SP_KEYWORDS) + _geometry(0.1) + _energy(FINAL_ENERGY) + TERMINATION
+    path = tmp_path / "utf16.out"
+    path.write_bytes(text.encode("utf-16"))  # utf-16 codec prepends the LE BOM
+    r = parse_file(str(path))
+    assert r.terminated_normally is True
+    assert r.final_energy_eh == FINAL_ENERGY
+
+
 def test_thermochemistry_without_frequencies_table_is_still_summarized(tmp_path):
     # A real ORCA shape: an IRC job reading a Hessian prints the GIBBS FREE
     # ENERGY block with no VIBRATIONAL FREQUENCIES table. The parsed value must

@@ -14,7 +14,7 @@ import json
 import os
 import shutil
 import sys
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, fields as dataclass_fields
 from pathlib import Path
 
 from .paths import config_file, default_workspace_root
@@ -139,14 +139,31 @@ class Settings:
         else:
             s = cls()
 
+        # Every str-typed field is consumed as a string (Path(orca_path),
+        # .strip(), f-strings into the UI payload); a wrong-typed value in a
+        # hand-edited/corrupted settings.json would otherwise persist itself
+        # and crash every get_settings/run from then on (P32). Same guard
+        # style as StepConfig.from_dict.
+        for f in dataclass_fields(s):
+            if isinstance(f.default, str) and not isinstance(getattr(s, f.name), str):
+                setattr(s, f.name, f.default)
+
         # mlip_envs is iterated (and .get()-ed) at startup by the Bridge, so a
-        # wrong-typed value in a hand-edited/corrupted settings.json would crash
-        # EVERY launch until the file is fixed (P32). Coerce to the expected
-        # shape: a list of dict entries; anything else degrades to [].
+        # wrong-typed value would crash EVERY launch until the file is fixed
+        # (P32). Coerce to the expected shape: a list of dict entries whose
+        # id/name/python are non-empty-id strings — the Bridge hard-indexes
+        # e["id"], so an id-less entry is exactly the startup crash loop this
+        # guard exists to prevent.
         if not isinstance(s.mlip_envs, list):
             s.mlip_envs = []
         else:
-            s.mlip_envs = [e for e in s.mlip_envs if isinstance(e, dict)]
+            s.mlip_envs = [
+                e for e in s.mlip_envs
+                if isinstance(e, dict)
+                and isinstance(e.get("id"), str) and e.get("id")
+                and isinstance(e.get("python"), str)
+                and isinstance(e.get("name", ""), str)
+            ]
 
         # fill in sensible defaults on first run
         if not s.orca_path:

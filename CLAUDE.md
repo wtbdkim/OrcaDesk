@@ -194,10 +194,29 @@ The `core/` pipeline:
 ### Queue semantics (important invariants)
 
 These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
+- **The queue stays editable while it runs (live queue, P29).** `start_run`
+  hands the engine the store's **own list**, and the engine walk picks the
+  next unhandled row (tracked by object identity) under the store's **own
+  lock** (`make_engine_factory` passes it). So while a run is in progress:
+  a calc added lands in the *same* run; PENDING/CANCELLED/BLOCKED rows can
+  be removed, edited (an edited row is a new object — the walk picks it in
+  its edited form), and reordered (the walk follows live list order).
+  Still protected mid-run: the in-flight calc (state RUNNING plus
+  `QueueEngine.active_name` for the picked-but-not-yet-stamped window),
+  DONE/FAILED rows (remove/edit refused until the run ends), `clear`, and
+  reference integrity — a mid-run add/edit with a dangling reference and a
+  remove/rename of a referenced parent are refused at the store, because
+  the pre-run screen (`find_dangling_reference`) never sees mid-run
+  mutations. A mid-run add whose name already has a result on disk is
+  confirmed in the UI first (`bridge.has_existing_output`) — the Run-click
+  overwrite modal never sees it, and the engine's keep-existing set is
+  fixed at run start, so it would otherwise overwrite silently.
 - **Calculation `name` is unique and is used as the on-disk folder name**
   (`{workspace}/{name}/`). Uniqueness is enforced in the store,
   **case-insensitively** — Windows resolves `water` and `Water` to the same
-  folder, so accepting both would share one `.out` between two calcs.
+  folder, so accepting both would share one `.out` between two calcs. The
+  invariant holds on every entry path: `add`/`replace`, `substitute_calcs`,
+  **and session restore** (`load_session` dedups, first occurrence wins).
 - **The queue autosaves to `%APPDATA%\ORCAdesk\session.json`** on every mutation
   (`QueueStore._bump_and_save`) and is restored on startup (`load_session`). A
   `RUNNING` calc persists its detached ORCA's `(pid, create_time)` **and its
@@ -281,7 +300,9 @@ from the desktop by `ServerController` (`controller.py`) running uvicorn in a da
 thread on the shared store. It serves the mobile PWA from `web_mobile/` at `/` and the
 queue API under `/api/`. fastapi/uvicorn are **optional** — `ServerController.is_available()`
 gates the whole feature, and the desktop app works fine without them. Per `CHANGELOG.md`
-phone-sync is in development and **not part of the packaged build**.
+phone-sync is in development and **not part of the packaged build** — enforced by
+`build.spec`'s `excludes` (fastapi/uvicorn/starlette/pydantic/anyio/qrcode/PIL),
+which must be dropped deliberately when phone-sync ships.
 
 ### MLIP environment (deliberately separate from ORCA)
 
@@ -347,10 +368,12 @@ maxcore/nprocs and the kind-shared numerics, and is kind-AWARE for Extra
 options and SCF: an untouched kind default follows the new kind, an explicit
 user override survives), so the user's method setup survives Expert/MLIP/CREST
 excursions without ever going stale against the selected
-kind; the back-out path re-resolves the edited calc **by name** after its
-confirm modal (queue indices can shift during the await — conformer fan-out,
-phone edits); `collectCalcFromForm(forPreview)` relaxes the NEB-TS product
-requirement like the other geometry checks. `rawText` survives an MLIP/CREST
+kind; the edit target is tracked **by name** (`editName`), never by queue
+index — the queue can shift under an open edit (remove/reorder, phone adds,
+conformer fan-out), and Update re-resolves the target at save time (a
+vanished target degrades to a plain add, and a clone's `conformer_origin`
+is carried over); `collectCalcFromForm(forPreview)` relaxes the NEB-TS
+product requirement like the other geometry checks. `rawText` survives an MLIP/CREST
 excursion and is cleared only by an explicit discard, edit, or reset. Raw-mode
 geometry can't desync from the text: loading a `.xyz` in raw mode is refused
 unless the text has a `{{GEOMETRY}}` placeholder (embedded coords run
@@ -462,8 +485,13 @@ reference path still works. `validate_result` requires normal termination
 `queue_needs_orca` excludes `crest*` too, so an all-CREST queue runs with no ORCA
 path. Charge/multiplicity come from the `Calculation` (shared with ORCA); CREST's
 `--uhf` is the **number of unpaired electrons = multiplicity − 1** (not the
-multiplicity). The pipeline was validated end to end against a real CREST 3.0.2
-install in WSL Ubuntu (including the conformer→ORCA handoff).
+multiplicity). The build card has a **geometry source** selector mirroring the
+MLIP card (`.xyz` loader **or** reference another queued calc —
+`onCrestGeomSourceChange`/`refreshCrestRefSelect` in `app.js`); a referenced
+CREST search resolves through the same `_resolve_geometry` path at run time,
+so it can start from e.g. an MLIP- or ORCA-optimized geometry. The pipeline
+was validated end to end against a real CREST 3.0.2 install in WSL Ubuntu
+(including the conformer→ORCA handoff).
 
 `build_crest_argv` (`crest/runner.py`) maps `StepConfig.crest_*` to CLI flags:
 method (`--gfn2`/`--gfn1`/`--gfn0`/`--gfnff`, exact-map with an unknown-value
@@ -491,12 +519,12 @@ per conformer (`expand_conformer_tracks` in `core/queue.py`): clones are named
 clone gets its conformer baked in as DIRECT geometry, deeper clones re-point
 their REFERENCE to the same-track parent clone — so a queued `crest ← opt ←
 freq` template fans out into K independent tracks and dependency-scoped
-failure blocking works per track. `run_all` walks a growable list for this,
-and the substitution is mirrored to the store through
-`QueueCallbacks.queue_substitute` → `QueueStore.substitute_calcs` — the one
-engine-driven structural mutation allowed mid-run (engine and store apply the
-identical change, preserving the visible-queue == executing-queue invariant
-that blocks user mutations during a run). Expansion also happens at run start
+failure blocking works per track. `run_all` walks the **live** list for this
+(see the live-queue bullet in Queue semantics), and the substitution is
+applied through `QueueCallbacks.queue_substitute` →
+`QueueStore.substitute_calcs`, which splices the shared list in place under
+the shared lock (the engine splices its own list only for standalone/test
+engines whose default callback didn't). Expansion also happens at run start
 when an already-DONE `all` search has pending referencing templates (built
 after it finished). The Results tab's conformer list is **read-only** for
 building: results are for interpretation; building happens on the Build tab. It
@@ -592,10 +620,22 @@ them there.
   combined `FUNC-D3` tokens (it wants the dispersion as a separate keyword). So combined
   tokens like `B3LYP-D3`/`B3LYP-D3BJ` are normalized to `B3LYP D3BJ`. Use `D3BJ` (or
   `D4`) explicitly everywhere.
-- **Double hybrids / MP2 need a `/C` correlation-fitting aux.** `_auto_aux` adds
-  `AutoAux` (generates `/J` and `/C`) for those methods when RI is on; if the user sets
-  the RI approximation to `NoRI` it adds nothing (conventional path). Plain hybrids/GGAs
+- **Double hybrids / MP2 / correlated wavefunction methods need a `/C`
+  correlation-fitting aux.** `_auto_aux` adds `AutoAux` (generates `/J` and `/C`)
+  for those methods when RI is on — the correlated set covers the CC/QCISD/
+  NEVPT2/CASPT2/ADC2 families via `_CORRELATED_MARKERS`, not just mp2/mp3; a
+  `/J`-only aux makes ORCA abort *after* the full SCF. If the user sets the RI
+  approximation to `NoRI` it adds nothing (conventional path). Plain hybrids/GGAs
   with an RI-J method get `def2/J` for def2 bases as before.
+- **Solvent-name normalization + `%cpcm` block routing.** Like functionals,
+  solvent picker labels go through an exact map (`normalize_solvent` /
+  `_SOLVENT_ALIASES`) to the spelling ORCA's solvent table accepts (e.g.
+  `Ethylene Glycol`→`1,2-ethanediol`); unknown names pass through verbatim.
+  A resolved name containing spaces cannot ride the simple keyword (ORCA's
+  parser splits on whitespace) — `Solvation.keyword()` then emits only the
+  `CPCM` activation keyword and `Solvation.block()` selects the solvent in a
+  quoted `%cpcm` block (`solvent "..."`; SMD: `smd true` + `smdsolvent "..."`).
+  Every name in `data/solvents.json` is verified to exist in ORCA 6.1.1.
 
 ## Git workflow
 

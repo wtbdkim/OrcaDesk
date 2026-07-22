@@ -5,7 +5,9 @@ serialization layer (calc_from_dict / calc_to_dict / session persistence).
 Contracts under test come from PRINCIPLES.md:
   * P24 — DONE is frozen; FAILED is locked; only EDITABLE_STATES may be
     edited/reordered; removal is allowed in every state except RUNNING.
-  * P29 — the queue is structurally frozen while the run flag is set.
+  * P29 — the queue is live while it runs: editable-state rows may be
+    added/removed/edited/reordered mid-run; the in-flight calc, non-editable
+    states, clear, and reference integrity stay protected.
   * P32 — persistence never crashes the app (corrupt JSON degrades, corrupt
     entries are skipped item-by-item).
   * P33 — calc names are validated at the shared choke point (path-dangerous
@@ -298,26 +300,88 @@ def test_remove_unknown_name_returns_false(store):
     assert store.remove("no_such_calc") is False
 
 
-# ---- 4. structural freeze while running (P29) ----------------------------
+# ---- 4. live queue while running (P29) -----------------------------------
+# The engine walks the store's own list, so editable-state rows may be
+# added/removed/edited/reordered mid-run; what stays protected: the in-flight
+# calc, non-editable states, clear, and reference integrity (a mid-run
+# mutation bypasses the pre-run dangling-reference screen).
 
-def test_every_structural_mutation_raises_while_run_flag_is_set(store):
+def test_editable_mutations_allowed_while_run_flag_is_set(store):
     store.add(make_calc("a"))
     store.add(make_calc("b"))
     store.set_running(True)
+    store.add(make_calc("c"))                     # add lands in the live queue
+    store.replace("b", make_calc("b"))            # pending rows stay editable
+    store.reorder(0, 1)                           # and reorderable
+    assert store.remove("c") is True              # and removable
     with pytest.raises(ValueError):
-        store.add(make_calc("c"))
-    with pytest.raises(ValueError):
-        store.remove("a")
-    with pytest.raises(ValueError):
-        store.clear()
-    with pytest.raises(ValueError):
-        store.replace("a", make_calc("a"))
-    with pytest.raises(ValueError):
-        store.reorder(0, 1)
-    # queue is untouched by the rejected mutations
-    assert store.names() == ["a", "b"]
+        store.clear()                             # clear stays blocked
+    assert store.names() == ["b", "a"]
+
+
+def test_non_editable_states_immune_while_running(store):
+    add_with_state(store, "hot", CalcState.RUNNING)
+    add_with_state(store, "done", CalcState.DONE)
+    add_with_state(store, "dead", CalcState.FAILED)
+    store.set_running(True)
+    for name in ("hot", "done", "dead"):
+        with pytest.raises(ValueError):
+            store.remove(name)
+        with pytest.raises(ValueError):
+            store.replace(name, make_calc(name))
     store.set_running(False)
-    assert store.remove("a") is True
+    # idle-time semantics unchanged: anything but RUNNING can be removed
+    assert store.remove("done") is True
+    assert store.remove("dead") is True
+    with pytest.raises(ValueError):
+        store.remove("hot")
+
+
+def test_mid_run_add_or_edit_with_dangling_reference_refused(store):
+    store.add(make_calc("base"))
+    store.set_running(True)
+    with pytest.raises(ValueError):
+        store.add(make_calc("orphan", geometry_source="reference",
+                            ref_name="ghost", xyz=""))
+    with pytest.raises(ValueError):   # self-reference is dangling too
+        store.add(make_calc("selfy", geometry_source="reference",
+                            ref_name="selfy", xyz=""))
+    with pytest.raises(ValueError):
+        store.replace("base", make_calc("base", geometry_source="reference",
+                                        ref_name="ghost", xyz=""))
+    store.set_running(False)
+    # idle-time laxness unchanged: the pre-run screen re-checks references
+    store.add(make_calc("orphan", geometry_source="reference",
+                        ref_name="ghost", xyz=""))
+    assert "orphan" in store.names()
+
+
+def test_mid_run_remove_or_rename_of_referenced_calc_refused(store):
+    store.add(make_calc("parent"))
+    store.add(make_calc("child", geometry_source="reference",
+                        ref_name="parent", xyz=""))
+    store.set_running(True)
+    with pytest.raises(ValueError):
+        store.remove("parent")
+    with pytest.raises(ValueError):   # renaming would dangle the child too
+        store.replace("parent", make_calc("parent2"))
+    store.set_running(False)
+    assert store.remove("parent") is True   # idle-time semantics unchanged
+
+
+def test_mid_run_mutation_of_engine_active_calc_refused(store):
+    store.add(make_calc("picked"))
+    store.add(make_calc("idle"))
+    store.set_running(True)
+
+    class _Engine:
+        active_name = "picked"   # what QueueEngine.active_name exposes at pick
+    store._engine = _Engine()
+    with pytest.raises(ValueError):
+        store.remove("picked")
+    with pytest.raises(ValueError):
+        store.replace("picked", make_calc("picked"))
+    assert store.remove("idle") is True   # other editable rows stay mutable
 
 
 # ---- 5. duplicate names / version counter --------------------------------
@@ -731,3 +795,88 @@ def test_check_token_non_ascii_is_denied_not_a_crash(store):
     # non-ASCII char must be an auth failure, not an HTTP 500.
     assert store.check_token("한글토큰") is False
     assert store.check_token("pin·123") is False
+
+
+# ---- calc_from_dict trust boundary: wrong-typed payload values ---------------
+
+def test_calc_from_dict_non_string_name_is_valueerror():
+    # every caller (bridge add_calc / POST /api/queue) catches ValueError and
+    # turns it into an {"error"} envelope / HTTP 400 — an AttributeError from
+    # .strip() would escape the slot instead
+    for bad in (123, None, ["x"], {"n": 1}):
+        with pytest.raises(ValueError):
+            calc_from_dict({"name": bad, "kind": "sp"})
+
+
+def test_calc_from_dict_infinite_charge_is_valueerror():
+    # JSON 1e999 parses to float("inf"); int(inf) raises OverflowError which
+    # no caller catches — it must surface as the standard ValueError instead
+    with pytest.raises(ValueError):
+        calc_from_dict({"name": "x", "charge": float("inf")})
+    with pytest.raises(ValueError):
+        calc_from_dict({"name": "x", "multiplicity": float("-inf")})
+
+
+def test_calc_from_dict_non_string_passthrough_fields_degrade():
+    c = calc_from_dict({"name": "x", "kind": 7, "xyz": 1,
+                        "ref_name": ["a"], "raw_text": {"t": 1}})
+    assert isinstance(c.kind, str)
+    assert c.xyz == "" and c.ref_name == "" and c.raw_text == ""
+
+
+# ---- session restore: wrong-typed runtime fields + name dedup (P32) ----------
+
+def test_session_wrong_typed_pid_restores_and_reconciles(session_root):
+    d = calc_to_session_dict(make_calc("weird", kind="opt"))
+    d["state"] = "running"
+    d["pid"] = [1]              # wrong-typed (hand-edited/corrupted session)
+    d["create_time"] = "soon"
+    (session_root / "session.json").write_text(
+        json.dumps({"schema": 1, "calculations": [d]}), encoding="utf-8")
+    store = QueueStore()
+    store.load_session()        # must not raise (TypeError used to escape
+    #                             process_matches via reconcile_calcs)
+    assert store.names() == ["weird"]
+    assert store.get("weird").state == CalcState.FAILED
+
+
+def test_session_device_output_path_does_not_hang_startup(session_root):
+    # Path("CON").exists() is True on Windows and open("CON") blocks on the
+    # console forever — reconciliation must skip non-regular files
+    d = calc_to_session_dict(make_calc("dev", kind="opt"))
+    d["state"] = "running"
+    d["pid"] = 999999997
+    d["create_time"] = 1.0
+    d["output_path"] = "CON"
+    (session_root / "session.json").write_text(
+        json.dumps({"schema": 1, "calculations": [d]}), encoding="utf-8")
+    store = QueueStore()
+    store.load_session()        # must return, not hang
+    assert store.get("dev").state == CalcState.FAILED
+
+
+def test_session_restore_dedups_case_colliding_names(session_root):
+    # a session written by a pre-uniqueness build (or merged externally) may
+    # hold "water" and "Water" — one on-disk folder on Windows; the restore
+    # path must uphold the same case-insensitive invariant add() enforces
+    d1 = calc_to_session_dict(make_calc("water", kind="sp"))
+    d2 = calc_to_session_dict(make_calc("Water", kind="opt"))
+    d3 = calc_to_session_dict(make_calc("water", kind="freq"))
+    (session_root / "session.json").write_text(
+        json.dumps({"schema": 1, "calculations": [d1, d2, d3]}), encoding="utf-8")
+    store = QueueStore()
+    store.load_session()
+    assert store.names() == ["water"]          # first occurrence wins
+    assert store.get("water").kind == "sp"
+
+
+def test_find_dangling_reference_skips_locked_states():
+    # FAILED calcs are locked (P24) and DONE results are frozen — neither will
+    # run again, so a dangling ref on them must not veto the whole run (e.g.
+    # FAILED conformer clones whose template parent was substituted away)
+    dead = make_calc("dead", geometry_source="reference", ref_name="gone", xyz="")
+    dead.state = CalcState.FAILED
+    ok = make_calc("ok")
+    assert store_mod.find_dangling_reference([dead, ok]) is None
+    pending = make_calc("pend", geometry_source="reference", ref_name="gone", xyz="")
+    assert store_mod.find_dangling_reference([pending, ok]) is not None

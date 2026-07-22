@@ -200,7 +200,13 @@ def calc_from_dict(d: dict) -> Calculation:
     """
     cfg = StepConfig.from_dict(d.get("config", {}))
     src = d.get("geometry_source", "direct")
-    name = d.get("name", "").strip()
+    # This is the trust boundary for phone/HTTP payloads too: wrong-typed
+    # values must surface as ValueError (the callers' 400/{"error"} path),
+    # never as AttributeError/OverflowError escaping the slot or endpoint.
+    raw_name = d.get("name", "")
+    if not isinstance(raw_name, str):
+        raise ValueError("Calculation name must be a string.")
+    name = raw_name.strip()
     if not name:
         raise ValueError("Calculation name is required.")
     _validate_calc_name(name)
@@ -208,20 +214,29 @@ def calc_from_dict(d: dict) -> Calculation:
     # "* xyz {charge} {multiplicity}" line. int() already blocks string
     # injection, but not absurd magnitudes — clamp to physically generous
     # ranges so a bogus client payload can't emit a nonsense input file.
-    charge = max(-100, min(100, int(d.get("charge", 0))))
-    multiplicity = max(1, min(200, int(d.get("multiplicity", 1))))
+    try:
+        charge = max(-100, min(100, int(d.get("charge", 0))))
+        multiplicity = max(1, min(200, int(d.get("multiplicity", 1))))
+    except OverflowError:                    # int(float("inf")) from JSON 1e999
+        raise ValueError("charge/multiplicity must be finite integers.")
+
+    def _s(key: str) -> str:
+        v = d.get(key, "")
+        return v if isinstance(v, str) else ""
+
+    kind = d.get("kind", cfg.kind)
     return Calculation(
         name=name,
-        kind=d.get("kind", cfg.kind),
+        kind=kind if isinstance(kind, str) else cfg.kind,
         config=cfg,
         charge=charge,
         multiplicity=multiplicity,
         geometry_source=GeometrySource(src),
-        xyz=d.get("xyz", ""),
-        ref_name=d.get("ref_name", ""),
-        conformer_origin=d.get("conformer_origin", ""),
+        xyz=_s("xyz"),
+        ref_name=_s("ref_name"),
+        conformer_origin=_s("conformer_origin"),
         is_raw=bool(d.get("is_raw", False)),
-        raw_text=d.get("raw_text", ""),
+        raw_text=_s("raw_text"),
     )
 
 
@@ -269,9 +284,21 @@ def calc_from_session_dict(d: dict) -> Calculation:
     except ValueError:
         c.state = CalcState.PENDING
     c.message = d.get("message", "")
-    c.output_path = d.get("output_path", "") or ""
-    c.pid = d.get("pid")
-    c.create_time = d.get("create_time")
+    out = d.get("output_path", "") or ""
+    c.output_path = out if isinstance(out, str) else ""
+    # pid/create_time flow into psutil.Process(int(pid)) during reconciliation;
+    # a wrong-typed value (hand-edited/corrupted session) must degrade to
+    # "no recorded process", not crash every startup (P32)
+    pid = d.get("pid")
+    try:
+        c.pid = int(pid) if pid is not None else None
+    except (TypeError, ValueError, OverflowError):
+        c.pid = None
+    ct = d.get("create_time")
+    try:
+        c.create_time = float(ct) if ct is not None else None
+    except (TypeError, ValueError):
+        c.create_time = None
     return c
 
 
@@ -282,7 +309,13 @@ def _parse_if_exists(calc):
     than crash."""
     from pathlib import Path
     path = getattr(calc, "output_path", "") or ""
-    if not (path and Path(path).exists()):
+    try:
+        # is_file(), not exists(): Windows resolves device names like "CON" to
+        # the console, which exists() passes and open() then blocks on forever
+        # — a corrupted session.json must not hang startup (P32)
+        if not (path and Path(path).is_file()):
+            return None
+    except OSError:
         return None
     try:
         kind = getattr(calc, "kind", "")
@@ -453,30 +486,83 @@ class QueueStore:
         return None
 
     # ---- mutations ----
+    # While a run is in progress the queue is LIVE, not frozen (P29): the
+    # engine walks this store's own list under this store's own lock
+    # (make_engine_factory passes both), picking the next unhandled row each
+    # iteration — so a row added mid-run executes in the same run, and a
+    # removed/edited PENDING row is simply never picked / picked in its edited
+    # form. What the guards below still protect mid-run:
+    #   - the engine's in-flight calc (state RUNNING, plus _engine_active for
+    #     the picked-but-not-yet-stamped window) is untouchable;
+    #   - non-EDITABLE_STATES rows (DONE/FAILED) keep their mid-run immunity —
+    #     a DONE row may be a reference parent the walk still needs;
+    #   - a mid-run add/edit must not carry a dangling reference, and a
+    #     mid-run remove must not create one: the idle-time laxness is safe
+    #     only because the pre-run check (find_dangling_reference) re-screens,
+    #     which a mid-run mutation bypasses — an unresolvable reference would
+    #     FAIL (and lock, P24) the dependent instead of refusing up front.
+
+    def _engine_active(self, name: str) -> bool:
+        """True when the running engine is currently handling `name` (duck-typed
+        so the store never imports the engine)."""
+        eng = self._engine
+        if eng is None:
+            return False
+        try:
+            return getattr(eng, "active_name", None) == name
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_reference(calc: Calculation) -> bool:
+        """Robust GeometrySource.REFERENCE test (enum or its str value)."""
+        src = calc.geometry_source
+        return src == GeometrySource.REFERENCE or str(
+            getattr(src, "value", src)) == "reference"
+
     def add(self, calc: Calculation) -> None:
-        """Append a calculation. Raises ValueError on duplicate name."""
+        """Append a calculation. Raises ValueError on duplicate name (and, while
+        the queue is running, on a reference that isn't in the queue)."""
         with self._lock:
-            if self._running:
-                # the engine runs a frozen snapshot of the queue; a calc added
-                # mid-run would never execute, so the visible and executing
-                # queues would silently diverge.
-                raise ValueError("Cannot add to the queue while it is running.")
             # case-insensitive: calc.name is an on-disk folder name and Windows
             # (the primary target) resolves "water" and "Water" to the SAME
             # folder — accepting both would silently share one .out between two
             # calculations.
             if any(c.name.casefold() == calc.name.casefold() for c in self._calcs):
                 raise ValueError(f"A calculation named '{calc.name}' already exists.")
+            if self._running and self._is_reference(calc) and (
+                    calc.ref_name not in {c.name for c in self._calcs}):
+                # no pre-run screen will catch this one — it would run (and
+                # FAIL, locking) with an unresolvable reference
+                raise ValueError(
+                    f"'{calc.name}' references '{calc.ref_name}', "
+                    "which is not in the queue.")
             self._calcs.append(calc)
             self._bump_and_save()
 
     def remove(self, name: str) -> bool:
         with self._lock:
             if self._running:
-                # the engine runs a frozen snapshot; removing any calc mid-run
-                # would diverge the visible queue from the executing one (same
-                # reason add/replace/reorder/clear are blocked while running).
-                raise ValueError("Cannot remove from the queue while it is running.")
+                target = next((c for c in self._calcs if c.name == name), None)
+                if target is None:
+                    return False
+                if target.state not in EDITABLE_STATES:
+                    raise ValueError(
+                        "While the queue is running, only pending, cancelled, "
+                        "or blocked calculations can be removed.")
+                if self._engine_active(name):
+                    raise ValueError(
+                        "Cannot remove: this calculation is about to run.")
+                dep = next(
+                    (c for c in self._calcs
+                     if c.name != name
+                     and c.state not in (CalcState.DONE, CalcState.FAILED)
+                     and self._is_reference(c) and c.ref_name == name),
+                    None)
+                if dep is not None:
+                    raise ValueError(
+                        f"Cannot remove '{name}' while the queue is running: "
+                        f"'{dep.name}' references its geometry.")
             for i, c in enumerate(self._calcs):
                 if c.name == name:
                     # belt-and-suspenders: never remove the in-flight calc
@@ -519,7 +605,10 @@ class QueueStore:
                 staying.add(nc.name.casefold())
             idxs = [i for i, c in enumerate(self._calcs) if c.name in removed]
             insert_at = idxs[0] if idxs else len(self._calcs)
-            self._calcs = [c for c in self._calcs if c.name not in removed]
+            # in place, never reassigned: the running engine walks THIS list
+            # object (start_run hands it over) — a rebind would silently split
+            # the visible queue from the executing one
+            self._calcs[:] = [c for c in self._calcs if c.name not in removed]
             for off, nc in enumerate(new_calcs):
                 self._calcs.insert(insert_at + off, nc)
             self._bump_and_save()
@@ -532,8 +621,6 @@ class QueueStore:
         runs on the next Run.
         Raises ValueError if the target isn't editable, or on a name clash."""
         with self._lock:
-            if self._running:
-                raise ValueError("Cannot edit a calculation while the queue is running.")
             idx = None
             for i, c in enumerate(self._calcs):
                 if c.name == name:
@@ -543,6 +630,23 @@ class QueueStore:
                 raise ValueError(f"No calculation named '{name}'.")
             if self._calcs[idx].state not in EDITABLE_STATES:
                 raise ValueError("Only pending, cancelled, or blocked calculations can be edited.")
+            if self._running:
+                if self._engine_active(name):
+                    raise ValueError(
+                        "Cannot edit: this calculation is about to run.")
+                if new_calc.name != name and any(
+                        c.name != name
+                        and c.state not in (CalcState.DONE, CalcState.FAILED)
+                        and self._is_reference(c) and c.ref_name == name
+                        for c in self._calcs):
+                    raise ValueError(
+                        f"Cannot rename '{name}' while the queue is running: "
+                        "another calculation references its geometry.")
+                if self._is_reference(new_calc) and new_calc.ref_name not in {
+                        c.name for c in self._calcs if c.name != name}:
+                    raise ValueError(
+                        f"'{new_calc.name}' references '{new_calc.ref_name}', "
+                        "which is not in the queue.")
             # if renaming, the new name must not collide with a DIFFERENT entry
             # (case-insensitive — names are Windows folder names, see add())
             if new_calc.name != name and any(
@@ -562,10 +666,10 @@ class QueueStore:
     def reorder(self, from_idx: int, to_idx: int) -> bool:
         """Move an editable calculation to a new position. Both endpoints must
         be editable (see EDITABLE_STATES) so running/done/failed items keep
-        their place. Returns True on move."""
+        their place. Returns True on move. Allowed mid-run too: the engine
+        picks the first unhandled row in live list order, so moving editable
+        rows genuinely reorders the remaining execution."""
         with self._lock:
-            if self._running:
-                raise ValueError("Cannot reorder while the queue is running.")
             n = len(self._calcs)
             if not (0 <= from_idx < n) or not (0 <= to_idx < n):
                 raise ValueError("Index out of range.")
@@ -648,7 +752,10 @@ class QueueStore:
                 raise RuntimeError("A run is already in progress.")
             if not self._calcs:
                 raise ValueError("The queue is empty.")
-            calcs = list(self._calcs)
+            # the engine walks the store's OWN list (live queue, P29) — the
+            # factory also hands it this store's lock, so its per-iteration
+            # pick and the user mutations above are serialized
+            calcs = self._calcs
             engine = engine_factory()
             self._engine = engine
             self._running = True
@@ -757,11 +864,21 @@ class QueueStore:
         if not isinstance(data, dict):
             return
         restored = []
+        seen_names: set[str] = set()
         for d in data.get("calculations", []):
             try:
-                restored.append(calc_from_session_dict(d))
+                c = calc_from_session_dict(d)
             except Exception:
                 continue  # skip a corrupt entry rather than lose the whole queue
+            # The restore path must uphold the same case-insensitive name
+            # uniqueness add() enforces (Windows folder identity): a session
+            # written by an older build (or edited/merged externally) could
+            # otherwise resurrect two calcs sharing one on-disk folder.
+            key = c.name.casefold()
+            if key in seen_names:
+                continue  # first occurrence wins, matching store.get()
+            seen_names.add(key)
+            restored.append(c)
         if not restored:
             return
         reconcile_calcs(restored)
@@ -805,6 +922,12 @@ def find_dangling_reference(calcs: "list[Calculation]") -> "str | None":
     message everywhere instead of failing mid-run with a murkier one."""
     names = {c.name for c in calcs}
     for c in calcs:
+        # DONE results are frozen and FAILED calcs are locked (P24) — neither
+        # will ever run again, so a dangling reference on them must not veto
+        # the whole run (e.g. FAILED conformer clones whose template parent
+        # was substituted away would otherwise lock the Run button for good).
+        if c.state in (CalcState.DONE, CalcState.FAILED):
+            continue
         src = c.geometry_source
         is_ref = src == GeometrySource.REFERENCE or str(
             getattr(src, "value", src)) == "reference"
@@ -839,6 +962,10 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
             calc_update=lambda i, c: store.touch(),
             queue_substitute=lambda removed, added: store.substitute_calcs(removed, added),
         )
+        # the store's own lock doubles as the engine's queue lock: run_all
+        # walks the store's live list (start_run), so the walk's pick step and
+        # user mutations must serialize on the same lock (P29)
         return QueueEngine(orca_path, workspace_root, cb, skip_names=skip,
-                           mlip_envs=envs, crest_distro=crest_pref)
+                           mlip_envs=envs, crest_distro=crest_pref,
+                           queue_lock=store._lock)
     return factory

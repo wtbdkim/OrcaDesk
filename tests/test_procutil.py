@@ -182,3 +182,14 @@ def test_kill_tree_never_raises_on_missing_or_invalid_targets():
     proc.wait(timeout=30)
     kill_tree(proc.pid, ct)
     kill_tree(proc.pid, (ct or 0) + WRONG_CREATE_TIME_OFFSET)
+
+
+def test_process_matches_wrong_typed_pid_is_false_not_a_crash():
+    # reconcile passes session-restored values; a wrong-typed pid (corrupted
+    # session) must read as "no such process", never TypeError/OverflowError
+    from orcamgr.core.procutil import kill_tree, process_matches
+    assert process_matches([1], 1.0) is False
+    assert process_matches({"pid": 1}, None) is False
+    assert process_matches(float("inf"), None) is False
+    kill_tree([1])            # must not raise
+    kill_tree(float("inf"))   # must not raise

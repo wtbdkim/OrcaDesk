@@ -28,7 +28,12 @@ let _currentResultName = "";    // queue calc name of the shown result ("" for a
 const localCalcs = {};          // name -> full calc (config/xyz/raw) added on THIS PC,
                                 // so editing keeps the details the store snapshot omits
 
-let editIndex = -1;             // queue index being edited, or -1 for "new"
+/** @type {string|null} */
+let editName = null;            // NAME of the queue calc being edited, or null for "new".
+                                // A name, never an index: the queue can shift under an
+                                // open edit (remove/reorder here, phone adds, conformer
+                                // fan-out), and a stale index made Update overwrite an
+                                // unrelated calculation.
 let rawMode = false;            // is the current build form in raw mode?
 let rawText = "";               // current raw .inp text being edited
 // Build backends: DFT (with Beginner/Expert sub-modes), MLIP, CREST. The
@@ -115,7 +120,7 @@ window.onInpDropped = async function (path) {
     // a drop starts a NEW calc: never load into an in-progress edit (the
     // same-mode no-op in setBuildMode would otherwise leave the edit active
     // and Update would silently overwrite the edited calc with this file)
-    if (editIndex !== -1) exitEditMode();
+    if (editName !== null) exitEditMode();
     setBuildMode("expert");
     enterRawWithText(res.text);
     const nameEl = document.getElementById("calc-name");
@@ -177,13 +182,12 @@ async function dropXyzIntoBackendCard(path) {
     if (isMlip) mlipXyz = coords; else crestXyz = coords;
     const st = document.getElementById(isMlip ? "mlip-xyz-status" : "crest-xyz-status");
     if (st) st.textContent = n ? `loaded (${n} atoms)` : "No atoms in file.";
-    if (isMlip) {
-      // a dropped file means direct geometry — reveal the branch that shows it
-      const dr = document.querySelector('input[name="mlip-geomsrc"][value="direct"]');
-      if (dr && !dr.checked) {
-        dr.checked = true;
-        onMlipGeomSourceChange();
-      }
+    // a dropped file means direct geometry — reveal the branch that shows it
+    const dr = document.querySelector(
+      `input[name="${isMlip ? "mlip" : "crest"}-geomsrc"][value="direct"]`);
+    if (dr && !dr.checked) {
+      dr.checked = true;
+      if (isMlip) onMlipGeomSourceChange(); else onCrestGeomSourceChange();
     }
     switchTab("build");
     appendLog(`Dropped .xyz loaded into the ${isMlip ? "MLIP" : "CREST"} card (${n} atoms).`, n ? "ok" : "warn");
@@ -241,6 +245,7 @@ async function pollTick() {
       // preserve the current selection so re-running them is safe.
       if (document.getElementById("geom-reference")?.style.display === "block") refreshRefSelect();
       if (document.getElementById("mlip-geom-reference")?.style.display === "block") refreshMlipRefSelect();
+      if (document.getElementById("crest-geom-reference")?.style.display === "block") refreshCrestRefSelect();
       _running = !!snap.running;
       setRunUI(_running);
       // auto-load results for any finished calculation
@@ -365,6 +370,7 @@ async function refreshQueue() {
     // refreshers preserve the current selection, so re-running them is safe.
     if (document.getElementById("geom-reference")?.style.display === "block") refreshRefSelect();
     if (document.getElementById("mlip-geom-reference")?.style.display === "block") refreshMlipRefSelect();
+    if (document.getElementById("crest-geom-reference")?.style.display === "block") refreshCrestRefSelect();
   } catch (e) { /* ignore */ }
 }
 
@@ -1074,7 +1080,8 @@ function applyCrestLock() {
   const note = document.getElementById("crest-lock-note");
   if (note) note.style.display = locked ? "" : "none";
   for (const id of ["crest-name", "crest-charge", "crest-mult", "crest-method",
-                    "crest-solvent", "crest-ewin", "crest-threads"]) {
+                    "crest-solvent", "crest-ewin", "crest-threads",
+                    "crest-ref-select"]) {
     const el = document.getElementById(id);
     if (el) el.disabled = locked;
   }
@@ -1245,7 +1252,7 @@ function refreshRefSelect() {
   }
   // a calc must not reference its own geometry (it would depend on itself), so
   // when editing, exclude the calc being edited from the candidate list
-  const selfName = editIndex !== -1 && queue[editIndex] ? queue[editIndex].name : null;
+  const selfName = editName;
   const candidates = queue.filter(c => c.name !== selfName);
   if (!candidates.length) {
     sel.innerHTML = `<option value="">(no other calculation to reference)</option>`;
@@ -1559,9 +1566,15 @@ function xyzElements(xyz) {
 function nebAtomCheck() {
   const box = document.getElementById("cfg-neb-atomcheck");
   if (!box) return;
+  // the ✓ branch sets an inline green that would otherwise survive into a
+  // later ⚠ verdict (inline style beats .qerror's red) — reset it up front
+  box.style.color = "";
   const react = directXyz, prod = _nebProductXyz;
   if (!react || !prod) { box.className = "hint"; box.textContent = ""; return; }
-  const r = xyzElements(react), p = xyzElements(prod);
+  // element symbols compare case-insensitively (ORCA itself does; legacy
+  // tools write "CL") — mirrors check_neb_atom_order on the Python side
+  const cap = (e) => e.charAt(0).toUpperCase() + e.slice(1).toLowerCase();
+  const r = xyzElements(react).map(cap), p = xyzElements(prod).map(cap);
   if (r.length !== p.length) {
     box.className = "qerror"; box.textContent = `⚠ Atom count differs: reactant ${r.length}, product ${p.length}. NEB-TS needs the same atoms in both.`;
     return;
@@ -1643,7 +1656,7 @@ function collectCalcFromForm(forPreview = false) {
   if (/[\\/:*?"<>|]/.test(name))
     throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
   // P1: name collision (allow self when editing)
-  const clash = queue.findIndex((c, idx) => c.name === name && idx !== editIndex);
+  const clash = queue.findIndex((c) => c.name === name && c.name !== editName);
   if (clash !== -1)
     throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
 
@@ -1711,13 +1724,41 @@ function collectCalcFromForm(forPreview = false) {
   };
 }
 
+/** Mid-run overwrite gate: while the queue is RUNNING, an added calc starts
+ *  automatically — without the Run-click conflicts modal. If the workspace
+ *  already holds a result under this name, confirm the overwrite first.
+ *  (Idle adds skip this; the Run click re-screens the whole queue.)
+ *  @param {string} name  @returns {Promise<boolean>} true to proceed */
+async function confirmMidRunOverwrite(name) {
+  if (!isRunning()) return true;
+  try {
+    const res = /** @type {ExistsResult} */ (JSON.parse(await bridge.has_existing_output(name)));
+    if (!res.ok || !res.exists) return true;
+    return await confirmModal({
+      title: "Overwrite existing results?",
+      body: `Results for <b>${escapeHtml(name)}</b> already exist in the workspace. ` +
+            `The queue is running, so this calculation will start automatically and <b>overwrite</b> them.`,
+      confirm: "Add & overwrite", danger: true,
+    });
+  } catch { return true; }
+}
+
 async function addCalcToQueue() {
   try {
     const calc = collectCalcFromForm();
-    const wasEditing = editIndex !== -1;
-    const oldName = wasEditing && queue[editIndex] ? queue[editIndex].name : null;
+    // Resolve the edit target by NAME at Update time — the queue may have
+    // shifted since the edit opened. A vanished target (removed via phone /
+    // fan-out) falls through to a plain add, mirroring updateEditUI.
+    const oldName = editName !== null && queue.some((c) => c.name === editName)
+      ? editName : null;
+    const wasEditing = oldName !== null;
 
     if (wasEditing && oldName) {
+      // preserve provenance the form doesn't carry: without this, saving any
+      // edit of a conformer-fan-out clone silently erased its
+      // "from crest · conformer k" origin (calc_from_dict defaults it to "")
+      const orig = queue.find((c) => c.name === oldName);
+      if (orig && orig.conformer_origin) calc.conformer_origin = orig.conformer_origin;
       // edit in place: preserves the calc's position in the queue
       const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
       if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
@@ -1730,6 +1771,7 @@ async function addCalcToQueue() {
       return;
     }
 
+    if (!await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
       appendLog("Could not add: " + res.error, "err");
@@ -1838,6 +1880,7 @@ async function addMlipCalcToQueue() {
       config: { kind, mlip_model: model, mlip_env_id: "" },
       state: "pending", message: "",
     });
+    if (!await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
       appendLog("Could not add: " + res.error, "err");
@@ -1865,10 +1908,43 @@ async function loadCrestXyz() {
   document.getElementById("crest-xyz-status").textContent =
     n ? `loaded (${n} atoms)` : "No atoms in file.";
 }
+/** @returns {string} the selected CREST geometry source ("direct" | "reference"). */
+function currentCrestGeomSource() {
+  const r = document.querySelector('input[name="crest-geomsrc"]:checked');
+  return r ? r.value : "direct";
+}
+/** Toggle the CREST .xyz-loader vs reference-picker branch (mirror of onMlipGeomSourceChange). */
+function onCrestGeomSourceChange() {
+  const src = currentCrestGeomSource();
+  document.getElementById("crest-geom-direct").style.display = src === "direct" ? "block" : "none";
+  document.getElementById("crest-geom-reference").style.display = src === "reference" ? "block" : "none";
+  if (src === "reference") refreshCrestRefSelect();
+}
+/** Fill the CREST reference dropdown from the current queue (mirror of refreshMlipRefSelect).
+ *  Lists every queued calc; the engine validates at run time that the ref produced a geometry. */
+function refreshCrestRefSelect() {
+  const sel = document.getElementById("crest-ref-select");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = "";
+  if (!queue.length) {
+    sel.innerHTML = `<option value="">(no calculations in queue yet)</option>`;
+    return;
+  }
+  for (const c of queue) {
+    const o = document.createElement("option");
+    o.value = c.name; o.textContent = `${c.name}  (${c.kind})`;
+    sel.appendChild(o);
+  }
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
 function resetCrestForm() {
   document.getElementById("crest-name").value = "";
   crestXyz = "";
   document.getElementById("crest-xyz-status").textContent = "";
+  const dr = document.querySelector('input[name="crest-geomsrc"][value="direct"]');
+  if (dr) dr.checked = true;
+  onCrestGeomSourceChange();
   // basics back to their index.html defaults too — Reset restores defaults on
   // every build card (MLIP, DFT), so CREST must not keep e.g. a typed mult
   document.getElementById("crest-charge").value = "0";
@@ -1903,7 +1979,16 @@ async function addCrestCalcToQueue() {
       throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
     if (queue.some(c => c.name === name))
       throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
-    if (!crestXyz) throw new Error("Load an .xyz file first.");
+    const src = currentCrestGeomSource();
+    let xyz = "", ref_name = "";
+    if (src === "reference") {
+      ref_name = document.getElementById("crest-ref-select").value;
+      if (!ref_name) throw new Error("Select a calculation to reference.");
+      if (ref_name === name) throw new Error("A calculation can't reference its own geometry.");
+    } else {
+      if (!crestXyz) throw new Error("Load an .xyz file first.");
+      xyz = crestXyz;
+    }
     const charge = parseInt(document.getElementById("crest-charge").value, 10) || 0;
     const mult = Math.max(1, parseInt(document.getElementById("crest-mult").value, 10) || 1);
     const method = document.getElementById("crest-method").value;
@@ -1917,8 +2002,8 @@ async function addCrestCalcToQueue() {
     const calc = /** @type {CalcInput} */ ({
       name, kind: "crest_conf",
       charge, multiplicity: mult,
-      geometry_source: "direct",
-      xyz: crestXyz, ref_name: "",
+      geometry_source: /** @type {"direct"|"reference"} */ (src),
+      xyz, ref_name,
       is_raw: false, raw_text: "",
       config: {
         kind: "crest_conf", crest_method: method, crest_solvent: solvent,
@@ -1940,6 +2025,7 @@ async function addCrestCalcToQueue() {
       },
       state: "pending", message: "",
     });
+    if (!await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
       appendLog("Could not add: " + res.error, "err");
@@ -1968,7 +2054,7 @@ async function editCalc(i) {
   if ((mirror.kind || "").startsWith("crest")) { toast("No in-place editing of CREST calculations yet — removal, then re-add from the CREST build mode."); return; }
   // raw calcs edit in the Expert editor, form calcs in the Beginner form —
   // align the mode (this also leaves MLIP/CREST mode if we're in it, and drops
-  // any previous in-progress edit; editIndex is set below, after the switch)
+  // any previous in-progress edit; editName is set below, after the switch)
   setBuildMode(mirror.is_raw ? "expert" : "beginner", false);
   // prefer the full local copy (has config/xyz/raw_text added on this PC)
   let c = localCalcs[mirror.name];
@@ -1986,7 +2072,7 @@ async function editCalc(i) {
     c = mirror;
     appendLog(`"${mirror.name}": full options couldn't be loaded; the edit may be incomplete.`, "warn");
   }
-  editIndex = i;
+  editName = mirror.name;
 
   document.getElementById("calc-name").value = c.name;
   document.getElementById("calc-charge").value = String(c.charge);
@@ -2075,10 +2161,11 @@ function fillConfigForm(cfg) {
 function updateEditUI() {
   const banner = document.getElementById("edit-banner");
   const addBtn = document.getElementById("add-btn");
-  const editing = editIndex === -1 ? null : queue[editIndex];
+  const editing = editName === null
+    ? null : queue.find((c) => c.name === editName) || null;
   if (!editing) {
     // not editing, or the edited entry vanished (e.g. removed via phone/poll)
-    editIndex = -1;
+    editName = null;
     banner.style.display = "none";
     addBtn.textContent = "Add to queue →";
   } else {
@@ -2089,7 +2176,7 @@ function updateEditUI() {
 }
 
 function exitEditMode() {
-  editIndex = -1;
+  editName = null;
   if (buildMode === "expert") {
     // back to the plain Expert view: editor cleared, guided form re-hidden
     rawMode = true; rawText = "";
@@ -2142,7 +2229,7 @@ function insertSnippet(key) {
 // the .inp drop handler.
 function enterRawWithText(text) {
   rawText = text || "";
-  if (buildMode !== "expert") setBuildMode("expert", true, editIndex !== -1);
+  if (buildMode !== "expert") setBuildMode("expert", true, editName !== null);
   rawMode = true;
   const ta = document.getElementById("raw-text");
   ta.value = rawText;
@@ -2155,7 +2242,7 @@ function enterRawWithText(text) {
 // generation). Lands in the Expert sub-mode from anywhere.
 async function loadInpFile() {
   // converting an in-progress FORM edit to raw is irreversible — confirm first
-  if (editIndex !== -1 && !rawMode) {
+  if (editName !== null && !rawMode) {
     const ok = await confirmModal({
       title: "Load an .inp here?",
       body: "This calculation becomes raw input, no longer form-editable.",
@@ -2184,7 +2271,7 @@ function setBuildMode(mode, persist = true, keepEdit = false) {
   // blanking the raw editor. editCalc doesn't need the fall-through: it fills
   // the form/editor itself after switching.)
   if (mode === buildMode) return;
-  if (editIndex !== -1 && !keepEdit) exitEditMode();    // a real mode switch drops an in-progress edit (unless converting it)
+  if (editName !== null && !keepEdit) exitEditMode();   // a real mode switch drops an in-progress edit (unless converting it)
   buildMode = mode;
   const dft = (mode === "beginner" || mode === "expert");
   if (dft) _dftSub = mode;
@@ -2251,8 +2338,8 @@ function setBuildMode(mode, persist = true, keepEdit = false) {
 // name/type/charge/mult/geometry cards persist — they live outside the editor).
 async function setDftSub(sub) {
   if (sub !== "beginner" && sub !== "expert") return;
-  if (sub === buildMode && editIndex === -1) return;
-  const editing = editIndex !== -1;
+  if (sub === buildMode && editName === null) return;
+  const editing = editName !== null;
 
   if (sub === "expert") {
     if (editing && !rawMode) {
@@ -2294,7 +2381,8 @@ async function setDftSub(sub) {
     if (editing) updateEditUI();
   } else {
     if (editing && rawMode) {
-      const q = queue[editIndex];
+      const q = editName === null
+        ? null : queue.find((c) => c.name === editName) || null;
       if (q && !q.is_raw) {
         // an UNSAVED Beginner->Expert conversion: the queued calc is still
         // form-based, so backing out just re-opens the form edit (the modal
@@ -2396,7 +2484,8 @@ async function viewInp(i) {
     ? (await fromCalc()) ?? (await fromDisk())
     : (await fromDisk()) ?? (await fromCalc());
   if (text == null) { toast("Input not available yet (queue run needed first)."); return; }
-  await showModal(`Input · ${escapeHtml(c.name)}`, `<pre class="inp-view">${escapeHtml(text)}</pre>`, [{ label: "Close", value: null }]);
+  // the title lands via textContent (showModal) — pre-escaping would show "&amp;"
+  await showModal(`Input · ${c.name}`, `<pre class="inp-view">${escapeHtml(text)}</pre>`, [{ label: "Close", value: null }]);
 }
 
 function renderQueue() {
@@ -2435,11 +2524,16 @@ function renderQueue() {
     // a "Completed." note is redundant with the done badge — hide completion notices
     const showMsg = !!c.message && !(c.state === "done" && /^Completed\b/.test(c.message));
     const editable = isEditableState(c.state);   // pending/cancelled/blocked: edit + drag
-    const removable = c.state !== "running";       // anything but running can be deleted
+    // idle: anything but running can be deleted; mid-run the store only
+    // accepts removal of editable rows (DONE/FAILED keep their mid-run
+    // immunity), so hide the × where it would just error
+    const removable = c.state !== "running" && (!isRunning() || editable);
     const div = document.createElement("div");
     div.className = "queue-item" + (editable ? " draggable" : "");
     div.dataset.index = String(i);
-    if (editable) div.setAttribute("draggable", "true");
+    // NOT statically draggable: a draggable row swallows text selection, so
+    // the attribute is set only while the pointer is down on the ≡ handle
+    // (attachDragHandlers) — row text stays selectable/copyable
     const handle = editable
       ? `<span class="drag-handle" title="Reorder handle">≡</span>` : `<span class="drag-handle placeholder"></span>`;
     // view the input (.inp) — available for ANY state, incl. running/done
@@ -2455,7 +2549,7 @@ function renderQueue() {
       ${handle}
       <div style="flex:1">
         <div class="qname">${escapeHtml(c.name)}${rawBadge}${backendBadge}</div>
-        <div class="qsteps">${c.kind} · ${srcLabel}${backendDetail}${cmLabel}</div>
+        <div class="qsteps">${escapeHtml(c.kind)} · ${srcLabel}${backendDetail}${cmLabel}</div>
         ${showMsg ? (
           c.state === "failed"
             ? `<div class="qerror">⚠ ${escapeHtml(c.message)}</div>`
@@ -2474,6 +2568,17 @@ function renderQueue() {
 // ---- drag-to-reorder (pending items only) ----
 let _dragFrom = null;
 function attachDragHandlers(div) {
+  // draggable only from the ≡ handle: arm the row on handle mousedown and
+  // disarm on release/drag end, so the row body keeps native text selection
+  const handle = div.querySelector(".drag-handle");
+  if (handle) {
+    handle.addEventListener("mousedown", () => {
+      div.setAttribute("draggable", "true");
+      // release outside the row (or without a drag) must disarm too
+      document.addEventListener("mouseup",
+        () => div.removeAttribute("draggable"), { once: true });
+    });
+  }
   div.addEventListener("dragstart", (e) => {
     _dragFrom = parseInt(div.dataset.index, 10);
     div.classList.add("dragging");
@@ -2481,6 +2586,7 @@ function attachDragHandlers(div) {
   });
   div.addEventListener("dragend", () => {
     div.classList.remove("dragging");
+    div.removeAttribute("draggable");
     _dragFrom = null;
     document.querySelectorAll(".queue-item.drop-target").forEach(x => x.classList.remove("drop-target"));
   });
@@ -2520,7 +2626,10 @@ async function removeCalc(i) {
   // c.name is user-typed and goes into the modal's innerHTML — escape it
   if (!await confirmModal({ title: "Remove calculation?",
       body: `Remove <b>${escapeHtml(c.name)}</b> from the queue?`, confirm: "Remove", danger: true })) return;
-  await bridge.remove_calc(c.name);
+  // the store can refuse (mid-run guards: the about-to-run calc, a referenced
+  // parent) — surface the reason instead of silently refreshing
+  const res = /** @type {MutationResult} */ (JSON.parse(await bridge.remove_calc(c.name)));
+  if (!res.ok) { failNotify(res.error || "Could not remove."); await refreshQueue(); return; }
   delete localCalcs[c.name];
   // The name is free for reuse now: a kept display-cache entry would keep
   // serving the REMOVED calc's result under a reused name for the rest of the
@@ -2598,10 +2707,13 @@ async function runQueue() {
   if (_running || _starting) return;
   if (!queue.length) { appendLog("No calculations queued.", "warn"); return; }
   // Mirrors store.queue_needs_orca (P4): ORCA is required only if a calc that
-  // will actually launch it exists — an all-MLIP queue (or one whose only ORCA
-  // calcs are DONE/FAILED, which never re-run) runs with no ORCA configured.
+  // will actually launch it exists — an all-MLIP or all-CREST queue (or one
+  // whose only ORCA calcs are DONE/FAILED, which never re-run) runs with no
+  // ORCA configured. Both mlip* and crest* run outside ORCA, exactly like the
+  // backend helper — the mirror omitting crest* wrongly blocked supported runs.
   const needsOrca = queue.some((c) =>
-    c.state !== "done" && c.state !== "failed" && !c.kind.startsWith("mlip"));
+    c.state !== "done" && c.state !== "failed"
+    && !c.kind.startsWith("mlip") && !c.kind.startsWith("crest"));
   if (needsOrca && !settings.orca_valid) { failNotify("ORCA path not set (see Settings)."); switchTab("settings"); return; }
 
   _starting = true;

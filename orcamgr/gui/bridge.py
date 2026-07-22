@@ -17,7 +17,7 @@ JS calls these slots:
   parse_out_file, parse_out_path, parse_calc_output, build_inp_preview,
   add_calc, remove_calc, clear_queue, reorder_calc, update_calc,
   get_queue, get_calc, get_inp, get_log, get_graph_lines, export_conformers,
-  get_free_energy_profile, check_overwrite_conflicts,
+  get_free_energy_profile, check_overwrite_conflicts, has_existing_output,
   run_queue, cancel_queue, stop_after_current,
   get_server_status, get_connect_qr, start_server, stop_server
 """
@@ -36,7 +36,7 @@ from PyQt6.QtWidgets import QFileDialog
 from ..config import Settings, autodetect_orca
 from ..mlip.env import (
     probe_env, new_env_id, resolve_interpreter,
-    env_payload_checking, env_payload_from_probe, aggregate_status,
+    env_payload_checking, env_payload_error, env_payload_from_probe, aggregate_status,
 )
 from ..crest.env import (
     probe_all as crest_probe_all, aggregate_status as crest_aggregate_status,
@@ -54,7 +54,8 @@ from ..state.store import (
 # runtime, so the JSON wire format is unchanged) — schemas.py is the single
 # source of truth, mirrored for the front-end by web/types.js.
 from ..state.schemas import (
-    AboutPayload, AutodetectResult, ConflictsResult, ErrorPayload, FepPoint,
+    AboutPayload, AutodetectResult, ConflictsResult, ErrorPayload, ExistsResult,
+    FepPoint,
     FepResult, GeomAtomPayload, GetCalcResult, GraphLinesResult, LoadResult,
     MlipStatusPayload, MutationResult, NmrPayload, OkResult, OrbitalPayload,
     ParsePayload, QrResult, ServerStatusPayload, SettingsPayload,
@@ -161,6 +162,10 @@ class Bridge(QObject):
             data = json.loads(payload_json or "{}")
             for k in ("orca_path", "workspace_root", "theme", "crest_distro"):
                 if k in data:
+                    if not isinstance(data[k], str):
+                        # a non-string would be persisted and then poison
+                        # Path(orca_path) on every later call, every session
+                        raise ValueError(f"{k} must be a string.")
                     setattr(self.settings, k, data[k])
             for k in ("default_nprocs", "default_maxcore_mb"):
                 if k in data:
@@ -288,7 +293,14 @@ class Bridge(QObject):
             self._mlip_probe_seq[env_id] = seq = self._mlip_probe_seq.get(env_id, 0) + 1
 
         def _worker() -> None:
-            result = env_payload_from_probe(env_id, name, probe_env(python))
+            try:
+                result = env_payload_from_probe(env_id, name, probe_env(python))
+            except Exception as e:
+                # a probe crash must still publish: a silently dead worker
+                # would pin the env at "Checking…" (and the build card locked)
+                # forever, with re-checks restarting the same failing probe
+                result = env_payload_error(env_id, name, python,
+                                           f"Probe failed: {e}")
             with self._mlip_lock:
                 if (self.settings.mlip_env(env_id) is not None
                         and self._mlip_probe_seq.get(env_id) == seq):
@@ -414,10 +426,25 @@ class Bridge(QObject):
                 distros = crest_list_distros()
                 target = distros[0] if distros else ""
             if target:
+                # The installer computes actionable diagnostics ("xz missing —
+                # sudo apt install xz-utils", download failures); discarding
+                # them left only the generic post-probe "CREST not found",
+                # with no way to learn WHY the install failed.
                 try:
-                    do_install(target)
-                except Exception:
-                    pass  # the re-probe below reports the real readiness
+                    res = do_install(target)
+                except Exception as e:
+                    res = {"ok": False, "error": str(e)}
+                if res.get("ok"):
+                    self.store.append_log(
+                        f"CREST {res.get('version', '')} installed into "
+                        f"'{target}'.".replace("  ", " "), "ok")
+                else:
+                    self.store.append_log(
+                        f"CREST install failed in '{target}': "
+                        f"{res.get('error') or 'unknown error'}", "err")
+            else:
+                self.store.append_log(
+                    "CREST install failed: no usable WSL distro found.", "err")
             status = crest_aggregate_status(crest_probe_all())
             with self._crest_lock:
                 self._crest_installing = False
@@ -860,6 +887,21 @@ class Bridge(QObject):
             return json.dumps(ConflictsResult(ok=True, conflicts=conflicts))
         except Exception as e:
             return json.dumps(ConflictsResult(ok=False, error=str(e), conflicts=[]))
+
+    @pyqtSlot(str, result=str)
+    def has_existing_output(self, name: str) -> str:
+        """True when the workspace already holds a result artifact for `name`
+        ({name}.out, or the MLIP worker's {name}.mlip.json). The live queue
+        accepts adds while a run is in progress, and those start without the
+        Run-click overwrite-conflicts modal — the front-end asks here first so
+        a name reuse can be confirmed before it lands in a running queue."""
+        try:
+            d = Path(self.settings.workspace_root) / str(name)
+            exists = (d / f"{name}.out").exists() or (
+                d / f"{name}.mlip.json").exists()
+            return json.dumps(ExistsResult(ok=True, exists=exists))
+        except Exception as e:
+            return json.dumps(ExistsResult(ok=False, error=str(e), exists=False))
 
     @pyqtSlot(str, result=str)
     def run_queue(self, skip_names_json: str = "") -> str:

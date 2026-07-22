@@ -333,15 +333,22 @@ the correct path in Settings."). Diagnosis code must not itself fail
 silently — leave a breadcrumb warn log. MLIP failures keep the worker's
 precise reason; never run them through the ORCA parser to invent a message.
 
-### P29 — The queue is structurally frozen while it runs
+### P29 — The running queue is live, guarded by state — never diverging
 
-Every structural mutation (`add`/`remove`/`clear`/`replace`/`reorder`)
-raises while the run flag is set, and `start_run` hands the engine a
-snapshot of the queue — otherwise the visible queue and the running queue
-would silently diverge (a calc added mid-run would never execute; the
-store's `add` comment names exactly this failure mode). The in-flight calc
-is additionally protected belt-and-suspenders on paths that do allow
-mutation.
+`start_run` hands the engine the store's **own list**, and the engine's
+walk picks the next unhandled row under the store's **own lock** — one
+queue, one lock, so the visible queue and the executing queue cannot
+diverge (the historical failure mode of the frozen-snapshot design was a
+mid-run add that would never execute; the live walk makes it execute in
+the same run). What mutations must respect while the run flag is set:
+only `EDITABLE_STATES` rows may be added/removed/edited/reordered; the
+engine's in-flight calc (state RUNNING, plus `active_name` for the
+picked-but-not-yet-stamped window) is untouchable; `clear` still raises;
+and reference integrity is enforced at the mutation (no dangling reference
+in a mid-run add/edit, no removal/rename of a referenced parent) because
+the pre-run screen (`find_dangling_reference`) never sees a mid-run
+mutation — an unresolvable reference would FAIL (and lock, P24) the
+dependent instead of being refused up front.
 
 ---
 
