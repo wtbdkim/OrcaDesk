@@ -101,11 +101,14 @@ class Calculation:
 class QueueCallbacks:
     log: Callable[[str, str], None] = lambda msg, level: None
     calc_update: Callable[[int, "Calculation"], None] = lambda i, c: None
-    # Structural queue substitution (per-conformer track expansion): the engine
-    # runs on a snapshot list, so replacing template rows with clones must also
-    # be applied to the owning store. Returns False to REFUSE the substitution
-    # (e.g. a name collision with a calc added mid-run) — the engine then leaves
-    # the templates in place (single-geometry fallback) instead of diverging.
+    # Structural queue substitution (per-conformer track expansion). When wired
+    # to a store the walked list IS the store's list (live-queue, P29), and
+    # this callback applies the splice there (store.substitute_calcs, in
+    # place); the engine only splices its own list when the callback didn't
+    # (the default no-op used by standalone/unit-test engines). Returns False
+    # to REFUSE the substitution (e.g. a name collision with a calc added
+    # mid-run) — the engine then leaves the templates in place
+    # (single-geometry fallback) instead of diverging.
     queue_substitute: Callable[[list, list], bool] = lambda removed_names, new_calcs: True
 
 
@@ -359,7 +362,8 @@ class QueueEngine:
                  callbacks: Optional[QueueCallbacks] = None,
                  skip_names: Optional[set] = None,
                  mlip_envs: Optional[list] = None,
-                 crest_distro: str = ""):
+                 crest_distro: str = "",
+                 queue_lock=None):
         self.runner = OrcaRunner(orca_path)
         # Registered MLIP environments [{id, name, python}], used to resolve which
         # interpreter runs a mlip_* calc. Empty if MLIP isn't configured.
@@ -394,6 +398,24 @@ class QueueEngine:
         # parsing it on a pre-launch failure would mask the real cause (A22).
         # Reset per calc in run_all, set in _run_calc.
         self._orca_launched = False
+        # The list run_all walks is LIVE (P29): when wired to a store,
+        # queue_lock IS the store's own lock (make_engine_factory), so user
+        # mutations of the queue and the walk's pick step are serialized.
+        # Standalone engines (tests) get a private lock — no concurrency there.
+        self._queue_lock = queue_lock if queue_lock is not None else threading.RLock()
+        # Name of the calc the walk is currently handling. Set at pick time
+        # UNDER the lock — i.e. before the RUNNING stamp lands — so the store
+        # can refuse mutations of a calc the engine has picked but not yet
+        # stamped (the pick→stamp window would otherwise let an edit/remove
+        # race a launch).
+        self._active_name: Optional[str] = None
+
+    @property
+    def active_name(self) -> Optional[str]:
+        """Name of the calc the walk is currently handling (None between runs).
+        The store consults this to refuse mutations of the in-flight calc."""
+        with self._queue_lock:
+            return self._active_name
 
     def cancel(self) -> None:
         self._cancel_event.set()
@@ -912,27 +934,37 @@ class QueueEngine:
                 return
         if result is None:
             return
-        expansion = expand_conformer_tracks(crest, result, calcs,
-                                            taken_names=set(self._by_name))
-        if expansion is None:
-            return
-        removed, added = expansion
-        removed_set = set(removed)
-        if not self.cb.queue_substitute(list(removed), list(added)):
-            self.cb.log(
-                f"[{crest.name}] could not expand conformer tracks (the queue "
-                "changed meanwhile); the referencing calculations keep the "
-                "lowest conformer.", "warn")
-            return
-        # mirror the substitution on the engine's own snapshot list
-        first = min(i for i, c in enumerate(calcs) if c.name in removed_set)
-        calcs[:] = [c for c in calcs if c.name not in removed_set]
-        for off, nc in enumerate(added):
-            calcs.insert(first + off, nc)
-        for name in removed:
-            self._by_name.pop(name, None)
-        for nc in added:
-            self._by_name[nc.name] = nc
+        # The whole expansion is one critical section: the templates are read,
+        # substituted in the store, and (when needed) spliced locally against
+        # ONE consistent view of the live queue — a user add/remove between
+        # those steps must not interleave.
+        with self._queue_lock:
+            expansion = expand_conformer_tracks(
+                crest, result, calcs,
+                taken_names={c.name for c in calcs})
+            if expansion is None:
+                return
+            removed, added = expansion
+            removed_set = set(removed)
+            if not self.cb.queue_substitute(list(removed), list(added)):
+                self.cb.log(
+                    f"[{crest.name}] could not expand conformer tracks (the queue "
+                    "changed meanwhile); the referencing calculations keep the "
+                    "lowest conformer.", "warn")
+                return
+            # When the store shares this list (live-queue wiring), its
+            # substitute_calcs above already spliced it in place — splice
+            # locally only when the templates are still present (standalone
+            # engine with the default no-op callback, e.g. unit tests).
+            if any(c.name in removed_set for c in calcs):
+                first = min(i for i, c in enumerate(calcs) if c.name in removed_set)
+                calcs[:] = [c for c in calcs if c.name not in removed_set]
+                for off, nc in enumerate(added):
+                    calcs.insert(first + off, nc)
+            for name in removed:
+                self._by_name.pop(name, None)
+            for nc in added:
+                self._by_name[nc.name] = nc
         k = len(getattr(result, "conformers", None) or [])
         self.cb.log(
             f"[{crest.name}] {k} conformers — expanded {len(removed)} referencing "
@@ -989,35 +1021,62 @@ class QueueEngine:
 
     # -- the whole queue --
     def run_all(self, calcs: list[Calculation]) -> None:
-        self._by_name = {c.name: c for c in calcs}
-        blocked_names: set[str] = set()
-        # Calcs already FAILED from a previous run are failure seeds (P24:
-        # FAILED is locked, never re-run): block their transitive dependents up
-        # front, exactly as a live failure would — otherwise a dependent would
-        # launch and die later in reference resolution with a murkier message.
-        for c in calcs:
-            if c.state == CalcState.FAILED:
-                blocked_names |= self._dependents_of(calcs, c.name)
+        with self._queue_lock:
+            self._by_name = {c.name: c for c in calcs}
+            blocked_names: set[str] = set()
+            # Calcs already FAILED from a previous run are failure seeds (P24:
+            # FAILED is locked, never re-run): block their transitive dependents
+            # up front, exactly as a live failure would — otherwise a dependent
+            # would launch and die later in reference resolution with a murkier
+            # message.
+            for c in calcs:
+                if c.state == CalcState.FAILED:
+                    blocked_names |= self._dependents_of(calcs, c.name)
 
-        # The symmetric normalization: a row still BLOCKED from a previous run
-        # whose ancestry is now clean (its failed parent was removed, or its
-        # reference re-pointed) WILL run this pass — reset it up front so the
-        # visible queue never shows a will-run row labelled with the stale
-        # "Skipped: a dependency failed." until the walk happens to reach it.
-        for idx, c in enumerate(calcs):
-            if c.state == CalcState.BLOCKED and c.name not in blocked_names:
-                c.state = CalcState.PENDING
-                c.message = ""
-                self.cb.calc_update(idx, c)
+            # The symmetric normalization: a row still BLOCKED from a previous
+            # run whose ancestry is now clean (its failed parent was removed, or
+            # its reference re-pointed) WILL run this pass — reset it up front so
+            # the visible queue never shows a will-run row labelled with the
+            # stale "Skipped: a dependency failed." until the walk reaches it.
+            for idx, c in enumerate(calcs):
+                if c.state == CalcState.BLOCKED and c.name not in blocked_names:
+                    c.state = CalcState.PENDING
+                    c.message = ""
+                    self.cb.calc_update(idx, c)
 
-        # A growable walk (not `for … in enumerate`): a finished "all"-handoff
-        # conformer search substitutes template rows further down the list with
-        # per-conformer clones (see _maybe_expand_crest), and those inserted
-        # rows must be visited by THIS run.
-        i = -1
-        while i + 1 < len(calcs):
-            i += 1
-            calc = calcs[i]
+        # The walk is over a LIVE list (P29): the owning store shares this very
+        # list (and the lock), and allows editable-state rows to be added,
+        # removed, edited, or reordered while the run is in progress. So the
+        # walk cannot be a positional `for … in enumerate` — each iteration
+        # picks, under the lock, the first list row not yet handled (tracked by
+        # object identity: an edited row is a NEW object and is picked again,
+        # which is exactly what "edited back to PENDING" should do). The same
+        # mechanism covers the per-conformer track expansion: substituted
+        # clones are new objects, so they are visited by THIS run.
+        # `seen` maps id() -> the object itself: the value pins the object so a
+        # removed row's id can't be recycled onto a new row mid-run.
+        seen: dict[int, Calculation] = {}
+        try:
+            self._run_walk(calcs, seen, blocked_names)
+        finally:
+            with self._queue_lock:
+                self._active_name = None
+
+    def _run_walk(self, calcs: list[Calculation], seen: dict,
+                  blocked_names: set) -> None:
+        while True:
+            with self._queue_lock:
+                # names must track the live list: mid-run adds resolve their
+                # references (and crest expansion checks name collisions)
+                # against the queue as it is NOW, not as it was at run start
+                self._by_name = {c.name: c for c in calcs}
+                nxt = next(((j, c) for j, c in enumerate(calcs)
+                            if id(c) not in seen), None)
+                if nxt is None:
+                    break
+                i, calc = nxt
+                seen[id(calc)] = calc
+                self._active_name = calc.name
             if self._detach_event.is_set():
                 # App is shutting down: stop processing and leave every calc as
                 # it is (a RUNNING one keeps going in the background for reattach).
@@ -1049,7 +1108,10 @@ class QueueEngine:
             # now that job has finished; leave the remaining calcs PENDING (so
             # they stay runnable) and stop processing the queue.
             if self._stop_after_current.is_set():
-                remaining = sum(1 for c in calcs[i:] if c.state == CalcState.PENDING)
+                # count by state, not position: every already-handled row was
+                # stamped out of PENDING, so the PENDING rows (including the
+                # one just picked) are exactly what this drain leaves behind
+                remaining = sum(1 for c in calcs if c.state == CalcState.PENDING)
                 self.cb.log(
                     f"Stopped after current job; {remaining} calculation(s) left pending.",
                     "info",
@@ -1077,6 +1139,18 @@ class QueueEngine:
                 self.cb.log(f"[{calc.name}] failed previously \u2014 locked; "
                             "build a new calculation to retry.", "warn")
                 continue
+
+            # A row added (or edited) mid-run postdates the blocked_names
+            # bookkeeping above, so also judge its DIRECT parent's live state:
+            # referencing a FAILED/BLOCKED calc blocks it exactly like a
+            # dependent known at seed time. (Transitively sound: mid-run adds
+            # append, so a parent is always visited before its new dependent.)
+            if calc.name not in blocked_names and calc.ref_name and (
+                    calc.geometry_source == GeometrySource.REFERENCE):
+                parent = self._by_name.get(calc.ref_name)
+                if parent is not None and parent.state in (
+                        CalcState.FAILED, CalcState.BLOCKED):
+                    blocked_names.add(calc.name)
 
             if calc.name in blocked_names:
                 calc.state = CalcState.BLOCKED
@@ -1192,7 +1266,8 @@ class QueueEngine:
                 calc.create_time = None
                 self.cb.log(f"[{calc.name}] FAILED: {calc.message}", "err")
                 self.cb.calc_update(i, calc)
-                blocked_names |= self._dependents_of(calcs, calc.name)
+                with self._queue_lock:
+                    blocked_names |= self._dependents_of(calcs, calc.name)
             except Exception as e:  # defensive
                 calc.state = CalcState.FAILED
                 calc.message = f"Unexpected error: {e}"
@@ -1200,7 +1275,8 @@ class QueueEngine:
                 calc.create_time = None
                 self.cb.log(f"[{calc.name}] FAILED: {e}", "err")
                 self.cb.calc_update(i, calc)
-                blocked_names |= self._dependents_of(calcs, calc.name)
+                with self._queue_lock:
+                    blocked_names |= self._dependents_of(calcs, calc.name)
 
             # a conformer search that just finished DONE may fan its referencing
             # chains out into per-conformer tracks (guarded inside; a no-op for

@@ -17,7 +17,7 @@ JS calls these slots:
   parse_out_file, parse_out_path, parse_calc_output, build_inp_preview,
   add_calc, remove_calc, clear_queue, reorder_calc, update_calc,
   get_queue, get_calc, get_inp, get_log, get_graph_lines, export_conformers,
-  get_free_energy_profile, check_overwrite_conflicts,
+  get_free_energy_profile, check_overwrite_conflicts, has_existing_output,
   run_queue, cancel_queue, stop_after_current,
   get_server_status, get_connect_qr, start_server, stop_server
 """
@@ -54,7 +54,8 @@ from ..state.store import (
 # runtime, so the JSON wire format is unchanged) — schemas.py is the single
 # source of truth, mirrored for the front-end by web/types.js.
 from ..state.schemas import (
-    AboutPayload, AutodetectResult, ConflictsResult, ErrorPayload, FepPoint,
+    AboutPayload, AutodetectResult, ConflictsResult, ErrorPayload, ExistsResult,
+    FepPoint,
     FepResult, GeomAtomPayload, GetCalcResult, GraphLinesResult, LoadResult,
     MlipStatusPayload, MutationResult, NmrPayload, OkResult, OrbitalPayload,
     ParsePayload, QrResult, ServerStatusPayload, SettingsPayload,
@@ -886,6 +887,21 @@ class Bridge(QObject):
             return json.dumps(ConflictsResult(ok=True, conflicts=conflicts))
         except Exception as e:
             return json.dumps(ConflictsResult(ok=False, error=str(e), conflicts=[]))
+
+    @pyqtSlot(str, result=str)
+    def has_existing_output(self, name: str) -> str:
+        """True when the workspace already holds a result artifact for `name`
+        ({name}.out, or the MLIP worker's {name}.mlip.json). The live queue
+        accepts adds while a run is in progress, and those start without the
+        Run-click overwrite-conflicts modal — the front-end asks here first so
+        a name reuse can be confirmed before it lands in a running queue."""
+        try:
+            d = Path(self.settings.workspace_root) / str(name)
+            exists = (d / f"{name}.out").exists() or (
+                d / f"{name}.mlip.json").exists()
+            return json.dumps(ExistsResult(ok=True, exists=exists))
+        except Exception as e:
+            return json.dumps(ExistsResult(ok=False, error=str(e), exists=False))
 
     @pyqtSlot(str, result=str)
     def run_queue(self, skip_names_json: str = "") -> str:

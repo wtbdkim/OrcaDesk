@@ -5,7 +5,9 @@ serialization layer (calc_from_dict / calc_to_dict / session persistence).
 Contracts under test come from PRINCIPLES.md:
   * P24 — DONE is frozen; FAILED is locked; only EDITABLE_STATES may be
     edited/reordered; removal is allowed in every state except RUNNING.
-  * P29 — the queue is structurally frozen while the run flag is set.
+  * P29 — the queue is live while it runs: editable-state rows may be
+    added/removed/edited/reordered mid-run; the in-flight calc, non-editable
+    states, clear, and reference integrity stay protected.
   * P32 — persistence never crashes the app (corrupt JSON degrades, corrupt
     entries are skipped item-by-item).
   * P33 — calc names are validated at the shared choke point (path-dangerous
@@ -298,26 +300,88 @@ def test_remove_unknown_name_returns_false(store):
     assert store.remove("no_such_calc") is False
 
 
-# ---- 4. structural freeze while running (P29) ----------------------------
+# ---- 4. live queue while running (P29) -----------------------------------
+# The engine walks the store's own list, so editable-state rows may be
+# added/removed/edited/reordered mid-run; what stays protected: the in-flight
+# calc, non-editable states, clear, and reference integrity (a mid-run
+# mutation bypasses the pre-run dangling-reference screen).
 
-def test_every_structural_mutation_raises_while_run_flag_is_set(store):
+def test_editable_mutations_allowed_while_run_flag_is_set(store):
     store.add(make_calc("a"))
     store.add(make_calc("b"))
     store.set_running(True)
+    store.add(make_calc("c"))                     # add lands in the live queue
+    store.replace("b", make_calc("b"))            # pending rows stay editable
+    store.reorder(0, 1)                           # and reorderable
+    assert store.remove("c") is True              # and removable
     with pytest.raises(ValueError):
-        store.add(make_calc("c"))
-    with pytest.raises(ValueError):
-        store.remove("a")
-    with pytest.raises(ValueError):
-        store.clear()
-    with pytest.raises(ValueError):
-        store.replace("a", make_calc("a"))
-    with pytest.raises(ValueError):
-        store.reorder(0, 1)
-    # queue is untouched by the rejected mutations
-    assert store.names() == ["a", "b"]
+        store.clear()                             # clear stays blocked
+    assert store.names() == ["b", "a"]
+
+
+def test_non_editable_states_immune_while_running(store):
+    add_with_state(store, "hot", CalcState.RUNNING)
+    add_with_state(store, "done", CalcState.DONE)
+    add_with_state(store, "dead", CalcState.FAILED)
+    store.set_running(True)
+    for name in ("hot", "done", "dead"):
+        with pytest.raises(ValueError):
+            store.remove(name)
+        with pytest.raises(ValueError):
+            store.replace(name, make_calc(name))
     store.set_running(False)
-    assert store.remove("a") is True
+    # idle-time semantics unchanged: anything but RUNNING can be removed
+    assert store.remove("done") is True
+    assert store.remove("dead") is True
+    with pytest.raises(ValueError):
+        store.remove("hot")
+
+
+def test_mid_run_add_or_edit_with_dangling_reference_refused(store):
+    store.add(make_calc("base"))
+    store.set_running(True)
+    with pytest.raises(ValueError):
+        store.add(make_calc("orphan", geometry_source="reference",
+                            ref_name="ghost", xyz=""))
+    with pytest.raises(ValueError):   # self-reference is dangling too
+        store.add(make_calc("selfy", geometry_source="reference",
+                            ref_name="selfy", xyz=""))
+    with pytest.raises(ValueError):
+        store.replace("base", make_calc("base", geometry_source="reference",
+                                        ref_name="ghost", xyz=""))
+    store.set_running(False)
+    # idle-time laxness unchanged: the pre-run screen re-checks references
+    store.add(make_calc("orphan", geometry_source="reference",
+                        ref_name="ghost", xyz=""))
+    assert "orphan" in store.names()
+
+
+def test_mid_run_remove_or_rename_of_referenced_calc_refused(store):
+    store.add(make_calc("parent"))
+    store.add(make_calc("child", geometry_source="reference",
+                        ref_name="parent", xyz=""))
+    store.set_running(True)
+    with pytest.raises(ValueError):
+        store.remove("parent")
+    with pytest.raises(ValueError):   # renaming would dangle the child too
+        store.replace("parent", make_calc("parent2"))
+    store.set_running(False)
+    assert store.remove("parent") is True   # idle-time semantics unchanged
+
+
+def test_mid_run_mutation_of_engine_active_calc_refused(store):
+    store.add(make_calc("picked"))
+    store.add(make_calc("idle"))
+    store.set_running(True)
+
+    class _Engine:
+        active_name = "picked"   # what QueueEngine.active_name exposes at pick
+    store._engine = _Engine()
+    with pytest.raises(ValueError):
+        store.remove("picked")
+    with pytest.raises(ValueError):
+        store.replace("picked", make_calc("picked"))
+    assert store.remove("idle") is True   # other editable rows stay mutable
 
 
 # ---- 5. duplicate names / version counter --------------------------------

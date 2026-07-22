@@ -5,7 +5,29 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **The queue can now be edited while it is running.** Previously every
+  structural change was refused mid-run ("Cannot add to the queue while it
+  is running"). The engine now walks the store's live queue, so while a run
+  is in progress you can add new calculations (they execute in the *same*
+  run), and remove, edit, or reorder pending/cancelled/blocked rows. Still
+  protected: the in-flight calculation, finished (DONE) and failed rows,
+  and Clear all. Guard rails that replace the old freeze: a mid-run
+  add/edit can't reference a calculation that isn't in the queue, a
+  referenced parent can't be removed or renamed mid-run, and adding a name
+  whose results already exist on disk asks before overwriting (the
+  Run-click overwrite check can't see calcs added after the run started).
+- **CREST conformer searches can start from another calculation's
+  geometry.** The CREST build card gains the same geometry-source selector
+  as the MLIP card: load an `.xyz` directly or reference a queued
+  calculation (e.g. an MLIP or ORCA pre-optimization) — the optimized
+  geometry is injected at run time.
+
 ### Changed
+- **Queue-row text is selectable again.** Rows were fully draggable, so
+  clicking calculation names/details started a drag instead of a text
+  selection. Dragging now arms only from the ≡ handle; the rest of the row
+  supports normal select/copy.
 - **The packaged build now really excludes phone-sync.** The docs have always
   said phone-sync is not part of the packaged build, but nothing enforced it:
   PyInstaller follows the optional fastapi/uvicorn/qrcode imports, so whether

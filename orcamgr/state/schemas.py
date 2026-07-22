@@ -335,6 +335,15 @@ class ConflictsResult(_Ok, total=False):
     conflicts: "list[str]"
 
 
+class ExistsResult(_Ok, total=False):
+    """has_existing_output — "exists" is present on every branch. Backs the
+    front-end's mid-run add warning: the queue keeps running while calcs are
+    added, so a name whose workspace folder already holds a result would be
+    overwritten without the Run-click conflicts modal ever seeing it."""
+    error: str
+    exists: bool
+
+
 class AutodetectResult(_Ok, total=False):
     """autodetect_orca — "path" is present on every branch ("" when nothing
     was found); "error" only when detection itself raised. NOTE: despite the

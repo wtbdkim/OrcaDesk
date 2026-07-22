@@ -194,6 +194,23 @@ The `core/` pipeline:
 ### Queue semantics (important invariants)
 
 These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
+- **The queue stays editable while it runs (live queue, P29).** `start_run`
+  hands the engine the store's **own list**, and the engine walk picks the
+  next unhandled row (tracked by object identity) under the store's **own
+  lock** (`make_engine_factory` passes it). So while a run is in progress:
+  a calc added lands in the *same* run; PENDING/CANCELLED/BLOCKED rows can
+  be removed, edited (an edited row is a new object — the walk picks it in
+  its edited form), and reordered (the walk follows live list order).
+  Still protected mid-run: the in-flight calc (state RUNNING plus
+  `QueueEngine.active_name` for the picked-but-not-yet-stamped window),
+  DONE/FAILED rows (remove/edit refused until the run ends), `clear`, and
+  reference integrity — a mid-run add/edit with a dangling reference and a
+  remove/rename of a referenced parent are refused at the store, because
+  the pre-run screen (`find_dangling_reference`) never sees mid-run
+  mutations. A mid-run add whose name already has a result on disk is
+  confirmed in the UI first (`bridge.has_existing_output`) — the Run-click
+  overwrite modal never sees it, and the engine's keep-existing set is
+  fixed at run start, so it would otherwise overwrite silently.
 - **Calculation `name` is unique and is used as the on-disk folder name**
   (`{workspace}/{name}/`). Uniqueness is enforced in the store,
   **case-insensitively** — Windows resolves `water` and `Water` to the same
@@ -468,8 +485,13 @@ reference path still works. `validate_result` requires normal termination
 `queue_needs_orca` excludes `crest*` too, so an all-CREST queue runs with no ORCA
 path. Charge/multiplicity come from the `Calculation` (shared with ORCA); CREST's
 `--uhf` is the **number of unpaired electrons = multiplicity − 1** (not the
-multiplicity). The pipeline was validated end to end against a real CREST 3.0.2
-install in WSL Ubuntu (including the conformer→ORCA handoff).
+multiplicity). The build card has a **geometry source** selector mirroring the
+MLIP card (`.xyz` loader **or** reference another queued calc —
+`onCrestGeomSourceChange`/`refreshCrestRefSelect` in `app.js`); a referenced
+CREST search resolves through the same `_resolve_geometry` path at run time,
+so it can start from e.g. an MLIP- or ORCA-optimized geometry. The pipeline
+was validated end to end against a real CREST 3.0.2 install in WSL Ubuntu
+(including the conformer→ORCA handoff).
 
 `build_crest_argv` (`crest/runner.py`) maps `StepConfig.crest_*` to CLI flags:
 method (`--gfn2`/`--gfn1`/`--gfn0`/`--gfnff`, exact-map with an unknown-value
@@ -497,12 +519,12 @@ per conformer (`expand_conformer_tracks` in `core/queue.py`): clones are named
 clone gets its conformer baked in as DIRECT geometry, deeper clones re-point
 their REFERENCE to the same-track parent clone — so a queued `crest ← opt ←
 freq` template fans out into K independent tracks and dependency-scoped
-failure blocking works per track. `run_all` walks a growable list for this,
-and the substitution is mirrored to the store through
-`QueueCallbacks.queue_substitute` → `QueueStore.substitute_calcs` — the one
-engine-driven structural mutation allowed mid-run (engine and store apply the
-identical change, preserving the visible-queue == executing-queue invariant
-that blocks user mutations during a run). Expansion also happens at run start
+failure blocking works per track. `run_all` walks the **live** list for this
+(see the live-queue bullet in Queue semantics), and the substitution is
+applied through `QueueCallbacks.queue_substitute` →
+`QueueStore.substitute_calcs`, which splices the shared list in place under
+the shared lock (the engine splices its own list only for standalone/test
+engines whose default callback didn't). Expansion also happens at run start
 when an already-DONE `all` search has pending referencing templates (built
 after it finished). The Results tab's conformer list is **read-only** for
 building: results are for interpretation; building happens on the Build tab. It
