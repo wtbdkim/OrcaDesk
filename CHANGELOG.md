@@ -3,7 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.1-beta] — 2026-07-22
 
 ### Added
 - **The queue can now be edited while it is running.** Previously every
