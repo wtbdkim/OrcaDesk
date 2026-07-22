@@ -349,10 +349,12 @@ maxcore/nprocs and the kind-shared numerics, and is kind-AWARE for Extra
 options and SCF: an untouched kind default follows the new kind, an explicit
 user override survives), so the user's method setup survives Expert/MLIP/CREST
 excursions without ever going stale against the selected
-kind; the back-out path re-resolves the edited calc **by name** after its
-confirm modal (queue indices can shift during the await — conformer fan-out,
-phone edits); `collectCalcFromForm(forPreview)` relaxes the NEB-TS product
-requirement like the other geometry checks. `rawText` survives an MLIP/CREST
+kind; the edit target is tracked **by name** (`editName`), never by queue
+index — the queue can shift under an open edit (remove/reorder, phone adds,
+conformer fan-out), and Update re-resolves the target at save time (a
+vanished target degrades to a plain add, and a clone's `conformer_origin`
+is carried over); `collectCalcFromForm(forPreview)` relaxes the NEB-TS
+product requirement like the other geometry checks. `rawText` survives an MLIP/CREST
 excursion and is cleared only by an explicit discard, edit, or reset. Raw-mode
 geometry can't desync from the text: loading a `.xyz` in raw mode is refused
 unless the text has a `{{GEOMETRY}}` placeholder (embedded coords run

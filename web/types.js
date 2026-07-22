@@ -124,7 +124,7 @@
 
 /**
  * Full-fidelity calculation, as returned by get_calc() ("calc" key).
- * Mirror of calc_to_session_dict() in orcamgr/state/store.py — 15 keys.
+ * Mirror of calc_to_session_dict() in orcamgr/state/store.py — 16 keys.
  * @typedef {Object} CalcFull
  * @property {string} name
  * @property {string} kind
@@ -134,6 +134,7 @@
  * @property {"direct"|"reference"} geometry_source
  * @property {string} xyz
  * @property {string} ref_name
+ * @property {string} conformer_origin  per-conformer clone provenance ("" otherwise)
  * @property {boolean} is_raw
  * @property {string} raw_text
  * @property {"pending"|"running"|"done"|"failed"|"blocked"|"cancelled"} state
@@ -157,6 +158,7 @@
  * @property {"direct"|"reference"} [geometry_source]
  * @property {string} [xyz]
  * @property {string} [ref_name]
+ * @property {string} [conformer_origin]  preserved on edit of a conformer clone
  * @property {boolean} [is_raw]
  * @property {string} [raw_text]
  * @property {string} [state]    sent by the UI, ignored by calc_from_dict

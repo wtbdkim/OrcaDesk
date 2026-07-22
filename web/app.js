@@ -28,7 +28,12 @@ let _currentResultName = "";    // queue calc name of the shown result ("" for a
 const localCalcs = {};          // name -> full calc (config/xyz/raw) added on THIS PC,
                                 // so editing keeps the details the store snapshot omits
 
-let editIndex = -1;             // queue index being edited, or -1 for "new"
+/** @type {string|null} */
+let editName = null;            // NAME of the queue calc being edited, or null for "new".
+                                // A name, never an index: the queue can shift under an
+                                // open edit (remove/reorder here, phone adds, conformer
+                                // fan-out), and a stale index made Update overwrite an
+                                // unrelated calculation.
 let rawMode = false;            // is the current build form in raw mode?
 let rawText = "";               // current raw .inp text being edited
 // Build backends: DFT (with Beginner/Expert sub-modes), MLIP, CREST. The
@@ -115,7 +120,7 @@ window.onInpDropped = async function (path) {
     // a drop starts a NEW calc: never load into an in-progress edit (the
     // same-mode no-op in setBuildMode would otherwise leave the edit active
     // and Update would silently overwrite the edited calc with this file)
-    if (editIndex !== -1) exitEditMode();
+    if (editName !== null) exitEditMode();
     setBuildMode("expert");
     enterRawWithText(res.text);
     const nameEl = document.getElementById("calc-name");
@@ -1245,7 +1250,7 @@ function refreshRefSelect() {
   }
   // a calc must not reference its own geometry (it would depend on itself), so
   // when editing, exclude the calc being edited from the candidate list
-  const selfName = editIndex !== -1 && queue[editIndex] ? queue[editIndex].name : null;
+  const selfName = editName;
   const candidates = queue.filter(c => c.name !== selfName);
   if (!candidates.length) {
     sel.innerHTML = `<option value="">(no other calculation to reference)</option>`;
@@ -1559,9 +1564,15 @@ function xyzElements(xyz) {
 function nebAtomCheck() {
   const box = document.getElementById("cfg-neb-atomcheck");
   if (!box) return;
+  // the ✓ branch sets an inline green that would otherwise survive into a
+  // later ⚠ verdict (inline style beats .qerror's red) — reset it up front
+  box.style.color = "";
   const react = directXyz, prod = _nebProductXyz;
   if (!react || !prod) { box.className = "hint"; box.textContent = ""; return; }
-  const r = xyzElements(react), p = xyzElements(prod);
+  // element symbols compare case-insensitively (ORCA itself does; legacy
+  // tools write "CL") — mirrors check_neb_atom_order on the Python side
+  const cap = (e) => e.charAt(0).toUpperCase() + e.slice(1).toLowerCase();
+  const r = xyzElements(react).map(cap), p = xyzElements(prod).map(cap);
   if (r.length !== p.length) {
     box.className = "qerror"; box.textContent = `⚠ Atom count differs: reactant ${r.length}, product ${p.length}. NEB-TS needs the same atoms in both.`;
     return;
@@ -1643,7 +1654,7 @@ function collectCalcFromForm(forPreview = false) {
   if (/[\\/:*?"<>|]/.test(name))
     throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
   // P1: name collision (allow self when editing)
-  const clash = queue.findIndex((c, idx) => c.name === name && idx !== editIndex);
+  const clash = queue.findIndex((c) => c.name === name && c.name !== editName);
   if (clash !== -1)
     throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
 
@@ -1714,10 +1725,19 @@ function collectCalcFromForm(forPreview = false) {
 async function addCalcToQueue() {
   try {
     const calc = collectCalcFromForm();
-    const wasEditing = editIndex !== -1;
-    const oldName = wasEditing && queue[editIndex] ? queue[editIndex].name : null;
+    // Resolve the edit target by NAME at Update time — the queue may have
+    // shifted since the edit opened. A vanished target (removed via phone /
+    // fan-out) falls through to a plain add, mirroring updateEditUI.
+    const oldName = editName !== null && queue.some((c) => c.name === editName)
+      ? editName : null;
+    const wasEditing = oldName !== null;
 
     if (wasEditing && oldName) {
+      // preserve provenance the form doesn't carry: without this, saving any
+      // edit of a conformer-fan-out clone silently erased its
+      // "from crest · conformer k" origin (calc_from_dict defaults it to "")
+      const orig = queue.find((c) => c.name === oldName);
+      if (orig && orig.conformer_origin) calc.conformer_origin = orig.conformer_origin;
       // edit in place: preserves the calc's position in the queue
       const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
       if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
@@ -1968,7 +1988,7 @@ async function editCalc(i) {
   if ((mirror.kind || "").startsWith("crest")) { toast("No in-place editing of CREST calculations yet — removal, then re-add from the CREST build mode."); return; }
   // raw calcs edit in the Expert editor, form calcs in the Beginner form —
   // align the mode (this also leaves MLIP/CREST mode if we're in it, and drops
-  // any previous in-progress edit; editIndex is set below, after the switch)
+  // any previous in-progress edit; editName is set below, after the switch)
   setBuildMode(mirror.is_raw ? "expert" : "beginner", false);
   // prefer the full local copy (has config/xyz/raw_text added on this PC)
   let c = localCalcs[mirror.name];
@@ -1986,7 +2006,7 @@ async function editCalc(i) {
     c = mirror;
     appendLog(`"${mirror.name}": full options couldn't be loaded; the edit may be incomplete.`, "warn");
   }
-  editIndex = i;
+  editName = mirror.name;
 
   document.getElementById("calc-name").value = c.name;
   document.getElementById("calc-charge").value = String(c.charge);
@@ -2075,10 +2095,11 @@ function fillConfigForm(cfg) {
 function updateEditUI() {
   const banner = document.getElementById("edit-banner");
   const addBtn = document.getElementById("add-btn");
-  const editing = editIndex === -1 ? null : queue[editIndex];
+  const editing = editName === null
+    ? null : queue.find((c) => c.name === editName) || null;
   if (!editing) {
     // not editing, or the edited entry vanished (e.g. removed via phone/poll)
-    editIndex = -1;
+    editName = null;
     banner.style.display = "none";
     addBtn.textContent = "Add to queue →";
   } else {
@@ -2089,7 +2110,7 @@ function updateEditUI() {
 }
 
 function exitEditMode() {
-  editIndex = -1;
+  editName = null;
   if (buildMode === "expert") {
     // back to the plain Expert view: editor cleared, guided form re-hidden
     rawMode = true; rawText = "";
@@ -2142,7 +2163,7 @@ function insertSnippet(key) {
 // the .inp drop handler.
 function enterRawWithText(text) {
   rawText = text || "";
-  if (buildMode !== "expert") setBuildMode("expert", true, editIndex !== -1);
+  if (buildMode !== "expert") setBuildMode("expert", true, editName !== null);
   rawMode = true;
   const ta = document.getElementById("raw-text");
   ta.value = rawText;
@@ -2155,7 +2176,7 @@ function enterRawWithText(text) {
 // generation). Lands in the Expert sub-mode from anywhere.
 async function loadInpFile() {
   // converting an in-progress FORM edit to raw is irreversible — confirm first
-  if (editIndex !== -1 && !rawMode) {
+  if (editName !== null && !rawMode) {
     const ok = await confirmModal({
       title: "Load an .inp here?",
       body: "This calculation becomes raw input, no longer form-editable.",
@@ -2184,7 +2205,7 @@ function setBuildMode(mode, persist = true, keepEdit = false) {
   // blanking the raw editor. editCalc doesn't need the fall-through: it fills
   // the form/editor itself after switching.)
   if (mode === buildMode) return;
-  if (editIndex !== -1 && !keepEdit) exitEditMode();    // a real mode switch drops an in-progress edit (unless converting it)
+  if (editName !== null && !keepEdit) exitEditMode();   // a real mode switch drops an in-progress edit (unless converting it)
   buildMode = mode;
   const dft = (mode === "beginner" || mode === "expert");
   if (dft) _dftSub = mode;
@@ -2251,8 +2272,8 @@ function setBuildMode(mode, persist = true, keepEdit = false) {
 // name/type/charge/mult/geometry cards persist — they live outside the editor).
 async function setDftSub(sub) {
   if (sub !== "beginner" && sub !== "expert") return;
-  if (sub === buildMode && editIndex === -1) return;
-  const editing = editIndex !== -1;
+  if (sub === buildMode && editName === null) return;
+  const editing = editName !== null;
 
   if (sub === "expert") {
     if (editing && !rawMode) {
@@ -2294,7 +2315,8 @@ async function setDftSub(sub) {
     if (editing) updateEditUI();
   } else {
     if (editing && rawMode) {
-      const q = queue[editIndex];
+      const q = editName === null
+        ? null : queue.find((c) => c.name === editName) || null;
       if (q && !q.is_raw) {
         // an UNSAVED Beginner->Expert conversion: the queued calc is still
         // form-based, so backing out just re-opens the form edit (the modal
@@ -2396,7 +2418,8 @@ async function viewInp(i) {
     ? (await fromCalc()) ?? (await fromDisk())
     : (await fromDisk()) ?? (await fromCalc());
   if (text == null) { toast("Input not available yet (queue run needed first)."); return; }
-  await showModal(`Input · ${escapeHtml(c.name)}`, `<pre class="inp-view">${escapeHtml(text)}</pre>`, [{ label: "Close", value: null }]);
+  // the title lands via textContent (showModal) — pre-escaping would show "&amp;"
+  await showModal(`Input · ${c.name}`, `<pre class="inp-view">${escapeHtml(text)}</pre>`, [{ label: "Close", value: null }]);
 }
 
 function renderQueue() {
@@ -2455,7 +2478,7 @@ function renderQueue() {
       ${handle}
       <div style="flex:1">
         <div class="qname">${escapeHtml(c.name)}${rawBadge}${backendBadge}</div>
-        <div class="qsteps">${c.kind} · ${srcLabel}${backendDetail}${cmLabel}</div>
+        <div class="qsteps">${escapeHtml(c.kind)} · ${srcLabel}${backendDetail}${cmLabel}</div>
         ${showMsg ? (
           c.state === "failed"
             ? `<div class="qerror">⚠ ${escapeHtml(c.message)}</div>`
@@ -2598,10 +2621,13 @@ async function runQueue() {
   if (_running || _starting) return;
   if (!queue.length) { appendLog("No calculations queued.", "warn"); return; }
   // Mirrors store.queue_needs_orca (P4): ORCA is required only if a calc that
-  // will actually launch it exists — an all-MLIP queue (or one whose only ORCA
-  // calcs are DONE/FAILED, which never re-run) runs with no ORCA configured.
+  // will actually launch it exists — an all-MLIP or all-CREST queue (or one
+  // whose only ORCA calcs are DONE/FAILED, which never re-run) runs with no
+  // ORCA configured. Both mlip* and crest* run outside ORCA, exactly like the
+  // backend helper — the mirror omitting crest* wrongly blocked supported runs.
   const needsOrca = queue.some((c) =>
-    c.state !== "done" && c.state !== "failed" && !c.kind.startsWith("mlip"));
+    c.state !== "done" && c.state !== "failed"
+    && !c.kind.startsWith("mlip") && !c.kind.startsWith("crest"));
   if (needsOrca && !settings.orca_valid) { failNotify("ORCA path not set (see Settings)."); switchTab("settings"); return; }
 
   _starting = true;

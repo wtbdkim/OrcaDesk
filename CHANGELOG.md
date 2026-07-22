@@ -95,6 +95,32 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   failed, …) that the bridge silently discarded, leaving only the generic
   "CREST not found in this distro." after a failed install. The result (or
   the success + version) now lands in the log.
+- **An open edit can no longer save over the wrong calculation.** The Build
+  tab tracked the edited calc by *queue index*; removing or reordering
+  another row (or a phone add / conformer fan-out) while the edit was open
+  shifted the queue under it, so Update silently replaced whichever calc had
+  slid into that slot — or refused a legitimate update with a spurious
+  "name already in the queue" clash. The edit target is now tracked by name
+  and re-resolved at Update time (a vanished target falls back to a plain
+  add).
+- **An all-CREST queue runs without ORCA from the desktop too.** The
+  front-end's pre-run mirror of `queue_needs_orca` excluded only `mlip*`, so
+  a queue whose only runnable calcs were CREST was wrongly blocked with
+  "ORCA path not set" before the backend — which allows it — was ever asked.
+- **Editing a conformer-track clone keeps its provenance.** Saving any edit
+  of a fan-out clone erased its "from crest · conformer k" queue-row label
+  (the edit payload never carried `conformer_origin`); the origin now rides
+  along, and the `CalcInput`/`CalcFull` typedefs document the field.
+- **NEB reactant/product indicator: a ⚠ verdict can't render green.** The ✓
+  branch's inline green survived into later mismatch warnings (inline style
+  beats the error class); the color is reset per check. The JS-side check
+  also compares element symbols case-insensitively, matching the engine.
+- **SCF graph x-axis labels the real SCF iteration.** Tick labels used the
+  filtered-array index (the ΔE=0 first row is dropped from the plot), so
+  every label read one cycle off against the raw log.
+- **Cosmetics:** the `.inp` viewer no longer double-escapes `&` in the modal
+  title; the queue row's kind field is escaped like every other
+  user-influenced string.
 
 ## [0.5.0-beta] — 2026-07-21
 
