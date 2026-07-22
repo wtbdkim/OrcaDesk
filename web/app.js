@@ -182,13 +182,12 @@ async function dropXyzIntoBackendCard(path) {
     if (isMlip) mlipXyz = coords; else crestXyz = coords;
     const st = document.getElementById(isMlip ? "mlip-xyz-status" : "crest-xyz-status");
     if (st) st.textContent = n ? `loaded (${n} atoms)` : "No atoms in file.";
-    if (isMlip) {
-      // a dropped file means direct geometry — reveal the branch that shows it
-      const dr = document.querySelector('input[name="mlip-geomsrc"][value="direct"]');
-      if (dr && !dr.checked) {
-        dr.checked = true;
-        onMlipGeomSourceChange();
-      }
+    // a dropped file means direct geometry — reveal the branch that shows it
+    const dr = document.querySelector(
+      `input[name="${isMlip ? "mlip" : "crest"}-geomsrc"][value="direct"]`);
+    if (dr && !dr.checked) {
+      dr.checked = true;
+      if (isMlip) onMlipGeomSourceChange(); else onCrestGeomSourceChange();
     }
     switchTab("build");
     appendLog(`Dropped .xyz loaded into the ${isMlip ? "MLIP" : "CREST"} card (${n} atoms).`, n ? "ok" : "warn");
@@ -246,6 +245,7 @@ async function pollTick() {
       // preserve the current selection so re-running them is safe.
       if (document.getElementById("geom-reference")?.style.display === "block") refreshRefSelect();
       if (document.getElementById("mlip-geom-reference")?.style.display === "block") refreshMlipRefSelect();
+      if (document.getElementById("crest-geom-reference")?.style.display === "block") refreshCrestRefSelect();
       _running = !!snap.running;
       setRunUI(_running);
       // auto-load results for any finished calculation
@@ -370,6 +370,7 @@ async function refreshQueue() {
     // refreshers preserve the current selection, so re-running them is safe.
     if (document.getElementById("geom-reference")?.style.display === "block") refreshRefSelect();
     if (document.getElementById("mlip-geom-reference")?.style.display === "block") refreshMlipRefSelect();
+    if (document.getElementById("crest-geom-reference")?.style.display === "block") refreshCrestRefSelect();
   } catch (e) { /* ignore */ }
 }
 
@@ -1079,7 +1080,8 @@ function applyCrestLock() {
   const note = document.getElementById("crest-lock-note");
   if (note) note.style.display = locked ? "" : "none";
   for (const id of ["crest-name", "crest-charge", "crest-mult", "crest-method",
-                    "crest-solvent", "crest-ewin", "crest-threads"]) {
+                    "crest-solvent", "crest-ewin", "crest-threads",
+                    "crest-ref-select"]) {
     const el = document.getElementById(id);
     if (el) el.disabled = locked;
   }
@@ -1722,6 +1724,25 @@ function collectCalcFromForm(forPreview = false) {
   };
 }
 
+/** Mid-run overwrite gate: while the queue is RUNNING, an added calc starts
+ *  automatically — without the Run-click conflicts modal. If the workspace
+ *  already holds a result under this name, confirm the overwrite first.
+ *  (Idle adds skip this; the Run click re-screens the whole queue.)
+ *  @param {string} name  @returns {Promise<boolean>} true to proceed */
+async function confirmMidRunOverwrite(name) {
+  if (!isRunning()) return true;
+  try {
+    const res = /** @type {ExistsResult} */ (JSON.parse(await bridge.has_existing_output(name)));
+    if (!res.ok || !res.exists) return true;
+    return await confirmModal({
+      title: "Overwrite existing results?",
+      body: `Results for <b>${escapeHtml(name)}</b> already exist in the workspace. ` +
+            `The queue is running, so this calculation will start automatically and <b>overwrite</b> them.`,
+      confirm: "Add & overwrite", danger: true,
+    });
+  } catch { return true; }
+}
+
 async function addCalcToQueue() {
   try {
     const calc = collectCalcFromForm();
@@ -1750,6 +1771,7 @@ async function addCalcToQueue() {
       return;
     }
 
+    if (!await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
       appendLog("Could not add: " + res.error, "err");
@@ -1858,6 +1880,7 @@ async function addMlipCalcToQueue() {
       config: { kind, mlip_model: model, mlip_env_id: "" },
       state: "pending", message: "",
     });
+    if (!await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
       appendLog("Could not add: " + res.error, "err");
@@ -1885,10 +1908,43 @@ async function loadCrestXyz() {
   document.getElementById("crest-xyz-status").textContent =
     n ? `loaded (${n} atoms)` : "No atoms in file.";
 }
+/** @returns {string} the selected CREST geometry source ("direct" | "reference"). */
+function currentCrestGeomSource() {
+  const r = document.querySelector('input[name="crest-geomsrc"]:checked');
+  return r ? r.value : "direct";
+}
+/** Toggle the CREST .xyz-loader vs reference-picker branch (mirror of onMlipGeomSourceChange). */
+function onCrestGeomSourceChange() {
+  const src = currentCrestGeomSource();
+  document.getElementById("crest-geom-direct").style.display = src === "direct" ? "block" : "none";
+  document.getElementById("crest-geom-reference").style.display = src === "reference" ? "block" : "none";
+  if (src === "reference") refreshCrestRefSelect();
+}
+/** Fill the CREST reference dropdown from the current queue (mirror of refreshMlipRefSelect).
+ *  Lists every queued calc; the engine validates at run time that the ref produced a geometry. */
+function refreshCrestRefSelect() {
+  const sel = document.getElementById("crest-ref-select");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = "";
+  if (!queue.length) {
+    sel.innerHTML = `<option value="">(no calculations in queue yet)</option>`;
+    return;
+  }
+  for (const c of queue) {
+    const o = document.createElement("option");
+    o.value = c.name; o.textContent = `${c.name}  (${c.kind})`;
+    sel.appendChild(o);
+  }
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
 function resetCrestForm() {
   document.getElementById("crest-name").value = "";
   crestXyz = "";
   document.getElementById("crest-xyz-status").textContent = "";
+  const dr = document.querySelector('input[name="crest-geomsrc"][value="direct"]');
+  if (dr) dr.checked = true;
+  onCrestGeomSourceChange();
   // basics back to their index.html defaults too — Reset restores defaults on
   // every build card (MLIP, DFT), so CREST must not keep e.g. a typed mult
   document.getElementById("crest-charge").value = "0";
@@ -1923,7 +1979,16 @@ async function addCrestCalcToQueue() {
       throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
     if (queue.some(c => c.name === name))
       throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
-    if (!crestXyz) throw new Error("Load an .xyz file first.");
+    const src = currentCrestGeomSource();
+    let xyz = "", ref_name = "";
+    if (src === "reference") {
+      ref_name = document.getElementById("crest-ref-select").value;
+      if (!ref_name) throw new Error("Select a calculation to reference.");
+      if (ref_name === name) throw new Error("A calculation can't reference its own geometry.");
+    } else {
+      if (!crestXyz) throw new Error("Load an .xyz file first.");
+      xyz = crestXyz;
+    }
     const charge = parseInt(document.getElementById("crest-charge").value, 10) || 0;
     const mult = Math.max(1, parseInt(document.getElementById("crest-mult").value, 10) || 1);
     const method = document.getElementById("crest-method").value;
@@ -1937,8 +2002,8 @@ async function addCrestCalcToQueue() {
     const calc = /** @type {CalcInput} */ ({
       name, kind: "crest_conf",
       charge, multiplicity: mult,
-      geometry_source: "direct",
-      xyz: crestXyz, ref_name: "",
+      geometry_source: /** @type {"direct"|"reference"} */ (src),
+      xyz, ref_name,
       is_raw: false, raw_text: "",
       config: {
         kind: "crest_conf", crest_method: method, crest_solvent: solvent,
@@ -1960,6 +2025,7 @@ async function addCrestCalcToQueue() {
       },
       state: "pending", message: "",
     });
+    if (!await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
       appendLog("Could not add: " + res.error, "err");
@@ -2458,11 +2524,16 @@ function renderQueue() {
     // a "Completed." note is redundant with the done badge — hide completion notices
     const showMsg = !!c.message && !(c.state === "done" && /^Completed\b/.test(c.message));
     const editable = isEditableState(c.state);   // pending/cancelled/blocked: edit + drag
-    const removable = c.state !== "running";       // anything but running can be deleted
+    // idle: anything but running can be deleted; mid-run the store only
+    // accepts removal of editable rows (DONE/FAILED keep their mid-run
+    // immunity), so hide the × where it would just error
+    const removable = c.state !== "running" && (!isRunning() || editable);
     const div = document.createElement("div");
     div.className = "queue-item" + (editable ? " draggable" : "");
     div.dataset.index = String(i);
-    if (editable) div.setAttribute("draggable", "true");
+    // NOT statically draggable: a draggable row swallows text selection, so
+    // the attribute is set only while the pointer is down on the ≡ handle
+    // (attachDragHandlers) — row text stays selectable/copyable
     const handle = editable
       ? `<span class="drag-handle" title="Reorder handle">≡</span>` : `<span class="drag-handle placeholder"></span>`;
     // view the input (.inp) — available for ANY state, incl. running/done
@@ -2497,6 +2568,17 @@ function renderQueue() {
 // ---- drag-to-reorder (pending items only) ----
 let _dragFrom = null;
 function attachDragHandlers(div) {
+  // draggable only from the ≡ handle: arm the row on handle mousedown and
+  // disarm on release/drag end, so the row body keeps native text selection
+  const handle = div.querySelector(".drag-handle");
+  if (handle) {
+    handle.addEventListener("mousedown", () => {
+      div.setAttribute("draggable", "true");
+      // release outside the row (or without a drag) must disarm too
+      document.addEventListener("mouseup",
+        () => div.removeAttribute("draggable"), { once: true });
+    });
+  }
   div.addEventListener("dragstart", (e) => {
     _dragFrom = parseInt(div.dataset.index, 10);
     div.classList.add("dragging");
@@ -2504,6 +2586,7 @@ function attachDragHandlers(div) {
   });
   div.addEventListener("dragend", () => {
     div.classList.remove("dragging");
+    div.removeAttribute("draggable");
     _dragFrom = null;
     document.querySelectorAll(".queue-item.drop-target").forEach(x => x.classList.remove("drop-target"));
   });
@@ -2543,7 +2626,10 @@ async function removeCalc(i) {
   // c.name is user-typed and goes into the modal's innerHTML — escape it
   if (!await confirmModal({ title: "Remove calculation?",
       body: `Remove <b>${escapeHtml(c.name)}</b> from the queue?`, confirm: "Remove", danger: true })) return;
-  await bridge.remove_calc(c.name);
+  // the store can refuse (mid-run guards: the about-to-run calc, a referenced
+  // parent) — surface the reason instead of silently refreshing
+  const res = /** @type {MutationResult} */ (JSON.parse(await bridge.remove_calc(c.name)));
+  if (!res.ok) { failNotify(res.error || "Could not remove."); await refreshQueue(); return; }
   delete localCalcs[c.name];
   // The name is free for reuse now: a kept display-cache entry would keep
   // serving the REMOVED calc's result under a reused name for the rest of the

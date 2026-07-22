@@ -310,9 +310,22 @@
           </div>
           <div class="hint" style="margin-top:2px">⚠ <span class="mono">--cluster</span> (PCA + k-means) is documented as unsuitable for non-covalent complexes / molecular clusters — use it only on single molecules.</div>
         </details>
-        <div class="btn-group" style="margin-top:10px;margin-bottom:4px">
-          <button class="btn btn-sm" onclick="loadCrestXyz()">Load .xyz</button>
-          <span id="crest-xyz-status" class="hint" style="margin:0;align-self:center"></span>
+        <div class="field-row" style="margin:12px 0 8px">
+          <label class="checkbox"><input type="radio" name="crest-geomsrc" value="direct" checked onchange="onCrestGeomSourceChange()"> From .xyz file</label>
+          <label class="checkbox"><input type="radio" name="crest-geomsrc" value="reference" onchange="onCrestGeomSourceChange()"> From another calculation</label>
+        </div>
+        <div id="crest-geom-direct">
+          <div class="btn-group" style="margin-bottom:4px">
+            <button class="btn btn-sm" onclick="loadCrestXyz()">Load .xyz</button>
+            <span id="crest-xyz-status" class="hint" style="margin:0;align-self:center"></span>
+          </div>
+        </div>
+        <div id="crest-geom-reference" style="display:none">
+          <div class="field">
+            <label>Geometry from</label>
+            <select id="crest-ref-select"></select>
+          </div>
+          <div class="hint">Referenced calc's optimized geometry (e.g. an MLIP or ORCA opt), injected here at run time (it runs first).</div>
         </div>
         <div class="btn-group" style="margin-top:14px">
           <button class="btn btn-primary" onclick="addCrestCalcToQueue()">Add to queue →</button>

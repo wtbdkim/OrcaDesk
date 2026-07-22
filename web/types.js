@@ -465,6 +465,16 @@
  * @property {string[]} conflicts
  */
 
+/**
+ * has_existing_output(name) result; "exists" is always present. Backs the
+ * mid-run add warning (the live queue starts added calcs without the
+ * Run-click conflicts modal).
+ * @typedef {Object} ExistsResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {boolean} exists
+ */
+
 /* ---------- server control (phone sync) ---------- */
 
 /**

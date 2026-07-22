@@ -638,6 +638,9 @@ margin-bottom 8px`. Name block 13px/600 (+ tag), meta line 12px mono muted
 actions. Frozen rows keep an invisible drag-handle placeholder so columns
 align (D64). Drag: `.dragging opacity .5`; `.drop-target` ring border +
 inset bottom insertion line (`box-shadow 0 -2px 0 --ring inset`).
+Drag arms only from the ≡ handle (`draggable` is set on handle mousedown and
+cleared on release/dragend): a statically-draggable row swallows native text
+selection, and row text (names, meta) must stay selectable/copyable.
 
 ### 11.10 Modal
 
