@@ -922,7 +922,25 @@ class QueueEngine:
         n = len(result.conformers)
         calc.message = f"Completed — {n} conformer(s)."
         self.cb.log(f"[{calc.name}] done — {n} conformer(s).", "ok")
+        self._export_crest_conformers(calc, Path(out_path).parent)
         self.cb.calc_update(index, calc)
+
+    def _export_crest_conformers(self, calc: Calculation, calc_dir) -> None:
+        """Auto-split the finished ensemble into per-conformer ``.xyz`` files under
+        ``conformers/`` — every CREST run leaves individual files without a manual
+        export (the Results-tab button re-runs the same split). Best-effort: a
+        missing/empty ensemble or a write error is logged, never fatal, so it can't
+        turn a DONE search into a FAILED one."""
+        from ..crest.export import export_conformers
+
+        try:
+            written = export_conformers(Path(calc_dir) / "crest_conformers.xyz",
+                                        Path(calc_dir) / "conformers", calc.name)
+        except (FileNotFoundError, ValueError, OSError) as e:
+            self.cb.log(f"[{calc.name}] conformer .xyz export skipped: {e}", "warn")
+            return
+        self.cb.log(f"[{calc.name}] exported {len(written)} conformer(s) "
+                    f"to conformers/.", "info")
 
     # -- per-conformer track expansion (crest_handoff == "all") --
     def _maybe_expand_crest(self, calcs: list[Calculation], crest: Calculation) -> None:

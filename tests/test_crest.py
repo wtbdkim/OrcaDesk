@@ -369,6 +369,39 @@ def test_queue_engine_runs_crest_conf_to_done(tmp_path, monkeypatch):
     assert any(level == "ok" for level, _ in logs)
 
 
+def test_queue_engine_auto_exports_per_conformer_xyz_on_finish(tmp_path, monkeypatch):
+    """A finished search splits its ensemble into one .xyz per conformer under
+    conformers/ automatically — no manual Export step."""
+    _patch_runner(monkeypatch)
+    cb, _, _ = _recording_callbacks()
+    engine = QueueEngine("", str(tmp_path), cb)
+    calc = _crest_calc("conf")
+
+    engine.run_all([calc])
+
+    conf_dir = tmp_path / "conf" / "conformers"
+    files = sorted(p.name for p in conf_dir.glob("*.xyz"))
+    assert files == ["conf_c1.xyz", "conf_c2.xyz"]   # _FAKE_ENSEMBLE has 2 frames
+    # each split file is a valid standalone .xyz (header count matches coords)
+    first = (conf_dir / "conf_c1.xyz").read_text().splitlines()
+    assert int(first[0]) == 1 and len(first[2].split()) >= 4
+
+
+def test_queue_engine_finish_survives_missing_ensemble_for_export(tmp_path, monkeypatch):
+    """The auto-export is best-effort: with the ensemble file absent the search
+    still fails on validation (no conformers), never on a raised export error."""
+    _patch_runner(monkeypatch)
+    _FakeCrestRunner.written_empty = True   # launch writes no crest_conformers.xyz
+    cb, _, _ = _recording_callbacks()
+    engine = QueueEngine("", str(tmp_path), cb)
+    calc = _crest_calc("conf")
+
+    engine.run_all([calc])   # must not raise from the export step
+
+    assert calc.state == CalcState.FAILED
+    assert not (tmp_path / "conf" / "conformers").exists()
+
+
 def test_queue_engine_crest_no_conformers_is_failed(tmp_path, monkeypatch):
     _patch_runner(monkeypatch)
     _FakeCrestRunner.written_empty = True     # produce no ensemble

@@ -562,13 +562,27 @@ the shared lock (the engine splices its own list only for standalone/test
 engines whose default callback didn't). Expansion also happens at run start
 when an already-DONE `all` search has pending referencing templates (built
 after it finished). The Results tab's conformer list is **read-only** for
-building: results are for interpretation; building happens on the Build tab. It
-does offer one file action — **Export as .xyz** (`bridge.export_conformers` →
-`crest/export.py`) splits `crest_conformers.xyz` into one standalone `.xyz` per
-conformer (verbatim frames — count + energy comment + coords) under a
-`conformers/` subfolder of the run, named `{name}_c{k}.xyz` (zero-padded; `c1` =
-the best conformer, == `crest_best.xyz`). No file dialog — the files land next to
-the run; this only reads/writes, never touches the queue.
+building: results are for interpretation; building happens on the Build tab.
+
+**Per-conformer `.xyz` are exported automatically on finish.** When a
+`crest_conf` search reaches DONE the engine
+(`QueueEngine._export_crest_conformers`, at the single finish point
+`_crest_monitor_and_finish` — so it covers a fresh run, a mid-run reattach, and
+the finished-while-closed judge) splits `crest_conformers.xyz` into one
+standalone `.xyz` per conformer (verbatim frames — count + energy comment +
+coords) under a `conformers/` subfolder of the run, named `{name}_c{k}.xyz`
+(zero-padded; `c1` = the best conformer, == `crest_best.xyz`). A search judged
+DONE at startup that never went through the engine (finished while the app was
+closed, never re-run) gets the same split via `store._auto_export_crest` inside
+`reconcile_calcs`. The export is **best-effort** everywhere: a missing/empty
+ensemble or a write error is logged (engine path) or swallowed (reconcile path)
+and never turns a completed search into a FAILED one. The split happens
+regardless of the *Conformer handoff* scope (`lowest`/`all`) — that scope only
+governs the geometry handoff to referencing calcs, not the on-disk files. The
+Results tab still offers **Export as .xyz** (`bridge.export_conformers` →
+`crest/export.py`, the same `export_conformers` split), now just a manual
+re-run of the automatic export. No file dialog — the files land next to the
+run; this only reads/writes, never touches the queue.
 
 **Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
 `list_crest_distros` / `set_crest_distro`) follow

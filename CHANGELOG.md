@@ -5,6 +5,18 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **CREST auto-exports every conformer as a separate `.xyz`.** When a conformer
+  search finishes, ORCAdesk now automatically splits `crest_conformers.xyz` into
+  one standalone `.xyz` per conformer under a `conformers/` subfolder of the run
+  (`{name}_c1.xyz`, `{name}_c2.xyz`, … energy-sorted, `c1` = the best conformer)
+  — no manual step. This happens for every finished search (a fresh run, a
+  mid-run reattach, and a search judged done after the app was reopened),
+  regardless of the *Conformer handoff* scope. The Results-tab **Export as
+  .xyz** button remains and simply re-runs the same split. The export is
+  best-effort: a missing or empty ensemble is logged and never turns a
+  completed search into a failure.
+
 ### Added
 - **MACE-MH-1 omol head.** A new MLIP model option, *MACE-MH-1 omol*, selects
   the `omol` head of the multi-head MACE-MH-1 model (wB97M-VV10, organic /

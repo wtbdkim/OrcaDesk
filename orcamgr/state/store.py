@@ -330,6 +330,25 @@ def _parse_if_exists(calc):
         return None
 
 
+def _auto_export_crest(calc) -> None:
+    """Best-effort split of a finished CREST search's ensemble into per-conformer
+    ``.xyz`` files under ``conformers/`` (mirrors the engine's finish-time export,
+    for a search judged DONE at startup that never went through the engine). Pure
+    file I/O, all errors swallowed — reconciliation must never fail on it. Lazy
+    import keeps state/ free of the crest package at import time."""
+    from pathlib import Path
+    path = getattr(calc, "output_path", "") or ""
+    if not path:
+        return
+    try:
+        from ..crest.export import export_conformers
+        calc_dir = Path(path).parent
+        export_conformers(calc_dir / "crest_conformers.xyz",
+                          calc_dir / "conformers", calc.name)
+    except Exception:
+        pass
+
+
 def _crest_calc_alive(calc) -> bool:
     """WSL-aware liveness for a RUNNING crest_* calc. psutil (process_matches)
     can't see inside WSL, so ask the CrestRunner (kill -0 + start-time guard) in
@@ -382,6 +401,8 @@ def reconcile_calcs(calcs: "list[Calculation]") -> None:
                     validate_result(c, r)
                     c.state = CalcState.DONE
                     c.message = "Completed (finished while ORCAdesk was closed)."
+                    if c.kind.startswith("crest"):
+                        _auto_export_crest(c)
                 except OrcaRunError as e:
                     c.state = CalcState.FAILED
                     c.message = str(e)
