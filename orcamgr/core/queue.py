@@ -1097,26 +1097,19 @@ class QueueEngine:
                 break
 
             if self._cancel_event.is_set():
-                # Never stamp over a terminal state: DONE is frozen and FAILED
-                # is locked (P24) — re-stamping them CANCELLED would make them
-                # re-runnable and lose the result / failure diagnosis. BLOCKED
-                # keeps its "Skipped: a dependency failed." diagnosis too —
-                # only rows whose diagnosis is still TRUE reach here (stale
-                # BLOCKED rows with a clean ancestry were normalized to
-                # PENDING at run start). RUNNING is exempt as well: a row still
-                # RUNNING here is a reattach-pending job from a previous
-                # session that this walk never reached — its process is (or may
-                # be) alive, and stamping it CANCELLED would drop the pid (the
-                # only handle to it) without killing anything, orphaning a live
-                # ORCA. Leave it RUNNING; the next Run reattaches or judges it.
-                if calc.state not in (CalcState.DONE, CalcState.FAILED,
-                                      CalcState.BLOCKED, CalcState.RUNNING):
-                    calc.state = CalcState.CANCELLED
-                    calc.message = "Cancelled."
-                    calc.pid = None
-                    calc.create_time = None
-                    self.cb.calc_update(i, calc)
-                continue
+                # Hard cancel stops the queue but only stamps the job that was
+                # actually in flight: that one was killed and marked CANCELLED by
+                # the OrcaCancelled handler below. Every remaining calc is left
+                # UNTOUCHED — PENDING rows stay PENDING (re-runnable as-is, the
+                # plan is not discarded), and a reattach-pending RUNNING row keeps
+                # its pid for the next launch. (Deliberate: a cancel used to walk
+                # on and stamp all remaining PENDING rows CANCELLED; now it does
+                # not — stopping the run must not throw away the queued plan.)
+                remaining = sum(1 for c in calcs if c.state == CalcState.PENDING)
+                if remaining:
+                    self.cb.log(
+                        f"Cancelled; {remaining} calculation(s) left pending.", "info")
+                break
 
             # Graceful drain: the user asked to stop AFTER the current job. By
             # now that job has finished; leave the remaining calcs PENDING (so
@@ -1265,8 +1258,9 @@ class QueueEngine:
                 break
             except OrcaCancelled:
                 # user stopped the run mid-calc: mark THIS calc CANCELLED (not
-                # FAILED) and do NOT block its dependents — the remaining calcs
-                # are marked CANCELLED by the top-of-loop guard on the next pass.
+                # FAILED) and do NOT block its dependents. The remaining PENDING
+                # calcs are left as-is — the top-of-loop cancel guard breaks out
+                # of the walk on the next pass, so the queued plan is preserved.
                 calc.state = CalcState.CANCELLED
                 calc.message = "Cancelled by user."
                 calc.pid = None

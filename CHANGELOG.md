@@ -23,6 +23,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   registered interpreter's PyTorch sees a GPU (shown on the MLIP status and in
   Settings → MLIP). Existing MLIP calculations default to Auto.
 
+### Changed
+- **Stopping a run no longer cancels the pending queue.** Pressing Stop now
+  cancels only the calculation that is actually running and leaves every
+  pending calculation PENDING (runnable as-is) instead of stamping them all
+  CANCELLED — stopping a run no longer discards the queued plan. (Stop still
+  kills the in-flight job; "stop after current" still lets it finish.)
+
 ### Fixed
 - **Memory-leak audit fixes.** A pass over the long-session memory behavior
   closed several small leaks/retentions: display caches in the UI are now

@@ -176,8 +176,11 @@ The `core/` pipeline:
   `kill_tree(...)`, used for reattach and reliable tree termination.
 - `queue.py` — `QueueEngine` orchestrates the pipeline (details below). Validation
   is the module-level `validate_result()` (shared by the engine and session
-  reconciliation). Cancel verbs: hard `cancel()`, graceful `request_stop_after_current()`
-  (drain), and `detach()` (shutdown — leave the running job alive).
+  reconciliation). Cancel verbs: hard `cancel()` (kill the in-flight job → it
+  becomes CANCELLED; break out of the walk and leave every remaining calc as-is,
+  so PENDING rows stay PENDING — a stop does not discard the queued plan),
+  graceful `request_stop_after_current()` (drain — let the in-flight job finish,
+  rest stays PENDING), and `detach()` (shutdown — leave the running job alive).
 - `parser.py` — `parse_file()` → `ParseResult` (energies + SCF energy
   decomposition, geometry, orbitals/HOMO-LUMO, Mulliken & Löwdin charges, Mayer
   population (bond orders + valences), dipole moment, rotational constants,

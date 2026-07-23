@@ -252,13 +252,16 @@ cleanup paths must not fail.
 
 ### P22 — Three stop verbs; the user's intent is never recorded as failure
 
-`cancel()` (kill the tree, rest → CANCELLED), `request_stop_after_current()`
-(drain; rest stays PENDING and runs next time), `detach()` (stop monitoring,
-leave ORCA running — the shutdown path). The distinction is carried in the
-type system (`OrcaCancelled` / `OrcaDetached` subclasses of `OrcaRunError`) so
-a cancelled calc is CANCELLED, not FAILED, and does not block its dependents.
-Control from the UI thread only sets an event; the worker loop performs the
-actual kill, so the UI never blocks.
+`cancel()` (kill the in-flight job → CANCELLED; the rest of the queue is left
+as-is, so PENDING rows stay PENDING and runnable — a stop must not discard the
+queued plan), `request_stop_after_current()` (drain; the in-flight job finishes,
+rest stays PENDING and runs next time), `detach()` (stop monitoring, leave ORCA
+running — the shutdown path). So `cancel()` and the drain differ only in whether
+the in-flight job is killed; neither throws away the pending calcs. The
+distinction is carried in the type system (`OrcaCancelled` / `OrcaDetached`
+subclasses of `OrcaRunError`) so a cancelled calc is CANCELLED, not FAILED, and
+does not block its dependents. Control from the UI thread only sets an event; the
+worker loop performs the actual kill, so the UI never blocks.
 
 ### P23 — Failure propagation is dependency-scoped, not whole-queue
 
