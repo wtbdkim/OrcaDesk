@@ -131,6 +131,8 @@ class MlipEnvPayload(TypedDict):
     state: str                # "checking" | "ready" | "error"
     version: str              # interpreter Python version (e.g. "3.11.5"), or ""
     backends: "list[MlipBackend]"   # auto-detected MLIP backends present
+    cuda: "bool | None"       # torch sees a CUDA GPU (None = unknown/not probed)
+    cuda_name: str            # GPU name when cuda is True, else ""
     message: str              # human-readable status / error detail
 
 

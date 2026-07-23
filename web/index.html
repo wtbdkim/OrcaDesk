@@ -192,10 +192,12 @@
         <div id="mlip-lock-note" class="mlip-lock-note" style="display:none">Ready MACE environment required.</div>
         <div class="field-row">
           <div class="field"><label>Name</label><input id="mlip-name" type="text" placeholder="e.g. mol-mace-opt"></div>
-          <div class="field" style="flex:0 0 175px"><label>Task</label>
-            <select id="mlip-task">
+          <div class="field" style="flex:0 0 190px"><label>Task</label>
+            <select id="mlip-task" onchange="onMlipTaskChange()">
               <option value="opt">Optimization</option>
               <option value="sp">Single point</option>
+              <option value="freq">Frequencies</option>
+              <option value="opt_freq">Opt + Frequencies</option>
             </select>
           </div>
           <div class="field" style="flex:0 0 240px"><label>MACE model</label><select id="mlip-model"></select></div>
@@ -203,7 +205,20 @@
         <div class="field-row">
           <div class="field" style="flex:0 0 110px"><label>Charge</label><input id="mlip-charge" type="number" value="0"></div>
           <div class="field" style="flex:0 0 130px"><label>Multiplicity</label><input id="mlip-mult" type="number" value="1" min="1"></div>
-          <div class="field"><div class="hint" style="margin:0;align-self:end">Used by OMol25 / multi-head models (ions, radicals). MACE-OFF / MACE-MP ignore them.</div></div>
+          <div class="field" style="flex:0 0 150px"><label>Device</label>
+            <select id="mlip-device">
+              <option value="">Auto (GPU if available)</option>
+              <option value="cpu">CPU</option>
+              <option value="cuda">GPU (CUDA)</option>
+            </select>
+          </div>
+          <div class="field"><div class="hint" style="margin:0;align-self:end">Charge/multiplicity: OMol25 / multi-head models (ions, radicals). MACE-OFF / MACE-MP ignore them.</div></div>
+        </div>
+        <!-- thermochemistry conditions: shown only for the frequency tasks -->
+        <div class="field-row" id="mlip-thermo-row" style="display:none">
+          <div class="field" style="flex:0 0 150px"><label>Temperature (K)</label><input id="mlip-temp" type="number" value="298.15" step="0.01" min="0"></div>
+          <div class="field" style="flex:0 0 150px"><label>Pressure (atm)</label><input id="mlip-pressure" type="number" value="1.0" step="0.1" min="0"></div>
+          <div class="field"><div class="hint" style="margin:0;align-self:end">Ideal-gas thermochemistry (ZPE, H, G, S). Symmetry number 1 assumed.</div></div>
         </div>
         <div class="field-row" style="margin:12px 0 8px">
           <label class="checkbox"><input type="radio" name="mlip-geomsrc" value="direct" checked onchange="onMlipGeomSourceChange()"> From .xyz file</label>

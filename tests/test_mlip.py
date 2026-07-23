@@ -79,6 +79,46 @@ main()
 STUB_WORKER_CONVERGED = _STUB_WORKER_TEMPLATE.replace("__CONVERGED__", "True")
 STUB_WORKER_UNCONVERGED = _STUB_WORKER_TEMPLATE.replace("__CONVERGED__", "False")
 
+# Stdlib-only stand-in for a freq/opt_freq worker: same JSON-I/O contract, but it
+# also emits a frequency block + thermochemistry (no ASE/torch needed). __IMAG__
+# controls the number of imaginary (negative) modes so a test can drive the
+# per-kind validation (a true minimum needs zero).
+_STUB_FREQ_TEMPLATE = r'''
+import json, sys
+
+def main():
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    with open(cfg["input_xyz"], "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    atoms = []
+    for ln in lines[2:]:
+        parts = ln.split()
+        if len(parts) >= 4:
+            atoms.append([parts[0], float(parts[1]), float(parts[2]), float(parts[3])])
+    with open(cfg["output_xyz"], "w", encoding="utf-8") as f:
+        f.write(str(len(atoms)) + "\nstub freq\n")
+        for a in atoms:
+            f.write("{0} {1:.6f} {2:.6f} {3:.6f}\n".format(a[0], a[1], a[2], a[3]))
+    imag = __IMAG__
+    freqs = [-200.0 * (i + 1) for i in range(imag)] + [1500.0, 3000.0]
+    result = {"task": cfg.get("task", "opt_freq"), "converged": True,
+              "energy_ev": -27.211386245988, "n_steps": 2, "model": cfg.get("model", ""),
+              "geometry": atoms, "error": None,
+              "has_frequencies": True, "frequencies": freqs, "n_imaginary": imag,
+              "zpe_ev": 0.1, "gibbs_ev": -1.2, "enthalpy_ev": -1.1,
+              "entropy_term_ev": 0.03, "internal_energy_ev": -1.15,
+              "temperature_k": cfg.get("temperature", 298.15),
+              "pressure_atm": cfg.get("pressure", 1.0)}
+    with open(cfg["result_json"], "w", encoding="utf-8") as f:
+        json.dump(result, f)
+    print("[stub] freq done", flush=True)
+
+main()
+'''
+STUB_FREQ_MINIMUM = _STUB_FREQ_TEMPLATE.replace("__IMAG__", "0")
+STUB_FREQ_SADDLE = _STUB_FREQ_TEMPLATE.replace("__IMAG__", "1")
+
 
 def _recording_callbacks():
     logs: list = []
@@ -155,6 +195,78 @@ def test_write_mlip_run_files_encodes_the_task(tmp_path):
                                      "H 0 0 0", tmp_path / "op.json")
     assert _json.loads(cp_sp.read_text(encoding="utf-8"))["task"] == "sp"
     assert _json.loads(cp_opt.read_text(encoding="utf-8"))["task"] == "opt"
+
+
+def test_write_mlip_run_files_encodes_freq_tasks_device_and_thermo(tmp_path):
+    import json as _json
+    _, cp_freq = write_mlip_run_files(
+        tmp_path / "fq", "fq", "MACE-OFF medium", "H 0 0 0",
+        tmp_path / "fq.json", task="opt_freq", device="cuda",
+        temperature=310.0, pressure=2.0)
+    cfg = _json.loads(cp_freq.read_text(encoding="utf-8"))
+    assert cfg["task"] == "opt_freq"
+    assert cfg["device"] == "cuda"
+    assert cfg["temperature"] == 310.0 and cfg["pressure"] == 2.0
+    # an unknown task falls back to opt; an unknown device falls back to "" (auto)
+    _, cp_bad = write_mlip_run_files(
+        tmp_path / "bad", "bad", "MACE-OFF medium", "H 0 0 0",
+        tmp_path / "bad.json", task="nonsense", device="tpu")
+    bad = _json.loads(cp_bad.read_text(encoding="utf-8"))
+    assert bad["task"] == "opt"
+    assert bad["device"] == ""   # auto (resolved in the worker)
+
+
+def test_parse_mlip_result_reads_frequencies_and_thermochemistry(tmp_path):
+    # a freq/opt_freq worker result: frequencies (cm^-1, negative = imaginary)
+    # plus ideal-gas thermochemistry in eV -> converted to Hartree in ParseResult.
+    result_json = tmp_path / "freq.mlip.json"
+    result_json.write_text(json.dumps({
+        "task": "opt_freq", "converged": True,
+        "energy_ev": -5.0 * EV_PER_HARTREE, "n_steps": 7,
+        "has_frequencies": True,
+        "frequencies": [1200.0, 1600.0, 3700.0],
+        "n_imaginary": 0,
+        "zpe_ev": 0.5 * EV_PER_HARTREE,
+        "gibbs_ev": -4.0 * EV_PER_HARTREE,
+        "enthalpy_ev": -4.5 * EV_PER_HARTREE,
+        "entropy_term_ev": 0.02 * EV_PER_HARTREE,
+        "internal_energy_ev": -4.6 * EV_PER_HARTREE,
+        "temperature_k": 298.15, "pressure_atm": 1.0,
+        "geometry": [["O", 0.0, 0.0, 0.1], ["H", 0.0, 0.75, -0.4]],
+        "error": None,
+    }), encoding="utf-8")
+
+    r = parse_mlip_result(str(result_json))
+
+    assert r.terminated_normally is True
+    assert r.is_optimization is True         # opt_freq relaxes first
+    assert r.has_frequencies is True
+    assert r.frequencies == [1200.0, 1600.0, 3700.0]
+    assert r.n_imaginary == 0
+    assert r.zpe_eh == pytest.approx(0.5)
+    assert r.gibbs_eh == pytest.approx(-4.0)
+    assert r.enthalpy_eh == pytest.approx(-4.5)
+    assert r.entropy_term_eh == pytest.approx(0.02)
+    assert r.total_thermal_eh == pytest.approx(-4.6)
+    assert r.temperature_k == pytest.approx(298.15)
+    assert r.pressure_atm == pytest.approx(1.0)
+
+
+def test_parse_mlip_freq_task_is_not_an_optimization(tmp_path):
+    # a bare freq (no opt) leaves the geometry as given: is_optimization False,
+    # so validation applies the imaginary-mode rule, not a convergence check.
+    result_json = tmp_path / "freqonly.mlip.json"
+    result_json.write_text(json.dumps({
+        "task": "freq", "converged": True, "energy_ev": -1.0,
+        "has_frequencies": True, "frequencies": [-450.0, 1200.0],
+        "n_imaginary": 1,
+        "geometry": [["H", 0.0, 0.0, 0.0], ["H", 0.0, 0.0, 0.74]],
+        "error": None,
+    }), encoding="utf-8")
+    r = parse_mlip_result(str(result_json))
+    assert r.is_optimization is False
+    assert r.has_frequencies is True
+    assert r.n_imaginary == 1
 
 
 def test_success_json_without_geometry_is_demoted_to_failure(tmp_path):
@@ -293,6 +405,39 @@ def test_unconverged_mlip_opt_is_marked_failed(tmp_path, monkeypatch):
 
     assert calc.state == CalcState.FAILED
     assert "converge" in calc.message.lower()
+
+
+def test_queue_engine_runs_mlip_opt_freq_to_done_with_frequencies(tmp_path, monkeypatch):
+    # A minimum (zero imaginary modes) opt_freq runs to DONE and carries the
+    # frequency + thermochemistry block into the shared ParseResult.
+    monkeypatch.setattr(mlip_runner_mod, "MACE_WORKER_SCRIPT", STUB_FREQ_MINIMUM)
+    cb, _logs, _updates = _recording_callbacks()
+    engine = QueueEngine("", str(tmp_path), cb, mlip_envs=_stub_env())
+    cfg = StepConfig(kind="mlip_opt_freq", mlip_model="MACE-OFF medium")
+    calc = Calculation(name="of", kind="mlip_opt_freq", config=cfg, xyz=WATER_XYZ)
+
+    engine.run_all([calc])
+
+    assert calc.state == CalcState.DONE
+    assert calc.result.has_frequencies is True
+    assert calc.result.n_imaginary == 0
+    assert calc.result.gibbs_eh is not None
+    assert calc.result.zpe_eh is not None
+
+
+def test_mlip_freq_with_imaginary_mode_is_marked_failed(tmp_path, monkeypatch):
+    # P25 through the MLIP freq path: a freq result with an imaginary mode is not
+    # a true minimum, so the calc is FAILED (mirrors ORCA freq validation).
+    monkeypatch.setattr(mlip_runner_mod, "MACE_WORKER_SCRIPT", STUB_FREQ_SADDLE)
+    cb, _logs, _updates = _recording_callbacks()
+    engine = QueueEngine("", str(tmp_path), cb, mlip_envs=_stub_env())
+    cfg = StepConfig(kind="mlip_freq", mlip_model="MACE-OFF medium")
+    calc = Calculation(name="fq", kind="mlip_freq", config=cfg, xyz=WATER_XYZ)
+
+    engine.run_all([calc])
+
+    assert calc.state == CalcState.FAILED
+    assert "imaginary" in calc.message.lower()
 
 
 def test_mlip_calc_without_registered_env_fails_with_clear_reason(tmp_path):

@@ -5,6 +5,24 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **MLIP frequencies & thermochemistry.** The MLIP build card gains two new
+  tasks, *Frequencies* and *Opt + Frequencies*, alongside Optimization and
+  Single point. They run an ASE finite-difference vibrational analysis with
+  the MACE model and, for a true minimum, ideal-gas thermochemistry (ZPE,
+  enthalpy H, Gibbs G, entropy term T·S, inner energy U) — rendered on the
+  Results tab exactly like an ORCA frequency job. Temperature and pressure
+  are configurable per calc (shown only for the frequency tasks; symmetry
+  number 1 is assumed). Validation matches ORCA: a frequency result with any
+  imaginary mode is not a true minimum and the calculation is marked FAILED
+  (`mlip_freq` / `mlip_opt_freq`, the latter also requiring convergence).
+- **MLIP GPU support.** MLIP jobs can now run on a CUDA GPU instead of CPU — a
+  large speed-up for the many force evaluations a frequency job needs. The
+  build card has a Device selector (*Auto* — GPU when available, else CPU —
+  or explicit CPU / GPU), and the environment probe now reports whether the
+  registered interpreter's PyTorch sees a GPU (shown on the MLIP status and in
+  Settings → MLIP). Existing MLIP calculations default to Auto.
+
 ### Fixed
 - **Memory-leak audit fixes.** A pass over the long-session memory behavior
   closed several small leaks/retentions: display caches in the UI are now

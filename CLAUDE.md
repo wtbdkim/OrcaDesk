@@ -283,13 +283,19 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   validation failure marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`,
   `freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `irc`, `tddft`, `sp`,
   `general` (free keyword combination; no per-kind validation), `nmr`,
-  `neb_ts`, `mlip_opt`, `mlip_sp`, `crest_conf`. Kinds starting with `mlip` or
+  `neb_ts`, `mlip_opt`, `mlip_sp`, `mlip_freq`, `mlip_opt_freq`, `crest_conf`.
+  Kinds starting with `mlip` or
   `crest` run **outside** the ORCA pipeline: `QueueEngine.run_all` routes `mlip*`
-  to `_run_mlip_calc` (a MACE relaxation for `mlip_opt`, or a single-point energy
-  for `mlip_sp` — the worker branches on the `task` field) and `crest*` to
-  `_run_crest_calc` (a conformer search in WSL) instead of `_run_calc`.
-  `mlip_sp` validation requires only normal termination (an SP has no
-  convergence — `parse_mlip_result` sets `is_optimization=False` from `task`).
+  to `_run_mlip_calc` and `crest*` to `_run_crest_calc` (a conformer search in
+  WSL) instead of `_run_calc`. The MLIP worker branches on a `task` field mapped
+  from the kind (`mlip_opt`→`opt` LBFGS relaxation, `mlip_sp`→`sp` single-point
+  energy, `mlip_freq`→`freq` finite-difference vibrational analysis at the given
+  geometry, `mlip_opt_freq`→`opt_freq` relax-then-frequencies). MLIP validation
+  is per-kind too: `mlip_opt`/`mlip_opt_freq` must converge; `mlip_freq`/
+  `mlip_opt_freq` must have zero imaginary frequencies (same "true minimum" bar
+  as ORCA freq); `mlip_sp` requires only normal termination (an SP has no
+  convergence — `parse_mlip_result` sets `is_optimization` from `task`: True for
+  the opt kinds, False for sp/freq).
   `crest_conf` validation requires normal termination + at least one conformer.
   See the MLIP and CREST sections.
 
@@ -325,7 +331,10 @@ interpreter and **auto-detects** which backends import. The backend registry is
 `MLIP_BACKENDS` (key → import-package name; MACE/SevenNet seeded, extensible);
 an env is `ready` only when the common deps `COMMON_PACKAGES` (`torch`, `ase`)
 *and* at least one backend import — so the indicator is honest about the common
-"I pip-installed it myself but the env is incomplete" case. Probes are slow
+"I pip-installed it myself but the env is incomplete" case. The probe also
+reports whether the interpreter's torch sees a **CUDA GPU** (`cuda` / `cuda_name`
+on the env payload), which drives the build card's Device selector and the
+GPU/CPU note shown in Settings → MLIP. Probes are slow
 (importing torch), so each runs in a background thread on the Bridge and the UI
 polls `get_mlip_status()`. Bridge slots: `pick_mlip_python` (picker),
 `add_mlip_env` / `remove_mlip_env` (manage the list, each persists + probes),
@@ -387,14 +396,21 @@ charge/multiplicity inputs (used only by charge/spin-aware models — OMol25 /
 multi-head; MACE-OFF/MP ignore them), and a
 **geometry source** selector (`.xyz` loader **or** reference another queued calc,
 mirroring the ORCA build card — `onMlipGeomSourceChange`/`refreshMlipRefSelect` in
-`app.js`), which add a `mlip_opt` **or** `mlip_sp` calc (per the card's Task
-selector, `#mlip-task`) to the **shared queue** through the
-same `add_calc`/`calc_from_dict` path as ORCA calcs. A referenced `mlip_opt`
+`app.js`), which add a calc of the kind chosen by the card's Task selector
+(`#mlip-task`: `mlip_opt` / `mlip_sp` / `mlip_freq` / `mlip_opt_freq`) to the
+**shared queue** through the
+same `add_calc`/`calc_from_dict` path as ORCA calcs. The frequency tasks reveal a
+temperature/pressure row (`#mlip-thermo-row` → `StepConfig.freq_temp_k` /
+`freq_pressure_atm`, reused from the ORCA freq fields) for the ideal-gas
+thermochemistry. A **Device** selector (`#mlip-device` →
+`StepConfig.mlip_device`: `""` auto / `cpu` / `cuda`) picks the torch device; the
+GPU option is enabled only when a ready env's probe reports CUDA (`_mlipCuda`,
+`refreshMlipDeviceOptions`). A referenced `mlip_opt`/`mlip_opt_freq`
 resolves through the very same `_resolve_geometry` path as an opt→freq handoff, so
 an MLIP pre-optimization can start from another calc's optimized geometry (e.g. a
 CREST best conformer). The model lives on
-`StepConfig.mlip_model` (+ `mlip_env_id`, `""` = first ready env); `build_input`
-ignores those — an MLIP calc never produces an ORCA `.inp`. `_meta_line` shows
+`StepConfig.mlip_model` (+ `mlip_env_id`, `""` = first ready env; `mlip_device`);
+`build_input` ignores those — an MLIP calc never produces an ORCA `.inp`. `_meta_line` shows
 the model instead of charge/mult for `mlip*` kinds, and `CalcSummary` also carries
 the model/method as **explicit fields** (`mlip_model`, `crest_method`,
 `crest_handoff`) so the desktop queue row can render them escaped (never innerHTML
@@ -419,12 +435,23 @@ organic), `mace_mp` (materials + the multi-head `mh-1`/`mh-0`), or `mace_omol`
 `Calculation` into the worker as `atoms.info["charge"]` and `["spin"]` — where
 **`spin` is the spin multiplicity 2S+1 (the multiplicity itself, not
 `mult−1`)**; the OMol25 / multi-head models consume them (ions, radicals) while
-MACE-OFF/MP ignore them. It then runs an ASE `LBFGS` relaxation (CPU, fmax
-0.05), and writes the optimized geometry + energy + convergence to a JSON
+MACE-OFF/MP ignore them. The worker resolves the compute **device** itself
+(`cfg["device"]`: `cpu`/`cuda`, or `""` = auto → CUDA when the user's torch build
+sees a GPU, else CPU) — only the worker's own env can answer that, so the
+resolution lives there, never on the ORCAdesk side. Per task it then runs an ASE
+`LBFGS` relaxation (fmax 0.05) for the opt kinds and/or an ASE `Vibrations`
+finite-difference Hessian for the freq kinds; a freq result on a true minimum
+(zero imaginary modes) also gets ideal-gas thermochemistry via
+`IdealGasThermo` (ZPE / H / G / T·S / U, symmetry number 1 assumed, `spin` =
+(mult−1)/2, at `cfg["temperature"]`/`["pressure"]`). It writes the geometry +
+energy (+ frequencies + thermochemistry) + convergence to a JSON
 result; `MlipRunner` tails its stdout into the `.out` and the live log and is
 cancellable (`QueueEngine.cancel`/`detach` forward to the active `MlipRunner`).
 `parse_mlip_result` reads that JSON into the **shared `ParseResult`** (geometry,
-`final_energy_eh`, `opt_converged`), so a downstream ORCA calc references an
+`final_energy_eh`, `opt_converged`, and — for freq kinds — `frequencies`/
+`n_imaginary`/`zpe_eh`/`gibbs_eh`/`enthalpy_eh`/`entropy_term_eh`/
+`total_thermal_eh`, rendered on the Results tab like an ORCA freq job), so a
+downstream ORCA calc references an
 MLIP-optimized geometry through the **same** `_resolve_geometry` path an opt→freq
 handoff uses. `validate_result` checks `mlip_opt` convergence; `_failure_reason`
 skips the ORCA `.out` parse for mlip kinds. The engine gets the env list via

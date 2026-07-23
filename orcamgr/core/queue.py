@@ -296,10 +296,19 @@ def validate_result(calc: Calculation, result: ParseResult) -> None:
         if not result.conformers:
             raise OrcaRunError("CREST produced no conformers.")
         return
-    # MLIP optimization: the only check is convergence (no ORCA-style keywords).
+    # MLIP: convergence for the opt kinds; the imaginary-mode rule for the freq
+    # kinds (same "a true minimum has zero imaginary modes" bar as ORCA freq).
+    # No ORCA-style keyword checks — MLIP produces no ORCA .out.
     if calc.kind.startswith("mlip"):
-        if result.is_optimization and not result.opt_converged:
+        if calc.kind in ("mlip_opt", "mlip_opt_freq") and not result.opt_converged:
             raise OrcaRunError("MLIP optimization did not converge within the step limit.")
+        if calc.kind in ("mlip_freq", "mlip_opt_freq") and result.n_imaginary > 0:
+            imag = [f for f in result.frequencies if f < 0]
+            detail = ", ".join(f"{v:.2f}" for v in imag[:5])
+            raise OrcaRunError(
+                f"{result.n_imaginary} imaginary frequency/frequencies "
+                f"(cm^-1: {detail}). Not a true minimum."
+            )
         return
     if calc.kind in ("opt", "ts_opt", "opt_freq", "ts_opt_freq") and not result.opt_converged:
         raise OrcaRunError("Optimization did not converge.")
@@ -729,13 +738,18 @@ class QueueEngine:
         calc_dir.mkdir(parents=True, exist_ok=True)
         out_path = calc_dir / f"{calc.name}.out"
         result_json = calc_dir / f"{calc.name}.mlip.json"
-        task = "sp" if calc.kind == "mlip_sp" else "opt"
+        task = {"mlip_sp": "sp", "mlip_freq": "freq",
+                "mlip_opt_freq": "opt_freq"}.get(calc.kind, "opt")
         script_path, config_path = write_mlip_run_files(
             calc_dir, calc.name, calc.config.mlip_model, xyz, result_json,
-            charge=calc.charge, multiplicity=calc.multiplicity, task=task)
+            charge=calc.charge, multiplicity=calc.multiplicity, task=task,
+            device=getattr(calc.config, "mlip_device", ""),
+            temperature=getattr(calc.config, "freq_temp_k", 298.15),
+            pressure=getattr(calc.config, "freq_pressure_atm", 1.0))
 
         model = calc.config.mlip_model or "MACE"
-        verb = "single-point energy" if task == "sp" else "optimizing"
+        verb = {"sp": "single-point energy", "freq": "frequencies",
+                "opt_freq": "optimizing + frequencies"}.get(task, "optimizing")
         self.cb.log(f"[{calc.name}] ({calc.kind}) {verb} with {model} via {python}...", "info")
         # Persist the result path up front (mirror of the ORCA launch path): if
         # the worker races to completion just as the app shuts down, the next

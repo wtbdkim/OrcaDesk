@@ -35,10 +35,12 @@ from ..core.runner import OrcaRunError, OrcaCancelled, OrcaDetached
 
 LogCallback = Callable[[str], None]
 
-# Optimizer defaults (v1; CPU only — see the env discussion). fmax in eV/Å.
+# Optimizer defaults. fmax in eV/Å. DEFAULT_DEVICE "" means auto — the worker
+# picks CUDA when the user's torch build sees a GPU, else CPU (only the worker's
+# own env can answer that, so the resolution lives there, not here).
 DEFAULT_FMAX = 0.05
 DEFAULT_MAX_STEPS = 500
-DEFAULT_DEVICE = "cpu"
+DEFAULT_DEVICE = ""
 
 
 # The worker script, run by the USER's interpreter (so it may import torch/mace/
@@ -47,7 +49,102 @@ DEFAULT_DEVICE = "cpu"
 # into it (no code injection from model names / paths). Kept as a module-level
 # constant so tests can swap in a stdlib-only stub.
 MACE_WORKER_SCRIPT = r'''
-import sys, json, traceback
+import sys, json, os, shutil, traceback
+
+def _resolve_device(requested):
+    # "" (or anything not cpu/cuda) means auto: use CUDA when the user's torch
+    # build sees a GPU, else fall back to CPU. Only the worker's own env can
+    # answer this, so the resolution happens here, never on the ORCAdesk side.
+    dev = str(requested or "").strip().lower()
+    if dev in ("cpu", "cuda"):
+        return dev
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+def _geometry_type(atoms):
+    # IdealGasThermo needs to know how many trans/rot modes to drop: monatomic
+    # (0 vib), linear (3N-5), or nonlinear (3N-6). Decide from the moments of
+    # inertia (one ~0 principal moment => linear).
+    n = len(atoms)
+    if n == 1:
+        return "monatomic"
+    if n == 2:
+        return "linear"
+    import numpy as np
+    moments = np.sort(np.abs(atoms.get_moments_of_inertia()))
+    if moments[-1] > 0 and moments[0] < 1e-3 * moments[-1]:
+        return "linear"
+    return "nonlinear"
+
+def _vibrational_analysis(atoms, geometry, cfg, result):
+    # Finite-difference Hessian via ASE Vibrations, then ideal-gas thermochem.
+    # The 3N raw modes include ~5-6 near-zero translation/rotation modes; we drop
+    # the ones closest to zero (by |frequency|) so a genuine imaginary mode (a
+    # large-magnitude one, e.g. a saddle point) is KEPT, never sliced off with
+    # the trans/rot block the way ASE's positional slice would.
+    import numpy as np
+    from ase.vibrations import Vibrations
+    n = len(atoms)
+    ndrop = {"monatomic": 3 * n, "linear": 5, "nonlinear": 6}[geometry]
+    vibdir = "vib"
+    shutil.rmtree(vibdir, ignore_errors=True)   # stale cache -> wrong Hessian
+    vib = Vibrations(atoms, name=vibdir)
+    print("[mlip] frequencies: " + str(6 * n) + " force evaluations on "
+          + str(n) + " atoms...", flush=True)
+    vib.run()
+    energies = np.asarray(vib.get_energies())        # complex eV, ascending |.|
+    freqs = np.asarray(vib.get_frequencies())        # complex cm^-1
+    order = np.argsort(np.abs(freqs))                 # near-zero (trans/rot) first
+    keep = order[ndrop:] if ndrop < len(order) else np.array([], dtype=int)
+    keep = keep[np.argsort(np.abs(freqs[keep]))]      # report ascending |freq|
+    signed = []
+    kept_energies = []
+    n_imag = 0
+    for i in keep:
+        f = freqs[i]
+        if abs(f.imag) > 1e-6:
+            signed.append(-abs(float(f.imag)))
+            n_imag += 1
+        else:
+            signed.append(float(f.real))
+        kept_energies.append(energies[i])
+    result["has_frequencies"] = True
+    result["frequencies"] = signed
+    result["n_imaginary"] = n_imag
+    result["temperature_k"] = float(cfg.get("temperature", 298.15))
+    result["pressure_atm"] = float(cfg.get("pressure", 1.0))
+    # ZPE from the real modes only (imaginary contribute no zero-point energy)
+    zpe = 0.5 * sum(float(e.real) for e in kept_energies if abs(e.imag) <= 1e-6)
+    result["zpe_ev"] = zpe
+    print("[mlip] " + str(len(signed)) + " modes, " + str(n_imag)
+          + " imaginary; ZPE=" + repr(zpe) + " eV", flush=True)
+    if n_imag == 0 and geometry != "monatomic":
+        try:
+            from ase.thermochemistry import IdealGasThermo
+            T = result["temperature_k"]
+            P_pa = result["pressure_atm"] * 101325.0
+            spin = max(0.0, (int(cfg.get("multiplicity", 1)) - 1) / 2.0)
+            thermo = IdealGasThermo(
+                vib_energies=kept_energies, geometry=geometry,
+                potentialenergy=result["energy_ev"], atoms=atoms,
+                symmetrynumber=1, spin=spin, ignore_imag_modes=True)
+            H = float(thermo.get_enthalpy(T, verbose=False))
+            S = float(thermo.get_entropy(T, P_pa, verbose=False))
+            G = float(thermo.get_gibbs_energy(T, P_pa, verbose=False))
+            kB = 8.617333262e-5   # eV/K; ideal gas H = U + kB*T (per molecule)
+            result["enthalpy_ev"] = H
+            result["gibbs_ev"] = G
+            result["entropy_term_ev"] = T * S
+            result["internal_energy_ev"] = H - kB * T
+            print("[mlip] thermochem @" + str(T) + "K: H=" + repr(H)
+                  + " G=" + repr(G) + " eV (symmetry number 1 assumed)", flush=True)
+        except Exception as te:
+            # thermochem is a bonus; a failure here must not lose the geometry
+            # or the frequencies. Report the reason and carry on.
+            print("[mlip] thermochemistry skipped: " + repr(te), flush=True)
 
 def main():
     with open(sys.argv[1], "r", encoding="utf-8") as f:
@@ -63,8 +160,9 @@ def main():
             from mace.calculators import mace_omol as load_mace
         else:
             from mace.calculators import mace_mp as load_mace
-        print("[mlip] loading " + str(cfg["model"]) + " (device=" + str(cfg["device"]) + ")", flush=True)
-        calc = load_mace(model=cfg["model_arg"], device=cfg["device"], default_dtype="float64")
+        device = _resolve_device(cfg.get("device"))
+        print("[mlip] loading " + str(cfg["model"]) + " (device=" + device + ")", flush=True)
+        calc = load_mace(model=cfg["model_arg"], device=device, default_dtype="float64")
         atoms = read(cfg["input_xyz"])
         # OMol25 / multi-head models are charge- and spin-aware: MACECalculator
         # reads atoms.info["charge"] and ["spin"], where "spin" is the SPIN
@@ -75,31 +173,32 @@ def main():
         atoms.info["charge"] = int(cfg.get("charge", 0))
         atoms.info["spin"] = max(1, int(cfg.get("multiplicity", 1)))
         atoms.calc = calc
-        if task == "sp":
-            # single point: energy (+ forces) at the given geometry, no relaxation
-            print("[mlip] single point on " + str(len(atoms)) + " atoms", flush=True)
-            energy = float(atoms.get_potential_energy())
-            import numpy as _np
-            fmax = float(_np.linalg.norm(atoms.get_forces(), axis=1).max()) if len(atoms) else 0.0
-            result["converged"] = True     # an SP has nothing to converge
-            result["n_steps"] = 0
-            result["fmax"] = fmax
-            print("[mlip] done: energy=" + repr(energy) + " eV  fmax=" + repr(fmax) + " eV/A", flush=True)
-        else:
+        do_opt = task in ("opt", "opt_freq")
+        do_freq = task in ("freq", "opt_freq")
+        if do_opt:
             from ase.optimize import LBFGS
             print("[mlip] optimizing " + str(len(atoms)) + " atoms, fmax=" + str(cfg["fmax"]), flush=True)
             opt = LBFGS(atoms, logfile="-")
             result["converged"] = bool(opt.run(fmax=cfg["fmax"], steps=cfg["max_steps"]))
             result["n_steps"] = int(opt.get_number_of_steps())
-            energy = float(atoms.get_potential_energy())
-            print("[mlip] done: converged=" + str(result["converged"]) + " energy=" + repr(energy) +
-                  " eV steps=" + str(result["n_steps"]), flush=True)
+        else:
+            # sp / freq: no relaxation, so there is nothing to converge
+            result["converged"] = True
+            result["n_steps"] = 0
+        energy = float(atoms.get_potential_energy())
+        result["energy_ev"] = energy
+        import numpy as _np
+        result["fmax"] = (float(_np.linalg.norm(atoms.get_forces(), axis=1).max())
+                          if len(atoms) else 0.0)
         write(cfg["output_xyz"], atoms)
         syms = atoms.get_chemical_symbols()
         pos = atoms.get_positions()
         result["geometry"] = [[syms[i], float(pos[i][0]), float(pos[i][1]), float(pos[i][2])]
                               for i in range(len(atoms))]
-        result["energy_ev"] = energy
+        print("[mlip] energy=" + repr(energy) + " eV  fmax=" + repr(result["fmax"]) + " eV/A", flush=True)
+        if do_freq:
+            _vibrational_analysis(atoms, _geometry_type(atoms), cfg, result)
+        print("[mlip] done.", flush=True)
     except Exception as e:
         result["error"] = type(e).__name__ + ": " + str(e)
         traceback.print_exc()
@@ -151,12 +250,18 @@ def _as_xyz_file(coords: str) -> str:
 
 def write_mlip_run_files(calc_dir, name: str, model: str, xyz: str, result_json,
                          charge: int = 0, multiplicity: int = 1,
-                         task: str = "opt") -> tuple[Path, Path]:
+                         task: str = "opt", device: str = "",
+                         temperature: float = 298.15,
+                         pressure: float = 1.0) -> tuple[Path, Path]:
     """Write the input .xyz, the JSON config, and the worker script into the run
     folder. Returns (script_path, config_path) for MlipRunner.run(). charge and
     multiplicity are passed to the worker for charge/spin-aware models (OMol25 /
-    multi-head); MACE-OFF/MP ignore them. task is "opt" (LBFGS relaxation) or
-    "sp" (single-point energy at the given geometry)."""
+    multi-head); MACE-OFF/MP ignore them. task is one of "opt" (LBFGS relaxation),
+    "sp" (single-point energy), "freq" (vibrational analysis + thermochemistry at
+    the given geometry) or "opt_freq" (relax, then frequencies); an unknown value
+    falls back to "opt". device is "" (auto: CUDA when the worker's env sees a GPU,
+    else CPU), "cpu", or "cuda" — resolved inside the worker. temperature (K) and
+    pressure (atm) drive the ideal-gas thermochemistry for the freq tasks."""
     calc_dir = Path(calc_dir)
     calc_dir.mkdir(parents=True, exist_ok=True)
     input_xyz = calc_dir / f"{name}.xyz"
@@ -166,11 +271,18 @@ def write_mlip_run_files(calc_dir, name: str, model: str, xyz: str, result_json,
 
     input_xyz.write_text(_as_xyz_file(xyz), encoding="utf-8")
     family, model_arg = parse_mace_model(model)
+    task = str(task).lower()
+    if task not in ("opt", "sp", "freq", "opt_freq"):
+        task = "opt"
+    device = str(device).lower()
+    if device not in ("cpu", "cuda"):
+        device = DEFAULT_DEVICE   # "" = auto (resolved in the worker)
     cfg = {
         "model": model or "MACE-OFF medium",
-        "family": family, "model_arg": model_arg, "device": DEFAULT_DEVICE,
+        "family": family, "model_arg": model_arg, "device": device,
         "charge": int(charge), "multiplicity": int(multiplicity),
-        "task": "sp" if str(task).lower() == "sp" else "opt",
+        "task": task,
+        "temperature": float(temperature), "pressure": float(pressure),
         "fmax": DEFAULT_FMAX, "max_steps": DEFAULT_MAX_STEPS,
         "input_xyz": str(input_xyz), "output_xyz": str(output_xyz),
         "result_json": str(result_json),

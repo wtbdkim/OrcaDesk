@@ -959,12 +959,15 @@ function applyMlipLock() {
   card.classList.toggle("locked", locked);
   const note = document.getElementById("mlip-lock-note");
   if (note) note.style.display = locked ? "" : "none";
-  for (const id of ["mlip-name", "mlip-task", "mlip-model", "mlip-charge", "mlip-mult", "mlip-ref-select"]) {
+  for (const id of ["mlip-name", "mlip-task", "mlip-model", "mlip-charge", "mlip-mult",
+                    "mlip-device", "mlip-temp", "mlip-pressure", "mlip-ref-select"]) {
     const el = document.getElementById(id);
     if (el) el.disabled = locked;
   }
   card.querySelectorAll("button").forEach(b => { b.disabled = locked; });
 }
+/** Any ready env reports a CUDA GPU — drives the Device dropdown's default/hint. */
+let _mlipCuda = false;
 /** Backend list -> "MACE 0.3.6, SevenNet 0.10.0".
  *  @param {MlipBackend[]} backends */
 function mlipBackendText(backends) {
@@ -977,7 +980,10 @@ function renderMlip(st) {
   const state = (st && st.state) || "unset";
   const envs = (st && st.envs) || [];
   _mlipReady = (state === "ready");
+  // GPU is offered when some ready env's torch actually sees a CUDA device
+  _mlipCuda = envs.some(e => e.state === "ready" && e.cuda === true);
   applyMlipLock();
+  refreshMlipDeviceOptions();
   const pill = document.getElementById("mlip-status");
   pill.classList.toggle("ok", state === "ready");
   pill.classList.toggle("err", state === "error");
@@ -1028,7 +1034,10 @@ function renderMlipEnvList(envs) {
     const de = document.createElement("div");
     de.className = "mlip-env-detail";
     if (e.state === "ready") {
-      de.textContent = (mlipBackendText(e.backends) || "ready") + (e.version ? " · python " + e.version : "");
+      const dev = e.cuda === true ? " · GPU: " + (e.cuda_name || "CUDA")
+                : e.cuda === false ? " · CPU only" : "";
+      de.textContent = (mlipBackendText(e.backends) || "ready")
+        + (e.version ? " · python " + e.version : "") + dev;
       de.style.color = "var(--ok)";
     } else if (e.state === "checking") {
       de.textContent = "checking…";
@@ -1831,11 +1840,33 @@ function resetMlipForm() {
   document.getElementById("mlip-task").value = "opt";
   document.getElementById("mlip-charge").value = "0";
   document.getElementById("mlip-mult").value = "1";
+  document.getElementById("mlip-temp").value = "298.15";
+  document.getElementById("mlip-pressure").value = "1.0";
   mlipXyz = "";
   document.getElementById("mlip-xyz-status").textContent = "";
   const dr = document.querySelector('input[name="mlip-geomsrc"][value="direct"]');
   if (dr) dr.checked = true;
+  onMlipTaskChange();
   onMlipGeomSourceChange();
+}
+/** Show the thermochemistry (T/P) row only for the frequency tasks. */
+function onMlipTaskChange() {
+  const task = document.getElementById("mlip-task")?.value || "opt";
+  const row = document.getElementById("mlip-thermo-row");
+  if (row) row.style.display = (task === "freq" || task === "opt_freq") ? "" : "none";
+}
+/** Reflect detected GPU on the Device dropdown: label the CUDA option and, when
+ *  no ready env sees a GPU, disable it so the user can't pick a device the
+ *  worker would fail to load (Auto still falls back to CPU safely). */
+function refreshMlipDeviceOptions() {
+  const sel = document.getElementById("mlip-device");
+  if (!sel) return;
+  const cuda = /** @type {any} */ (sel.querySelector('option[value="cuda"]'));
+  if (cuda) {
+    cuda.textContent = _mlipCuda ? "GPU (CUDA)" : "GPU (CUDA) — none detected";
+    cuda.disabled = !_mlipCuda;
+    if (!_mlipCuda && sel.value === "cuda") sel.value = "";
+  }
 }
 /** @returns {string} the selected MLIP geometry source ("direct" | "reference"). */
 function currentMlipGeomSource() {
@@ -1889,14 +1920,22 @@ async function addMlipCalcToQueue() {
     }
     const charge = parseInt(document.getElementById("mlip-charge").value, 10) || 0;
     const mult = Math.max(1, parseInt(document.getElementById("mlip-mult").value, 10) || 1);
-    const kind = document.getElementById("mlip-task").value === "sp" ? "mlip_sp" : "mlip_opt";
+    const device = document.getElementById("mlip-device").value;
+    const task = document.getElementById("mlip-task").value;
+    const kind = { sp: "mlip_sp", freq: "mlip_freq", opt_freq: "mlip_opt_freq" }[task] || "mlip_opt";
+    /** @type {Partial<StepConfigPayload>} */
+    const config = { kind, mlip_model: model, mlip_env_id: "", mlip_device: device };
+    if (task === "freq" || task === "opt_freq") {
+      config.freq_temp_k = parseFloat(document.getElementById("mlip-temp").value) || 298.15;
+      config.freq_pressure_atm = parseFloat(document.getElementById("mlip-pressure").value) || 1.0;
+    }
     const calc = /** @type {CalcInput} */ ({
       name, kind,
       charge, multiplicity: mult,
       geometry_source: src,
       xyz, ref_name,
       is_raw: false, raw_text: "",
-      config: { kind, mlip_model: model, mlip_env_id: "" },
+      config,
       state: "pending", message: "",
     });
     if (!await confirmMidRunOverwrite(calc.name)) return;
@@ -1908,7 +1947,9 @@ async function addMlipCalcToQueue() {
       return;
     }
     localCalcs[calc.name] = calc;
-    appendLog(`"${calc.name}" (MLIP ${kind === "mlip_sp" ? "single point" : "opt"} · ${model}) added to queue.`, "ok");
+    const taskLabel = { mlip_sp: "single point", mlip_freq: "frequencies",
+                        mlip_opt_freq: "opt + frequencies" }[kind] || "opt";
+    appendLog(`"${calc.name}" (MLIP ${taskLabel} · ${model}) added to queue.`, "ok");
     resetMlipForm();
     await refreshQueue();
     switchTab("queue");

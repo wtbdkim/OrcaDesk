@@ -229,6 +229,7 @@ class StepConfig:
     # ORCA: build_input() ignores them entirely (ORCA never sees an MLIP calc).
     mlip_model: str = ""                 # e.g. "MACE-OFF medium"
     mlip_env_id: str = ""                # registered MLIP env to run in ("" = first ready)
+    mlip_device: str = ""                # "" = auto (CUDA if available, else CPU) | cpu | cuda
 
     # CREST (conformer sampling, run via WSL) — used only when kind starts with
     # "crest". These drive the separate pipeline in orcamgr/crest/, NOT ORCA:
@@ -316,6 +317,11 @@ class StepConfig:
         # input ORCA rejects. New builds no longer offer it (data/scf_convergences.json).
         if cfg.scf_convergence.strip().lower() == "mediumscf":
             cfg.scf_convergence = "NormalSCF"
+        # mlip_device is a closed enum at the trust boundary (it selects the torch
+        # device the worker runs on): anything but cpu/cuda degrades to "" (auto,
+        # which the worker resolves to CUDA when available, else CPU).
+        if cfg.mlip_device not in ("", "cpu", "cuda"):
+            cfg.mlip_device = ""
         # crest_handoff is a closed enum at the trust boundary: anything but the
         # two known values degrades to the safe default (single-geometry handoff).
         if cfg.crest_handoff not in ("lowest", "all"):
