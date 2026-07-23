@@ -17,6 +17,8 @@ JS calls these slots:
   parse_out_file, parse_out_path, parse_calc_output, build_inp_preview,
   add_calc, remove_calc, clear_queue, reorder_calc, update_calc,
   get_queue, get_calc, get_inp, get_log, get_graph_lines, export_conformers,
+  get_conformer_frames, browse_xyz_folder,
+  get_favorites, toggle_favorite, export_frames,
   get_free_energy_profile, check_overwrite_conflicts, has_existing_output,
   run_queue, cancel_queue, stop_after_current,
   get_server_status, get_connect_qr, start_server, stop_server
@@ -826,6 +828,98 @@ class Bridge(QObject):
             dest = folder / "conformers"
             written = _export(folder / "crest_conformers.xyz", dest, name)
             return json.dumps({"ok": True, "count": len(written), "folder": str(dest)})
+        except Exception as e:
+            return json.dumps({"ok": False, "error": str(e)})
+
+    # --- in-app 3D structure viewer (Results tab) ---
+    @pyqtSlot(str, result=str)
+    def get_conformer_frames(self, name: str) -> str:
+        """Frames for a queued CREST search's ensemble, for the in-app 3D viewer:
+        reads {run}/crest_conformers.xyz (or crest_best.xyz) and returns
+        {ok, title, frames:[{label, xyz, energy}]} — xyz is raw frame text 3Dmol
+        parses directly. On-demand (not in the result payload) so the normal
+        Results render stays light even for a 100-conformer ensemble."""
+        from ..molview import frames_from_file
+        try:
+            folder = self._calc_run_dir(name)
+            p = folder / "crest_conformers.xyz"
+            if not p.exists():
+                p = folder / "crest_best.xyz"
+            if not p.exists():
+                return json.dumps({"ok": False, "error": "No conformer ensemble on disk."})
+            frames = frames_from_file(p, label_prefix=f"{name}_c")
+        except OSError as e:
+            return json.dumps({"ok": False, "error": str(e)})
+        if not frames:
+            return json.dumps({"ok": False, "error": "No structures found in the ensemble."})
+        return json.dumps({"ok": True, "title": name, "frames": frames})
+
+    @pyqtSlot(result=str)
+    def browse_xyz_folder(self) -> str:
+        """Pick any folder and return every ``*.xyz`` structure in it (natural
+        filename order; each file may itself be multi-frame) as viewer frames —
+        {ok, title, frames:[{label, xyz, energy}]}. General: works on any folder
+        (e.g. a CREST ``conformers/`` folder). {ok:false, cancelled:true} when the
+        picker is closed, {ok:false, error} otherwise."""
+        folder = QFileDialog.getExistingDirectory(
+            self.window, "Select a folder of .xyz structures")
+        if not folder:
+            return json.dumps({"ok": False, "cancelled": True})
+        from ..molview import frames_from_folder
+        try:
+            frames = frames_from_folder(folder)
+        except OSError as e:
+            return json.dumps({"ok": False, "error": str(e)})
+        if not frames:
+            return json.dumps({"ok": False, "error": "No .xyz structures in that folder."})
+        return json.dumps({"ok": True, "title": Path(folder).name,
+                           "folder": folder, "frames": frames})
+
+    # --- 3D viewer favorites (starred conformers/structures) ---
+    @pyqtSlot(str, result=str)
+    def get_favorites(self, source: str) -> str:
+        """Favorited frame labels for a viewer source ("calc:<name>" /
+        "folder:<path>"). Returns {"ok": true, "labels": [...]}."""
+        from ..favorites import get as _get
+        try:
+            return json.dumps({"ok": True, "labels": _get(source)})
+        except Exception as e:
+            return json.dumps({"ok": False, "error": str(e), "labels": []})
+
+    @pyqtSlot(str, str, bool, result=str)
+    def toggle_favorite(self, source: str, label: str, on: bool) -> str:
+        """Star/unstar one frame under a source; persist and return the updated
+        label list. {"ok": true, "labels": [...]}."""
+        from ..favorites import toggle as _toggle
+        try:
+            return json.dumps({"ok": True, "labels": _toggle(source, label, on)})
+        except Exception as e:
+            return json.dumps({"ok": False, "error": str(e), "labels": []})
+
+    @pyqtSlot(str, str, str, result=str)
+    def export_frames(self, dest_kind: str, dest: str, frames_json: str) -> str:
+        """Write a set of viewer frames (favorites) to a `favorites/` subfolder as
+        one .xyz each. `dest_kind` is "calc" (dest = a queued calc name → its run
+        folder) or "folder" (dest = a folder path). `frames_json` is a list of
+        {label, xyz}. Returns {ok, count, folder} or {ok:false, error}."""
+        try:
+            frames = json.loads(frames_json or "[]")
+            if dest_kind == "calc":
+                base = self._calc_run_dir(dest)
+            else:
+                base = Path(dest)
+            out_dir = base / "favorites"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            count = 0
+            for fr in frames:
+                xyz = fr.get("xyz", "")
+                if not xyz:
+                    continue
+                fname = re.sub(r"[^A-Za-z0-9._-]+", "_", str(fr.get("label", "frame"))).strip("_") or "frame"
+                text = xyz if xyz.endswith("\n") else xyz + "\n"
+                (out_dir / f"{fname}.xyz").write_text(text, encoding="utf-8")
+                count += 1
+            return json.dumps({"ok": True, "count": count, "folder": str(out_dir)})
         except Exception as e:
             return json.dumps({"ok": False, "error": str(e)})
 

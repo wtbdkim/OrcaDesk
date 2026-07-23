@@ -21,5 +21,8 @@
     // don't pick up @types packages from any stray node_modules
     "types": []
   },
-  "include": ["web/**/*.js", "web/**/*.d.ts"]
+  "include": ["web/**/*.js", "web/**/*.d.ts"],
+  // web/vendor/ holds third-party bundles (3Dmol.js) — minified, not ours to
+  // type-check; exclude it so tsc only checks our authored front-end.
+  "exclude": ["web/vendor"]
 }

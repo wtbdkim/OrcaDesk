@@ -402,6 +402,8 @@
             <button id="btn-showall" class="btn btn-sm btn-ghost" onclick="toggleShowAll()"
                     title="Every parsed value, ignoring per-calc-type filtering">Show all</button>
             <button class="btn btn-sm" onclick="openOutFile()">Open .out</button>
+            <button class="btn btn-sm" onclick="browseXyzFolder()"
+                    title="Pick a folder of .xyz files and flip through them in 3D (← / →)">Browse .xyz…</button>
           </div>
         </div>
         <div id="result-body"><div class="hint">No result selected.</div></div>
@@ -546,6 +548,35 @@
   </div>
 </div>
 
+<!-- in-app 3D structure viewer (bundled locally; no external CDN) -->
+<div id="mol-viewer" class="mv-overlay" style="display:none">
+  <div class="mv-panel">
+    <div class="mv-head">
+      <div class="mv-title" id="mv-title">Structure viewer</div>
+      <div class="mv-hint">← / →&nbsp; step&nbsp;&nbsp;·&nbsp;&nbsp;Esc&nbsp; close&nbsp;&nbsp;·&nbsp;&nbsp;drag to rotate</div>
+      <button class="btn btn-sm btn-ghost" onclick="closeMolViewer()">Close ✕</button>
+    </div>
+    <div class="mv-body">
+      <div class="mv-list" id="mv-list"></div>
+      <div class="mv-stage">
+        <div id="mv-gl" class="mv-gl"></div>
+        <div class="mv-bar">
+          <button class="btn btn-sm" onclick="molViewerStep(-1)">← Prev</button>
+          <button class="btn btn-sm" id="mv-fav-btn" onclick="toggleFavCurrent()"
+                  title="Star this structure (F)">☆ Favorite</button>
+          <span id="mv-caption" class="mv-caption"></span>
+          <button class="btn btn-sm btn-ghost" id="mv-favonly-btn" onclick="toggleFavOnly()"
+                  title="Step only through starred structures">★ only</button>
+          <button class="btn btn-sm btn-ghost" id="mv-favexport-btn" onclick="exportFavorites()"
+                  title="Write starred structures to a favorites/ folder">Export ★</button>
+          <button class="btn btn-sm" onclick="molViewerStep(1)">Next →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/3Dmol-min.js"></script>
 <script src="scf_graph.js"></script>
 <script src="app.js"></script>
 </body>

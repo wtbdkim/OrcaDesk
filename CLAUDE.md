@@ -92,8 +92,10 @@ message) — so front-end errors are visible in the Log tab even in a deployed b
 (the log ring's trim retains older `[web] ` lines preferentially, so ORCA's stdout
 flood can't evict them — `QueueStore.append_log`);
 `ORCADESK_REMOTE_DEBUG` (handled in `main.py`) remains the dev-time tool.
-`window.py` also trims the embedded browser: WebGL and Chromium's built-in PDF
-viewer are disabled (the UI uses neither), and minimizing the window sets the
+`window.py` also trims the embedded browser: Chromium's built-in PDF viewer is
+disabled (the UI never opens PDFs). **WebGL is enabled** — the Results-tab 3D
+structure viewer (3Dmol.js) needs it; the Liquid-Glass wallpaper canvas is still
+2D, so WebGL is used only inside the viewer's own canvas. Minimizing the window sets the
 page's lifecycle state to Frozen so Chromium releases memory while ORCAdesk sits
 in the taskbar — safe because the JS side polls and already skips hidden ticks,
 catching up on restore. (No profile/cache tuning: the Qt 6 default profile is
@@ -583,6 +585,38 @@ Results tab still offers **Export as .xyz** (`bridge.export_conformers` →
 `crest/export.py`, the same `export_conformers` split), now just a manual
 re-run of the automatic export. No file dialog — the files land next to the
 run; this only reads/writes, never touches the queue.
+
+**In-app 3D structure viewer.** The Results tab renders structures with
+**3Dmol.js** (vendored at `web/vendor/3Dmol-min.js` — bundled locally, no CDN;
+this is why WebGL is enabled in `window.py`). It opens as a modal over the
+Results tab (`#mol-viewer` in `index.html`, `openMolViewer`/`molViewerShow`/
+`closeMolViewer` in `app.js`) and flips through a list of **frames** with the
+←/→ keys (Esc closes, drag rotates). A frame is `{label, xyz, energy}`; `xyz`
+is raw `.xyz` text 3Dmol parses directly, and the caption shows ΔE vs the
+lowest-energy frame when energies are present. Two entry points: **View in 3D**
+on a CREST conformer result (`bridge.get_conformer_frames(name)` reads the run's
+`crest_conformers.xyz`) and **Browse .xyz…** in the Results header
+(`bridge.browse_xyz_folder` picks any folder — general, e.g. a `conformers/`
+folder). Frames are read on demand (never in the result payload, so a
+100-conformer render stays light) by the Qt-free `orcamgr/molview.py`
+(`frames_from_file` / `frames_from_folder`, unit-tested). The GLViewer is created
+lazily on first open and reused; closing clears the scene but keeps the WebGL
+context.
+
+**Viewer favorites (starred structures).** In the viewer the user stars
+structures worth following up (the **F** key or the list star); stars persist
+across sessions via the Qt-free `orcamgr/favorites.py` (a small
+`favorites.json` in `user_data_root`, **not** `settings.json` — which is
+rewritten on every queue mutation), keyed by a namespaced *source*:
+`"calc:<name>"` for a CREST ensemble, `"folder:<path>"` for a browsed folder, so
+two sources never share a star set. **★ only** steps the ←/→ keys through
+starred frames alone; **Export ★** writes them to a `favorites/` subfolder next
+to the source. Bridge slots: `get_favorites(source)`, `toggle_favorite(source,
+label, on)`, `export_frames(dest_kind, dest, frames_json)` — `export_frames`
+takes the frames' xyz straight from the front-end (favorites are few) and
+sanitizes each label into a filename, so it needs no re-parse. `browse_xyz_folder`
+also returns the picked `folder` path (the export/favorites source for a browsed
+set).
 
 **Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
 `list_crest_distros` / `set_crest_distro`) follow

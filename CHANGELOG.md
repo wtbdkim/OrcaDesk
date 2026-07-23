@@ -3,7 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.2-beta] — 2026-07-24
 
 ### Changed
 - **CREST auto-exports every conformer as a separate `.xyz`.** When a conformer
@@ -18,6 +18,18 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   completed search into a failure.
 
 ### Added
+- **In-app 3D structure viewer with arrow-key browsing.** The Results tab can
+  now show structures in 3D (powered by 3Dmol.js, bundled locally) and flip
+  through many with the **← / →** keys — no external program. **View in 3D** on a
+  CREST conformer result steps through the whole ensemble; **Browse .xyz…** in
+  the Results header opens any folder of `.xyz` files (e.g. a `conformers/`
+  folder) as one browsable set. The caption shows each structure's ΔE relative to
+  the lowest-energy one; drag to rotate, Esc to close.
+- **Favorite (★) structures in the 3D viewer.** Star the conformers worth
+  following up (the **F** key or the star in the list) — stars persist across
+  sessions. **★ only** steps the ← / → keys through starred structures alone, and
+  **Export ★** writes just the starred ones to a `favorites/` folder next to the
+  source.
 - **MACE-MH-1 omol head.** A new MLIP model option, *MACE-MH-1 omol*, selects
   the `omol` head of the multi-head MACE-MH-1 model (wB97M-VV10, organic /
   organometallic) instead of its default inorganic-materials head — the head

@@ -4,7 +4,7 @@ A desktop GUI for building, queuing, running, and parsing ORCA computational
 chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark **or light** UI),
 Python core.
 
-> **Status: 0.5.1 beta** (`0.5.1-beta`). Desktop app: build → queue → run →
+> **Status: 0.5.2 beta** (`0.5.2-beta`). Desktop app: build → queue → run →
 > parse, validated against real ORCA 6.1.1 output. A running calculation
 > **survives closing the app** and is reattached on the next launch; the UI ships
 > with both a **dark and a light theme** (plus an optional **Liquid Glass**
@@ -132,7 +132,13 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   for the relevant calculation type; a **`Show all`** toggle reveals everything
   regardless of type. You can also open any external `.out` file. A **free-energy
   profile** view plots relative Gibbs free energy across finished frequency
-  calculations in queue order.
+  calculations in queue order. A built-in **3D structure viewer** shows
+  geometries in the window and lets you flip through many structures with the
+  **← / →** keys: *View in 3D* steps through a CREST conformer ensemble, and
+  *Browse .xyz…* opens any folder of `.xyz` files (e.g. a `conformers/` folder)
+  as one browsable set — no external viewer needed. **Star** the ones worth
+  keeping (the **F** key); starred structures persist, can be stepped through on
+  their own, and exported to a `favorites/` folder.
 - **Settings**: ORCA executable path, **MLIP environments** (register your own
   MACE-capable Python interpreters; backends are auto-detected), workspace folder,
   per-step defaults (nprocs / maxcore), and two live-graph options — the
