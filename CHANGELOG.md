@@ -6,6 +6,12 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **MACE-MH-1 omol head.** A new MLIP model option, *MACE-MH-1 omol*, selects
+  the `omol` head of the multi-head MACE-MH-1 model (wB97M-VV10, organic /
+  organometallic) instead of its default inorganic-materials head — the head
+  best suited to molecular and host–guest energetics (it is the strongest
+  MACE-MH-1 head on the S30L supramolecular benchmark). Like MACE-OMOL and
+  MACE-MH-1 it reads the calc's charge / multiplicity for ions and radicals.
 - **MLIP frequencies & thermochemistry.** The MLIP build card gains two new
   tasks, *Frequencies* and *Opt + Frequencies*, alongside Optimization and
   Single point. They run an ASE finite-difference vibrational analysis with

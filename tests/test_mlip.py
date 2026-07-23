@@ -482,17 +482,21 @@ def test_mlip_failure_blocks_dependent_calc_not_whole_queue(tmp_path, monkeypatc
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("label, expected", [
-    ("MACE-OFF small", ("mace_off", "small")),
-    ("MACE-OFF medium", ("mace_off", "medium")),
-    ("MACE-OFF large", ("mace_off", "large")),
-    ("MACE-MP small", ("mace_mp", "small")),
-    ("MACE-MP-0 medium", ("mace_mp", "medium")),
-    ("mace-mp large", ("mace_mp", "large")),
+    ("MACE-OFF small", ("mace_off", "small", "")),
+    ("MACE-OFF medium", ("mace_off", "medium", "")),
+    ("MACE-OFF large", ("mace_off", "large", "")),
+    ("MACE-MP small", ("mace_mp", "small", "")),
+    ("MACE-MP-0 medium", ("mace_mp", "medium", "")),
+    ("mace-mp large", ("mace_mp", "large", "")),
     # OMol25 models: a dedicated loader / named model arg, not a size
-    ("MACE-OMOL extra-large", ("mace_omol", "extra_large")),
-    ("mace-omol", ("mace_omol", "extra_large")),
-    ("MACE-MH-1", ("mace_mp", "mh-1")),
-    ("MACE-MH-0", ("mace_mp", "mh-0")),
+    ("MACE-OMOL extra-large", ("mace_omol", "extra_large", "")),
+    ("mace-omol", ("mace_omol", "extra_large", "")),
+    ("MACE-MH-1", ("mace_mp", "mh-1", "")),
+    ("MACE-MH-0", ("mace_mp", "mh-0", "")),
+    # mh-1's omol head: mace_mp loader + head selector. The "mh-1 omol" key must
+    # win over the plain "omol"/"mh-1" keys (all three are substrings here).
+    ("MACE-MH-1 omol", ("mace_mp", "mh-1", "omol")),
+    ("mace-mh-1 omol head", ("mace_mp", "mh-1", "omol")),
 ])
 def test_parse_mace_model_maps_family_and_model_arg(label, expected):
     assert parse_mace_model(label) == expected
@@ -500,7 +504,7 @@ def test_parse_mace_model_maps_family_and_model_arg(label, expected):
 
 @pytest.mark.parametrize("label", ["", None, "SomeUnknownModel", "MACE-OFF"])
 def test_parse_mace_model_unknown_label_falls_back_to_off_medium(label):
-    assert parse_mace_model(label) == ("mace_off", "medium")
+    assert parse_mace_model(label) == ("mace_off", "medium", "")
 
 
 def test_write_mlip_run_files_records_model_arg_and_charge_spin(tmp_path):
@@ -514,6 +518,7 @@ def test_write_mlip_run_files_records_model_arg_and_charge_spin(tmp_path):
     cfg = _json.loads(config_path.read_text(encoding="utf-8"))
     assert cfg["family"] == "mace_omol"
     assert cfg["model_arg"] == "extra_large"
+    assert cfg["head"] == ""   # mace_omol has no multi-head selector
     assert cfg["charge"] == -1
     assert cfg["multiplicity"] == 2   # worker sets atoms.info["spin"] = multiplicity (2S+1), i.e. 2 = doublet
     # defaults when omitted (backward-compatible neutral singlet)
@@ -522,6 +527,12 @@ def test_write_mlip_run_files_records_model_arg_and_charge_spin(tmp_path):
     cfg2 = _json.loads(cp2.read_text(encoding="utf-8"))
     assert cfg2["charge"] == 0 and cfg2["multiplicity"] == 1
     assert cfg2["family"] == "mace_off" and cfg2["model_arg"] == "medium"
+    # mh-1's omol head: mace_mp loader + head='omol' recorded for the worker
+    _, cp3 = write_mlip_run_files(tmp_path, "j3", "MACE-MH-1 omol",
+                                  "H 0 0 0", tmp_path / "j3.json")
+    cfg3 = _json.loads(cp3.read_text(encoding="utf-8"))
+    assert cfg3["family"] == "mace_mp" and cfg3["model_arg"] == "mh-1"
+    assert cfg3["head"] == "omol"
 
 
 # ---------------------------------------------------------------------------

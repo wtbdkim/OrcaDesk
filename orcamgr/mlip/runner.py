@@ -161,8 +161,15 @@ def main():
         else:
             from mace.calculators import mace_mp as load_mace
         device = _resolve_device(cfg.get("device"))
-        print("[mlip] loading " + str(cfg["model"]) + " (device=" + device + ")", flush=True)
-        calc = load_mace(model=cfg["model_arg"], device=device, default_dtype="float64")
+        head = cfg.get("head") or ""
+        print("[mlip] loading " + str(cfg["model"]) + " (device=" + device + ")"
+              + (" head=" + head if head else ""), flush=True)
+        load_kwargs = {"model": cfg["model_arg"], "device": device, "default_dtype": "float64"}
+        # `head` selects a multi-head model's head and is a mace_mp-only kwarg;
+        # mace_off/mace_omol don't accept it, so only pass it for mace_mp.
+        if head and cfg["family"] == "mace_mp":
+            load_kwargs["head"] = head
+        calc = load_mace(**load_kwargs)
         atoms = read(cfg["input_xyz"])
         # OMol25 / multi-head models are charge- and spin-aware: MACECalculator
         # reads atoms.info["charge"] and ["spin"], where "spin" is the SPIN
@@ -210,31 +217,40 @@ main()
 
 
 # Special models whose loader/model-arg can't be expressed as a size heuristic:
-# a label containing the key maps to (loader family, model= argument). Checked
-# before the small/medium/large heuristic. mace_omol is the dedicated OMol25
-# model; mh-0/mh-1 are the multi-head models (which include an OMol head) and
-# load through mace_mp. Order matters only in that these win over the heuristic.
+# a label containing the key maps to (loader family, model= argument, head).
+# Checked before the small/medium/large heuristic. mace_omol is the dedicated
+# OMol25 model; mh-0/mh-1 are the multi-head models and load through mace_mp.
+# `head` is the multi-head selector passed to mace_mp(head=...) — "" means the
+# model's own default head (omat_pbe for mh-1). "MACE-MH-1 omol" selects the
+# omol head (wB97M-VV10, organic/organometallic; the best mh-1 head for
+# molecular / host-guest energetics — S30L). Order matters: the more specific
+# "mh-1 omol" must precede the plain "omol" and "mh-1" keys, since a label like
+# "MACE-MH-1 omol" contains all three as substrings and the first hit wins.
 _SPECIAL_MODELS = {
-    "omol": ("mace_omol", "extra_large"),
-    "mh-1": ("mace_mp", "mh-1"),
-    "mh-0": ("mace_mp", "mh-0"),
+    "mh-1 omol": ("mace_mp", "mh-1", "omol"),
+    "omol": ("mace_omol", "extra_large", ""),
+    "mh-1": ("mace_mp", "mh-1", ""),
+    "mh-0": ("mace_mp", "mh-0", ""),
 }
 
 
-def parse_mace_model(model: str) -> tuple[str, str]:
-    """Map a dropdown label to (family, model_arg) for the worker. family is one
-    of {'mace_off','mace_mp','mace_omol'} (the loader function); model_arg is
-    passed verbatim to that loader (a size 'small'/'medium'/'large', or a named
-    model like 'extra_large'/'mh-1'). 'MACE-OFF medium' -> ('mace_off','medium'),
-    'MACE-OMOL extra-large' -> ('mace_omol','extra_large'), 'MACE-MH-1' ->
-    ('mace_mp','mh-1'). Unknown labels default to MACE-OFF medium."""
+def parse_mace_model(model: str) -> tuple[str, str, str]:
+    """Map a dropdown label to (family, model_arg, head) for the worker. family
+    is one of {'mace_off','mace_mp','mace_omol'} (the loader function); model_arg
+    is passed verbatim to that loader (a size 'small'/'medium'/'large', or a
+    named model like 'extra_large'/'mh-1'); head is the mace_mp multi-head
+    selector ("" = the model's default head; only mace_mp accepts it).
+    'MACE-OFF medium' -> ('mace_off','medium',''), 'MACE-OMOL extra-large' ->
+    ('mace_omol','extra_large',''), 'MACE-MH-1' -> ('mace_mp','mh-1',''),
+    'MACE-MH-1 omol' -> ('mace_mp','mh-1','omol'). Unknown labels default to
+    MACE-OFF medium."""
     m = (model or "").strip().lower()
-    for key, fam_arg in _SPECIAL_MODELS.items():
+    for key, fam_arg_head in _SPECIAL_MODELS.items():
         if key in m:
-            return fam_arg
+            return fam_arg_head
     family = "mace_mp" if "mp" in m else "mace_off"
     size = next((s for s in ("small", "medium", "large") if s in m), "medium")
-    return family, size
+    return family, size, ""
 
 
 def _as_xyz_file(coords: str) -> str:
@@ -270,7 +286,7 @@ def write_mlip_run_files(calc_dir, name: str, model: str, xyz: str, result_json,
     script_path = calc_dir / "mlip_opt.py"
 
     input_xyz.write_text(_as_xyz_file(xyz), encoding="utf-8")
-    family, model_arg = parse_mace_model(model)
+    family, model_arg, head = parse_mace_model(model)
     task = str(task).lower()
     if task not in ("opt", "sp", "freq", "opt_freq"):
         task = "opt"
@@ -279,7 +295,7 @@ def write_mlip_run_files(calc_dir, name: str, model: str, xyz: str, result_json,
         device = DEFAULT_DEVICE   # "" = auto (resolved in the worker)
     cfg = {
         "model": model or "MACE-OFF medium",
-        "family": family, "model_arg": model_arg, "device": device,
+        "family": family, "model_arg": model_arg, "head": head, "device": device,
         "charge": int(charge), "multiplicity": int(multiplicity),
         "task": task,
         "temperature": float(temperature), "pressure": float(pressure),

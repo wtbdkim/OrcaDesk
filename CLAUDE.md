@@ -432,9 +432,14 @@ env, via `_resolve_mlip_python`), writes an input `.xyz` + a JSON config + the
 worker script into the run folder, then runs the user's interpreter on it. The
 worker — running in the **user's** env, so it may import `torch`/`mace`/`ase`
 (ORCAdesk's env need not) — loads a MACE calculator via `parse_mace_model`,
-which maps the dropdown label to `(family, model_arg)`: `mace_off` (SPICE,
+which maps the dropdown label to `(family, model_arg, head)`: `mace_off` (SPICE,
 organic), `mace_mp` (materials + the multi-head `mh-1`/`mh-0`), or `mace_omol`
-(the OMol25 model, `extra_large`). Charge/multiplicity flow from the
+(the OMol25 model, `extra_large`). `head` is the multi-head selector passed as
+`mace_mp(head=...)` — `""` is the model's default head (`omat_pbe` for `mh-1`);
+the `MACE-MH-1 omol` label selects `mh-1`'s `omol` head (wB97M-VV10,
+organic/organometallic — the best `mh-1` head for molecular / host-guest
+energetics). Only `mace_mp` accepts `head`, so the worker passes it only for
+that family. Charge/multiplicity flow from the
 `Calculation` into the worker as `atoms.info["charge"]` and `["spin"]` — where
 **`spin` is the spin multiplicity 2S+1 (the multiplicity itself, not
 `mult−1`)**; the OMol25 / multi-head models consume them (ions, radicals) while
