@@ -667,6 +667,90 @@ test("the stepper falls back to the compact strip when the height cannot fit the
   assert.ok(!short.includes("stripes"), "no hazard stripes on the compact strip");
 });
 
+test("CrestTracker counts an EARLY-terminated MTD toward the batch", function () {
+  const c = new SCFGraph.CrestTracker();
+  feed(c, [
+    " Meta-Dynamics Iteration 2",
+    "*MTD   1 completed successfully ...        4 min, 42.323 sec",
+    "*MTD   3 terminated EARLY  ...        2 min, 25.625 sec",
+  ]);
+  assert.strictEqual(c.mtdDone, 2, "EARLY still delivered a trajectory — counter must not stall");
+});
+
+test("CrestTracker tracks the multilevel ensemble-optimization sub-phase", function () {
+  // lines verbatim from a real CREST 3.0.2 run (Asp conformer search)
+  const c = new SCFGraph.CrestTracker();
+  feed(c, [
+    " Initial Geometry Optimization",
+    " t(MTD) / ps    :    17.0",
+    " Σ(t(MTD)) / ps :   102.0 (6 MTDs)",
+    " Meta-Dynamics Iteration 1",
+    "*MTD   1 completed successfully ...        3 min, 55.219 sec",
+  ]);
+  assert.strictEqual(c.mtdLen, 17, "MTD length parsed");
+  assert.ok(SCFGraph.renderCrestProgress(c).includes("iteration 1 · 1/6 MTDs · 17 ps each"));
+  for (let k = 2; k <= 6; k++) c.push(`*MTD   ${k} completed successfully ...        3 min, 57.411 sec`);
+  c.push(' Optimizing all 1014 structures from file "crest_dynamics.trj" ...');
+  c.push(" crude pre-optimization");
+  assert.ok(SCFGraph.renderCrestProgress(c).includes("optimizing 1014 structures (crude)"),
+            "the multi-minute optimization block is visible, not a stalled MTD count");
+  c.push("CREGEN> E lowest :   -74.74126");
+  c.push(" 472 structures remain within    12.00 kcal/mol window");
+  c.push(" optimization with tight thresholds");
+  assert.ok(SCFGraph.renderCrestProgress(c).includes("optimizing 472 structures (tight)"),
+            "the tight sub-block adopts the crude CREGEN's in-window count");
+  c.push("CREGEN> E lowest :   -74.74664");
+  c.push(" 93 structures remain within     6.00 kcal/mol window");
+  assert.ok(SCFGraph.renderCrestProgress(c).includes("iteration 1 · E lowest -74.74664 Eh · 93 in 6 kcal window"),
+            "after the iteration's tight CREGEN the sub shows the ensemble state");
+});
+
+test("the live CREGEN ensemble state rides the sampling row, next to the MTD count", function () {
+  const c = new SCFGraph.CrestTracker();
+  feed(c, [
+    " Σ(t(MTD)) / ps :   102.0 (6 MTDs)",
+    " Meta-Dynamics Iteration 1",
+    "CREGEN> E lowest :   -74.74664",
+    " 93 structures remain within     6.00 kcal/mol window",
+    " A new lower conformer was found!",
+    " Improved by    0.00020 Eh or    0.12361kcal/mol",
+    " Meta-Dynamics Iteration 2",
+    "*MTD   1 completed successfully ...        4 min, 42.323 sec",
+  ]);
+  const html = SCFGraph.renderCrestProgress(c, { height: 600 });
+  assert.ok(html.includes("iteration 2 · 1/6 MTDs · E lowest -74.74664 Eh · 93 in 6 kcal window · new lowest −0.12 kcal/mol"),
+            "MTD count and the CREGEN state share the sampling row's key-result line");
+  assert.ok(!html.includes("vstep-foot"), "no footer strip while the search runs");
+  // best-so-far: a later (higher) crude-pass E must not displace the minimum
+  c.push("CREGEN> E lowest :   -74.73693");
+  assert.ok(SCFGraph.renderCrestProgress(c, { height: 600 }).includes("E lowest -74.74664 Eh"));
+});
+
+test("a finished CREST stepper's footer shows ensemble statistics + runtime split", function () {
+  const c = new SCFGraph.CrestTracker();
+  feed(c, CREST_LINES.slice(0, -1).concat([
+    " population of lowest in %             :   15.755",
+    " ensemble free energy (kcal/mol)       :   -2.031",
+    " Metadynamics (MTD)         ...       13 min, 47.202 sec ( 42.236%)",
+    " Geometry optimization      ...       18 min, 45.221 sec ( 57.453%)",
+    " CREST terminated normally.",
+  ]));
+  const html = SCFGraph.renderCrestProgress(c, { height: 600 });
+  assert.ok(html.includes("lowest populated 15.8%"));
+  assert.ok(html.includes("ensemble ΔG -2.03 kcal/mol"));
+  assert.ok(html.includes("runtime: MTD 42% / opt 57%"));
+  assert.ok(!html.includes("CREGEN · E lowest"), "the live CREGEN strip is replaced once done");
+});
+
+test("the CREST meta line carries the echoed solvent and NCI mode", function () {
+  const c = new SCFGraph.CrestTracker();
+  c.push(" $ /home/u/.local/bin/crest input.xyz --gfn2 --alpb acetone --ewin 6 -T 12 --nci --chrg 0 --uhf 0");
+  c.push(" Initial Geometry Optimization");
+  const html = SCFGraph.renderCrestProgress(c);
+  assert.ok(html.includes("GFN2-xTB · ALPB(acetone) · NCI mode · 12 cores"),
+            "method · solvent · NCI · cores on the meta line");
+});
+
 // ---------- summary ----------
 console.log("");
 console.log(passed + " passed, " + failed + " failed");

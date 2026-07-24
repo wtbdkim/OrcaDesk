@@ -6,6 +6,19 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [0.5.2-beta] — 2026-07-24
 
 ### Changed
+- **The CREST progress stepper (Log → Graph) is much more detailed.** The
+  Metadynamics-sampling row now follows the whole in-iteration pipeline instead
+  of freezing on the MTD count: the MTD batch (`iteration 2 · 4/6 MTDs · 17 ps
+  each`) and the multilevel ensemble optimization that follows it (`optimizing
+  1014 structures (crude/tight)` — the multi-minute stretch that used to look
+  stalled), then the CREGEN ensemble state appended right on the same line
+  (best `E lowest` so far, structures in the energy window, the latest "new
+  lower conformer" improvement). Once finished, a footer strip under the
+  stepper shows the ensemble statistics (population of the lowest conformer,
+  ensemble ΔG, MTD/optimization runtime split). The meta line
+  now also carries the solvent (`ALPB(acetone)`) and NCI mode. Fixed alongside:
+  an MTD that "terminated EARLY" now counts toward the batch, so the counter no
+  longer sticks below N/N.
 - **CREST auto-exports every conformer as a separate `.xyz`.** When a conformer
   search finishes, ORCAdesk now automatically splits `crest_conformers.xyz` into
   one standalone `.xyz` per conformer under a `conformers/` subfolder of the run

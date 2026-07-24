@@ -713,9 +713,14 @@ phase the pipeline jumped over (no entry stamp of its own but a later stage has
 one, e.g. CREST's Genetic crossing when there's nothing to cross) — keeps the
 rail `--ok` through it but shows a hollow dashed muted dot and an italic
 `skipped` result, so it never reads as a misleading instant "done". Rows are
-`flex:1` between `46–96px`, so **the rail follows the window height**. When the
-panel is too short to fit the rows
-(`< head + n·46px`) the renderer falls back to `.stepc` — the retired HUD
+`flex:1` between `46–96px`, so **the rail follows the window height**. An
+optional **footer strip** (`.vstep-foot`, 12.5px mono muted, tabular numerals,
+`--border` top rule) may sit under the rows for a pipeline-wide status that
+belongs to no single stage — CREST uses it once finished for the ensemble
+statistics + runtime split. Live mid-run state stays on the current row's
+key-result line — a value belongs next to the progress it describes, not in
+a detached strip. When the panel is too short to fit the rows
+(`< head + foot + n·46px`) the renderer falls back to `.stepc` — the retired HUD
 frame minus its hazard stripes: centered title, `STEP k/n` (or `DONE`/
 `STOPPED`) left, the current stage's label + key result center, a dot chain
 right, meta line below. Reuse this exact stepper for any staged pipeline

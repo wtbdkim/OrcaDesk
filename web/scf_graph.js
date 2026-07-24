@@ -1049,7 +1049,7 @@
   // text) is rendered instead. Live clocks (current stage + total elapsed)
   // carry data-clock="<start ms>" and are re-stamped in place by the app's 1s
   // poll, so they keep ticking while the log is silent.
-  const STEP_HEAD_PX = 88, STEP_ROW_MIN = 46, STEP_ROW_MAX = 96;
+  const STEP_HEAD_PX = 88, STEP_ROW_MIN = 46, STEP_ROW_MAX = 96, STEP_FOOT_PX = 30;
 
   function _fmtClock(sec) {
     sec = Math.max(0, Math.round(sec));
@@ -1105,6 +1105,8 @@
   function _stepMetaParts(t) {
     const parts = [];
     if (t.method) parts.push(t.method);
+    if (t.solvent) parts.push(t.solvent);      // CREST: --alpb/--gbsa solvent
+    if (t.nci) parts.push("NCI mode");         // CREST: --nci ellipsoid potential
     if (t.cores) parts.push(`${t.cores} cores`);
     return parts;
   }
@@ -1124,12 +1126,14 @@
   }
 
   // m: {title, state: "running"|"done"|"error", at (n = all done),
-  //     rows: [{label, sub, secs, live, startMs}], meta: string[], elapsed}
+  //     rows: [{label, sub, secs, live, startMs}], meta: string[], elapsed,
+  //     foot?: string — one status line under the rows (CREST's CREGEN strip)}
   function _stepPanelHtml(m, opts) {
     const n = m.rows.length;
+    const footPx = m.foot ? STEP_FOOT_PX : 0;
     const avail = opts && opts.height ? opts.height : 0;
-    if (avail && avail < STEP_HEAD_PX + n * STEP_ROW_MIN) return _stepCompactHtml(m);
-    const style = avail ? ` style="height:${Math.round(Math.min(avail, STEP_HEAD_PX + n * STEP_ROW_MAX))}px"` : "";
+    if (avail && avail < STEP_HEAD_PX + footPx + n * STEP_ROW_MIN) return _stepCompactHtml(m);
+    const style = avail ? ` style="height:${Math.round(Math.min(avail, STEP_HEAD_PX + footPx + n * STEP_ROW_MAX))}px"` : "";
     let pill;
     if (m.state === "done") pill = `<span class="vstep-pill ok">✓ DONE</span>`;
     else if (m.state === "error") pill = `<span class="vstep-pill err">■ STOPPED</span>`;
@@ -1165,6 +1169,7 @@
         `<div class="vstep-head"><div class="vstep-title">${m.title}</div>${pill}</div>` +
         `<div class="vstep-meta">${_stepMetaHtml(m)}</div>` +
         `<div class="vstep-rows">${rows}</div>` +
+        (m.foot ? `<div class="vstep-foot">${m.foot}</div>` : "") +
       `</div>`
     );
   }
@@ -1262,8 +1267,14 @@
   // "CREST terminated normally.". Unlike SCF/opt there is NO single monotone
   // convergence quantity and the macro-iteration count is unknown up front, so
   // this tracks a PHASE CHAIN (init -> sampling -> MD -> final) plus — within
-  // sampling — the MTD count and the CREGEN lowest-energy / conformer-count
-  // series that feed a small graph.
+  // sampling — the MTD count, the multilevel ensemble-optimization sub-phase
+  // ("Optimizing all N structures", crude/tight/very tight — the multi-minute
+  // stretch that used to look stalled), and the CREGEN lowest-energy /
+  // in-window series appended to the same key-result line; a footer strip
+  // appears only once finished (ensemble statistics). NOTE the .out
+  // tail delivers complete lines only, so CREST's in-place "|>10.2% ..."
+  // percent tokens inside an optimization block are NOT available live — the
+  // sub-phase granularity here is the finest the stream supports.
   // The iMTD-GC pipeline in order (verified on real CREST 3.0.2 output):
   // initial opt -> metadynamics sampling -> additional regular MDs -> genetic
   // structure crossing (GC) -> final opt -> final CREGEN ensemble sort. CREGEN
@@ -1285,10 +1296,25 @@
   const CREST_WINDOW_RE  = /(\d+)\s+structures?\s+remain within\s+([\d.]+)\s*kcal/i;
   const CREST_ITER_RE    = /Meta-Dynamics Iteration\s+(\d+)/i;
   const CREST_MTDTOT_RE  = /\((\d+)\s*MTDs\)/;
-  const CREST_MTDDONE_RE = /\*MTD\s+\d+\s+completed successfully/i;
+  // an MTD that "terminated EARLY" still delivered its trajectory — count it,
+  // or the batch counter sticks below N/N forever (seen on real 3.0.2 runs)
+  const CREST_MTDDONE_RE = /\*MTD\s+\d+\s+(?:completed successfully|terminated EARLY)/i;
   const CREST_DONE_RE    = /CREST terminated normally\./;
   const CREST_ERR_RE     = /Change in topology detected|safety termination of CREST/i;
   const CREST_NCONF_RE   = /number of unique conformers for further calc\s+(\d+)/i;
+  // multilevel ensemble optimization (runs after each MTD batch and as the
+  // final optimization; line formats verbatim from real CREST 3.0.2 output)
+  const CREST_MTDLEN_RE  = /^\s*t\(MTD\)\s*\/\s*ps\s*:\s*([\d.]+)/i;
+  const CREST_OPTALL_RE  = /Optimizing all\s+(\d+)\s+structures/i;
+  const CREST_OPTCRUDE_RE = /^\s*crude pre-optimization/i;
+  const CREST_OPTLVL_RE  = /^\s*optimization with (very tight|tight) thresholds/i;
+  // " A new lower conformer was found!" is followed by this line:
+  const CREST_IMPROVED_RE = /Improved by\s+[-\d.]+\s*Eh or\s+([-\d.]+)\s*kcal\/mol/i;
+  // Final Ensemble Information + Wall Time Summary key stats
+  const CREST_POP_RE     = /population of lowest in %\s*:\s*([\d.]+)/i;
+  const CREST_GFREE_RE   = /ensemble free energy \(kcal\/mol\)\s*:\s*(-?[\d.]+)/i;
+  const CREST_TMTD_RE    = /^\s*Metadynamics \(MTD\)\s+\.\.\..*\(\s*([\d.]+)%\)/;
+  const CREST_TOPT_RE    = /^\s*Geometry optimization\s+\.\.\..*\(\s*([\d.]+)%\)/;
 
   function CrestTracker() {
     this.active = false;    // any CREST progress marker seen
@@ -1297,8 +1323,18 @@
     this.iter = 0;          // latest "Meta-Dynamics Iteration N"
     this.mtdTotal = 0;      // MTDs per iteration (from "(14 MTDs)")
     this.mtdDone = 0;       // MTDs completed in the CURRENT iteration
+    this.mtdLen = 0;        // MTD length in ps ("t(MTD) / ps : 17.0")
     this.energies = [];     // CREGEN "E lowest" series (Hartree), one per sort pass
     this.windowCount = 0;   // latest "N structures remain within ... kcal" count
+    this.windowKcal = 0;    // that line's kcal/mol window (2×ewin crude, ewin tight)
+    this.optTotal = 0;      // ensemble optimization: structures in the running block
+    this.optLevel = "";     // "" | "crude" | "tight" | "very tight"
+    this.optActive = false; // an ensemble-optimization block is running now
+    this.improvedKcal = 0;  // latest "A new lower conformer" improvement (kcal/mol)
+    this.pop = 0;           // final "population of lowest in %"
+    this.gFree = null;      // final "ensemble free energy (kcal/mol)"
+    this.mtdPct = 0;        // Wall Time Summary: % of runtime spent in MTD
+    this.optPct = 0;        // Wall Time Summary: % of runtime spent optimizing
     this.nConf = 0;         // final "number of unique conformers for further calc"
     this.finished = false;  // "CREST terminated normally."
     this.error = false;     // a known abort signature (topology change / safety stop)
@@ -1308,6 +1344,8 @@
     this.tEnd = 0;          // ms when the run finished/stopped (0 while running)
     this.noTimes = false;   // rebuilt from disk — wall-clock stamps would be meaningless
     this.method = "";       // echoed --gfn* flag, prettified ("GFN2-xTB")
+    this.solvent = "";      // echoed --alpb/--gbsa solvent, e.g. "ALPB(acetone)"
+    this.nci = false;       // echoed --nci flag (NCI ellipsoid-potential mode)
     this.cores = 0;         // echoed -T thread count
   }
   // monotonic phase advance, like FreqTracker/TddftTracker
@@ -1321,13 +1359,45 @@
     }
     return true;
   };
+  // latest "N in window" text (the kcal width when known)
+  CrestTracker.prototype._winTxt = function () {
+    return `${this.windowCount} in ${this.windowKcal ? `${this.windowKcal} kcal ` : ""}window`;
+  };
+  // a running ensemble-optimization block's text, "" when none is running
+  CrestTracker.prototype._optTxt = function () {
+    if (!this.optActive || !this.optTotal) return "";
+    return `optimizing ${this.optTotal} structures${this.optLevel ? ` (${this.optLevel})` : ""}`;
+  };
+  // the latest CREGEN ensemble state (best E so far, in-window count, newest
+  // "new lower conformer" improvement) — appended to the current stage's
+  // key-result line so it sits right next to the MTD/opt progress
+  CrestTracker.prototype._cregenTxt = function () {
+    if (!this.energies.length) return this.windowCount ? this._winTxt() : "";
+    const bits = [`E lowest ${Math.min.apply(null, this.energies).toFixed(5)} Eh`];
+    if (this.windowCount) bits.push(this._winTxt());
+    if (this.improvedKcal) bits.push(`new lowest −${this.improvedKcal.toFixed(2)} kcal/mol`);
+    return bits.join(" · ");
+  };
   // the current stage's key-result line (frozen into subs[] when the stage ends)
   CrestTracker.prototype._curSub = function () {
-    if (this.aStage === "sample") return this.mtdTotal
-      ? `iteration ${this.iter || 1} · ${Math.min(this.mtdDone, this.mtdTotal)}/${this.mtdTotal} MTDs`
-      : `iteration ${this.iter || 1}`;
-    if (this.aStage === "md" || this.aStage === "gc" || this.aStage === "final")
-      return this.windowCount ? `${this.windowCount} in window` : "";
+    if (this.aStage === "sample") {
+      const parts = [`iteration ${this.iter || 1}`];
+      const opt = this._optTxt();
+      const cg = this._cregenTxt();
+      if (opt) parts.push(opt);
+      else if (this.mtdTotal && (this.mtdDone < this.mtdTotal || !cg))
+        parts.push(`${Math.min(this.mtdDone, this.mtdTotal)}/${this.mtdTotal} MTDs${!cg && this.mtdLen ? ` · ${this.mtdLen} ps each` : ""}`);
+      if (cg) parts.push(cg);
+      return parts.join(" · ");
+    }
+    if (this.aStage === "md" || this.aStage === "gc" || this.aStage === "final") {
+      const parts = [];
+      const opt = this._optTxt();
+      if (opt) parts.push(opt);
+      const cg = this._cregenTxt();
+      if (cg) parts.push(cg);
+      return parts.join(" · ");
+    }
     return "";
   };
   CrestTracker.prototype.push = function (line) {
@@ -1336,6 +1406,9 @@
       const gm = cmd[1].match(/--(gfn\S*)/i);
       if (gm) this.method = gm[1].toLowerCase().split("//")
         .map(function (k) { return CREST_METHOD_NAMES[k] || k.toUpperCase(); }).join("//");
+      const sv = cmd[1].match(/--(alpb|gbsa)\s+(\S+)/i);
+      if (sv) this.solvent = `${sv[1].toUpperCase()}(${sv[2]})`;
+      if (/--nci\b/i.test(cmd[1])) this.nci = true;
       const th = cmd[1].match(/-T\s+(\d+)/);
       if (th) this.cores = parseInt(th[1], 10);
       return false;   // meta only — nothing to redraw yet
@@ -1347,18 +1420,74 @@
     const mt = line.match(CREST_MTDTOT_RE);
     if (mt) { this.mtdTotal = parseInt(mt[1], 10); this.active = true; return true; }
     const it = line.match(CREST_ITER_RE);
-    if (it) { this.iter = parseInt(it[1], 10); this.mtdDone = 0; return this._advance(1); }
+    if (it) {
+      this.iter = parseInt(it[1], 10); this.mtdDone = 0;
+      this.optActive = false; this.optTotal = 0; this.optLevel = "";
+      return this._advance(1);
+    }
     if (CREST_MTDDONE_RE.test(line)) { this.mtdDone++; this.active = true; return true; }
+    const ml = line.match(CREST_MTDLEN_RE);
+    if (ml) { this.mtdLen = parseFloat(ml[1]); this.active = true; return true; }
+    // ensemble-optimization sub-phase: "Optimizing all N structures" opens a
+    // block; crude/tight/very-tight name its level. A tight sub-block reuses
+    // the structures the crude CREGEN kept, so re-opening after a CREGEN pass
+    // adopts the latest in-window count as its total. The block closes on the
+    // CREGEN "E lowest" that follows it (and on a new iteration / MTD batch).
+    const oa = line.match(CREST_OPTALL_RE);
+    if (oa) { this.optTotal = parseInt(oa[1], 10); this.optLevel = ""; this.optActive = true; this.active = true; return true; }
+    if (CREST_OPTCRUDE_RE.test(line)) { this.optLevel = "crude"; this.optActive = true; this.active = true; return true; }
+    const ol = line.match(CREST_OPTLVL_RE);
+    if (ol) {
+      this.optLevel = ol[1].toLowerCase();
+      if (!this.optActive) { this.optActive = true; if (this.windowCount) this.optTotal = this.windowCount; }
+      this.active = true; return true;
+    }
     const el = line.match(CREST_ELOW_RE);
-    if (el) { const e = parseFloat(el[1]); if (isFinite(e)) this.energies.push(e); this.active = true; return true; }
+    if (el) {
+      const e = parseFloat(el[1]);
+      if (isFinite(e)) this.energies.push(e);
+      this.optActive = false;
+      // an "Improved by" note belongs to the pass that just ended — a new
+      // CREGEN pass starts fresh, so the note doesn't linger for the whole run
+      this.improvedKcal = 0;
+      this.active = true; return true;
+    }
     const w = line.match(CREST_WINDOW_RE);
-    if (w) { this.windowCount = parseInt(w[1], 10); this.active = true; return true; }
+    if (w) {
+      this.windowCount = parseInt(w[1], 10);
+      const k = parseFloat(w[2]);
+      if (isFinite(k)) this.windowKcal = k;
+      this.active = true; return true;
+    }
+    const im = line.match(CREST_IMPROVED_RE);
+    if (im) { this.improvedKcal = parseFloat(im[1]); this.active = true; return true; }
+    const pp = line.match(CREST_POP_RE);
+    if (pp) { this.pop = parseFloat(pp[1]); this.active = true; return true; }
+    const gf = line.match(CREST_GFREE_RE);
+    if (gf) { this.gFree = parseFloat(gf[1]); this.active = true; return true; }
+    const tm = line.match(CREST_TMTD_RE);
+    if (tm) { this.mtdPct = parseFloat(tm[1]); return false; }   // meta for the done footer
+    const to = line.match(CREST_TOPT_RE);
+    if (to) { this.optPct = parseFloat(to[1]); return false; }
     for (let i = 0; i < CREST_STAGES.length; i++) {
       if (CREST_STAGES[i].re.test(line)) return this._advance(i);
     }
     return false;
   };
   CrestTracker.prototype.hasData = function () { return this.active; };
+
+  // the footer strip under the CREST stepper — finished runs only: the
+  // ensemble statistics + runtime split. The LIVE CREGEN state rides the
+  // current stage's key-result line instead (_cregenTxt), next to the
+  // MTD/optimization progress it belongs to.
+  function _crestFoot(cr) {
+    if (!cr.finished) return "";
+    const bits = [];
+    if (cr.pop) bits.push(`lowest populated ${cr.pop.toFixed(1)}%`);
+    if (cr.gFree != null) bits.push(`ensemble ΔG ${cr.gFree.toFixed(2)} kcal/mol`);
+    if (cr.mtdPct && cr.optPct) bits.push(`runtime: MTD ${Math.round(cr.mtdPct)}% / opt ${Math.round(cr.optPct)}%`);
+    return bits.join(" · ");
+  }
 
   function renderCrestProgress(cr, opts) {
     const state = cr.error ? "error" : cr.finished ? "done" : "running";
@@ -1375,6 +1504,7 @@
       rows: rows,
       meta: _stepMetaParts(cr),
       elapsed: _stepElapsed(cr, now),
+      foot: _crestFoot(cr),
     }, opts);
   }
 
