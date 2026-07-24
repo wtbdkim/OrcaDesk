@@ -1905,7 +1905,7 @@ async function addMlipCalcToQueue() {
     if (!name) throw new Error("Name is required.");
     if (/[\\/:*?"<>|]/.test(name))
       throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
-    if (queue.some(c => c.name === name))
+    if (queue.some(c => c.name === name && c.name !== editName))
       throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
     const model = document.getElementById("mlip-model").value;
     const src = currentMlipGeomSource();
@@ -1938,6 +1938,26 @@ async function addMlipCalcToQueue() {
       config,
       state: "pending", message: "",
     });
+    // editing: replace in place (preserves queue position), like the DFT path.
+    // Re-resolve the target by NAME — the queue may have shifted since the edit
+    // opened; a vanished target falls through to a plain add.
+    const oldName = editName !== null && queue.some(c => c.name === editName) ? editName : null;
+    if (oldName) {
+      // preserve fan-out provenance the card doesn't carry (an mlip clone can be
+      // a conformer track's 1-hop calc) — else the edit erases "from … conformer k"
+      const orig = queue.find(c => c.name === oldName);
+      if (orig && orig.conformer_origin) calc.conformer_origin = orig.conformer_origin;
+      const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
+      if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
+      if (oldName !== calc.name) delete localCalcs[oldName];
+      localCalcs[calc.name] = calc;
+      appendLog(`"${calc.name}" updated.`, "ok");
+      exitEditMode();
+      resetMlipForm();
+      await refreshQueue();
+      switchTab("queue");
+      return;
+    }
     if (!await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
@@ -2037,7 +2057,7 @@ async function addCrestCalcToQueue() {
     if (!name) throw new Error("Name is required.");
     if (/[\\/:*?"<>|]/.test(name))
       throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
-    if (queue.some(c => c.name === name))
+    if (queue.some(c => c.name === name && c.name !== editName))
       throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
     const src = currentCrestGeomSource();
     let xyz = "", ref_name = "";
@@ -2085,6 +2105,22 @@ async function addCrestCalcToQueue() {
       },
       state: "pending", message: "",
     });
+    // editing: replace in place (preserves queue position), like the DFT path.
+    const oldName = editName !== null && queue.some(c => c.name === editName) ? editName : null;
+    if (oldName) {
+      const orig = queue.find(c => c.name === oldName);
+      if (orig && orig.conformer_origin) calc.conformer_origin = orig.conformer_origin;
+      const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
+      if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
+      if (oldName !== calc.name) delete localCalcs[oldName];
+      localCalcs[calc.name] = calc;
+      appendLog(`"${calc.name}" updated.`, "ok");
+      exitEditMode();
+      resetCrestForm();
+      await refreshQueue();
+      switchTab("queue");
+      return;
+    }
     if (!await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
@@ -2104,14 +2140,129 @@ async function addCrestCalcToQueue() {
 }
 
 // ---------- editing existing calcs ----------
+// Edit an MLIP or CREST calc in its own build card. The ORCA editor can't
+// represent them, so this is the backend-card analogue of editCalc: load the
+// full calc (config/xyz may not be in this session's copy — restored/phone),
+// switch to the card, fill it, then set editName AFTER the switch so
+// setBuildMode's own exitEditMode() (fired on a real mode change) can't clobber
+// the target. update_calc is kind-agnostic at the store, so no backend change
+// was needed — only this wiring.
+async function editBackendCalc(mirror, i) {
+  const isMlip = (mirror.kind || "").startsWith("mlip");
+  if (isMlip ? !_mlipReady : !_crestReady) {
+    toast(isMlip ? "Ready MACE environment required (see Settings)."
+                 : "CREST in a WSL distribution required (see Settings → CREST).");
+    return;
+  }
+  // prefer the full local copy; else fetch it (restored session / phone add)
+  let c = localCalcs[mirror.name];
+  if (!c) {
+    try {
+      const res = /** @type {GetCalcResult} */ (JSON.parse(await bridge.get_calc(mirror.name)));
+      if (res && res.ok && res.calc) { c = res.calc; localCalcs[mirror.name] = c; }
+    } catch (e) { /* fall through to the warning */ }
+    // the queue may have shifted during the await — make sure i still points at us
+    if (!queue[i] || queue[i].name !== mirror.name) return;
+  }
+  if (!c) {
+    c = mirror;
+    appendLog(`"${mirror.name}": full options couldn't be loaded; the edit may be incomplete.`, "warn");
+  }
+  setBuildMode(isMlip ? "mlip" : "crest", false);   // editName still null → no edit dropped
+  if (isMlip) fillMlipForm(c); else fillCrestForm(c);
+  editName = mirror.name;                            // AFTER the switch, per the note above
+  updateEditUI();
+  switchTab("build");
+}
+
+/** Populate the MLIP build card from a calc (inverse of addMlipCalcToQueue). */
+function fillMlipForm(c) {
+  const cfg = c.config || {};
+  document.getElementById("mlip-name").value = c.name;
+  document.getElementById("mlip-charge").value = String(c.charge);
+  document.getElementById("mlip-mult").value = String(c.multiplicity);
+  const task = { mlip_sp: "sp", mlip_freq: "freq", mlip_opt_freq: "opt_freq" }[c.kind] || "opt";
+  document.getElementById("mlip-task").value = task;
+  onMlipTaskChange();
+  if (cfg.mlip_model) document.getElementById("mlip-model").value = cfg.mlip_model;
+  // set the CUDA enable/label state first, THEN the value — refreshMlipDeviceOptions
+  // clears a "cuda" value the current machine has no GPU for (Auto still falls
+  // back to CPU safely), so a device the worker couldn't load never sticks.
+  refreshMlipDeviceOptions();
+  document.getElementById("mlip-device").value = cfg.mlip_device || "";
+  document.getElementById("mlip-temp").value =
+    String(cfg.freq_temp_k != null ? cfg.freq_temp_k : 298.15);
+  document.getElementById("mlip-pressure").value =
+    String(cfg.freq_pressure_atm != null ? cfg.freq_pressure_atm : 1.0);
+  const src = c.geometry_source === "reference" ? "reference" : "direct";
+  const r = document.querySelector(`input[name="mlip-geomsrc"][value="${src}"]`);
+  if (r) r.checked = true;
+  mlipXyz = c.xyz || "";
+  document.getElementById("mlip-xyz-status").textContent =
+    mlipXyz ? `loaded (${mlipXyz.split("\n").filter(Boolean).length} atoms)` : "";
+  onMlipGeomSourceChange();
+  if (src === "reference") {
+    refreshMlipRefSelect();
+    document.getElementById("mlip-ref-select").value = c.ref_name || "";
+  }
+}
+
+/** Populate the CREST build card from a calc (inverse of addCrestCalcToQueue). */
+function fillCrestForm(c) {
+  const cfg = c.config || {};
+  const setV = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
+  const setC = (id, v) => { const e = document.getElementById(id); if (e) e.checked = !!v; };
+  const num = v => (v ? String(v) : "");   // 0/undefined → blank, matching resetCrestForm
+  setV("crest-name", c.name);
+  setV("crest-charge", String(c.charge));
+  setV("crest-mult", String(c.multiplicity));
+  setV("crest-method", cfg.crest_method || "gfn2");
+  setV("crest-solvent", cfg.crest_solvent || "");
+  setV("crest-ewin", cfg.crest_ewin != null ? String(cfg.crest_ewin) : "6");
+  setV("crest-threads", cfg.crest_threads != null ? String(cfg.crest_threads) : "4");
+  setV("crest-handoff", cfg.crest_handoff === "all" ? "all" : "lowest");
+  setV("crest-preset", ["quick", "squick", "mquick"].includes(cfg.crest_preset) ? cfg.crest_preset : "");
+  setV("crest-solvent-model", cfg.crest_solvent_model === "gbsa" ? "gbsa" : "alpb");
+  setV("crest-mdlen", num(cfg.crest_mdlen_mult));
+  setV("crest-tstep", num(cfg.crest_tstep_fs));
+  setV("crest-tnmd", num(cfg.crest_tnmd_k));
+  setV("crest-mddump", num(cfg.crest_mddump_fs));
+  setV("crest-vbdump", num(cfg.crest_vbdump_ps));
+  setC("crest-nci", cfg.crest_nci);
+  setC("crest-norotmd", cfg.crest_norotmd);
+  setC("crest-cbonds", cfg.crest_cbonds);
+  setC("crest-subrmsd", cfg.crest_subrmsd);
+  setC("crest-cluster", cfg.crest_cluster);
+  setC("crest-keepdir", cfg.crest_keepdir);
+  // reveal Advanced when anything there is non-default, so filled knobs are visible
+  const advChanged = cfg.crest_preset || cfg.crest_nci || cfg.crest_norotmd ||
+    cfg.crest_cbonds || cfg.crest_subrmsd || cfg.crest_cluster || cfg.crest_keepdir ||
+    cfg.crest_mdlen_mult || cfg.crest_tstep_fs || cfg.crest_tnmd_k ||
+    cfg.crest_mddump_fs || cfg.crest_vbdump_ps ||
+    (cfg.crest_solvent_model && cfg.crest_solvent_model !== "alpb");
+  const det = document.querySelector("#card-crest .adv-section");
+  if (det && advChanged) det.setAttribute("open", "");
+  const src = c.geometry_source === "reference" ? "reference" : "direct";
+  const r = document.querySelector(`input[name="crest-geomsrc"][value="${src}"]`);
+  if (r) r.checked = true;
+  crestXyz = c.xyz || "";
+  document.getElementById("crest-xyz-status").textContent =
+    crestXyz ? `loaded (${crestXyz.split("\n").filter(Boolean).length} atoms)` : "";
+  onCrestGeomSourceChange();
+  if (src === "reference") {
+    refreshCrestRefSelect();
+    document.getElementById("crest-ref-select").value = c.ref_name || "";
+  }
+}
+
 async function editCalc(i) {
   const mirror = queue[i];
   if (!mirror) return;
   if (!isEditableState(mirror.state)) { toast("Editing limited to pending, cancelled, or blocked calculations."); return; }
-  // MLIP calcs use the separate MLIP form, not the ORCA editor. In-place editing
-  // isn't wired yet — remove and re-add from the MLIP build mode instead.
-  if ((mirror.kind || "").startsWith("mlip")) { toast("No in-place editing of MLIP calculations yet — removal, then re-add from the MLIP build mode."); return; }
-  if ((mirror.kind || "").startsWith("crest")) { toast("No in-place editing of CREST calculations yet — removal, then re-add from the CREST build mode."); return; }
+  // MLIP/CREST calcs live in their own build cards, not the ORCA editor — edit
+  // them there (mirrors this function's load-full-calc + set-editName dance).
+  const kind = mirror.kind || "";
+  if (kind.startsWith("mlip") || kind.startsWith("crest")) { await editBackendCalc(mirror, i); return; }
   // raw calcs edit in the Expert editor, form calcs in the Beginner form —
   // align the mode (this also leaves MLIP/CREST mode if we're in it, and drops
   // any previous in-progress edit; editName is set below, after the switch)
@@ -2221,17 +2372,23 @@ function fillConfigForm(cfg) {
 function updateEditUI() {
   const banner = document.getElementById("edit-banner");
   const addBtn = document.getElementById("add-btn");
+  // MLIP/CREST edit in their own cards, each with its own Add/Update button —
+  // flip them in lockstep with the DFT button so any active card reads "Update".
+  const mlipBtn = document.getElementById("mlip-add-btn");
+  const crestBtn = document.getElementById("crest-add-btn");
   const editing = editName === null
     ? null : queue.find((c) => c.name === editName) || null;
+  const label = editing ? "Update" : "Add to queue →";
+  addBtn.textContent = label;
+  if (mlipBtn) mlipBtn.textContent = label;
+  if (crestBtn) crestBtn.textContent = label;
   if (!editing) {
     // not editing, or the edited entry vanished (e.g. removed via phone/poll)
     editName = null;
     banner.style.display = "none";
-    addBtn.textContent = "Add to queue →";
   } else {
     banner.style.display = "block";
     banner.textContent = `Editing: ${editing.name}${rawMode ? " (raw)" : ""}`;
-    addBtn.textContent = "Update";
   }
 }
 
@@ -2576,8 +2733,8 @@ function renderQueue() {
     const cmLabel = (!isMlip || c.charge !== 0 || c.multiplicity !== 1)
       ? ` · charge ${c.charge} · mult ${c.multiplicity}` : "";
     // backend detail (explicit CalcSummary fields, escaped): the MACE model is
-    // otherwise invisible on desktop (MLIP calcs have no edit and no .inp view);
-    // the CREST method + all-conformers handoff change what a run will do.
+    // otherwise invisible on desktop (MLIP calcs have no .inp view); the CREST
+    // method + all-conformers handoff change what a run will do.
     const backendDetail = isMlip && c.mlip_model ? ` · ${escapeHtml(c.mlip_model)}`
       : isCrest ? `${c.crest_method ? " · " + escapeHtml(c.crest_method) : ""}${c.crest_handoff === "all" ? " · all conformers" : ""}`
       : "";

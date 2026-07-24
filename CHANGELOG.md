@@ -31,6 +31,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   completed search into a failure.
 
 ### Added
+- **MLIP and CREST calculations are now editable in the queue.** The queue-row
+  **edit** button on a pending MLIP or CREST calculation reopens it in its own
+  build card (MACE or CREST) with every field pre-filled, and the card's button
+  becomes **Update** — no more remove-and-re-add. Editing preserves the
+  calculation's position in the queue (and a conformer-fan-out clone's
+  provenance). Same editable states as before (pending / cancelled / blocked);
+  a running, done, or failed calculation stays locked.
 - **In-app 3D structure viewer with arrow-key browsing.** The Results tab can
   now show structures in 3D (powered by 3Dmol.js, bundled locally) and flip
   through many with the **← / →** keys — no external program. **View in 3D** on a

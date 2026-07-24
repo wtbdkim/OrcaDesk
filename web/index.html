@@ -238,7 +238,7 @@
           <div class="hint">Referenced calc's optimized geometry (e.g. a CREST best conformer or an ORCA/MLIP opt), injected here at run time (it runs first).</div>
         </div>
         <div class="btn-group" style="margin-top:14px">
-          <button class="btn btn-primary" onclick="addMlipCalcToQueue()">Add to queue →</button>
+          <button class="btn btn-primary" id="mlip-add-btn" onclick="addMlipCalcToQueue()">Add to queue →</button>
           <button class="btn btn-ghost" onclick="resetMlipForm()">Reset</button>
         </div>
       </div>
@@ -343,7 +343,7 @@
           <div class="hint">Referenced calc's optimized geometry (e.g. an MLIP or ORCA opt), injected here at run time (it runs first).</div>
         </div>
         <div class="btn-group" style="margin-top:14px">
-          <button class="btn btn-primary" onclick="addCrestCalcToQueue()">Add to queue →</button>
+          <button class="btn btn-primary" id="crest-add-btn" onclick="addCrestCalcToQueue()">Add to queue →</button>
           <button class="btn btn-ghost" onclick="resetCrestForm()">Reset</button>
         </div>
       </div>

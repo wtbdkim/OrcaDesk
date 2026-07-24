@@ -419,8 +419,20 @@ CREST best conformer). The model lives on
 the model instead of charge/mult for `mlip*` kinds, and `CalcSummary` also carries
 the model/method as **explicit fields** (`mlip_model`, `crest_method`,
 `crest_handoff`) so the desktop queue row can render them escaped (never innerHTML
-the pre-joined `meta` — it embeds user-typed ref names); `editCalc` refuses
-in-place editing of MLIP calcs for now (remove + re-add). The card is **locked**
+the pre-joined `meta` — it embeds user-typed ref names). MLIP/CREST calcs are
+**editable in place** in their own build cards: `editCalc` routes an `mlip*`/
+`crest*` kind to `editBackendCalc`, which loads the full calc (via `localCalcs`
+or `bridge.get_calc`), switches to the card, fills it (`fillMlipForm` /
+`fillCrestForm`, the inverse of the add functions), then sets `editName` **after**
+the mode switch so `setBuildMode`'s own `exitEditMode()` can't clobber the target
+— and the card's Add button flips to **Update** (`updateEditUI` now drives
+`#mlip-add-btn` / `#crest-add-btn` alongside `#add-btn`). `addMlipCalcToQueue` /
+`addCrestCalcToQueue` gained the same update path as the DFT
+`addCalcToQueue`: re-resolve the target by name, `bridge.update_calc` in place
+(preserving `conformer_origin` for a fan-out clone), and exclude the edited name
+from their uniqueness check. `update_calc` is kind-agnostic at the store
+(`replace`, gated by `EDITABLE_STATES` and the mid-run protections), so no backend
+change was needed. The card is **locked**
 (greyed, inputs/buttons disabled, `#mlip-lock-note` shown) until some MLIP env is
 ready — `applyMlipLock` in `app.js`, driven by the `get_mlip_status` poll
 (`_mlipReady`); `addMlipCalcToQueue` guards on it too.
