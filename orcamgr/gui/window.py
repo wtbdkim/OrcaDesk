@@ -117,12 +117,14 @@ class MainWindow(QMainWindow):
         self._page = _ConsoleCapturePage(self.store, self.view)
         self.view.setPage(self._page)
 
-        # Web-platform features this local single-page UI never uses; the
-        # wallpaper canvas is 2D, so WebGL only costs idle GPU/driver state.
+        # WebGL is ON: the Results-tab molecule viewer (3Dmol.js) renders
+        # conformers/structures with it. The Liquid-Glass wallpaper canvas is
+        # still 2D — WebGL is used only inside the viewer's own canvas. Chromium's
+        # built-in PDF viewer stays off (the UI never opens PDFs).
         # (No cache/cookie tuning needed: the Qt 6 default profile is already
         # off-the-record — in-memory cache, no persistent cookies.)
         ws = self._page.settings()
-        ws.setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, False)
+        ws.setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, True)
         ws.setAttribute(QWebEngineSettings.WebAttribute.PdfViewerEnabled, False)
 
         # Bridge owns all backend logic; register it on the channel.

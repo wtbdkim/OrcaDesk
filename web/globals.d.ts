@@ -56,6 +56,13 @@ interface OrcaBridge {
   get_inp(name: string): Promise<string>;
   get_graph_lines(name: string): Promise<string>;
   export_conformers(name: string): Promise<string>;
+  // 3D structure viewer (Results tab); both return {ok,title,frames:[{label,xyz,energy}]} | {ok:false,...} JSON
+  get_conformer_frames(name: string): Promise<string>;
+  browse_xyz_folder(): Promise<string>;
+  // viewer favorites (starred structures)
+  get_favorites(source: string): Promise<string>;            // {ok, labels[]}
+  toggle_favorite(source: string, label: string, on: boolean): Promise<string>;  // {ok, labels[]}
+  export_frames(destKind: string, dest: string, framesJson: string): Promise<string>;  // {ok, count, folder}
   // run / results
   get_free_energy_profile(): Promise<string>;
   check_overwrite_conflicts(): Promise<string>;

@@ -318,6 +318,10 @@ def mlip_matrix(settings, tmp_path_factory):
               mlip_model="MACE-OFF small"),
         _calc("smoke_mlip_sp", kind="mlip_sp", xyz=H2O,
               mlip_model="MACE-OFF small"),
+        # relax + vibrational analysis + ideal-gas thermochemistry: a true
+        # minimum (water) must come back with zero imaginary modes and a Gibbs G
+        _calc("smoke_mlip_opt_freq", kind="mlip_opt_freq", xyz=H2O,
+              mlip_model="MACE-OFF small"),
     ]
     if settings.orca_is_valid():
         # MLIP → ORCA geometry handoff, live
@@ -338,6 +342,18 @@ def test_mlip_opt(mlip_matrix):
 def test_mlip_sp(mlip_matrix):
     calc = _assert_done(mlip_matrix, "smoke_mlip_sp")
     assert calc.result.final_energy_eh is not None
+
+
+def test_mlip_opt_freq(mlip_matrix):
+    # DONE already asserts (via validate_result) that the relaxation converged
+    # AND the minimum has zero imaginary modes; check the frequency block +
+    # thermochemistry actually landed, and that water's stretches are sane.
+    calc = _assert_done(mlip_matrix, "smoke_mlip_opt_freq")
+    r = calc.result
+    assert r.has_frequencies and r.n_imaginary == 0
+    assert len(r.frequencies) == 3            # 3N-6 for a nonlinear triatomic
+    assert max(r.frequencies) > 3000          # O–H stretch, cm^-1
+    assert r.zpe_eh is not None and r.gibbs_eh is not None
 
 
 def test_mlip_to_orca_handoff(mlip_matrix):

@@ -192,10 +192,12 @@
         <div id="mlip-lock-note" class="mlip-lock-note" style="display:none">Ready MACE environment required.</div>
         <div class="field-row">
           <div class="field"><label>Name</label><input id="mlip-name" type="text" placeholder="e.g. mol-mace-opt"></div>
-          <div class="field" style="flex:0 0 175px"><label>Task</label>
-            <select id="mlip-task">
+          <div class="field" style="flex:0 0 190px"><label>Task</label>
+            <select id="mlip-task" onchange="onMlipTaskChange()">
               <option value="opt">Optimization</option>
               <option value="sp">Single point</option>
+              <option value="freq">Frequencies</option>
+              <option value="opt_freq">Opt + Frequencies</option>
             </select>
           </div>
           <div class="field" style="flex:0 0 240px"><label>MACE model</label><select id="mlip-model"></select></div>
@@ -203,7 +205,20 @@
         <div class="field-row">
           <div class="field" style="flex:0 0 110px"><label>Charge</label><input id="mlip-charge" type="number" value="0"></div>
           <div class="field" style="flex:0 0 130px"><label>Multiplicity</label><input id="mlip-mult" type="number" value="1" min="1"></div>
-          <div class="field"><div class="hint" style="margin:0;align-self:end">Used by OMol25 / multi-head models (ions, radicals). MACE-OFF / MACE-MP ignore them.</div></div>
+          <div class="field" style="flex:0 0 150px"><label>Device</label>
+            <select id="mlip-device">
+              <option value="">Auto (GPU if available)</option>
+              <option value="cpu">CPU</option>
+              <option value="cuda">GPU (CUDA)</option>
+            </select>
+          </div>
+          <div class="field"><div class="hint" style="margin:0;align-self:end">Charge/multiplicity: OMol25 / multi-head models (ions, radicals). MACE-OFF / MACE-MP ignore them.</div></div>
+        </div>
+        <!-- thermochemistry conditions: shown only for the frequency tasks -->
+        <div class="field-row" id="mlip-thermo-row" style="display:none">
+          <div class="field" style="flex:0 0 150px"><label>Temperature (K)</label><input id="mlip-temp" type="number" value="298.15" step="0.01" min="0"></div>
+          <div class="field" style="flex:0 0 150px"><label>Pressure (atm)</label><input id="mlip-pressure" type="number" value="1.0" step="0.1" min="0"></div>
+          <div class="field"><div class="hint" style="margin:0;align-self:end">Ideal-gas thermochemistry (ZPE, H, G, S). Symmetry number 1 assumed.</div></div>
         </div>
         <div class="field-row" style="margin:12px 0 8px">
           <label class="checkbox"><input type="radio" name="mlip-geomsrc" value="direct" checked onchange="onMlipGeomSourceChange()"> From .xyz file</label>
@@ -223,7 +238,7 @@
           <div class="hint">Referenced calc's optimized geometry (e.g. a CREST best conformer or an ORCA/MLIP opt), injected here at run time (it runs first).</div>
         </div>
         <div class="btn-group" style="margin-top:14px">
-          <button class="btn btn-primary" onclick="addMlipCalcToQueue()">Add to queue →</button>
+          <button class="btn btn-primary" id="mlip-add-btn" onclick="addMlipCalcToQueue()">Add to queue →</button>
           <button class="btn btn-ghost" onclick="resetMlipForm()">Reset</button>
         </div>
       </div>
@@ -264,15 +279,6 @@
           <div class="field" style="flex:0 0 160px"><label>Energy window (kcal/mol)</label><input id="crest-ewin" type="number" value="6" step="0.5" min="0.5"></div>
           <div class="field" style="flex:0 0 110px"><label>Threads</label><input id="crest-threads" type="number" value="4" min="1"></div>
         </div>
-        <div class="field-row">
-          <div class="field" style="flex:0 0 260px"><label>Conformer handoff</label>
-            <select id="crest-handoff">
-              <option value="lowest">lowest conformer only</option>
-              <option value="all">all conformers — one track each</option>
-            </select>
-          </div>
-        </div>
-        <div class="hint" style="margin:-4px 0 8px">With "all conformers", calculations referencing this search are duplicated per conformer (<span class="mono">name_c1</span>, <span class="mono">name_c2</span>, …) when it finishes — the whole referencing chain, e.g. opt → freq, fans out per track.</div>
         <div class="field-row">
           <div class="field" style="flex:0 0 220px"><label>Search speed</label>
             <select id="crest-preset">
@@ -328,7 +334,7 @@
           <div class="hint">Referenced calc's optimized geometry (e.g. an MLIP or ORCA opt), injected here at run time (it runs first).</div>
         </div>
         <div class="btn-group" style="margin-top:14px">
-          <button class="btn btn-primary" onclick="addCrestCalcToQueue()">Add to queue →</button>
+          <button class="btn btn-primary" id="crest-add-btn" onclick="addCrestCalcToQueue()">Add to queue →</button>
           <button class="btn btn-ghost" onclick="resetCrestForm()">Reset</button>
         </div>
       </div>
@@ -387,6 +393,8 @@
             <button id="btn-showall" class="btn btn-sm btn-ghost" onclick="toggleShowAll()"
                     title="Every parsed value, ignoring per-calc-type filtering">Show all</button>
             <button class="btn btn-sm" onclick="openOutFile()">Open .out</button>
+            <button class="btn btn-sm" onclick="browseXyzFolder()"
+                    title="Pick a folder of .xyz files and flip through them in 3D (← / →)">Browse .xyz…</button>
           </div>
         </div>
         <div id="result-body"><div class="hint">No result selected.</div></div>
@@ -531,6 +539,35 @@
   </div>
 </div>
 
+<!-- in-app 3D structure viewer (bundled locally; no external CDN) -->
+<div id="mol-viewer" class="mv-overlay" style="display:none">
+  <div class="mv-panel">
+    <div class="mv-head">
+      <div class="mv-title" id="mv-title">Structure viewer</div>
+      <div class="mv-hint">← / →&nbsp; step&nbsp;&nbsp;·&nbsp;&nbsp;Esc&nbsp; close&nbsp;&nbsp;·&nbsp;&nbsp;drag to rotate</div>
+      <button class="btn btn-sm btn-ghost" onclick="closeMolViewer()">Close ✕</button>
+    </div>
+    <div class="mv-body">
+      <div class="mv-list" id="mv-list"></div>
+      <div class="mv-stage">
+        <div id="mv-gl" class="mv-gl"></div>
+        <div class="mv-bar">
+          <button class="btn btn-sm" onclick="molViewerStep(-1)">← Prev</button>
+          <button class="btn btn-sm" id="mv-fav-btn" onclick="toggleFavCurrent()"
+                  title="Star this structure (F)">☆ Favorite</button>
+          <span id="mv-caption" class="mv-caption"></span>
+          <button class="btn btn-sm btn-ghost" id="mv-favonly-btn" onclick="toggleFavOnly()"
+                  title="Step only through starred structures">★ only</button>
+          <button class="btn btn-sm btn-ghost" id="mv-favexport-btn" onclick="exportFavorites()"
+                  title="Write starred structures to a favorites/ folder">Export ★</button>
+          <button class="btn btn-sm" onclick="molViewerStep(1)">Next →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/3Dmol-min.js"></script>
 <script src="scf_graph.js"></script>
 <script src="app.js"></script>
 </body>

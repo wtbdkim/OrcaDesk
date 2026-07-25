@@ -46,9 +46,10 @@ def parse_mlip_result(path: str) -> ParseResult:
         return r   # terminated_normally stays False
 
     r.terminated_normally = True
-    # a single-point ("sp") task isn't an optimization: this gates validation
-    # (no convergence requirement) and the Results tab's final-geometry section
-    r.is_optimization = str(data.get("task", "opt")) != "sp"
+    # only the opt tasks are optimizations: this gates the convergence check and
+    # the Results tab's final-geometry section. sp / freq leave the geometry as
+    # given, so they are not optimizations (opt_freq relaxes first, so it is).
+    r.is_optimization = str(data.get("task", "opt")) in ("opt", "opt_freq")
     r.opt_converged = bool(data.get("converged"))
 
     e_ev = data.get("energy_ev")
@@ -57,6 +58,42 @@ def parse_mlip_result(path: str) -> ParseResult:
             r.final_energy_eh = float(e_ev) / _EV_PER_HARTREE
         except (TypeError, ValueError):
             pass
+
+    # Vibrational analysis + ideal-gas thermochemistry (freq / opt_freq tasks).
+    # The worker reports frequencies in cm^-1 (negative = imaginary) and the
+    # thermochemistry in eV; convert the energies to Hartree for the shared
+    # ParseResult so the Results tab renders them exactly like an ORCA freq job.
+    if data.get("has_frequencies"):
+        r.has_frequencies = True
+        freqs = []
+        for v in (data.get("frequencies") or []):
+            try:
+                freqs.append(float(v))
+            except (TypeError, ValueError):
+                continue
+        r.frequencies = freqs
+        try:
+            r.n_imaginary = int(data.get("n_imaginary") or 0)
+        except (TypeError, ValueError):
+            r.n_imaginary = sum(1 for f in freqs if f < 0)
+        for jkey, attr in (("zpe_ev", "zpe_eh"), ("gibbs_ev", "gibbs_eh"),
+                           ("enthalpy_ev", "enthalpy_eh"),
+                           ("entropy_term_ev", "entropy_term_eh"),
+                           ("internal_energy_ev", "total_thermal_eh")):
+            val = data.get(jkey)
+            if val is not None:
+                try:
+                    setattr(r, attr, float(val) / _EV_PER_HARTREE)
+                except (TypeError, ValueError):
+                    pass
+        for jkey, attr in (("temperature_k", "temperature_k"),
+                           ("pressure_atm", "pressure_atm")):
+            val = data.get(jkey)
+            if val is not None:
+                try:
+                    setattr(r, attr, float(val))
+                except (TypeError, ValueError):
+                    pass
 
     geom = []
     for row in (data.get("geometry") or []):

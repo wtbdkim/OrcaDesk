@@ -4,7 +4,7 @@ A desktop GUI for building, queuing, running, and parsing ORCA computational
 chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark **or light** UI),
 Python core.
 
-> **Status: 0.5.1 beta** (`0.5.1-beta`). Desktop app: build → queue → run →
+> **Status: 0.5.2 beta** (`0.5.2-beta`). Desktop app: build → queue → run →
 > parse, validated against real ORCA 6.1.1 output. A running calculation
 > **survives closing the app** and is reattached on the next launch; the UI ships
 > with both a **dark and a light theme** (plus an optional **Liquid Glass**
@@ -75,12 +75,25 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   same queue (it runs detached and survives the app closing, like an ORCA run);
   its finished ensemble is listed (read-only) in the **Results** tab. Follow-up
   calculations reference the search from their geometry source on the Build
-  tab: with the card's **Conformer handoff** set to *all conformers*, a queued
-  pipeline referencing the search (e.g. MLIP opt → ORCA opt → freq) automatically
-  **fans out into one track per conformer** (`name_c1`, `name_c2`, …) when the
-  search finishes; with *lowest conformer only* it runs once, on the best
-  conformer. The CREST build card stays **locked until a distro with CREST is
+  tab and run on the **lowest-energy conformer**; every conformer is also
+  exported as its own `.xyz` under the run's `conformers/` subfolder for manual
+  follow-ups. The CREST build card stays **locked until a distro with CREST is
   ready**.
+
+  > **WSL memory note:** a CREST run is I/O-heavy, and by default WSL2 keeps
+  > every byte it caches — its `Vmmem WSL` process can balloon to many GB
+  > (up to 50 % of your RAM) and **not give the memory back** after the run.
+  > That is WSL's design, not a leak in CREST or ORCAdesk. To make WSL return
+  > cached memory when idle, create `C:\Users\<you>\.wslconfig` containing:
+  >
+  > ```ini
+  > [experimental]
+  > autoMemoryReclaim=gradual
+  > ```
+  >
+  > and run `wsl --shutdown` once while **no CREST job is running** (it would
+  > kill the job). Optionally add `memory=8GB` under a `[wsl2]` section to cap
+  > the VM outright.
 - **Queue**: calculations run in order. If one fails, anything that references
   it (directly or transitively) is skipped (blocked); unrelated calculations
   continue. Each calculation gets its own folder `{workspace}/{name}/`. The
@@ -117,7 +130,13 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   for the relevant calculation type; a **`Show all`** toggle reveals everything
   regardless of type. You can also open any external `.out` file. A **free-energy
   profile** view plots relative Gibbs free energy across finished frequency
-  calculations in queue order.
+  calculations in queue order. A built-in **3D structure viewer** shows
+  geometries in the window and lets you flip through many structures with the
+  **← / →** keys: *View in 3D* steps through a CREST conformer ensemble, and
+  *Browse .xyz…* opens any folder of `.xyz` files (e.g. a `conformers/` folder)
+  as one browsable set — no external viewer needed. **Star** the ones worth
+  keeping (the **F** key); starred structures persist, can be stepped through on
+  their own, and exported to a `favorites/` folder.
 - **Settings**: ORCA executable path, **MLIP environments** (register your own
   MACE-capable Python interpreters; backends are auto-detected), workspace folder,
   per-step defaults (nprocs / maxcore), and two live-graph options — the

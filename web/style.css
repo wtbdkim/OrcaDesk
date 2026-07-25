@@ -583,6 +583,7 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .vstep-row.skipped .vstep-sub { font-style: italic; opacity: 0.7; }
 .vstep-row.cur.err .vstep-sub { color: var(--err); opacity: 0.85; }
 .vstep-time { font-family: var(--font-mono); font-size: 13px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; align-self: center; }
+.vstep-foot { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 6px; }
 .vstep-row.cur .vstep-time { color: var(--foreground); }
 @keyframes vstep-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 /* compact fallback (short window): the retired HUD frame minus its hazard
@@ -678,6 +679,56 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
   max-height: 60vh; overflow: auto; white-space: pre; tab-size: 2;
 }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+
+/* ---- in-app 3D molecule viewer (Results tab) ---- */
+.mv-overlay {
+  position: fixed; inset: 0; z-index: 110;
+  background: rgba(0,0,0,0.62);
+  display: flex; align-items: center; justify-content: center;
+}
+.mv-panel {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+  width: min(1080px, calc(100vw - 48px)); height: min(760px, calc(100vh - 48px));
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.mv-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+}
+.mv-title { font-size: 15px; font-weight: 600; }
+.mv-hint { font-size: 12px; color: var(--muted-foreground); margin-left: auto; }
+.mv-head > .btn { margin-left: 4px; }
+.mv-body { display: flex; min-height: 0; flex: 1 1 auto; }
+.mv-list {
+  flex: 0 0 220px; overflow-y: auto; border-right: 1px solid var(--border);
+  padding: 6px; background: var(--input-bg);
+}
+.mv-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer;
+  font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground);
+}
+.mv-row:hover { background: var(--accent); color: var(--foreground); }
+.mv-row.active { background: var(--secondary); color: var(--foreground); font-weight: 600; }
+.mv-star {
+  flex: 0 0 auto; width: 16px; text-align: center; color: var(--muted-foreground);
+  cursor: pointer; user-select: none;
+}
+.mv-star:hover { color: var(--warn); }
+.mv-star.on { color: var(--warn); }
+.mv-row-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mv-row-de { flex: 0 0 auto; color: var(--muted-foreground); font-size: 11px; }
+/* toggle-on state for the bar's Favorite / ★ only buttons */
+.btn.mv-on { border-color: var(--warn); color: var(--warn); }
+.mv-stage { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+.mv-gl { position: relative; flex: 1 1 auto; min-height: 0; }
+.mv-gl canvas { border-radius: 0; }
+.mv-bar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; border-top: 1px solid var(--border);
+}
+.mv-caption { font-size: 13px; color: var(--muted-foreground); margin: 0 auto; font-family: var(--font-mono); }
 
 /* ============================================================
    Liquid Glass theme variant  (Apple "Liquid Glass" — WWDC25)

@@ -9,7 +9,7 @@
     "keywords": ["MACE-MP-0 small", "MACE-MP-0 medium", "MACE-MP-0 large"]
   },
   "MACE-OMOL / MH (OMol25)": {
-    "_note": "OMol25-trained. MACE-OMOL = the dedicated OMol25 model (mace_omol, extra-large, ASL license); MACE-MH-1 = multi-head incl. OMol (mace_mp, mh-1). Both use charge + multiplicity — set them on the card for ions / radicals.",
-    "keywords": ["MACE-OMOL extra-large", "MACE-MH-1"]
+    "_note": "OMol25-trained. MACE-OMOL = the dedicated OMol25 model (mace_omol, extra-large, ASL license); MACE-MH-1 = multi-head incl. OMol (mace_mp, mh-1). 'MACE-MH-1 omol' selects mh-1's omol head (wB97M-VV10, organic/organometallic) via mace_mp(head='omol') — the best mh-1 head for molecular / host-guest energetics (S30L). Both use charge + multiplicity — set them on the card for ions / radicals.",
+    "keywords": ["MACE-OMOL extra-large", "MACE-MH-1", "MACE-MH-1 omol"]
   }
 }

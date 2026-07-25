@@ -3,6 +3,113 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.6.0-beta] — 2026-07-25
+
+### Removed
+- **The per-conformer track fan-out (Conformer handoff "all") is gone.** The
+  CREST build card no longer has a *Conformer handoff* selector; referencing a
+  conformer search from another calculation's geometry source now always hands
+  off the **lowest-energy conformer** (this was the previous default). The
+  engine-side track expansion (cloned `name_c1`, `name_c2`, … chains) and its
+  queue-substitution machinery were removed with it. Existing queues saved with
+  the "all" scope load fine and simply run on the lowest conformer; already
+  fanned-out `_c1/_c2` clones remain ordinary calculations. Every conformer is
+  still available on disk (the automatic per-conformer `.xyz` export and the
+  Results-tab 3D viewer are unchanged).
+
+## [0.5.2-beta] — 2026-07-24
+
+### Changed
+- **The CREST progress stepper (Log → Graph) is much more detailed.** The
+  Metadynamics-sampling row now follows the whole in-iteration pipeline instead
+  of freezing on the MTD count: the MTD batch (`iteration 2 · 4/6 MTDs · 17 ps
+  each`) and the multilevel ensemble optimization that follows it (`optimizing
+  1014 structures (crude/tight)` — the multi-minute stretch that used to look
+  stalled), then the CREGEN ensemble state appended right on the same line
+  (best `E lowest` so far, structures in the energy window, the latest "new
+  lower conformer" improvement). Once finished, a footer strip under the
+  stepper shows the ensemble statistics (population of the lowest conformer,
+  ensemble ΔG, MTD/optimization runtime split). The meta line
+  now also carries the solvent (`ALPB(acetone)`) and NCI mode. Fixed alongside:
+  an MTD that "terminated EARLY" now counts toward the batch, so the counter no
+  longer sticks below N/N.
+- **CREST auto-exports every conformer as a separate `.xyz`.** When a conformer
+  search finishes, ORCAdesk now automatically splits `crest_conformers.xyz` into
+  one standalone `.xyz` per conformer under a `conformers/` subfolder of the run
+  (`{name}_c1.xyz`, `{name}_c2.xyz`, … energy-sorted, `c1` = the best conformer)
+  — no manual step. This happens for every finished search (a fresh run, a
+  mid-run reattach, and a search judged done after the app was reopened),
+  regardless of the *Conformer handoff* scope. The Results-tab **Export as
+  .xyz** button remains and simply re-runs the same split. The export is
+  best-effort: a missing or empty ensemble is logged and never turns a
+  completed search into a failure.
+
+### Added
+- **MLIP and CREST calculations are now editable in the queue.** The queue-row
+  **edit** button on a pending MLIP or CREST calculation reopens it in its own
+  build card (MACE or CREST) with every field pre-filled, and the card's button
+  becomes **Update** — no more remove-and-re-add. Editing preserves the
+  calculation's position in the queue (and a conformer-fan-out clone's
+  provenance). Same editable states as before (pending / cancelled / blocked);
+  a running, done, or failed calculation stays locked.
+- **In-app 3D structure viewer with arrow-key browsing.** The Results tab can
+  now show structures in 3D (powered by 3Dmol.js, bundled locally) and flip
+  through many with the **← / →** keys — no external program. **View in 3D** on a
+  CREST conformer result steps through the whole ensemble; **Browse .xyz…** in
+  the Results header opens any folder of `.xyz` files (e.g. a `conformers/`
+  folder) as one browsable set. The caption shows each structure's ΔE relative to
+  the lowest-energy one; drag to rotate, Esc to close.
+- **Favorite (★) structures in the 3D viewer.** Star the conformers worth
+  following up (the **F** key or the star in the list) — stars persist across
+  sessions. **★ only** steps the ← / → keys through starred structures alone, and
+  **Export ★** writes just the starred ones to a `favorites/` folder next to the
+  source.
+- **MACE-MH-1 omol head.** A new MLIP model option, *MACE-MH-1 omol*, selects
+  the `omol` head of the multi-head MACE-MH-1 model (wB97M-VV10, organic /
+  organometallic) instead of its default inorganic-materials head — the head
+  best suited to molecular and host–guest energetics (it is the strongest
+  MACE-MH-1 head on the S30L supramolecular benchmark). Like MACE-OMOL and
+  MACE-MH-1 it reads the calc's charge / multiplicity for ions and radicals.
+- **MLIP frequencies & thermochemistry.** The MLIP build card gains two new
+  tasks, *Frequencies* and *Opt + Frequencies*, alongside Optimization and
+  Single point. They run an ASE finite-difference vibrational analysis with
+  the MACE model and, for a true minimum, ideal-gas thermochemistry (ZPE,
+  enthalpy H, Gibbs G, entropy term T·S, inner energy U) — rendered on the
+  Results tab exactly like an ORCA frequency job. Temperature and pressure
+  are configurable per calc (shown only for the frequency tasks; symmetry
+  number 1 is assumed). Validation matches ORCA: a frequency result with any
+  imaginary mode is not a true minimum and the calculation is marked FAILED
+  (`mlip_freq` / `mlip_opt_freq`, the latter also requiring convergence).
+- **MLIP GPU support.** MLIP jobs can now run on a CUDA GPU instead of CPU — a
+  large speed-up for the many force evaluations a frequency job needs. The
+  build card has a Device selector (*Auto* — GPU when available, else CPU —
+  or explicit CPU / GPU), and the environment probe now reports whether the
+  registered interpreter's PyTorch sees a GPU (shown on the MLIP status and in
+  Settings → MLIP). Existing MLIP calculations default to Auto.
+
+### Changed
+- **Stopping a run no longer cancels the pending queue.** Pressing Stop now
+  cancels only the calculation that is actually running and leaves every
+  pending calculation PENDING (runnable as-is) instead of stamping them all
+  CANCELLED — stopping a run no longer discards the queued plan. (Stop still
+  kills the in-flight job; "stop after current" still lets it finish.)
+
+### Fixed
+- **Memory-leak audit fixes.** A pass over the long-session memory behavior
+  closed several small leaks/retentions: display caches in the UI are now
+  swept when a calculation leaves the queue through a non-desktop path
+  (conformer fan-out substitution, a phone remove) — this also stops a
+  reused name from serving the removed calc's cached result; opening a
+  modal over an unresolved one now dismisses the first (its Escape handler
+  and pending promise used to linger and could close the new modal);
+  switching Liquid Glass back to shadcn releases the wallpaper canvas's
+  backing store (~tens of MB); `get_graph_lines` now really caps its
+  payload as documented; removed MLIP environments drop their probe
+  bookkeeping; a force-killed MLIP worker is reaped; the phone-client
+  heartbeat prunes stale entries; and a server thread that ignores a stop
+  is kept tracked instead of leaked untracked. (For the WSL/CREST
+  multi-GB memory growth, see the `.wslconfig` note in the README.)
+
 ## [0.5.1-beta] — 2026-07-22
 
 ### Added

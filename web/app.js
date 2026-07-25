@@ -31,9 +31,9 @@ const localCalcs = {};          // name -> full calc (config/xyz/raw) added on T
 /** @type {string|null} */
 let editName = null;            // NAME of the queue calc being edited, or null for "new".
                                 // A name, never an index: the queue can shift under an
-                                // open edit (remove/reorder here, phone adds, conformer
-                                // fan-out), and a stale index made Update overwrite an
-                                // unrelated calculation.
+                                // open edit (remove/reorder here, phone adds), and a
+                                // stale index made Update overwrite an unrelated
+                                // calculation.
 let rawMode = false;            // is the current build form in raw mode?
 let rawText = "";               // current raw .inp text being edited
 // Build backends: DFT (with Beginner/Expert sub-modes), MLIP, CREST. The
@@ -239,13 +239,25 @@ async function pollTick() {
       _queueVersion = snap.version;
       queue = (snap.calculations || []).map(mirrorCalc);
       renderQueue();
-      // Poll-delivered queue changes (a phone client's add, the engine's
-      // conformer fan-out substitution) must keep the reference dropdowns live
-      // too — same visibility-gated refresh as refreshQueue, both refreshers
-      // preserve the current selection so re-running them is safe.
+      // Poll-delivered queue changes (e.g. a phone client's add) must keep the
+      // reference dropdowns live too — same visibility-gated refresh as
+      // refreshQueue, both refreshers preserve the current selection so
+      // re-running them is safe.
       if (document.getElementById("geom-reference")?.style.display === "block") refreshRefSelect();
       if (document.getElementById("mlip-geom-reference")?.style.display === "block") refreshMlipRefSelect();
       if (document.getElementById("crest-geom-reference")?.style.display === "block") refreshCrestRefSelect();
+      // Names that left the queue via a non-desktop path (e.g. a phone
+      // client's remove) never pass through
+      // removeCalc/clearQueue's invalidation — sweep the display caches here so
+      // a freed name can't serve the old calc's data if reused, and the maps
+      // can't grow for the life of the session.
+      const _live = new Set(queue.map(c => c.name));
+      let _sweptResults = false;
+      for (const k of Object.keys(localCalcs)) if (!_live.has(k)) delete localCalcs[k];
+      for (const k of Object.keys(calcResults)) if (!_live.has(k)) { delete calcResults[k]; _sweptResults = true; }
+      for (const k of Object.keys(_resultExtras)) if (!_live.has(k)) delete _resultExtras[k];
+      if (_currentResultName && !_live.has(_currentResultName)) _currentResultName = "";
+      if (_sweptResults) refreshResultSelect();
       _running = !!snap.running;
       setRunUI(_running);
       // auto-load results for any finished calculation
@@ -347,12 +359,10 @@ function mirrorCalc(c) {
     name: c.name, kind: c.kind, state: c.state, message: c.message,
     is_raw: c.is_raw, charge: c.charge, multiplicity: c.multiplicity,
     geometry_source: c.geometry_source, ref_name: c.ref_name,
-    conformer_origin: c.conformer_origin || "",
     output_path: c.output_path || "",
     scf_convergence: c.scf_convergence || "TightSCF",
     mlip_model: c.mlip_model || "",
     crest_method: c.crest_method || "",
-    crest_handoff: c.crest_handoff || "",
     // config/xyz aren't returned by the snapshot; editing pulls from here only
     // for display. (Full re-edit of phone-added calcs is a later refinement.)
   };
@@ -675,7 +685,14 @@ function applyThemeVariant(variant, level) {
   document.querySelectorAll("#lg-level-row button").forEach(b =>
     b.classList.toggle("on", b.getAttribute("data-level") === lv));
   if (v === "liquidglass") { renderWallpaper(); _lgPulseStart(); }
-  else _lgPulseStop();
+  else {
+    _lgPulseStop();
+    // The hidden canvas keeps its full viewport×DPR backing store (~tens of MB)
+    // unless shrunk — the CSS display:none alone releases nothing. renderWallpaper
+    // re-sizes it on the way back to liquidglass.
+    const cv = /** @type {HTMLCanvasElement|null} */ (/** @type {unknown} */ (document.getElementById("lgWall")));
+    if (cv && cv.width > 1) { cv.width = 1; cv.height = 1; }
+  }
 }
 
 /** Persist a settings patch; refresh the mirror. Returns false on backend error. */
@@ -940,12 +957,15 @@ function applyMlipLock() {
   card.classList.toggle("locked", locked);
   const note = document.getElementById("mlip-lock-note");
   if (note) note.style.display = locked ? "" : "none";
-  for (const id of ["mlip-name", "mlip-task", "mlip-model", "mlip-charge", "mlip-mult", "mlip-ref-select"]) {
+  for (const id of ["mlip-name", "mlip-task", "mlip-model", "mlip-charge", "mlip-mult",
+                    "mlip-device", "mlip-temp", "mlip-pressure", "mlip-ref-select"]) {
     const el = document.getElementById(id);
     if (el) el.disabled = locked;
   }
   card.querySelectorAll("button").forEach(b => { b.disabled = locked; });
 }
+/** Any ready env reports a CUDA GPU — drives the Device dropdown's default/hint. */
+let _mlipCuda = false;
 /** Backend list -> "MACE 0.3.6, SevenNet 0.10.0".
  *  @param {MlipBackend[]} backends */
 function mlipBackendText(backends) {
@@ -958,7 +978,10 @@ function renderMlip(st) {
   const state = (st && st.state) || "unset";
   const envs = (st && st.envs) || [];
   _mlipReady = (state === "ready");
+  // GPU is offered when some ready env's torch actually sees a CUDA device
+  _mlipCuda = envs.some(e => e.state === "ready" && e.cuda === true);
   applyMlipLock();
+  refreshMlipDeviceOptions();
   const pill = document.getElementById("mlip-status");
   pill.classList.toggle("ok", state === "ready");
   pill.classList.toggle("err", state === "error");
@@ -1009,7 +1032,10 @@ function renderMlipEnvList(envs) {
     const de = document.createElement("div");
     de.className = "mlip-env-detail";
     if (e.state === "ready") {
-      de.textContent = (mlipBackendText(e.backends) || "ready") + (e.version ? " · python " + e.version : "");
+      const dev = e.cuda === true ? " · GPU: " + (e.cuda_name || "CUDA")
+                : e.cuda === false ? " · CPU only" : "";
+      de.textContent = (mlipBackendText(e.backends) || "ready")
+        + (e.version ? " · python " + e.version : "") + dev;
       de.style.color = "var(--ok)";
     } else if (e.state === "checking") {
       de.textContent = "checking…";
@@ -1747,18 +1773,13 @@ async function addCalcToQueue() {
   try {
     const calc = collectCalcFromForm();
     // Resolve the edit target by NAME at Update time — the queue may have
-    // shifted since the edit opened. A vanished target (removed via phone /
-    // fan-out) falls through to a plain add, mirroring updateEditUI.
+    // shifted since the edit opened. A vanished target (removed via phone)
+    // falls through to a plain add, mirroring updateEditUI.
     const oldName = editName !== null && queue.some((c) => c.name === editName)
       ? editName : null;
     const wasEditing = oldName !== null;
 
     if (wasEditing && oldName) {
-      // preserve provenance the form doesn't carry: without this, saving any
-      // edit of a conformer-fan-out clone silently erased its
-      // "from crest · conformer k" origin (calc_from_dict defaults it to "")
-      const orig = queue.find((c) => c.name === oldName);
-      if (orig && orig.conformer_origin) calc.conformer_origin = orig.conformer_origin;
       // edit in place: preserves the calc's position in the queue
       const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
       if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
@@ -1812,11 +1833,33 @@ function resetMlipForm() {
   document.getElementById("mlip-task").value = "opt";
   document.getElementById("mlip-charge").value = "0";
   document.getElementById("mlip-mult").value = "1";
+  document.getElementById("mlip-temp").value = "298.15";
+  document.getElementById("mlip-pressure").value = "1.0";
   mlipXyz = "";
   document.getElementById("mlip-xyz-status").textContent = "";
   const dr = document.querySelector('input[name="mlip-geomsrc"][value="direct"]');
   if (dr) dr.checked = true;
+  onMlipTaskChange();
   onMlipGeomSourceChange();
+}
+/** Show the thermochemistry (T/P) row only for the frequency tasks. */
+function onMlipTaskChange() {
+  const task = document.getElementById("mlip-task")?.value || "opt";
+  const row = document.getElementById("mlip-thermo-row");
+  if (row) row.style.display = (task === "freq" || task === "opt_freq") ? "" : "none";
+}
+/** Reflect detected GPU on the Device dropdown: label the CUDA option and, when
+ *  no ready env sees a GPU, disable it so the user can't pick a device the
+ *  worker would fail to load (Auto still falls back to CPU safely). */
+function refreshMlipDeviceOptions() {
+  const sel = document.getElementById("mlip-device");
+  if (!sel) return;
+  const cuda = /** @type {any} */ (sel.querySelector('option[value="cuda"]'));
+  if (cuda) {
+    cuda.textContent = _mlipCuda ? "GPU (CUDA)" : "GPU (CUDA) — none detected";
+    cuda.disabled = !_mlipCuda;
+    if (!_mlipCuda && sel.value === "cuda") sel.value = "";
+  }
 }
 /** @returns {string} the selected MLIP geometry source ("direct" | "reference"). */
 function currentMlipGeomSource() {
@@ -1855,7 +1898,7 @@ async function addMlipCalcToQueue() {
     if (!name) throw new Error("Name is required.");
     if (/[\\/:*?"<>|]/.test(name))
       throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
-    if (queue.some(c => c.name === name))
+    if (queue.some(c => c.name === name && c.name !== editName))
       throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
     const model = document.getElementById("mlip-model").value;
     const src = currentMlipGeomSource();
@@ -1870,16 +1913,40 @@ async function addMlipCalcToQueue() {
     }
     const charge = parseInt(document.getElementById("mlip-charge").value, 10) || 0;
     const mult = Math.max(1, parseInt(document.getElementById("mlip-mult").value, 10) || 1);
-    const kind = document.getElementById("mlip-task").value === "sp" ? "mlip_sp" : "mlip_opt";
+    const device = document.getElementById("mlip-device").value;
+    const task = document.getElementById("mlip-task").value;
+    const kind = { sp: "mlip_sp", freq: "mlip_freq", opt_freq: "mlip_opt_freq" }[task] || "mlip_opt";
+    /** @type {Partial<StepConfigPayload>} */
+    const config = { kind, mlip_model: model, mlip_env_id: "", mlip_device: device };
+    if (task === "freq" || task === "opt_freq") {
+      config.freq_temp_k = parseFloat(document.getElementById("mlip-temp").value) || 298.15;
+      config.freq_pressure_atm = parseFloat(document.getElementById("mlip-pressure").value) || 1.0;
+    }
     const calc = /** @type {CalcInput} */ ({
       name, kind,
       charge, multiplicity: mult,
       geometry_source: src,
       xyz, ref_name,
       is_raw: false, raw_text: "",
-      config: { kind, mlip_model: model, mlip_env_id: "" },
+      config,
       state: "pending", message: "",
     });
+    // editing: replace in place (preserves queue position), like the DFT path.
+    // Re-resolve the target by NAME — the queue may have shifted since the edit
+    // opened; a vanished target falls through to a plain add.
+    const oldName = editName !== null && queue.some(c => c.name === editName) ? editName : null;
+    if (oldName) {
+      const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
+      if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
+      if (oldName !== calc.name) delete localCalcs[oldName];
+      localCalcs[calc.name] = calc;
+      appendLog(`"${calc.name}" updated.`, "ok");
+      exitEditMode();
+      resetMlipForm();
+      await refreshQueue();
+      switchTab("queue");
+      return;
+    }
     if (!await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
@@ -1889,7 +1956,9 @@ async function addMlipCalcToQueue() {
       return;
     }
     localCalcs[calc.name] = calc;
-    appendLog(`"${calc.name}" (MLIP ${kind === "mlip_sp" ? "single point" : "opt"} · ${model}) added to queue.`, "ok");
+    const taskLabel = { mlip_sp: "single point", mlip_freq: "frequencies",
+                        mlip_opt_freq: "opt + frequencies" }[kind] || "opt";
+    appendLog(`"${calc.name}" (MLIP ${taskLabel} · ${model}) added to queue.`, "ok");
     resetMlipForm();
     await refreshQueue();
     switchTab("queue");
@@ -1953,8 +2022,6 @@ function resetCrestForm() {
   document.getElementById("crest-solvent").value = "";
   document.getElementById("crest-ewin").value = "6";
   document.getElementById("crest-threads").value = "4";
-  const ho = document.getElementById("crest-handoff");
-  if (ho) ho.value = "lowest";
   // advanced knobs back to CREST defaults
   for (const id of ["crest-preset", "crest-solvent-model"]) {
     const el = document.getElementById(id);
@@ -1977,7 +2044,7 @@ async function addCrestCalcToQueue() {
     if (!name) throw new Error("Name is required.");
     if (/[\\/:*?"<>|]/.test(name))
       throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
-    if (queue.some(c => c.name === name))
+    if (queue.some(c => c.name === name && c.name !== editName))
       throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
     const src = currentCrestGeomSource();
     let xyz = "", ref_name = "";
@@ -1995,7 +2062,6 @@ async function addCrestCalcToQueue() {
     const solvent = document.getElementById("crest-solvent").value;
     const ewin = parseFloat(document.getElementById("crest-ewin").value) || 6.0;
     const threads = Math.max(1, parseInt(document.getElementById("crest-threads").value, 10) || 4);
-    const handoff = document.getElementById("crest-handoff").value === "all" ? "all" : "lowest";
     const numVal = id => parseFloat(document.getElementById(id).value) || 0;
     const checked = id => document.getElementById(id).checked;
     const preset = document.getElementById("crest-preset").value;
@@ -2008,7 +2074,6 @@ async function addCrestCalcToQueue() {
       config: {
         kind: "crest_conf", crest_method: method, crest_solvent: solvent,
         crest_ewin: ewin, crest_threads: threads, crest_env_id: "",
-        crest_handoff: handoff,
         crest_preset: ["quick", "squick", "mquick"].includes(preset) ? preset : "",
         crest_nci: checked("crest-nci"),
         crest_solvent_model: document.getElementById("crest-solvent-model").value === "gbsa" ? "gbsa" : "alpb",
@@ -2025,6 +2090,20 @@ async function addCrestCalcToQueue() {
       },
       state: "pending", message: "",
     });
+    // editing: replace in place (preserves queue position), like the DFT path.
+    const oldName = editName !== null && queue.some(c => c.name === editName) ? editName : null;
+    if (oldName) {
+      const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
+      if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
+      if (oldName !== calc.name) delete localCalcs[oldName];
+      localCalcs[calc.name] = calc;
+      appendLog(`"${calc.name}" updated.`, "ok");
+      exitEditMode();
+      resetCrestForm();
+      await refreshQueue();
+      switchTab("queue");
+      return;
+    }
     if (!await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
@@ -2044,14 +2123,128 @@ async function addCrestCalcToQueue() {
 }
 
 // ---------- editing existing calcs ----------
+// Edit an MLIP or CREST calc in its own build card. The ORCA editor can't
+// represent them, so this is the backend-card analogue of editCalc: load the
+// full calc (config/xyz may not be in this session's copy — restored/phone),
+// switch to the card, fill it, then set editName AFTER the switch so
+// setBuildMode's own exitEditMode() (fired on a real mode change) can't clobber
+// the target. update_calc is kind-agnostic at the store, so no backend change
+// was needed — only this wiring.
+async function editBackendCalc(mirror, i) {
+  const isMlip = (mirror.kind || "").startsWith("mlip");
+  if (isMlip ? !_mlipReady : !_crestReady) {
+    toast(isMlip ? "Ready MACE environment required (see Settings)."
+                 : "CREST in a WSL distribution required (see Settings → CREST).");
+    return;
+  }
+  // prefer the full local copy; else fetch it (restored session / phone add)
+  let c = localCalcs[mirror.name];
+  if (!c) {
+    try {
+      const res = /** @type {GetCalcResult} */ (JSON.parse(await bridge.get_calc(mirror.name)));
+      if (res && res.ok && res.calc) { c = res.calc; localCalcs[mirror.name] = c; }
+    } catch (e) { /* fall through to the warning */ }
+    // the queue may have shifted during the await — make sure i still points at us
+    if (!queue[i] || queue[i].name !== mirror.name) return;
+  }
+  if (!c) {
+    c = mirror;
+    appendLog(`"${mirror.name}": full options couldn't be loaded; the edit may be incomplete.`, "warn");
+  }
+  setBuildMode(isMlip ? "mlip" : "crest", false);   // editName still null → no edit dropped
+  if (isMlip) fillMlipForm(c); else fillCrestForm(c);
+  editName = mirror.name;                            // AFTER the switch, per the note above
+  updateEditUI();
+  switchTab("build");
+}
+
+/** Populate the MLIP build card from a calc (inverse of addMlipCalcToQueue). */
+function fillMlipForm(c) {
+  const cfg = c.config || {};
+  document.getElementById("mlip-name").value = c.name;
+  document.getElementById("mlip-charge").value = String(c.charge);
+  document.getElementById("mlip-mult").value = String(c.multiplicity);
+  const task = { mlip_sp: "sp", mlip_freq: "freq", mlip_opt_freq: "opt_freq" }[c.kind] || "opt";
+  document.getElementById("mlip-task").value = task;
+  onMlipTaskChange();
+  if (cfg.mlip_model) document.getElementById("mlip-model").value = cfg.mlip_model;
+  // set the CUDA enable/label state first, THEN the value — refreshMlipDeviceOptions
+  // clears a "cuda" value the current machine has no GPU for (Auto still falls
+  // back to CPU safely), so a device the worker couldn't load never sticks.
+  refreshMlipDeviceOptions();
+  document.getElementById("mlip-device").value = cfg.mlip_device || "";
+  document.getElementById("mlip-temp").value =
+    String(cfg.freq_temp_k != null ? cfg.freq_temp_k : 298.15);
+  document.getElementById("mlip-pressure").value =
+    String(cfg.freq_pressure_atm != null ? cfg.freq_pressure_atm : 1.0);
+  const src = c.geometry_source === "reference" ? "reference" : "direct";
+  const r = document.querySelector(`input[name="mlip-geomsrc"][value="${src}"]`);
+  if (r) r.checked = true;
+  mlipXyz = c.xyz || "";
+  document.getElementById("mlip-xyz-status").textContent =
+    mlipXyz ? `loaded (${mlipXyz.split("\n").filter(Boolean).length} atoms)` : "";
+  onMlipGeomSourceChange();
+  if (src === "reference") {
+    refreshMlipRefSelect();
+    document.getElementById("mlip-ref-select").value = c.ref_name || "";
+  }
+}
+
+/** Populate the CREST build card from a calc (inverse of addCrestCalcToQueue). */
+function fillCrestForm(c) {
+  const cfg = c.config || {};
+  const setV = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
+  const setC = (id, v) => { const e = document.getElementById(id); if (e) e.checked = !!v; };
+  const num = v => (v ? String(v) : "");   // 0/undefined → blank, matching resetCrestForm
+  setV("crest-name", c.name);
+  setV("crest-charge", String(c.charge));
+  setV("crest-mult", String(c.multiplicity));
+  setV("crest-method", cfg.crest_method || "gfn2");
+  setV("crest-solvent", cfg.crest_solvent || "");
+  setV("crest-ewin", cfg.crest_ewin != null ? String(cfg.crest_ewin) : "6");
+  setV("crest-threads", cfg.crest_threads != null ? String(cfg.crest_threads) : "4");
+  setV("crest-preset", ["quick", "squick", "mquick"].includes(cfg.crest_preset) ? cfg.crest_preset : "");
+  setV("crest-solvent-model", cfg.crest_solvent_model === "gbsa" ? "gbsa" : "alpb");
+  setV("crest-mdlen", num(cfg.crest_mdlen_mult));
+  setV("crest-tstep", num(cfg.crest_tstep_fs));
+  setV("crest-tnmd", num(cfg.crest_tnmd_k));
+  setV("crest-mddump", num(cfg.crest_mddump_fs));
+  setV("crest-vbdump", num(cfg.crest_vbdump_ps));
+  setC("crest-nci", cfg.crest_nci);
+  setC("crest-norotmd", cfg.crest_norotmd);
+  setC("crest-cbonds", cfg.crest_cbonds);
+  setC("crest-subrmsd", cfg.crest_subrmsd);
+  setC("crest-cluster", cfg.crest_cluster);
+  setC("crest-keepdir", cfg.crest_keepdir);
+  // reveal Advanced when anything there is non-default, so filled knobs are visible
+  const advChanged = cfg.crest_preset || cfg.crest_nci || cfg.crest_norotmd ||
+    cfg.crest_cbonds || cfg.crest_subrmsd || cfg.crest_cluster || cfg.crest_keepdir ||
+    cfg.crest_mdlen_mult || cfg.crest_tstep_fs || cfg.crest_tnmd_k ||
+    cfg.crest_mddump_fs || cfg.crest_vbdump_ps ||
+    (cfg.crest_solvent_model && cfg.crest_solvent_model !== "alpb");
+  const det = document.querySelector("#card-crest .adv-section");
+  if (det && advChanged) det.setAttribute("open", "");
+  const src = c.geometry_source === "reference" ? "reference" : "direct";
+  const r = document.querySelector(`input[name="crest-geomsrc"][value="${src}"]`);
+  if (r) r.checked = true;
+  crestXyz = c.xyz || "";
+  document.getElementById("crest-xyz-status").textContent =
+    crestXyz ? `loaded (${crestXyz.split("\n").filter(Boolean).length} atoms)` : "";
+  onCrestGeomSourceChange();
+  if (src === "reference") {
+    refreshCrestRefSelect();
+    document.getElementById("crest-ref-select").value = c.ref_name || "";
+  }
+}
+
 async function editCalc(i) {
   const mirror = queue[i];
   if (!mirror) return;
   if (!isEditableState(mirror.state)) { toast("Editing limited to pending, cancelled, or blocked calculations."); return; }
-  // MLIP calcs use the separate MLIP form, not the ORCA editor. In-place editing
-  // isn't wired yet — remove and re-add from the MLIP build mode instead.
-  if ((mirror.kind || "").startsWith("mlip")) { toast("No in-place editing of MLIP calculations yet — removal, then re-add from the MLIP build mode."); return; }
-  if ((mirror.kind || "").startsWith("crest")) { toast("No in-place editing of CREST calculations yet — removal, then re-add from the CREST build mode."); return; }
+  // MLIP/CREST calcs live in their own build cards, not the ORCA editor — edit
+  // them there (mirrors this function's load-full-calc + set-editName dance).
+  const kind = mirror.kind || "";
+  if (kind.startsWith("mlip") || kind.startsWith("crest")) { await editBackendCalc(mirror, i); return; }
   // raw calcs edit in the Expert editor, form calcs in the Beginner form —
   // align the mode (this also leaves MLIP/CREST mode if we're in it, and drops
   // any previous in-progress edit; editName is set below, after the switch)
@@ -2161,17 +2354,23 @@ function fillConfigForm(cfg) {
 function updateEditUI() {
   const banner = document.getElementById("edit-banner");
   const addBtn = document.getElementById("add-btn");
+  // MLIP/CREST edit in their own cards, each with its own Add/Update button —
+  // flip them in lockstep with the DFT button so any active card reads "Update".
+  const mlipBtn = document.getElementById("mlip-add-btn");
+  const crestBtn = document.getElementById("crest-add-btn");
   const editing = editName === null
     ? null : queue.find((c) => c.name === editName) || null;
+  const label = editing ? "Update" : "Add to queue →";
+  addBtn.textContent = label;
+  if (mlipBtn) mlipBtn.textContent = label;
+  if (crestBtn) crestBtn.textContent = label;
   if (!editing) {
     // not editing, or the edited entry vanished (e.g. removed via phone/poll)
     editName = null;
     banner.style.display = "none";
-    addBtn.textContent = "Add to queue →";
   } else {
     banner.style.display = "block";
     banner.textContent = `Editing: ${editing.name}${rawMode ? " (raw)" : ""}`;
-    addBtn.textContent = "Update";
   }
 }
 
@@ -2394,9 +2593,9 @@ async function setDftSub(sub) {
           confirm: "Discard & reopen form", danger: true,
         });
         if (!ok) return;
-        // the queue may have shifted during the modal (poll / conformer
-        // fan-out) — re-resolve by name, like editCalc's own await guard; if
-        // the calc vanished or left an editable state, just drop the edit
+        // the queue may have shifted during the modal (poll) — re-resolve by
+        // name, like editCalc's own await guard; if the calc vanished or left
+        // an editable state, just drop the edit
         const idx = queue.findIndex(c => c.name === q.name);
         if (idx === -1 || !isEditableState(queue[idx].state)) {
           exitEditMode();
@@ -2500,10 +2699,7 @@ function renderQueue() {
   el.innerHTML = "";
   queue.forEach((c, i) => {
     // ref_name is user-typed (a calc name) and lands in innerHTML — escape it
-    // a per-conformer track clone bakes its conformer's geometry in as DIRECT,
-    // so show its provenance ("from tt1 · conformer 2") instead of a bare "xyz"
-    const srcLabel = c.geometry_source === "reference" ? `ref → ${escapeHtml(c.ref_name)}`
-      : c.conformer_origin ? `from ${escapeHtml(c.conformer_origin)}` : "xyz";
+    const srcLabel = c.geometry_source === "reference" ? `ref → ${escapeHtml(c.ref_name)}` : "xyz";
     const isMlip = (c.kind || "").startsWith("mlip");
     const isCrest = (c.kind || "").startsWith("crest");
     const rawBadge = c.is_raw ? `<span class="qstate raw">raw</span>` : "";
@@ -2516,10 +2712,10 @@ function renderQueue() {
     const cmLabel = (!isMlip || c.charge !== 0 || c.multiplicity !== 1)
       ? ` · charge ${c.charge} · mult ${c.multiplicity}` : "";
     // backend detail (explicit CalcSummary fields, escaped): the MACE model is
-    // otherwise invisible on desktop (MLIP calcs have no edit and no .inp view);
-    // the CREST method + all-conformers handoff change what a run will do.
+    // otherwise invisible on desktop (MLIP calcs have no .inp view); the CREST
+    // method changes what a run will do.
     const backendDetail = isMlip && c.mlip_model ? ` · ${escapeHtml(c.mlip_model)}`
-      : isCrest ? `${c.crest_method ? " · " + escapeHtml(c.crest_method) : ""}${c.crest_handoff === "all" ? " · all conformers" : ""}`
+      : isCrest && c.crest_method ? ` · ${escapeHtml(c.crest_method)}`
       : "";
     // a "Completed." note is redundant with the done badge — hide completion notices
     const showMsg = !!c.message && !(c.state === "done" && /^Completed\b/.test(c.message));
@@ -2659,9 +2855,17 @@ async function clearQueue() {
 
 function isRunning() { return _running; }
 
+/** @type {((v: any) => void)|null} */
+let _activeModalClose = null;   // close() of the modal currently shown, so a
+                                // second showModal dismisses it first — otherwise
+                                // the first modal's document keydown listener +
+                                // pending Promise leak, and its stale Escape
+                                // handler would hide the NEW modal.
+
 // generic modal: buttons = [{label, value, primary?, danger?}], returns chosen value (or null if dismissed)
 function showModal(title, bodyHtml, buttons) {
   return new Promise((resolve) => {
+    if (_activeModalClose) _activeModalClose(null);
     const overlay = document.getElementById("modal-overlay");
     document.getElementById("modal-title").textContent = title;
     document.getElementById("modal-body").innerHTML = bodyHtml;
@@ -2669,11 +2873,13 @@ function showModal(title, bodyHtml, buttons) {
     actions.innerHTML = "";
     let onKey;
     const close = (v) => {
+      if (_activeModalClose === close) _activeModalClose = null;
       overlay.style.display = "none";
       overlay.onclick = null;
       document.removeEventListener("keydown", onKey);
       resolve(v);
     };
+    _activeModalClose = close;
     // dismiss (= null) on Escape or a click on the backdrop, so the themed modal
     // behaves like a normal dialog
     onKey = (e) => { if (e.key === "Escape") close(null); };
@@ -3089,8 +3295,8 @@ function renderSummary(rows, d) {
 
 /** CREST conformer ensemble: a read-only ranked list. The Results tab is for
  *  interpreting results — follow-up calculations are built on the Build tab by
- *  referencing the CREST search (its "Conformer handoff" scope decides whether
- *  the referencing chain fans out per conformer). @param {ConformerPayload[]} confs */
+ *  referencing the CREST search (a reference receives the lowest-energy
+ *  conformer's geometry). @param {ConformerPayload[]} confs */
 function renderConformers(confs) {
   const body = document.getElementById("result-body");
   let rows = "";
@@ -3101,15 +3307,19 @@ function renderConformers(confs) {
       <td>${c.energy_eh.toFixed(8)}</td>
       <td>${c.n_atoms}</td></tr>`;
   }
-  // Export is only meaningful for a queued CREST calc (needs its workspace
-  // folder server-side); an externally opened .out has no _currentResultName.
-  const exportBtn = _currentResultName
-    ? `<button class="btn btn-sm btn-ghost" onclick="exportConformers()">Export as .xyz</button>` : "";
+  // Export / 3D view are only meaningful for a queued CREST calc (they need its
+  // workspace folder server-side); an externally opened .out has no
+  // _currentResultName.
+  const actions = _currentResultName
+    ? `<div class="btn-group">
+         <button class="btn btn-sm" onclick="viewConformers3D()">View in 3D</button>
+         <button class="btn btn-sm btn-ghost" onclick="exportConformers()">Export as .xyz</button>
+       </div>` : "";
   body.innerHTML += `
     <div class="divider"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
       <div class="card-title">Conformers (${confs.length})</div>
-      ${exportBtn}
+      ${actions}
     </div>
     <div style="max-height:280px;overflow:auto">
       <table class="data">
@@ -3117,7 +3327,7 @@ function renderConformers(confs) {
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <div class="hint" style="margin-top:6px">Follow-up calculations are built on the Build tab: reference this search from a geometry source — its Conformer handoff setting decides whether the chain runs on the lowest conformer or fans out per conformer. <b>Export as .xyz</b> writes every conformer (c1 = the best) to a <code>conformers/</code> subfolder of the run.</div>`;
+    <div class="hint" style="margin-top:6px">Follow-up calculations are built on the Build tab: reference this search from a geometry source — the referencing calculation runs on the lowest-energy conformer. <b>View in 3D</b> flips through every conformer with the ← / → keys; <b>Export as .xyz</b> writes each one (c1 = the best) to a <code>conformers/</code> subfolder of the run.</div>`;
 }
 
 /** Split the shown CREST search's ensemble into per-conformer .xyz files
@@ -3130,6 +3340,210 @@ async function exportConformers() {
     toast(`Exported ${r.count} conformer${r.count === 1 ? "" : "s"} to ${r.folder}`);
     appendLog(`Exported ${r.count} conformer .xyz files to ${r.folder}`, "ok");
   } catch (e) { failNotify("Could not export conformers."); }
+}
+
+/* ---------- in-app 3D structure viewer (3Dmol.js) ----------
+ * Opens a modal over the Results tab and flips through a list of frames with
+ * the ← / → keys. Frames come from the backend as {label, xyz, energy}; xyz is
+ * raw .xyz text that 3Dmol parses directly. The viewer is created lazily on
+ * first open (WebGL context) and reused thereafter.
+ *
+ * Favorites: the user stars structures worth following up (F key or the star in
+ * the list); stars persist across sessions server-side, keyed by a viewer
+ * *source* ("calc:<name>" for a CREST ensemble, "folder:<path>" for a browsed
+ * folder). "★ only" steps through starred frames only; "Export ★" writes them
+ * to a favorites/ folder. */
+/** @typedef {{label:string, xyz:string, energy:number|null}} MolFrame */
+/** @type {MolFrame[]} */ let _mvFrames = [];
+let _mvIndex = 0;
+let _mvEmin = Infinity;         // lowest frame energy, for the ΔE column/caption
+/** @type {any} */ let _mvViewer = null;
+let _mvKeyHandler = null;
+let _mvSource = "";             // favorites key: "calc:<name>" | "folder:<path>"
+let _mvSourceKind = "calc";     // "calc" | "folder" — for Export ★ destination
+let _mvSourceRef = "";          // calc name or folder path (export destination)
+/** @type {Set<string>} */ let _mvFavs = new Set();
+let _mvFavOnly = false;         // "★ only" filter active?
+
+/** View a queued CREST search's conformers in 3D (button in renderConformers). */
+async function viewConformers3D() {
+  if (!_currentResultName) return;
+  let r; try { r = JSON.parse(await bridge.get_conformer_frames(_currentResultName)); }
+  catch (e) { failNotify("Could not load conformers."); return; }
+  if (!r.ok) { failNotify(r.error || "Could not load conformers."); return; }
+  await openMolViewer(r.title, r.frames, "calc", _currentResultName);
+}
+
+/** Pick any folder of .xyz files and browse them in 3D (Results header button). */
+async function browseXyzFolder() {
+  let r; try { r = JSON.parse(await bridge.browse_xyz_folder()); }
+  catch (e) { failNotify("Could not open the folder."); return; }
+  if (r.cancelled) return;               // picker closed — not an error
+  if (!r.ok) { failNotify(r.error || "Could not open the folder."); return; }
+  await openMolViewer(r.title, r.frames, "folder", r.folder || "");
+}
+
+/** @param {string} title @param {MolFrame[]} frames
+ *  @param {"calc"|"folder"} kind @param {string} ref calc name or folder path */
+async function openMolViewer(title, frames, kind, ref) {
+  if (!frames || !frames.length) { failNotify("No structures to show."); return; }
+  const $3Dmol = window["$3Dmol"] || window["3Dmol"];
+  if (!$3Dmol) { failNotify("3D viewer failed to load."); return; }
+  _mvFrames = frames; _mvIndex = 0; _mvFavOnly = false;
+  _mvSourceKind = kind; _mvSourceRef = ref || "";
+  _mvSource = `${kind}:${ref || ""}`;
+  document.getElementById("mv-title").textContent = title || "Structure viewer";
+  // load persisted favorites for this source
+  _mvFavs = new Set();
+  try {
+    const fr = JSON.parse(await bridge.get_favorites(_mvSource));
+    if (fr.ok) _mvFavs = new Set(fr.labels || []);
+  } catch (e) { /* favorites are best-effort — never block the viewer */ }
+  // energies drive the ΔE column; compute the min once for the whole set
+  _mvEmin = Math.min(...frames.map(f => (typeof f.energy === "number" ? f.energy : Infinity)));
+  renderMvList();
+  const overlay = document.getElementById("mol-viewer");
+  overlay.style.display = "flex";
+  // create the GLViewer lazily, after the container is visible & sized
+  if (!_mvViewer) {
+    const bg = getComputedStyle(document.documentElement)
+      .getPropertyValue("--card").trim() || "#18181b";
+    _mvViewer = $3Dmol.createViewer(document.getElementById("mv-gl"),
+      { backgroundColor: bg });
+  }
+  _mvViewer.resize();
+  updateFavOnlyBtn();
+  molViewerShow(0);
+  if (!_mvKeyHandler) {
+    _mvKeyHandler = (e) => {
+      if (overlay.style.display === "none") return;
+      if (e.key === "ArrowRight") { molViewerStep(1); e.preventDefault(); }
+      else if (e.key === "ArrowLeft") { molViewerStep(-1); e.preventDefault(); }
+      else if (e.key === "Escape") { closeMolViewer(); e.preventDefault(); }
+      else if (e.key === "f" || e.key === "F") { toggleFavCurrent(); e.preventDefault(); }
+    };
+    document.addEventListener("keydown", _mvKeyHandler);
+  }
+}
+
+/** ΔE in kcal/mol vs the lowest-energy frame, or "" when energies are absent. */
+function _mvDeltaE(f) {
+  if (typeof f.energy === "number" && isFinite(_mvEmin)) {
+    return ((f.energy - _mvEmin) * 627.5094740631).toFixed(2);
+  }
+  return "";
+}
+
+/** Rebuild the side list from state (labels, stars, ΔE, active highlight). */
+function renderMvList() {
+  document.getElementById("mv-list").innerHTML = _mvFrames.map((f, i) => {
+    const fav = _mvFavs.has(f.label);
+    const de = _mvDeltaE(f);
+    return `<div class="mv-row ${i === _mvIndex ? "active" : ""}" data-i="${i}">
+      <span class="mv-star ${fav ? "on" : ""}" onclick="event.stopPropagation();toggleFav(${i})"
+            title="Star / unstar">${fav ? "★" : "☆"}</span>
+      <span class="mv-row-label" onclick="molViewerShow(${i})">${escapeHtml(f.label)}</span>
+      <span class="mv-row-de" onclick="molViewerShow(${i})">${de === "" ? "" : de}</span>
+    </div>`;
+  }).join("");
+}
+
+/** Frame indices the ← / → keys traverse — all, or favorites only when filtered. */
+function _mvVisibleIndices() {
+  if (!_mvFavOnly) return _mvFrames.map((_, i) => i);
+  return _mvFrames.map((_, i) => i).filter(i => _mvFavs.has(_mvFrames[i].label));
+}
+
+/** @param {number} i show frame i (absolute index; wraps within the full set) */
+function molViewerShow(i) {
+  const n = _mvFrames.length; if (!n || !_mvViewer) return;
+  _mvIndex = ((i % n) + n) % n;
+  const f = _mvFrames[_mvIndex];
+  _mvViewer.clear();
+  _mvViewer.addModel(f.xyz, "xyz");
+  _mvViewer.setStyle({}, { stick: { radius: 0.14 }, sphere: { scale: 0.26 } });
+  _mvViewer.zoomTo();
+  _mvViewer.render();
+  const de = _mvDeltaE(f);
+  const star = _mvFavs.has(f.label) ? "★ " : "";
+  document.getElementById("mv-caption").textContent =
+    `${star}${_mvIndex + 1} / ${n}  ·  ${f.label}` + (de === "" ? "" : `  ·  ΔE ${de} kcal/mol`);
+  updateFavBtn();
+  // highlight the active list row
+  document.querySelectorAll("#mv-list .mv-row").forEach(el =>
+    el.classList.toggle("active", Number(el.getAttribute("data-i")) === _mvIndex));
+  const active = document.querySelector(`#mv-list .mv-row[data-i="${_mvIndex}"]`);
+  if (active) active.scrollIntoView({ block: "nearest" });
+}
+
+/** @param {number} d step by d visible frames (±1), respecting the ★-only filter */
+function molViewerStep(d) {
+  const vis = _mvVisibleIndices();
+  if (!vis.length) return;
+  let pos = vis.indexOf(_mvIndex);
+  pos = pos === -1 ? 0 : (pos + d + vis.length) % vis.length;
+  molViewerShow(vis[pos]);
+}
+
+/** Star/unstar frame i; persist and re-render. @param {number} i */
+async function toggleFav(i) {
+  const f = _mvFrames[i]; if (!f) return;
+  const on = !_mvFavs.has(f.label);
+  if (on) _mvFavs.add(f.label); else _mvFavs.delete(f.label);   // optimistic
+  renderMvList(); updateFavBtn(); updateFavOnlyBtn();
+  try {
+    const r = JSON.parse(await bridge.toggle_favorite(_mvSource, f.label, on));
+    if (r.ok) _mvFavs = new Set(r.labels || []);
+  } catch (e) { /* keep the optimistic state if the persist call fails */ }
+  renderMvList();
+}
+
+function toggleFavCurrent() { toggleFav(_mvIndex); }
+
+/** Toggle the "★ only" filter; snap to a favorite if the current frame isn't one. */
+function toggleFavOnly() {
+  const anyFav = _mvFrames.some(f => _mvFavs.has(f.label));
+  if (!_mvFavOnly && !anyFav) { toast("No favorites yet — star a structure first (F)."); return; }
+  _mvFavOnly = !_mvFavOnly;
+  updateFavOnlyBtn();
+  if (_mvFavOnly && !_mvFavs.has(_mvFrames[_mvIndex].label)) {
+    const vis = _mvVisibleIndices();
+    if (vis.length) molViewerShow(vis[0]);
+  }
+}
+
+function updateFavBtn() {
+  const btn = document.getElementById("mv-fav-btn");
+  if (!btn) return;
+  const fav = _mvFrames[_mvIndex] && _mvFavs.has(_mvFrames[_mvIndex].label);
+  btn.textContent = fav ? "★ Favorited" : "☆ Favorite";
+  btn.classList.toggle("mv-on", !!fav);
+}
+
+function updateFavOnlyBtn() {
+  const btn = document.getElementById("mv-favonly-btn");
+  if (btn) btn.classList.toggle("mv-on", _mvFavOnly);
+}
+
+/** Write the starred structures to a favorites/ folder next to the source. */
+async function exportFavorites() {
+  const favFrames = _mvFrames.filter(f => _mvFavs.has(f.label))
+    .map(f => ({ label: f.label, xyz: f.xyz }));
+  if (!favFrames.length) { toast("No favorites to export — star some first (F)."); return; }
+  try {
+    const r = JSON.parse(await bridge.export_frames(
+      _mvSourceKind, _mvSourceRef, JSON.stringify(favFrames)));
+    if (!r.ok) { failNotify(r.error || "Could not export favorites."); return; }
+    toast(`Exported ${r.count} favorite${r.count === 1 ? "" : "s"} to ${r.folder}`);
+    appendLog(`Exported ${r.count} favorite .xyz to ${r.folder}`, "ok");
+  } catch (e) { failNotify("Could not export favorites."); }
+}
+
+function closeMolViewer() {
+  document.getElementById("mol-viewer").style.display = "none";
+  // release GPU memory: clear the scene but keep the viewer/context for reuse
+  if (_mvViewer) { _mvViewer.clear(); _mvViewer.render(); }
+  _mvFrames = [];
 }
 
 let _lastGeomXyz = "";   // last rendered geometry, for the Copy .xyz button

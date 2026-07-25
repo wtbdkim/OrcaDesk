@@ -168,8 +168,8 @@ def test_midrun_failure_blocks_only_dependents_and_queue_continues(tmp_path):
     assert harness.calls == ["root", "unrelated"]
 
 
-# ---- cancel: terminal states keep their diagnosis ------------------------------
-def test_cancel_marks_pending_cancelled_but_preserves_terminal_states(tmp_path):
+# ---- cancel: only the in-flight job is stamped; the plan is preserved ----------
+def test_cancel_stamps_only_the_inflight_job_and_leaves_pending_rows_pending(tmp_path):
     harness = EngineHarness(tmp_path)
 
     def cancel_and_abort(_calc: Calculation) -> None:
@@ -197,8 +197,10 @@ def test_cancel_marks_pending_cancelled_but_preserves_terminal_states(tmp_path):
                             done_prev, failed_prev, blocked_prev])
 
     assert first.state is CalcState.DONE                # finished before the stop
-    assert inflight.state is CalcState.CANCELLED        # user intent, not failure
-    assert pending_tail.state is CalcState.CANCELLED
+    assert inflight.state is CalcState.CANCELLED        # only the in-flight job
+    # the rest of the queued plan is preserved: a cancel stops the run without
+    # discarding the pending calcs — pending_tail stays runnable as-is.
+    assert pending_tail.state is CalcState.PENDING
     assert done_prev.state is CalcState.DONE            # frozen, not re-stamped
     assert failed_prev.state is CalcState.FAILED        # locked, not re-stamped
     assert failed_prev.message == "SCF did not converge."
@@ -207,10 +209,11 @@ def test_cancel_marks_pending_cancelled_but_preserves_terminal_states(tmp_path):
 
 
 def test_cancel_leaves_reattach_pending_running_row_untouched(tmp_path):
-    # a row still RUNNING when the cancel sweep reaches it is a reattach-
-    # pending job from a previous session (its process may be alive);
-    # stamping it CANCELLED would drop the pid — the only handle to the
-    # process — without killing anything, orphaning a live detached ORCA.
+    # a row still RUNNING further down the queue at cancel time is a reattach-
+    # pending job from a previous session (its process may be alive); the cancel
+    # breaks out of the walk without touching it, so its pid — the only handle to
+    # the process — is preserved rather than dropped (which would orphan a live
+    # detached ORCA).
     harness = EngineHarness(tmp_path)
 
     def cancel_and_abort(_calc: Calculation) -> None:

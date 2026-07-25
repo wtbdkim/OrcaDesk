@@ -30,6 +30,7 @@ from orcamgr.core.runner import OrcaRunError
 ALL_KINDS = [
     "opt", "ts_opt", "freq", "ts_freq", "opt_freq", "ts_opt_freq",
     "irc", "tddft", "sp", "general", "nmr", "neb_ts", "mlip_opt",
+    "mlip_freq", "mlip_opt_freq",
 ]
 
 
@@ -192,6 +193,32 @@ def test_mlip_opt_is_not_subject_to_orca_frequency_rules():
     # validated on convergence alone (it returns before the ORCA-kind checks).
     result = freq_result([-42.0, 100.0], is_optimization=True, opt_converged=True)
     validate_result(make_calc("mlip_opt"), result)
+
+
+# ---- mlip_freq / mlip_opt_freq: the imaginary-mode rule (MLIP, no ORCA .out) --
+def test_mlip_freq_zero_imaginary_passes():
+    result = freq_result([120.0, 1500.0, 3000.0])
+    validate_result(make_calc("mlip_freq"), result)
+
+
+def test_mlip_freq_imaginary_mode_fails():
+    result = freq_result([-300.0, 1500.0])
+    with pytest.raises(OrcaRunError, match="imaginary"):
+        validate_result(make_calc("mlip_freq"), result)
+
+
+def test_mlip_opt_freq_requires_convergence_and_zero_imaginary():
+    # unconverged relaxation fails first
+    unconv = freq_result([120.0, 1500.0], opt_converged=False)
+    with pytest.raises(OrcaRunError, match="did not converge"):
+        validate_result(make_calc("mlip_opt_freq"), unconv)
+    # converged but with an imaginary mode still fails (not a true minimum)
+    saddle = freq_result([-300.0, 1500.0], opt_converged=True)
+    with pytest.raises(OrcaRunError, match="imaginary"):
+        validate_result(make_calc("mlip_opt_freq"), saddle)
+    # converged minimum passes
+    minimum = freq_result([120.0, 1500.0], opt_converged=True)
+    validate_result(make_calc("mlip_opt_freq"), minimum)
 
 
 # ---- plain kinds: normal termination is enough ------------------------------

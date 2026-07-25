@@ -229,6 +229,7 @@ class StepConfig:
     # ORCA: build_input() ignores them entirely (ORCA never sees an MLIP calc).
     mlip_model: str = ""                 # e.g. "MACE-OFF medium"
     mlip_env_id: str = ""                # registered MLIP env to run in ("" = first ready)
+    mlip_device: str = ""                # "" = auto (CUDA if available, else CPU) | cpu | cuda
 
     # CREST (conformer sampling, run via WSL) — used only when kind starts with
     # "crest". These drive the separate pipeline in orcamgr/crest/, NOT ORCA:
@@ -239,12 +240,6 @@ class StepConfig:
     crest_ewin: float = 6.0              # ensemble energy window (kcal/mol)
     crest_threads: int = 4               # CREST -T thread count
     crest_env_id: str = ""               # registered CREST env to run in ("" = first ready)
-    # Conformer handoff scope: which conformers downstream calcs get. "lowest" =
-    # a calc referencing this search receives only the best conformer (the
-    # classic single-geometry reference). "all" = when the search finishes with
-    # K>1 conformers, every PENDING calc chain referencing it is SUBSTITUTED by
-    # one clone per conformer ({name}_c1..cK) — see QueueEngine expansion.
-    crest_handoff: str = "lowest"        # lowest | all
     # --- advanced conformer-search knobs (optional; 0/""/False = CREST default) ---
     crest_preset: str = ""               # "" | quick | squick | mquick (--quick/--squick/--mquick)
     crest_nci: bool = False              # --nci: ellipsoid wall, keeps a complex from dissociating
@@ -316,10 +311,11 @@ class StepConfig:
         # input ORCA rejects. New builds no longer offer it (data/scf_convergences.json).
         if cfg.scf_convergence.strip().lower() == "mediumscf":
             cfg.scf_convergence = "NormalSCF"
-        # crest_handoff is a closed enum at the trust boundary: anything but the
-        # two known values degrades to the safe default (single-geometry handoff).
-        if cfg.crest_handoff not in ("lowest", "all"):
-            cfg.crest_handoff = "lowest"
+        # mlip_device is a closed enum at the trust boundary (it selects the torch
+        # device the worker runs on): anything but cpu/cuda degrades to "" (auto,
+        # which the worker resolves to CUDA when available, else CPU).
+        if cfg.mlip_device not in ("", "cpu", "cuda"):
+            cfg.mlip_device = ""
         # advanced CREST knobs: closed enums degrade to the default; numeric knobs
         # are coerced+clamped (they're interpolated verbatim into the CLI argv).
         if cfg.crest_preset not in ("", "quick", "squick", "mquick"):

@@ -78,8 +78,9 @@ def _probe_names() -> list[str]:
 
 
 # Probe executed INSIDE the user's interpreter: import each name, capture its
-# version (or None on failure), print a single JSON line. Built from the registry
-# so there is one source of truth.
+# version (or None on failure), and report whether torch sees a CUDA GPU (so the
+# UI can offer GPU execution honestly). Print a single JSON line. Built from the
+# registry so there is one source of truth.
 _PROBE = (
     "import importlib, json, sys\n"
     f"names = {_probe_names()!r}\n"
@@ -90,7 +91,17 @@ _PROBE = (
     "        out[_n] = getattr(_m, '__version__', '?')\n"
     "    except Exception:\n"
     "        out[_n] = None\n"
-    "print(json.dumps({'python': sys.version.split()[0], 'packages': out}))\n"
+    "cuda = None\n"
+    "cuda_name = ''\n"
+    "try:\n"
+    "    import torch as _t\n"
+    "    cuda = bool(_t.cuda.is_available())\n"
+    "    if cuda:\n"
+    "        cuda_name = str(_t.cuda.get_device_name(0))\n"
+    "except Exception:\n"
+    "    cuda = None\n"
+    "print(json.dumps({'python': sys.version.split()[0], 'packages': out,"
+    " 'cuda': cuda, 'cuda_name': cuda_name}))\n"
 )
 
 
@@ -111,6 +122,8 @@ def probe_env(python_path: str, timeout: float = 30.0) -> dict:
       packages       : dict[str, str|None] -- import name -> version, or None
       common_missing : list[str]           -- of COMMON_PACKAGES, which failed
       backends       : list[dict]          -- detected: {key, label, version}
+      cuda           : bool | None          -- torch sees a CUDA GPU (None = unknown)
+      cuda_name      : str                  -- GPU name when cuda is True
       ready          : bool                -- all common deps import AND >=1 backend
       error          : str | None          -- why the probe could not run at all
     """
@@ -118,6 +131,7 @@ def probe_env(python_path: str, timeout: float = 30.0) -> dict:
     base: dict = {
         "python": path, "version": "", "packages": {},
         "common_missing": list(COMMON_PACKAGES), "backends": [],
+        "cuda": None, "cuda_name": "",
         "ready": False, "error": None,
     }
 
@@ -167,6 +181,8 @@ def probe_env(python_path: str, timeout: float = 30.0) -> dict:
         packages=packages,
         common_missing=common_missing,
         backends=backends,
+        cuda=data.get("cuda"),
+        cuda_name=data.get("cuda_name", "") or "",
         ready=(not common_missing and bool(backends)),
     )
     return base
@@ -181,6 +197,7 @@ def env_payload_checking(env_id: str, name: str, python: str) -> dict:
     return {
         "id": env_id, "name": name, "python": python,
         "state": "checking", "version": "", "backends": [],
+        "cuda": None, "cuda_name": "",
         "message": "Checking environment…",
     }
 
@@ -192,6 +209,7 @@ def env_payload_error(env_id: str, name: str, python: str, message: str) -> dict
     return {
         "id": env_id, "name": name, "python": python,
         "state": "error", "version": "", "backends": [],
+        "cuda": None, "cuda_name": "",
         "message": message[:500],
     }
 
@@ -199,9 +217,16 @@ def env_payload_error(env_id: str, name: str, python: str, message: str) -> dict
 def env_payload_from_probe(env_id: str, name: str, probe: dict) -> dict:
     """Map a :func:`probe_env` result to the MlipEnvPayload wire shape."""
     backends = probe.get("backends") or []
+    cuda = probe.get("cuda")
+    cuda_name = probe.get("cuda_name", "") or ""
     if probe.get("ready"):
         state = "ready"
         message = "Ready: " + ", ".join(f"{b['label']} {b['version']}" for b in backends)
+        # surface the compute device so the user knows a freq job won't crawl on CPU
+        if cuda:
+            message += f" · GPU: {cuda_name}" if cuda_name else " · GPU available"
+        elif cuda is False:
+            message += " · CPU only"
     else:
         state = "error"
         common_missing = probe.get("common_missing") or []
@@ -217,7 +242,8 @@ def env_payload_from_probe(env_id: str, name: str, probe: dict) -> dict:
     return {
         "id": env_id, "name": name, "python": probe.get("python", ""),
         "state": state, "version": probe.get("version", ""),
-        "backends": backends, "message": message,
+        "backends": backends, "cuda": cuda, "cuda_name": cuda_name,
+        "message": message,
     }
 
 
