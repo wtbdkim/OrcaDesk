@@ -656,19 +656,17 @@ def test_calc_to_dict_backend_detail_fields_are_explicit_and_kind_scoped():
         "mace2", kind="mlip_opt",
         config={"kind": "mlip_opt", "mlip_model": "MACE-OFF small"}))
     assert mlip["mlip_model"] == "MACE-OFF small"
-    assert mlip["crest_method"] == "" and mlip["crest_handoff"] == ""
+    assert mlip["crest_method"] == ""
 
     crest = calc_to_dict(make_calc(
         "conf", kind="crest_conf",
-        config={"kind": "crest_conf", "crest_method": "gfnff",
-                "crest_handoff": "all"}))
+        config={"kind": "crest_conf", "crest_method": "gfnff"}))
     assert crest["crest_method"] == "gfnff"
-    assert crest["crest_handoff"] == "all"
     assert crest["mlip_model"] == ""
 
     orca = calc_to_dict(make_calc("plain", kind="opt", config={"kind": "opt"}))
     assert orca["mlip_model"] == ""
-    assert orca["crest_method"] == "" and orca["crest_handoff"] == ""
+    assert orca["crest_method"] == ""
 
 
 def test_log_trim_preferentially_retains_web_lines(store):
@@ -683,40 +681,6 @@ def test_log_trim_preferentially_retains_web_lines(store):
     assert len(msgs) <= 4501          # still bounded (4000 tail + <=500 web + growth)
     seqs = [ln["seq"] for ln in payload["lines"]]
     assert seqs == sorted(seqs)       # retention must preserve seq order
-
-
-# ---- substitute_calcs (per-conformer track expansion, engine-driven) ------
-
-def test_substitute_calcs_replaces_rows_at_position(store):
-    for n in ("a", "b", "c"):
-        store.add(make_calc(n))
-    ok = store.substitute_calcs(["b"], [make_calc("b_c1"), make_calc("b_c2")])
-    assert ok is True
-    assert [x.name for x in store.list()] == ["a", "b_c1", "b_c2", "c"]
-
-
-def test_substitute_calcs_refuses_name_collision_and_applies_nothing(store):
-    store.add(make_calc("a"))
-    store.add(make_calc("b"))
-    ok = store.substitute_calcs(["b"], [make_calc("b_c1"), make_calc("a")])
-    assert ok is False
-    assert [x.name for x in store.list()] == ["a", "b"]
-
-
-def test_substitute_calcs_is_allowed_while_running(store):
-    # unlike user mutations (add/remove/reorder are blocked mid-run), the
-    # engine-driven substitution must work while running: the engine applies
-    # the identical change to its executing snapshot, keeping the visible and
-    # executing queues in sync — the invariant the running guard protects.
-    store.add(make_calc("a"))
-    store.add(make_calc("b"))
-    store.set_running(True)
-    try:
-        ok = store.substitute_calcs(["b"], [make_calc("b_c1")])
-    finally:
-        store.set_running(False)
-    assert ok is True
-    assert [x.name for x in store.list()] == ["a", "b_c1"]
 
 
 # ---- reconcile: finished / stopped while ORCAdesk was closed -----------------
@@ -872,8 +836,8 @@ def test_session_restore_dedups_case_colliding_names(session_root):
 
 def test_find_dangling_reference_skips_locked_states():
     # FAILED calcs are locked (P24) and DONE results are frozen — neither will
-    # run again, so a dangling ref on them must not veto the whole run (e.g.
-    # FAILED conformer clones whose template parent was substituted away)
+    # run again, so a dangling ref on them must not veto the whole run (e.g. a
+    # FAILED calc whose referenced parent was later removed)
     dead = make_calc("dead", geometry_source="reference", ref_name="gone", xyz="")
     dead.state = CalcState.FAILED
     ok = make_calc("ok")

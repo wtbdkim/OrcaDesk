@@ -3,6 +3,20 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.6.0-beta] — 2026-07-25
+
+### Removed
+- **The per-conformer track fan-out (Conformer handoff "all") is gone.** The
+  CREST build card no longer has a *Conformer handoff* selector; referencing a
+  conformer search from another calculation's geometry source now always hands
+  off the **lowest-energy conformer** (this was the previous default). The
+  engine-side track expansion (cloned `name_c1`, `name_c2`, … chains) and its
+  queue-substitution machinery were removed with it. Existing queues saved with
+  the "all" scope load fine and simply run on the lowest conformer; already
+  fanned-out `_c1/_c2` clones remain ordinary calculations. Every conformer is
+  still available on disk (the automatic per-conformer `.xyz` export and the
+  Results-tab 3D viewer are unchanged).
+
 ## [0.5.2-beta] — 2026-07-24
 
 ### Changed

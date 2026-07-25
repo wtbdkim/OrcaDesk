@@ -25,11 +25,10 @@ import orcamgr.crest.runner as crest_runner_mod
 from orcamgr.core.input_generator import StepConfig
 from orcamgr.core.queue import (
     Calculation, CalcState, GeometrySource, QueueCallbacks, QueueEngine,
-    expand_conformer_tracks, validate_result,
+    validate_result,
 )
 from orcamgr.core.parser import ParseResult, Conformer, HARTREE_TO_KCAL
 from orcamgr.core.runner import OrcaRunError
-from orcamgr.core.parser import Atom
 from orcamgr.crest.parser import parse_crest_result, CREST_SUCCESS_MARKER
 from orcamgr.crest.runner import build_crest_argv
 from orcamgr.state.store import queue_needs_orca
@@ -474,162 +473,6 @@ def test_failure_detail_generic_exit_code_still_reported(tmp_path):
     assert "exit code 2" in r.error_message
 
 
-# ---------------------------------------------------------------------------
-# 7. synthetic multi-conformer results (shared by the expansion tests below)
-# ---------------------------------------------------------------------------
-
-def _result_with_conformers(n=2):
-    confs = []
-    for k in range(1, n + 1):
-        geom = [Atom("O", 0.0, 0.0, 0.1 * k), Atom("H", 0.0, 0.75, -0.4)]
-        confs.append(Conformer(index=k, energy_eh=-5.0 + 0.001 * k,
-                               rel_kcal=0.627 * k, geometry=geom))
-    return ParseResult(is_conformer_search=True, terminated_normally=True,
-                       conformers=confs, geometry=confs[0].geometry,
-                       final_energy_eh=confs[0].energy_eh)
-
-
-# ---------------------------------------------------------------------------
-# 8. per-conformer track expansion (crest_handoff="all"):
-#    a queued reference chain crest <- opt <- freq fans out into one clone
-#    chain per conformer when the search finishes.
-# ---------------------------------------------------------------------------
-
-def _ref_calc(name, kind, ref, charge=0, mult=1):
-    return Calculation(name=name, kind=kind, config=StepConfig(kind=kind),
-                       charge=charge, multiplicity=mult,
-                       geometry_source=GeometrySource.REFERENCE, ref_name=ref)
-
-
-def _done_all_crest(name="cr", n=3):
-    c = _crest_calc(name)
-    c.config.crest_handoff = "all"
-    c.state = CalcState.DONE
-    c.result = _result_with_conformers(n)
-    return c
-
-
-def test_expand_fans_reference_chain_out_track_major():
-    crest = _done_all_crest("cr", 3)
-    opt = _ref_calc("opt", "opt", "cr", charge=-1, mult=2)
-    freq = _ref_calc("freq", "freq", "opt")
-    calcs = [crest, opt, freq]
-
-    removed, added = expand_conformer_tracks(
-        crest, crest.result, calcs, taken_names={c.name for c in calcs})
-
-    assert removed == ["opt", "freq"]
-    assert [c.name for c in added] == [
-        "opt_c1", "freq_c1", "opt_c2", "freq_c2", "opt_c3", "freq_c3"]
-    o1, f1 = added[0], added[1]
-    # 1-hop clone: the conformer is baked in as DIRECT geometry; the template's
-    # own charge/multiplicity are kept (the template IS the user's spec)
-    assert o1.geometry_source == GeometrySource.DIRECT and o1.ref_name == ""
-    row = o1.xyz.splitlines()[0].split()
-    assert row[0] == "O" and len(row) == 4
-    assert o1.charge == -1 and o1.multiplicity == 2
-    # deeper clone: REFERENCE re-pointed to the SAME-track parent clone
-    assert f1.geometry_source == GeometrySource.REFERENCE and f1.ref_name == "opt_c1"
-    assert added[3].ref_name == "opt_c2"
-    # tracks get independent config copies
-    o1.config.functional = "PBE0"
-    assert opt.config.functional != "PBE0"
-    # different conformers -> different baked geometries
-    assert added[0].xyz != added[2].xyz
-
-
-def test_expand_noop_without_all_handoff_two_conformers_or_templates():
-    crest = _done_all_crest("cr", 3)
-    opt = _ref_calc("opt", "opt", "cr")
-    crest.config.crest_handoff = "lowest"
-    assert expand_conformer_tracks(crest, crest.result, [crest, opt], set()) is None
-    crest.config.crest_handoff = "all"
-    assert expand_conformer_tracks(crest, _result_with_conformers(1),
-                                   [crest, opt], set()) is None
-    unrelated = Calculation(name="x", kind="opt", config=StepConfig(kind="opt"),
-                            xyz="H 0 0 0")
-    assert expand_conformer_tracks(crest, crest.result, [crest, unrelated], set()) is None
-
-
-def test_expand_clones_only_pending_dependents_and_uniquifies_names():
-    crest = _done_all_crest("cr", 2)
-    done_dep = _ref_calc("old", "opt", "cr")
-    done_dep.state = CalcState.DONE           # finished earlier: never cloned
-    opt = _ref_calc("opt", "opt", "cr")
-    calcs = [crest, done_dep, opt]
-
-    removed, added = expand_conformer_tracks(
-        crest, crest.result, calcs,
-        taken_names={"cr", "old", "opt", "opt_c1"})
-
-    assert removed == ["opt"]
-    assert [c.name for c in added] == ["opt_c1_2", "opt_c2"]
-
-
-def test_queue_engine_expands_all_handoff_and_runs_the_tracks(tmp_path, monkeypatch):
-    # e2e on the fake runner (2-conformer ensemble): [crest(all), child(ref)]
-    # becomes [crest, child_c1, child_c2], all DONE, the store notified once.
-    _patch_runner(monkeypatch)
-    cb, _logs, _ = _recording_callbacks()
-    subs = []
-    cb.queue_substitute = lambda removed, added: (
-        subs.append((list(removed), list(added))) or True)
-    engine = QueueEngine("", str(tmp_path), cb)
-    parent = _crest_calc("par")
-    parent.config.crest_handoff = "all"
-    child = _crest_calc("child")
-    child.geometry_source = GeometrySource.REFERENCE
-    child.ref_name = "par"
-    calcs = [parent, child]
-
-    engine.run_all(calcs)
-
-    assert [c.name for c in calcs] == ["par", "child_c1", "child_c2"]
-    assert [c.state for c in calcs] == [CalcState.DONE] * 3
-    assert len(subs) == 1 and subs[0][0] == ["child"]
-    # the clones carry their conformer's coordinates as DIRECT geometry
-    assert all(c.geometry_source == GeometrySource.DIRECT for c in calcs[1:])
-
-
-def test_queue_engine_store_refusal_falls_back_to_single_geometry(tmp_path, monkeypatch):
-    # if the store refuses the substitution (name collision), the template stays
-    # and runs on the best conformer — never half a substitution.
-    _patch_runner(monkeypatch)
-    cb, logs, _ = _recording_callbacks()
-    cb.queue_substitute = lambda removed, added: False
-    engine = QueueEngine("", str(tmp_path), cb)
-    parent = _crest_calc("par")
-    parent.config.crest_handoff = "all"
-    child = _crest_calc("child")
-    child.geometry_source = GeometrySource.REFERENCE
-    child.ref_name = "par"
-    calcs = [parent, child]
-
-    engine.run_all(calcs)
-
-    assert [c.name for c in calcs] == ["par", "child"]
-    assert child.state == CalcState.DONE
-    assert any("could not expand" in m for _l, m in logs)
-
-
-def test_run_start_expansion_for_already_done_crest(tmp_path, monkeypatch):
-    # the search finished in a previous run; referencing templates added later
-    # are expanded by the DONE-skip branch when the next run starts.
-    _patch_runner(monkeypatch)
-    cb, _logs, _ = _recording_callbacks()
-    engine = QueueEngine("", str(tmp_path), cb)
-    parent = _done_all_crest("par", 2)
-    child = _crest_calc("child")
-    child.geometry_source = GeometrySource.REFERENCE
-    child.ref_name = "par"
-    calcs = [parent, child]
-
-    engine.run_all(calcs)
-
-    assert [c.name for c in calcs] == ["par", "child_c1", "child_c2"]
-    assert [c.state for c in calcs] == [CalcState.DONE] * 3
-
-
 def test_corrupt_mid_file_frame_does_not_swallow_following_frames(tmp_path):
     # a frame declaring more atoms than it has must be skipped WITHOUT the
     # cursor overshooting into the next frame's header (which silently
@@ -653,35 +496,3 @@ def test_corrupt_mid_file_frame_does_not_swallow_following_frames(tmp_path):
     assert energy == -155.1 and len(atoms) == 3
     split = split_conformer_frames(corrupt_then_valid)
     assert len(split) == 1 and split[0].startswith("3\n")
-
-
-def test_expand_repoints_child_template_that_precedes_its_parent():
-    # refs are free-form at add time, so a child template can sit BEFORE its
-    # parent in queue order (freq added first, then opt). The re-pointing must
-    # still target the parent's clone — a lazy fill left the child pointing at
-    # the parent's ORIGINAL name, which the substitution removes (K clones
-    # FAILED on a dangling ref).
-    crest = _done_all_crest("cr", 2)
-    freq = _ref_calc("freq", "freq", "opt")   # child first in queue order
-    opt = _ref_calc("opt", "opt", "cr")
-    calcs = [crest, freq, opt]
-
-    removed, added = expand_conformer_tracks(
-        crest, crest.result, calcs, taken_names={c.name for c in calcs})
-
-    assert set(removed) == {"freq", "opt"}
-    by_name = {c.name: c for c in added}
-    assert by_name["freq_c1"].ref_name == "opt_c1"
-    assert by_name["freq_c2"].ref_name == "opt_c2"
-
-
-def test_expand_uniquifier_is_case_insensitive_like_the_store():
-    # the store's substitute_calcs collision check casefolds; the uniquifier
-    # must too, or a case-colliding queued name ("Opt_c1" vs generated
-    # "opt_c1") passes here only to abort the whole substitution there
-    crest = _done_all_crest("cr", 2)
-    opt = _ref_calc("opt", "opt", "cr")
-    removed, added = expand_conformer_tracks(
-        crest, crest.result, [crest, opt],
-        taken_names={"cr", "opt", "Opt_c1"})
-    assert [c.name for c in added] == ["opt_c1_2", "opt_c2"]

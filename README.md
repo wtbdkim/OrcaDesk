@@ -75,11 +75,9 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   same queue (it runs detached and survives the app closing, like an ORCA run);
   its finished ensemble is listed (read-only) in the **Results** tab. Follow-up
   calculations reference the search from their geometry source on the Build
-  tab: with the card's **Conformer handoff** set to *all conformers*, a queued
-  pipeline referencing the search (e.g. MLIP opt → ORCA opt → freq) automatically
-  **fans out into one track per conformer** (`name_c1`, `name_c2`, …) when the
-  search finishes; with *lowest conformer only* it runs once, on the best
-  conformer. The CREST build card stays **locked until a distro with CREST is
+  tab and run on the **lowest-energy conformer**; every conformer is also
+  exported as its own `.xyz` under the run's `conformers/` subfolder for manual
+  follow-ups. The CREST build card stays **locked until a distro with CREST is
   ready**.
 
   > **WSL memory note:** a CREST run is I/O-heavy, and by default WSL2 keeps

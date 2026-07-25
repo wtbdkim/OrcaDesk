@@ -23,7 +23,7 @@
 
 /**
  * One calculation as it appears in the polled queue snapshot.
- * Mirror of calc_to_dict() in orcamgr/state/store.py — 16 keys, all
+ * Mirror of calc_to_dict() in orcamgr/state/store.py — 14 keys, all
  * always present.
  * @typedef {Object} CalcSummary
  * @property {string} name              unique; doubles as the on-disk folder name
@@ -32,7 +32,6 @@
  * @property {number} multiplicity
  * @property {"direct"|"reference"} geometry_source
  * @property {string} ref_name          referenced calc name ("" for direct)
- * @property {string} conformer_origin  per-conformer clone provenance ("" otherwise)
  * @property {boolean} is_raw
  * @property {"pending"|"running"|"done"|"failed"|"blocked"|"cancelled"} state
  * @property {string} message
@@ -41,7 +40,6 @@
  * @property {string} meta              one-line list-row summary, built server-side
  * @property {string} mlip_model        mlip* kinds: MACE model label; "" otherwise
  * @property {string} crest_method      crest* kinds: tight-binding method; "" otherwise
- * @property {string} crest_handoff     crest* kinds: "lowest" | "all"; "" otherwise
  */
 
 /**
@@ -107,7 +105,6 @@
  * @property {number} [crest_ewin]     conformer energy window (kcal/mol)
  * @property {number} [crest_threads]  CREST thread count (-T)
  * @property {string} [crest_env_id]   preferred WSL distro ("" = first with CREST)
- * @property {string} [crest_handoff]  conformer handoff scope: "lowest" | "all"
  * @property {string} [crest_preset]   search speed: "" | quick | squick | mquick
  * @property {boolean} [crest_nci]     --nci ellipsoid wall (keep a complex intact)
  * @property {string} [crest_solvent_model]  implicit-solvent model: "alpb" | "gbsa"
@@ -125,7 +122,7 @@
 
 /**
  * Full-fidelity calculation, as returned by get_calc() ("calc" key).
- * Mirror of calc_to_session_dict() in orcamgr/state/store.py — 16 keys.
+ * Mirror of calc_to_session_dict() in orcamgr/state/store.py — 15 keys.
  * @typedef {Object} CalcFull
  * @property {string} name
  * @property {string} kind
@@ -135,7 +132,6 @@
  * @property {"direct"|"reference"} geometry_source
  * @property {string} xyz
  * @property {string} ref_name
- * @property {string} conformer_origin  per-conformer clone provenance ("" otherwise)
  * @property {boolean} is_raw
  * @property {string} raw_text
  * @property {"pending"|"running"|"done"|"failed"|"blocked"|"cancelled"} state
@@ -159,7 +155,6 @@
  * @property {"direct"|"reference"} [geometry_source]
  * @property {string} [xyz]
  * @property {string} [ref_name]
- * @property {string} [conformer_origin]  preserved on edit of a conformer clone
  * @property {boolean} [is_raw]
  * @property {string} [raw_text]
  * @property {string} [state]    sent by the UI, ignored by calc_from_dict

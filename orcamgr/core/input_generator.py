@@ -240,12 +240,6 @@ class StepConfig:
     crest_ewin: float = 6.0              # ensemble energy window (kcal/mol)
     crest_threads: int = 4               # CREST -T thread count
     crest_env_id: str = ""               # registered CREST env to run in ("" = first ready)
-    # Conformer handoff scope: which conformers downstream calcs get. "lowest" =
-    # a calc referencing this search receives only the best conformer (the
-    # classic single-geometry reference). "all" = when the search finishes with
-    # K>1 conformers, every PENDING calc chain referencing it is SUBSTITUTED by
-    # one clone per conformer ({name}_c1..cK) — see QueueEngine expansion.
-    crest_handoff: str = "lowest"        # lowest | all
     # --- advanced conformer-search knobs (optional; 0/""/False = CREST default) ---
     crest_preset: str = ""               # "" | quick | squick | mquick (--quick/--squick/--mquick)
     crest_nci: bool = False              # --nci: ellipsoid wall, keeps a complex from dissociating
@@ -322,10 +316,6 @@ class StepConfig:
         # which the worker resolves to CUDA when available, else CPU).
         if cfg.mlip_device not in ("", "cpu", "cuda"):
             cfg.mlip_device = ""
-        # crest_handoff is a closed enum at the trust boundary: anything but the
-        # two known values degrades to the safe default (single-geometry handoff).
-        if cfg.crest_handoff not in ("lowest", "all"):
-            cfg.crest_handoff = "lowest"
         # advanced CREST knobs: closed enums degrade to the default; numeric knobs
         # are coerced+clamped (they're interpolated verbatim into the CLI argv).
         if cfg.crest_preset not in ("", "quick", "squick", "mquick"):

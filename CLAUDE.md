@@ -220,8 +220,8 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   (`{workspace}/{name}/`). Uniqueness is enforced in the store,
   **case-insensitively** — Windows resolves `water` and `Water` to the same
   folder, so accepting both would share one `.out` between two calcs. The
-  invariant holds on every entry path: `add`/`replace`, `substitute_calcs`,
-  **and session restore** (`load_session` dedups, first occurrence wins).
+  invariant holds on every entry path: `add`/`replace` **and session
+  restore** (`load_session` dedups, first occurrence wins).
 - **The queue autosaves to `%APPDATA%\ORCAdesk\session.json`** on every mutation
   (`QueueStore._bump_and_save`) and is restored on startup (`load_session`). A
   `RUNNING` calc persists its detached ORCA's `(pid, create_time)` **and its
@@ -383,10 +383,9 @@ options and SCF: an untouched kind default follows the new kind, an explicit
 user override survives), so the user's method setup survives Expert/MLIP/CREST
 excursions without ever going stale against the selected
 kind; the edit target is tracked **by name** (`editName`), never by queue
-index — the queue can shift under an open edit (remove/reorder, phone adds,
-conformer fan-out), and Update re-resolves the target at save time (a
-vanished target degrades to a plain add, and a clone's `conformer_origin`
-is carried over); `collectCalcFromForm(forPreview)` relaxes the NEB-TS
+index — the queue can shift under an open edit (remove/reorder, phone adds),
+and Update re-resolves the target at save time (a vanished target degrades
+to a plain add); `collectCalcFromForm(forPreview)` relaxes the NEB-TS
 product requirement like the other geometry checks. `rawText` survives an MLIP/CREST
 excursion and is cleared only by an explicit discard, edit, or reset. Raw-mode
 geometry can't desync from the text: loading a `.xyz` in raw mode is refused
@@ -417,8 +416,8 @@ CREST best conformer). The model lives on
 `StepConfig.mlip_model` (+ `mlip_env_id`, `""` = first ready env; `mlip_device`);
 `build_input` ignores those — an MLIP calc never produces an ORCA `.inp`. `_meta_line` shows
 the model instead of charge/mult for `mlip*` kinds, and `CalcSummary` also carries
-the model/method as **explicit fields** (`mlip_model`, `crest_method`,
-`crest_handoff`) so the desktop queue row can render them escaped (never innerHTML
+the model/method as **explicit fields** (`mlip_model`, `crest_method`) so the
+desktop queue row can render them escaped (never innerHTML
 the pre-joined `meta` — it embeds user-typed ref names). MLIP/CREST calcs are
 **editable in place** in their own build cards: `editCalc` routes an `mlip*`/
 `crest*` kind to `editBackendCalc`, which loads the full calc (via `localCalcs`
@@ -428,9 +427,8 @@ the mode switch so `setBuildMode`'s own `exitEditMode()` can't clobber the targe
 — and the card's Add button flips to **Update** (`updateEditUI` now drives
 `#mlip-add-btn` / `#crest-add-btn` alongside `#add-btn`). `addMlipCalcToQueue` /
 `addCrestCalcToQueue` gained the same update path as the DFT
-`addCalcToQueue`: re-resolve the target by name, `bridge.update_calc` in place
-(preserving `conformer_origin` for a fan-out clone), and exclude the edited name
-from their uniqueness check. `update_calc` is kind-agnostic at the store
+`addCalcToQueue`: re-resolve the target by name, `bridge.update_calc` in place,
+and exclude the edited name from their uniqueness check. `update_calc` is kind-agnostic at the store
 (`replace`, gated by `EDITABLE_STATES` and the mid-run protections), so no backend
 change was needed. The card is **locked**
 (greyed, inputs/buttons disabled, `#mlip-lock-note` shown) until some MLIP env is
@@ -555,28 +553,15 @@ options (`--cinp` constraints) and standalone modes (`--cregen`) are intentional
 out of scope. UI: the CREST build card + a collapsible "Advanced settings"
 (`.adv-section`).
 
-**Conformer → follow-up pipeline (per-conformer track expansion).** Follow-up
-MLIP/ORCA calculations are built on the **Build tab** by referencing the CREST
-calc through the normal geometry-source dropdown; the CREST build card's
-**Conformer handoff** scope (`StepConfig.crest_handoff`: `lowest` | `all`)
-decides what a reference receives. `lowest` (default) is the classic
-single-geometry handoff — the best conformer via `_resolve_geometry`. With
-`all`, the moment the search reaches DONE with K ≥ 2 conformers the engine
-**substitutes** every PENDING calc chain referencing it with one clone chain
-per conformer (`expand_conformer_tracks` in `core/queue.py`): clones are named
-`{name}_c{k}` in track-major order (c1's whole chain, then c2's, …); a 1-hop
-clone gets its conformer baked in as DIRECT geometry, deeper clones re-point
-their REFERENCE to the same-track parent clone — so a queued `crest ← opt ←
-freq` template fans out into K independent tracks and dependency-scoped
-failure blocking works per track. `run_all` walks the **live** list for this
-(see the live-queue bullet in Queue semantics), and the substitution is
-applied through `QueueCallbacks.queue_substitute` →
-`QueueStore.substitute_calcs`, which splices the shared list in place under
-the shared lock (the engine splices its own list only for standalone/test
-engines whose default callback didn't). Expansion also happens at run start
-when an already-DONE `all` search has pending referencing templates (built
-after it finished). The Results tab's conformer list is **read-only** for
-building: results are for interpretation; building happens on the Build tab.
+**Conformer → follow-up pipeline.** Follow-up MLIP/ORCA calculations are built
+on the **Build tab** by referencing the CREST calc through the normal
+geometry-source dropdown; a reference always receives the **lowest-energy
+conformer** (the classic single-geometry handoff via `_resolve_geometry` —
+`parse_crest_result` sets `geometry`/`final_energy_eh` to the best conformer).
+The per-conformer track fan-out (`crest_handoff="all"`, `expand_conformer_tracks`
+/ `substitute_calcs`) was removed in 0.6.0-beta. The Results tab's conformer
+list is **read-only** for building: results are for interpretation; building
+happens on the Build tab.
 
 **Per-conformer `.xyz` are exported automatically on finish.** When a
 `crest_conf` search reaches DONE the engine
@@ -590,9 +575,7 @@ DONE at startup that never went through the engine (finished while the app was
 closed, never re-run) gets the same split via `store._auto_export_crest` inside
 `reconcile_calcs`. The export is **best-effort** everywhere: a missing/empty
 ensemble or a write error is logged (engine path) or swallowed (reconcile path)
-and never turns a completed search into a FAILED one. The split happens
-regardless of the *Conformer handoff* scope (`lowest`/`all`) — that scope only
-governs the geometry handoff to referencing calcs, not the on-disk files. The
+and never turns a completed search into a FAILED one. The
 Results tab still offers **Export as .xyz** (`bridge.export_conformers` →
 `crest/export.py`, the same `export_conformers` split), now just a manual
 re-run of the automatic export. No file dialog — the files land next to the

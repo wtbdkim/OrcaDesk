@@ -28,10 +28,9 @@ The engine is GUI-agnostic: it communicates only through callbacks.
 
 from __future__ import annotations
 
-import copy
 import shutil
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional
@@ -74,10 +73,6 @@ class Calculation:
     geometry_source: GeometrySource = GeometrySource.DIRECT
     xyz: str = ""                          # used when source == DIRECT
     ref_name: str = ""                     # used when source == REFERENCE
-    # Display-only provenance for a per-conformer track clone whose geometry was
-    # baked in from a conformer search (see expand_conformer_tracks): e.g.
-    # "tt1 · conformer 2". "" for ordinary calcs. Never affects execution.
-    conformer_origin: str = ""
 
     # raw mode: user has hand-edited the full .inp text. When True, the engine
     # uses raw_text verbatim (substituting the geometry placeholder if present)
@@ -101,15 +96,6 @@ class Calculation:
 class QueueCallbacks:
     log: Callable[[str, str], None] = lambda msg, level: None
     calc_update: Callable[[int, "Calculation"], None] = lambda i, c: None
-    # Structural queue substitution (per-conformer track expansion). When wired
-    # to a store the walked list IS the store's list (live-queue, P29), and
-    # this callback applies the splice there (store.substitute_calcs, in
-    # place); the engine only splices its own list when the callback didn't
-    # (the default no-op used by standalone/unit-test engines). Returns False
-    # to REFUSE the substitution (e.g. a name collision with a calc added
-    # mid-run) — the engine then leaves the templates in place
-    # (single-geometry fallback) instead of diverging.
-    queue_substitute: Callable[[list, list], bool] = lambda removed_names, new_calcs: True
 
 
 def _xyz_from_geometry(result: ParseResult) -> str:
@@ -182,96 +168,6 @@ def _kept_result_matches(calc: Calculation, result: ParseResult) -> str:
                 f"(element sequence differs at atom #{i + 1}: "
                 f"{got[i]} on disk vs {exp[i]} here)")
     return ""
-
-
-def _bare_xyz_from_atoms(atoms) -> str:
-    """Bare 'El x y z' coordinate block from a list of parser Atoms."""
-    return "\n".join(f"{a.symbol} {a.x:.10f} {a.y:.10f} {a.z:.10f}" for a in atoms)
-
-
-def _unique_track_name(base: str, taken: "set[str]") -> str:
-    """taken holds CASEFOLDED names: uniqueness must match the store's
-    case-insensitive rule (substitute_calcs), or a case-colliding queued name
-    would slip past here only to abort the whole substitution there."""
-    if base.casefold() not in taken:
-        return base
-    n = 2
-    while f"{base}_{n}".casefold() in taken:
-        n += 1
-    return f"{base}_{n}"
-
-
-def expand_conformer_tracks(crest: Calculation, result: ParseResult,
-                            calcs: "list[Calculation]",
-                            taken_names: "set[str]"):
-    """Per-conformer track substitution for a finished "all"-handoff conformer
-    search (StepConfig.crest_handoff == "all").
-
-    Every PENDING calc referencing ``crest`` — directly or transitively — is a
-    TEMPLATE. Each template becomes one clone per conformer, ``{name}_c{k}``, in
-    track-major order (conformer 1's whole chain, then conformer 2's, …), so a
-    queued ``crest ← opt ← freq`` pipeline fans out into K independent tracks.
-    A clone whose template referenced the crest directly gets that conformer's
-    coordinates baked in as DIRECT geometry (the clone no longer depends on the
-    crest row); deeper clones stay REFERENCE, re-pointed to the same-track clone
-    of their parent — so dependency-scoped failure blocking works per track.
-
-    Only PENDING templates participate: anything DONE/FAILED/… keeps its state
-    and its original geometry. Returns ``(removed_template_names, new_calcs)``,
-    or None when there is nothing to expand (handoff != "all", fewer than two
-    conformers, or no pending templates). Pure — mutates nothing."""
-    if getattr(crest.config, "crest_handoff", "") != "all":
-        return None
-    conformers = list(getattr(result, "conformers", None) or [])
-    if len(conformers) < 2:
-        return None
-
-    # the PENDING reference-closure of the crest (fixpoint, then queue order)
-    track_names = {crest.name}
-    templates: list[Calculation] = []
-    changed = True
-    while changed:
-        changed = False
-        for c in calcs:
-            if (c.state == CalcState.PENDING
-                    and c.geometry_source == GeometrySource.REFERENCE
-                    and c.ref_name in track_names
-                    and c.name not in track_names):
-                track_names.add(c.name)
-                templates.append(c)
-                changed = True
-    if not templates:
-        return None
-    order = {id(c): i for i, c in enumerate(calcs)}
-    templates.sort(key=lambda c: order[id(c)])
-
-    taken = {n.casefold() for n in taken_names}
-    clone_name: dict = {}          # (template_name, k) -> clone name
-    added: list[Calculation] = []
-    for k, conf in enumerate(conformers, start=1):
-        # name every clone of this track BEFORE building any: the re-pointing
-        # below needs the parent template's clone name, and a child template
-        # can precede its parent in queue order (refs are free-form at add
-        # time) — filling the map lazily left such a child pointing at the
-        # parent's ORIGINAL name, which is removed by the substitution
-        for t in templates:
-            name = _unique_track_name(f"{t.name}_c{k}", taken)
-            taken.add(name.casefold())
-            clone_name[(t.name, k)] = name
-        for t in templates:
-            name = clone_name[(t.name, k)]
-            if t.ref_name == crest.name:
-                src, xyz, ref = GeometrySource.DIRECT, _bare_xyz_from_atoms(conf.geometry), ""
-                origin = f"{crest.name} · conformer {k}"
-            else:
-                src, xyz, ref, origin = GeometrySource.REFERENCE, "", clone_name.get((t.ref_name, k), t.ref_name), ""
-            added.append(Calculation(
-                name=name, kind=t.kind, config=copy.deepcopy(t.config),
-                charge=t.charge, multiplicity=t.multiplicity,
-                geometry_source=src, xyz=xyz, ref_name=ref,
-                conformer_origin=origin, is_raw=t.is_raw, raw_text=t.raw_text,
-            ))
-    return [t.name for t in templates], added
 
 
 def validate_result(calc: Calculation, result: ParseResult) -> None:
@@ -942,66 +838,6 @@ class QueueEngine:
         self.cb.log(f"[{calc.name}] exported {len(written)} conformer(s) "
                     f"to conformers/.", "info")
 
-    # -- per-conformer track expansion (crest_handoff == "all") --
-    def _maybe_expand_crest(self, calcs: list[Calculation], crest: Calculation) -> None:
-        """If ``crest`` is a DONE conformer search whose handoff scope is "all",
-        substitute every PENDING calc chain referencing it with one clone per
-        conformer (expand_conformer_tracks). The owning store applies the same
-        substitution through cb.queue_substitute so the UI queue and the session
-        file stay in sync; if the store refuses (a name collision with a calc
-        added mid-run), the templates stay as they are and simply run on the
-        best conformer — the safe single-geometry fallback. Cheap no-op guards
-        make this safe to call after every calc."""
-        if not crest.kind.startswith("crest") or crest.state != CalcState.DONE:
-            return
-        if getattr(crest.config, "crest_handoff", "") != "all":
-            return
-        result = crest.result
-        if result is None and crest.output_path:
-            # DONE from a previous session: parse the on-disk ensemble now
-            try:
-                result = result_from_output(crest)
-                crest.result = result
-            except Exception:
-                return
-        if result is None:
-            return
-        # The whole expansion is one critical section: the templates are read,
-        # substituted in the store, and (when needed) spliced locally against
-        # ONE consistent view of the live queue — a user add/remove between
-        # those steps must not interleave.
-        with self._queue_lock:
-            expansion = expand_conformer_tracks(
-                crest, result, calcs,
-                taken_names={c.name for c in calcs})
-            if expansion is None:
-                return
-            removed, added = expansion
-            removed_set = set(removed)
-            if not self.cb.queue_substitute(list(removed), list(added)):
-                self.cb.log(
-                    f"[{crest.name}] could not expand conformer tracks (the queue "
-                    "changed meanwhile); the referencing calculations keep the "
-                    "lowest conformer.", "warn")
-                return
-            # When the store shares this list (live-queue wiring), its
-            # substitute_calcs above already spliced it in place — splice
-            # locally only when the templates are still present (standalone
-            # engine with the default no-op callback, e.g. unit tests).
-            if any(c.name in removed_set for c in calcs):
-                first = min(i for i, c in enumerate(calcs) if c.name in removed_set)
-                calcs[:] = [c for c in calcs if c.name not in removed_set]
-                for off, nc in enumerate(added):
-                    calcs.insert(first + off, nc)
-            for name in removed:
-                self._by_name.pop(name, None)
-            for nc in added:
-                self._by_name[nc.name] = nc
-        k = len(getattr(result, "conformers", None) or [])
-        self.cb.log(
-            f"[{crest.name}] {k} conformers — expanded {len(removed)} referencing "
-            f"calculation(s) into {len(added)} per-conformer track(s).", "info")
-
     # -- dependency-scoped failure propagation --
     def _dependents_of(self, calcs: list[Calculation], failed_name: str) -> set[str]:
         """All calc names that depend on failed_name, directly or transitively."""
@@ -1150,10 +986,6 @@ class QueueEngine:
             # re-run, so the user can retry them.
             if calc.state == CalcState.DONE:
                 self.cb.log(f"[{calc.name}] already done \u2014 skipping.", "info")
-                # an already-DONE "all"-handoff conformer search may have gained
-                # new pending referencing chains since it finished \u2014 expand them
-                # now (run-start expansion; no-op guarded inside)
-                self._maybe_expand_crest(calcs, calc)
                 self.cb.calc_update(i, calc)
                 continue
 
@@ -1234,8 +1066,6 @@ class QueueEngine:
                     self.cb.log(f"[{calc.name}] {problem}; running.", "warn")
                     self._skip_names.discard(calc.name)
                 else:
-                    # a kept crest result counts as DONE — expand its tracks too
-                    self._maybe_expand_crest(calcs, calc)
                     self.cb.calc_update(i, calc)
                     continue
 
@@ -1303,8 +1133,3 @@ class QueueEngine:
                 self.cb.calc_update(i, calc)
                 with self._queue_lock:
                     blocked_names |= self._dependents_of(calcs, calc.name)
-
-            # a conformer search that just finished DONE may fan its referencing
-            # chains out into per-conformer tracks (guarded inside; a no-op for
-            # every other kind/state, including the failure paths above)
-            self._maybe_expand_crest(calcs, calc)

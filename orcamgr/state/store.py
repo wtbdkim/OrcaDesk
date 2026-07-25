@@ -153,7 +153,6 @@ def calc_to_dict(c: Calculation) -> CalcSummary:
         geometry_source=c.geometry_source.value
         if isinstance(c.geometry_source, GeometrySource) else str(c.geometry_source),
         ref_name=c.ref_name,
-        conformer_origin=getattr(c, "conformer_origin", ""),
         is_raw=c.is_raw,
         state=c.state.value if isinstance(c.state, CalcState) else str(c.state),
         message=c.message,
@@ -169,8 +168,6 @@ def calc_to_dict(c: Calculation) -> CalcSummary:
         if c.kind.startswith("mlip") else "",
         crest_method=(getattr(c.config, "crest_method", "") if c.config else "")
         if c.kind.startswith("crest") else "",
-        crest_handoff=(getattr(c.config, "crest_handoff", "") if c.config else "")
-        if c.kind.startswith("crest") else "",
     )
 
 
@@ -183,13 +180,10 @@ def _meta_line(c: Calculation) -> str:
     if c.kind.startswith("mlip"):
         model = getattr(c.config, "mlip_model", "") if c.config else ""
         return f"{c.kind} · {src} · {model or 'MACE'}"
-    # CREST calcs use charge/multiplicity too; also show the tight-binding method
-    # and (when set) the all-conformers handoff, since it changes queue behaviour.
+    # CREST calcs use charge/multiplicity too; also show the tight-binding method.
     if c.kind.startswith("crest"):
         method = getattr(c.config, "crest_method", "") if c.config else ""
-        handoff = getattr(c.config, "crest_handoff", "") if c.config else ""
-        tail = " · all conformers" if handoff == "all" else ""
-        return f"{c.kind} · {src} · {method or 'gfn2'} · q{c.charge} m{c.multiplicity}{tail}"
+        return f"{c.kind} · {src} · {method or 'gfn2'} · q{c.charge} m{c.multiplicity}"
     return f"{c.kind} · {src} · q{c.charge} m{c.multiplicity}"
 
 
@@ -234,7 +228,6 @@ def calc_from_dict(d: dict) -> Calculation:
         geometry_source=GeometrySource(src),
         xyz=_s("xyz"),
         ref_name=_s("ref_name"),
-        conformer_origin=_s("conformer_origin"),
         is_raw=bool(d.get("is_raw", False)),
         raw_text=_s("raw_text"),
     )
@@ -263,7 +256,6 @@ def calc_to_session_dict(c: Calculation) -> CalcFull:
         geometry_source=gs,
         xyz=c.xyz,
         ref_name=c.ref_name,
-        conformer_origin=getattr(c, "conformer_origin", ""),
         is_raw=c.is_raw,
         raw_text=c.raw_text,
         state=st,
@@ -608,40 +600,6 @@ class QueueStore:
             self._calcs.clear()
             self._bump_and_save()
 
-    def substitute_calcs(self, removed_names: "list[str]",
-                         new_calcs: "list[Calculation]") -> bool:
-        """Atomically replace the named calcs with ``new_calcs`` at the position
-        of the first removed row — the store side of the engine's per-conformer
-        track expansion (QueueEngine._maybe_expand_crest, crest_handoff="all").
-
-        Deliberately NOT guarded by the running flag: unlike a user edit, this
-        mutation is driven by the engine itself, which applies the identical
-        substitution to its own executing snapshot — so the visible queue and
-        the executing queue stay in sync (the invariant the running guard
-        protects). Returns False (applying nothing) if a new name collides with
-        a calc that is staying, so the engine can fall back to the untouched
-        templates instead of running half a substitution."""
-        removed = set(removed_names)
-        with self._lock:
-            # collision check is case-insensitive (names are Windows folder
-            # names, see add()); removal filtering stays exact — the engine
-            # passes the actual queued names.
-            staying = {c.name.casefold() for c in self._calcs if c.name not in removed}
-            for nc in new_calcs:
-                if nc.name.casefold() in staying:
-                    return False
-                staying.add(nc.name.casefold())
-            idxs = [i for i, c in enumerate(self._calcs) if c.name in removed]
-            insert_at = idxs[0] if idxs else len(self._calcs)
-            # in place, never reassigned: the running engine walks THIS list
-            # object (start_run hands it over) — a rebind would silently split
-            # the visible queue from the executing one
-            self._calcs[:] = [c for c in self._calcs if c.name not in removed]
-            for off, nc in enumerate(new_calcs):
-                self._calcs.insert(insert_at + off, nc)
-            self._bump_and_save()
-        return True
-
     def replace(self, name: str, new_calc: Calculation) -> bool:
         """Replace an editable calculation in place (keeps its queue position).
         Editable = pending, cancelled, or blocked (see EDITABLE_STATES). Editing
@@ -952,8 +910,8 @@ def find_dangling_reference(calcs: "list[Calculation]") -> "str | None":
     for c in calcs:
         # DONE results are frozen and FAILED calcs are locked (P24) — neither
         # will ever run again, so a dangling reference on them must not veto
-        # the whole run (e.g. FAILED conformer clones whose template parent
-        # was substituted away would otherwise lock the Run button for good).
+        # the whole run (e.g. a FAILED calc whose referenced parent was later
+        # removed would otherwise lock the Run button for good).
         if c.state in (CalcState.DONE, CalcState.FAILED):
             continue
         src = c.geometry_source
@@ -988,7 +946,6 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
         cb = QueueCallbacks(
             log=lambda msg, level: store.append_log(msg, level),
             calc_update=lambda i, c: store.touch(),
-            queue_substitute=lambda removed, added: store.substitute_calcs(removed, added),
         )
         # the store's own lock doubles as the engine's queue lock: run_all
         # walks the store's live list (start_run), so the walk's pick step and

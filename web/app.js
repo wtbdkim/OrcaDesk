@@ -31,9 +31,9 @@ const localCalcs = {};          // name -> full calc (config/xyz/raw) added on T
 /** @type {string|null} */
 let editName = null;            // NAME of the queue calc being edited, or null for "new".
                                 // A name, never an index: the queue can shift under an
-                                // open edit (remove/reorder here, phone adds, conformer
-                                // fan-out), and a stale index made Update overwrite an
-                                // unrelated calculation.
+                                // open edit (remove/reorder here, phone adds), and a
+                                // stale index made Update overwrite an unrelated
+                                // calculation.
 let rawMode = false;            // is the current build form in raw mode?
 let rawText = "";               // current raw .inp text being edited
 // Build backends: DFT (with Beginner/Expert sub-modes), MLIP, CREST. The
@@ -239,15 +239,15 @@ async function pollTick() {
       _queueVersion = snap.version;
       queue = (snap.calculations || []).map(mirrorCalc);
       renderQueue();
-      // Poll-delivered queue changes (a phone client's add, the engine's
-      // conformer fan-out substitution) must keep the reference dropdowns live
-      // too — same visibility-gated refresh as refreshQueue, both refreshers
-      // preserve the current selection so re-running them is safe.
+      // Poll-delivered queue changes (e.g. a phone client's add) must keep the
+      // reference dropdowns live too — same visibility-gated refresh as
+      // refreshQueue, both refreshers preserve the current selection so
+      // re-running them is safe.
       if (document.getElementById("geom-reference")?.style.display === "block") refreshRefSelect();
       if (document.getElementById("mlip-geom-reference")?.style.display === "block") refreshMlipRefSelect();
       if (document.getElementById("crest-geom-reference")?.style.display === "block") refreshCrestRefSelect();
-      // Names that left the queue via a non-desktop path (the engine's conformer
-      // fan-out substitution, a phone client's remove) never pass through
+      // Names that left the queue via a non-desktop path (e.g. a phone
+      // client's remove) never pass through
       // removeCalc/clearQueue's invalidation — sweep the display caches here so
       // a freed name can't serve the old calc's data if reused, and the maps
       // can't grow for the life of the session.
@@ -359,12 +359,10 @@ function mirrorCalc(c) {
     name: c.name, kind: c.kind, state: c.state, message: c.message,
     is_raw: c.is_raw, charge: c.charge, multiplicity: c.multiplicity,
     geometry_source: c.geometry_source, ref_name: c.ref_name,
-    conformer_origin: c.conformer_origin || "",
     output_path: c.output_path || "",
     scf_convergence: c.scf_convergence || "TightSCF",
     mlip_model: c.mlip_model || "",
     crest_method: c.crest_method || "",
-    crest_handoff: c.crest_handoff || "",
     // config/xyz aren't returned by the snapshot; editing pulls from here only
     // for display. (Full re-edit of phone-added calcs is a later refinement.)
   };
@@ -1775,18 +1773,13 @@ async function addCalcToQueue() {
   try {
     const calc = collectCalcFromForm();
     // Resolve the edit target by NAME at Update time — the queue may have
-    // shifted since the edit opened. A vanished target (removed via phone /
-    // fan-out) falls through to a plain add, mirroring updateEditUI.
+    // shifted since the edit opened. A vanished target (removed via phone)
+    // falls through to a plain add, mirroring updateEditUI.
     const oldName = editName !== null && queue.some((c) => c.name === editName)
       ? editName : null;
     const wasEditing = oldName !== null;
 
     if (wasEditing && oldName) {
-      // preserve provenance the form doesn't carry: without this, saving any
-      // edit of a conformer-fan-out clone silently erased its
-      // "from crest · conformer k" origin (calc_from_dict defaults it to "")
-      const orig = queue.find((c) => c.name === oldName);
-      if (orig && orig.conformer_origin) calc.conformer_origin = orig.conformer_origin;
       // edit in place: preserves the calc's position in the queue
       const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
       if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
@@ -1943,10 +1936,6 @@ async function addMlipCalcToQueue() {
     // opened; a vanished target falls through to a plain add.
     const oldName = editName !== null && queue.some(c => c.name === editName) ? editName : null;
     if (oldName) {
-      // preserve fan-out provenance the card doesn't carry (an mlip clone can be
-      // a conformer track's 1-hop calc) — else the edit erases "from … conformer k"
-      const orig = queue.find(c => c.name === oldName);
-      if (orig && orig.conformer_origin) calc.conformer_origin = orig.conformer_origin;
       const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
       if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
       if (oldName !== calc.name) delete localCalcs[oldName];
@@ -2033,8 +2022,6 @@ function resetCrestForm() {
   document.getElementById("crest-solvent").value = "";
   document.getElementById("crest-ewin").value = "6";
   document.getElementById("crest-threads").value = "4";
-  const ho = document.getElementById("crest-handoff");
-  if (ho) ho.value = "lowest";
   // advanced knobs back to CREST defaults
   for (const id of ["crest-preset", "crest-solvent-model"]) {
     const el = document.getElementById(id);
@@ -2075,7 +2062,6 @@ async function addCrestCalcToQueue() {
     const solvent = document.getElementById("crest-solvent").value;
     const ewin = parseFloat(document.getElementById("crest-ewin").value) || 6.0;
     const threads = Math.max(1, parseInt(document.getElementById("crest-threads").value, 10) || 4);
-    const handoff = document.getElementById("crest-handoff").value === "all" ? "all" : "lowest";
     const numVal = id => parseFloat(document.getElementById(id).value) || 0;
     const checked = id => document.getElementById(id).checked;
     const preset = document.getElementById("crest-preset").value;
@@ -2088,7 +2074,6 @@ async function addCrestCalcToQueue() {
       config: {
         kind: "crest_conf", crest_method: method, crest_solvent: solvent,
         crest_ewin: ewin, crest_threads: threads, crest_env_id: "",
-        crest_handoff: handoff,
         crest_preset: ["quick", "squick", "mquick"].includes(preset) ? preset : "",
         crest_nci: checked("crest-nci"),
         crest_solvent_model: document.getElementById("crest-solvent-model").value === "gbsa" ? "gbsa" : "alpb",
@@ -2108,8 +2093,6 @@ async function addCrestCalcToQueue() {
     // editing: replace in place (preserves queue position), like the DFT path.
     const oldName = editName !== null && queue.some(c => c.name === editName) ? editName : null;
     if (oldName) {
-      const orig = queue.find(c => c.name === oldName);
-      if (orig && orig.conformer_origin) calc.conformer_origin = orig.conformer_origin;
       const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
       if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
       if (oldName !== calc.name) delete localCalcs[oldName];
@@ -2220,7 +2203,6 @@ function fillCrestForm(c) {
   setV("crest-solvent", cfg.crest_solvent || "");
   setV("crest-ewin", cfg.crest_ewin != null ? String(cfg.crest_ewin) : "6");
   setV("crest-threads", cfg.crest_threads != null ? String(cfg.crest_threads) : "4");
-  setV("crest-handoff", cfg.crest_handoff === "all" ? "all" : "lowest");
   setV("crest-preset", ["quick", "squick", "mquick"].includes(cfg.crest_preset) ? cfg.crest_preset : "");
   setV("crest-solvent-model", cfg.crest_solvent_model === "gbsa" ? "gbsa" : "alpb");
   setV("crest-mdlen", num(cfg.crest_mdlen_mult));
@@ -2611,9 +2593,9 @@ async function setDftSub(sub) {
           confirm: "Discard & reopen form", danger: true,
         });
         if (!ok) return;
-        // the queue may have shifted during the modal (poll / conformer
-        // fan-out) — re-resolve by name, like editCalc's own await guard; if
-        // the calc vanished or left an editable state, just drop the edit
+        // the queue may have shifted during the modal (poll) — re-resolve by
+        // name, like editCalc's own await guard; if the calc vanished or left
+        // an editable state, just drop the edit
         const idx = queue.findIndex(c => c.name === q.name);
         if (idx === -1 || !isEditableState(queue[idx].state)) {
           exitEditMode();
@@ -2717,10 +2699,7 @@ function renderQueue() {
   el.innerHTML = "";
   queue.forEach((c, i) => {
     // ref_name is user-typed (a calc name) and lands in innerHTML — escape it
-    // a per-conformer track clone bakes its conformer's geometry in as DIRECT,
-    // so show its provenance ("from tt1 · conformer 2") instead of a bare "xyz"
-    const srcLabel = c.geometry_source === "reference" ? `ref → ${escapeHtml(c.ref_name)}`
-      : c.conformer_origin ? `from ${escapeHtml(c.conformer_origin)}` : "xyz";
+    const srcLabel = c.geometry_source === "reference" ? `ref → ${escapeHtml(c.ref_name)}` : "xyz";
     const isMlip = (c.kind || "").startsWith("mlip");
     const isCrest = (c.kind || "").startsWith("crest");
     const rawBadge = c.is_raw ? `<span class="qstate raw">raw</span>` : "";
@@ -2734,9 +2713,9 @@ function renderQueue() {
       ? ` · charge ${c.charge} · mult ${c.multiplicity}` : "";
     // backend detail (explicit CalcSummary fields, escaped): the MACE model is
     // otherwise invisible on desktop (MLIP calcs have no .inp view); the CREST
-    // method + all-conformers handoff change what a run will do.
+    // method changes what a run will do.
     const backendDetail = isMlip && c.mlip_model ? ` · ${escapeHtml(c.mlip_model)}`
-      : isCrest ? `${c.crest_method ? " · " + escapeHtml(c.crest_method) : ""}${c.crest_handoff === "all" ? " · all conformers" : ""}`
+      : isCrest && c.crest_method ? ` · ${escapeHtml(c.crest_method)}`
       : "";
     // a "Completed." note is redundant with the done badge — hide completion notices
     const showMsg = !!c.message && !(c.state === "done" && /^Completed\b/.test(c.message));
@@ -3316,8 +3295,8 @@ function renderSummary(rows, d) {
 
 /** CREST conformer ensemble: a read-only ranked list. The Results tab is for
  *  interpreting results — follow-up calculations are built on the Build tab by
- *  referencing the CREST search (its "Conformer handoff" scope decides whether
- *  the referencing chain fans out per conformer). @param {ConformerPayload[]} confs */
+ *  referencing the CREST search (a reference receives the lowest-energy
+ *  conformer's geometry). @param {ConformerPayload[]} confs */
 function renderConformers(confs) {
   const body = document.getElementById("result-body");
   let rows = "";
@@ -3348,7 +3327,7 @@ function renderConformers(confs) {
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <div class="hint" style="margin-top:6px">Follow-up calculations are built on the Build tab: reference this search from a geometry source — its Conformer handoff setting decides whether the chain runs on the lowest conformer or fans out per conformer. <b>View in 3D</b> flips through every conformer with the ← / → keys; <b>Export as .xyz</b> writes each one (c1 = the best) to a <code>conformers/</code> subfolder of the run.</div>`;
+    <div class="hint" style="margin-top:6px">Follow-up calculations are built on the Build tab: reference this search from a geometry source — the referencing calculation runs on the lowest-energy conformer. <b>View in 3D</b> flips through every conformer with the ← / → keys; <b>Export as .xyz</b> writes each one (c1 = the best) to a <code>conformers/</code> subfolder of the run.</div>`;
 }
 
 /** Split the shown CREST search's ensemble into per-conformer .xyz files
