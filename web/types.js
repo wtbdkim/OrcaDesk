@@ -68,7 +68,10 @@
 
 /**
  * Method configuration. Mirror of StepConfig in input_generator.py
- * (to_dict()/from_dict are a plain asdict round-trip) — 29 fields.
+ * (to_dict()/from_dict are a plain asdict round-trip) — 48 fields.
+ * The [optional] markers describe the JS→Python SEND direction (the build
+ * forms omit keys that don't apply, e.g. crest_* on a DFT calc); in the
+ * Python→JS direction to_dict() = asdict(), so all 48 keys always arrive.
  * @typedef {Object} StepConfigPayload
  * @property {string} kind
  * @property {string} functional
@@ -431,13 +434,58 @@
  */
 
 /**
- * export_conformers(name) result: how many per-conformer .xyz files were written
- * and into which folder.
+ * export_conformers(name) / export_frames(...) result: how many .xyz files
+ * were written and into which folder.
  * @typedef {Object} ExportResult
  * @property {boolean} ok
  * @property {string} [error]
  * @property {number} [count]
  * @property {string} [folder]
+ */
+
+/**
+ * One 3D-viewer frame. Mirror of the Python MolFramePayload
+ * (orcamgr/state/schemas.py; built by orcamgr/molview.py) — xyz is raw
+ * .xyz text 3Dmol parses directly.
+ * @typedef {Object} MolFrame
+ * @property {string} label
+ * @property {string} xyz
+ * @property {number|null} energy    Hartree, or null when unknown
+ */
+
+/**
+ * get_conformer_frames(name) / browse_xyz_folder() result. Mirror of the
+ * Python FramesResult. title/frames are present on the ok branch;
+ * "folder" (the picked path — the export/favorites source) only from
+ * browse_xyz_folder, which also has the {ok:false, cancelled:true}
+ * picker-closed branch (not an error).
+ * @typedef {Object} FramesResult
+ * @property {boolean} ok
+ * @property {string} [title]
+ * @property {MolFrame[]} [frames]
+ * @property {string} [folder]
+ * @property {boolean} [cancelled]
+ * @property {string} [error]
+ */
+
+/**
+ * get_favorites(source) / toggle_favorite(...) result. Mirror of the Python
+ * FavoritesResult; "labels" is present on every branch ([] on failure).
+ * @typedef {Object} FavoritesResult
+ * @property {boolean} ok
+ * @property {string[]} labels
+ * @property {string} [error]
+ */
+
+/**
+ * set_wallpaper_image(dataUri) result. Mirror of the Python WallpaperResult.
+ * stored=false means the input was empty/invalid/oversize and the stored
+ * image was cleared instead. The OSError branch returns the bare {error}
+ * envelope (no "ok"), so every key is optional.
+ * @typedef {Object} WallpaperResult
+ * @property {boolean} [ok]
+ * @property {boolean} [stored]
+ * @property {string} [error]
  */
 
 /**

@@ -86,6 +86,16 @@ The entire UI lives in `web/` (HTML/CSS/JS, shadcn-style dark theme). `main.py` 
 `MainWindow` (`orcamgr/gui/window.py`), which hosts a `QWebEngineView` loading
 `web/index.html` and registers a single `Bridge` object on a `QWebChannel`.
 
+The JS is plain scripts sharing one global scope (no modules/bundler). `app.js`
+holds the app shell (tabs, build cards, queue, polling); self-contained sections
+live in their own files, loaded by `index.html` **before** `app.js` in this
+order: `scf_graph.js` → `combo.js` (combobox widget) → `appearance.js`
+(theme variant / wallpaper / Liquid-Glass pulse) → `log_graph.js` (log pane +
+progress trackers) → `results_render.js` (Results-tab section renderers) →
+`molviewer.js` (3D viewer + favorites). Cross-file calls resolve at runtime, so
+only top-level statements may not touch a later file's bindings (TDZ) — keep new
+top-level code declaration-only.
+
 The view's page is `_ConsoleCapturePage` (`window.py`), which forwards JS console
 output into the shared log buffer as `[web] ...` lines (rate-limited per identical
 message) — so front-end errors are visible in the Log tab even in a deployed build
@@ -147,7 +157,7 @@ survive removal, so a calc reusing a removed CREST calc's name would otherwise
 parse as a conformer search. Both paths
 send the *whole* `ParseResult` (every section the parser found) plus two gating flags
 — `is_optimization` and `show_elec` (`= ParseResult.shows_electronic_props`) — and the
-front-end (`web/app.js` `renderResultSections` / `renderSummary`) decides what to show
+front-end (`web/results_render.js` `renderResultSections` / `renderSummary`) decides what to show
 per calc kind. Final geometry shows only for opt jobs; general electronic-structure
 sections (orbitals, charges, Mayer, dipole, rotational, SCF decomposition, and the
 `"elec"`-tagged summary rows) show only for sp/opt; freq/tddft/nmr/neb sections are
@@ -587,7 +597,7 @@ run; this only reads/writes, never touches the queue.
 **3Dmol.js** (vendored at `web/vendor/3Dmol-min.js` — bundled locally, no CDN;
 this is why WebGL is enabled in `window.py`). It opens as a modal over the
 Results tab (`#mol-viewer` in `index.html`, `openMolViewer`/`molViewerShow`/
-`closeMolViewer` in `app.js`) and flips through a list of **frames** with the
+`closeMolViewer` in `web/molviewer.js`) and flips through a list of **frames** with the
 ←/→ keys (Esc closes, drag rotates). A frame is `{label, xyz, energy}`; `xyz`
 is raw `.xyz` text 3Dmol parses directly, and the caption shows ΔE vs the
 lowest-energy frame when energies are present. Two entry points: **View in 3D**
@@ -663,7 +673,7 @@ them there.
   has a second *variant* selected by `html[data-theme-variant]` (`shadcn`, the
   flat default, or `liquidglass`) plus an intensity `html[data-glass]`
   (`restrained`/`moderate`/`bold`/`vivid`/`maximal`, mapping to the design2..6
-  previews). `applyThemeVariant` in `app.js` flips those attributes; the whole
+  previews). `applyThemeVariant` in `web/appearance.js` flips those attributes; the whole
   Liquid-Glass CSS layer (an `--lg-*` token group + refracting `backdrop-filter:
   url(#lgLens*)` chrome over a `<canvas id="lgWall">` wallpaper) is **gated on
   those attributes**, so shadcn is untouched when off. Persisted as
@@ -679,7 +689,7 @@ them there.
   WebEngine drop the chrome bars from the on-screen composite (the 0.5.0-beta
   invisible-tab-strip bug) — and, because external GPU events (sleep/resume,
   driver reset) can still drop a bar's layer permanently (a static bar is never
-  re-invalidated), `app.js` pulses an imperceptible `--lg-pulse` paint delta
+  re-invalidated), `appearance.js` pulses an imperceptible `--lg-pulse` paint delta
   through both bars every 250 ms so any dropped layer re-rasters within ~0.25 s
   (§16.5 rule 4; the pulse must stay paint-only — never `will-change`/
   `transform`, which would break backdrop sampling). Full spec: DESIGN.md §16.

@@ -15,7 +15,7 @@ interface OrcaBridge {
   get_about(): Promise<string>;
   get_settings(): Promise<string>;
   save_settings(payloadJson: string): Promise<string>;
-  set_wallpaper_image(dataUri: string): Promise<string>;   // {ok, stored} JSON; stored=false when ""/invalid/oversize (cleared)
+  set_wallpaper_image(dataUri: string): Promise<string>;   // WallpaperResult JSON: {ok, stored}; stored=false when ""/invalid/oversize (cleared)
   get_wallpaper_image(): Promise<string>;                   // bare data-URI string ("" = none)
   autodetect_orca(): Promise<string>;          // AutodetectResult JSON (mutates settings on success)
   // MLIP environments (separate from ORCA; one env per MLIP)
@@ -55,13 +55,17 @@ interface OrcaBridge {
   get_inp(name: string): Promise<string>;
   get_graph_lines(name: string): Promise<string>;
   export_conformers(name: string): Promise<string>;
-  // 3D structure viewer (Results tab); both return {ok,title,frames:[{label,xyz,energy}]} | {ok:false,...} JSON
+  // 3D structure viewer (Results tab); both return FramesResult JSON:
+  // {ok,title,frames:[{label,xyz,energy}]} | {ok:false,...}
   get_conformer_frames(name: string): Promise<string>;
+  // FramesResult JSON; also returns "folder" (the picked path) on success, and
+  // has a cancel branch: {ok:false, cancelled:true} when the picker is closed
+  // (a deliberate dismissal, not an error)
   browse_xyz_folder(): Promise<string>;
   // viewer favorites (starred structures)
-  get_favorites(source: string): Promise<string>;            // {ok, labels[]}
-  toggle_favorite(source: string, label: string, on: boolean): Promise<string>;  // {ok, labels[]}
-  export_frames(destKind: string, dest: string, framesJson: string): Promise<string>;  // {ok, count, folder}
+  get_favorites(source: string): Promise<string>;            // FavoritesResult JSON: {ok, labels[]}
+  toggle_favorite(source: string, label: string, on: boolean): Promise<string>;  // FavoritesResult JSON: {ok, labels[]}
+  export_frames(destKind: string, dest: string, framesJson: string): Promise<string>;  // ExportResult JSON: {ok, count, folder}
   // run / results
   get_free_energy_profile(): Promise<string>;
   check_overwrite_conflicts(): Promise<string>;

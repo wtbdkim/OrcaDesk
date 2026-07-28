@@ -569,6 +569,13 @@
 
 <script src="vendor/3Dmol-min.js"></script>
 <script src="scf_graph.js"></script>
+<!-- plain global scripts split out of app.js — must load after scf_graph.js
+     (log_graph.js reads window.SCFGraph at top level) and before app.js -->
+<script src="combo.js"></script>
+<script src="appearance.js"></script>
+<script src="log_graph.js"></script>
+<script src="results_render.js"></script>
+<script src="molviewer.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

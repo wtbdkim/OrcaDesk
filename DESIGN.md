@@ -942,7 +942,7 @@ content surfaces (cards, forms, the queue list, the log terminal, parse tables,
 the plot canvas) stay opaque so a data-dense app stays legible. Refraction is a
 Chromium-only `backdrop-filter: url(#lgLens*) blur() saturate()` chain (the app
 is Qt WebEngine / Chromium); the wallpaper itself is a viewport-fixed
-`<canvas id="lgWall">` painted by `app.js` (six procedural presets +
+`<canvas id="lgWall">` painted by `web/appearance.js` (six procedural presets +
 custom-image upload).
 
 **16.2 The intensity ladder.** `html[data-glass]` selects one of five levels
@@ -1005,7 +1005,7 @@ keep:
    bar's text layer gone while its tint survived, proving any of a bar's
    three composited pieces can drop independently). Because a static bar is
    never invalidated, a drop would be permanent — so while Liquid Glass is
-   active, `app.js` flips `--lg-pulse` between `0` and `0.004` every 250 ms
+   active, `appearance.js` flips `--lg-pulse` between `0` and `0.004` every 250 ms
    (`LG_PULSE_MS` — the flip period is the heal-latency upper bound; going
    much faster buys nothing and turns the bars into constant GPU work), and
    `style.css` routes that imperceptible delta (≈1/255 alpha,
@@ -1033,7 +1033,7 @@ Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
 | B4 | `scf_graph.js` hardcoded `#52b788` for the converged-zone shading (the dark `--crit-rmsg` value) — it didn't re-color in light theme, despite the same file declaring the CSS-var convention | D10, D14 | resolved (0.4.3-beta — inline `style="fill:var(--crit-rmsg)"`) |
 | B5 | Combo dropdown fallback `var(--popover, #1a1d24)` carried a pre-zinc color that differed from the real token `#18181b` | D10 | resolved (0.4.3-beta — fallback dropped) |
 | B6 | Mobile stylesheet fork drift: undefined `var(--fg)` used twice; `--muted` (a background tone) used as text color (near-invisible); log box hardcoded `#050506` instead of a token; radius values differ; no light theme; copy still sentence-form; native `confirm()` for the destructive remove (vs D61); its own timing constants (poll 1500ms, log cap 1500 lines, heartbeat 5000ms) and motion (4px panel fade, animated accordion chevron) undocumented | D54, D10, D70, D61, D53 | partially resolved (0.4.3-beta: the outright bugs — undefined `--fg`, `--muted`-as-text, the hardcoded log background — fixed via the desktop token names incl. `--code-bg`) — light theme, copy normalization, and the themed confirm remain; restore parity when touching mobile |
-| B7 | ~75 inline `style=""` attributes (37 in `index.html`, 38 in `app.js` templates) do layout micro-tuning outside classes | D50 | accepted (pragmatic for one-off layout; promote to a class the second time a style repeats) |
+| B7 | ~75 inline `style=""` attributes (37 in `index.html`, 38 in the web JS templates) do layout micro-tuning outside classes | D50 | accepted (pragmatic for one-off layout; promote to a class the second time a style repeats) |
 | B8 | Two versions of the empty-queue copy existed (static HTML vs `renderQueue`) with different wording | D70 | resolved (0.4.3-beta — one string; the static HTML is marked as a pre-bridge placeholder kept in sync) |
 | B9 | Inline file-load status hints mixed conventions ("N atoms loaded." vs "no product loaded") and the MACE-env-missing message existed in two non-identical phrasings | D70, D72 | resolved (0.4.3-beta — `loaded (N atoms)` inline-status form; one MACE-env-missing phrasing) |
 | B10 | `design_preview.html` sits in the repo root; its "after" proposals (hover-lift, glow tab underline) were rejected but the file's status is undocumented | D32 | stale-doc (this entry is now the record: preview = proposal sandbox, not spec; rejected proposals stay rejected) |
