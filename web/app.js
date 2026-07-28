@@ -1258,18 +1258,35 @@ function switchTab(name) {
 }
 
 // ---------- geometry source ----------
-function currentGeomSource() {
-  const r = document.querySelector('input[name="geomsrc"]:checked');
+// One implementation serves all three build cards (DFT / MLIP / CREST): the
+// per-card element ids and radio names differ only by an id prefix. The named
+// per-card functions below are thin wrappers kept because index.html's inline
+// onchange handlers (and the form fill/reset paths) call them by name.
+
+/** Selected geometry source of a build card.
+ *  @param {string} prefix card id prefix: "" (DFT), "mlip-", or "crest-"
+ *  @returns {string} "direct" | "reference" */
+function geomSourceFor(prefix) {
+  const r = document.querySelector(`input[name="${prefix}geomsrc"]:checked`);
   return r ? r.value : "direct";
 }
-function onGeomSourceChange() {
-  const src = currentGeomSource();
-  document.getElementById("geom-direct").style.display = src === "direct" ? "block" : "none";
-  document.getElementById("geom-reference").style.display = src === "reference" ? "block" : "none";
-  if (src === "reference") refreshRefSelect();
+/** Toggle a build card's .xyz-loader vs reference-picker branch.
+ *  @param {string} prefix card id prefix: "" (DFT), "mlip-", or "crest-" */
+function applyGeomSource(prefix) {
+  const src = geomSourceFor(prefix);
+  const direct = document.getElementById(prefix + "geom-direct");
+  const refBox = document.getElementById(prefix + "geom-reference");
+  if (direct) direct.style.display = src === "direct" ? "block" : "none";
+  if (refBox) refBox.style.display = src === "reference" ? "block" : "none";
+  if (src === "reference") refreshRefSelectFor(prefix);
 }
-function refreshRefSelect() {
-  const sel = document.getElementById("ref-select");
+/** Fill a build card's reference dropdown from the current queue. Lists every
+ *  queued calc except the one being edited; the engine validates at run time
+ *  that the referenced calc produced a geometry.
+ *  @param {string} prefix card id prefix: "" (DFT), "mlip-", or "crest-" */
+function refreshRefSelectFor(prefix) {
+  const sel = document.getElementById(prefix + "ref-select");
+  if (!sel) return;
   const prev = sel.value;
   sel.innerHTML = "";
   if (!queue.length) {
@@ -1291,6 +1308,18 @@ function refreshRefSelect() {
   }
   if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
 }
+/** @returns {string} the selected DFT geometry source ("direct" | "reference"). */
+function currentGeomSource() { return geomSourceFor(""); }
+function onGeomSourceChange() { applyGeomSource(""); }
+function refreshRefSelect() { refreshRefSelectFor(""); }
+/** @returns {string} the selected MLIP geometry source ("direct" | "reference"). */
+function currentMlipGeomSource() { return geomSourceFor("mlip-"); }
+function onMlipGeomSourceChange() { applyGeomSource("mlip-"); }
+function refreshMlipRefSelect() { refreshRefSelectFor("mlip-"); }
+/** @returns {string} the selected CREST geometry source ("direct" | "reference"). */
+function currentCrestGeomSource() { return geomSourceFor("crest-"); }
+function onCrestGeomSourceChange() { applyGeomSource("crest-"); }
+function refreshCrestRefSelect() { refreshRefSelectFor("crest-"); }
 
 // Parse a raw .xyz file's text into a normalized "El x y z" coordinate block.
 // The load_* slots return a LoadResult JSON envelope; callers feed this the
@@ -1861,36 +1890,8 @@ function refreshMlipDeviceOptions() {
     if (!_mlipCuda && sel.value === "cuda") sel.value = "";
   }
 }
-/** @returns {string} the selected MLIP geometry source ("direct" | "reference"). */
-function currentMlipGeomSource() {
-  const r = document.querySelector('input[name="mlip-geomsrc"]:checked');
-  return r ? r.value : "direct";
-}
-/** Toggle the MLIP .xyz-loader vs reference-picker branch (mirror of onGeomSourceChange). */
-function onMlipGeomSourceChange() {
-  const src = currentMlipGeomSource();
-  document.getElementById("mlip-geom-direct").style.display = src === "direct" ? "block" : "none";
-  document.getElementById("mlip-geom-reference").style.display = src === "reference" ? "block" : "none";
-  if (src === "reference") refreshMlipRefSelect();
-}
-/** Fill the MLIP reference dropdown from the current queue (mirror of refreshRefSelect).
- *  Lists every queued calc; the engine validates at run time that the ref produced a geometry. */
-function refreshMlipRefSelect() {
-  const sel = document.getElementById("mlip-ref-select");
-  if (!sel) return;
-  const prev = sel.value;
-  sel.innerHTML = "";
-  if (!queue.length) {
-    sel.innerHTML = `<option value="">(no calculations in queue yet)</option>`;
-    return;
-  }
-  for (const c of queue) {
-    const o = document.createElement("option");
-    o.value = c.name; o.textContent = `${c.name}  (${c.kind})`;
-    sel.appendChild(o);
-  }
-  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
-}
+// (geometry-source helpers for this card live in the shared "geometry source"
+//  section above: currentMlipGeomSource / onMlipGeomSourceChange / refreshMlipRefSelect)
 async function addMlipCalcToQueue() {
   try {
     if (!_mlipReady) throw new Error("Ready MACE environment required (see Settings).");
@@ -1977,36 +1978,8 @@ async function loadCrestXyz() {
   document.getElementById("crest-xyz-status").textContent =
     n ? `loaded (${n} atoms)` : "No atoms in file.";
 }
-/** @returns {string} the selected CREST geometry source ("direct" | "reference"). */
-function currentCrestGeomSource() {
-  const r = document.querySelector('input[name="crest-geomsrc"]:checked');
-  return r ? r.value : "direct";
-}
-/** Toggle the CREST .xyz-loader vs reference-picker branch (mirror of onMlipGeomSourceChange). */
-function onCrestGeomSourceChange() {
-  const src = currentCrestGeomSource();
-  document.getElementById("crest-geom-direct").style.display = src === "direct" ? "block" : "none";
-  document.getElementById("crest-geom-reference").style.display = src === "reference" ? "block" : "none";
-  if (src === "reference") refreshCrestRefSelect();
-}
-/** Fill the CREST reference dropdown from the current queue (mirror of refreshMlipRefSelect).
- *  Lists every queued calc; the engine validates at run time that the ref produced a geometry. */
-function refreshCrestRefSelect() {
-  const sel = document.getElementById("crest-ref-select");
-  if (!sel) return;
-  const prev = sel.value;
-  sel.innerHTML = "";
-  if (!queue.length) {
-    sel.innerHTML = `<option value="">(no calculations in queue yet)</option>`;
-    return;
-  }
-  for (const c of queue) {
-    const o = document.createElement("option");
-    o.value = c.name; o.textContent = `${c.name}  (${c.kind})`;
-    sel.appendChild(o);
-  }
-  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
-}
+// (geometry-source helpers for this card live in the shared "geometry source"
+//  section above: currentCrestGeomSource / onCrestGeomSourceChange / refreshCrestRefSelect)
 function resetCrestForm() {
   document.getElementById("crest-name").value = "";
   crestXyz = "";

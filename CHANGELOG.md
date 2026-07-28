@@ -3,6 +3,19 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Editing an MLIP/CREST calculation no longer offers the calc itself as its
+  geometry reference.** The DFT card already excluded the calc being edited from
+  the reference dropdown; the MLIP and CREST cards now share that logic (the
+  three geometry-source selectors are one implementation), so a self-reference
+  can no longer be picked during an in-place edit.
+
+### Removed
+- The unused `list_crest_distros` bridge slot (the Settings distro picker is
+  populated from `get_crest_status()`).
+
 ## [0.6.0-beta] — 2026-07-25
 
 ### Removed
