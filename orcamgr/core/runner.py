@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Callable, Optional, Tuple
 
 from .procutil import process_matches, kill_tree, create_time_of
+from .tailer import FileTailer
 
 
 LogCallback = Callable[[str], None]
@@ -160,17 +161,9 @@ class OrcaRunner:
 
     @staticmethod
     def end_position(output_path: Path) -> int:
-        """Current end-of-file offset of ``output_path`` as a TEXT-mode tell()
-        cookie compatible with monitor()'s seek() — NOT a byte size (os.path.
-        getsize would desync on CRLF). Used to start a reattach's tail at the
-        current EOF so the already-written output isn't re-streamed. 0 if the
-        file can't be read yet."""
-        try:
-            with open(output_path, "r", encoding="utf-8", errors="replace") as f:
-                f.seek(0, 2)
-                return f.tell()
-        except OSError:
-            return 0
+        """Text-mode tell() cookie for the current EOF of ``output_path`` — see
+        FileTailer.end_position (a reattach tails from here)."""
+        return FileTailer.end_position(output_path)
 
     # ---- monitor (worker thread, blocks) ----
     def monitor(self, output_path: Path,
@@ -185,42 +178,18 @@ class OrcaRunner:
         isn't re-streamed into the live log; a fresh launch leaves it 0 to read
         from the start. The full graph history is rebuilt separately by the UI
         from the .out on disk."""
-        output_path = Path(output_path)
-        pos = int(start_pos)
-        buf = ""
-
-        def _drain() -> None:
-            nonlocal pos, buf
-            try:
-                with open(output_path, "r", encoding="utf-8", errors="replace") as f:
-                    f.seek(pos)
-                    chunk = f.read()
-                    pos = f.tell()
-            except OSError:
-                return
-            if not chunk:
-                return
-            buf += chunk
-            while True:
-                nl = buf.find("\n")
-                if nl < 0:
-                    break
-                line = buf[:nl].rstrip("\r")
-                buf = buf[nl + 1:]
-                if on_line is not None:
-                    on_line(line)
+        tail = FileTailer(output_path, start_pos)
 
         while True:
-            _drain()
+            tail.drain(on_line)
             if self._cancel_event.is_set():
                 self._kill()
                 raise OrcaCancelled("Cancelled by user.")
             if self._detach_event.is_set():
                 raise OrcaDetached("Monitoring stopped; ORCA left running.")
             if not self._is_alive():
-                _drain()  # capture any trailing output written just before exit
-                if buf.strip() and on_line is not None:
-                    on_line(buf.rstrip("\r\n"))
+                tail.drain(on_line)  # capture trailing output written just before exit
+                tail.flush_tail(on_line)
                 break
             time.sleep(_TAIL_POLL)
 

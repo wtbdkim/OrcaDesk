@@ -102,7 +102,8 @@ catching up on restore. (No profile/cache tuning: the Qt 6 default profile is
 already off-the-record.)
 
 `orcamgr/gui/bridge.py` is the **entire backend API surface for the desktop**: every
-`@pyqtSlot` is callable from JS (the slot list is documented at the top of `bridge.py`).
+`@pyqtSlot` is callable from JS (the full slot list, with signatures, is the `Bridge`
+declaration in `web/globals.d.ts` — kept honest by the tsc check).
 Slots take/return JSON strings. The JS side does not hold queue state — it **polls**
 `get_queue()` / `get_log(since)` on a `QTimer`. This polling design is deliberate: it
 keeps the run worker thread and Qt's UI thread decoupled, avoiding cross-thread Qt
@@ -541,8 +542,9 @@ was validated end to end against a real CREST 3.0.2 install in WSL Ubuntu
 (including the conformer→ORCA handoff).
 
 `build_crest_argv` (`crest/runner.py`) maps `StepConfig.crest_*` to CLI flags:
-method (`--gfn2`/`--gfn1`/`--gfn0`/`--gfnff`, exact-map with an unknown-value
-`--<name>` fallback), solvent (`--alpb`/`--gbsa` by `crest_solvent_model`),
+method (the label maps 1:1 onto CREST's flag — `gfn2` → `--gfn2`, incl.
+`gfn2//gfnff`; an already-dashed value passes through verbatim), solvent
+(`--alpb`/`--gbsa` by `crest_solvent_model`),
 `--ewin`, `-T`, plus the optional advanced knobs — `crest_preset`
 (`--quick`/`--squick`/`--mquick`), `crest_nci` (`--nci`), the MD/MTD numerics
 (`--mdlen x<mult>`, `--tstep`, `--tnmd`, `--mddump`, `--vbdump`), and the
@@ -614,7 +616,7 @@ also returns the picked `folder` path (the export/favorites source for a browsed
 set).
 
 **Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
-`list_crest_distros` / `set_crest_distro`) follow
+`set_crest_distro`) follow
 the MLIP pattern: a background probe publishes to `Bridge._crest_status` (guarded
 by `_crest_lock`) and the UI polls `get_crest_status`. The Build tab gains the
 `crest` mode (`Settings.build_mode`; the CREST button on the backend toggle — see

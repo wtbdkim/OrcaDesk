@@ -8,16 +8,13 @@
   --background: #09090b;
   --foreground: #fafafa;
   --card: #18181b;
-  --card-foreground: #fafafa;
   --popover: #18181b;
   --border: #27272a;
   --input: #27272a;
   --input-bg: #0e0e10;
   --code-bg: #050506;       /* log + raw-editor terminal surface */
-  --muted: #18181b;
   --muted-foreground: #a1a1aa;
   --accent: #27272a;
-  --accent-foreground: #fafafa;
   --primary: #fafafa;
   --primary-foreground: #18181b;
   --secondary: #27272a;
@@ -43,7 +40,6 @@
   --err-tint-bg: rgba(248,113,113,.08);     /* 8% */
   --err-tint-hover: rgba(248,113,113,.10);  /* 10% */
   --err-outline: rgba(248,113,113,.3);      /* 30% */
-  --err-stripe: rgba(248,113,113,.55);      /* 55% */
   --raw-tint: rgba(192,132,252,.15);        /* 15% of --raw #c084fc */
   /* optimization-graph criterion series (tuned for the dark card) */
   --crit-de: #4cc9f0; --crit-rmsg: #52b788; --crit-maxg: #ffd166; --crit-rmss: #c08eff; --crit-maxs: #ff8fa3;
@@ -65,16 +61,13 @@ html[data-theme="light"] {
   --background: #fffff0;
   --foreground: #09090b;
   --card: #f5f5dc;
-  --card-foreground: #09090b;
   --popover: #fffff0;
   --border: #dad6b8;
   --input: #dad6b8;
   --input-bg: #fffff0;
   --code-bg: #f2efd8;
-  --muted: #ece8ce;
   --muted-foreground: #6f6d5c;
   --accent: #ece8ce;
-  --accent-foreground: #18181b;
   --primary: #18181b;
   --primary-foreground: #fafafa;
   --secondary: #ece8ce;
@@ -100,7 +93,6 @@ html[data-theme="light"] {
   --err-tint-bg: rgba(220,38,38,.08);       /* 8% */
   --err-tint-hover: rgba(220,38,38,.10);    /* 10% */
   --err-outline: rgba(220,38,38,.3);        /* 30% */
-  --err-stripe: rgba(220,38,38,.55);        /* 55% */
   --raw-tint: rgba(15,118,110,.15);         /* 15% of --raw teal */
   /* criterion series — darkened so the thin lines stay legible on the white card */
   --crit-de: #0e7490; --crit-rmsg: #15803d; --crit-maxg: #b45309; --crit-rmss: #7c3aed; --crit-maxs: #be123c;

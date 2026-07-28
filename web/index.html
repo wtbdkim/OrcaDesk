@@ -344,7 +344,7 @@
            Beginner -> Expert is the form -> .inp conversion now -->
       <div class="btn-group" id="build-actions">
         <button class="btn btn-primary" id="add-btn" onclick="addCalcToQueue()">Add to queue →</button>
-        <button class="btn" id="loadinp-btn" onclick="loadInpFile()">Load .inp file</button>
+        <button class="btn" onclick="loadInpFile()">Load .inp file</button>
         <button class="btn btn-ghost" onclick="resetBuild()">Reset</button>
       </div>
     </section>
@@ -558,7 +558,7 @@
           <span id="mv-caption" class="mv-caption"></span>
           <button class="btn btn-sm btn-ghost" id="mv-favonly-btn" onclick="toggleFavOnly()"
                   title="Step only through starred structures">★ only</button>
-          <button class="btn btn-sm btn-ghost" id="mv-favexport-btn" onclick="exportFavorites()"
+          <button class="btn btn-sm btn-ghost" onclick="exportFavorites()"
                   title="Write starred structures to a favorites/ folder">Export ★</button>
           <button class="btn btn-sm" onclick="molViewerStep(1)">Next →</button>
         </div>

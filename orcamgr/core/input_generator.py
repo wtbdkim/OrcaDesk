@@ -14,7 +14,6 @@ Each step produces a complete .inp text given an XYZ coordinate block.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields as dataclass_fields, asdict
-from typing import Optional
 
 
 # ---- defaults (match the user's established workflow) -------------------

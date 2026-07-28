@@ -273,9 +273,6 @@
     const raw = (ls - lc) / (ls - lt);
     return Math.max(0, Math.min(0.99, raw));
   };
-  GeoTracker.prototype.current = function () {
-    return this._lastMaxGrad();
-  };
   GeoTracker.prototype.criteriaSummary = function () {
     // returns {met, total} from the latest completed step
     const c = Object.keys(this._criteria).length ? this._criteria : this._pendingCriteria;
@@ -424,11 +421,6 @@
   };
 
   // ---------- rendering (DOM-string builders) ----------
-  function fmtSci(x) {
-    if (x == null || !isFinite(x)) return "—";
-    return x.toExponential(2);
-  }
-
   // The live "~N s / SCF cycle" pace chip, right-aligned in the progress meta
   // line (.scf-prog-meta is a flex row). Rendered with the current value, then
   // kept fresh between panel re-renders by app.js's poll tick (by id).
@@ -1526,7 +1518,6 @@
     renderCrestProgress: renderCrestProgress,
     setEtaMode: setEtaMode,
     setGeoMode: setGeoMode,
-    SCF_TARGETS: SCF_TARGETS,
   };
 
   // export for browser (global) and node (module.exports) for testing

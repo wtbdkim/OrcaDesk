@@ -22,10 +22,9 @@ from typing import Optional
 
 from ..core.queue import (
     Calculation, CalcState, GeometrySource, QueueEngine, QueueCallbacks,
-    validate_result,
+    result_from_output, validate_result,
 )
 from ..core.input_generator import StepConfig
-from ..core.parser import parse_file
 from ..core.runner import OrcaRunError
 from ..core.procutil import process_matches
 from ..paths import data_dir, user_data_root
@@ -295,10 +294,10 @@ def calc_from_session_dict(d: dict) -> Calculation:
 
 
 def _parse_if_exists(calc):
-    """Parse a calc's on-disk output if present, dispatching on kind (MLIP uses
-    its JSON parser, CREST its ensemble parser, ORCA the .out parser). Returns
-    None on any read/parse error so reconciliation can fall back to FAILED rather
-    than crash."""
+    """Parse a calc's on-disk output if present, via the engine's own kind
+    dispatch (result_from_output — one dispatch for engine and reconciliation).
+    Returns None on any read/parse error so reconciliation can fall back to
+    FAILED rather than crash."""
     from pathlib import Path
     path = getattr(calc, "output_path", "") or ""
     try:
@@ -307,17 +306,7 @@ def _parse_if_exists(calc):
         # — a corrupted session.json must not hang startup (P32)
         if not (path and Path(path).is_file()):
             return None
-    except OSError:
-        return None
-    try:
-        kind = getattr(calc, "kind", "")
-        if kind.startswith("mlip"):
-            from ..mlip.parser import parse_mlip_result
-            return parse_mlip_result(path)
-        if kind.startswith("crest"):
-            from ..crest.parser import parse_crest_result
-            return parse_crest_result(path)
-        return parse_file(path)
+        return result_from_output(calc)
     except Exception:
         return None
 
@@ -353,7 +342,7 @@ def _crest_calc_alive(calc) -> bool:
         return False
     try:
         from ..crest.runner import CrestRunner
-        runner = CrestRunner(distro, "")
+        runner = CrestRunner(distro)
         runner.adopt(calc.pid, calc.create_time)
         return runner.is_alive()
     except Exception:

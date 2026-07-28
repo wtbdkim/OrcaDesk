@@ -304,7 +304,7 @@ class _FakeCrestRunner:
     detached WSL script would produce, with no wsl.exe involved."""
     written_empty = False   # class flag to force a no-conformer (failed) run
 
-    def __init__(self, distro, crest_bin):
+    def __init__(self, distro):
         self.distro = distro
 
     def cancel(self): pass

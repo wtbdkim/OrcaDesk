@@ -28,7 +28,6 @@ interface OrcaBridge {
   get_crest_status(): Promise<string>;         // CrestStatusPayload JSON
   check_crest(): Promise<string>;              // CrestStatusPayload JSON (re-probe)
   install_crest(distro: string): Promise<string>;      // CrestStatusPayload JSON ("" = first distro)
-  list_crest_distros(): Promise<string>;       // {distros: string[]} JSON
   set_crest_distro(distro: string): Promise<string>;   // CrestStatusPayload JSON
   // file pickers / loaders
   pick_orca_executable(): Promise<string>;     // raw path string
@@ -108,7 +107,6 @@ interface SCFGraphAPI {
   renderCrestProgress(...args: any[]): string;
   setEtaMode(mode: string): void;
   setGeoMode(mode: string): void;
-  SCF_TARGETS: Record<string, number>;
 }
 
 declare var SCFGraph: SCFGraphAPI;

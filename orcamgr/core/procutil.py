@@ -13,6 +13,8 @@ process is "ours" only if its creation timestamp matches what we recorded.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from typing import Optional
 
 import psutil
@@ -21,6 +23,13 @@ import psutil
 # can differ in the least significant digits across reads / persistence, so we
 # compare with a small tolerance rather than for exact equality.
 _CREATE_TIME_TOL = 1.5  # seconds
+
+
+def no_window_flags() -> int:
+    """Popen creationflags to avoid a console-window flash on Windows (0 elsewhere)."""
+    if sys.platform.startswith("win"):
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return 0
 
 
 def create_time_of(pid: int) -> Optional[float]:

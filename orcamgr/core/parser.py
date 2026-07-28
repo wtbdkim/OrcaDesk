@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -59,6 +59,39 @@ class Conformer:
     energy_eh: float        # absolute energy (Hartree), from the .xyz comment line
     rel_kcal: float         # energy relative to the best conformer (kcal/mol)
     geometry: list = field(default_factory=list)   # list[Atom]
+
+
+# Homogeneous scalar summary rows: (attribute, label, format, category), in
+# emission order. ``summary_rows()`` interleaves these tables with the
+# composite / conditional rows (File, Termination, Optimization, HOMO/LUMO,
+# Rotational, Frequencies, TD-DFT, NMR), which stay explicit there. The label
+# text, decimal places / units, category, and row order are a tested contract.
+_SUMMARY_ENERGY_ROWS = [
+    ("final_energy_eh", "Final SP energy", "{:.8f} Eh", ""),
+    ("dispersion_correction_eh", "Dispersion corr.", "{:.8f} Eh", ""),
+    # SCF energy decomposition (electronic)
+    ("nuclear_repulsion_eh", "Nuclear repulsion", "{:.6f} Eh", "elec"),
+    ("electronic_energy_eh", "Electronic energy", "{:.6f} Eh", "elec"),
+    ("one_electron_eh", "One-electron energy", "{:.6f} Eh", "elec"),
+    ("two_electron_eh", "Two-electron energy", "{:.6f} Eh", "elec"),
+    ("kinetic_energy_eh", "Kinetic energy", "{:.6f} Eh", "elec"),
+    ("potential_energy_eh", "Potential energy", "{:.6f} Eh", "elec"),
+    ("virial_ratio", "Virial ratio", "{:.5f}", "elec"),
+]
+_SUMMARY_PROP_ROWS = [
+    ("gap_ev", "HOMO-LUMO gap", "{:.4f} eV", "elec"),
+    ("dipole_debye", "Dipole moment", "{:.4f} Debye", "elec"),
+]
+_SUMMARY_THERMO_ROWS = [
+    ("gibbs_eh", "Final Gibbs G", "{:.8f} Eh", ""),
+    ("total_thermal_eh", "Inner energy U", "{:.8f} Eh", ""),
+    ("enthalpy_eh", "Enthalpy H", "{:.8f} Eh", ""),
+    ("entropy_term_eh", "Entropy term T·S", "{:.8f} Eh", ""),
+    ("zpe_eh", "ZPE", "{:.8f} Eh", ""),
+    ("g_minus_e_el_eh", "G - E(el)", "{:.8f} Eh", ""),
+    ("temperature_k", "Temperature", "{:.2f} K", ""),
+    ("pressure_atm", "Pressure", "{:.2f} atm", ""),
+]
 
 
 @dataclass
@@ -162,9 +195,6 @@ class ParseResult:
     # (IRC PATH SUMMARY) — the Results tab titles/captions the profile per kind
     neb_path_kind: str = "neb"
 
-    def to_dict(self) -> dict:
-        return asdict(self)
-
     @property
     def shows_electronic_props(self) -> bool:
         """Whether to surface general electronic-structure properties (orbitals /
@@ -188,6 +218,14 @@ class ParseResult:
         def add(label: str, value: str, cat: str = "") -> None:
             rows.append((label, value, cat))
 
+        def add_scalars(spec: list[tuple[str, str, str, str]]) -> None:
+            # homogeneous rows from the module-level _SUMMARY_* tables;
+            # each is emitted only when its attribute is set
+            for attr, label, fmt, cat in spec:
+                v = getattr(self, attr)
+                if v is not None:
+                    add(label, fmt.format(v), cat)
+
         add("File", self.filename)
         # only when a version was actually parsed — MLIP/CREST results (and
         # non-ORCA files) have none, and a "?" row is just noise for them
@@ -205,25 +243,7 @@ class ParseResult:
             add("Atoms", str(self.n_atoms))
         if self.n_electrons is not None:
             add("Electrons", str(self.n_electrons))
-        if self.final_energy_eh is not None:
-            add("Final SP energy", f"{self.final_energy_eh:.8f} Eh")
-        if self.dispersion_correction_eh is not None:
-            add("Dispersion corr.", f"{self.dispersion_correction_eh:.8f} Eh")
-        # SCF energy decomposition (electronic)
-        if self.nuclear_repulsion_eh is not None:
-            add("Nuclear repulsion", f"{self.nuclear_repulsion_eh:.6f} Eh", "elec")
-        if self.electronic_energy_eh is not None:
-            add("Electronic energy", f"{self.electronic_energy_eh:.6f} Eh", "elec")
-        if self.one_electron_eh is not None:
-            add("One-electron energy", f"{self.one_electron_eh:.6f} Eh", "elec")
-        if self.two_electron_eh is not None:
-            add("Two-electron energy", f"{self.two_electron_eh:.6f} Eh", "elec")
-        if self.kinetic_energy_eh is not None:
-            add("Kinetic energy", f"{self.kinetic_energy_eh:.6f} Eh", "elec")
-        if self.potential_energy_eh is not None:
-            add("Potential energy", f"{self.potential_energy_eh:.6f} Eh", "elec")
-        if self.virial_ratio is not None:
-            add("Virial ratio", f"{self.virial_ratio:.5f}", "elec")
+        add_scalars(_SUMMARY_ENERGY_ROWS)
         if self.is_optimization:
             add("Optimization",
                 "converged" if self.opt_converged else "NOT converged")
@@ -232,10 +252,7 @@ class ParseResult:
             add("HOMO", f"#{self.homo_index}  {self.homo_ev:.4f} eV", "elec")
         if self.lumo_ev is not None:
             add("LUMO", f"#{self.lumo_index}  {self.lumo_ev:.4f} eV", "elec")
-        if self.gap_ev is not None:
-            add("HOMO-LUMO gap", f"{self.gap_ev:.4f} eV", "elec")
-        if self.dipole_debye is not None:
-            add("Dipole moment", f"{self.dipole_debye:.4f} Debye", "elec")
+        add_scalars(_SUMMARY_PROP_ROWS)
         if self.rot_const_cm:
             add("Rotational const.",
                 " / ".join(f"{c:.4f}" for c in self.rot_const_cm) + " cm⁻¹", "elec")
@@ -246,22 +263,7 @@ class ParseResult:
         # reading a Hessian prints a full GIBBS FREE ENERGY block), so each row
         # is emitted on its own presence — never gated behind has_frequencies,
         # per the "all rows are always emitted" contract above.
-        if self.gibbs_eh is not None:
-            add("Final Gibbs G", f"{self.gibbs_eh:.8f} Eh")
-        if self.total_thermal_eh is not None:
-            add("Inner energy U", f"{self.total_thermal_eh:.8f} Eh")
-        if self.enthalpy_eh is not None:
-            add("Enthalpy H", f"{self.enthalpy_eh:.8f} Eh")
-        if self.entropy_term_eh is not None:
-            add("Entropy term T·S", f"{self.entropy_term_eh:.8f} Eh")
-        if self.zpe_eh is not None:
-            add("ZPE", f"{self.zpe_eh:.8f} Eh")
-        if self.g_minus_e_el_eh is not None:
-            add("G - E(el)", f"{self.g_minus_e_el_eh:.8f} Eh")
-        if self.temperature_k is not None:
-            add("Temperature", f"{self.temperature_k:.2f} K")
-        if self.pressure_atm is not None:
-            add("Pressure", f"{self.pressure_atm:.2f} atm")
+        add_scalars(_SUMMARY_THERMO_ROWS)
         if self.has_tddft:
             add("TD-DFT states", str(len(self.transitions)))
             bright = self.brightest_transition()
@@ -284,6 +286,51 @@ def _clean_lines(text: str) -> list[str]:
 
 def _find_all(lines: list[str], needle: str) -> list[int]:
     return [i for i, ln in enumerate(lines) if needle in ln]
+
+
+def _scan_scalars(lines: list[str], r: ParseResult, spec: dict) -> None:
+    """Assign scalar fields from a declarative ``attr -> (pattern, cast)`` spec.
+
+    Every line is visited and each match overwrites the previous value, which
+    implements the parser-wide last-occurrence-wins rule (the converged / final
+    value of a recurring quantity). ``cast`` receives capture group 1; a cast
+    failure leaves the previous value in place (e.g. a malformed
+    rotational-constants line)."""
+    compiled = [(attr, re.compile(pat), cast) for attr, (pat, cast) in spec.items()]
+    for ln in lines:
+        for attr, rx, cast in compiled:
+            m = rx.search(ln)
+            if m:
+                try:
+                    setattr(r, attr, cast(m.group(1)))
+                except ValueError:
+                    pass
+
+
+def _scan_rows(lines: list[str], start: int, row_re: re.Pattern, build, stop=None) -> list:
+    """Collect table rows from ``lines[start:]``: each stripped line must match
+    ``row_re`` (``re.match``; the match object is fed to ``build``). A blank
+    line, a line matching the optional ``stop`` predicate, or the first
+    non-matching line ends the table."""
+    out: list = []
+    for ln in lines[start:]:
+        s = ln.strip()
+        if not s or (stop is not None and stop(s)):
+            break
+        m = row_re.match(s)
+        if not m:
+            break
+        out.append(build(m))
+    return out
+
+
+def _find_header(lines: list[str], start: int, within: int, pred) -> Optional[int]:
+    """Locate a column-header line (``pred(line)`` true) within ``within``
+    lines after a section marker; returns its index, or None if absent."""
+    for i in range(start, min(start + within, len(lines))):
+        if pred(lines[i]):
+            return i
+    return None
 
 
 # Common ORCA failure signatures, checked in priority order. Each entry is
@@ -426,34 +473,22 @@ class OrcaOutParser:
         r.input_keywords = " ".join(keywords).strip()
 
     def _parse_charge_mult(self, lines, r):
-        for ln in lines:
-            m = re.search(r"Total Charge\s+Charge\s+\.+\s*(-?\d+)", ln)
-            if m:
-                r.charge = int(m.group(1))
-            m = re.search(r"Multiplicity\s+Mult\s+\.+\s*(\d+)", ln)
-            if m:
-                r.multiplicity = int(m.group(1))
-            m = re.search(r"Number of Electrons\s+NEL\s+\.+\s*(\d+)", ln)
-            if m:
-                r.n_electrons = int(m.group(1))
+        _scan_scalars(lines, r, {
+            "charge": (r"Total Charge\s+Charge\s+\.+\s*(-?\d+)", int),
+            "multiplicity": (r"Multiplicity\s+Mult\s+\.+\s*(\d+)", int),
+            "n_electrons": (r"Number of Electrons\s+NEL\s+\.+\s*(\d+)", int),
+        })
 
     def _parse_final_energy(self, lines, r):
-        vals = []
-        for ln in lines:
-            m = re.search(r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)", ln)
-            if m:
-                vals.append(float(m.group(1)))
-        if vals:
-            r.final_energy_eh = vals[-1]
+        _scan_scalars(lines, r, {
+            "final_energy_eh": (r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)", float),
+        })
 
     def _parse_dispersion(self, lines, r):
-        vals = []
-        for ln in lines:
-            m = re.match(r"\s*Dispersion correction\s+(-?\d+\.\d+)\s*$", ln)
-            if m:
-                vals.append(float(m.group(1)))
-        if vals:
-            r.dispersion_correction_eh = vals[-1]
+        _scan_scalars(lines, r, {
+            "dispersion_correction_eh":
+                (r"^\s*Dispersion correction\s+(-?\d+\.\d+)\s*$", float),
+        })
 
     def _parse_optimization(self, lines, r):
         kw = r.input_keywords.lower()
@@ -464,17 +499,11 @@ class OrcaOutParser:
         idxs = _find_all(lines, "CARTESIAN COORDINATES (ANGSTROEM)")
         if not idxs:
             return
-        start = idxs[-1] + 2
-        atoms: list[Atom] = []
-        for ln in lines[start:]:
-            s = ln.strip()
-            if not s:
-                break
-            m = re.match(r"([A-Za-z]{1,3})\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", s)
-            if not m:
-                break
-            atoms.append(Atom(m.group(1), float(m.group(2)),
-                              float(m.group(3)), float(m.group(4))))
+        atoms: list[Atom] = _scan_rows(
+            lines, idxs[-1] + 2,
+            re.compile(r"([A-Za-z]{1,3})\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)"),
+            lambda m: Atom(m.group(1), float(m.group(2)),
+                           float(m.group(3)), float(m.group(4))))
         r.geometry = atoms
         r.n_atoms = len(atoms)
 
@@ -483,23 +512,15 @@ class OrcaOutParser:
         if not idxs:
             return
         start = idxs[-1]
-        header = None
-        for i in range(start, min(start + 8, len(lines))):
-            if "OCC" in lines[i] and "E(eV)" in lines[i]:
-                header = i
-                break
+        header = _find_header(lines, start, 8,
+                              lambda ln: "OCC" in ln and "E(eV)" in ln)
         if header is None:
             return
-        orbs: list[Orbital] = []
-        for ln in lines[header + 1:]:
-            s = ln.strip()
-            if not s:
-                break
-            m = re.match(r"(\d+)\s+(\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", s)
-            if not m:
-                break
-            orbs.append(Orbital(int(m.group(1)), float(m.group(2)),
-                                float(m.group(3)), float(m.group(4))))
+        orbs: list[Orbital] = _scan_rows(
+            lines, header + 1,
+            re.compile(r"(\d+)\s+(\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)"),
+            lambda m: Orbital(int(m.group(1)), float(m.group(2)),
+                              float(m.group(3)), float(m.group(4))))
         if not orbs:
             return
         r.orbitals = orbs
@@ -516,37 +537,25 @@ class OrcaOutParser:
                 r.lumo_ev = lumo.energy_ev
                 r.gap_ev = lumo.energy_ev - homo.energy_ev
 
-    def _parse_mulliken(self, lines, r):
-        idxs = _find_all(lines, "MULLIKEN ATOMIC CHARGES")
+    def _parse_atomic_charges(self, lines, marker) -> list[tuple[str, float]]:
+        """MULLIKEN/LOEWDIN ATOMIC CHARGES share one table shape; only the
+        section marker differs. Returns [] when the section is absent."""
+        idxs = _find_all(lines, marker)
         if not idxs:
-            return
-        start = idxs[-1] + 2
-        charges: list[tuple[str, float]] = []
-        for ln in lines[start:]:
-            s = ln.strip()
-            if s.startswith("Sum of atomic charges") or not s:
-                break
-            m = re.match(r"\d+\s+([A-Za-z]{1,3})\s*:\s*(-?\d+\.\d+)", s)
-            if not m:
-                break
-            charges.append((m.group(1), float(m.group(2))))
-        r.mulliken_charges = charges
+            return []
+        return _scan_rows(
+            lines, idxs[-1] + 2,
+            re.compile(r"\d+\s+([A-Za-z]{1,3})\s*:\s*(-?\d+\.\d+)"),
+            lambda m: (m.group(1), float(m.group(2))),
+            stop=lambda s: s.startswith("Sum of atomic charges"))
+
+    def _parse_mulliken(self, lines, r):
+        r.mulliken_charges = self._parse_atomic_charges(
+            lines, "MULLIKEN ATOMIC CHARGES")
 
     def _parse_loewdin(self, lines, r):
-        idxs = _find_all(lines, "LOEWDIN ATOMIC CHARGES")
-        if not idxs:
-            return
-        start = idxs[-1] + 2
-        charges: list[tuple[str, float]] = []
-        for ln in lines[start:]:
-            s = ln.strip()
-            if s.startswith("Sum of atomic charges") or not s:
-                break
-            m = re.match(r"\d+\s+([A-Za-z]{1,3})\s*:\s*(-?\d+\.\d+)", s)
-            if not m:
-                break
-            charges.append((m.group(1), float(m.group(2))))
-        r.loewdin_charges = charges
+        r.loewdin_charges = self._parse_atomic_charges(
+            lines, "LOEWDIN ATOMIC CHARGES")
 
     def _parse_mayer(self, lines, r):
         idxs = _find_all(lines, "MAYER POPULATION ANALYSIS")
@@ -554,26 +563,20 @@ class OrcaOutParser:
             return
         start = idxs[-1]
         # per-atom table: header "ATOM  NA  ZA  QA  VA  BVA  FA", then rows
-        head = None
-        for i in range(start, min(start + 20, len(lines))):
-            if lines[i].strip().startswith("ATOM") and "VA" in lines[i]:
-                head = i
-                break
+        head = _find_header(
+            lines, start, 20,
+            lambda ln: ln.strip().startswith("ATOM") and "VA" in ln)
         vals: list = []
         scan_from = start
         if head is not None:
             scan_from = head + 1
-            for ln in lines[head + 1:]:
-                s = ln.strip()
-                if not s:
-                    break
-                m = re.match(
+            vals = _scan_rows(
+                lines, head + 1,
+                re.compile(
                     r"(\d+)\s+([A-Za-z]{1,3})\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+"
-                    r"(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", s)
-                if not m:
-                    break
+                    r"(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)"),
                 # groups: idx, el, NA, ZA, QA, VA, BVA, FA  -> keep VA (group 6)
-                vals.append((int(m.group(1)), m.group(2), float(m.group(6))))
+                lambda m: (int(m.group(1)), m.group(2), float(m.group(6))))
         r.mayer_valences = vals
         # bond orders, printed after the table as "B(  i-El ,  j-El ) :  order"
         bond_re = re.compile(
@@ -590,44 +593,31 @@ class OrcaOutParser:
         r.mayer_bonds = bonds
 
     def _parse_scf_components(self, lines, r):
-        pats = {
-            "nuclear_repulsion_eh": r"Nuclear Repulsion\s*:\s*(-?\d+\.\d+)",
-            "electronic_energy_eh": r"Electronic Energy\s*:\s*(-?\d+\.\d+)",
-            "one_electron_eh": r"One Electron Energy\s*:\s*(-?\d+\.\d+)",
-            "two_electron_eh": r"Two Electron Energy\s*:\s*(-?\d+\.\d+)",
-            "potential_energy_eh": r"Potential Energy\s*:\s*(-?\d+\.\d+)",
-            "kinetic_energy_eh": r"Kinetic Energy\s*:\s*(-?\d+\.\d+)",
-            "virial_ratio": r"Virial Ratio\s*:\s*(-?\d+\.\d+)",
-        }
-        for ln in lines:
-            for attr, pat in pats.items():
-                m = re.search(pat, ln)
-                if m:
-                    setattr(r, attr, float(m.group(1)))
+        _scan_scalars(lines, r, {
+            "nuclear_repulsion_eh": (r"Nuclear Repulsion\s*:\s*(-?\d+\.\d+)", float),
+            "electronic_energy_eh": (r"Electronic Energy\s*:\s*(-?\d+\.\d+)", float),
+            "one_electron_eh": (r"One Electron Energy\s*:\s*(-?\d+\.\d+)", float),
+            "two_electron_eh": (r"Two Electron Energy\s*:\s*(-?\d+\.\d+)", float),
+            "potential_energy_eh": (r"Potential Energy\s*:\s*(-?\d+\.\d+)", float),
+            "kinetic_energy_eh": (r"Kinetic Energy\s*:\s*(-?\d+\.\d+)", float),
+            "virial_ratio": (r"Virial Ratio\s*:\s*(-?\d+\.\d+)", float),
+        })
 
     def _parse_dipole(self, lines, r):
-        for ln in lines:
-            m = re.search(r"Magnitude \(a\.u\.\)\s*:\s*(-?\d+\.\d+)", ln)
-            if m:
-                r.dipole_au = float(m.group(1))
-            m = re.search(r"Magnitude \(Debye\)\s*:\s*(-?\d+\.\d+)", ln)
-            if m:
-                r.dipole_debye = float(m.group(1))
+        _scan_scalars(lines, r, {
+            "dipole_au": (r"Magnitude \(a\.u\.\)\s*:\s*(-?\d+\.\d+)", float),
+            "dipole_debye": (r"Magnitude \(Debye\)\s*:\s*(-?\d+\.\d+)", float),
+        })
 
     def _parse_rotational(self, lines, r):
-        for ln in lines:
-            m = re.search(r"Rotational constants in cm-1:\s*(.+)", ln)
-            if m:
-                try:
-                    r.rot_const_cm = [float(x) for x in m.group(1).split()][:3]
-                except ValueError:
-                    pass
-            m = re.search(r"Rotational constants in MHz\s*:\s*(.+)", ln)
-            if m:
-                try:
-                    r.rot_const_mhz = [float(x) for x in m.group(1).split()][:3]
-                except ValueError:
-                    pass
+        # cast splits the captured tail into the first three floats; a
+        # malformed line raises ValueError, which _scan_scalars swallows
+        # (keeping the previous value), matching the old try/except.
+        first3 = lambda tail: [float(x) for x in tail.split()][:3]  # noqa: E731
+        _scan_scalars(lines, r, {
+            "rot_const_cm": (r"Rotational constants in cm-1:\s*(.+)", first3),
+            "rot_const_mhz": (r"Rotational constants in MHz\s*:\s*(.+)", first3),
+        })
 
     def _parse_frequencies(self, lines, r):
         idxs = _find_all(lines, "VIBRATIONAL FREQUENCIES")
@@ -653,31 +643,16 @@ class OrcaOutParser:
         r.n_imaginary = n_imag
 
     def _parse_thermochemistry(self, lines, r):
-        for ln in lines:
-            m = re.search(r"Zero point energy\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
-            if m:
-                r.zpe_eh = float(m.group(1))
-            m = re.search(r"Total thermal energy\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
-            if m:
-                r.total_thermal_eh = float(m.group(1))
-            m = re.search(r"Final Gibbs free energy\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
-            if m:
-                r.gibbs_eh = float(m.group(1))
-            m = re.search(r"G-E\(el\)\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
-            if m:
-                r.g_minus_e_el_eh = float(m.group(1))
-            m = re.search(r"Total Enthalpy\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
-            if m:
-                r.enthalpy_eh = float(m.group(1))
-            m = re.search(r"Final entropy term\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
-            if m:
-                r.entropy_term_eh = float(m.group(1))
-            m = re.search(r"Temperature\s+\.*\s*(-?\d+\.\d+)\s*K\b", ln)
-            if m:
-                r.temperature_k = float(m.group(1))
-            m = re.search(r"Pressure\s+\.*\s*(-?\d+\.\d+)\s*atm", ln)
-            if m:
-                r.pressure_atm = float(m.group(1))
+        _scan_scalars(lines, r, {
+            "zpe_eh": (r"Zero point energy\s+\.*\s*(-?\d+\.\d+)\s*Eh", float),
+            "total_thermal_eh": (r"Total thermal energy\s+\.*\s*(-?\d+\.\d+)\s*Eh", float),
+            "gibbs_eh": (r"Final Gibbs free energy\s+\.*\s*(-?\d+\.\d+)\s*Eh", float),
+            "g_minus_e_el_eh": (r"G-E\(el\)\s+\.*\s*(-?\d+\.\d+)\s*Eh", float),
+            "enthalpy_eh": (r"Total Enthalpy\s+\.*\s*(-?\d+\.\d+)\s*Eh", float),
+            "entropy_term_eh": (r"Final entropy term\s+\.*\s*(-?\d+\.\d+)\s*Eh", float),
+            "temperature_k": (r"Temperature\s+\.*\s*(-?\d+\.\d+)\s*K\b", float),
+            "pressure_atm": (r"Pressure\s+\.*\s*(-?\d+\.\d+)\s*atm", float),
+        })
 
     def _parse_tddft(self, lines, r):
         idxs = _find_all(lines, "ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE")
@@ -768,27 +743,19 @@ class OrcaOutParser:
         start = idxs[-1]
         # find the "Nucleus  Element  Isotropic  Anisotropy" header, then the
         # dashed separator; data rows follow until a blank line
-        header = None
-        for i in range(start, min(start + 8, len(lines))):
-            if "Nucleus" in lines[i] and "Isotropic" in lines[i]:
-                header = i
-                break
+        header = _find_header(lines, start, 8,
+                              lambda ln: "Nucleus" in ln and "Isotropic" in ln)
         if header is None:
             return
         # data begins after the dashed line following the header
         data_start = header + 1
         if data_start < len(lines) and set(lines[data_start].strip()) <= {"-", " "}:
             data_start += 1
-        shieldings: list[tuple[int, str, float, float]] = []
-        for ln in lines[data_start:]:
-            s = ln.strip()
-            if not s:
-                break
-            m = re.match(r"(\d+)\s+([A-Za-z]{1,3})\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", s)
-            if not m:
-                break
-            shieldings.append((int(m.group(1)), m.group(2),
-                               float(m.group(3)), float(m.group(4))))
+        shieldings: list[tuple[int, str, float, float]] = _scan_rows(
+            lines, data_start,
+            re.compile(r"(\d+)\s+([A-Za-z]{1,3})\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)"),
+            lambda m: (int(m.group(1)), m.group(2),
+                       float(m.group(3)), float(m.group(4))))
         if shieldings:
             r.has_nmr = True
             r.nmr_shieldings = shieldings

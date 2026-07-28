@@ -25,6 +25,8 @@ import json
 import uuid
 from pathlib import Path
 
+from ..core.procutil import no_window_flags
+
 
 # Dependencies every MLIP environment needs regardless of which backend it hosts.
 COMMON_PACKAGES = ("torch", "ase")
@@ -105,13 +107,6 @@ _PROBE = (
 )
 
 
-def _no_window_flags() -> int:
-    """Avoid a console-window flash when spawning the probe on Windows."""
-    if sys.platform.startswith("win"):
-        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return 0
-
-
 def probe_env(python_path: str, timeout: float = 30.0) -> dict:
     """
     Run the user's Python interpreter and check which MLIP packages import.
@@ -147,7 +142,7 @@ def probe_env(python_path: str, timeout: float = 30.0) -> dict:
         proc = subprocess.run(
             [path, "-c", _PROBE],
             capture_output=True, text=True, timeout=timeout,
-            creationflags=_no_window_flags(),
+            creationflags=no_window_flags(),
         )
     except subprocess.TimeoutExpired:
         base["error"] = "Environment check timed out."

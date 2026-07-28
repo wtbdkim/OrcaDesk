@@ -7,21 +7,8 @@ the queue/log by polling cheap @pyqtSlot getters (get_queue / get_log) on a
 QTimer in JS — this keeps the store's worker thread and Qt's UI thread cleanly
 separated (no cross-thread Qt signal juggling).
 
-JS calls these slots:
-  get_about, get_settings, save_settings,
-  set_wallpaper_image, get_wallpaper_image, autodetect_orca,
-  pick_orca_executable, pick_mlip_python, add_mlip_env, remove_mlip_env,
-  check_mlip, get_mlip_status,
-  pick_workspace, load_xyz_file, load_inp_file,
-  load_inp_path, load_xyz_path, load_choices,
-  parse_out_file, parse_out_path, parse_calc_output, build_inp_preview,
-  add_calc, remove_calc, clear_queue, reorder_calc, update_calc,
-  get_queue, get_calc, get_inp, get_log, get_graph_lines, export_conformers,
-  get_conformer_frames, browse_xyz_folder,
-  get_favorites, toggle_favorite, export_frames,
-  get_free_energy_profile, check_overwrite_conflicts, has_existing_output,
-  run_queue, cancel_queue, stop_after_current,
-  get_server_status, get_connect_qr, start_server, stop_server
+The complete, always-current slot list (with signatures) is the Bridge
+declaration in web/globals.d.ts — kept in sync by the tsc check.
 """
 
 from __future__ import annotations
@@ -47,7 +34,7 @@ from ..crest.env import (
 from ..crest.wsl import list_distros as crest_list_distros
 from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL, user_data_root
 from ..core.input_generator import StepConfig, build_input_template
-from ..core.queue import GeometrySource, CalcState, result_from_output
+from ..core.queue import CalcState, result_from_output
 from ..core.parser import parse_file
 from ..state.store import (
     QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory,
@@ -460,11 +447,6 @@ class Bridge(QObject):
 
         threading.Thread(target=_worker, daemon=True).start()
         return self.get_crest_status()
-
-    @pyqtSlot(result=str)
-    def list_crest_distros(self) -> str:
-        """Usable (non-infrastructure) WSL distro names, for the Settings picker."""
-        return json.dumps({"distros": crest_list_distros()})
 
     @pyqtSlot(str, result=str)
     def set_crest_distro(self, distro: str) -> str:
