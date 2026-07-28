@@ -51,6 +51,7 @@ from ..state.schemas import (
     ParsePayload, QrResult, ServerStatusPayload, SettingsPayload,
     StartServerResult, TextResult, TransitionPayload,
     CrestStatusPayload, ConformerPayload,
+    WallpaperResult, ExportResult, FramesResult, FavoritesResult,
 )
 
 
@@ -219,11 +220,11 @@ class Bridge(QObject):
                     path.unlink()
                 except FileNotFoundError:
                     pass
-                return json.dumps({"ok": True, "stored": False})
+                return json.dumps(WallpaperResult(ok=True, stored=False))
             tmp = path.with_name(path.name + ".tmp")
             tmp.write_text(text, encoding="utf-8")
             tmp.replace(path)
-            return json.dumps({"ok": True, "stored": True})
+            return json.dumps(WallpaperResult(ok=True, stored=True))
         except OSError as e:
             return json.dumps(ErrorPayload(error=str(e)))
 
@@ -809,9 +810,9 @@ class Bridge(QObject):
             folder = self._calc_run_dir(name)
             dest = folder / "conformers"
             written = _export(folder / "crest_conformers.xyz", dest, name)
-            return json.dumps({"ok": True, "count": len(written), "folder": str(dest)})
+            return json.dumps(ExportResult(ok=True, count=len(written), folder=str(dest)))
         except Exception as e:
-            return json.dumps({"ok": False, "error": str(e)})
+            return json.dumps(ExportResult(ok=False, error=str(e)))
 
     # --- in-app 3D structure viewer (Results tab) ---
     @pyqtSlot(str, result=str)
@@ -828,13 +829,13 @@ class Bridge(QObject):
             if not p.exists():
                 p = folder / "crest_best.xyz"
             if not p.exists():
-                return json.dumps({"ok": False, "error": "No conformer ensemble on disk."})
+                return json.dumps(FramesResult(ok=False, error="No conformer ensemble on disk."))
             frames = frames_from_file(p, label_prefix=f"{name}_c")
         except OSError as e:
-            return json.dumps({"ok": False, "error": str(e)})
+            return json.dumps(FramesResult(ok=False, error=str(e)))
         if not frames:
-            return json.dumps({"ok": False, "error": "No structures found in the ensemble."})
-        return json.dumps({"ok": True, "title": name, "frames": frames})
+            return json.dumps(FramesResult(ok=False, error="No structures found in the ensemble."))
+        return json.dumps(FramesResult(ok=True, title=name, frames=frames))
 
     @pyqtSlot(result=str)
     def browse_xyz_folder(self) -> str:
@@ -846,16 +847,16 @@ class Bridge(QObject):
         folder = QFileDialog.getExistingDirectory(
             self.window, "Select a folder of .xyz structures")
         if not folder:
-            return json.dumps({"ok": False, "cancelled": True})
+            return json.dumps(FramesResult(ok=False, cancelled=True))
         from ..molview import frames_from_folder
         try:
             frames = frames_from_folder(folder)
         except OSError as e:
-            return json.dumps({"ok": False, "error": str(e)})
+            return json.dumps(FramesResult(ok=False, error=str(e)))
         if not frames:
-            return json.dumps({"ok": False, "error": "No .xyz structures in that folder."})
-        return json.dumps({"ok": True, "title": Path(folder).name,
-                           "folder": folder, "frames": frames})
+            return json.dumps(FramesResult(ok=False, error="No .xyz structures in that folder."))
+        return json.dumps(FramesResult(ok=True, title=Path(folder).name,
+                                       folder=folder, frames=frames))
 
     # --- 3D viewer favorites (starred conformers/structures) ---
     @pyqtSlot(str, result=str)
@@ -864,9 +865,9 @@ class Bridge(QObject):
         "folder:<path>"). Returns {"ok": true, "labels": [...]}."""
         from ..favorites import get as _get
         try:
-            return json.dumps({"ok": True, "labels": _get(source)})
+            return json.dumps(FavoritesResult(ok=True, labels=_get(source)))
         except Exception as e:
-            return json.dumps({"ok": False, "error": str(e), "labels": []})
+            return json.dumps(FavoritesResult(ok=False, error=str(e), labels=[]))
 
     @pyqtSlot(str, str, bool, result=str)
     def toggle_favorite(self, source: str, label: str, on: bool) -> str:
@@ -874,9 +875,9 @@ class Bridge(QObject):
         label list. {"ok": true, "labels": [...]}."""
         from ..favorites import toggle as _toggle
         try:
-            return json.dumps({"ok": True, "labels": _toggle(source, label, on)})
+            return json.dumps(FavoritesResult(ok=True, labels=_toggle(source, label, on)))
         except Exception as e:
-            return json.dumps({"ok": False, "error": str(e), "labels": []})
+            return json.dumps(FavoritesResult(ok=False, error=str(e), labels=[]))
 
     @pyqtSlot(str, str, str, result=str)
     def export_frames(self, dest_kind: str, dest: str, frames_json: str) -> str:
@@ -901,9 +902,9 @@ class Bridge(QObject):
                 text = xyz if xyz.endswith("\n") else xyz + "\n"
                 (out_dir / f"{fname}.xyz").write_text(text, encoding="utf-8")
                 count += 1
-            return json.dumps({"ok": True, "count": count, "folder": str(out_dir)})
+            return json.dumps(ExportResult(ok=True, count=count, folder=str(out_dir)))
         except Exception as e:
-            return json.dumps({"ok": False, "error": str(e)})
+            return json.dumps(ExportResult(ok=False, error=str(e)))
 
     # --- run / cancel ---
     @pyqtSlot(result=str)

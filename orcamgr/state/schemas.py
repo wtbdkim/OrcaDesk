@@ -3,7 +3,8 @@ TypedDict schemas for every payload exchanged across the QWebChannel bridge
 (orcamgr/gui/bridge.py) and the phone HTTP API (orcamgr/server/app.py) that is
 NOT already covered by the Calculation/StepConfig serialization in store.py /
 input_generator.py: settings, log entries, queue snapshots, parse-result
-summaries, server status, and the ok/error envelopes.
+summaries, 3D-viewer frames, export/favorites envelopes, server status, and
+the ok/error envelopes.
 
 MIRROR CONTRACT: web/types.js holds the JSDoc mirror of these shapes for the
 front-end. The two files must stay in sync field by field — when you add or
@@ -351,6 +352,52 @@ class AutodetectResult(_Ok, total=False):
     instead of returning a bare string."""
     path: str
     error: str
+
+
+# ---- appearance / 3D viewer / conformer export (desktop bridge) ---------------
+
+class WallpaperResult(_Ok, total=False):
+    """set_wallpaper_image — the ok branches carry "stored" (False = the input
+    was empty / not an image / oversize, so the stored file was cleared, not
+    written). The OSError branch keeps its bare ErrorPayload wire ({"error":
+    ...}, no "ok"); "error" is declared here for the web/types.js mirror."""
+    stored: bool
+    error: str
+
+
+class ExportResult(_Ok, total=False):
+    """export_conformers / export_frames — how many .xyz files were written
+    and into which folder."""
+    error: str
+    count: int
+    folder: str
+
+
+class MolFramePayload(TypedDict):
+    """One 3D-viewer frame (rides FramesResult.frames; built by
+    molview.frames_from_file / frames_from_folder). "xyz" is raw .xyz frame
+    text 3Dmol parses directly."""
+    label: str
+    xyz: str
+    energy: "float | None"    # absolute energy (Hartree), None when unknown
+
+
+class FramesResult(_Ok, total=False):
+    """get_conformer_frames / browse_xyz_folder — viewer frame lists.
+    "folder" rides only browse_xyz_folder's success (the picked path, used as
+    the export/favorites source); "cancelled" only its closed picker."""
+    cancelled: bool
+    error: str
+    title: str
+    folder: str
+    frames: "list[MolFramePayload]"
+
+
+class FavoritesResult(_Ok, total=False):
+    """get_favorites / toggle_favorite — "labels" is present on every branch
+    ([] on failure)."""
+    error: str
+    labels: "list[str]"
 
 
 # ---- phone-sync server (bridge slots + HTTP endpoints) ------------------------
