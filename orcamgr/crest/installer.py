@@ -25,13 +25,10 @@ CREST_RELEASE_URL = (
     "crest-gnu-12-ubuntu-latest.tar.xz"
 )
 
-_TOOLS_SCRIPT = (
-    'for t in curl wget tar xz; do '
-    'if command -v "$t" >/dev/null 2>&1; then echo "$t=1"; else echo "$t=0"; fi; done'
-)
-
 # Uses curl if present, else wget. Fails loudly (nonzero rc + message) if neither
-# a downloader nor the extractors are available.
+# a downloader nor the extractors are available — which is why there is no
+# separate pre-flight tool check: the install script IS the check, and reports a
+# missing tool as an ordinary install failure with the same message channel.
 _INSTALL_SCRIPT = f'''
 set -u
 have() {{ command -v "$1" >/dev/null 2>&1; }}
@@ -59,26 +56,6 @@ chmod +x "$CRESTBIN"
 ln -sf "$CRESTBIN" "$BIN/crest"
 echo "ORCAdesk-OK: $CRESTBIN"
 '''
-
-
-def distro_can_install(distro: str) -> dict:
-    """Check the tools an auto-install needs. Returns
-    {ok, missing:[...], has_downloader}."""
-    rc, out, _ = run_bash(distro, _TOOLS_SCRIPT, timeout=20.0)
-    present = {}
-    for line in out.splitlines():
-        if "=" in line:
-            k, v = line.strip().split("=", 1)
-            present[k] = (v == "1")
-    has_downloader = present.get("curl", False) or present.get("wget", False)
-    missing = []
-    if not present.get("tar", False):
-        missing.append("tar")
-    if not present.get("xz", False):
-        missing.append("xz")
-    if not has_downloader:
-        missing.append("curl-or-wget")
-    return {"ok": (not missing), "missing": missing, "has_downloader": has_downloader}
 
 
 def install_crest(distro: str, timeout: float = 300.0) -> dict:

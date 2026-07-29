@@ -159,6 +159,14 @@ def _kept_result_matches(calc: Calculation, result: ParseResult) -> str:
     return ""
 
 
+def _imaginary_detail(result: ParseResult) -> str:
+    """The imaginary frequencies of a result as a short "cm^-1" list (up to 5),
+    for the validation messages below. "none" when there are none, so a caller
+    reporting an unexpected count always has something to print."""
+    imag = [f for f in result.frequencies if f < 0]
+    return ", ".join(f"{v:.2f}" for v in imag[:5]) if imag else "none"
+
+
 def validate_result(calc: Calculation, result: ParseResult) -> None:
     """Per-kind result validation, raising OrcaRunError on a bad result. Module-
     level so both the live engine and session reconciliation (after a restart)
@@ -188,21 +196,17 @@ def validate_result(calc: Calculation, result: ParseResult) -> None:
         if calc.kind in ("mlip_opt", "mlip_opt_freq") and not result.opt_converged:
             raise OrcaRunError("MLIP optimization did not converge within the step limit.")
         if calc.kind in ("mlip_freq", "mlip_opt_freq") and result.n_imaginary > 0:
-            imag = [f for f in result.frequencies if f < 0]
-            detail = ", ".join(f"{v:.2f}" for v in imag[:5])
             raise OrcaRunError(
                 f"{result.n_imaginary} imaginary frequency/frequencies "
-                f"(cm^-1: {detail}). Not a true minimum."
+                f"(cm^-1: {_imaginary_detail(result)}). Not a true minimum."
             )
         return
     if calc.kind in ("opt", "ts_opt", "opt_freq", "ts_opt_freq") and not result.opt_converged:
         raise OrcaRunError("Optimization did not converge.")
     if calc.kind in ("freq", "opt_freq") and result.n_imaginary > 0:
-        imag = [f for f in result.frequencies if f < 0]
-        detail = ", ".join(f"{v:.2f}" for v in imag[:5])
         raise OrcaRunError(
             f"{result.n_imaginary} imaginary frequency/frequencies "
-            f"(cm^-1: {detail}). Not a true minimum."
+            f"(cm^-1: {_imaginary_detail(result)}). Not a true minimum."
         )
     if calc.kind in ("ts_freq", "ts_opt_freq"):
         # a genuine transition state has exactly ONE imaginary frequency
@@ -213,11 +217,10 @@ def validate_result(calc: Calculation, result: ParseResult) -> None:
                 "(a TS should have exactly one)."
             )
         if n > 1:
-            imag = [f for f in result.frequencies if f < 0]
-            detail = ", ".join(f"{v:.2f}" for v in imag[:5])
             raise OrcaRunError(
-                f"{n} imaginary frequencies (cm^-1: {detail}). A transition "
-                "state should have exactly one; this is a higher-order saddle point."
+                f"{n} imaginary frequencies (cm^-1: {_imaginary_detail(result)}). "
+                "A transition state should have exactly one; this is a "
+                "higher-order saddle point."
             )
     if calc.kind == "neb_ts" and result.frequencies:
         # preset_neb_ts appends FREQ to verify the located TS. If frequencies
@@ -225,11 +228,10 @@ def validate_result(calc: Calculation, result: ParseResult) -> None:
         # saddle); skip the check when the user removed FREQ (no frequencies).
         n = result.n_imaginary
         if n != 1:
-            imag = [f for f in result.frequencies if f < 0]
-            detail = ", ".join(f"{v:.2f}" for v in imag[:5]) if imag else "none"
             raise OrcaRunError(
                 f"NEB-TS located a structure with {n} imaginary frequency/frequencies "
-                f"(cm^-1: {detail}); a transition state must have exactly one."
+                f"(cm^-1: {_imaginary_detail(result)}); a transition state must "
+                "have exactly one."
             )
 
 
@@ -334,6 +336,18 @@ class QueueEngine:
             self._mlip_runner.detach()
         if self._crest_runner is not None:
             self._crest_runner.detach()
+
+    def _forward_pending_signals(self, runner) -> None:
+        """Replay a Stop/shutdown that landed BEFORE this runner was registered.
+        cancel()/detach() above only reach the runner currently stored on the
+        engine, so a signal arriving in the window between picking a calc and
+        assigning its runner would be lost — the job would keep running through
+        a cancel. Every MLIP/CREST registration site calls this right after
+        storing the runner."""
+        if self._cancel_event.is_set():
+            runner.cancel()
+        if self._detach_event.is_set():
+            runner.detach()
 
     # -- geometry resolution --
     def _resolve_geometry(self, calc: Calculation) -> str:
@@ -667,12 +681,7 @@ class QueueEngine:
         runner = MlipRunner(python)
         self._mlip_runner = runner
         try:
-            # forward a Stop/shutdown that landed BEFORE the runner was
-            # registered (cancel()/detach() signal only the registered runner)
-            if self._cancel_event.is_set():
-                runner.cancel()
-            if self._detach_event.is_set():
-                runner.detach()
+            self._forward_pending_signals(runner)
             rc = runner.run(script_path, [str(config_path)], out_path,
                             cwd=calc_dir, on_line=lambda ln: self.cb.log(ln, "orca"))
         finally:
@@ -707,11 +716,7 @@ class QueueEngine:
                 runner.adopt(calc.pid, calc.create_time)
             if runner is not None and runner.is_alive():
                 self._crest_runner = runner
-                # forward a Stop/shutdown that landed before registration
-                if self._cancel_event.is_set():
-                    runner.cancel()
-                if self._detach_event.is_set():
-                    runner.detach()
+                self._forward_pending_signals(runner)
                 self.cb.log(f"[{calc.name}] reattaching to CREST still running "
                             f"(pid {calc.pid})...", "info")
                 self.cb.calc_update(index, calc)
@@ -764,12 +769,7 @@ class QueueEngine:
         runner = CrestRunner(distro)
         self._crest_runner = runner
         try:
-            # forward a Stop/shutdown that landed before the runner was
-            # registered (cancel()/detach() signal only the registered runner)
-            if self._cancel_event.is_set():
-                runner.cancel()
-            if self._detach_event.is_set():
-                runner.detach()
+            self._forward_pending_signals(runner)
             pid, create_time = runner.launch(script_path, calc.name, out_path)
             calc.pid = pid
             calc.create_time = create_time
