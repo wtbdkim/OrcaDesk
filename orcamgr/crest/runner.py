@@ -68,24 +68,21 @@ def build_crest_argv(config, charge: int, multiplicity: int) -> list[str]:
         model = (getattr(config, "crest_solvent_model", "alpb") or "alpb").strip().lower()
         argv += ["--gbsa" if model == "gbsa" else "--alpb", solvent]
 
-    try:
-        ewin = float(getattr(config, "crest_ewin", 6.0) or 6.0)
-        argv += ["--ewin", f"{ewin:g}"]
-    except (TypeError, ValueError):
-        pass
+    # Numeric knobs. StepConfig.from_dict is the trust boundary — it coerces and
+    # clamps every one of these — so the fallback here only covers a hand-built
+    # StepConfig (tests / direct construction). A bad value degrades to the
+    # field's default rather than dropping the flag: a silently missing -T would
+    # ignore the user's thread setting without saying so.
+    def _num(attr, default=0.0):
+        try:
+            return float(getattr(config, attr, default) or default)
+        except (TypeError, ValueError):
+            return default
 
-    try:
-        threads = int(getattr(config, "crest_threads", 4) or 4)
-        argv += ["-T", str(max(1, threads))]
-    except (TypeError, ValueError):
-        pass
+    argv += ["--ewin", f"{_num('crest_ewin', 6.0):g}"]
+    argv += ["-T", str(max(1, int(_num('crest_threads', 4.0))))]
 
     # --- advanced knobs (each emitted only when set to a non-default value) ---
-    def _num(attr):
-        try:
-            return float(getattr(config, attr, 0.0) or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
 
     preset = (getattr(config, "crest_preset", "") or "").strip().lower()
     if preset in ("quick", "squick", "mquick"):

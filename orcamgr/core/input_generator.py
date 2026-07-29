@@ -321,6 +321,8 @@ class StepConfig:
             cfg.crest_preset = ""
         if cfg.crest_solvent_model not in ("alpb", "gbsa"):
             cfg.crest_solvent_model = "alpb"
+        cfg.crest_ewin = _clamp_float(cfg.crest_ewin, 6.0, 0.0, 1000.0)
+        cfg.crest_threads = _clamp_int(cfg.crest_threads, 4, 1, 1024)
         cfg.crest_mdlen_mult = _clamp_float(cfg.crest_mdlen_mult, 0.0, 0.0, 100.0)
         cfg.crest_tstep_fs = _clamp_float(cfg.crest_tstep_fs, 0.0, 0.0, 1000.0)
         cfg.crest_tnmd_k = _clamp_float(cfg.crest_tnmd_k, 0.0, 0.0, 100_000.0)

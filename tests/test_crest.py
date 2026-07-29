@@ -247,6 +247,29 @@ def test_build_crest_argv_preset_and_model_reject_bad_values():
     assert argv[argv.index("--alpb") + 1] == "thf"          # bad model -> default alpb
 
 
+def test_build_crest_argv_ewin_and_threads_are_clamped():
+    # from_dict is the trust boundary for the two headline numeric knobs too:
+    # they ride the CLI verbatim (-T / --ewin), so an absurd value must be
+    # clamped rather than passed through.
+    cfg = StepConfig.from_dict({"kind": "crest_conf", "crest_threads": 999999,
+                                "crest_ewin": "1e9"})
+    assert cfg.crest_threads == 1024 and cfg.crest_ewin == 1000.0
+    argv = build_crest_argv(cfg, 0, 1)
+    assert argv[argv.index("-T") + 1] == "1024"
+    assert argv[argv.index("--ewin") + 1] == "1000"
+
+
+def test_build_crest_argv_keeps_the_flag_when_a_value_is_junk():
+    # A non-numeric value degrades to the field default and the flag STAYS —
+    # dropping -T entirely would silently ignore the user's thread setting.
+    cfg = StepConfig.from_dict({"kind": "crest_conf", "crest_threads": "abc",
+                                "crest_ewin": None})
+    assert cfg.crest_threads == 4 and cfg.crest_ewin == 6.0
+    argv = build_crest_argv(cfg, 0, 1)
+    assert argv[argv.index("-T") + 1] == "4"
+    assert argv[argv.index("--ewin") + 1] == "6"
+
+
 # ---------------------------------------------------------------------------
 # 4. validate_result for crest_conf (P25 / P6)
 # ---------------------------------------------------------------------------

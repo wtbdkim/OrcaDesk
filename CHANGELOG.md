@@ -6,6 +6,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **The CREST energy window and thread count are now validated like every other
+  numeric option.** They were the only two `crest_*` numbers that skipped the
+  trust boundary: an out-of-range value rode straight onto the command line
+  (`-T 999999`), and a non-numeric one made the flag vanish entirely — so the
+  setting was silently ignored instead of applied. Both are now coerced and
+  clamped (energy window ≤ 1000 kcal/mol, threads ≤ 1024), and a junk value
+  falls back to the default *with the flag still emitted*.
+
 - **Editing an MLIP/CREST calculation no longer offers the calc itself as its
   geometry reference.** The DFT card already excluded the calc being edited from
   the reference dropdown; the MLIP and CREST cards now share that logic (the
