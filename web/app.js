@@ -876,16 +876,13 @@ function refreshRefSelectFor(prefix) {
   }
   if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
 }
-/** @returns {string} the selected DFT geometry source ("direct" | "reference"). */
-function currentGeomSource() { return geomSourceFor(""); }
+// Per-card bindings for the three functions above (index.html wires these to
+// the radios; the "current…" readers are gone — collectGeomSource calls
+// geomSourceFor directly).
 function onGeomSourceChange() { applyGeomSource(""); }
 function refreshRefSelect() { refreshRefSelectFor(""); }
-/** @returns {string} the selected MLIP geometry source ("direct" | "reference"). */
-function currentMlipGeomSource() { return geomSourceFor("mlip-"); }
 function onMlipGeomSourceChange() { applyGeomSource("mlip-"); }
 function refreshMlipRefSelect() { refreshRefSelectFor("mlip-"); }
-/** @returns {string} the selected CREST geometry source ("direct" | "reference"). */
-function currentCrestGeomSource() { return geomSourceFor("crest-"); }
 function onCrestGeomSourceChange() { applyGeomSource("crest-"); }
 function refreshCrestRefSelect() { refreshRefSelectFor("crest-"); }
 
@@ -1274,29 +1271,16 @@ function collectConfig(kind) {
 /** Read the whole Build form into the calc payload for add_calc/update_calc.
  * @param {boolean} [forPreview] @returns {CalcInput} */
 function collectCalcFromForm(forPreview = false) {
-  const name = document.getElementById("calc-name").value.trim();
-  if (!name) throw new Error("Name is required.");
-  if (/[\\/:*?"<>|]/.test(name))
-    throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
-  // P1: name collision (allow self when editing)
-  const clash = queue.findIndex((c) => c.name === name && c.name !== editName);
-  if (clash !== -1)
-    throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
+  const name = readCalcName("calc-name");   // P1: unique, folder-name safe
 
   const kind = document.getElementById("calc-kind").value;
-  const src = currentGeomSource();
-  let xyz = "", ref_name = "";
-  if (src === "direct") {
-    // in raw+direct the coords live in the raw text; xyz may be empty
-    if (!forPreview && !rawMode && !directXyz) throw new Error("Load an .xyz file first.");
-    xyz = directXyz;
-  } else {
-    ref_name = document.getElementById("ref-select").value;
-    // a reference is required to actually queue the calc, but NOT to open the
-    // raw editor (you pick the reference before adding; the field stays enabled)
-    if (!forPreview && !ref_name) throw new Error("Select a calculation to reference.");
-    if (ref_name && ref_name === name) throw new Error("A calculation can't reference its own geometry.");
-  }
+  // in raw+direct the coords live in the raw text, so xyz may be empty; and a
+  // reference is required to actually queue the calc but NOT to open the raw
+  // editor (you pick the reference before adding; the field stays enabled)
+  const { src, xyz, ref_name } = collectGeomSource("", name, directXyz, {
+    requireXyz: !forPreview && !rawMode,
+    requireRef: !forPreview,
+  });
 
   // raw integrity: must have actual .inp text, and reference mode needs the placeholder
   if (rawMode && !forPreview && !rawText.trim())
@@ -1338,7 +1322,7 @@ function collectCalcFromForm(forPreview = false) {
     name, kind,
     charge,
     multiplicity,
-    geometry_source: /** @type {"direct"|"reference"} */ (src),
+    geometry_source: src,
     xyz, ref_name,
     is_raw: rawMode,
     raw_text: rawMode ? rawText : "",
@@ -1366,29 +1350,32 @@ async function confirmMidRunOverwrite(name) {
   } catch { return true; }
 }
 
-async function addCalcToQueue() {
-  try {
-    const calc = collectCalcFromForm();
-    // Resolve the edit target by NAME at Update time — the queue may have
-    // shifted since the edit opened. A vanished target (removed via phone)
-    // falls through to a plain add, mirroring updateEditUI.
-    const oldName = editName !== null && queue.some((c) => c.name === editName)
-      ? editName : null;
-    const wasEditing = oldName !== null;
+/** Send a built calc to the store — the shared commit tail of all three build
+ *  cards (DFT / MLIP / CREST). Editing replaces in place (preserving the queue
+ *  position), otherwise it is a plain add gated by the mid-run overwrite check.
+ *  The edit target is re-resolved by NAME here, at save time: the queue may have
+ *  shifted since the edit opened (remove/reorder, a phone add), and a vanished
+ *  target degrades to a plain add, mirroring updateEditUI.
+ *  @param {CalcInput} calc
+ *  @param {{addedLog: string, reset?: () => void, exitEditOnAdd?: boolean}} opts
+ *    addedLog       — the log line for a successful add ("updated." is shared)
+ *    reset          — clear the card's form afterwards (MLIP/CREST own theirs)
+ *    exitEditOnAdd  — also leave edit mode on a plain ADD. DFT only: for the
+ *                     backend cards exitEditMode() would clear rawText, and that
+ *                     must survive an MLIP/CREST excursion (only an explicit
+ *                     discard/edit/reset may clear it). */
+async function submitCalc(calc, opts) {
+  const oldName = editName !== null && queue.some((c) => c.name === editName)
+    ? editName : null;
 
-    if (wasEditing && oldName) {
-      // edit in place: preserves the calc's position in the queue
-      const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
-      if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
-      if (oldName !== calc.name) delete localCalcs[oldName];
-      localCalcs[calc.name] = calc;
-      appendLog(`"${calc.name}" updated.`, "ok");
-      exitEditMode();
-      await refreshQueue();
-      switchTab("queue");
-      return;
-    }
-
+  if (oldName) {
+    const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
+    if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
+    if (oldName !== calc.name) delete localCalcs[oldName];
+    localCalcs[calc.name] = calc;
+    appendLog(`"${calc.name}" updated.`, "ok");
+    exitEditMode();
+  } else {
     if (!await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
     if (!res.ok) {
@@ -1398,10 +1385,62 @@ async function addCalcToQueue() {
       return;
     }
     localCalcs[calc.name] = calc;
-    appendLog(`"${calc.name}" (${calc.kind}${calc.is_raw ? ", raw" : ""}) added to queue.`, "ok");
-    exitEditMode();
-    await refreshQueue();
-    switchTab("queue");
+    appendLog(opts.addedLog, "ok");
+    if (opts.exitEditOnAdd) exitEditMode();
+  }
+  if (opts.reset) opts.reset();
+  await refreshQueue();
+  switchTab("queue");
+}
+
+/** Read + validate a build card's name field. Shared by all three cards: the
+ *  name is the on-disk folder name, so it must be non-empty, free of characters
+ *  Windows refuses, and unique in the queue (the calc being edited excluded —
+ *  renaming it to itself is not a clash).
+ *  @param {string} inputId @returns {string} */
+function readCalcName(inputId) {
+  const name = document.getElementById(inputId).value.trim();
+  if (!name) throw new Error("Name is required.");
+  if (/[\\/:*?"<>|]/.test(name))
+    throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
+  if (queue.some((c) => c.name === name && c.name !== editName))
+    throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
+  return name;
+}
+
+/** Collect a build card's geometry choice into the {xyz, ref_name} pair a calc
+ *  carries. Shared by all three cards (they differ only in the id prefix and
+ *  which .xyz they loaded).
+ *  @param {string} prefix "" (DFT), "mlip-" or "crest-"
+ *  @param {string} name the calc's own name, to reject a self-reference
+ *  @param {string} loadedXyz the card's last loaded coordinate block
+ *  @param {{requireXyz?: boolean, requireRef?: boolean}} [opts]
+ *    requireXyz — false in raw mode: the coordinates live in the raw text
+ *    requireRef — false for a preview: the reference is picked before adding */
+function collectGeomSource(prefix, name, loadedXyz, opts = {}) {
+  const requireXyz = opts.requireXyz !== false;
+  const requireRef = opts.requireRef !== false;
+  const src = geomSourceFor(prefix);
+  let xyz = "", ref_name = "";
+  if (src === "reference") {
+    ref_name = document.getElementById(`${prefix}ref-select`).value;
+    if (requireRef && !ref_name) throw new Error("Select a calculation to reference.");
+    if (ref_name && ref_name === name)
+      throw new Error("A calculation can't reference its own geometry.");
+  } else {
+    if (requireXyz && !loadedXyz) throw new Error("Load an .xyz file first.");
+    xyz = loadedXyz;
+  }
+  return { src: /** @type {"direct"|"reference"} */ (src), xyz, ref_name };
+}
+
+async function addCalcToQueue() {
+  try {
+    const calc = collectCalcFromForm();
+    await submitCalc(calc, {
+      addedLog: `"${calc.name}" (${calc.kind}${calc.is_raw ? ", raw" : ""}) added to queue.`,
+      exitEditOnAdd: true,
+    });
   } catch (e) {
     appendLog(e.message, "err"); toast(e.message);
   }
@@ -1459,27 +1498,13 @@ function refreshMlipDeviceOptions() {
   }
 }
 // (geometry-source helpers for this card live in the shared "geometry source"
-//  section above: currentMlipGeomSource / onMlipGeomSourceChange / refreshMlipRefSelect)
+//  section above: onMlipGeomSourceChange / refreshMlipRefSelect)
 async function addMlipCalcToQueue() {
   try {
     if (!_mlipReady) throw new Error("Ready MACE environment required (see Settings).");
-    const name = document.getElementById("mlip-name").value.trim();
-    if (!name) throw new Error("Name is required.");
-    if (/[\\/:*?"<>|]/.test(name))
-      throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
-    if (queue.some(c => c.name === name && c.name !== editName))
-      throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
+    const name = readCalcName("mlip-name");
     const model = document.getElementById("mlip-model").value;
-    const src = currentMlipGeomSource();
-    let xyz = "", ref_name = "";
-    if (src === "reference") {
-      ref_name = document.getElementById("mlip-ref-select").value;
-      if (!ref_name) throw new Error("Select a calculation to reference.");
-      if (ref_name === name) throw new Error("A calculation can't reference its own geometry.");
-    } else {
-      if (!mlipXyz) throw new Error("Load an .xyz file first.");
-      xyz = mlipXyz;
-    }
+    const { src, xyz, ref_name } = collectGeomSource("mlip-", name, mlipXyz);
     const charge = parseInt(document.getElementById("mlip-charge").value, 10) || 0;
     const mult = Math.max(1, parseInt(document.getElementById("mlip-mult").value, 10) || 1);
     const device = document.getElementById("mlip-device").value;
@@ -1500,37 +1525,12 @@ async function addMlipCalcToQueue() {
       config,
       state: "pending", message: "",
     });
-    // editing: replace in place (preserves queue position), like the DFT path.
-    // Re-resolve the target by NAME — the queue may have shifted since the edit
-    // opened; a vanished target falls through to a plain add.
-    const oldName = editName !== null && queue.some(c => c.name === editName) ? editName : null;
-    if (oldName) {
-      const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
-      if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
-      if (oldName !== calc.name) delete localCalcs[oldName];
-      localCalcs[calc.name] = calc;
-      appendLog(`"${calc.name}" updated.`, "ok");
-      exitEditMode();
-      resetMlipForm();
-      await refreshQueue();
-      switchTab("queue");
-      return;
-    }
-    if (!await confirmMidRunOverwrite(calc.name)) return;
-    const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
-    if (!res.ok) {
-      appendLog("Could not add: " + res.error, "err");
-      toast(res.error);
-      await refreshQueue();
-      return;
-    }
-    localCalcs[calc.name] = calc;
     const taskLabel = { mlip_sp: "single point", mlip_freq: "frequencies",
                         mlip_opt_freq: "opt + frequencies" }[kind] || "opt";
-    appendLog(`"${calc.name}" (MLIP ${taskLabel} · ${model}) added to queue.`, "ok");
-    resetMlipForm();
-    await refreshQueue();
-    switchTab("queue");
+    await submitCalc(calc, {
+      addedLog: `"${calc.name}" (MLIP ${taskLabel} · ${model}) added to queue.`,
+      reset: resetMlipForm,
+    });
   } catch (e) {
     appendLog(e.message, "err"); toast(e.message);
   }
@@ -1547,7 +1547,7 @@ async function loadCrestXyz() {
     n ? `loaded (${n} atoms)` : "No atoms in file.";
 }
 // (geometry-source helpers for this card live in the shared "geometry source"
-//  section above: currentCrestGeomSource / onCrestGeomSourceChange / refreshCrestRefSelect)
+//  section above: onCrestGeomSourceChange / refreshCrestRefSelect)
 function resetCrestForm() {
   document.getElementById("crest-name").value = "";
   crestXyz = "";
@@ -1581,22 +1581,8 @@ function resetCrestForm() {
 async function addCrestCalcToQueue() {
   try {
     if (!_crestReady) throw new Error("CREST in a WSL distribution required (see Settings → CREST).");
-    const name = document.getElementById("crest-name").value.trim();
-    if (!name) throw new Error("Name is required.");
-    if (/[\\/:*?"<>|]/.test(name))
-      throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
-    if (queue.some(c => c.name === name && c.name !== editName))
-      throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
-    const src = currentCrestGeomSource();
-    let xyz = "", ref_name = "";
-    if (src === "reference") {
-      ref_name = document.getElementById("crest-ref-select").value;
-      if (!ref_name) throw new Error("Select a calculation to reference.");
-      if (ref_name === name) throw new Error("A calculation can't reference its own geometry.");
-    } else {
-      if (!crestXyz) throw new Error("Load an .xyz file first.");
-      xyz = crestXyz;
-    }
+    const name = readCalcName("crest-name");
+    const { src, xyz, ref_name } = collectGeomSource("crest-", name, crestXyz);
     const charge = parseInt(document.getElementById("crest-charge").value, 10) || 0;
     const mult = Math.max(1, parseInt(document.getElementById("crest-mult").value, 10) || 1);
     const method = document.getElementById("crest-method").value;
@@ -1609,7 +1595,7 @@ async function addCrestCalcToQueue() {
     const calc = /** @type {CalcInput} */ ({
       name, kind: "crest_conf",
       charge, multiplicity: mult,
-      geometry_source: /** @type {"direct"|"reference"} */ (src),
+      geometry_source: src,
       xyz, ref_name,
       is_raw: false, raw_text: "",
       config: {
@@ -1631,33 +1617,10 @@ async function addCrestCalcToQueue() {
       },
       state: "pending", message: "",
     });
-    // editing: replace in place (preserves queue position), like the DFT path.
-    const oldName = editName !== null && queue.some(c => c.name === editName) ? editName : null;
-    if (oldName) {
-      const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
-      if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
-      if (oldName !== calc.name) delete localCalcs[oldName];
-      localCalcs[calc.name] = calc;
-      appendLog(`"${calc.name}" updated.`, "ok");
-      exitEditMode();
-      resetCrestForm();
-      await refreshQueue();
-      switchTab("queue");
-      return;
-    }
-    if (!await confirmMidRunOverwrite(calc.name)) return;
-    const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
-    if (!res.ok) {
-      appendLog("Could not add: " + res.error, "err");
-      toast(res.error);
-      await refreshQueue();
-      return;
-    }
-    localCalcs[calc.name] = calc;
-    appendLog(`"${calc.name}" (CREST ${method}) added to queue.`, "ok");
-    resetCrestForm();
-    await refreshQueue();
-    switchTab("queue");
+    await submitCalc(calc, {
+      addedLog: `"${calc.name}" (CREST ${method}) added to queue.`,
+      reset: resetCrestForm,
+    });
   } catch (e) {
     appendLog(e.message, "err"); toast(e.message);
   }

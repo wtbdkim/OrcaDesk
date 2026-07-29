@@ -436,10 +436,18 @@ or `bridge.get_calc`), switches to the card, fills it (`fillMlipForm` /
 `fillCrestForm`, the inverse of the add functions), then sets `editName` **after**
 the mode switch so `setBuildMode`'s own `exitEditMode()` can't clobber the target
 — and the card's Add button flips to **Update** (`updateEditUI` now drives
-`#mlip-add-btn` / `#crest-add-btn` alongside `#add-btn`). `addMlipCalcToQueue` /
-`addCrestCalcToQueue` gained the same update path as the DFT
-`addCalcToQueue`: re-resolve the target by name, `bridge.update_calc` in place,
-and exclude the edited name from their uniqueness check. `update_calc` is kind-agnostic at the store
+`#mlip-add-btn` / `#crest-add-btn` alongside `#add-btn`). All three add
+functions (`addCalcToQueue` / `addMlipCalcToQueue` / `addCrestCalcToQueue`) are
+**one implementation of everything but the card's own fields**: `readCalcName`
+(non-empty, folder-name safe, unique with the edited calc excluded),
+`collectGeomSource(prefix, …)` (the `{xyz, ref_name}` pair, with `requireXyz` /
+`requireRef` relaxed for DFT raw mode and previews), and `submitCalc` — the
+shared commit tail that re-resolves the edit target **by name** at save time
+(the queue may have shifted; a vanished target degrades to a plain add),
+calls `update_calc` in place or `add_calc` behind the mid-run overwrite gate,
+then logs, resets, refreshes and switches to the Queue tab. `submitCalc`'s
+`exitEditOnAdd` flag is DFT-only on purpose: `exitEditMode()` clears `rawText`,
+which must survive an MLIP/CREST excursion. `update_calc` is kind-agnostic at the store
 (`replace`, gated by `EDITABLE_STATES` and the mid-run protections), so no backend
 change was needed. The card is **locked**
 (greyed, inputs/buttons disabled, `#mlip-lock-note` shown) until some MLIP env is
