@@ -40,7 +40,8 @@ npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
 python -m pytest                       # 326 tests over the framework-free layers
-node tests/web/scf_graph.test.js       # 31 tracker/progress tests, no npm deps
+node tests/web/scf_graph.test.js       # 36 tracker/progress tests, no npm deps
+                                       # (covers progress_panels.js too)
 
 # Real-backend smoke matrix (opt-in): one answer-known input per calc kind,
 # run through the real QueueEngine against YOUR installed ORCA/MACE/CREST.
@@ -89,12 +90,24 @@ The entire UI lives in `web/` (HTML/CSS/JS, shadcn-style dark theme). `main.py` 
 The JS is plain scripts sharing one global scope (no modules/bundler). `app.js`
 holds the app shell (tabs, build cards, queue, polling); self-contained sections
 live in their own files, loaded by `index.html` **before** `app.js` in this
-order: `scf_graph.js` → `combo.js` (combobox widget) → `appearance.js`
-(theme variant / wallpaper / Liquid-Glass pulse) → `log_graph.js` (log pane +
-progress trackers) → `results_render.js` (Results-tab section renderers) →
-`molviewer.js` (3D viewer + favorites). Cross-file calls resolve at runtime, so
-only top-level statements may not touch a later file's bindings (TDZ) — keep new
-top-level code declaration-only.
+order: `scf_graph.js` → `progress_panels.js` → `combo.js` (combobox widget) →
+`appearance.js` (theme variant / wallpaper / Liquid-Glass pulse) →
+`log_graph.js` (log pane + progress trackers) → `results_render.js`
+(Results-tab section renderers) → `molviewer.js` (3D viewer + favorites).
+Cross-file calls resolve at runtime, so only top-level statements may not touch
+a later file's bindings (TDZ) — keep new top-level code declaration-only.
+
+`progress_panels.js` is the one **hard** ordering constraint in that list (the
+rest resolve at call time): it doesn't create its own global, it `Object.assign`s
+the freq/TD-DFT/CREST trackers and step-panel renderers onto the **same
+`SCFGraph` namespace** `scf_graph.js` publishes, so it must load immediately
+after it. That keeps `SCFGraph.*` the single entry point for every caller while
+splitting the file along its real seam — SCF/geometry convergence graph vs.
+step panels, which share exactly one helper (`_fmtDuration`, re-exported on the
+namespace). The mobile PWA loads **only** `scf_graph.js`: it uses the SCF/geo
+graph alone, so it never ships the panel half. In node both files export the
+namespace, so `tests/web/scf_graph.test.js` requires `scf_graph.js` and then
+`progress_panels.js` for its side effect.
 
 The view's page is `_ConsoleCapturePage` (`window.py`), which forwards JS console
 output into the shared log buffer as `[web] ...` lines (rate-limited per identical
@@ -815,7 +828,8 @@ If nothing in the docs is affected, no doc edit is needed — but the check itse
 not optional: confirm it before committing, every time.
 
 Alongside the doc check, run the test suite before every commit that touches
-Python or `web/scf_graph.js` (`python -m pytest` and, for scf_graph changes,
+Python or the `SCFGraph` modules (`python -m pytest` and, for
+`scf_graph.js` / `progress_panels.js` changes,
 `node tests/web/scf_graph.test.js`) — the suite is fast (~3 s) and pins the
 principle contracts (P56). A red test is either a test bug or a product bug;
 never adjust a test to make wrong behavior pass.

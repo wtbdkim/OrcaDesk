@@ -520,16 +520,23 @@ and the payload is cached (`_resultExtras`) so the "Show all" toggle
 re-renders with **no re-fetch**. Specialty sections are present-only — they
 exist only for their kind, so presence is the gate.
 
-### P46 — Stream-parsing and progress logic live in `scf_graph.js`
+### P46 — Stream-parsing and progress logic live in the `SCFGraph` modules
 
 Log-line parsing, progress tracking, and ETA estimation — the logic-dense,
-regression-prone part — live in a separate module shared by desktop and
+regression-prone part — live outside `app.js`, in modules shared by desktop and
 mobile: DOM-free trackers (unit-testable in node, push-based, idempotent by
 keying steps on the real cycle number so re-fed lines overwrite instead of
 inflating) plus pure functions returning HTML/SVG strings. `app.js` only
 pushes lines and inserts the returned strings. One-shot static SVG over a
-finished payload may stay in `app.js`. Every regex/heuristic in this module
+finished payload may stay in `app.js`. Every regex/heuristic in these modules
 carries its real-output validation evidence in a comment (P3).
+
+They are two files behind **one namespace**: `scf_graph.js` (SCF + geometry
+convergence graph, the half the mobile PWA loads on its own) and
+`progress_panels.js` (freq / TD-DFT / CREST step panels), which extends the
+namespace in place and therefore loads right after it. Callers only ever see
+`SCFGraph.*`. Split further only along a seam this real — these two halves
+share a single helper.
 
 ### P47 — Mirror backend state rules; the failed response never overwrites the mirror
 
@@ -623,7 +630,8 @@ rules:
   corpus validation remains the primary evidence for parser heuristics).
 - **Isolated**: never write to the real `%APPDATA%` — path functions are
   monkeypatched to tmp dirs.
-- Run the suite before any commit touching Python or `scf_graph.js` (~3 s).
+- Run the suite before any commit touching Python or the `SCFGraph` modules
+  (`scf_graph.js` / `progress_panels.js`) (~3 s).
 
 *(Adopted 2026-07-03 with the initial 234-test suite — which found and led to
 the fix of three real boundary bugs on its first run.)*

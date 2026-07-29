@@ -91,11 +91,15 @@ declare class QWebChannel {
   );
 }
 
-/* ---------- scf_graph.js public surface (window.SCFGraph) ---------- */
+/* ---------- window.SCFGraph: scf_graph.js + progress_panels.js ----------
+   One namespace, two files. scf_graph.js creates it (SCF/geo convergence
+   graph); progress_panels.js loads next and extends it in place with the
+   freq/TD-DFT/CREST step panels. */
 
 interface SCFGraphAPI {
   SCFTracker: new () => any;
   GeoTracker: new () => any;
+  /* the four below come from progress_panels.js */
   FreqTracker: new () => any;
   TddftTracker: new () => any;
   CrestTracker: new () => any;
@@ -115,8 +119,9 @@ interface SCFGraphAPI {
 
 declare var SCFGraph: SCFGraphAPI;
 
-/* scf_graph.js also exports for node-based testing */
+/* both files also export for node-based testing */
 declare var module: { exports: any };
+declare function require(id: string): any;
 
 /* ---------- window entry points called from Python (window.py) ---------- */
 

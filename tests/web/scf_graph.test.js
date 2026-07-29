@@ -17,6 +17,10 @@ const assert = require("assert");
 const path = require("path");
 
 const SCFGraph = require(path.join(__dirname, "..", "..", "web", "scf_graph.js"));
+// The freq/TD-DFT/CREST trackers live in progress_panels.js, which extends the
+// SCFGraph namespace in place (same object, require() caches it) — so this side
+// effect is what makes SCFGraph.FreqTracker & co. available here.
+require(path.join(__dirname, "..", "..", "web", "progress_panels.js"));
 
 // ---------- tiny test runner ----------
 let passed = 0;

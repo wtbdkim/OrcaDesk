@@ -569,6 +569,10 @@
 
 <script src="vendor/3Dmol-min.js"></script>
 <script src="scf_graph.js"></script>
+<!-- freq/TD-DFT/CREST step panels; EXTENDS the SCFGraph namespace scf_graph.js
+     creates, so it must come right after it (the mobile PWA loads only
+     scf_graph.js — it uses the SCF/geo graph alone) -->
+<script src="progress_panels.js"></script>
 <!-- plain global scripts split out of app.js — must load after scf_graph.js
      (log_graph.js reads window.SCFGraph at top level) and before app.js -->
 <script src="combo.js"></script>
