@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 407 tests over the framework-free layers
+python -m pytest                       # 409 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 36 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -521,7 +521,11 @@ that family. Charge/multiplicity flow from the
 MACE-OFF/MP ignore them. The worker resolves the compute **device** itself
 (`cfg["device"]`: `cpu`/`cuda`, or `""` = auto → CUDA when the user's torch build
 sees a GPU, else CPU) — only the worker's own env can answer that, so the
-resolution lives there, never on the ORCAdesk side. Per task it then runs an ASE
+resolution lives there, never on the ORCAdesk side. It also caps its own CPU
+threads to the cores the queue charged it (`threads` in the config ->
+`_cap_threads`, setting `OMP/MKL/OPENBLAS/NUMEXPR_NUM_THREADS` **before** torch
+is imported, then `torch.set_num_threads`): torch otherwise takes every core,
+invisible one job at a time and a blown budget with two. Per task it then runs an ASE
 `LBFGS` relaxation (fmax 0.05) for the opt kinds and/or an ASE `Vibrations`
 finite-difference Hessian for the freq kinds; a freq result on a true minimum
 (zero imaginary modes) also gets ideal-gas thermochemistry via

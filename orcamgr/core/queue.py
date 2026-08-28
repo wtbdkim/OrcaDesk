@@ -735,7 +735,10 @@ class QueueEngine:
             charge=calc.charge, multiplicity=calc.multiplicity, task=task,
             device=getattr(calc.config, "mlip_device", ""),
             temperature=getattr(calc.config, "freq_temp_k", 298.15),
-            pressure=getattr(calc.config, "freq_pressure_atm", 1.0))
+            pressure=getattr(calc.config, "freq_pressure_atm", 1.0),
+            # what admission control charged this job (core/resources.py) --
+            # the worker must not quietly take every core on the machine
+            threads=declared_cores(calc))
 
         model = calc.config.mlip_model or "MACE"
         verb = {"sp": "single-point energy", "freq": "frequencies",

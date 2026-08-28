@@ -52,6 +52,28 @@ DEFAULT_DEVICE = ""
 MACE_WORKER_SCRIPT = r'''
 import sys, json, os, shutil, traceback
 
+def _cap_threads(n):
+    # A CPU MLIP job is charged `nprocs` cores by the queue's admission control
+    # (core/resources.py), so it must actually stay inside that: torch and the
+    # BLAS underneath it default to EVERY core, which would silently blow the
+    # budget the moment anything runs alongside. The env vars have to be set
+    # before torch is imported, hence: here, first thing.
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return
+    if n < 1:
+        return
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS"):
+        os.environ[var] = str(n)
+    try:
+        import torch
+        torch.set_num_threads(n)
+    except Exception:
+        pass
+
+
 def _resolve_device(requested):
     # "" (or anything not cpu/cuda) means auto: use CUDA when the user's torch
     # build sees a GPU, else fall back to CPU. Only the worker's own env can
@@ -151,6 +173,8 @@ def main():
     with open(sys.argv[1], "r", encoding="utf-8") as f:
         cfg = json.load(f)
     task = cfg.get("task", "opt")
+    # before ANY torch import below (see _cap_threads)
+    _cap_threads(cfg.get("threads"))
     result = {"converged": False, "energy_ev": None, "n_steps": None, "task": task,
               "model": cfg.get("model", ""), "geometry": [], "error": None}
     try:
@@ -164,7 +188,9 @@ def main():
         device = _resolve_device(cfg.get("device"))
         head = cfg.get("head") or ""
         print("[mlip] loading " + str(cfg["model"]) + " (device=" + device + ")"
-              + (" head=" + head if head else ""), flush=True)
+              + (" head=" + head if head else "")
+              + (" threads=" + str(cfg.get("threads")) if cfg.get("threads") else ""),
+              flush=True)
         load_kwargs = {"model": cfg["model_arg"], "device": device, "default_dtype": "float64"}
         # `head` selects a multi-head model's head and is a mace_mp-only kwarg;
         # mace_off/mace_omol don't accept it, so only pass it for mace_mp.
@@ -258,7 +284,8 @@ def write_mlip_run_files(calc_dir, name: str, model: str, xyz: str, result_json,
                          charge: int = 0, multiplicity: int = 1,
                          task: str = "opt", device: str = "",
                          temperature: float = 298.15,
-                         pressure: float = 1.0) -> tuple[Path, Path]:
+                         pressure: float = 1.0,
+                         threads: int = 0) -> tuple[Path, Path]:
     """Write the input .xyz, the JSON config, and the worker script into the run
     folder. Returns (script_path, config_path) for MlipRunner.run(). charge and
     multiplicity are passed to the worker for charge/spin-aware models (OMol25 /
@@ -267,7 +294,9 @@ def write_mlip_run_files(calc_dir, name: str, model: str, xyz: str, result_json,
     the given geometry) or "opt_freq" (relax, then frequencies); an unknown value
     falls back to "opt". device is "" (auto: CUDA when the worker's env sees a GPU,
     else CPU), "cpu", or "cuda" — resolved inside the worker. temperature (K) and
-    pressure (atm) drive the ideal-gas thermochemistry for the freq tasks."""
+    pressure (atm) drive the ideal-gas thermochemistry for the freq tasks. threads
+    caps the worker's CPU threads (0 = leave torch's default): the queue charges
+    a CPU MLIP job that many cores, so the worker has to keep to them."""
     calc_dir = Path(calc_dir)
     calc_dir.mkdir(parents=True, exist_ok=True)
     input_xyz = calc_dir / f"{name}.xyz"
@@ -289,6 +318,7 @@ def write_mlip_run_files(calc_dir, name: str, model: str, xyz: str, result_json,
         "charge": int(charge), "multiplicity": int(multiplicity),
         "task": task,
         "temperature": float(temperature), "pressure": float(pressure),
+        "threads": max(0, int(threads or 0)),
         "fmax": DEFAULT_FMAX, "max_steps": DEFAULT_MAX_STEPS,
         "input_xyz": str(input_xyz), "output_xyz": str(output_xyz),
         "result_json": str(result_json),

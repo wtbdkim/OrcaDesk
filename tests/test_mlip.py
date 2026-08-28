@@ -216,6 +216,31 @@ def test_write_mlip_run_files_encodes_freq_tasks_device_and_thermo(tmp_path):
     assert bad["device"] == ""   # auto (resolved in the worker)
 
 
+def test_write_mlip_run_files_caps_the_worker_threads(tmp_path):
+    # The queue charges a CPU MLIP job `nprocs` cores (core/resources.py), so
+    # the worker has to keep to them: torch and the BLAS under it default to
+    # every core, which would blow the budget as soon as anything runs
+    # alongside. The cap travels in the config the worker reads.
+    import json as _json
+    _, cp = write_mlip_run_files(
+        tmp_path / "t", "t", "MACE-OFF medium", "H 0 0 0",
+        tmp_path / "t.json", threads=4)
+    assert _json.loads(cp.read_text(encoding="utf-8"))["threads"] == 4
+    # unset stays 0 = leave torch's own default alone
+    _, cp0 = write_mlip_run_files(
+        tmp_path / "t0", "t0", "MACE-OFF medium", "H 0 0 0", tmp_path / "t0.json")
+    assert _json.loads(cp0.read_text(encoding="utf-8"))["threads"] == 0
+
+
+def test_worker_sets_the_thread_env_before_importing_torch(tmp_path):
+    # _cap_threads must run before any torch import: OMP_NUM_THREADS is only
+    # read at import time, so a later call would silently do nothing.
+    from orcamgr.mlip.runner import MACE_WORKER_SCRIPT
+    body = MACE_WORKER_SCRIPT
+    assert "OMP_NUM_THREADS" in body
+    assert body.index("_cap_threads(cfg.get(\"threads\"))") < body.index("from ase.io import")
+
+
 def test_parse_mlip_result_reads_frequencies_and_thermochemistry(tmp_path):
     # a freq/opt_freq worker result: frequencies (cm^-1, negative = imaginary)
     # plus ideal-gas thermochemistry in eV -> converted to Hartree in ParseResult.
