@@ -513,33 +513,31 @@ function updateOrcaStatus(valid) {
 }
 
 /** Grey out and lock a backend build card while its toolchain isn't ready: the
- *  card gets `.locked`, its lock note appears, and every listed field plus every
- *  button inside the card is disabled. One implementation for the MLIP and CREST
- *  cards — they differ only in which fields they own.
+ *  card gets `.locked`, its lock note appears, and every control inside the card
+ *  is disabled. One implementation for the MLIP and CREST cards.
+ *
+ *  The controls come from the card's own DOM, not a hand-written id list: that
+ *  list had already drifted (CREST's whole Advanced-settings block and both
+ *  cards' geometry-source radios stayed live under the grey), and a query can't
+ *  go stale when a field is added. `<option>` is deliberately not matched —
+ *  refreshMlipDeviceOptions() owns the CUDA option's own disabled state.
  *  @param {string} prefix "mlip" or "crest" (names `#card-*` and `#*-lock-note`)
- *  @param {boolean} locked
- *  @param {string[]} ids the card's own inputs/selects */
-function applyBackendCardLock(prefix, locked, ids) {
+ *  @param {boolean} locked */
+function applyBackendCardLock(prefix, locked) {
   const card = document.getElementById(`card-${prefix}`);
   if (!card) return;
   card.classList.toggle("locked", locked);
   const note = document.getElementById(`${prefix}-lock-note`);
   if (note) note.style.display = locked ? "" : "none";
-  for (const id of ids) {
-    const el = document.getElementById(id);
-    if (el) el.disabled = locked;
-  }
-  card.querySelectorAll("button").forEach(b => { b.disabled = locked; });
+  card.querySelectorAll("input, select, textarea, button")
+      .forEach(el => { /** @type {any} */ (el).disabled = locked; });
 }
 
 let _mlipPollTimer = 0;
 let _mlipReady = false;   // any registered MACE env is ready — gates the MLIP build card
-const _MLIP_LOCK_FIELDS = ["mlip-name", "mlip-task", "mlip-model", "mlip-charge",
-                           "mlip-mult", "mlip-device", "mlip-temp", "mlip-pressure",
-                           "mlip-ref-select"];
 /** Grey out and lock the MLIP build card when no MACE environment is ready. */
 function applyMlipLock() {
-  applyBackendCardLock("mlip", !_mlipReady, _MLIP_LOCK_FIELDS);
+  applyBackendCardLock("mlip", !_mlipReady);
 }
 /** Any ready env reports a CUDA GPU — drives the Device dropdown's default/hint. */
 let _mlipCuda = false;
@@ -674,12 +672,9 @@ async function pickMlipPython() {
 // ---------- CREST (WSL) status ----------
 let _crestPollTimer = 0;
 let _crestReady = false;   // some WSL distro has CREST — gates the CREST build card
-const _CREST_LOCK_FIELDS = ["crest-name", "crest-charge", "crest-mult", "crest-method",
-                            "crest-solvent", "crest-ewin", "crest-threads",
-                            "crest-ref-select"];
 /** Grey out and lock the CREST build card when no distro has CREST. */
 function applyCrestLock() {
-  applyBackendCardLock("crest", !_crestReady, _CREST_LOCK_FIELDS);
+  applyBackendCardLock("crest", !_crestReady);
 }
 /** Reflect a CrestStatusPayload on the top-bar pill and the Settings section.
  *  @param {CrestStatusPayload} st */

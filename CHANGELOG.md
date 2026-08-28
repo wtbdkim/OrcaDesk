@@ -6,6 +6,15 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **A locked MLIP/CREST build card is now fully inert.** The card greys out and
+  says why when its toolchain isn't ready, but only a hand-listed subset of its
+  fields was actually disabled: CREST's entire *Advanced settings* block
+  (preset, NCI mode, solvent model, every MD/MTD number, all five toggles) and
+  both cards' *geometry source* radio buttons stayed live under the grey, so
+  they could be changed on a card that refuses to accept the calculation. Every
+  control inside a locked card is disabled now, and the lock reads the card's
+  own controls instead of a hand-maintained id list that could drift again.
+
 - **The CREST energy window and thread count are now validated like every other
   numeric option.** They were the only two `crest_*` numbers that skipped the
   trust boundary: an out-of-range value rode straight onto the command line
