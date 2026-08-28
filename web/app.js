@@ -235,7 +235,8 @@ async function pollTick() {
     // new log lines
     const logRes = /** @type {LogPayload} */ (JSON.parse(await bridge.get_log(_logSeq)));
     if (logRes && logRes.lines) {
-      for (const ln of logRes.lines) appendLog(ln.msg, ln.level);
+      for (const ln of logRes.lines) appendLog(ln.msg, ln.level, ln.calc);
+      refreshLogFilterOptions();
       if (typeof logRes.latest === "number") _logSeq = logRes.latest;
     }
     // queue changes (only re-render if version changed)
@@ -243,6 +244,7 @@ async function pollTick() {
     if (snap && snap.version !== _queueVersion) {
       _queueVersion = snap.version;
       queue = (snap.calculations || []).map(mirrorCalc);
+      _resources = snap.resources || null;
       renderQueue();
       // Poll-delivered queue changes (e.g. a phone client's add) must keep the
       // reference dropdowns live too — same visibility-gated refresh as
@@ -272,6 +274,9 @@ async function pollTick() {
     } else if (snap) {
       if (!!snap.running !== _running) { _running = !!snap.running; setRunUI(_running); }
     }
+    // occupancy changes as jobs start/finish, which does not always bump the
+    // queue version — refresh it every tick, it is three numbers
+    if (snap) { _resources = snap.resources || null; renderQueueResources(); }
     // seed the graph from the full .out for a reattached / finished-while-closed
     // opt whose live stream didn't capture its history (see maybeSeedGraph)
     await maybeSeedGraph();
@@ -307,7 +312,8 @@ async function maybeSeedGraph() {
   // graph seeded over its stream (e.g. a mid-run log Clear resets the
   // trackers and would otherwise trigger exactly that).
   const anyRunning = (queue || []).some(c => c.state === "running");
-  if (!target && !anyRunning && _geoTracker && !_geoTracker.hasData()) {
+  const _cur = curTrackers();
+  if (!target && !anyRunning && _cur && !_cur.geo.hasData()) {
     // no live opt running: fill an empty graph from the most recent done opt
     const dones = (queue || []).filter(c => c.state === "done" && _OPT_KINDS.includes(c.kind));
     target = dones.length ? dones[dones.length - 1] : null;
@@ -320,7 +326,8 @@ async function maybeSeedGraph() {
       const t = new SCFGraph.SCFTracker();
       const g = new SCFGraph.GeoTracker();
       for (const ln of r.lines) { t.push(ln); g.push(ln); }   // offline: never via appendLog (no DOM flood)
-      _scfTracker = t; _geoTracker = g; _scfDirty = true;
+      const b = jobTrackers(target.name);
+      b.scf = t; b.geo = g; _scfDirty = true;
     }
   } catch (e) {
     _seededGraph.delete(target.name);   // let a later tick retry
@@ -338,7 +345,8 @@ async function maybeSeedCrestGraph() {
   // graph panel over from a live non-CREST job (CrestTracker with data wins
   // the panel priority in renderSCFPanel)
   const anyRunning = (queue || []).some(c => c.state === "running");
-  if (!target && !anyRunning && _crestTracker && !_crestTracker.hasData()) {
+  const _cur = curTrackers();
+  if (!target && !anyRunning && _cur && !_cur.crest.hasData()) {
     const dones = (queue || []).filter(c => c.state === "done" && (c.kind || "").startsWith("crest"));
     target = dones.length ? dones[dones.length - 1] : null;
   }
@@ -350,7 +358,7 @@ async function maybeSeedCrestGraph() {
       const c = new SCFGraph.CrestTracker();
       for (const ln of r.lines) c.push(ln);   // offline: never via appendLog
       c.noTimes = true;   // replayed in one burst — its wall-clock stamps are meaningless
-      _crestTracker = c; _scfDirty = true;
+      jobTrackers(target.name).crest = c; _scfDirty = true;
     }
   } catch (e) {
     _seededGraph.delete(target.name);   // let a later tick retry
@@ -373,11 +381,49 @@ function mirrorCalc(c) {
   };
 }
 
+/** Cores/memory the current run holds, from the last queue snapshot. All
+ *  zeros while nothing runs. @type {RunResources|null} */
+let _resources = null;
+
+/** "2 running - 12 / 16 cores - 28.8 / 24.0 GB" above the queue, while a
+ *  parallel run is actually occupying something. Hidden for a sequential run:
+ *  one job at a time needs no budget readout. */
+function renderQueueResources() {
+  const box = document.getElementById("queue-resources");
+  if (!box) return;
+  const r = _resources;
+  if (!r || !r.jobs || r.max_jobs <= 1) { box.hidden = true; return; }
+  const gb = (mb) => (mb / 1024).toFixed(1);
+  box.innerHTML =
+    `<span class="qres-run">${r.jobs} running</span>` +
+    `<span class="qres-sep">/</span>` +
+    `<span>${r.cores_used} of ${r.cores_budget} cores</span>` +
+    `<span class="qres-sep">/</span>` +
+    `<span>${gb(r.ram_used_mb)} of ${gb(r.ram_budget_mb)} GB</span>`;
+  box.hidden = false;
+}
+
+/** Spell out what "auto" means on this machine, under the budget fields. */
+function renderBudgetHint(settings) {
+  const el = document.getElementById("set-budget-hint");
+  if (!el) return;
+  const cores = settings.max_total_cores || settings.auto_cores || 0;
+  const ram = settings.max_total_ram_mb || settings.auto_ram_mb || 0;
+  const jobs = settings.max_concurrent_jobs || 1;
+  el.textContent = jobs <= 1
+    ? `One calculation at a time. Auto is ${settings.auto_cores} cores `
+      + `/ ${(settings.auto_ram_mb / 1024).toFixed(1)} GB on this machine.`
+    : `Up to ${jobs} at once within ${cores} cores and `
+      + `${(ram / 1024).toFixed(1)} GB — each calculation takes its own nprocs `
+      + `(and maxcore x nprocs of memory) out of that.`;
+}
+
 async function refreshQueue() {
   try {
     const snap = /** @type {QueueSnapshot} */ (JSON.parse(await bridge.get_queue()));
     _queueVersion = snap.version;
     queue = (snap.calculations || []).map(mirrorCalc);
+    _resources = snap.resources || null;
     renderQueue();
     // Keep the reference dropdowns live: they're only rebuilt when the geometry
     // source is toggled, so a calc added while "From another calculation" was
@@ -488,6 +534,10 @@ async function loadSettings() {
   document.getElementById("set-ws").value = settings.workspace_root || "";
   document.getElementById("set-nprocs").value = String(settings.default_nprocs || 6);
   document.getElementById("set-maxcore").value = String(settings.default_maxcore_mb || 2400);
+  document.getElementById("set-jobs").value = String(settings.max_concurrent_jobs || 1);
+  document.getElementById("set-cores").value = String(settings.max_total_cores || 0);
+  document.getElementById("set-ram").value = String(settings.max_total_ram_mb || 0);
+  renderBudgetHint(settings);
   // ETA mode radio
   const mode = settings.eta_mode || "conservative";
   const radio = document.querySelector(`input[name="eta-mode"][value="${mode}"]`);
@@ -777,6 +827,10 @@ async function saveSettings() {
     workspace_root: document.getElementById("set-ws").value.trim(),
     default_nprocs: parseInt(document.getElementById("set-nprocs").value, 10) || 6,
     default_maxcore_mb: parseInt(document.getElementById("set-maxcore").value, 10) || 2400,
+    max_concurrent_jobs: parseInt(document.getElementById("set-jobs").value, 10) || 1,
+    // 0 is meaningful here ("auto"), so an empty/NaN field must fall back to 0
+    max_total_cores: parseInt(document.getElementById("set-cores").value, 10) || 0,
+    max_total_ram_mb: parseInt(document.getElementById("set-ram").value, 10) || 0,
     eta_mode: etaEl ? etaEl.value : "conservative",
     geo_graph_mode: geoEl ? geoEl.value : "all5",
   };
@@ -2187,6 +2241,7 @@ async function viewInp(i) {
 }
 
 function renderQueue() {
+  renderQueueResources();
   const el = document.getElementById("queue-list");
   if (!queue.length) { el.innerHTML = `<div class="queue-empty">
     <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="queue-empty-icon">

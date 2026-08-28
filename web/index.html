@@ -352,6 +352,8 @@
     <!-- ============ QUEUE ============ -->
     <section class="panel" data-panel="queue">
       <div class="card">
+        <!-- filled by renderQueue() while a run occupies cores; empty otherwise -->
+        <div id="queue-resources" class="queue-resources" hidden></div>
         <!-- pre-bridge placeholder only; renderQueue() replaces it — keep the copy in sync -->
         <div id="queue-list"><div class="queue-empty">No calculations queued — a new calculation from the Build tab to get started.</div></div>
       </div>
@@ -368,6 +370,10 @@
       <div class="log-mode-toggle">
         <button id="logmode-raw" class="active" onclick="setLogMode('raw')">Raw</button>
         <button id="logmode-graph" onclick="setLogMode('graph')">Graph</button>
+        <!-- appears once a second calculation has produced output: with jobs
+             running in parallel their lines interleave in one buffer -->
+        <select id="log-filter" class="log-filter" onchange="setLogFilter(this.value)"
+                aria-label="Show output from" hidden><option value="">All jobs</option></select>
         <!-- the "~N s / SCF cycle" pace chip lives in the SCF panel's progress
              meta line (scf_graph.js _paceSpan), not in this toolbar -->
         <button class="btn btn-sm btn-ghost" style="margin-left:auto" onclick="clearLog()">Clear</button>
@@ -493,6 +499,19 @@
           <div class="field"><label>nprocs</label><input id="set-nprocs" type="number" min="1" value="6"></div>
           <div class="field"><label>maxcore (MB / core)</label><input id="set-maxcore" type="number" min="100" step="100" value="2400"></div>
         </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Parallel runs</div>
+        <div class="card-desc">How much of this machine the queue may occupy at once.</div>
+        <div class="field-row">
+          <div class="field" style="flex:0 0 150px"><label>Run at once</label>
+            <input id="set-jobs" type="number" min="1" max="64" value="1"></div>
+          <div class="field" style="flex:0 0 170px"><label>Core budget</label>
+            <input id="set-cores" type="number" min="0" max="1024" value="0" placeholder="0 = auto"></div>
+          <div class="field" style="flex:0 0 190px"><label>Memory budget (MB)</label>
+            <input id="set-ram" type="number" min="0" step="1024" value="0" placeholder="0 = auto"></div>
+        </div>
+        <div class="hint" id="set-budget-hint"></div>
       </div>
       <div class="card">
         <div class="card-title">Optimization time estimate</div>

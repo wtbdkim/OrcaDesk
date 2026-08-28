@@ -246,7 +246,14 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 - **Every log line carries the calc that produced it** (`LogLine.calc`, `""` =
   engine-level). With jobs interleaving into one buffer the raw ORCA tail has no
   name of its own, so the tag is what lets the Log tab and the per-job graphs
-  separate them. `QueueCallbacks.log` is `(msg, level, calc="")`.
+  separate them. `QueueCallbacks.log` is `(msg, level, calc="")`. On the
+  front-end (`web/log_graph.js`) the five convergence trackers are no longer
+  globals but a **per-calc bundle** in the `_jobs` Map keyed by that tag
+  (`jobTrackers(name)`); the panel renders one job at a time — `shownJob()` =
+  the explicit pick (`setGraphJob`) else the newest running job — and the job
+  picker / raw-log filter only appear once a second calc has produced output, so
+  a sequential run is visually unchanged. `QueueSnapshot.resources` feeds the
+  queue's occupancy strip.
 - **The queue stays editable while it runs (live queue, P29).** `start_run`
   hands the engine the store's **own list**, and the engine walk picks the
   next unhandled row (tracked by object identity) under the store's **own

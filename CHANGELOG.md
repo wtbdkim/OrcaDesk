@@ -6,11 +6,9 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **The queue can run several calculations at once.** The run engine admits by
-  budget rather than one at a time: a *run at once* limit plus a **core budget**
-  and a **memory budget** (the Settings controls for them land next; the engine,
-  the API and the session already carry them). Admission is by budget, not by
-  lanes: each
+- **The queue can run several calculations at once.** Settings → *Parallel runs*
+  sets how many may be in flight, plus a **core budget** and a **memory
+  budget**. Admission is by budget, not by lanes: each
   calculation declares what it occupies (ORCA `%pal nprocs`, CREST `-T`, the
   MLIP thread cap) and starts only while it still fits — so *two 8-core jobs*
   and *four 4-core jobs* are the same setting, decided by the calculations
@@ -28,8 +26,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     than waiting forever.
   - **Cancel** stops every job in flight; **Stop after current** lets the
     running ones finish and starts no more.
-  - Every log line now records which calculation produced it, so interleaved
-    output can be told apart.
+  - Every log line records which calculation produced it, so interleaved output
+    can be told apart: the Log tab gains a **job filter**, the convergence graph
+    a **job picker**, and the queue a live *2 running / 12 of 16 cores* readout.
+    A single-job run looks exactly as it did — the filter and picker only appear
+    once a second calculation has produced output.
 
 ## [0.6.1-beta] — 2026-08-28
 

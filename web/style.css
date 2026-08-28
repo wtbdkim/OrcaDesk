@@ -350,6 +350,16 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 }
 
 /* ---- atoms table ---- */
+/* Run occupancy above the queue list: only shown while a parallel run actually
+   holds cores (a one-at-a-time run needs no budget readout) */
+.queue-resources {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 8px;   /* §11.1 canonical spacing step */
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--muted-foreground);
+}
+.queue-resources .qres-run { color: var(--foreground); font-weight: 600; }
+.queue-resources .qres-sep { opacity: 0.45; }
+
 .atoms-head {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 8px;   /* §11.1 canonical spacing step */
@@ -520,7 +530,20 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
   border-radius: var(--radius-sm); cursor: pointer;
 }
 .log-mode-toggle button.active { background: var(--accent); color: var(--foreground); }
+/* Raw-log job filter: one control among the mode buttons, so it takes the
+   toolbar's own type scale rather than a form field's */
+.log-filter {
+  margin-left: 8px; width: auto; font-size: 12px; padding: 5px 8px;
+  font-family: var(--font-mono);
+}
 .scf-panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+/* "Showing <job>" above the graph — only rendered once a second job has data */
+.graph-jobpick {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.graph-jobpick select {
+  width: auto; font-size: 12px; padding: 4px 8px; font-family: var(--font-mono);
+}
 .graph-summary { margin-bottom: 4px; }
 .graph-divider { height: 1px; background: var(--border); margin: 14px 0; }
 /* nest the plot in its own box: it sits on the page tint (ivory in light, a
