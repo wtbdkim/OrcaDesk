@@ -329,3 +329,30 @@ def test_a_keep_existing_row_still_goes_through_admission(tmp_path):
     done = make_calc("done", state=CalcState.DONE)
     assert harness.engine._handled_without_running(done, set()) is True
     assert harness.engine._handled_without_running(make_calc("x"), {"x"}) is True
+
+
+def test_every_per_calc_line_carries_its_tag(tmp_path):
+    # The front-end keys the log filter, the job picker and the per-job trackers
+    # off LogLine.calc. An untagged "[name] ..." line makes its job invisible
+    # until something else arrives -- a reattached run showed only the one job
+    # that happened to print. Whatever a message says, if it names a
+    # calculation it must also be tagged with it.
+    harness = EngineHarness(tmp_path, budget=_wide(3))
+    harness.behaviors["boom"] = raiser(OrcaRunError("nope"))
+    rows = [make_calc("plain"),
+            make_calc("finished", state=CalcState.DONE),
+            make_calc("boom", kind="opt"),
+            make_calc("dependent", ref="boom")]
+
+    harness.engine.run_all(rows)
+
+    checked = 0
+    for msg, _level, calc in harness.tagged:
+        if not msg.startswith("["):
+            continue                      # engine-level line, deliberately ""
+        name = msg[1:msg.index("]")]
+        assert calc == name, f"untagged per-calc line: {msg!r}"
+        checked += 1
+    # done-skip, failure, block. (The fake _run_calc stamps DONE itself, so the
+    # engine's own completion line never runs here.)
+    assert checked >= 3

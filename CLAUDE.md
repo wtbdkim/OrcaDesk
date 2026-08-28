@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 417 tests over the framework-free layers
+python -m pytest                       # 419 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 36 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -229,8 +229,12 @@ The `core/` pipeline:
 These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 - **Several calculations can run at once, admitted by budget (P57).**
   `ResourceBudget(max_jobs, cores, ram_mb)` (from `Settings.max_concurrent_jobs`
-  / `max_total_cores` / `max_total_ram_mb`, 0 = auto) is passed to
-  `make_engine_factory` by **both** run entry points. `_run_walk` is a
+  / `max_total_cores` / `max_total_ram_mb`) is passed to `make_engine_factory` by
+  **both** run entry points. 0 is "auto" for all three: for the two budgets it
+  means this machine (physical cores / 75% of RAM), and for `max_jobs` it means
+  **as many as those budgets allow** — every job takes at least one core, so the
+  core budget is already the ceiling and the job count needn't be a second
+  number to keep in sync with it. `_run_walk` is a
   dispatcher: it picks in queue order under the store's lock, then runs each
   calc in its own thread with its own backend runner (`_JobSlot`, thread-local
   via `_job`) and its own reserved cores/RAM, released when it finishes. A row
@@ -257,8 +261,11 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   globals but a **per-calc bundle** in the `_jobs` Map keyed by that tag
   (`jobTrackers(name)`); the panel renders one job at a time — `shownJob()` =
   the explicit pick (`setGraphJob`) else the newest running job — and the job
-  picker / raw-log filter only appear once a second calc has produced output, so
-  a sequential run is visually unchanged. `QueueSnapshot.resources` feeds the
+  picker (only jobs with an actual curve — `graphJobs()`) and the raw-log filter
+  (every job that produced a line) are **button strips**, not selects, and only
+  appear once a second calc has produced output, so a sequential run is visually
+  unchanged. The job name rides in `data-job` with one delegated click handler:
+  a calc name may contain a quote, which would break an inline `onclick`. `QueueSnapshot.resources` feeds the
   queue's occupancy strip.
 - **The queue stays editable while it runs (live queue, P29).** `start_run`
   hands the engine the store's **own list**, and the engine walk picks the

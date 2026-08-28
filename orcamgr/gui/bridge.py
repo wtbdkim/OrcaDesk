@@ -175,7 +175,7 @@ class Bridge(QObject):
             # straight into admission control, where a negative or absurd value
             # would either stall the queue forever or let it oversubscribe the
             # machine. 0 stays 0 for the two budgets ("auto").
-            for key, lo, hi in (("max_concurrent_jobs", 1, 64),
+            for key, lo, hi in (("max_concurrent_jobs", 0, 64),   # 0 = as many as fit
                                 ("max_total_cores", 0, 1024),
                                 ("max_total_ram_mb", 0, 4_000_000)):
                 if key in data:

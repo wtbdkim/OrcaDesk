@@ -411,13 +411,17 @@ function renderBudgetHint(settings) {
   if (!el) return;
   const cores = settings.max_total_cores || settings.auto_cores || 0;
   const ram = settings.max_total_ram_mb || settings.auto_ram_mb || 0;
-  const jobs = settings.max_concurrent_jobs || 1;
-  el.textContent = jobs <= 1
-    ? `One calculation at a time. Auto is ${settings.auto_cores} cores `
-      + `/ ${(settings.auto_ram_mb / 1024).toFixed(1)} GB on this machine.`
-    : `Up to ${jobs} at once within ${cores} cores and `
-      + `${(ram / 1024).toFixed(1)} GB — each calculation takes its own nprocs `
-      + `(and maxcore x nprocs of memory) out of that.`;
+  const jobs = settings.max_concurrent_jobs || 0;
+  const within = `${cores} cores and ${(ram / 1024).toFixed(1)} GB`;
+  const share = "each calculation takes its own nprocs (and maxcore x nprocs of "
+              + "memory) out of that, and the next one starts the moment one finishes";
+  el.textContent =
+    jobs === 1
+      ? `One calculation at a time. Auto is ${settings.auto_cores} cores `
+        + `/ ${(settings.auto_ram_mb / 1024).toFixed(1)} GB on this machine.`
+      : jobs === 0
+        ? `As many at once as fit in ${within} — ${share}.`
+        : `Up to ${jobs} at once within ${within} — ${share}.`;
 }
 
 async function refreshQueue() {
@@ -538,7 +542,7 @@ async function loadSettings() {
   document.getElementById("set-maxcore").value = String(settings.default_maxcore_mb || 2400);
   const mlipThreads = document.getElementById("mlip-threads");
   if (mlipThreads) mlipThreads.value = String(settings.default_nprocs || 6);
-  document.getElementById("set-jobs").value = String(settings.max_concurrent_jobs || 1);
+  document.getElementById("set-jobs").value = String(settings.max_concurrent_jobs || 0);
   document.getElementById("set-cores").value = String(settings.max_total_cores || 0);
   document.getElementById("set-ram").value = String(settings.max_total_ram_mb || 0);
   renderBudgetHint(settings);
@@ -831,7 +835,8 @@ async function saveSettings() {
     workspace_root: document.getElementById("set-ws").value.trim(),
     default_nprocs: parseInt(document.getElementById("set-nprocs").value, 10) || 6,
     default_maxcore_mb: parseInt(document.getElementById("set-maxcore").value, 10) || 2400,
-    max_concurrent_jobs: parseInt(document.getElementById("set-jobs").value, 10) || 1,
+    // 0 is meaningful ("as many as fit"), so an empty/NaN field falls back to it
+    max_concurrent_jobs: parseInt(document.getElementById("set-jobs").value, 10) || 0,
     // 0 is meaningful here ("auto"), so an empty/NaN field must fall back to 0
     max_total_cores: parseInt(document.getElementById("set-cores").value, 10) || 0,
     max_total_ram_mb: parseInt(document.getElementById("set-ram").value, 10) || 0,

@@ -482,7 +482,8 @@ class QueueEngine:
         validate_result(calc, result)   # raises OrcaRunError on a bad result
         calc.state = CalcState.DONE
         calc.message = "Completed (finished while ORCAdesk was closed)."
-        self.cb.log(f"[{calc.name}] finished while unmonitored — result adopted.", "ok")
+        self.cb.log(f"[{calc.name}] finished while unmonitored — result adopted.",
+                    "ok", calc.name)
         self.cb.calc_update(index, calc)
 
     # -- single calculation --
@@ -523,7 +524,7 @@ class QueueEngine:
             # while closed, reconcile_calcs can only judge DONE from a path.
             calc.output_path = str(out_path)
             self.cb.log(f"[{calc.name}] reattaching to ORCA still running "
-                        f"(pid {calc.pid})...", "info")
+                        f"(pid {calc.pid})...", "info", calc.name)
             self.cb.calc_update(index, calc)
             # Tail from the CURRENT end of file: don't re-stream the output
             # written before the app closed (that would flood the live log and,
@@ -650,7 +651,8 @@ class QueueEngine:
                     if src.exists():
                         shutil.copyfile(src, calc_dir / hess_name)
                         self.cb.log(f"[{calc.name}] copied {hess_name} from "
-                                    f"{calc.ref_name}'s folder.", "info")
+                                    f"{calc.ref_name}'s folder.", "info",
+                                    calc.name)
                 if not hess_path.exists():
                     raise OrcaRunError(
                         f'IRC needs the Hessian file "{hess_name}", but it was '
@@ -814,7 +816,7 @@ class QueueEngine:
             # overwrite a completed result). A crash without an ensemble parses to
             # zero conformers and validate_result fails it, as it should.
             self.cb.log(f"[{calc.name}] CREST finished while the app was closed; "
-                        "reading results...", "info")
+                        "reading results...", "info", calc.name)
             self._crest_monitor_and_finish(calc, index, out_path, calc.name,
                                            already_done=True)
             return
@@ -897,10 +899,11 @@ class QueueEngine:
             written = export_conformers(Path(calc_dir) / "crest_conformers.xyz",
                                         Path(calc_dir) / "conformers", calc.name)
         except (FileNotFoundError, ValueError, OSError) as e:
-            self.cb.log(f"[{calc.name}] conformer .xyz export skipped: {e}", "warn")
+            self.cb.log(f"[{calc.name}] conformer .xyz export skipped: {e}",
+                        "warn", calc.name)
             return
         self.cb.log(f"[{calc.name}] exported {len(written)} conformer(s) "
-                    f"to conformers/.", "info")
+                    f"to conformers/.", "info", calc.name)
 
     # -- dependency-scoped failure propagation --
     def _dependents_of(self, calcs: list[Calculation], failed_name: str) -> set[str]:
@@ -948,7 +951,8 @@ class QueueEngine:
             # Diagnosing the failure must not itself fail silently — fall back to
             # the raw runner message, but leave a breadcrumb so a broken parse
             # path is discoverable instead of swallowed.
-            self.cb.log(f"[{calc.name}] could not parse .out for a detailed reason ({e}).", "warn")
+            self.cb.log(f"[{calc.name}] could not parse .out for a detailed "
+                        f"reason ({e}).", "warn", calc.name)
         return runner_msg
 
     # -- the whole queue --
@@ -1278,7 +1282,7 @@ class QueueEngine:
         # by a dependency that failed later. CANCELLED calculations DO
         # re-run, so the user can retry them.
         if calc.state == CalcState.DONE:
-            self.cb.log(f"[{calc.name}] already done — skipping.", "info")
+            self.cb.log(f"[{calc.name}] already done — skipping.", "info", calc.name)
             self.cb.calc_update(i, calc)
             return False
 
@@ -1287,7 +1291,7 @@ class QueueEngine:
         # diagnosis is never re-stamped BLOCKED.
         if calc.state == CalcState.FAILED:
             self.cb.log(f"[{calc.name}] failed previously — locked; "
-                        "build a new calculation to retry.", "warn")
+                        "build a new calculation to retry.", "warn", calc.name)
             return False
 
         # A row added (or edited) mid-run postdates run_all's blocked_names
@@ -1305,7 +1309,8 @@ class QueueEngine:
         if calc.name in blocked_names:
             calc.state = CalcState.BLOCKED
             calc.message = "Skipped: a dependency failed."
-            self.cb.log(f"[{calc.name}] blocked (a dependency failed).", "warn")
+            self.cb.log(f"[{calc.name}] blocked (a dependency failed).",
+                        "warn", calc.name)
             self.cb.calc_update(i, calc)
             return False
         return True
@@ -1352,7 +1357,8 @@ class QueueEngine:
                     calc.state = CalcState.DONE
                     calc.message = "Kept existing result (not recomputed)."
                     self._by_name[calc.name] = calc
-                    self.cb.log(f"[{calc.name}] kept existing result on disk — not recomputed.", "info")
+                    self.cb.log(f"[{calc.name}] kept existing result on disk "
+                                "— not recomputed.", "info", calc.name)
             except OrcaRunError as e:
                 problem = f"existing result invalid ({e})"
                 calc.output_path = prev_output_path
@@ -1362,7 +1368,7 @@ class QueueEngine:
         else:
             problem = "no existing result found"
         if problem:
-            self.cb.log(f"[{calc.name}] {problem}; running.", "warn")
+            self.cb.log(f"[{calc.name}] {problem}; running.", "warn", calc.name)
             self._skip_names.discard(calc.name)
             return False
         self.cb.calc_update(i, calc)

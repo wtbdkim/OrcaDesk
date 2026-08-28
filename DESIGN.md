@@ -670,11 +670,18 @@ the bottom; otherwise the floating `↓ Latest` pill (`padding 5px 11px; 12px;
 --accent bg; radius 999px; shadow 0 2px 10px rgba(0,0,0,.35)`) appears
 bottom-right (offset 14px). DOM capped at 2000 lines.
 
-**Job filter** (`.log-filter`, in the mode-toggle row): `width auto; 12px mono;
-padding 5px 8px; margin-left 8px`. Hidden until a **second** calculation has
-produced output — a sequential run must look exactly as it always did. Filtering
-hides every line not tagged with the chosen calculation, engine-level lines
-included (they are not that job's output).
+**Job filter** (`.log-jobs`, in the mode-toggle row): one button per job plus
+*All*, at `11.5px mono; padding 5px 10px` — a step below the Raw/Graph buttons,
+so the mode choice stays the primary level (the same relationship as the Build
+tab's `.bsub`), behind a 1px `--border` rule. Wraps rather than scrolls. Hidden
+until a **second** calculation has produced output — a sequential run must look
+exactly as it always did. Filtering hides every line not tagged with the chosen
+calculation, engine-level lines included (they are not that job's output).
+
+> Buttons, not a `<select>`: switching between running jobs is the frequent
+> action, and a menu costs two clicks and hides the job list until opened. The
+> job name lives in `data-job` with one delegated handler — a calculation name
+> may legally contain a quote, which would break out of an inline `onclick`.
 
 **Run occupancy** (`.queue-resources`, above the queue list): `flex; gap 8px;
 margin-bottom 8px; 11.5px mono; --muted-foreground`, the job count in
@@ -748,10 +755,13 @@ tracker's stage-entry stamps and are suppressed on a disk-rebuilt tracker
 (`noTimes`, replayed in one burst).
 
 **Graph job picker** (`.graph-jobpick`, above the panel): `flex; gap 8px;
-margin-bottom 8px`, a muted `Showing` label plus a `width auto; 12px mono`
-select. Rendered only when two or more calculations have produced graph data;
-with one job the panel is byte-for-byte what it was. The panel shows one job at
-a time — the explicit pick, else the newest running job.
+margin-bottom 8px`, a muted `Showing` label plus a `.graph-subtoggle` strip of
+mono buttons — one per job, matching the Optimization / Current SCF toggle
+directly below it. Rendered only when two or more calculations have **graph
+data**: a calc that merely logged a status line has a tracker bundle but nothing
+to draw, and offering it would open an empty graph. With one job the panel is
+byte-for-byte what it was. The panel shows one job at a time — the explicit
+pick, else the newest running job with a curve.
 
 ### 11.16 Charts (SVG)
 

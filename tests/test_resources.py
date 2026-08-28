@@ -150,3 +150,17 @@ def test_budget_from_settings_reads_the_three_knobs():
 
     b = ResourceBudget.from_settings(_S())
     assert (b.max_jobs, b.cores, b.ram_mb) == (3, 12, 8000)
+
+
+def test_zero_jobs_means_as_many_as_the_budget_allows():
+    # The usual way to think about it: cap the machine, not the job count.
+    # Every job takes at least one core, so the core budget is already the
+    # ceiling -- 0 just stops the job count being a second number to keep in
+    # sync with it.
+    b = ResourceBudget(max_jobs=0, cores=12, ram_mb=8000).resolved()
+    assert b.max_jobs == 12
+    # and with auto cores too
+    b2 = ResourceBudget(max_jobs=0).resolved()
+    assert b2.max_jobs == auto_cores()
+    # an explicit cap still wins
+    assert ResourceBudget(max_jobs=2, cores=12).resolved().max_jobs == 2

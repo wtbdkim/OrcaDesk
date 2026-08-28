@@ -531,20 +531,23 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
   border-radius: var(--radius-sm); cursor: pointer;
 }
 .log-mode-toggle button.active { background: var(--accent); color: var(--foreground); }
-/* Raw-log job filter: one control among the mode buttons, so it takes the
-   toolbar's own type scale rather than a form field's */
-.log-filter {
-  margin-left: 8px; width: auto; font-size: 12px; padding: 5px 8px;
-  font-family: var(--font-mono);
+/* Raw-log job filter: one button per job, in the mode-toggle row. A step
+   smaller than the Raw/Graph buttons so the mode choice stays the primary
+   level (same relationship as the Build tab's .bsub). */
+.log-jobs { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.log-jobs[hidden] { display: none; }        /* author display beats UA [hidden] */
+.log-jobs::before {
+  content: ""; width: 1px; height: 20px; background: var(--border); margin: 0 2px;
+}
+.log-mode-toggle .log-jobs button {
+  font-size: 11.5px; padding: 5px 10px; font-family: var(--font-mono);
 }
 .scf-panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
 /* "Showing <job>" above the graph — only rendered once a second job has data */
 .graph-jobpick {
   display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
 }
-.graph-jobpick select {
-  width: auto; font-size: 12px; padding: 4px 8px; font-family: var(--font-mono);
-}
+.graph-jobpick .graph-subtoggle button { font-family: var(--font-mono); }
 .graph-summary { margin-bottom: 4px; }
 .graph-divider { height: 1px; background: var(--border); margin: 14px 0; }
 /* nest the plot in its own box: it sits on the page tint (ivory in light, a

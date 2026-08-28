@@ -93,7 +93,9 @@ class Settings:
     # --- parallel queue admission (see core/resources.py) ---
     # How many calculations may run at once. 1 = the classic one-at-a-time
     # queue, which stays the default: raising it is a deliberate choice about
-    # this machine, not something to inherit silently on upgrade.
+    # this machine, not something to inherit silently on upgrade. 0 = as many as
+    # the core/RAM budget allows, which is the usual way to think about it (you
+    # cap the machine, not the job count).
     max_concurrent_jobs: int = 1
     # Total cores the queue may occupy across all running jobs (0 = auto, the
     # machine's physical core count). Each calculation declares its own share

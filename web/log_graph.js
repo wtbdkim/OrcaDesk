@@ -50,13 +50,26 @@ function shownJob() {
   if (_jobPick && _jobs.has(_jobPick)) return _jobPick;
   const running = (queue || []).filter(c => c.state === "running").map(c => c.name);
   for (let i = running.length - 1; i >= 0; i--) {
-    if (_jobs.has(running[i])) return running[i];
+    if (jobHasGraph(running[i])) return running[i];
   }
+  const withData = graphJobs();
+  if (withData.length) return withData[withData.length - 1];
   const names = [..._jobs.keys()];
   return names.length ? names[names.length - 1] : "";
 }
 /** @returns {JobTrackers|null} */
 function curTrackers() { return jobTrackers(shownJob()); }
+/** True when this job has produced something the graph panel can draw. A calc
+ *  that only logged a status line ("already done - skipping.") has a bundle but
+ *  nothing to show, and listing it would offer an empty graph.
+ *  @param {string} name */
+function jobHasGraph(name) {
+  const b = _jobs.get(name);
+  return !!b && (b.scf.hasData?.() || b.scf.points.length > 0 || b.geo.hasData()
+                 || b.freq.hasData() || b.tddft.hasData() || b.crest.hasData());
+}
+/** Jobs worth offering in the graph picker, in the order they started. */
+function graphJobs() { return [..._jobs.keys()].filter(jobHasGraph); }
 /** The queue row for the job on screen (null when it has left the queue). */
 function shownCalc() {
   const name = shownJob();
@@ -186,18 +199,23 @@ function renderSCFPanel() {
   }
   _scfDirty = false;
 }
-/** The "showing: <job>" selector above the graph. Empty while only one job has
- *  ever produced data — a single-job run should look exactly as it always did. */
+/** The "Showing <job>" picker above the graph: one button per job, so switching
+ *  is a single click. Empty while only one job has ever produced data — a
+ *  single-job run should look exactly as it always did.
+ *
+ *  The job name goes in `data-job`, never in an inline handler: a calculation
+ *  name may legally contain a quote (only path-dangerous characters are
+ *  rejected), which would break out of an onclick attribute. */
 function jobPickerHtml() {
-  const names = [..._jobs.keys()];
+  const names = graphJobs();
   if (names.length < 2) return "";
   const cur = shownJob();
-  const opts = names.map(n =>
-    `<option value="${escapeHtml(n)}"${n === cur ? " selected" : ""}>${escapeHtml(n)}</option>`
+  const btns = names.map(n =>
+    `<button data-job="${escapeHtml(n)}"${n === cur ? ' class="active"' : ""}>${escapeHtml(n)}</button>`
   ).join("");
   return `<div class="graph-jobpick">
     <span class="hint" style="margin:0">Showing</span>
-    <select onchange="setGraphJob(this.value)">${opts}</select>
+    <div class="graph-subtoggle">${btns}</div>
   </div>`;
 }
 // the graph is sized to the viewport, so it must follow window resizes
@@ -228,6 +246,7 @@ let _logFilter = "";            // "" = every line
 function setLogFilter(name) {
   _logFilter = name || "";
   applyLogFilter();
+  refreshLogFilterOptions();   // move the active state onto the clicked button
 }
 /** @param {Element} el */
 function _lineHidden(el) {
@@ -242,22 +261,38 @@ function applyLogFilter() {
   }
   updateLogJump();
 }
-/** Keep the raw-log filter's options in step with the jobs that have produced
- *  output. Called from the poll tick; a no-op unless the set changed. */
+/** Keep the raw-log filter in step with the jobs that have produced output:
+ *  an "All" button plus one per job. Called from the poll tick and whenever a
+ *  new job first appears; a no-op unless the set or the selection changed. */
 function refreshLogFilterOptions() {
-  const sel = document.getElementById("log-filter");
-  if (!sel) return;
+  const box = document.getElementById("log-filter");
+  if (!box) return;
   const names = [..._jobs.keys()];
-  const wanted = "|" + names.join("|");
-  if (sel.dataset.names === wanted) return;
-  sel.dataset.names = wanted;
-  sel.innerHTML = `<option value="">All jobs</option>` +
-    names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
   // a filtered-on job that left the queue falls back to showing everything
-  if (_logFilter && !names.includes(_logFilter)) _logFilter = "";
-  sel.value = _logFilter;
-  sel.hidden = names.length < 2;
+  if (_logFilter && !names.includes(_logFilter)) {
+    _logFilter = "";
+    applyLogFilter();
+  }
+  const wanted = _logFilter + "|" + names.join("|");
+  if (box.dataset.state === wanted) return;
+  box.dataset.state = wanted;
+  const btn = (value, label) =>
+    `<button data-job="${escapeHtml(value)}"` +
+    `${value === _logFilter ? ' class="active"' : ""}>${escapeHtml(label)}</button>`;
+  box.innerHTML = btn("", "All") + names.map(n => btn(n, n)).join("");
+  box.hidden = names.length < 2;
 }
+
+// One delegated handler for both button strips. Delegation (rather than an
+// inline onclick) keeps the job name in a data attribute, where a quote in a
+// calculation name cannot break out of it.
+document.addEventListener("click", (e) => {
+  const btn = /** @type {Element} */ (e.target)?.closest?.("[data-job]");
+  if (!btn) return;
+  const job = btn.getAttribute("data-job") || "";
+  if (btn.closest("#log-filter")) setLogFilter(job);
+  else if (btn.closest(".graph-jobpick")) setGraphJob(job);
+});
 
 // every backend's per-calc start marker: ORCA "running ORCA…", CREST "running
 // CREST…", MLIP "optimizing with…" / "single-point energy with…". Matching them

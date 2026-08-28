@@ -374,9 +374,10 @@
         <button id="logmode-raw" class="active" onclick="setLogMode('raw')">Raw</button>
         <button id="logmode-graph" onclick="setLogMode('graph')">Graph</button>
         <!-- appears once a second calculation has produced output: with jobs
-             running in parallel their lines interleave in one buffer -->
-        <select id="log-filter" class="log-filter" onchange="setLogFilter(this.value)"
-                aria-label="Show output from" hidden><option value="">All jobs</option></select>
+             running in parallel their lines interleave in one buffer. One button
+             per job (filled by refreshLogFilterOptions) so switching is a click,
+             not a menu. -->
+        <div id="log-filter" class="log-jobs" role="group" aria-label="Show output from" hidden></div>
         <!-- the "~N s / SCF cycle" pace chip lives in the SCF panel's progress
              meta line (scf_graph.js _paceSpan), not in this toolbar -->
         <button class="btn btn-sm btn-ghost" style="margin-left:auto" onclick="clearLog()">Clear</button>
@@ -508,7 +509,7 @@
         <div class="card-desc">How much of this machine the queue may occupy at once.</div>
         <div class="field-row">
           <div class="field" style="flex:0 0 150px"><label>Run at once</label>
-            <input id="set-jobs" type="number" min="1" max="64" value="1"></div>
+            <input id="set-jobs" type="number" min="0" max="64" value="0" placeholder="0 = as many as fit"></div>
           <div class="field" style="flex:0 0 170px"><label>Core budget</label>
             <input id="set-cores" type="number" min="0" max="1024" value="0" placeholder="0 = auto"></div>
           <div class="field" style="flex:0 0 190px"><label>Memory budget (MB)</label>

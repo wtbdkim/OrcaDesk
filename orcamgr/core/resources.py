@@ -78,9 +78,11 @@ def auto_ram_mb() -> int:
 class ResourceBudget:
     """The admission limits for one run.
 
-    max_jobs: how many calculations may be in flight at once (1 = the classic
-        one-at-a-time queue). A hard cap that also covers the non-CPU reasons to
-        not run everything at once (disk contention, a single GPU).
+    max_jobs: how many calculations may be in flight at once. 1 = the classic
+        one-at-a-time queue; **0 = as many as the core/RAM budget allows**, which
+        is the usual way to think about it — you cap the machine, not the job
+        count. A non-zero value is the extra cap for the non-CPU reasons to not
+        run everything at once (disk contention, a single GPU).
     cores / ram_mb: 0 means "auto" — resolved from the machine at run start.
     """
     max_jobs: int = 1
@@ -98,9 +100,16 @@ class ResourceBudget:
 
     def resolved(self) -> "ResourceBudget":
         """A copy with the auto (0) fields filled in from this machine."""
+        cores = int(self.cores) if self.cores and self.cores > 0 else auto_cores()
+        jobs = int(self.max_jobs or 0)
+        # 0 = "as many as fit": every job takes at least one core, so the core
+        # budget is already the ceiling — this just stops the job count from
+        # being a second thing to keep in sync with it.
+        if jobs <= 0:
+            jobs = max(1, cores)
         return ResourceBudget(
-            max_jobs=max(1, int(self.max_jobs or 1)),
-            cores=int(self.cores) if self.cores and self.cores > 0 else auto_cores(),
+            max_jobs=jobs,
+            cores=cores,
             ram_mb=int(self.ram_mb) if self.ram_mb and self.ram_mb > 0 else auto_ram_mb(),
         )
 
