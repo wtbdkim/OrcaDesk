@@ -3,16 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Fixed
-- **CREST could not run at all.** A refactor moved the output-tailing loop into
-  a shared helper but left `crest/runner.py` without the import, so every CREST
-  conformer search died immediately with an internal error — and two references
-  to the deleted local helper survived in the give-up branch. Every CREST test
-  replaces the runner with a fake, so nothing failed. Both are fixed, the real
-  tail loop is now exercised by tests, and a new check walks every module for
-  names that are read but never bound.
+## [0.7.0-beta] — 2026-08-28
 
 ### Added
 - **The queue can run several calculations at once.** Settings → *Parallel runs*
@@ -63,9 +54,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     A single-job run looks exactly as it did — the filter and picker only appear
     once a second calculation has produced output.
 
-## [0.6.1-beta] — 2026-08-28
-
 ### Fixed
+- **CREST could not run at all.** A refactor moved the output-tailing loop into
+  a shared helper but left `crest/runner.py` without the import, so every CREST
+  conformer search died immediately with an internal error — and two references
+  to the deleted local helper survived in the give-up branch. Every CREST test
+  replaces the runner with a fake, so nothing failed. Both are fixed, the real
+  tail loop is now exercised by tests, and a new check walks every module for
+  names that are read but never bound.
 - **A locked MLIP/CREST build card is now fully inert.** The card greys out and
   says why when its toolchain isn't ready, but only a hand-listed subset of its
   fields was actually disabled: CREST's entire *Advanced settings* block
