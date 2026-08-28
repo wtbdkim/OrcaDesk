@@ -40,7 +40,7 @@ from .input_generator import (
     _xyz_elements,
 )
 from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
-                        uses_gpu, worker_threads)
+                        ram_headroom_mb, uses_gpu, worker_threads)
 from .runner import OrcaRunner, OrcaRunError, OrcaCancelled, OrcaDetached
 from .parser import parse_file, ParseResult
 from .procutil import process_matches
@@ -1154,8 +1154,21 @@ class QueueEngine:
 
         if sum(s.cores for s in self._slots.values()) + slot.cores > self.budget.cores:
             return False
-        return (sum(s.ram_mb for s in self._slots.values()) + slot.ram_mb
-                <= self.budget.ram_mb)
+        if (sum(s.ram_mb for s in self._slots.values()) + slot.ram_mb
+                > self.budget.ram_mb):
+            return False
+        # The memory budget is spent against ESTIMATES, and they are wrong in
+        # both directions (core/resources.py): ORCA may exceed its %maxcore,
+        # CREST is charged far more than it takes. So before adding to what is
+        # already running, ask the machine what it actually has left. Skipped
+        # when nothing is in flight — the first job must always be able to
+        # start, whatever the memory situation, or the queue could stall
+        # outright.
+        if self._slots:
+            headroom = ram_headroom_mb()
+            if headroom and slot.ram_mb > headroom:
+                return False
+        return True
 
     def _release(self, name: str) -> None:
         """Drop a picked-but-not-started row's claim on the in-flight set."""

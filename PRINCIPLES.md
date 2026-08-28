@@ -676,6 +676,13 @@ must now state outright:
   own worker. So GPU work is serialized: one at a time, CPU jobs unaffected.
   Only an *explicit* GPU choice counts; the auto device is resolved inside the
   worker, and guessing would serialize CPU jobs for nothing.
+* **An estimate is not a promise; ask the machine.** Cores are declared and
+  exact, memory is estimated — and the estimates are wrong in both directions
+  (ORCA may exceed its `%maxcore`; CREST takes a fraction of what it is
+  charged). So before a *second* job is admitted the real free memory is
+  checked, with a reserve left for everything else. The first job always
+  starts regardless: a guard that can stall the queue outright is worse than
+  the oversubscription it prevents.
 * **Memory is a first-class limit.** ORCA's `%maxcore` is *per core*, so
   a 6-core job at 2400 MB reserves 14.4 GB: a core-only budget would let
   two of them push a 32 GB machine into swap and make parallel slower than

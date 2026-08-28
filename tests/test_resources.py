@@ -12,7 +12,8 @@ from orcamgr.core.input_generator import StepConfig
 from orcamgr.core.queue import Calculation
 from orcamgr.core.resources import (
     ResourceBudget, auto_cores, auto_ram_mb, declared_cores, estimated_ram_mb,
-    raw_maxcore_mb, raw_nprocs, uses_gpu, worker_threads,
+    free_ram_mb, ram_headroom_mb, raw_maxcore_mb, raw_nprocs, uses_gpu,
+    worker_threads,
 )
 
 
@@ -176,3 +177,25 @@ def test_only_an_explicit_cuda_device_claims_the_gpu_lane():
     assert uses_gpu(_calc("mlip_opt", mlip_device="")) is False
     assert uses_gpu(_calc("sp")) is False
     assert uses_gpu(_calc("crest_conf")) is False
+
+
+# ---- memory: the estimate, and the machine's own answer ----------------------
+
+def test_crest_memory_scales_with_its_threads():
+    # Measured at ~20 MB total for a 9-atom search (-T 2 and -T 8), so the flat
+    # 2 GB it used to be charged was budget it never touched. Each -T is another
+    # concurrent xtb worker, so the estimate follows the thread count, with a
+    # floor for a larger system.
+    small = estimated_ram_mb(_calc("crest_conf", crest_threads=1))
+    big = estimated_ram_mb(_calc("crest_conf", crest_threads=16))
+    assert small == 256                       # the floor
+    assert big == 16 * 128
+    assert big > small
+
+
+def test_free_memory_is_reported_or_honestly_zero():
+    free = free_ram_mb()
+    assert free >= 0
+    if free:
+        # headroom keeps a reserve for the OS and everything else
+        assert ram_headroom_mb() < free

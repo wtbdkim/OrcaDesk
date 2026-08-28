@@ -392,3 +392,48 @@ def test_a_gpu_job_and_cpu_jobs_still_overlap(tmp_path):
     harness.engine.run_all([gpu, cpu])
 
     assert (gpu.state, cpu.state) == (CalcState.DONE, CalcState.DONE)
+
+
+def test_a_second_job_waits_when_the_machine_is_actually_low_on_memory(tmp_path):
+    # The memory budget is spent against estimates, and they are wrong in both
+    # directions -- ORCA may exceed its %maxcore, CREST is charged far more than
+    # it takes. So the machine's own free memory is checked before ADDING to
+    # what is already running.
+    harness = EngineHarness(tmp_path, budget=_wide(4))
+    import orcamgr.core.queue as queue_mod
+    monkey = lambda: 64            # 64 MB of headroom: nothing else fits
+    original = queue_mod.ram_headroom_mb
+    queue_mod.ram_headroom_mb = monkey
+    try:
+        overlap = _Overlap()
+        calcs = []
+        for name in ("a", "b"):
+            c = make_calc(name)
+            c.config.maxcore_mb = 2000       # 2 GB x 1 core, far over the headroom
+            c.config.nprocs = 1
+            harness.behaviors[name] = overlap.behavior
+            calcs.append(c)
+
+        harness.engine.run_all(calcs)
+    finally:
+        queue_mod.ram_headroom_mb = original
+
+    assert overlap.peak == 1                 # never two at once
+    assert all(c.state is CalcState.DONE for c in calcs)   # but both still ran
+
+
+def test_the_first_job_starts_however_low_memory_is(tmp_path):
+    # The guard must never stall the queue outright: with nothing in flight the
+    # job runs whatever the machine says.
+    harness = EngineHarness(tmp_path, budget=_wide(4))
+    import orcamgr.core.queue as queue_mod
+    original = queue_mod.ram_headroom_mb
+    queue_mod.ram_headroom_mb = lambda: 1
+    try:
+        calc = make_calc("solo")
+        calc.config.maxcore_mb = 64000
+        harness.engine.run_all([calc])
+    finally:
+        queue_mod.ram_headroom_mb = original
+
+    assert calc.state is CalcState.DONE

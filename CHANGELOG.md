@@ -44,6 +44,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     throttled to one thread.
   - **Cancel** stops every job in flight; **Stop after current** lets the
     running ones finish and starts no more.
+  - **The machine's real free memory is checked before a second job starts.**
+    The memory budget is spent against estimates, and they are wrong both ways:
+    ORCA's `%maxcore` is a guideline it *may exceed*, while a CREST search is
+    charged far more than it takes (measured: ~20&nbsp;MB for a small molecule,
+    at any thread count). A mixed queue is where that matters most, so the
+    budget is no longer the only defence — the first job always starts, but
+    adding to it also requires the memory to actually be there. CREST's estimate
+    now follows its thread count instead of a flat 2&nbsp;GB it never used.
   - **One GPU calculation at a time.** An MLIP job set to *GPU (CUDA)* is
     charged a single core, so the core budget alone would put a dozen of them on
     one card — where they run out of video memory rather than queueing. GPU work

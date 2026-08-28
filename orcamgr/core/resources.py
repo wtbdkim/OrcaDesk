@@ -9,10 +9,21 @@ are the same setting — the per-calculation `nprocs` decides the shape, and
 ORCAdesk never rewrites it (a raw `.inp` owns its own `%pal`, and raw text is
 never edited on the user's behalf — P26).
 
-Cores are *declared* and therefore exact; memory is *estimated* (ORCA's
-`%maxcore` is a per-core ceiling, not a measurement, and MLIP/CREST do not
-declare one at all), so the RAM budget is a guard rail against obvious
-oversubscription, not an accounting system.
+Cores are *declared* and therefore exact; memory is **estimated**, and the
+estimate is wrong in both directions:
+
+* ORCA's `%maxcore` is a per-core *guideline it may exceed*, not a cap, so a
+  large job can use more than it is charged;
+* CREST is charged far more than it takes — a GFN2 search on a small molecule
+  peaks around 20 MB across all its xtb workers (measured: ethanol, `-T 2` and
+  `-T 8`, `--quick`), because xtb's memory grows with system size and stays
+  modest.
+
+So the memory budget alone cannot promise anything, and a mixed queue is exactly
+where it is weakest. `free_ram_mb()` is the second line of defence: before a
+*second* job is admitted, the machine is asked how much memory it actually has
+left. That catches an under-estimate from any backend, and it never blocks the
+first job, so the queue can always make progress.
 """
 from __future__ import annotations
 
@@ -37,11 +48,24 @@ _AUTO_RAM_SHARE = 0.75
 # none will actually use. The form path always writes an explicit %maxcore.
 _ORCA_DEFAULT_MAXCORE_MB = 1024
 
-# Memory estimates for the backends that declare nothing (MB per job). Both are
-# deliberately rough and generous-but-not-absurd: they exist so a queue of MLIP
-# or CREST jobs cannot pile up unbounded, not to predict real usage.
+# Memory estimates for the backends that declare nothing. They exist so a queue
+# of MLIP or CREST jobs cannot pile up unbounded, not to predict real usage.
+#
+# MLIP: torch plus a MACE model, per job. Roughly right for the CPU models and
+# on the generous side for the small ones.
 _MLIP_RAM_MB = 3000
-_CREST_RAM_MB = 2000
+# CREST: measured at ~20 MB total for a 9-atom search at -T 2 and -T 8, so the
+# real figure is tiny; xtb's memory grows with system size rather than thread
+# count. This scales gently with the thread count anyway (each -T is another
+# concurrent xtb worker) and keeps a floor, so a large host-guest system is not
+# wildly under-charged while a small search stops eating 2 GB of budget it never
+# touches.
+_CREST_RAM_PER_THREAD_MB = 128
+_CREST_RAM_FLOOR_MB = 256
+
+# Memory left untouched when deciding whether the machine can take another job:
+# the OS, ORCAdesk itself, and whatever else the user is running.
+_RAM_RESERVE_MB = 2048
 
 # `%pal nprocs 8 end`, or the `nprocs 8` line inside a multi-line %pal block.
 _PAL_NPROCS_RE = re.compile(r"^\s*(?:%pal\s+)?nprocs\s+(\d+)", re.IGNORECASE | re.MULTILINE)
@@ -72,6 +96,25 @@ def auto_ram_mb() -> int:
         except Exception:
             pass
     return _FALLBACK_RAM_MB
+
+
+def free_ram_mb() -> int:
+    """Memory the machine actually has available right now, in MB. 0 when it
+    cannot be determined — callers treat that as "don't second-guess the
+    estimate"."""
+    if psutil is None:
+        return 0
+    try:
+        return int(psutil.virtual_memory().available / (1024 * 1024))
+    except Exception:
+        return 0
+
+
+def ram_headroom_mb() -> int:
+    """How much of the free memory a new job may take, after leaving the OS and
+    everything else their reserve. 0 when free memory is unknown."""
+    free = free_ram_mb()
+    return max(0, free - _RAM_RESERVE_MB) if free else 0
 
 
 @dataclass
@@ -201,7 +244,8 @@ def estimated_ram_mb(calc) -> int:
     if kind.startswith("mlip"):
         return _MLIP_RAM_MB
     if kind.startswith("crest"):
-        return _CREST_RAM_MB
+        threads = declared_cores(calc)
+        return max(_CREST_RAM_FLOOR_MB, threads * _CREST_RAM_PER_THREAD_MB)
     cfg = getattr(calc, "config", None)
     cores = declared_cores(calc)
     if getattr(calc, "is_raw", False):

@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 426 tests over the framework-free layers
+python -m pytest                       # 430 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 36 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -201,8 +201,10 @@ The `core/` pipeline:
 - `procutil.py` — psutil-backed `process_matches(pid, create_time)` and
   `kill_tree(...)`, used for reattach and reliable tree termination.
 - `resources.py` — what a calculation *costs* (`declared_cores`,
-  `estimated_ram_mb`, reading a raw `.inp`'s own `%pal`/`%maxcore`) and the
-  `ResourceBudget` the dispatcher admits against. Qt-free, psutil for the
+  `estimated_ram_mb`, reading a raw `.inp`'s own `%pal`/`%maxcore`), the
+  `ResourceBudget` the dispatcher admits against, and `ram_headroom_mb()` —
+  the machine's real free memory minus a reserve, consulted before a **second**
+  job starts because the memory estimates are wrong in both directions. Qt-free, psutil for the
   machine's physical core count / installed RAM.
 - `queue.py` — `QueueEngine` orchestrates the pipeline (details below). Validation
   is the module-level `validate_result()` (shared by the engine and session
