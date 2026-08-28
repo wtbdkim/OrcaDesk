@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Callable, Optional, Tuple
 
 from ..core.runner import OrcaRunError, OrcaCancelled, OrcaDetached
+from ..core.tailer import FileTailer
 from ..core.xyzutil import as_xyz_file
 from .wsl import run_bash
 
@@ -307,11 +308,10 @@ class CrestRunner:
                     indeterminate = 0
                 if alive is False or indeterminate >= _MAX_INDETERMINATE:
                     time.sleep(0.5)   # give a just-finishing script time to flush .rc
-                    _drain()
+                    tail.drain(on_line)
                     if rc_path.exists():
                         break
-                    if buf.strip() and on_line is not None:
-                        on_line(buf.rstrip("\r\n"))
+                    tail.flush_tail(on_line)   # emit any partial trailing line
                     break
             time.sleep(_TAIL_POLL)
 

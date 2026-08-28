@@ -92,9 +92,13 @@ class EngineHarness:
             skip_names=skip_names,
             budget=budget,
         )
-        # Instance attribute shadows the bound method: run_all's
-        # self._run_calc(...) resolves to the fake.
+        # Instance attributes shadow the bound methods: run_all's
+        # self._run_calc(...) resolves to the fake. The MLIP and CREST entry
+        # points are faked too — the dispatcher routes those kinds elsewhere,
+        # so a test using one would otherwise reach the real backend.
         self.engine._run_calc = self._fake_run_calc
+        self.engine._run_mlip_calc = self._fake_run_calc
+        self.engine._run_crest_calc = self._fake_run_calc
 
     def _fake_run_calc(self, calc: Calculation, index: int) -> None:
         with _CALLS_LOCK:

@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 419 tests over the framework-free layers
+python -m pytest                       # 426 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 36 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -251,7 +251,11 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   `%maxcore`, falling back to ORCA's default), not the hidden form field. The
   MLIP worker's thread cap is `worker_threads`, deliberately **not**
   `declared_cores`: a CUDA job is charged 1 core but still needs threads for its
-  CPU-side work. `max_jobs` defaults to **1** — the classic sequential
+  CPU-side work. **GPU work runs one job at a time** (`uses_gpu` → `_JobSlot.gpu`
+  → `_fits`): a CUDA job costs one core, so the budget would admit a dozen onto
+  one card, and there is no number ORCAdesk can put on video memory. Only an
+  explicit `mlip_device == "cuda"` counts — `""` (auto) is resolved inside the
+  worker, the only place that can ask torch. `max_jobs` defaults to **1** — the classic sequential
   queue — so nothing changes until the user raises it.
 - **Every log line carries the calc that produced it** (`LogLine.calc`, `""` =
   engine-level). With jobs interleaving into one buffer the raw ORCA tail has no

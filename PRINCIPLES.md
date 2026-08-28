@@ -670,6 +670,12 @@ must now state outright:
   whole budget runs alone once nothing else is in flight (logged, P2);
   when every remaining row waits on a reference that can never complete,
   the rows are stamped BLOCKED instead of spinning.
+* **A resource ORCAdesk cannot measure gets a lane, not a number.** An MLIP
+  job on CUDA is charged one core, and there is no budget figure for video
+  memory — the only process that can ask torch what the card has is the user's
+  own worker. So GPU work is serialized: one at a time, CPU jobs unaffected.
+  Only an *explicit* GPU choice counts; the auto device is resolved inside the
+  worker, and guessing would serialize CPU jobs for nothing.
 * **Memory is a first-class limit.** ORCA's `%maxcore` is *per core*, so
   a 6-core job at 2400 MB reserves 14.4 GB: a core-only budget would let
   two of them push a 32 GB machine into swap and make parallel slower than

@@ -356,3 +356,39 @@ def test_every_per_calc_line_carries_its_tag(tmp_path):
     # done-skip, failure, block. (The fake _run_calc stamps DONE itself, so the
     # engine's own completion line never runs here.)
     assert checked >= 3
+
+
+def test_only_one_gpu_job_runs_at_a_time(tmp_path):
+    # A CUDA job is charged a single core, so the core budget alone would admit
+    # a dozen onto one card -- where they run out of VRAM rather than queueing.
+    # There is no budget number for video memory (ORCAdesk cannot see inside the
+    # user's torch), so the limit is a lane.
+    harness = EngineHarness(tmp_path, budget=_wide(4))
+    overlap = _Overlap()
+    calcs = []
+    for name in ("gpu-a", "gpu-b"):
+        c = make_calc(name, kind="mlip_opt")
+        c.config.mlip_device = "cuda"
+        harness.behaviors[name] = overlap.behavior
+        calcs.append(c)
+
+    harness.engine.run_all(calcs)
+
+    assert overlap.peak == 1
+    assert all(c.state is CalcState.DONE for c in calcs)
+
+
+def test_a_gpu_job_and_cpu_jobs_still_overlap(tmp_path):
+    # The lane holds back other GPU work only -- CPU calculations run alongside.
+    harness = EngineHarness(tmp_path, budget=_wide(3))
+    gate = threading.Barrier(2, timeout=20)
+    gpu = make_calc("gpu", kind="mlip_opt")
+    gpu.config.mlip_device = "cuda"
+    cpu = make_calc("cpu", kind="mlip_opt")
+    cpu.config.mlip_device = "cpu"
+    harness.behaviors["gpu"] = lambda _c: gate.wait()
+    harness.behaviors["cpu"] = lambda _c: gate.wait()
+
+    harness.engine.run_all([gpu, cpu])
+
+    assert (gpu.state, cpu.state) == (CalcState.DONE, CalcState.DONE)

@@ -5,6 +5,15 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **CREST could not run at all.** A refactor moved the output-tailing loop into
+  a shared helper but left `crest/runner.py` without the import, so every CREST
+  conformer search died immediately with an internal error — and two references
+  to the deleted local helper survived in the give-up branch. Every CREST test
+  replaces the runner with a fake, so nothing failed. Both are fixed, the real
+  tail loop is now exercised by tests, and a new check walks every module for
+  names that are read but never bound.
+
 ### Added
 - **The queue can run several calculations at once.** Settings → *Parallel runs*
   takes a **core budget** and a **memory budget**, and starts as many
@@ -35,6 +44,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     throttled to one thread.
   - **Cancel** stops every job in flight; **Stop after current** lets the
     running ones finish and starts no more.
+  - **One GPU calculation at a time.** An MLIP job set to *GPU (CUDA)* is
+    charged a single core, so the core budget alone would put a dozen of them on
+    one card — where they run out of video memory rather than queueing. GPU work
+    gets a lane of its own; CPU calculations still run alongside it.
   - Every log line records which calculation produced it, so interleaved output
     can be told apart: the Log tab gains a **job filter**, the convergence graph
     a **job picker** — both one button per job, so switching is a single click —

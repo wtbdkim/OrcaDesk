@@ -40,7 +40,7 @@ from .input_generator import (
     _xyz_elements,
 )
 from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
-                        worker_threads)
+                        uses_gpu, worker_threads)
 from .runner import OrcaRunner, OrcaRunError, OrcaCancelled, OrcaDetached
 from .parser import parse_file, ParseResult
 from .procutil import process_matches
@@ -122,6 +122,7 @@ class _JobSlot:
     name: str
     cores: int = 0
     ram_mb: int = 0
+    gpu: bool = False
     runner: object = None
     orca_launched: bool = False
 
@@ -1135,7 +1136,7 @@ class QueueEngine:
 
     def _slot_for(self, calc: Calculation) -> "_JobSlot":
         return _JobSlot(name=calc.name, cores=declared_cores(calc),
-                        ram_mb=estimated_ram_mb(calc))
+                        ram_mb=estimated_ram_mb(calc), gpu=uses_gpu(calc))
 
     def _fits(self, slot: "_JobSlot") -> bool:
         """Does `slot` fit alongside what is already running? Caller holds the
@@ -1143,6 +1144,14 @@ class QueueEngine:
         core/resources.py for how a calculation's cost is read."""
         if len(self._slots) >= self.budget.max_jobs:
             return False
+        # One GPU job at a time. A CUDA job is charged a single core (its CPU
+        # use is marginal), so the core budget would happily admit a dozen of
+        # them onto one card — where they do not queue politely, they run out of
+        # VRAM. There is no budget number for video memory: ORCAdesk cannot see
+        # inside the user's torch, so the honest limit is a lane.
+        if slot.gpu and any(s.gpu for s in self._slots.values()):
+            return False
+
         if sum(s.cores for s in self._slots.values()) + slot.cores > self.budget.cores:
             return False
         return (sum(s.ram_mb for s in self._slots.values()) + slot.ram_mb

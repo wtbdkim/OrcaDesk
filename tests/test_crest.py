@@ -519,3 +519,44 @@ def test_corrupt_mid_file_frame_does_not_swallow_following_frames(tmp_path):
     assert energy == -155.1 and len(atoms) == 3
     split = split_conformer_frames(corrupt_then_valid)
     assert len(split) == 1 and split[0].startswith("3\n")
+
+
+# ---- the REAL CrestRunner tail loop (no WSL) --------------------------------
+# Every other CREST test replaces the runner with a fake, so the real monitor
+# never runs. That is how a missing import and two references to a deleted
+# helper survived in it: a NameError in front of the user, green tests behind.
+
+def test_crest_runner_reports_the_end_of_a_file(tmp_path):
+    out = tmp_path / "job.out"
+    out.write_text("one\ntwo\n", encoding="utf-8")
+    assert crest_runner_mod.CrestRunner("Ubuntu").end_position(out) > 0
+
+
+def test_crest_monitor_tails_to_the_rc_marker(tmp_path):
+    # The .rc marker is already there, so the loop drains the output once and
+    # returns the exit code -- exercising FileTailer end to end.
+    out = tmp_path / "job.out"
+    out.write_text("CREST line one\nCREST line two\n", encoding="utf-8")
+    (tmp_path / "job.crest.rc").write_text("0\n", encoding="utf-8")
+    seen: list = []
+
+    rc = crest_runner_mod.CrestRunner("Ubuntu").monitor(out, "job", on_line=seen.append)
+
+    assert rc == 0
+    assert "CREST line one" in seen and "CREST line two" in seen
+
+
+def test_crest_monitor_gives_up_when_the_job_is_definitively_gone(tmp_path, monkeypatch):
+    # The safety net: no .rc marker and WSL says the process is gone. This is
+    # the branch that still called a helper deleted in a refactor.
+    out = tmp_path / "job.out"
+    out.write_text("partial line without a newline", encoding="utf-8")
+    monkeypatch.setattr(crest_runner_mod, "_LIVENESS_EVERY", 0.0)
+    runner = crest_runner_mod.CrestRunner("Ubuntu")
+    monkeypatch.setattr(runner, "_liveness", lambda: False)
+    seen: list = []
+
+    rc = runner.monitor(out, "job", on_line=seen.append)
+
+    assert rc is None                                   # no marker to read
+    assert seen == ["partial line without a newline"]   # flushed, not swallowed

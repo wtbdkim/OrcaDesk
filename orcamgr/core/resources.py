@@ -163,6 +163,23 @@ def declared_cores(calc) -> int:
     return max(1, int(getattr(cfg, "nprocs", 1) or 1))
 
 
+def uses_gpu(calc) -> bool:
+    """True when this calculation will run on the GPU.
+
+    Only an explicit ``cuda`` counts. The empty (auto) device is resolved inside
+    the MLIP worker, in the user's own environment — the only place that can ask
+    torch whether a GPU exists — so ORCAdesk cannot know here, and guessing
+    would either serialize CPU jobs for nothing or claim a lane that is not
+    used. A user who wants the GPU lane picks GPU explicitly; the build card
+    only offers it when a ready env actually reports CUDA.
+    """
+    kind = getattr(calc, "kind", "") or ""
+    if not kind.startswith("mlip"):
+        return False
+    cfg = getattr(calc, "config", None)
+    return (getattr(cfg, "mlip_device", "") or "").strip().lower() == "cuda"
+
+
 def worker_threads(calc) -> int:
     """CPU threads the MLIP worker may use — deliberately NOT declared_cores.
 

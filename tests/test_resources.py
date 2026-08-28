@@ -12,7 +12,7 @@ from orcamgr.core.input_generator import StepConfig
 from orcamgr.core.queue import Calculation
 from orcamgr.core.resources import (
     ResourceBudget, auto_cores, auto_ram_mb, declared_cores, estimated_ram_mb,
-    raw_maxcore_mb, raw_nprocs, worker_threads,
+    raw_maxcore_mb, raw_nprocs, uses_gpu, worker_threads,
 )
 
 
@@ -164,3 +164,15 @@ def test_zero_jobs_means_as_many_as_the_budget_allows():
     assert b2.max_jobs == auto_cores()
     # an explicit cap still wins
     assert ResourceBudget(max_jobs=2, cores=12).resolved().max_jobs == 2
+
+
+def test_only_an_explicit_cuda_device_claims_the_gpu_lane():
+    # "" is auto, resolved inside the worker (the only place that can ask torch
+    # whether a GPU exists), so ORCAdesk must not guess: claiming a lane that is
+    # not used would serialize CPU jobs for nothing.
+    assert uses_gpu(_calc("mlip_opt", mlip_device="cuda")) is True
+    assert uses_gpu(_calc("mlip_freq", mlip_device="CUDA")) is True
+    assert uses_gpu(_calc("mlip_opt", mlip_device="cpu")) is False
+    assert uses_gpu(_calc("mlip_opt", mlip_device="")) is False
+    assert uses_gpu(_calc("sp")) is False
+    assert uses_gpu(_calc("crest_conf")) is False
