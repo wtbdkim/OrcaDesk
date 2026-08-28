@@ -3,7 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.1-beta] — 2026-08-28
 
 ### Fixed
 - **A locked MLIP/CREST build card is now fully inert.** The card greys out and
