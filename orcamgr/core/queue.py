@@ -39,7 +39,8 @@ from .input_generator import (
     StepConfig, build_input, render_raw_input, GEOMETRY_PLACEHOLDER, check_neb_atom_order,
     _xyz_elements,
 )
-from .resources import ResourceBudget, declared_cores, estimated_ram_mb
+from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
+                        worker_threads)
 from .runner import OrcaRunner, OrcaRunError, OrcaCancelled, OrcaDetached
 from .parser import parse_file, ParseResult
 from .procutil import process_matches
@@ -291,8 +292,9 @@ class QueueEngine:
         # One OrcaRunner per JOB, not per engine: with several calculations in
         # flight each needs its own process handle and its own cancel/detach
         # events. A factory (rather than a fixed instance) is also the seam a
-        # test uses to intercept a launch.
-        self._orca_runner_factory = lambda: OrcaRunner(orca_path)
+        # test uses to intercept a launch. It reads self.orca_path so the field
+        # and what actually launches cannot diverge.
+        self._orca_runner_factory = lambda: OrcaRunner(self.orca_path)
         # Registered MLIP environments [{id, name, python}], used to resolve which
         # interpreter runs a mlip_* calc. Empty if MLIP isn't configured.
         self.mlip_envs = list(mlip_envs or [])
@@ -736,14 +738,16 @@ class QueueEngine:
             device=getattr(calc.config, "mlip_device", ""),
             temperature=getattr(calc.config, "freq_temp_k", 298.15),
             pressure=getattr(calc.config, "freq_pressure_atm", 1.0),
-            # what admission control charged this job (core/resources.py) --
             # the worker must not quietly take every core on the machine
-            threads=declared_cores(calc))
+            # (worker_threads, NOT declared_cores: a CUDA job is charged 1 core
+            # but still needs threads for its CPU-side work)
+            threads=worker_threads(calc))
 
         model = calc.config.mlip_model or "MACE"
         verb = {"sp": "single-point energy", "freq": "frequencies",
                 "opt_freq": "optimizing + frequencies"}.get(task, "optimizing")
-        self.cb.log(f"[{calc.name}] ({calc.kind}) {verb} with {model} via {python}...", "info")
+        self.cb.log(f"[{calc.name}] ({calc.kind}) {verb} with {model} via {python}...",
+                    "info", calc.name)
         # Persist the result path up front (mirror of the ORCA launch path): if
         # the worker races to completion just as the app shuts down, the next
         # launch's reconcile can still judge it DONE from the JSON on disk.
@@ -842,7 +846,7 @@ class QueueEngine:
 
         method = getattr(calc.config, "crest_method", "") or "gfn2"
         self.cb.log(f"[{calc.name}] (crest_conf) running CREST [{method}] "
-                    f"in WSL:{distro} ...", "info")
+                    f"in WSL:{distro} ...", "info", calc.name)
         runner = self._use_runner(CrestRunner(distro))
         try:
             pid, create_time = runner.launch(script_path, calc.name, out_path)
@@ -1072,7 +1076,7 @@ class QueueEngine:
         for j, c in enumerate(calcs):
             if id(c) in seen:
                 continue
-            if not self._deps_ready(c):
+            if not self._deps_ready(c, seen):
                 continue
             if ignore_budget or self._handled_without_running(c, blocked_names):
                 return j, c
@@ -1080,29 +1084,50 @@ class QueueEngine:
                 return j, c
         return None
 
-    def _deps_ready(self, calc: Calculation) -> bool:
+    def _deps_ready(self, calc: Calculation, seen: dict) -> bool:
         """False while this calc's geometry reference may still become DONE, so
         the dispatcher leaves it for a later scan instead of failing it.
 
+        "May still become DONE" is about what this RUN will do, not just the
+        parent's current state:
+
+        * RUNNING, or picked and not yet stamped (`_active_names` — the
+          pick->stamp window), is obviously not final;
+        * PENDING **or CANCELLED** and not yet handled this run is not final
+          either: a CANCELLED calc re-runs (P24, and _precheck says so), so
+          reading its state as terminal would admit the dependent alongside its
+          re-running parent, and _resolve_geometry would FAIL it — a state that
+          is LOCKED, forcing the user to rebuild the calculation.
+
         A dangling or self-reference is 'ready': it has always failed in
         _resolve_geometry with a precise message, and deferring it forever would
-        turn a clear error into a hang. A FAILED/BLOCKED/CANCELLED parent is
-        ready too — _precheck blocks the child, or the run fails it, as before.
+        turn a clear error into a hang. A FAILED/BLOCKED parent is ready too —
+        _precheck blocks the child, as before.
         """
         if (calc.geometry_source != GeometrySource.REFERENCE) or not calc.ref_name:
             return True
         parent = self._by_name.get(calc.ref_name)
         if parent is None or parent is calc:
             return True
-        return parent.state not in (CalcState.PENDING, CalcState.RUNNING)
+        if parent.state == CalcState.RUNNING or parent.name in self._active_names:
+            return False
+        return not (parent.state in (CalcState.PENDING, CalcState.CANCELLED)
+                    and id(parent) not in seen)
 
     def _handled_without_running(self, calc: Calculation,
                                  blocked_names: set) -> bool:
-        """True when _precheck / _try_keep_existing will dispose of this row
-        without launching anything, so it needs no share of the budget."""
+        """True when _precheck will dispose of this row without launching
+        anything, so it needs no share of the budget. These are pure state
+        checks, and therefore certain.
+
+        A keep-existing (`_skip_names`) row is deliberately NOT here: whether it
+        is adopted or falls through to a real run is only known after parsing
+        its output, so it goes through admission like any other row. Treating it
+        as free would let it reach _start_job with no room, where waiting would
+        park the single dispatcher and head-of-line block every row behind it.
+        """
         return (calc.state in (CalcState.DONE, CalcState.FAILED)
-                or calc.name in blocked_names
-                or calc.name in self._skip_names)
+                or calc.name in blocked_names)
 
     def _slot_for(self, calc: Calculation) -> "_JobSlot":
         return _JobSlot(name=calc.name, cores=declared_cores(calc),
@@ -1145,10 +1170,10 @@ class QueueEngine:
         False if a stop landed while waiting for room (nothing was started)."""
         slot = self._slot_for(calc)
         with self._slot_cv:
-            # A row picked as "will be handled without running" (a keep-existing
-            # candidate) can still fall through to a real run, so admission is
-            # confirmed HERE, not at pick time. Waiting stops as soon as nothing
-            # is in flight — the run-alone rule that keeps big jobs from
+            # Belt and braces: _pick_ready already admitted this row, and only
+            # this dispatcher starts jobs, so it still fits. The wait is here in
+            # case that ever stops holding — it stops as soon as nothing is in
+            # flight, which is the run-alone rule that keeps big jobs from
             # starving.
             while self._slots and not self._fits(slot):
                 if self._stop_pending():
@@ -1198,9 +1223,12 @@ class QueueEngine:
             }
 
     def _stop_pending(self) -> bool:
-        """A cancel or a shutdown has been signalled — start nothing more."""
+        """A stop of any kind has been signalled — start nothing more. The
+        graceful drain counts: it means "let what is running finish", and a row
+        picked but still waiting for room has NOT started."""
         return (self._cancel_event.is_set() or self._detach_event.is_set()
-                or self._shutdown_seen.is_set())
+                or self._shutdown_seen.is_set()
+                or self._stop_after_current.is_set())
 
     def _should_stop(self, calcs: list[Calculation]) -> bool:
         """Top-of-iteration stop guards. True → break out of the walk."""

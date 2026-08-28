@@ -12,7 +12,7 @@ from orcamgr.core.input_generator import StepConfig
 from orcamgr.core.queue import Calculation
 from orcamgr.core.resources import (
     ResourceBudget, auto_cores, auto_ram_mb, declared_cores, estimated_ram_mb,
-    raw_maxcore_mb, raw_nprocs,
+    raw_maxcore_mb, raw_nprocs, worker_threads,
 )
 
 
@@ -112,3 +112,41 @@ def test_zero_means_auto_per_field():
     b = ResourceBudget(max_jobs=2, cores=0, ram_mb=4096).resolved()
     assert b.cores == auto_cores()
     assert b.ram_mb == 4096
+
+
+# ---- the thread cap is not the admission cost -------------------------------
+
+def test_worker_threads_is_not_the_cuda_accounting_value():
+    # A CUDA job is CHARGED one core (its CPU use is marginal), but it still
+    # runs ASE/numpy work between GPU calls -- capping its threads at that one
+    # core would serialize a finite-difference frequency run.
+    gpu = _calc("mlip_freq", nprocs=8, mlip_device="cuda")
+    assert declared_cores(gpu) == 1          # what the budget is charged
+    assert worker_threads(gpu) == 8          # what the worker may use
+
+
+def test_worker_threads_follows_nprocs_on_cpu():
+    assert worker_threads(_calc("mlip_opt", nprocs=4, mlip_device="cpu")) == 4
+    assert worker_threads(_calc("mlip_opt", nprocs=0)) == 1
+
+
+# ---- raw memory never falls back to the hidden form -------------------------
+
+def test_raw_without_maxcore_uses_orcas_default_not_the_form():
+    # declared_cores already refuses to trust the hidden form for a raw calc;
+    # the memory half must agree, or the two disagree about what runs.
+    calc = _calc(nprocs=6, maxcore_mb=8000)
+    calc.is_raw = True
+    calc.raw_text = "! B3LYP def2-SVP\n"        # no %pal, no %maxcore
+    assert declared_cores(calc) == 1
+    assert estimated_ram_mb(calc) == 1024       # ORCA's own default, x 1 core
+
+
+def test_budget_from_settings_reads_the_three_knobs():
+    class _S:
+        max_concurrent_jobs = 3
+        max_total_cores = 12
+        max_total_ram_mb = 8000
+
+    b = ResourceBudget.from_settings(_S())
+    assert (b.max_jobs, b.cores, b.ram_mb) == (3, 12, 8000)

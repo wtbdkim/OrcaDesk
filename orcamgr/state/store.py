@@ -411,8 +411,8 @@ class QueueStore:
         # monotonically increasing version, bumped on every mutation so clients
         # can cheaply poll "did anything change?"
         self._version = 0
-        # log buffer: list of (seq, level, message); clients poll with ?since=
-        self._log: list[tuple[int, str, str]] = []
+        # log buffer: list of (seq, level, message, calc); clients poll with ?since=
+        self._log: list[tuple[int, str, str, str]] = []
         self._log_seq = 0
         # the background engine + thread while a run is in progress
         self._engine = None

@@ -33,6 +33,10 @@ _FALLBACK_RAM_MB = 8192
 # left to the OS, the app itself, and whatever else the user is running.
 _AUTO_RAM_SHARE = 0.75
 
+# ORCA's own default %maxcore (MB per core) — what a raw input that declares
+# none will actually use. The form path always writes an explicit %maxcore.
+_ORCA_DEFAULT_MAXCORE_MB = 1024
+
 # Memory estimates for the backends that declare nothing (MB per job). Both are
 # deliberately rough and generous-but-not-absurd: they exist so a queue of MLIP
 # or CREST jobs cannot pile up unbounded, not to predict real usage.
@@ -82,6 +86,15 @@ class ResourceBudget:
     max_jobs: int = 1
     cores: int = 0
     ram_mb: int = 0
+
+    @classmethod
+    def from_settings(cls, settings) -> "ResourceBudget":
+        """The budget a run gets from the user's settings. Both run entry points
+        (the desktop bridge and the phone's /api/run) build it here, so the two
+        cannot drift apart (P4)."""
+        return cls(max_jobs=getattr(settings, "max_concurrent_jobs", 1),
+                   cores=getattr(settings, "max_total_cores", 0),
+                   ram_mb=getattr(settings, "max_total_ram_mb", 0))
 
     def resolved(self) -> "ResourceBudget":
         """A copy with the auto (0) fields filled in from this machine."""
@@ -141,6 +154,19 @@ def declared_cores(calc) -> int:
     return max(1, int(getattr(cfg, "nprocs", 1) or 1))
 
 
+def worker_threads(calc) -> int:
+    """CPU threads the MLIP worker may use — deliberately NOT declared_cores.
+
+    A CUDA job is *charged* one core (its CPU use is marginal next to the GPU),
+    but it still runs real ASE/numpy work between GPU calls — a finite-difference
+    frequency run especially — so capping it at that one core would serialize it.
+    The cap is the declared nprocs either way; only the accounting differs by
+    device.
+    """
+    cfg = getattr(calc, "config", None)
+    return max(1, int(getattr(cfg, "nprocs", 1) or 1))
+
+
 def estimated_ram_mb(calc) -> int:
     """Rough memory footprint of this calculation, in MB. For ORCA this is
     `%maxcore` x cores — ORCA's own per-core ceiling, which is what the run will
@@ -153,9 +179,10 @@ def estimated_ram_mb(calc) -> int:
     cfg = getattr(calc, "config", None)
     cores = declared_cores(calc)
     if getattr(calc, "is_raw", False):
-        per_core = raw_maxcore_mb(getattr(calc, "raw_text", "") or "")
+        # Same rule as declared_cores: read what will actually execute. A raw
+        # input that declares no %maxcore gets ORCA's default, NOT the hidden
+        # form field (which is not what runs).
+        per_core = raw_maxcore_mb(getattr(calc, "raw_text", "") or "") or _ORCA_DEFAULT_MAXCORE_MB
     else:
-        per_core = int(getattr(cfg, "maxcore_mb", 0) or 0)
-    if per_core <= 0:
-        per_core = int(getattr(cfg, "maxcore_mb", 0) or 0) or 2400
+        per_core = int(getattr(cfg, "maxcore_mb", 0) or 0) or _ORCA_DEFAULT_MAXCORE_MB
     return max(1, per_core * cores)

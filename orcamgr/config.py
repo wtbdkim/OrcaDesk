@@ -162,6 +162,18 @@ class Settings:
             if isinstance(f.default, str) and not isinstance(getattr(s, f.name), str):
                 setattr(s, f.name, f.default)
 
+        # Same guard for the int-typed fields. The parallel-run budgets ride
+        # straight into ResourceBudget.resolved(), which compares them with `>`:
+        # a string from a hand-edited settings.json would raise TypeError out of
+        # a pyqtSlot — errors must be data, never exceptions across that boundary
+        # (P32). bool is excluded: it is an int subclass but a different field.
+        for f in dataclass_fields(s):
+            if type(f.default) is int:
+                try:
+                    setattr(s, f.name, int(getattr(s, f.name)))
+                except (TypeError, ValueError):
+                    setattr(s, f.name, f.default)
+
         # mlip_envs is iterated (and .get()-ed) at startup by the Bridge, so a
         # wrong-typed value would crash EVERY launch until the file is fixed
         # (P32). Coerce to the expected shape: a list of dict entries whose

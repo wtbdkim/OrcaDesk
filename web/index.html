@@ -205,6 +205,9 @@
         <div class="field-row">
           <div class="field" style="flex:0 0 110px"><label>Charge</label><input id="mlip-charge" type="number" value="0"></div>
           <div class="field" style="flex:0 0 130px"><label>Multiplicity</label><input id="mlip-mult" type="number" value="1" min="1"></div>
+          <!-- the worker is capped to this, and the queue charges it the same
+               number: without it torch would take every core on the machine -->
+          <div class="field" style="flex:0 0 120px"><label>CPU threads</label><input id="mlip-threads" type="number" value="6" min="1"></div>
           <div class="field" style="flex:0 0 150px"><label>Device</label>
             <select id="mlip-device">
               <option value="">Auto (GPU if available)</option>

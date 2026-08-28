@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 409 tests over the framework-free layers
+python -m pytest                       # 417 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 36 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -236,12 +236,18 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   via `_job`) and its own reserved cores/RAM, released when it finishes. A row
   is picked only if it is **dependency-ready** — a REFERENCE whose parent may
   still become DONE is *deferred*, not failed (sequential order used to
-  guarantee this) — and **affordable**; a row that does not fit is skipped over,
+  guarantee this). "May still become DONE" covers RUNNING, picked-but-not-yet-
+  stamped (`_active_names`), **and PENDING/CANCELLED rows this run has not
+  handled yet** — a CANCELLED calc re-runs (P24), so treating it as final would
+  admit its dependent alongside it and FAILED-lock it — and **affordable**; a row that does not fit is skipped over,
   and if nothing fits with nothing in flight the first ready row runs alone over
   budget (no starvation). All-deferred with nothing in flight = a reference
   cycle, stamped BLOCKED (`_block_unreachable`), never a hang. Cost is read from
-  what will actually execute (`core/resources.py`): a raw calc's own `%pal`, not
-  the hidden form field. `max_jobs` defaults to **1** — the classic sequential
+  what will actually execute (`core/resources.py`): a raw calc's own `%pal` (and
+  `%maxcore`, falling back to ORCA's default), not the hidden form field. The
+  MLIP worker's thread cap is `worker_threads`, deliberately **not**
+  `declared_cores`: a CUDA job is charged 1 core but still needs threads for its
+  CPU-side work. `max_jobs` defaults to **1** — the classic sequential
   queue — so nothing changes until the user raises it.
 - **Every log line carries the calc that produced it** (`LogLine.calc`, `""` =
   engine-level). With jobs interleaving into one buffer the raw ORCA tail has no
@@ -452,7 +458,9 @@ verbatim), and a raw calc's stored charge/multiplicity mirror its own
 UI (`_ORCA_BUILD`) and shows a self-contained `#card-mlip`: a name, a MACE-model
 dropdown (options in `data/mace_models.json`, served via `load_choices`),
 charge/multiplicity inputs (used only by charge/spin-aware models — OMol25 /
-multi-head; MACE-OFF/MP ignore them), and a
+multi-head; MACE-OFF/MP ignore them), a **CPU threads** field
+(`StepConfig.nprocs`, seeded from `Settings.default_nprocs`) that both caps the
+worker and is what the core budget charges the job, and a
 **geometry source** selector (`.xyz` loader **or** reference another queued calc,
 mirroring the ORCA build card — `onMlipGeomSourceChange`/`refreshMlipRefSelect` in
 `app.js`), which add a calc of the kind chosen by the card's Task selector

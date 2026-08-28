@@ -241,10 +241,11 @@ async function pollTick() {
     }
     // queue changes (only re-render if version changed)
     const snap = /** @type {QueueSnapshot} */ (JSON.parse(await bridge.get_queue()));
+    // occupancy first: renderQueue() paints the readout from it
+    if (snap) _resources = snap.resources || null;
     if (snap && snap.version !== _queueVersion) {
       _queueVersion = snap.version;
       queue = (snap.calculations || []).map(mirrorCalc);
-      _resources = snap.resources || null;
       renderQueue();
       // Poll-delivered queue changes (e.g. a phone client's add) must keep the
       // reference dropdowns live too — same visibility-gated refresh as
@@ -264,6 +265,7 @@ async function pollTick() {
       for (const k of Object.keys(calcResults)) if (!_live.has(k)) { delete calcResults[k]; _sweptResults = true; }
       for (const k of Object.keys(_resultExtras)) if (!_live.has(k)) delete _resultExtras[k];
       if (_currentResultName && !_live.has(_currentResultName)) _currentResultName = "";
+      pruneJobTrackers(_live);
       if (_sweptResults) refreshResultSelect();
       _running = !!snap.running;
       setRunUI(_running);
@@ -273,10 +275,10 @@ async function pollTick() {
       }
     } else if (snap) {
       if (!!snap.running !== _running) { _running = !!snap.running; setRunUI(_running); }
+      // jobs start and finish without bumping the queue version, so the
+      // readout is refreshed here too (renderQueue already did it above)
+      renderQueueResources();
     }
-    // occupancy changes as jobs start/finish, which does not always bump the
-    // queue version — refresh it every tick, it is three numbers
-    if (snap) { _resources = snap.resources || null; renderQueueResources(); }
     // seed the graph from the full .out for a reattached / finished-while-closed
     // opt whose live stream didn't capture its history (see maybeSeedGraph)
     await maybeSeedGraph();
@@ -534,6 +536,8 @@ async function loadSettings() {
   document.getElementById("set-ws").value = settings.workspace_root || "";
   document.getElementById("set-nprocs").value = String(settings.default_nprocs || 6);
   document.getElementById("set-maxcore").value = String(settings.default_maxcore_mb || 2400);
+  const mlipThreads = document.getElementById("mlip-threads");
+  if (mlipThreads) mlipThreads.value = String(settings.default_nprocs || 6);
   document.getElementById("set-jobs").value = String(settings.max_concurrent_jobs || 1);
   document.getElementById("set-cores").value = String(settings.max_total_cores || 0);
   document.getElementById("set-ram").value = String(settings.max_total_ram_mb || 0);
@@ -839,6 +843,7 @@ async function saveSettings() {
   if ("error" in res) { failNotify("Could not save settings: " + res.error); return; }
   settings = res;
   updateOrcaStatus(settings.orca_valid);
+  renderBudgetHint(settings);   // "auto is N cores" depends on what was just saved
   // push the new modes to the live graph immediately
   if (SCFGraph && SCFGraph.setEtaMode) SCFGraph.setEtaMode(settings.eta_mode);
   if (SCFGraph && SCFGraph.setGeoMode) SCFGraph.setGeoMode(settings.geo_graph_mode);
@@ -1518,6 +1523,8 @@ function resetMlipForm() {
   document.getElementById("mlip-task").value = "opt";
   document.getElementById("mlip-charge").value = "0";
   document.getElementById("mlip-mult").value = "1";
+  document.getElementById("mlip-threads").value =
+    String((settings && settings.default_nprocs) || 6);
   document.getElementById("mlip-temp").value = "298.15";
   document.getElementById("mlip-pressure").value = "1.0";
   mlipXyz = "";
@@ -1560,7 +1567,10 @@ async function addMlipCalcToQueue() {
     const task = document.getElementById("mlip-task").value;
     const kind = { sp: "mlip_sp", freq: "mlip_freq", opt_freq: "mlip_opt_freq" }[task] || "mlip_opt";
     /** @type {Partial<StepConfigPayload>} */
-    const config = { kind, mlip_model: model, mlip_env_id: "", mlip_device: device };
+    const config = { kind, mlip_model: model, mlip_env_id: "", mlip_device: device,
+                     // the worker's thread cap AND what the queue charges this
+                     // job against the core budget (core/resources.py)
+                     nprocs: Math.max(1, parseInt(document.getElementById("mlip-threads").value, 10) || 1) };
     if (task === "freq" || task === "opt_freq") {
       config.freq_temp_k = parseFloat(document.getElementById("mlip-temp").value) || 298.15;
       config.freq_pressure_atm = parseFloat(document.getElementById("mlip-pressure").value) || 1.0;
@@ -1726,6 +1736,8 @@ function fillMlipForm(c) {
   // back to CPU safely), so a device the worker couldn't load never sticks.
   refreshMlipDeviceOptions();
   document.getElementById("mlip-device").value = cfg.mlip_device || "";
+  document.getElementById("mlip-threads").value =
+    String(cfg.nprocs || (settings && settings.default_nprocs) || 6);
   document.getElementById("mlip-temp").value =
     String(cfg.freq_temp_k != null ? cfg.freq_temp_k : 298.15);
   document.getElementById("mlip-pressure").value =

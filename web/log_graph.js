@@ -262,7 +262,7 @@ function refreshLogFilterOptions() {
 // every backend's per-calc start marker: ORCA "running ORCA…", CREST "running
 // CREST…", MLIP "optimizing with…" / "single-point energy with…". Matching them
 // resets that job's trackers so a re-run never inherits the previous curve.
-const _CALC_START_RE = /^\[(.+?)\]\s*\([^)]*\)\s*(?:running ORCA|running CREST|optimizing|single-point)/i;
+const _CALC_START_RE = /^\[(.+?)\]\s*\([^)]*\)\s*(?:running ORCA|running CREST|optimizing|single-point|frequencies)/i;
 /** @param {string} msg @param {string} level @param {string} [calc] owning calculation ("" = engine-level) */
 function appendLog(msg, level, calc) {
   const name = calc || "";
@@ -311,6 +311,24 @@ function appendLog(msg, level, calc) {
       if (b.iterTimes.length > 40) b.iterTimes.shift();
     }
   }
+}
+/** Drop the tracker bundles of calculations that have left the queue.
+ *  Without this the Map grows for the whole session -- five trackers and their
+ *  point arrays per calculation ever seen -- and the job picker / log filter
+ *  list calcs that were removed hours ago instead of the run's.
+ *  @param {Set<string>} liveNames names still in the queue */
+function pruneJobTrackers(liveNames) {
+  let dropped = false;
+  for (const name of [..._jobs.keys()]) {
+    if (liveNames.has(name)) continue;
+    _jobs.delete(name);
+    _seededGraph.delete(name);   // a name reused later must be able to re-seed
+    dropped = true;
+  }
+  if (!dropped) return;
+  if (_jobPick && !_jobs.has(_jobPick)) _jobPick = "";
+  refreshLogFilterOptions();
+  if (_logMode === "graph") _scfDirty = true;
 }
 function clearLog() {
   document.getElementById("log").innerHTML = "";

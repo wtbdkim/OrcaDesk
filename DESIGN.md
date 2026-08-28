@@ -682,6 +682,13 @@ margin-bottom 8px; 11.5px mono; --muted-foreground`, the job count in
 parallel run actually holds cores (`jobs > 0 && max_jobs > 1`); a one-at-a-time
 run needs no budget readout, so it stays hidden.
 
+> Any component that sets its own `display` **must** pair it with a
+> `[hidden] { display: none; }` rule (`.queue-resources[hidden]`,
+> `.log-to-bottom[hidden]`). An author declaration beats the UA `[hidden]`
+> rule at equal specificity, so `el.hidden = true` alone leaves it painted —
+> and a JS check of `el.hidden` still reports true, so the bug survives
+> testing unless the assertion reads `getComputedStyle(...).display`.
+
 ### 11.13 KV grid and data table
 
 KV: `grid 180px 1fr; gap 6px 16px; 13px`; key sans muted, value mono, value

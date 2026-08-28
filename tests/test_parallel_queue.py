@@ -261,3 +261,71 @@ def test_resource_usage_reports_budget_and_occupancy(tmp_path):
     assert usage["cores_used"] == 8            # 3 + 5, both in flight
     assert usage["cores_budget"] == 32
     assert usage["ram_budget_mb"] == 64_000
+
+
+# ---- regressions found in review --------------------------------------------
+
+def test_a_cancelled_parent_is_waited_for_not_read_as_final(tmp_path):
+    # CANCELLED calculations RE-RUN (P24, and _precheck says so), so a parent in
+    # that state is not final. Reading it as final admitted the dependent
+    # alongside its re-running parent, where _resolve_geometry failed it -- and
+    # FAILED is LOCKED, so the user would have had to rebuild the calculation.
+    harness = EngineHarness(tmp_path, budget=_wide(4))
+    gate = threading.Event()
+    harness.behaviors["parent"] = lambda _c: gate.wait(20)
+    parent = make_calc("parent", kind="opt", state=CalcState.CANCELLED)
+    child = make_calc("child", ref="parent")
+
+    run = threading.Thread(target=lambda: harness.engine.run_all([parent, child]))
+    run.start()
+    time.sleep(0.4)                      # plenty of scans for the child
+    assert harness.calls == ["parent"]   # the child was NOT admitted alongside
+    gate.set()
+    run.join(30)
+
+    assert harness.calls == ["parent", "child"]
+    assert (parent.state, child.state) == (CalcState.DONE, CalcState.DONE)
+
+
+def test_drain_lets_the_running_jobs_finish_and_starts_no_more(tmp_path):
+    # "Stop after current" generalizes to "let what is in flight finish"; every
+    # row that has not started stays PENDING and runnable.
+    harness = EngineHarness(tmp_path, budget=_wide(2))
+    # The drain has to be requested while both are still held: a barrier would
+    # release them at the same moment the test resumes, and the dispatcher could
+    # start "c" before the request landed.
+    in_flight = threading.Semaphore(0)
+    hold = threading.Event()
+
+    def _hold(_c):
+        in_flight.release()
+        hold.wait(20)
+
+    harness.behaviors["a"] = _hold
+    harness.behaviors["b"] = _hold
+    a, b, c = make_calc("a"), make_calc("b"), make_calc("c")
+
+    run = threading.Thread(target=lambda: harness.engine.run_all([a, b, c]))
+    run.start()
+    assert in_flight.acquire(timeout=20)      # a is in flight
+    assert in_flight.acquire(timeout=20)      # ...and so is b
+    harness.engine.request_stop_after_current()
+    hold.set()
+    run.join(30)
+
+    assert (a.state, b.state) == (CalcState.DONE, CalcState.DONE)
+    assert c.state is CalcState.PENDING
+    assert "c" not in harness.calls
+
+
+def test_a_keep_existing_row_still_goes_through_admission(tmp_path):
+    # Whether it is adopted or falls through to a real run is only known after
+    # its output is parsed, so it cannot be treated as costing nothing: doing so
+    # let it reach _start_job with no room, where waiting parks the single
+    # dispatcher and head-of-line blocks every row behind it.
+    harness = EngineHarness(tmp_path, skip_names={"maybe"})
+    assert harness.engine._handled_without_running(make_calc("maybe"), set()) is False
+    # a state-decided row IS free -- those checks are certain
+    done = make_calc("done", state=CalcState.DONE)
+    assert harness.engine._handled_without_running(done, set()) is True
+    assert harness.engine._handled_without_running(make_calc("x"), {"x"}) is True

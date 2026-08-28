@@ -262,3 +262,26 @@ def test_load_drops_mlip_env_entries_without_a_string_id(settings_file):
     ]})
     s = Settings.load()
     assert [e["id"] for e in s.mlip_envs] == ["ok2"]
+
+
+def test_int_fields_survive_a_corrupted_settings_file(settings_file):
+    # P32: a hand-edited/corrupted settings.json must degrade to defaults, not
+    # crash the app. The parallel-run budgets ride into ResourceBudget.resolved(),
+    # which compares them with `>` -- a string there raises TypeError out of a
+    # pyqtSlot, and errors must be data, never exceptions across that boundary.
+    import json
+
+    settings_file.write_text(json.dumps({
+        "max_concurrent_jobs": "4",      # string that happens to parse
+        "max_total_cores": "nonsense",   # string that does not
+        "default_nprocs": None,
+    }), encoding="utf-8")
+
+    s = Settings.load()
+
+    assert s.max_concurrent_jobs == 4          # coerced
+    assert s.max_total_cores == 0              # fell back to the default
+    assert s.default_nprocs == 6
+    # and the budget it feeds can actually be resolved
+    from orcamgr.core.resources import ResourceBudget
+    assert ResourceBudget.from_settings(s).resolved().cores > 0

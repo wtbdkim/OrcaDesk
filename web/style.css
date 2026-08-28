@@ -357,6 +357,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   margin-bottom: 8px;   /* §11.1 canonical spacing step */
   font-family: var(--font-mono); font-size: 11.5px; color: var(--muted-foreground);
 }
+.queue-resources[hidden] { display: none; }   /* author display beats UA [hidden] */
 .queue-resources .qres-run { color: var(--foreground); font-weight: 600; }
 .queue-resources .qres-sep { opacity: 0.45; }
 

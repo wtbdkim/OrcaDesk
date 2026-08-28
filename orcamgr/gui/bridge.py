@@ -1042,9 +1042,7 @@ class Bridge(QObject):
     def _budget(self) -> ResourceBudget:
         """The parallel-run admission budget from settings (0 = auto, resolved
         against this machine by the engine)."""
-        return ResourceBudget(max_jobs=self.settings.max_concurrent_jobs,
-                              cores=self.settings.max_total_cores,
-                              ram_mb=self.settings.max_total_ram_mb)
+        return ResourceBudget.from_settings(self.settings)
 
     @pyqtSlot(result=str)
     def cancel_queue(self) -> str:

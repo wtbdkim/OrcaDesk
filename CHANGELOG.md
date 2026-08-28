@@ -26,7 +26,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     than waiting forever.
   - An MLIP calculation now keeps to the cores it was charged: its worker set
     no thread limit, so torch took **every** core on the machine — invisible
-    while jobs ran one at a time, a blown budget the moment two do.
+    while jobs ran one at a time, a blown budget the moment two do. The MLIP
+    build card gains a **CPU threads** field (seeded from the *nprocs* default)
+    so that number is yours to set; a GPU run is charged one core but is not
+    throttled to one thread.
   - **Cancel** stops every job in flight; **Stop after current** lets the
     running ones finish and starts no more.
   - Every log line records which calculation produced it, so interleaved output

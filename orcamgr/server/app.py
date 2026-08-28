@@ -176,10 +176,7 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
         factory = make_engine_factory(store, settings.orca_path, settings.workspace_root,
                                       mlip_envs=settings.mlip_envs,
                                       crest_distro=settings.crest_distro,
-                                      budget=ResourceBudget(
-                                          max_jobs=settings.max_concurrent_jobs,
-                                          cores=settings.max_total_cores,
-                                          ram_mb=settings.max_total_ram_mb))
+                                      budget=ResourceBudget.from_settings(settings))
         try:
             store.start_run(factory)
         except RuntimeError as e:

@@ -658,9 +658,14 @@ must now state outright:
 
 * **Dependencies are deferred, not failed.** A REFERENCE calc whose parent
   may still become DONE is passed over and re-examined later; queue order
-  no longer guarantees the parent ran first. A parent that can never
-  succeed (FAILED/BLOCKED/CANCELLED, missing, or itself) is *not* deferred
-  — it must reach its existing, precise error (P28) rather than hang.
+  no longer guarantees the parent ran first. "May still become DONE" is
+  about what *this run* will do, not the parent's current state alone: a
+  **CANCELLED** parent re-runs (P24), and a parent picked but not yet
+  stamped RUNNING is mid-launch — reading either as final admits the
+  dependent alongside its own parent, where geometry resolution FAILS it,
+  and FAILED is locked. A parent that genuinely cannot succeed
+  (FAILED/BLOCKED, missing, or itself) is *not* deferred — it must reach
+  its existing, precise error (P28) rather than hang.
 * **Nothing starves and nothing deadlocks.** A calculation larger than the
   whole budget runs alone once nothing else is in flight (logged, P2);
   when every remaining row waits on a reference that can never complete,
