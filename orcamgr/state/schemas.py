@@ -77,6 +77,10 @@ class QueueSnapshot(TypedDict):
     running: bool
     version: int
     calculations: "list[CalcSummary]"
+    # Live CPU/RAM occupancy of the run. All zeros while nothing runs — the
+    # budgets are only known to the engine, so an idle client shows the limits
+    # from SettingsPayload instead.
+    resources: "RunResources"
 
 
 class LogLine(TypedDict):
@@ -85,12 +89,33 @@ class LogLine(TypedDict):
     # lines streamed during a run — see core/queue.py)
     level: str
     msg: str
+    # Name of the calculation this line belongs to, "" for engine-level lines.
+    # Several calculations can run at once, so their tailed output interleaves
+    # in one buffer: this tag is what routes a line back to its job (the Log
+    # tab's per-job filter and the per-job convergence graphs both key off it).
+    calc: str
 
 
 class LogPayload(TypedDict):
     """store.QueueStore.log_since() — what get_log / GET /api/log serve."""
     lines: "list[LogLine]"
     latest: int
+
+
+class RunResources(TypedDict):
+    """Live CPU/RAM occupancy of a parallel run — the queue header's readout.
+
+    `cores_used`/`ram_used_mb` are what the in-flight jobs reserved (declared
+    cores; ORCA %maxcore x cores for memory, a flat estimate for MLIP/CREST —
+    see core/resources.py), the budgets are the resolved limits, and `jobs` is
+    how many calculations are in flight against `max_jobs`.
+    """
+    cores_used: int
+    cores_budget: int
+    ram_used_mb: int
+    ram_budget_mb: int
+    jobs: int
+    max_jobs: int
 
 
 # ---- settings / about (desktop bridge) --------------------------------------
@@ -100,6 +125,14 @@ class SettingsPayload(TypedDict):
     workspace_root: str
     default_nprocs: int
     default_maxcore_mb: int
+    # Parallel-run admission (core/resources.py). 0 = auto for the two budgets;
+    # auto_cores / auto_ram_mb report what auto resolves to on THIS machine so
+    # the UI can label the control ("auto (16 cores)") without guessing.
+    max_concurrent_jobs: int
+    max_total_cores: int
+    max_total_ram_mb: int
+    auto_cores: int
+    auto_ram_mb: int
     theme: str                # "dark" | "light"
     theme_variant: str        # "shadcn" | "liquidglass"
     glass_level: str          # restrained|moderate|bold|vivid|maximal (liquidglass)

@@ -124,7 +124,7 @@ def _recording_callbacks():
     logs: list = []
     updates: list = []
     cb = QueueCallbacks(
-        log=lambda msg, level: logs.append((level, msg)),
+        log=lambda msg, level, _calc="": logs.append((level, msg)),
         calc_update=lambda i, c: updates.append((i, c.state)),
     )
     return cb, logs, updates

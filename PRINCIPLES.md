@@ -345,13 +345,14 @@ diverge (the historical failure mode of the frozen-snapshot design was a
 mid-run add that would never execute; the live walk makes it execute in
 the same run). What mutations must respect while the run flag is set:
 only `EDITABLE_STATES` rows may be added/removed/edited/reordered; the
-engine's in-flight calc (state RUNNING, plus `active_name` for the
-picked-but-not-yet-stamped window) is untouchable; `clear` still raises;
+engine's in-flight calcs (state RUNNING, plus `active_names` for the
+picked-but-not-yet-stamped window) are untouchable; `clear` still raises;
 and reference integrity is enforced at the mutation (no dangling reference
 in a mid-run add/edit, no removal/rename of a referenced parent) because
 the pre-run screen (`find_dangling_reference`) never sees a mid-run
 mutation — an unresolvable reference would FAIL (and lock, P24) the
-dependent instead of being refused up front.
+dependent instead of being refused up front. When more than one calc runs
+at a time, the same walk admits by budget instead of one-at-a-time (P57).
 
 ---
 
@@ -635,6 +636,45 @@ rules:
 
 *(Adopted 2026-07-03 with the initial 234-test suite — which found and led to
 the fix of three real boundary bugs on its first run.)*
+
+---
+
+### P57 — Parallelism is admission, never rewriting
+
+Several calculations may run at once, and the limit is a **budget**, not a
+lane count: each calculation declares what it will occupy (ORCA `%pal
+nprocs`, CREST `-T`, the MLIP worker's thread cap) and the dispatcher
+starts it only while those cores — and its estimated memory — still fit
+inside the user's budget (`core/resources.py`). So "two 8-core jobs" and
+"four 4-core jobs" are the same setting, expressed by the calculations
+themselves. ORCAdesk never edits a calculation to make it fit: a raw
+`.inp` owns its `%pal`, and rewriting it to hit a lane count would break
+the verbatim rule (P26) precisely where the user was most explicit. The
+cost is therefore *read* from what will actually execute — a raw input's
+own text, not the hidden form field.
+
+Three consequences the sequential engine got for free and the dispatcher
+must now state outright:
+
+* **Dependencies are deferred, not failed.** A REFERENCE calc whose parent
+  may still become DONE is passed over and re-examined later; queue order
+  no longer guarantees the parent ran first. A parent that can never
+  succeed (FAILED/BLOCKED/CANCELLED, missing, or itself) is *not* deferred
+  — it must reach its existing, precise error (P28) rather than hang.
+* **Nothing starves and nothing deadlocks.** A calculation larger than the
+  whole budget runs alone once nothing else is in flight (logged, P2);
+  when every remaining row waits on a reference that can never complete,
+  the rows are stamped BLOCKED instead of spinning.
+* **Memory is a first-class limit.** ORCA's `%maxcore` is *per core*, so
+  a 6-core job at 2400 MB reserves 14.4 GB: a core-only budget would let
+  two of them push a 32 GB machine into swap and make parallel slower than
+  sequential. Cores are declared and exact; memory is an estimate, and is
+  labelled as one.
+
+Because their output interleaves in one log buffer, every line a job
+produces carries its calculation's name (`LogLine.calc`) — the raw ORCA
+tail has no name of its own, and without the tag neither the log nor the
+convergence graphs could be separated per job.
 
 ---
 

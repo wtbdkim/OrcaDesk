@@ -353,7 +353,7 @@ class _FakeCrestRunner:
 
 def _recording_callbacks():
     logs, updates = [], []
-    cb = QueueCallbacks(log=lambda m, l: logs.append((l, m)),
+    cb = QueueCallbacks(log=lambda m, l, _calc="": logs.append((l, m)),
                         calc_update=lambda i, c: updates.append((i, c.state)))
     return cb, logs, updates
 

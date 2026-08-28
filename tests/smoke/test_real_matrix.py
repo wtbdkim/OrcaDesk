@@ -138,7 +138,7 @@ def _run(calcs, workspace, settings):
         orca_path=settings.orca_path,
         workspace_root=str(workspace),
         callbacks=QueueCallbacks(
-            log=lambda msg, level: logs.append(f"[{level}] {msg}"),
+            log=lambda msg, level, _calc="": logs.append(f"[{level}] {msg}"),
             calc_update=lambda index, calc: None,
         ),
         mlip_envs=settings.mlip_envs,

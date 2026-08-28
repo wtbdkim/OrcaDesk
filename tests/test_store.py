@@ -375,7 +375,8 @@ def test_mid_run_mutation_of_engine_active_calc_refused(store):
     store.set_running(True)
 
     class _Engine:
-        active_name = "picked"   # what QueueEngine.active_name exposes at pick
+        # what QueueEngine.active_names exposes for a picked-but-not-stamped calc
+        active_names = {"picked"}
     store._engine = _Engine()
     with pytest.raises(ValueError):
         store.remove("picked")

@@ -39,10 +39,16 @@ from .input_generator import (
     StepConfig, build_input, render_raw_input, GEOMETRY_PLACEHOLDER, check_neb_atom_order,
     _xyz_elements,
 )
+from .resources import ResourceBudget, declared_cores, estimated_ram_mb
 from .runner import OrcaRunner, OrcaRunError, OrcaCancelled, OrcaDetached
 from .parser import parse_file, ParseResult
 from .procutil import process_matches
 from .xyzutil import as_xyz_file
+
+
+# How long the dispatcher sleeps between re-scans while it waits for a job to
+# finish. A finishing job also notifies _slot_cv, so this is only a backstop.
+_SLOT_POLL = 0.25
 
 
 class CalcState(str, Enum):
@@ -95,8 +101,28 @@ class Calculation:
 # ---- callbacks ----------------------------------------------------------
 @dataclass
 class QueueCallbacks:
-    log: Callable[[str, str], None] = lambda msg, level: None
+    # (message, level, calc_name). `calc_name` is "" for engine-level lines and
+    # the owning calculation's name for anything a specific job produced — with
+    # several jobs in flight their tailed output interleaves in one buffer, and
+    # only an explicit tag can route a line back to its job (the front-end log
+    # filter and the per-job convergence graphs both key off it).
+    log: Callable[..., None] = lambda msg, level, calc="": None
     calc_update: Callable[[int, "Calculation"], None] = lambda i, c: None
+
+
+@dataclass
+class _JobSlot:
+    """One in-flight job: the resources it reserved and the runner to stop it.
+
+    `cores`/`ram_mb` are the admission cost taken from the budget for as long as
+    the job runs; `runner` is whichever backend runner it registered (see
+    `_use_runner`), so cancel()/detach() can reach every job at once.
+    """
+    name: str
+    cores: int = 0
+    ram_mb: int = 0
+    runner: object = None
+    orca_launched: bool = False
 
 
 def _xyz_from_geometry(result: ParseResult) -> str:
@@ -259,20 +285,21 @@ class QueueEngine:
                  skip_names: Optional[set] = None,
                  mlip_envs: Optional[list] = None,
                  crest_distro: str = "",
-                 queue_lock=None):
-        self.runner = OrcaRunner(orca_path)
+                 queue_lock=None,
+                 budget: "Optional[ResourceBudget]" = None):
+        self.orca_path = orca_path
+        # One OrcaRunner per JOB, not per engine: with several calculations in
+        # flight each needs its own process handle and its own cancel/detach
+        # events. A factory (rather than a fixed instance) is also the seam a
+        # test uses to intercept a launch.
+        self._orca_runner_factory = lambda: OrcaRunner(orca_path)
         # Registered MLIP environments [{id, name, python}], used to resolve which
         # interpreter runs a mlip_* calc. Empty if MLIP isn't configured.
         self.mlip_envs = list(mlip_envs or [])
-        # the MlipRunner of the in-flight MLIP job, so cancel()/detach() can reach
-        # it (the ORCA runner and the MLIP runner are separate objects).
-        self._mlip_runner = None
         # Preferred WSL distro for CREST calcs ("" = auto-detect the first distro
         # that has CREST). A crest_conf calc runs its Linux binary through WSL
         # (see orcamgr/crest/), OUTSIDE the ORCA pipeline.
         self.crest_distro = (crest_distro or "").strip()
-        # the CrestRunner of the in-flight CREST job, so cancel()/detach() reach it.
-        self._crest_runner = None
         self.workspace_root = Path(workspace_root)
         self.cb = callbacks or QueueCallbacks()
         # hard cancel: kill the current job and skip the rest (CANCELLED).
@@ -283,59 +310,106 @@ class QueueEngine:
         # shutdown detach: stop monitoring but LEAVE the running ORCA alive so it
         # survives the app closing and can be reattached next launch.
         self._detach_event = threading.Event()
+        # A job came back reporting app shutdown (OrcaDetached). Single-threaded
+        # this was the walk's own `break`; with jobs on their own threads the
+        # outcome has to travel back to the dispatcher, which must then start
+        # nothing more — including a row it already picked and is holding for a
+        # free slot.
+        self._shutdown_seen = threading.Event()
         self._by_name: dict[str, Calculation] = {}
         # calculations the user chose to skip this run (e.g. to keep existing
         # results on disk instead of overwriting them)
         self._skip_names = set(skip_names or ())
-        # True once the current calc attempt has actually launched (or adopted)
-        # its ORCA process — i.e. the on-disk .out belongs to THIS attempt.
-        # Gates _failure_reason's .out parse: the folder may hold a stale .out
-        # from a previous run (e.g. after a rejected keep-existing result), and
-        # parsing it on a pre-launch failure would mask the real cause (A22).
-        # Reset per calc in run_all, set in _run_calc.
-        self._orca_launched = False
         # The list run_all walks is LIVE (P29): when wired to a store,
         # queue_lock IS the store's own lock (make_engine_factory), so user
         # mutations of the queue and the walk's pick step are serialized.
         # Standalone engines (tests) get a private lock — no concurrency there.
         self._queue_lock = queue_lock if queue_lock is not None else threading.RLock()
-        # Name of the calc the walk is currently handling. Set at pick time
-        # UNDER the lock — i.e. before the RUNNING stamp lands — so the store
-        # can refuse mutations of a calc the engine has picked but not yet
-        # stamped (the pick→stamp window would otherwise let an edit/remove
-        # race a launch).
-        self._active_name: Optional[str] = None
+        # Names the dispatcher is currently handling. A name is added at pick
+        # time UNDER the lock — i.e. before the RUNNING stamp lands — so the
+        # store can refuse mutations of a calc the engine has picked but not yet
+        # stamped (the pick->stamp window would otherwise let an edit/remove
+        # race a launch). A set, not a name: several jobs run at once.
+        self._active_names: "set[str]" = set()
+        # CPU/RAM admission limits, resolved against this machine at construction
+        # (0 = auto). max_jobs 1 is the classic one-at-a-time queue.
+        self.budget = (budget or ResourceBudget()).resolved()
+        # In-flight jobs by calc name -> _JobSlot (its reserved cores/RAM and its
+        # backend runner). Guarded by _queue_lock; _slot_cv wakes the dispatcher
+        # when a job finishes and its budget comes back.
+        self._slots: "dict[str, _JobSlot]" = {}
+        self._slot_cv = threading.Condition(self._queue_lock)
+        # Per-job state for the thread running it (see _job).
+        self._job_local = threading.local()
+
+    # -- per-job state ----------------------------------------------------
+    @property
+    def _job(self) -> "_JobSlot":
+        """The slot of the job running on THIS thread. Job bodies run in their
+        own threads, so state that used to be a single engine field (the backend
+        runner, the "has ORCA launched yet" flag) is per-thread. A direct call
+        outside a run (tests, reconciliation) gets a private throwaway slot."""
+        slot = getattr(self._job_local, "slot", None)
+        if slot is None:
+            slot = _JobSlot(name="")
+            self._job_local.slot = slot
+        return slot
 
     @property
-    def active_name(self) -> Optional[str]:
-        """Name of the calc the walk is currently handling (None between runs).
-        The store consults this to refuse mutations of the in-flight calc."""
+    def _orca_launched(self) -> bool:
+        """True once THIS job actually launched (or adopted) its ORCA process --
+        i.e. the on-disk .out belongs to this attempt. Gates _failure_reason's
+        .out parse: the folder may hold a stale .out from a previous run (e.g.
+        after a rejected keep-existing result), and parsing it on a pre-launch
+        failure would mask the real cause (A22)."""
+        return self._job.orca_launched
+
+    @_orca_launched.setter
+    def _orca_launched(self, value: bool) -> None:
+        self._job.orca_launched = value
+
+    def _use_runner(self, runner):
+        """Register `runner` as this job's backend runner so cancel()/detach()
+        can reach it, and replay a stop that landed before it existed."""
+        self._job.runner = runner
+        self._forward_pending_signals(runner)
+        return runner
+
+    def _live_runners(self) -> list:
         with self._queue_lock:
-            return self._active_name
+            return [s.runner for s in self._slots.values() if s.runner is not None]
+
+    @property
+    def active_names(self) -> "set[str]":
+        """Names of the calcs the dispatcher is currently handling (empty between
+        runs). The store consults this to refuse mutations of an in-flight calc."""
+        with self._queue_lock:
+            return set(self._active_names)
 
     def cancel(self) -> None:
+        """Hard stop: kill every job in flight and start no more."""
         self._cancel_event.set()
-        self.runner.cancel()
-        if self._mlip_runner is not None:
-            self._mlip_runner.cancel()
-        if self._crest_runner is not None:
-            self._crest_runner.cancel()
+        for runner in self._live_runners():
+            runner.cancel()
+        with self._slot_cv:
+            self._slot_cv.notify_all()
 
     def request_stop_after_current(self) -> None:
-        """Stop processing once the in-flight job finishes; leave the remaining
-        calculations PENDING. Does NOT kill the running job."""
+        """Stop starting new jobs; let the ones already in flight finish. The
+        remaining calculations stay PENDING. Does NOT kill anything."""
         self._stop_after_current.set()
+        with self._slot_cv:
+            self._slot_cv.notify_all()
 
     def detach(self) -> None:
         """Stop monitoring the queue WITHOUT killing the running ORCA — used on
         app shutdown so the in-flight job survives and can be reattached. The
         running calc is left in the RUNNING state (its pid is already persisted)."""
         self._detach_event.set()
-        self.runner.detach()
-        if self._mlip_runner is not None:
-            self._mlip_runner.detach()
-        if self._crest_runner is not None:
-            self._crest_runner.detach()
+        for runner in self._live_runners():
+            runner.detach()
+        with self._slot_cv:
+            self._slot_cv.notify_all()
 
     def _forward_pending_signals(self, runner) -> None:
         """Replay a Stop/shutdown that landed BEFORE this runner was registered.
@@ -437,7 +511,8 @@ class QueueEngine:
             return
         if (calc.state == CalcState.RUNNING and calc.pid
                 and process_matches(calc.pid, calc.create_time)):
-            self.runner.adopt(calc.pid, calc.create_time)
+            runner = self._use_runner(self._orca_runner_factory())
+            runner.adopt(calc.pid, calc.create_time)
             # The adopted process owns the on-disk .out, so a failure diagnosis
             # may trust it (see _failure_reason).
             self._orca_launched = True
@@ -452,7 +527,7 @@ class QueueEngine:
             # written before the app closed (that would flood the live log and,
             # past the log-buffer cap, truncate the graph). The UI rebuilds the
             # full SCF/opt-graph history separately from the .out on disk.
-            start_pos = self.runner.end_position(out_path)
+            start_pos = runner.end_position(out_path)
             self._monitor_and_finish(calc, index, out_path, start_pos=start_pos)
             return
 
@@ -489,8 +564,9 @@ class QueueEngine:
         self._prepare_neb_side_files(calc, calc_dir, xyz, text)
         self._stage_irc_hessian(calc, calc_dir)
 
-        self.cb.log(f"[{calc.name}] ({calc.kind}) running ORCA...", "info")
-        pid, create_time = self.runner.launch(inp_path, out_path)
+        self.cb.log(f"[{calc.name}] ({calc.kind}) running ORCA...", "info", calc.name)
+        runner = self._use_runner(self._orca_runner_factory())
+        pid, create_time = runner.launch(inp_path, out_path)
         # From here the .out on disk is THIS attempt's output — a failure
         # diagnosis may trust it (see _failure_reason).
         self._orca_launched = True
@@ -594,7 +670,7 @@ class QueueEngine:
         calc.pid = None
         calc.create_time = None
         calc.message = message
-        self.cb.log(f"[{calc.name}] {log_msg}", "ok")
+        self.cb.log(f"[{calc.name}] {log_msg}", "ok", calc.name)
         self.cb.calc_update(index, calc)
 
     def _monitor_and_finish(self, calc: Calculation, index: int, out_path,
@@ -603,8 +679,9 @@ class QueueEngine:
         parse + validate + mark DONE. Shared by the fresh-launch and reattach
         paths (reattach passes start_pos = current EOF). OrcaCancelled /
         OrcaDetached propagate to run_all."""
-        self.runner.monitor(out_path, on_line=lambda ln: self.cb.log(ln, "orca"),
-                            start_pos=start_pos)
+        self._job.runner.monitor(
+            out_path, on_line=lambda ln: self.cb.log(ln, "orca", calc.name),
+            start_pos=start_pos)
         self._finish_ok(calc, index, parse_file(str(out_path)), out_path)
 
     # -- single MLIP calculation (runs OUTSIDE the ORCA pipeline) --
@@ -678,14 +755,12 @@ class QueueEngine:
             result_json.unlink()
         except OSError:
             pass
-        runner = MlipRunner(python)
-        self._mlip_runner = runner
+        runner = self._use_runner(MlipRunner(python))
         try:
-            self._forward_pending_signals(runner)
-            rc = runner.run(script_path, [str(config_path)], out_path,
-                            cwd=calc_dir, on_line=lambda ln: self.cb.log(ln, "orca"))
+            rc = runner.run(script_path, [str(config_path)], out_path, cwd=calc_dir,
+                            on_line=lambda ln: self.cb.log(ln, "orca", calc.name))
         finally:
-            self._mlip_runner = None
+            self._job.runner = None
         if not result_json.exists():
             raise OrcaRunError(
                 f"MLIP worker exited (code {rc}) without writing a result — "
@@ -715,17 +790,16 @@ class QueueEngine:
             if runner is not None:
                 runner.adopt(calc.pid, calc.create_time)
             if runner is not None and runner.is_alive():
-                self._crest_runner = runner
-                self._forward_pending_signals(runner)
+                self._use_runner(runner)
                 self.cb.log(f"[{calc.name}] reattaching to CREST still running "
-                            f"(pid {calc.pid})...", "info")
+                            f"(pid {calc.pid})...", "info", calc.name)
                 self.cb.calc_update(index, calc)
                 start_pos = runner.end_position(out_path)
                 try:
                     self._crest_monitor_and_finish(calc, index, out_path,
                                                    calc.name, start_pos=start_pos)
                 finally:
-                    self._crest_runner = None
+                    self._job.runner = None
                 return
             # Not alive (or distro unknown): the job finished while we were away.
             # The detached script already copied the ensemble back + wrote the .rc
@@ -766,10 +840,8 @@ class QueueEngine:
         method = getattr(calc.config, "crest_method", "") or "gfn2"
         self.cb.log(f"[{calc.name}] (crest_conf) running CREST [{method}] "
                     f"in WSL:{distro} ...", "info")
-        runner = CrestRunner(distro)
-        self._crest_runner = runner
+        runner = self._use_runner(CrestRunner(distro))
         try:
-            self._forward_pending_signals(runner)
             pid, create_time = runner.launch(script_path, calc.name, out_path)
             calc.pid = pid
             calc.create_time = create_time
@@ -781,7 +853,7 @@ class QueueEngine:
             self.cb.calc_update(index, calc)
             self._crest_monitor_and_finish(calc, index, out_path, calc.name)
         finally:
-            self._crest_runner = None
+            self._job.runner = None
 
     def _crest_monitor_and_finish(self, calc: Calculation, index: int, out_path,
                                   name: str, start_pos: int = 0,
@@ -794,9 +866,10 @@ class QueueEngine:
         from ..crest.parser import parse_crest_result
 
         if not already_done:
-            self._crest_runner.monitor(out_path, name,
-                                       on_line=lambda ln: self.cb.log(ln, "orca"),
-                                       start_pos=start_pos)
+            self._job.runner.monitor(
+                out_path, name,
+                on_line=lambda ln: self.cb.log(ln, "orca", calc.name),
+                start_pos=start_pos)
 
         result = parse_crest_result(str(out_path))
         n = len(result.conformers)
@@ -910,51 +983,225 @@ class QueueEngine:
             self._run_walk(calcs, seen, blocked_names)
         finally:
             with self._queue_lock:
-                self._active_name = None
+                self._active_names.clear()
+                self._slots.clear()
 
     def _run_walk(self, calcs: list[Calculation], seen: dict,
                   blocked_names: set) -> None:
-        """One pass over the live queue: pick → stop guards → state screening →
-        keep-existing adoption → backend dispatch. Each stage is a helper below
-        so its contract is testable on its own; the loop itself only sequences
-        them."""
-        while True:
-            nxt = self._pick_next(calcs, seen)
-            if nxt is None:
-                break
-            i, calc = nxt
-            if self._should_stop(calcs):
-                break
-            if not self._precheck(calc, i, blocked_names):
-                continue
-            if self._try_keep_existing(calc, i):
-                continue
-            if not self._dispatch_and_handle(calc, i, calcs, blocked_names):
-                break
+        """One pass over the live queue, running up to `budget.max_jobs`
+        calculations at a time.
 
-    def _pick_next(self, calcs: list[Calculation], seen: dict):
-        """(index, calc) of the first list row not yet handled, or None when the
-        walk is exhausted. The whole pick happens UNDER the queue lock: the name
-        map, the seen-stamp and _active_name must land atomically so the store
-        can refuse mutations of a calc that is picked but not yet stamped
-        RUNNING (the pick→stamp window)."""
+        Picking stays serialized in this one dispatcher thread; each picked calc
+        then gets its OWN thread, its own backend runner and its own reserved
+        slice of the core/RAM budget, released when it finishes. So the queue
+        order, the live-queue rules (P29) and the per-calc pipeline are exactly
+        what they were single-threaded — only the number of jobs in flight
+        changed.
+
+        The scan takes the first row that is (a) not yet handled, (b)
+        dependency-ready and (c) affordable:
+
+        * dependency-ready — a REFERENCE calc whose parent may still become DONE
+          is DEFERRED, not picked. Sequential running got this for free (the
+          parent always finished first); in parallel the child would otherwise
+          be picked while its parent is still RUNNING and die in geometry
+          resolution.
+        * affordable — declared cores + estimated RAM still fit the budget
+          (core/resources.py). A row that does not fit is skipped OVER rather
+          than blocking the rows behind it; if nothing fits and nothing is in
+          flight, the first ready row runs alone over budget, so an oversized
+          calculation can never starve.
+        """
+        threads: "list[threading.Thread]" = []
+        try:
+            while True:
+                with self._slot_cv:
+                    if self._should_stop(calcs):
+                        break
+                    picked = self._pick_ready(calcs, seen, blocked_names)
+                    if picked is None:
+                        if all(id(c) in seen for c in calcs):
+                            break                     # queue exhausted
+                        if self._slots:
+                            # a job in flight will free budget (or satisfy the
+                            # dependency the rest are waiting on) and wake us
+                            self._slot_cv.wait(_SLOT_POLL)
+                            continue
+                        # Nothing running and nothing affordable: let the first
+                        # ready row through regardless of budget (see above).
+                        picked = self._pick_ready(calcs, seen, blocked_names,
+                                                  ignore_budget=True)
+                        if picked is None:
+                            # ...and nothing is even dependency-ready, with no
+                            # job left to unblock it: the rest is a cycle.
+                            self._block_unreachable(calcs, seen)
+                            break
+                    i, calc = picked
+                    seen[id(calc)] = calc
+                    self._active_names.add(calc.name)
+                if not self._precheck(calc, i, blocked_names):
+                    self._release(calc.name)
+                    continue
+                if self._try_keep_existing(calc, i):
+                    self._release(calc.name)
+                    continue
+                if not self._start_job(calc, i, calcs, blocked_names, threads):
+                    break
+        finally:
+            # The run is over only when every job it started has come back:
+            # the store flips its "running" flag on this call returning, and a
+            # detached/cancelled job still has state to stamp.
+            for t in threads:
+                t.join()
+
+    def _pick_ready(self, calcs: list[Calculation], seen: dict,
+                    blocked_names: set, ignore_budget: bool = False):
+        """(index, calc) of the first row that may be handled now, or None.
+
+        Caller must hold the lock: the name map, the seen-stamp and the
+        _active_names entry have to land atomically so the store can refuse
+        mutations of a calc that is picked but not yet stamped RUNNING (the
+        pick->stamp window).
+        """
+        # names must track the live list: mid-run adds resolve their references
+        # against the queue as it is NOW, not as it was at run start
+        self._by_name = {c.name: c for c in calcs}
+        for j, c in enumerate(calcs):
+            if id(c) in seen:
+                continue
+            if not self._deps_ready(c):
+                continue
+            if ignore_budget or self._handled_without_running(c, blocked_names):
+                return j, c
+            if self._fits(self._slot_for(c)):
+                return j, c
+        return None
+
+    def _deps_ready(self, calc: Calculation) -> bool:
+        """False while this calc's geometry reference may still become DONE, so
+        the dispatcher leaves it for a later scan instead of failing it.
+
+        A dangling or self-reference is 'ready': it has always failed in
+        _resolve_geometry with a precise message, and deferring it forever would
+        turn a clear error into a hang. A FAILED/BLOCKED/CANCELLED parent is
+        ready too — _precheck blocks the child, or the run fails it, as before.
+        """
+        if (calc.geometry_source != GeometrySource.REFERENCE) or not calc.ref_name:
+            return True
+        parent = self._by_name.get(calc.ref_name)
+        if parent is None or parent is calc:
+            return True
+        return parent.state not in (CalcState.PENDING, CalcState.RUNNING)
+
+    def _handled_without_running(self, calc: Calculation,
+                                 blocked_names: set) -> bool:
+        """True when _precheck / _try_keep_existing will dispose of this row
+        without launching anything, so it needs no share of the budget."""
+        return (calc.state in (CalcState.DONE, CalcState.FAILED)
+                or calc.name in blocked_names
+                or calc.name in self._skip_names)
+
+    def _slot_for(self, calc: Calculation) -> "_JobSlot":
+        return _JobSlot(name=calc.name, cores=declared_cores(calc),
+                        ram_mb=estimated_ram_mb(calc))
+
+    def _fits(self, slot: "_JobSlot") -> bool:
+        """Does `slot` fit alongside what is already running? Caller holds the
+        lock. Jobs, cores and estimated memory are all hard limits; see
+        core/resources.py for how a calculation's cost is read."""
+        if len(self._slots) >= self.budget.max_jobs:
+            return False
+        if sum(s.cores for s in self._slots.values()) + slot.cores > self.budget.cores:
+            return False
+        return (sum(s.ram_mb for s in self._slots.values()) + slot.ram_mb
+                <= self.budget.ram_mb)
+
+    def _release(self, name: str) -> None:
+        """Drop a picked-but-not-started row's claim on the in-flight set."""
+        with self._slot_cv:
+            self._active_names.discard(name)
+            self._slot_cv.notify_all()
+
+    def _block_unreachable(self, calcs: list[Calculation], seen: dict) -> None:
+        """Nothing is running and every remaining row is waiting on a geometry
+        reference that can never complete — i.e. the references form a cycle.
+        Stamp them BLOCKED instead of spinning forever."""
+        for j, c in enumerate(calcs):
+            if id(c) in seen:
+                continue
+            seen[id(c)] = c
+            c.state = CalcState.BLOCKED
+            c.message = "Skipped: its geometry reference can never complete."
+            self.cb.log(f"[{c.name}] blocked (circular geometry reference).",
+                        "warn", c.name)
+            self.cb.calc_update(j, c)
+
+    def _start_job(self, calc: Calculation, i: int, calcs: list[Calculation],
+                   blocked_names: set, threads: list) -> bool:
+        """Reserve this calc's resources and run it in its own thread. Returns
+        False if a stop landed while waiting for room (nothing was started)."""
+        slot = self._slot_for(calc)
+        with self._slot_cv:
+            # A row picked as "will be handled without running" (a keep-existing
+            # candidate) can still fall through to a real run, so admission is
+            # confirmed HERE, not at pick time. Waiting stops as soon as nothing
+            # is in flight — the run-alone rule that keeps big jobs from
+            # starving.
+            while self._slots and not self._fits(slot):
+                if self._stop_pending():
+                    break
+                self._slot_cv.wait(_SLOT_POLL)
+            if self._stop_pending():
+                self._active_names.discard(calc.name)
+                self._slot_cv.notify_all()
+                return False
+            if not self._fits(slot) and self.budget.max_jobs > 1:
+                self.cb.log(
+                    f"[{calc.name}] needs {slot.cores} core(s) / "
+                    f"{slot.ram_mb} MB — more than the whole budget "
+                    f"({self.budget.cores} core(s) / {self.budget.ram_mb} MB); "
+                    "running it on its own.", "warn", calc.name)
+            self._slots[calc.name] = slot
+
+        def _work() -> None:
+            self._job_local.slot = slot
+            try:
+                if not self._dispatch_and_handle(calc, i, calcs, blocked_names):
+                    self._shutdown_seen.set()   # app is closing: stop the walk
+            finally:
+                with self._slot_cv:
+                    self._slots.pop(calc.name, None)
+                    self._active_names.discard(calc.name)
+                    self._slot_cv.notify_all()
+
+        t = threading.Thread(target=_work, name=f"orcadesk-job-{calc.name}",
+                             daemon=True)
+        threads.append(t)
+        t.start()
+        return True
+
+    def resource_usage(self) -> dict:
+        """What the in-flight jobs have reserved, against the budget. Read by
+        the store for the queue snapshot (duck-typed, so the store never imports
+        the engine)."""
         with self._queue_lock:
-            # names must track the live list: mid-run adds resolve their
-            # references against the queue as it is NOW, not as it was
-            # at run start
-            self._by_name = {c.name: c for c in calcs}
-            nxt = next(((j, c) for j, c in enumerate(calcs)
-                        if id(c) not in seen), None)
-            if nxt is None:
-                return None
-            _, calc = nxt
-            seen[id(calc)] = calc
-            self._active_name = calc.name
-            return nxt
+            return {
+                "cores_used": sum(s.cores for s in self._slots.values()),
+                "cores_budget": self.budget.cores,
+                "ram_used_mb": sum(s.ram_mb for s in self._slots.values()),
+                "ram_budget_mb": self.budget.ram_mb,
+                "jobs": len(self._slots),
+                "max_jobs": self.budget.max_jobs,
+            }
+
+    def _stop_pending(self) -> bool:
+        """A cancel or a shutdown has been signalled — start nothing more."""
+        return (self._cancel_event.is_set() or self._detach_event.is_set()
+                or self._shutdown_seen.is_set())
 
     def _should_stop(self, calcs: list[Calculation]) -> bool:
         """Top-of-iteration stop guards. True → break out of the walk."""
-        if self._detach_event.is_set():
+        if self._detach_event.is_set() or self._shutdown_seen.is_set():
             # App is shutting down: stop processing and leave every calc as
             # it is (a RUNNING one keeps going in the background for reattach).
             return True
@@ -983,7 +1230,8 @@ class QueueEngine:
             # one just picked) are exactly what this drain leaves behind
             remaining = sum(1 for c in calcs if c.state == CalcState.PENDING)
             self.cb.log(
-                f"Stopped after current job; {remaining} calculation(s) left pending.",
+                f"Stopping after the running job(s); "
+                f"{remaining} calculation(s) left pending.",
                 "info",
             )
             return True
@@ -1126,9 +1374,10 @@ class QueueEngine:
                 calc.pid = None
                 calc.create_time = None
                 self.cb.calc_update(i, calc)
-                self.cb.log(f"[{calc.name}] stopped on shutdown.", "info")
+                self.cb.log(f"[{calc.name}] stopped on shutdown.", "info", calc.name)
             else:
-                self.cb.log(f"[{calc.name}] left running in the background.", "info")
+                self.cb.log(f"[{calc.name}] left running in the background.",
+                            "info", calc.name)
             return False
         except OrcaCancelled:
             # user stopped the run mid-calc: mark THIS calc CANCELLED (not
@@ -1139,14 +1388,14 @@ class QueueEngine:
             calc.message = "Cancelled by user."
             calc.pid = None
             calc.create_time = None
-            self.cb.log(f"[{calc.name}] cancelled.", "info")
+            self.cb.log(f"[{calc.name}] cancelled.", "info", calc.name)
             self.cb.calc_update(i, calc)
         except OrcaRunError as e:
             calc.state = CalcState.FAILED
             calc.message = self._failure_reason(calc, str(e))
             calc.pid = None
             calc.create_time = None
-            self.cb.log(f"[{calc.name}] FAILED: {calc.message}", "err")
+            self.cb.log(f"[{calc.name}] FAILED: {calc.message}", "err", calc.name)
             self.cb.calc_update(i, calc)
             with self._queue_lock:
                 blocked_names |= self._dependents_of(calcs, calc.name)
@@ -1155,7 +1404,7 @@ class QueueEngine:
             calc.message = f"Unexpected error: {e}"
             calc.pid = None
             calc.create_time = None
-            self.cb.log(f"[{calc.name}] FAILED: {e}", "err")
+            self.cb.log(f"[{calc.name}] FAILED: {e}", "err", calc.name)
             self.cb.calc_update(i, calc)
             with self._queue_lock:
                 blocked_names |= self._dependents_of(calcs, calc.name)

@@ -30,7 +30,8 @@ from ..core.procutil import process_matches
 from ..paths import data_dir, user_data_root
 # Wire-payload shapes (plain dicts at runtime; see schemas.py for the mirror
 # contract with web/types.js)
-from .schemas import CalcFull, CalcSummary, LogLine, LogPayload, QueueSnapshot
+from .schemas import (CalcFull, CalcSummary, LogLine, LogPayload,
+                      QueueSnapshot, RunResources)
 
 # States whose calculations the user may still edit / reorder.
 # PENDING: never run yet. CANCELLED: a deliberate user stop, not a failure, so
@@ -471,13 +472,30 @@ class QueueStore:
 
     # ---- reads ----
     def snapshot(self) -> QueueSnapshot:
-        """Full state for a client (queue list + running flag + version)."""
+        """Full state for a client (queue list + running flag + version +
+        the run's live resource occupancy)."""
         with self._lock:
             return QueueSnapshot(
                 running=self._running,
                 version=self._version,
                 calculations=[calc_to_dict(c) for c in self._calcs],
+                resources=self.run_resources(),
             )
+
+    def run_resources(self) -> RunResources:
+        """Cores/memory the in-flight jobs reserved, against the run's budget.
+        All zeros between runs: the budget lives on the engine, and an idle
+        client reads the limits from the settings payload instead. Duck-typed so
+        the store never imports the engine."""
+        idle = RunResources(cores_used=0, cores_budget=0, ram_used_mb=0,
+                            ram_budget_mb=0, jobs=0, max_jobs=0)
+        eng = self._engine
+        if eng is None:
+            return idle
+        try:
+            return RunResources(**eng.resource_usage())
+        except Exception:
+            return idle
 
     def version(self) -> int:
         with self._lock:
@@ -518,7 +536,7 @@ class QueueStore:
         if eng is None:
             return False
         try:
-            return getattr(eng, "active_name", None) == name
+            return name in (getattr(eng, "active_names", None) or ())
         except Exception:
             return False
 
@@ -680,10 +698,14 @@ class QueueStore:
             self._bump_and_save()
 
     # ---- log buffer ----
-    def append_log(self, message: str, level: str = "info") -> None:
+    def append_log(self, message: str, level: str = "info",
+                   calc: str = "") -> None:
+        """Append one log line. `calc` names the calculation that produced it
+        ("" = engine/app level): with several jobs in flight their output
+        interleaves here, and the tag is what lets a client separate them."""
         with self._lock:
             self._log_seq += 1
-            self._log.append((self._log_seq, level, message))
+            self._log.append((self._log_seq, level, message, calc))
             # cap buffer so a long run doesn't grow memory without bound.
             # Preferential retention for "[web] " lines: ORCA stdout floods this
             # ring (a single run emits thousands of lines) and would evict the
@@ -701,8 +723,8 @@ class QueueStore:
         """Return log lines with seq > since, plus the latest seq."""
         with self._lock:
             lines = [
-                LogLine(seq=s, level=lv, msg=m)
-                for (s, lv, m) in self._log if s > since
+                LogLine(seq=s, level=lv, msg=m, calc=c)
+                for (s, lv, m, c) in self._log if s > since
             ]
             return LogPayload(lines=lines, latest=self._log_seq)
 
@@ -915,7 +937,8 @@ def find_dangling_reference(calcs: "list[Calculation]") -> "str | None":
 def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str,
                         skip_names: "set[str] | None" = None,
                         mlip_envs: "list | None" = None,
-                        crest_distro: str = ""):
+                        crest_distro: str = "",
+                        budget=None):
     """
     Returns a zero-arg factory that builds a QueueEngine whose callbacks feed
     the given store (log buffer + version bumps). Used by start_run().
@@ -926,6 +949,9 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
     can run mlip_* calcs in the user's MACE interpreter. None/empty disables MLIP.
     crest_distro: preferred WSL distro for crest_* calcs ("" = auto-detect the
     first distro that has CREST).
+    budget: a core/resources.ResourceBudget capping how many calculations run at
+    once and how many cores / how much memory they may occupy together. None =
+    the default one-at-a-time queue.
     """
     skip = set(skip_names or ())
     envs = list(mlip_envs or [])
@@ -933,7 +959,7 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
 
     def factory() -> QueueEngine:
         cb = QueueCallbacks(
-            log=lambda msg, level: store.append_log(msg, level),
+            log=lambda msg, level, calc="": store.append_log(msg, level, calc),
             calc_update=lambda i, c: store.touch(),
         )
         # the store's own lock doubles as the engine's queue lock: run_all
@@ -941,5 +967,5 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
         # user mutations must serialize on the same lock (P29)
         return QueueEngine(orca_path, workspace_root, cb, skip_names=skip,
                            mlip_envs=envs, crest_distro=crest_pref,
-                           queue_lock=store._lock)
+                           queue_lock=store._lock, budget=budget)
     return factory

@@ -36,6 +36,7 @@ from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL, user_data_root
 from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import CalcState, result_from_output
 from ..core.parser import parse_file
+from ..core.resources import ResourceBudget, auto_cores, auto_ram_mb
 from ..state.store import (
     QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory,
     load_choice_groups, queue_needs_orca, find_dangling_reference,
@@ -140,6 +141,11 @@ class Bridge(QObject):
             workspace_root=self.settings.workspace_root,
             default_nprocs=self.settings.default_nprocs,
             default_maxcore_mb=self.settings.default_maxcore_mb,
+            max_concurrent_jobs=self.settings.max_concurrent_jobs,
+            max_total_cores=self.settings.max_total_cores,
+            max_total_ram_mb=self.settings.max_total_ram_mb,
+            auto_cores=auto_cores(),
+            auto_ram_mb=auto_ram_mb(),
             theme=self.settings.theme,
             theme_variant=self.settings.theme_variant,
             glass_level=self.settings.glass_level,
@@ -165,6 +171,19 @@ class Bridge(QObject):
             for k in ("default_nprocs", "default_maxcore_mb"):
                 if k in data:
                     setattr(self.settings, k, int(data[k]))
+            # Parallel-run budgets — clamped here, the trust boundary: these ride
+            # straight into admission control, where a negative or absurd value
+            # would either stall the queue forever or let it oversubscribe the
+            # machine. 0 stays 0 for the two budgets ("auto").
+            for key, lo, hi in (("max_concurrent_jobs", 1, 64),
+                                ("max_total_cores", 0, 1024),
+                                ("max_total_ram_mb", 0, 4_000_000)):
+                if key in data:
+                    try:
+                        val = int(data[key])
+                    except (TypeError, ValueError):
+                        continue
+                    setattr(self.settings, key, max(lo, min(hi, val)))
             # opt-ETA mode: only accept known values
             if "eta_mode" in data and data["eta_mode"] in ("conservative", "eager"):
                 self.settings.eta_mode = data["eta_mode"]
@@ -1010,7 +1029,8 @@ class Bridge(QObject):
         factory = make_engine_factory(self.store, self.settings.orca_path,
                                       self.settings.workspace_root, skip_names,
                                       mlip_envs=self.settings.mlip_envs,
-                                      crest_distro=self.settings.crest_distro)
+                                      crest_distro=self.settings.crest_distro,
+                                      budget=self._budget())
         try:
             self.store.start_run(factory)
         except RuntimeError as e:
@@ -1018,6 +1038,13 @@ class Bridge(QObject):
         except ValueError as e:
             return json.dumps(OkResult(ok=False, error=str(e)))
         return json.dumps(OkResult(ok=True))
+
+    def _budget(self) -> ResourceBudget:
+        """The parallel-run admission budget from settings (0 = auto, resolved
+        against this machine by the engine)."""
+        return ResourceBudget(max_jobs=self.settings.max_concurrent_jobs,
+                              cores=self.settings.max_total_cores,
+                              ram_mb=self.settings.max_total_ram_mb)
 
     @pyqtSlot(result=str)
     def cancel_queue(self) -> str:
@@ -1047,7 +1074,8 @@ class Bridge(QObject):
         factory = make_engine_factory(self.store, self.settings.orca_path,
                                       self.settings.workspace_root,
                                       mlip_envs=self.settings.mlip_envs,
-                                      crest_distro=self.settings.crest_distro)
+                                      crest_distro=self.settings.crest_distro,
+                                      budget=self._budget())
         try:
             self.store.start_run(factory)
             self.store.append_log(

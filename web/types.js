@@ -45,10 +45,24 @@
 /**
  * Queue snapshot returned by get_queue() and in the "snapshot" key of
  * queue-mutating slots. Mirror of QueueStore.snapshot().
+ * @typedef {Object} RunResources
+ * @property {number} cores_used        cores the in-flight jobs reserved
+ * @property {number} cores_budget      the run's core budget
+ * @property {number} ram_used_mb       estimated memory the in-flight jobs hold
+ * @property {number} ram_budget_mb     the run's memory budget
+ * @property {number} jobs              calculations in flight
+ * @property {number} max_jobs          how many may be in flight at once
+ */
+
+/**
  * @typedef {Object} QueueSnapshot
  * @property {boolean} running
  * @property {number} version           monotonically increasing change counter
  * @property {CalcSummary[]} calculations
+ * @property {RunResources} resources   live occupancy; ALL ZEROS while idle —
+ *                                      the budgets live on the engine, so an
+ *                                      idle client shows the limits from
+ *                                      SettingsPayload instead
  */
 
 /**
@@ -174,6 +188,11 @@
  *                            see core/queue.py); JS-local appendLog reuses the
  *                            same values
  * @property {string} msg
+ * @property {string} calc    name of the calculation this line came from, ""
+ *                            for engine-level lines. Several calculations can
+ *                            run at once and their tailed output interleaves in
+ *                            one buffer, so this tag is what routes a line back
+ *                            to its job (Log-tab filter, per-job graphs)
  */
 
 /**
@@ -192,6 +211,11 @@
  * @property {string} workspace_root
  * @property {number} default_nprocs
  * @property {number} default_maxcore_mb
+ * @property {number} max_concurrent_jobs  calculations that may run at once (1 = sequential)
+ * @property {number} max_total_cores      total cores the queue may occupy (0 = auto)
+ * @property {number} max_total_ram_mb     total memory the queue may occupy, MB (0 = auto)
+ * @property {number} auto_cores           what "auto" resolves to here (physical cores)
+ * @property {number} auto_ram_mb          what "auto" resolves to here (75% of RAM)
  * @property {string} theme
  * @property {"shadcn"|"liquidglass"} theme_variant
  * @property {"restrained"|"moderate"|"bold"|"vivid"|"maximal"} glass_level

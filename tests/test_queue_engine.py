@@ -24,6 +24,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import threading
+import time
+
 import pytest
 
 from orcamgr.core.input_generator import StepConfig
@@ -35,7 +38,11 @@ from orcamgr.core.queue import (
     QueueCallbacks,
     QueueEngine,
 )
+from orcamgr.core.resources import ResourceBudget
 from orcamgr.core.runner import OrcaCancelled, OrcaRunError
+
+
+_CALLS_LOCK = threading.Lock()
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -67,26 +74,31 @@ class EngineHarness:
     _monitor_and_finish would. `calls` records which calcs actually ran.
     """
 
-    def __init__(self, tmp_path, skip_names=None):
+    def __init__(self, tmp_path, skip_names=None, budget=None):
         self.logs: list[tuple[str, str]] = []
+        self.tagged: list[tuple[str, str, str]] = []   # (msg, level, calc name)
         self.calls: list[str] = []
         self.behaviors: dict = {}
-        callbacks = QueueCallbacks(
-            log=lambda msg, level: self.logs.append((msg, level)),
-            calc_update=lambda index, calc: None,
-        )
+
+        def _log(msg, level, calc=""):
+            self.logs.append((msg, level))
+            self.tagged.append((msg, level, calc))
+
+        callbacks = QueueCallbacks(log=_log, calc_update=lambda index, calc: None)
         self.engine = QueueEngine(
             orca_path="orca-not-needed-in-tests",
             workspace_root=str(tmp_path),
             callbacks=callbacks,
             skip_names=skip_names,
+            budget=budget,
         )
         # Instance attribute shadows the bound method: run_all's
         # self._run_calc(...) resolves to the fake.
         self.engine._run_calc = self._fake_run_calc
 
     def _fake_run_calc(self, calc: Calculation, index: int) -> None:
-        self.calls.append(calc.name)
+        with _CALLS_LOCK:
+            self.calls.append(calc.name)
         action = self.behaviors.get(calc.name)
         if action is not None:
             action(calc)  # may raise OrcaRunError / OrcaCancelled / anything
@@ -332,7 +344,7 @@ def test_running_calc_with_dead_process_is_judged_not_relaunched(tmp_path, monke
     logs: list = []
     engine = QueueEngine(
         orca_path="orca-not-needed-in-tests", workspace_root=str(tmp_path),
-        callbacks=QueueCallbacks(log=lambda m, l: logs.append(m),
+        callbacks=QueueCallbacks(log=lambda m, l, _calc="": logs.append(m),
                                  calc_update=lambda i, c: None))
     calc = make_calc("orphan", kind="opt", state=CalcState.RUNNING)
     calc.xyz = "H 0.0 0.0 0.0\nH 0.0 0.0 0.74"
@@ -355,7 +367,7 @@ def test_running_calc_dead_without_output_fails_and_blocks_dependents(tmp_path, 
     monkeypatch.setattr(queue_mod, "process_matches", lambda pid, ct: False)
     engine = QueueEngine(
         orca_path="orca-not-needed-in-tests", workspace_root=str(tmp_path),
-        callbacks=QueueCallbacks(log=lambda m, l: None,
+        callbacks=QueueCallbacks(log=lambda m, l, _calc="": None,
                                  calc_update=lambda i, c: None))
     calc = make_calc("orphan", kind="opt", state=CalcState.RUNNING)
     calc.pid = 4242
@@ -448,7 +460,7 @@ def test_real_prelaunch_failure_ignores_stale_out(tmp_path):
     engine = QueueEngine(
         orca_path="orca-not-needed-in-tests",
         workspace_root=str(tmp_path),
-        callbacks=QueueCallbacks(log=lambda msg, level: logs.append((msg, level))),
+        callbacks=QueueCallbacks(log=lambda msg, level, _calc="": logs.append((msg, level))),
     )
     calc = make_calc("child", kind="opt", ref="ghost")   # ref not in the queue
     _write_out(tmp_path, "child", ABORTED_OPT_OUT)       # stale diagnosis on disk
@@ -553,7 +565,7 @@ class _SentinelRunner:
 def _real_engine(tmp_path) -> QueueEngine:
     engine = QueueEngine(orca_path="orca-not-needed-in-tests",
                          workspace_root=str(tmp_path))
-    engine.runner = _SentinelRunner()
+    engine._orca_runner_factory = _SentinelRunner
     return engine
 
 
@@ -748,11 +760,11 @@ def test_orca_launch_persists_output_path_before_detach(tmp_path):
         orca_path="orca-not-needed-in-tests",
         workspace_root=str(tmp_path),
         callbacks=QueueCallbacks(
-            log=lambda m, level: None,
+            log=lambda m, level, _calc="": None,
             calc_update=lambda i, c: updates.append((c.output_path, c.state)),
         ),
     )
-    engine.runner = _DetachingRunner()
+    engine._orca_runner_factory = _DetachingRunner
     calc = make_calc("shutme", kind="sp")
 
     engine.run_all([calc])
@@ -816,7 +828,7 @@ def test_reattach_prefers_persisted_output_path_over_current_workspace(tmp_path,
     engine = QueueEngine(
         orca_path="orca-not-needed-in-tests",
         workspace_root=str(tmp_path / "NEW_WS"),
-        callbacks=QueueCallbacks(log=lambda m, l: None,
+        callbacks=QueueCallbacks(log=lambda m, l, _calc="": None,
                                  calc_update=lambda i, c: None))
     old_out = tmp_path / "OLD_WS" / "job" / "job.out"
     old_out.parent.mkdir(parents=True)
@@ -827,8 +839,12 @@ def test_reattach_prefers_persisted_output_path_over_current_workspace(tmp_path,
     calc.output_path = str(old_out)
 
     seen = {}
-    monkeypatch.setattr(engine.runner, "adopt", lambda pid, ct: None)
-    monkeypatch.setattr(engine.runner, "end_position", lambda p: 0)
+
+    class _AdoptRunner:
+        def adopt(self, pid, ct): return None
+        def end_position(self, path): return 0
+
+    engine._orca_runner_factory = _AdoptRunner
 
     def fake_monitor(calc_, index, out_path, start_pos=0):
         seen["path"] = str(out_path)
@@ -923,13 +939,13 @@ def test_rows_reordered_mid_run_execute_in_new_order(tmp_path):
     assert harness.calls == ["first", "third", "second"]
 
 
-def test_active_name_is_exposed_while_a_calc_is_handled(tmp_path):
+def test_active_names_expose_every_calc_being_handled(tmp_path):
     harness = EngineHarness(tmp_path)
     seen: list = []
     harness.behaviors["only"] = lambda _c: seen.append(
-        harness.engine.active_name)
+        harness.engine.active_names)
 
     harness.engine.run_all([make_calc("only")])
 
-    assert seen == ["only"]                       # set while handling
-    assert harness.engine.active_name is None     # cleared when the run ends
+    assert seen == [{"only"}]                     # set while handling
+    assert harness.engine.active_names == set()   # cleared when the run ends

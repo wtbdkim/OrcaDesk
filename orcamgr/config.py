@@ -90,6 +90,20 @@ class Settings:
     # default compute resources (used to seed the GUI)
     default_nprocs: int = 6
     default_maxcore_mb: int = 2400
+    # --- parallel queue admission (see core/resources.py) ---
+    # How many calculations may run at once. 1 = the classic one-at-a-time
+    # queue, which stays the default: raising it is a deliberate choice about
+    # this machine, not something to inherit silently on upgrade.
+    max_concurrent_jobs: int = 1
+    # Total cores the queue may occupy across all running jobs (0 = auto, the
+    # machine's physical core count). Each calculation declares its own share
+    # (ORCA %pal nprocs / CREST -T), so "two 8-core jobs" and "four 4-core jobs"
+    # are the same budget — ORCAdesk never rewrites a calculation's nprocs.
+    max_total_cores: int = 0
+    # Total memory the queue may occupy, MB (0 = auto, 75% of installed RAM).
+    # ORCA's %maxcore is PER CORE, so a 6-core job at 2400 MB reserves 14.4 GB:
+    # without this guard two of them can quietly push a 32 GB machine into swap.
+    max_total_ram_mb: int = 0
     theme: str = "dark"
     # Theme *variant*, orthogonal to `theme` (light/dark): "shadcn" is the flat
     # default; "liquidglass" renders the Apple Liquid-Glass chrome (a refracting

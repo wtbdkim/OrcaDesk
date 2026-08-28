@@ -3,6 +3,34 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **The queue can run several calculations at once.** The run engine admits by
+  budget rather than one at a time: a *run at once* limit plus a **core budget**
+  and a **memory budget** (the Settings controls for them land next; the engine,
+  the API and the session already carry them). Admission is by budget, not by
+  lanes: each
+  calculation declares what it occupies (ORCA `%pal nprocs`, CREST `-T`, the
+  MLIP thread cap) and starts only while it still fits — so *two 8-core jobs*
+  and *four 4-core jobs* are the same setting, decided by the calculations
+  themselves. ORCAdesk never rewrites a calculation to make it fit; a raw `.inp`
+  keeps its own `%pal`, and its cost is read from that text. Both budgets
+  default to **auto** (physical cores / 75% of installed RAM) and *Run at once*
+  defaults to **1**, so nothing changes until you raise it.
+  - A calculation that references another now **waits** for its parent instead
+    of failing when it happens to be picked first — sequential running got
+    that for free.
+  - Memory is budgeted because ORCA's `%maxcore` is **per core**: a 6-core job
+    at 2400 MB reserves 14.4 GB, and two of those would push a 32 GB machine
+    into swap.
+  - A calculation larger than the whole budget still runs, on its own, rather
+    than waiting forever.
+  - **Cancel** stops every job in flight; **Stop after current** lets the
+    running ones finish and starts no more.
+  - Every log line now records which calculation produced it, so interleaved
+    output can be told apart.
+
 ## [0.6.1-beta] — 2026-08-28
 
 ### Fixed

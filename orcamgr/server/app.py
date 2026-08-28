@@ -29,6 +29,7 @@ from ..state.schemas import (
     HealthPayload, HeartbeatResult, MutationResult, OkResult, PingPayload,
     RunStartedResult,
 )
+from ..core.resources import ResourceBudget
 from ..paths import APP_VERSION, web_mobile_dir
 from ..config import Settings
 
@@ -169,9 +170,16 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
         # mlip_envs must ride along or a phone-started MLIP calc would find
         # no interpreter and fail even with a ready env registered (A18);
         # crest_distro likewise so a phone-started CREST calc resolves its WSL distro.
+        # The parallel-run budget rides along too, so a phone-started run obeys
+        # the same core/RAM limits as a desktop-started one (P4, same reason as
+        # mlip_envs/crest_distro above).
         factory = make_engine_factory(store, settings.orca_path, settings.workspace_root,
                                       mlip_envs=settings.mlip_envs,
-                                      crest_distro=settings.crest_distro)
+                                      crest_distro=settings.crest_distro,
+                                      budget=ResourceBudget(
+                                          max_jobs=settings.max_concurrent_jobs,
+                                          cores=settings.max_total_cores,
+                                          ram_mb=settings.max_total_ram_mb))
         try:
             store.start_run(factory)
         except RuntimeError as e:

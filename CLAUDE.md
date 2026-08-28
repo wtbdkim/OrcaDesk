@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 378 tests over the framework-free layers
+python -m pytest                       # 407 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 36 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -200,6 +200,10 @@ The `core/` pipeline:
   against PID reuse via `create_time`.
 - `procutil.py` — psutil-backed `process_matches(pid, create_time)` and
   `kill_tree(...)`, used for reattach and reliable tree termination.
+- `resources.py` — what a calculation *costs* (`declared_cores`,
+  `estimated_ram_mb`, reading a raw `.inp`'s own `%pal`/`%maxcore`) and the
+  `ResourceBudget` the dispatcher admits against. Qt-free, psutil for the
+  machine's physical core count / installed RAM.
 - `queue.py` — `QueueEngine` orchestrates the pipeline (details below). Validation
   is the module-level `validate_result()` (shared by the engine and session
   reconciliation). Cancel verbs: hard `cancel()` (kill the in-flight job → it
@@ -223,6 +227,26 @@ The `core/` pipeline:
 ### Queue semantics (important invariants)
 
 These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
+- **Several calculations can run at once, admitted by budget (P57).**
+  `ResourceBudget(max_jobs, cores, ram_mb)` (from `Settings.max_concurrent_jobs`
+  / `max_total_cores` / `max_total_ram_mb`, 0 = auto) is passed to
+  `make_engine_factory` by **both** run entry points. `_run_walk` is a
+  dispatcher: it picks in queue order under the store's lock, then runs each
+  calc in its own thread with its own backend runner (`_JobSlot`, thread-local
+  via `_job`) and its own reserved cores/RAM, released when it finishes. A row
+  is picked only if it is **dependency-ready** — a REFERENCE whose parent may
+  still become DONE is *deferred*, not failed (sequential order used to
+  guarantee this) — and **affordable**; a row that does not fit is skipped over,
+  and if nothing fits with nothing in flight the first ready row runs alone over
+  budget (no starvation). All-deferred with nothing in flight = a reference
+  cycle, stamped BLOCKED (`_block_unreachable`), never a hang. Cost is read from
+  what will actually execute (`core/resources.py`): a raw calc's own `%pal`, not
+  the hidden form field. `max_jobs` defaults to **1** — the classic sequential
+  queue — so nothing changes until the user raises it.
+- **Every log line carries the calc that produced it** (`LogLine.calc`, `""` =
+  engine-level). With jobs interleaving into one buffer the raw ORCA tail has no
+  name of its own, so the tag is what lets the Log tab and the per-job graphs
+  separate them. `QueueCallbacks.log` is `(msg, level, calc="")`.
 - **The queue stays editable while it runs (live queue, P29).** `start_run`
   hands the engine the store's **own list**, and the engine walk picks the
   next unhandled row (tracked by object identity) under the store's **own
@@ -230,8 +254,8 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   a calc added lands in the *same* run; PENDING/CANCELLED/BLOCKED rows can
   be removed, edited (an edited row is a new object — the walk picks it in
   its edited form), and reordered (the walk follows live list order).
-  Still protected mid-run: the in-flight calc (state RUNNING plus
-  `QueueEngine.active_name` for the picked-but-not-yet-stamped window),
+  Still protected mid-run: the in-flight calcs (state RUNNING plus
+  `QueueEngine.active_names` for the picked-but-not-yet-stamped window),
   DONE/FAILED rows (remove/edit refused until the run ends), `clear`, and
   reference integrity — a mid-run add/edit with a dangling reference and a
   remove/rename of a referenced parent are refused at the store, because
