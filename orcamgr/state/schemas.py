@@ -177,6 +177,37 @@ class MlipStatusPayload(TypedDict):
     envs: "list[MlipEnvPayload]"
 
 
+class BasePythonPayload(TypedDict):
+    """One interpreter that could serve as the base for a new MLIP venv."""
+    python: str               # absolute path to python.exe
+    version: str              # "3.12"
+    supported: bool           # torch publishes wheels for this CPython
+
+
+class MlipInstallOptionsPayload(TypedDict):
+    """Bridge.get_mlip_install_options() — what a one-click env creation can be
+    built from on this machine. Detection runs in the background (each candidate
+    is launched to report its version), so the UI polls this."""
+    state: str                # "checking" | "ready"
+    base_pythons: "list[BasePythonPayload]"
+    gpu: bool                 # an NVIDIA GPU is visible to the driver
+    gpu_name: str             # e.g. "NVIDIA GeForce RTX 5080", or ""
+    cuda_index: str           # torch wheel index its architecture needs, e.g. "cu128"
+    backends: "list[str]"     # backend keys installable (MLIP_BACKENDS order)
+
+
+class MlipInstallPayload(TypedDict):
+    """Bridge.get_mlip_install_status() / create_mlip_env() / cancel_mlip_install()
+    — progress of the running (or last) environment creation. `step`/`steps` drive
+    the progress line; `error` is why it failed, "" when it did not."""
+    state: str                # "idle" | "running" | "done" | "error"
+    step: int                 # 1-based, 0 before the first step
+    steps: int                # total steps in the plan
+    label: str                # what that step is doing
+    error: str                # failure reason, or ""
+    cancelled: bool
+
+
 class CrestDistroPayload(TypedDict):
     """One WSL distro probed for CREST (backs the "CREST ready" indicator)."""
     distro: str               # distro name (pass to `wsl -d <distro>`)

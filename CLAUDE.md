@@ -394,7 +394,10 @@ which must be dropped deliberately when phone-sync ships.
 `orcamgr/mlip/` is a dedicated package, kept **out of** the ORCA pipeline in
 `core/` on purpose: a Machine-Learned Interatomic Potential is a separate Python
 toolchain (PyTorch + mace-torch + ASE) that ORCAdesk shells out to the same way
-it shells out to the ORCA executable — it never installs that toolchain.
+it shells out to the ORCA executable. ORCAdesk can *build* such an environment
+for the user (`installer.py`, below) but never installs into the user's own
+Python, and never requires a compiler or a manual shell session — the same bar
+CREST's installer meets.
 
 **One environment per MLIP.** The user registers their own Python environments
 in `Settings.mlip_envs` (a list of `{id, name, python}`), not a single path —
@@ -466,6 +469,48 @@ geometry can't desync from the text: loading a `.xyz` in raw mode is refused
 unless the text has a `{{GEOMETRY}}` placeholder (embedded coords run
 verbatim), and a raw calc's stored charge/multiplicity mirror its own
 `* xyz C M` line, not the hidden form fields.
+
+**Creating an MLIP environment (one click).** `orcamgr/mlip/installer.py` is
+Qt-free and builds an env the user does not have: `find_base_pythons()` detects
+candidate interpreters (the `py` launcher, PATH, and — running from source only
+— `sys.executable`; a **frozen** ORCAdesk has no Python of its own, since
+`sys.executable` is `ORCAdesk.exe` and cannot run `-m venv`, which is why a base
+interpreter is the one manual prerequisite, the analogue of CREST's "a WSL
+distro must exist"). `install_plan()` returns the ordered steps — `venv` →
+upgrade pip → **torch from the device's own index** (cpu ≈150 MB, CUDA ≈2.5 GB)
+→ the backend's pip requirement (`BACKEND_REQUIREMENTS`, keyed like
+`MLIP_BACKENDS`). For a GPU env the CUDA index is **chosen from the card's
+compute capability** (`detect_gpu()` via `nvidia-smi --query-gpu=compute_cap`
+→ `cuda_index_for()` → `CUDA_INDEX_BY_CAPABILITY`, highest match first): a
+torch wheel only ships kernels for the architectures its toolkit knew, and too
+old a pick fails *late* — it installs, imports, reports the GPU, then dies at
+the first kernel launch with `no kernel image is available for execution on the
+device` (observed on an RTX 5080, sm_120, against cu124, whose kernels stop at
+sm_90). `gpu_name`/`cuda_index` ride on the options payload so the card can name
+the build it will fetch. Torch goes in **before** the backend and from a pinned
+index because `mace-torch` would otherwise pull whatever plain torch pip
+resolves, silently turning a GPU install into a CPU one. `MlipEnvInstaller.run()`
+streams every command's output through a callback and is cancellable — the
+cancel **terminates the child** rather than waiting for its next line, because
+pip is silent for minutes while a 2.5 GB wheel downloads. Pre-flight gates
+(a missing base, a CPython outside `MIN_PY..MAX_PY`, a non-empty target dir,
+and the **Windows path budget**) return `{ok: False, error}` before anything is
+created. The path budget is measured, not guessed (P3): a real
+`torch 2.13.0+cpu` install writes 38,469 files whose deepest path relative to
+the env root is **189 chars**, so with the default `MAX_PATH` the env dir gets
+~70 -- and `%APPDATA%\ORCAdesk\mlip_envs` already spends ~51, leaving ~18 for
+the name. Overflow otherwise surfaces as an opaque `OSError` at the *end* of a
+finished download (2.5 GB for a GPU env), so `path_budget_error()` refuses up
+front and names the number of characters to cut; `long_paths_enabled()` (the
+`LongPathsEnabled` registry value) lifts the gate entirely. The device is never
+guessed: `has_nvidia_gpu()` only *defaults* the choice and warns. Bridge slots
+`get_mlip_install_options` / `get_mlip_install_status` / `create_mlip_env` /
+`cancel_mlip_install` follow the probe pattern (background thread + UI polling,
+guarded by `_mlip_install_lock`); on success the env is appended to
+`Settings.mlip_envs` and probed through the existing `_start_mlip_probe`. Envs
+are created under `user_data_root()/mlip_envs/<slug>` (P18 — never the resource
+root), the slug sanitized because the name becomes a real directory. Wire
+shapes: `MlipInstallOptionsPayload` / `MlipInstallPayload` / `BasePythonPayload`.
 
 **Building MLIP jobs.** MLIP mode hides the whole ORCA build
 UI (`_ORCA_BUILD`) and shows a self-contained `#card-mlip`: a name, a MACE-model

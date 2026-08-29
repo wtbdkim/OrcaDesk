@@ -260,6 +260,36 @@
  */
 
 /**
+ * One interpreter usable as the base for a new MLIP venv.
+ * @typedef {Object} BasePythonPayload
+ * @property {string} python     absolute path to python.exe
+ * @property {string} version    "3.12"
+ * @property {boolean} supported torch publishes wheels for this CPython
+ */
+
+/**
+ * Mirror of Bridge.get_mlip_install_options(). What a one-click environment
+ * creation can be built from on this machine; detection is a background probe.
+ * @typedef {Object} MlipInstallOptionsPayload
+ * @property {"checking"|"ready"} state
+ * @property {BasePythonPayload[]} base_pythons
+ * @property {boolean} gpu       an NVIDIA GPU is visible to the driver
+ * @property {string[]} backends installable backend keys
+ */
+
+/**
+ * Mirror of Bridge.get_mlip_install_status() / create_mlip_env() /
+ * cancel_mlip_install(). Progress of the running (or last) env creation.
+ * @typedef {Object} MlipInstallPayload
+ * @property {"idle"|"running"|"done"|"error"} state
+ * @property {number} step       1-based, 0 before the first step
+ * @property {number} steps      total steps in the plan
+ * @property {string} label      what that step is doing
+ * @property {string} error      failure reason, or ""
+ * @property {boolean} cancelled
+ */
+
+/**
  * One WSL distro probed for CREST (backs the "CREST ready" indicator).
  * @typedef {Object} CrestDistroPayload
  * @property {string} distro      distro name (`wsl -d <distro>`)

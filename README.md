@@ -64,10 +64,15 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
     `%plots`, custom blocks). Use `{{GEOMETRY}}` where coordinates go.
 - **MLIP calculations**: relax a structure (or get a quick single-point energy)
   with a **MACE** model (MLIP) — fast, and a relaxed structure is a good starting
-  geometry for the DFT job. It runs in **your own** Python environment
-  (PyTorch + mace-torch + ASE),
-  registered under **Settings → MLIP environments**; ORCAdesk shells out to it and
-  never installs the toolchain. The MLIP build card stays **locked until a MACE
+  geometry for the DFT job. It runs in a dedicated Python environment
+  (PyTorch + mace-torch + ASE) managed under **Settings → MLIP environments**:
+  press **Create** and ORCAdesk builds one for you — pick **CPU** (~150 MB) or
+  **GPU/CUDA** (~2.5 GB) and it makes a private virtual environment, installs
+  PyTorch for that device, installs the backend, and registers the result. It
+  needs a Python already on your machine to build on (auto-detected; install one
+  from python.org if there is none). You can equally register an environment you
+  built yourself — ORCAdesk only ever shells out to it, and never installs into
+  a Python you manage. The MLIP build card stays **locked until a MACE
   environment is ready**. An `mlip_opt`/`mlip_sp` calculation joins the same queue,
   and an optimized geometry can be referenced by a downstream ORCA calculation
   just like an opt→freq handoff.
@@ -141,8 +146,9 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   as one browsable set — no external viewer needed. **Star** the ones worth
   keeping (the **F** key); starred structures persist, can be stepped through on
   their own, and exported to a `favorites/` folder.
-- **Settings**: ORCA executable path, **MLIP environments** (register your own
-  MACE-capable Python interpreters; backends are auto-detected), workspace folder,
+- **Settings**: ORCA executable path, **MLIP environments** (create one for CPU
+  or GPU in a click, or register your own MACE-capable Python interpreters;
+  backends are auto-detected), workspace folder,
   per-step defaults (nprocs / maxcore), and two live-graph options — the
   optimization time-estimate mode and what the optimization graph plots.
 

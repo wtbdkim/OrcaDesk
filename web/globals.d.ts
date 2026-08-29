@@ -24,6 +24,11 @@ interface OrcaBridge {
   remove_mlip_env(id: string): Promise<string>;        // MlipStatusPayload JSON
   check_mlip(id: string): Promise<string>;             // MlipStatusPayload JSON ("" = all)
   get_mlip_status(): Promise<string>;          // MlipStatusPayload JSON
+  // one-click MLIP environment creation (venv + torch for a device + a backend)
+  get_mlip_install_options(): Promise<string>; // MlipInstallOptionsPayload JSON
+  get_mlip_install_status(): Promise<string>;  // MlipInstallPayload JSON
+  create_mlip_env(payloadJson: string): Promise<string>;  // MlipInstallPayload | {error}
+  cancel_mlip_install(): Promise<string>;      // MlipInstallPayload JSON
   // CREST (runs in WSL; separate from ORCA)
   get_crest_status(): Promise<string>;         // CrestStatusPayload JSON
   check_crest(): Promise<string>;              // CrestStatusPayload JSON (re-probe)

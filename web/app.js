@@ -558,6 +558,10 @@ async function loadSettings() {
   // MLIP environments are managed in their own channel (a background probe per
   // env); render from get_mlip_status() and poll while any is still checking.
   pollMlipStatus();
+  // Base-Python / GPU detection for one-click env creation is a third channel:
+  // it launches every candidate interpreter to read its version, so it cannot
+  // run inline here.
+  pollMlipInstall();
   // CREST readiness (WSL distro probe) is likewise its own background channel.
   pollCrestStatus();
 }
@@ -725,6 +729,138 @@ async function checkMlipEnv(id) {
 async function pickMlipPython() {
   const p = await bridge.pick_mlip_python();
   if (p) document.getElementById("set-mlip").value = p;
+}
+
+// ---------- one-click MLIP environment creation ----------
+let _mlipInstallTimer = 0;
+/** @type {MlipInstallOptionsPayload|null} */
+let _mlipInstallOpts = null;
+/** Fill the base-Python picker and say what the chosen device will cost.
+ *  Kept honest (D2): a GPU pick on a machine with no NVIDIA GPU is called out
+ *  BEFORE a 2.5 GB download, not after it lands and torch reports CPU only. */
+function renderMlipInstallOptions() {
+  const opts = _mlipInstallOpts;
+  const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById("mlip-base-python"));
+  const detail = document.getElementById("mlip-install-detail");
+  const btn = /** @type {HTMLButtonElement|null} */ (document.getElementById("mlip-create-btn"));
+  const bases = (opts && opts.base_pythons) || [];
+  if (sel) {
+    const prev = sel.value;
+    sel.textContent = "";
+    for (const b of bases) {
+      const o = document.createElement("option");
+      o.value = b.python;
+      o.textContent = `Python ${b.version} — ${b.python}` + (b.supported ? "" : "  (unsupported)");
+      o.disabled = !b.supported;
+      sel.appendChild(o);
+    }
+    if (!bases.length) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = opts && opts.state === "checking" ? "detecting…" : "no Python found";
+      sel.appendChild(o);
+    }
+    if (prev && bases.some(b => b.python === prev)) sel.value = prev;
+  }
+  const usable = bases.some(b => b.supported);
+  const device = /** @type {HTMLSelectElement|null} */ (document.getElementById("mlip-new-device"));
+  const wantsGpu = !!device && device.value === "cuda";
+  if (btn && !_mlipInstalling()) {
+    // Nothing to build the venv WITH is the MLIP analogue of CREST's "no distro
+    // to install into": disable, with the reason in place, never a click that
+    // can only fail (D41).
+    btn.disabled = !usable;
+    btn.title = usable ? "" : "No supported Python found to build the environment with";
+  }
+  if (detail && !_mlipInstalling()) {
+    detail.style.color = "";
+    if (opts && opts.state === "checking") detail.textContent = "Detecting a base Python…";
+    else if (!usable) detail.textContent =
+      "No supported Python found. Install Python (3.9–3.14) from python.org, then Re-check, or register an existing environment below.";
+    else if (wantsGpu && opts && !opts.gpu) {
+      detail.textContent = "No NVIDIA GPU detected — a CUDA environment would download ~2.5 GB and still run on CPU.";
+      detail.style.color = "var(--warn)";
+    } else if (wantsGpu) {
+      // Name the wheel build. It is picked from the card's compute capability,
+      // and the wrong one is not a loud failure: it installs, imports, reports
+      // the GPU, then dies at the first kernel launch with "no kernel image is
+      // available for execution on the device".
+      const gpu = (opts && opts.gpu_name) || "your GPU";
+      const idx = (opts && opts.cuda_index) || "";
+      detail.textContent = "Downloads PyTorch with CUDA (~2.5 GB) plus the backend"
+        + (idx ? ` — ${idx} wheels, matched to ${gpu}.` : ".");
+    } else detail.textContent = "Downloads PyTorch (CPU, ~150 MB) plus the backend.";
+  }
+}
+function _mlipInstalling() {
+  return !!_mlipInstallState && _mlipInstallState.state === "running";
+}
+/** @type {MlipInstallPayload|null} */
+let _mlipInstallState = null;
+/** Reflect creation progress: the step line, and Create/Cancel swapping.
+ *  @param {MlipInstallPayload} st */
+function renderMlipInstall(st) {
+  _mlipInstallState = st;
+  const running = st.state === "running";
+  const btn = /** @type {HTMLButtonElement|null} */ (document.getElementById("mlip-create-btn"));
+  const cancel = document.getElementById("mlip-cancel-btn");
+  const detail = document.getElementById("mlip-install-detail");
+  if (btn) { btn.disabled = running; btn.textContent = running ? "Creating…" : "Create"; }
+  if (cancel) cancel.style.display = running ? "" : "none";
+  if (detail && running) {
+    detail.style.color = "";
+    detail.textContent = st.steps
+      ? `Step ${st.step}/${st.steps} — ${st.label}  (this takes a few minutes; the Log tab has pip's output)`
+      : st.label;
+  }
+  if (!running) renderMlipInstallOptions();
+  if (detail && st.state === "error" && st.error) {
+    detail.textContent = (st.cancelled ? "Cancelled — " : "Failed — ") + st.error;
+    detail.style.color = st.cancelled ? "" : "var(--err)";
+  }
+}
+/** Poll options + install progress until both settle. */
+async function pollMlipInstall() {
+  const wasRunning = _mlipInstalling();
+  _mlipInstallOpts = /** @type {MlipInstallOptionsPayload} */ (
+    JSON.parse(await bridge.get_mlip_install_options()));
+  const st = /** @type {MlipInstallPayload} */ (
+    JSON.parse(await bridge.get_mlip_install_status()));
+  renderMlipInstall(st);
+  if (wasRunning && st.state !== "running") {
+    // The new env was registered and is being probed on the OTHER channel,
+    // whose poll loop has long since settled — restart it or the env would sit
+    // at "checking…" until the next re-check.
+    toast(st.state === "done" ? "MLIP environment ready."
+          : st.cancelled ? "Environment creation cancelled."
+          : "Environment creation failed — see the Log tab.");
+    pollMlipStatus();
+  }
+  clearTimeout(_mlipInstallTimer);
+  if (st.state === "running" || (_mlipInstallOpts && _mlipInstallOpts.state === "checking"))
+    _mlipInstallTimer = setTimeout(pollMlipInstall, 900);
+}
+async function createMlipEnv() {
+  const name = /** @type {HTMLInputElement} */ (document.getElementById("mlip-new-name")).value.trim() || "MACE";
+  const backend = /** @type {HTMLSelectElement} */ (document.getElementById("mlip-new-backend")).value;
+  const device = /** @type {HTMLSelectElement} */ (document.getElementById("mlip-new-device")).value;
+  const base = /** @type {HTMLSelectElement} */ (document.getElementById("mlip-base-python")).value;
+  toast(device === "cuda"
+    ? "Creating a GPU environment — downloading ~2.5 GB…"
+    : "Creating an environment — downloading ~150 MB…");
+  const res = JSON.parse(await bridge.create_mlip_env(
+    JSON.stringify({ name, backend, device, base_python: base })));
+  if (res && res.error && res.state === undefined) {
+    failNotify("Could not start: " + res.error);
+    return;
+  }
+  renderMlipInstall(/** @type {MlipInstallPayload} */ (res));
+  pollMlipInstall();
+}
+async function cancelMlipInstall() {
+  const st = /** @type {MlipInstallPayload} */ (JSON.parse(await bridge.cancel_mlip_install()));
+  renderMlipInstall(st);
+  pollMlipInstall();
 }
 
 // ---------- CREST (WSL) status ----------

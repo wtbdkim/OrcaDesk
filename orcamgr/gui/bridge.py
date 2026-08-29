@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import QFileDialog
 
 from ..config import Settings, autodetect_orca
 from ..mlip.env import (
-    probe_env, new_env_id, resolve_interpreter,
+    probe_env, new_env_id, resolve_interpreter, MLIP_BACKENDS,
     env_payload_checking, env_payload_error, env_payload_from_probe, aggregate_status,
     order_envs_by_readiness,
 )
@@ -49,7 +49,8 @@ from ..state.schemas import (
     AboutPayload, AutodetectResult, ConflictsResult, ErrorPayload, ExistsResult,
     FepPoint,
     FepResult, GeomAtomPayload, GetCalcResult, GraphLinesResult, LoadResult,
-    MlipStatusPayload, MutationResult, NmrPayload, OkResult, OrbitalPayload,
+    MlipStatusPayload, MlipInstallPayload, MlipInstallOptionsPayload,
+    MutationResult, NmrPayload, OkResult, OrbitalPayload,
     ParsePayload, QrResult, ServerStatusPayload, SettingsPayload,
     StartServerResult, TextResult, TransitionPayload,
     CrestStatusPayload, ConformerPayload,
@@ -114,6 +115,17 @@ class Bridge(QObject):
         self._mlip_probe_seq: dict[str, int] = {}
         for env in self.settings.mlip_envs:
             self._start_mlip_probe(env["id"], env.get("name", ""), env.get("python", ""))
+        # One-click MLIP environment creation (venv + torch + a backend). Its
+        # own channel like the probe's: pip runs for minutes, so the work is a
+        # background thread and the UI polls get_mlip_install_status().
+        self._mlip_install_lock = threading.Lock()
+        self._mlip_install: dict = {"state": "idle", "step": 0, "steps": 0,
+                                    "label": "", "error": "", "cancelled": False}
+        self._mlip_installer = None       # live MlipEnvInstaller, for cancel
+        self._mlip_install_opts: dict = {"state": "checking", "base_pythons": [],
+                                         "gpu": False, "gpu_name": "",
+                                         "cuda_index": "", "backends": []}
+        self._start_mlip_install_probe()
         # Live CREST status (WSL distro probe). Like MLIP the probe is slow (it
         # spawns wsl.exe + runs `crest --version`), so it runs in a background
         # thread and the UI polls get_crest_status(). Guarded by its own lock.
@@ -395,6 +407,130 @@ class Bridge(QObject):
                         cfg["id"], cfg.get("name", ""), cfg.get("python", ""))
                 envs.append(st)
         return json.dumps(MlipStatusPayload(**aggregate_status(envs)))
+
+    # --- one-click MLIP environment creation ---
+    def _start_mlip_install_probe(self) -> None:
+        """Detect base interpreters + an NVIDIA GPU in the background. Each
+        candidate is LAUNCHED to report its version, so this must never run on
+        the Qt UI thread."""
+        def _worker() -> None:
+            from ..mlip.installer import (find_base_pythons, detect_gpu,
+                                          cuda_index_for)
+            try:
+                gpu = detect_gpu()
+                opts = {"state": "ready", "base_pythons": find_base_pythons(),
+                        "gpu": bool(gpu["name"]), "gpu_name": gpu["name"],
+                        # surfaced so the card can name the build it will fetch:
+                        # the wrong one installs fine and dies at the first
+                        # kernel launch, which is not a thing to discover later
+                        "cuda_index": cuda_index_for(gpu["capability"]),
+                        "backends": list(MLIP_BACKENDS.keys())}
+            except Exception as e:   # detection must never kill the panel
+                opts = {"state": "ready", "base_pythons": [], "gpu": False,
+                        "gpu_name": "", "cuda_index": "",
+                        "backends": list(MLIP_BACKENDS.keys())}
+                self.store.append_log(f"MLIP base-Python detection failed: {e}", "warn")
+            with self._mlip_install_lock:
+                self._mlip_install_opts = opts
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @pyqtSlot(result=str)
+    def get_mlip_install_options(self) -> str:
+        """What a new MLIP environment can be built from here (detected base
+        interpreters, whether a GPU exists, installable backends)."""
+        with self._mlip_install_lock:
+            opts = dict(self._mlip_install_opts)
+        return json.dumps(MlipInstallOptionsPayload(**opts))
+
+    @pyqtSlot(result=str)
+    def get_mlip_install_status(self) -> str:
+        """Progress of the running (or last) environment creation."""
+        with self._mlip_install_lock:
+            st = dict(self._mlip_install)
+        return json.dumps(MlipInstallPayload(**st))
+
+    @pyqtSlot(str, result=str)
+    def create_mlip_env(self, payload_json: str) -> str:
+        """Build a new MLIP environment (venv + torch for the chosen device + a
+        backend) and register it on success. Returns the install status
+        immediately; the UI polls get_mlip_install_status(). Refuses while one
+        is already running -- two pips into one tree is corruption."""
+        from ..mlip.installer import MlipEnvInstaller, venv_python
+        try:
+            data = json.loads(payload_json or "{}")
+        except json.JSONDecodeError as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+        name = (data.get("name") or "").strip() or "MACE"
+        backend = (data.get("backend") or "mace").strip()
+        device = (data.get("device") or "cpu").strip()
+        base = (data.get("base_python") or "").strip()
+        if not base:      # default to the best detected interpreter
+            with self._mlip_install_lock:
+                found = list(self._mlip_install_opts.get("base_pythons") or [])
+            base = found[0]["python"] if found else ""
+        # The folder name is user-typed and becomes a real directory: keep it to
+        # characters that cannot escape the envs root or trip Windows.
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-") or "mlip"
+        env_dir = user_data_root() / "mlip_envs" / slug
+
+        with self._mlip_install_lock:
+            if self._mlip_install.get("state") == "running":
+                return self.get_mlip_install_status()
+            self._mlip_install = {"state": "running", "step": 0, "steps": 4,
+                                  "label": "Starting…", "error": "",
+                                  "cancelled": False}
+            installer = self._mlip_installer = MlipEnvInstaller()
+
+        def _on_line(line: str) -> None:
+            self.store.append_log(f"[mlip-install] {line}", "info")
+
+        def _on_step(i: int, total: int, label: str) -> None:
+            with self._mlip_install_lock:
+                self._mlip_install.update({"step": i, "steps": total, "label": label})
+
+        def _worker() -> None:
+            try:
+                res = installer.run(base, env_dir, backend=backend, device=device,
+                                    on_line=_on_line, on_step=_on_step)
+            except Exception as e:      # a crash must still release the UI
+                res = {"ok": False, "python": "", "error": str(e), "cancelled": False}
+            if res.get("ok"):
+                python = res.get("python") or str(venv_python(env_dir))
+                env_id = new_env_id()
+                with self._mlip_lock:
+                    self.settings.mlip_envs.append(
+                        {"id": env_id, "name": name, "python": python})
+                self.settings.save()
+                self._start_mlip_probe(env_id, name, python)
+                self.store.append_log(
+                    f"MLIP environment '{name}' created ({device.upper()}).", "ok")
+            elif res.get("cancelled"):
+                self.store.append_log("MLIP environment creation cancelled.", "warn")
+            else:
+                self.store.append_log(
+                    f"MLIP environment creation failed: "
+                    f"{res.get('error') or 'unknown error'}", "err")
+            with self._mlip_install_lock:
+                self._mlip_installer = None
+                self._mlip_install = {
+                    "state": "done" if res.get("ok") else "error",
+                    "step": self._mlip_install.get("step", 0), "steps": 4,
+                    "label": self._mlip_install.get("label", ""),
+                    "error": "" if res.get("ok") else (res.get("error") or ""),
+                    "cancelled": bool(res.get("cancelled"))}
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return self.get_mlip_install_status()
+
+    @pyqtSlot(result=str)
+    def cancel_mlip_install(self) -> str:
+        """Stop a running environment creation (terminates pip)."""
+        with self._mlip_install_lock:
+            installer = self._mlip_installer
+        if installer is not None:
+            installer.cancel()
+        return self.get_mlip_install_status()
 
     # --- CREST environment (WSL-backed, kept separate from ORCA) ---
     def _start_crest_probe(self) -> None:

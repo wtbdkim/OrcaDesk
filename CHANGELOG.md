@@ -6,6 +6,37 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [0.7.0-beta] — 2026-08-28
 
 ### Added
+- **An MLIP environment can now be created with one click, for CPU or GPU.**
+  *Settings → MLIP environments* gained a **Create** button: pick a backend
+  (MACE / SevenNet) and a device, and ORCAdesk builds a private virtual
+  environment, installs PyTorch for that device, installs the backend, and
+  registers the result — no shell, no conda, no pip commands to copy. The
+  environment lands in `%APPDATA%\ORCAdesk\mlip_envs\` and is probed like any
+  other, so the *MLIP ready* indicator turns green on its own when it finishes.
+  - **CPU (~150 MB) and GPU/CUDA (~2.5 GB) are separate, explicit choices**, and
+    the size is on the button before you press it. Picking GPU on a machine with
+    no NVIDIA GPU says so first, rather than after the download.
+  - **The CUDA build is matched to your actual graphics card.** A PyTorch wheel
+    only carries kernels for the GPU generations its CUDA version knew about,
+    and picking one too old fails *late and confusingly*: it installs, imports,
+    reports your GPU as available, and then dies on the first calculation with
+    `CUDA error: no kernel image is available for execution on the device`.
+    ORCAdesk now reads the card's compute capability before downloading and
+    fetches the right build (an RTX 50-series card gets CUDA 12.8 wheels, not
+    12.4), and the card names the build and the GPU it matched.
+  - The base Python it builds on is **auto-detected**; if none is found (or none
+    in the range PyTorch publishes wheels for) the button is disabled and says
+    why — creating one is the single step ORCAdesk cannot do for you, the same
+    way a WSL distribution is for CREST.
+  - It takes minutes, so there is a live step counter and a **Cancel** button;
+    pip's full output goes to the Log tab.
+  - **A name that would break Windows' path limit is refused before the
+    download, not after it.** PyTorch nests files 189 characters deep, which
+    leaves about 18 characters for the environment name on a default Windows
+    install; overflowing it used to surface as an opaque `OSError` at the very
+    end of a completed download. The check says how many characters to cut, and
+    lifts entirely if Win32 long paths are enabled.
+  - Registering an environment you built yourself still works exactly as before.
 - **The queue can run several calculations at once.** Settings → *Parallel runs*
   takes a **core budget** and a **memory budget**, and starts as many
   calculations as fit in them, in queue order — the next one the moment one

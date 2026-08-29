@@ -93,14 +93,28 @@ Any fact the system needs twice is defined once and derived everywhere else:
 When the same judgment must be made from two code paths, extract it to one
 function *before* the second caller exists, not after they diverge.
 
-### P5 — Orchestrate; never bundle, never install
+### P5 — Orchestrate; never bundle, never import
 
 ORCAdesk does not do the chemistry. External scientific toolchains — the ORCA
-executable, and equally the MLIP stack (PyTorch/mace/ASE) — are the user's
-own installations, invoked by shelling out. ORCAdesk never installs them,
-never imports them into its own process, and never bundles them. Core
-`requirements.txt` stays minimal (PyQt6 + PyQt6-WebEngine + psutil); optional
-features carry
+executable, the MLIP stack (PyTorch/mace/ASE), the CREST binary — are invoked
+by **shelling out**: never bundled into the build, never imported into
+ORCAdesk's own process, and never installed *into* an environment the user
+manages.
+
+ORCAdesk **may provision a private copy** of a toolchain where that is fully
+scriptable — CREST's static binary into a WSL distro (`crest/installer.py`), a
+dedicated venv for an MLIP (`mlip/installer.py`). This is a convenience over
+the same shell-out boundary, not an exception to it: the copy lives in
+ORCAdesk's own writable space (`user_data_root()`, P18), the user's own
+interpreters and PATH are untouched, and the copy is reached by exactly the
+path a hand-built one would be. What is *not* scriptable stays the user's job
+and is named as a prerequisite rather than attempted — a WSL distro, a base
+Python interpreter — as is anything needing a compiler or an interactive
+session. ORCA is never provisioned: it is licensed, and its installer is
+interactive.
+
+Core `requirements.txt` stays minimal (PyQt6 + PyQt6-WebEngine + psutil);
+optional features carry
 their own requirements file and degrade gracefully when absent (P17). Even
 ORCA itself is required only when a non-MLIP calc will actually run.
 
@@ -727,3 +741,4 @@ tradeoff, kept), or **stale-doc** (the description, not the code, is wrong).
 | A21 | Code predated the amended P24 (FAILED-locked): `EDITABLE_STATES` still included `failed`, `run_all` re-ran FAILED calcs, `check_overwrite_conflicts` offered keep-existing for a failed `.out` (which the skip path then stamped DONE — A7), and the front-end `isEditableState` mirrored the old rule; BLOCKED sat outside `EDITABLE_STATES`, which would have stranded dependents after their failed parent's removal | P24 | resolved (0.4.3-beta — failure lock implemented end-to-end: store, engine, conflict check, UI affordances, BLOCKED editability; × removal stays available in every non-RUNNING state and remains queue-list-only) |
 | A22 | If a keep-existing fallback run (the skip path discarding an invalid kept result and running fresh) fails *before* ORCA launches (e.g. geometry resolution), `_failure_reason` may read the stale on-disk `.out` and mask the real pre-launch cause | P28, P2 | resolved (0.4.3-beta — `_failure_reason` consults the `.out` only after this attempt actually launched or adopted ORCA; a pre-launch failure keeps the engine's own error, with regression tests) |
 | A23 | `mlip_env_id == ""` is documented as *first **ready** env* (`StepConfig.mlip_env_id`, `web/types.js`, CLAUDE.md) but `_resolve_mlip_python` took `mlip_envs[0]` — the first **registered** env. Readiness is a live probe result held by the Bridge and was never plumbed to the engine, so with two envs whose first is broken, every MLIP calc routed to the broken one while the pill read "ready" off the other | P2, D2 | resolved (0.7.0-beta — the Bridge orders the list it hands the engine by last-known readiness (`order_envs_by_readiness`, Qt-free and unit-tested); the engine still takes `envs[0]`, so the contract now holds end to end) |
+| A24 | P5 read *"never installs them"*, but `crest/installer.py` has downloaded and installed the CREST binary since 0.5.0-beta — the principle was stale the day it shipped, and the MLIP env installer widened the gap | P5, P2 | resolved (0.7.0-beta — stale-doc: P5 rewritten as *never bundle, never import*, with provisioning a **private** copy allowed where fully scriptable and the un-scriptable step named as a prerequisite instead) |

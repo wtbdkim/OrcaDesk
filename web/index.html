@@ -468,10 +468,34 @@
       </div>
       <div class="card">
         <div class="card-title">MLIP environments</div>
-        <div class="card-desc">One self-provided Python environment per MLIP — separate venvs (MLIPs pin conflicting dependencies), backends auto-detected.</div>
+        <div class="card-desc">One Python environment per MLIP — created here or registered, separate venvs (MLIPs pin conflicting dependencies), backends auto-detected.</div>
         <div id="mlip-env-list" class="mlip-env-list"></div>
-        <div class="field-row" style="margin-top:8px">
-          <div class="field"><input id="set-mlip" type="text" class="mono" placeholder="C:\path\to\mlip-env\Scripts\python.exe"></div>
+        <div class="field-row" style="margin-top:12px">
+          <div class="field"><label>New environment</label>
+            <input id="mlip-new-name" type="text" placeholder="MACE">
+          </div>
+          <div class="field"><label>Backend</label>
+            <select id="mlip-new-backend"><option value="mace">MACE</option><option value="sevennet">SevenNet</option></select>
+          </div>
+          <div class="field"><label>Device</label>
+            <select id="mlip-new-device" onchange="renderMlipInstallOptions()">
+              <option value="cpu">CPU (~150 MB)</option>
+              <option value="cuda">GPU / CUDA (~2.5 GB)</option>
+            </select>
+          </div>
+          <button class="btn" id="mlip-create-btn" onclick="createMlipEnv()">Create</button>
+          <button class="btn btn-ghost" id="mlip-cancel-btn" onclick="cancelMlipInstall()" style="display:none">Cancel</button>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Base Python</label>
+            <select id="mlip-base-python"></select>
+          </div>
+        </div>
+        <div id="mlip-install-detail" class="hint" style="margin:4px 0 0"></div>
+        <div class="field-row" style="margin-top:12px">
+          <div class="field"><label>Or register an existing environment</label>
+            <input id="set-mlip" type="text" class="mono" placeholder="C:\path\to\mlip-env\Scripts\python.exe">
+          </div>
           <button class="btn" onclick="pickMlipPython()">Browse</button>
           <button class="btn" onclick="addMlipEnv()">Add</button>
         </div>
