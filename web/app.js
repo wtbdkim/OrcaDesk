@@ -740,9 +740,9 @@ let _mlipInstallOpts = null;
  *  BEFORE a 2.5 GB download, not after it lands and torch reports CPU only. */
 function renderMlipInstallOptions() {
   const opts = _mlipInstallOpts;
-  const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById("mlip-base-python"));
+  const sel = document.getElementById("mlip-base-python");
   const detail = document.getElementById("mlip-install-detail");
-  const btn = /** @type {HTMLButtonElement|null} */ (document.getElementById("mlip-create-btn"));
+  const btn = document.getElementById("mlip-create-btn");
   const bases = (opts && opts.base_pythons) || [];
   if (sel) {
     const prev = sel.value;
@@ -763,7 +763,7 @@ function renderMlipInstallOptions() {
     if (prev && bases.some(b => b.python === prev)) sel.value = prev;
   }
   const usable = bases.some(b => b.supported);
-  const device = /** @type {HTMLSelectElement|null} */ (document.getElementById("mlip-new-device"));
+  const device = document.getElementById("mlip-new-device");
   const wantsGpu = !!device && device.value === "cuda";
   if (btn && !_mlipInstalling()) {
     // Nothing to build the venv WITH is the MLIP analogue of CREST's "no distro
@@ -802,7 +802,7 @@ let _mlipInstallState = null;
 function renderMlipInstall(st) {
   _mlipInstallState = st;
   const running = st.state === "running";
-  const btn = /** @type {HTMLButtonElement|null} */ (document.getElementById("mlip-create-btn"));
+  const btn = document.getElementById("mlip-create-btn");
   const cancel = document.getElementById("mlip-cancel-btn");
   const detail = document.getElementById("mlip-install-detail");
   if (btn) { btn.disabled = running; btn.textContent = running ? "Creating…" : "Create"; }
@@ -841,10 +841,10 @@ async function pollMlipInstall() {
     _mlipInstallTimer = setTimeout(pollMlipInstall, 900);
 }
 async function createMlipEnv() {
-  const name = /** @type {HTMLInputElement} */ (document.getElementById("mlip-new-name")).value.trim() || "MACE";
-  const backend = /** @type {HTMLSelectElement} */ (document.getElementById("mlip-new-backend")).value;
-  const device = /** @type {HTMLSelectElement} */ (document.getElementById("mlip-new-device")).value;
-  const base = /** @type {HTMLSelectElement} */ (document.getElementById("mlip-base-python")).value;
+  const name = (document.getElementById("mlip-new-name")?.value || "").trim() || "MACE";
+  const backend = document.getElementById("mlip-new-backend")?.value || "mace";
+  const device = document.getElementById("mlip-new-device")?.value || "cpu";
+  const base = document.getElementById("mlip-base-python")?.value || "";
   toast(device === "cuda"
     ? "Creating a GPU environment — downloading ~2.5 GB…"
     : "Creating an environment — downloading ~150 MB…");
@@ -1731,7 +1731,7 @@ function refreshMlipDeviceOptions() {
 function onMlipDeviceChange() {
   const note = document.getElementById("mlip-threads-note");
   if (!note) return;
-  const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById("mlip-device"));
+  const sel = document.getElementById("mlip-device");
   const dev = sel ? sel.value : "";
   note.textContent = dev === "cuda"
     ? "CPU threads still applies on the GPU: it caps the CPU-side work (neighbour lists, the optimizer, finite-difference steps). A GPU job is charged one core and takes the single GPU lane, so the number here is not what the queue reserves."

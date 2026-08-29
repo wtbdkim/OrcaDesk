@@ -273,8 +273,10 @@
  * @typedef {Object} MlipInstallOptionsPayload
  * @property {"checking"|"ready"} state
  * @property {BasePythonPayload[]} base_pythons
- * @property {boolean} gpu       an NVIDIA GPU is visible to the driver
- * @property {string[]} backends installable backend keys
+ * @property {boolean} gpu        an NVIDIA GPU is visible to the driver
+ * @property {string} gpu_name    e.g. "NVIDIA GeForce RTX 5080", or ""
+ * @property {string} cuda_index  torch wheel index its architecture needs, e.g. "cu128"
+ * @property {string[]} backends  installable backend keys
  */
 
 /**
