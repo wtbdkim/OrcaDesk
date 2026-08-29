@@ -195,6 +195,7 @@ class CrestStatusPayload(TypedDict):
     state: str                # "unset" | "checking" | "ready" | "error"
     distros: "list[CrestDistroPayload]"
     wsl: bool                 # whether wsl.exe is available at all
+    install_error: str        # why the last install attempt failed, or ""
 
 
 class ErrorPayload(TypedDict):

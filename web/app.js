@@ -730,6 +730,7 @@ async function pickMlipPython() {
 // ---------- CREST (WSL) status ----------
 let _crestPollTimer = 0;
 let _crestReady = false;   // some WSL distro has CREST — gates the CREST build card
+let _crestInstallWatch = false;  // an install click is awaiting its outcome (toast once)
 /** Grey out and lock the CREST build card when no distro has CREST. */
 function applyCrestLock() {
   applyBackendCardLock("crest", !_crestReady);
@@ -780,16 +781,27 @@ function renderCrestSettings(st) {
   const btn = document.getElementById("crest-install-btn");
   if (btn) {
     // Installing is redundant once CREST is present in the target distro
-    // (auto-detect ⇒ any distro; a specific pick ⇒ that distro).
+    // (auto-detect ⇒ any distro; a specific pick ⇒ that distro) — and
+    // impossible with no distro to install INTO. Creating a distro needs a
+    // Linux account, so it is the one step ORCAdesk cannot script; leaving the
+    // button live there bought a click that could only fail into the Log tab.
     const target = sel ? sel.value : "";
     const alreadyReady = target
       ? distros.some(d => d.distro === target && d.ready)
       : distros.some(d => d.ready);
-    btn.disabled = alreadyReady;
-    btn.title = alreadyReady ? "CREST is already installed here" : "";
+    const noWsl = !st || !st.wsl;
+    const busy = !!st && st.state === "checking";
+    btn.disabled = alreadyReady || noWsl || busy || !distros.length;
+    btn.title = alreadyReady ? "CREST is already installed here"
+      : noWsl ? "WSL is not available on this machine"
+      : busy ? "Checking WSL…"
+      : !distros.length ? "No WSL distribution to install into — install one first, e.g. `wsl --install -d Ubuntu`"
+      : "";
   }
   if (detail) {
-    if (st && !st.wsl) detail.textContent = "WSL is not available on this machine.";
+    const installErr = (st && st.install_error) || "";
+    if (installErr) detail.textContent = "Install failed — " + installErr;
+    else if (st && !st.wsl) detail.textContent = "WSL is not available on this machine.";
     else if (!distros.length) detail.textContent = "No usable WSL distribution found. Install one, e.g. `wsl --install -d Ubuntu`.";
     else {
       const ready = distros.filter(d => d.ready).map(d => d.distro);
@@ -804,9 +816,20 @@ async function pollCrestStatus() {
   const st = /** @type {CrestStatusPayload} */ (JSON.parse(await bridge.get_crest_status()));
   renderCrest(st);
   clearTimeout(_crestPollTimer);
-  if (st.state === "checking") _crestPollTimer = setTimeout(pollCrestStatus, 900);
+  if (st.state === "checking") {
+    _crestPollTimer = setTimeout(pollCrestStatus, 900);
+    return;
+  }
+  // The install runs in a background thread, so its outcome lands here rather
+  // than on the click that started it — report it once, at the button.
+  if (_crestInstallWatch) {
+    _crestInstallWatch = false;
+    toast(st.install_error ? "CREST install failed — " + st.install_error
+                           : "CREST installed.");
+  }
 }
 async function checkCrest() {
+  _crestInstallWatch = false;
   const st = /** @type {CrestStatusPayload} */ (JSON.parse(await bridge.check_crest()));
   renderCrest(st);
   pollCrestStatus();
@@ -815,6 +838,7 @@ async function installCrest() {
   const sel = document.getElementById("set-crest-distro");
   const distro = sel ? sel.value : "";
   toast("Installing CREST into WSL — this downloads ~8 MB…");
+  _crestInstallWatch = true;
   const st = /** @type {CrestStatusPayload} */ (JSON.parse(await bridge.install_crest(distro || "")));
   renderCrest(st);
   pollCrestStatus();

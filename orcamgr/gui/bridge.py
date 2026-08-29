@@ -412,6 +412,9 @@ class Bridge(QObject):
         status.setdefault("state", "checking")
         status.setdefault("distros", [])
         status.setdefault("wsl", True)
+        # A plain re-probe publishes no install_error, so a Re-check clears a
+        # stale one on its own -- the error describes the last install ATTEMPT.
+        status.setdefault("install_error", "")
         return json.dumps(CrestStatusPayload(**status))
 
     @pyqtSlot(result=str)
@@ -432,7 +435,7 @@ class Bridge(QObject):
             self._crest_installing = True
             self._crest_status = {"state": "checking",
                                   "distros": self._crest_status.get("distros", []),
-                                  "wsl": True}
+                                  "wsl": self._crest_status.get("wsl", True)}
 
         def _worker() -> None:
             from ..crest.installer import install_crest as do_install
@@ -440,6 +443,10 @@ class Bridge(QObject):
             if not target:
                 distros = crest_list_distros()
                 target = distros[0] if distros else ""
+            # Carried onto the status payload: the install runs here, off the
+            # click, so the Settings card is the only place the user can learn
+            # the outcome without opening the Log tab.
+            install_error = ""
             if target:
                 # The installer computes actionable diagnostics ("xz missing —
                 # sudo apt install xz-utils", download failures); discarding
@@ -454,16 +461,23 @@ class Bridge(QObject):
                         f"CREST {res.get('version', '')} installed into "
                         f"'{target}'.".replace("  ", " "), "ok")
                 else:
+                    # A bare reason: every consumer prefixes its own "install
+                    # failed" (the card's detail line, the toast), so repeating
+                    # the verb here reads as "Install failed - ... failed:".
+                    install_error = (f"{target}: "
+                                     f"{res.get('error') or 'unknown error'}")
                     self.store.append_log(
                         f"CREST install failed in '{target}': "
                         f"{res.get('error') or 'unknown error'}", "err")
             else:
+                install_error = ("no usable WSL distribution found. Install one "
+                                 "first, e.g. `wsl --install -d Ubuntu`.")
                 self.store.append_log(
                     "CREST install failed: no usable WSL distro found.", "err")
             status = crest_aggregate_status(crest_probe_all())
             with self._crest_lock:
                 self._crest_installing = False
-                self._crest_status = status
+                self._crest_status = {**status, "install_error": install_error}
 
         threading.Thread(target=_worker, daemon=True).start()
         return self.get_crest_status()

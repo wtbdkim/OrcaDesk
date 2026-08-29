@@ -277,6 +277,7 @@
  * @property {"unset"|"checking"|"ready"|"error"} state
  * @property {CrestDistroPayload[]} distros
  * @property {boolean} wsl
+ * @property {string} install_error  why the last install attempt failed, or ""
  */
 
 /**

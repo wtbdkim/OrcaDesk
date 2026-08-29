@@ -55,6 +55,15 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     once a second calculation has produced output.
 
 ### Fixed
+- ***Install CREST* no longer offers a click that can only fail.** With WSL
+  present but **no Linux distribution installed**, the button stayed live;
+  pressing it reported nothing but a line in the Log tab, so the install simply
+  appeared to do nothing. Creating a distribution needs a Linux account and is
+  the one step ORCAdesk cannot script, so the button now **disables** when there
+  is nothing to install into — and says why on hover. When an install does run,
+  its outcome is reported where the click happened: the reason a failure failed
+  ("`xz` missing", "download failed") now reaches the Settings card and a toast
+  instead of only the log.
 - **CREST could not run at all.** A refactor moved the output-tailing loop into
   a shared helper but left `crest/runner.py` without the import, so every CREST
   conformer search died immediately with an internal error — and two references

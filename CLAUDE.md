@@ -705,7 +705,15 @@ set).
 **Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
 `set_crest_distro`) follow
 the MLIP pattern: a background probe publishes to `Bridge._crest_status` (guarded
-by `_crest_lock`) and the UI polls `get_crest_status`. The Build tab gains the
+by `_crest_lock`) and the UI polls `get_crest_status`. `install_crest` runs off
+the click too, so its outcome rides back on `CrestStatusPayload.install_error`
+(`""` = none) — the installer's diagnostics would otherwise reach only the Log
+tab, and the Install button reads as dead. A plain re-probe publishes no
+`install_error`, so **Re-check clears a stale one**: the field describes the last
+install *attempt*, not the current state. The button itself disables whenever
+there is nothing to install into (no WSL, no distro, or a probe in flight) —
+creating a distro needs a Linux account and is the one step ORCAdesk cannot
+script (D41). The Build tab gains the
 `crest` mode (`Settings.build_mode`; the CREST button on the backend toggle — see
 "Build-tab modes"), a locked `#card-crest` (until a
 distro has CREST), and a **Settings → CREST** distro picker + Install button. Wire
