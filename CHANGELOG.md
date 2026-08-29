@@ -146,6 +146,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   can no longer be picked during an in-place edit.
 
 ### Removed
+- **The "~N s / SCF cycle" pace figure is gone from the Log tab.** It sat in
+  the progress panel restating what the graph beside it already showed, and a
+  per-cycle average is the least useful of the timings on that panel — the
+  measured per-step rate and the ETA stay.
 - The unused `list_crest_distros` bridge slot (the Settings distro picker is
   populated from `get_crest_status()`).
 

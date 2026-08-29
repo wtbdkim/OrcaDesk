@@ -516,7 +516,7 @@ Every piece of text is one of these roles. No sizes between the steps
 | Input / select / body-small (checkbox, radio, combo item, kv, `.qname` at 600) | 13px |
 | Field label | 12px/500, `--muted-foreground` |
 | Descriptions (card-desc, hint, brand sub), log line (mono), table text (mono), small button, segmented toggle (600), status pill, env detail | 12px |
-| State badge (600, uppercase, +.03em), version badge (500, meta label), truncated paths (mono), progress meta/ETA/pace (mono) | 11px |
+| State badge (600, uppercase, +.03em), version badge (500, meta label), truncated paths (mono), progress meta/ETA (mono) | 11px |
 | Type tag (600), combo group header (700, uppercase, +.04em), chart axis titles, static-chart tick labels | 10px |
 | Live-graph tick labels (mono, `.scf-axis`) | 9px |
 | Pipeline-stepper title (700, uppercase, +.12em), stage label (13px), stage detail (11px muted) | 13px |
@@ -721,8 +721,8 @@ column left; header muted/500; no row hover. Tables live in a
 
 Progress bar: track `--accent`, `height 8px, radius 4px`; fill `--ok`,
 width transition .3s. Label 13px/600 (`Optimization 62% · step 12`); meta
-line 11px mono muted (accurate signals; pace chip right-aligned via
-`margin-left:auto`); ETA line below at `opacity .72` italic (D2). Staged
+line 11px mono muted (accurate signals, omitted when there are none);
+ETA line below at `opacity .72` italic (D2). Staged
 pipeline (`.vstep`): a **vertical stepper** that fills the Graph panel. Header
 = mono title (17px/700) + a state pill (`▷ RUNNING`/`✓ DONE` in `--ok` tint,
 `■ STOPPED` in `--err` tint); a meta line below it, 12.5px mono muted, joins

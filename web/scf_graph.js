@@ -426,23 +426,15 @@
   };
 
   // ---------- rendering (DOM-string builders) ----------
-  // The live "~N s / SCF cycle" pace chip, right-aligned in the progress meta
-  // line (.scf-prog-meta is a flex row). Rendered with the current value, then
-  // kept fresh between panel re-renders by app.js's poll tick (by id).
-  function _paceSpan(pace) {
-    return `<span id="scf-pace" class="scf-pace" title="Average wall-clock time per SCF cycle">${pace || ""}</span>`;
-  }
-
   // progress bar HTML
-  function renderSCFProgress(tracker, scfConv, pace) {
+  function renderSCFProgress(tracker, scfConv) {
     const target = targetFor(scfConv);
     const p = tracker.progress(target);
     const pct = Math.round(p * 100);
     const stepLabel = tracker.step > 0 ? `Geometry step ${tracker.step} · ` : "";
     return (
       `<div class="scf-prog-label">${stepLabel}SCF convergence ${pct}%</div>` +
-      `<div class="scf-prog-bar"><span style="width:${pct}%"></span></div>` +
-      `<div class="scf-prog-meta">${_paceSpan(pace)}</div>`
+      `<div class="scf-prog-bar"><span style="width:${pct}%"></span></div>`
     );
   }
 
@@ -591,7 +583,7 @@
     if (s < 24 * 3600) return "many hours";
     return "a day or more";
   }
-  function renderGeoProgress(geo, pace) {
+  function renderGeoProgress(geo) {
     const p = geo.progress();
     const pct = Math.round(p * 100);
     const cs = geo.criteriaSummary();
@@ -608,7 +600,7 @@
       return (
         `<div class="scf-prog-label">Optimization complete · 100% · step ${stepN}</div>` +
         `<div class="scf-prog-bar"><span style="width:100%"></span></div>` +
-        `<div class="scf-prog-meta">geometry converged${tail}${_paceSpan(pace)}</div>`
+        `<div class="scf-prog-meta">geometry converged${tail}</div>`
       );
     }
 
@@ -618,9 +610,10 @@
     const perMs = geo.perStepMs ? geo.perStepMs() : null;
     const rate = _fmtDuration(perMs);
     if (rate) facts.push(`~${rate}/step`);
-    // always emitted (even with no facts yet) so the pace chip's span exists
-    // for the poll tick's live update
-    const factLine = `<div class="scf-prog-meta">${facts.join(" · ")}${_paceSpan(pace)}</div>`;
+    // only when there is something to say: the line used to be emitted
+    // unconditionally to host the per-cycle pace chip, which is gone
+    const factLine = facts.length
+      ? `<div class="scf-prog-meta">${facts.join(" · ")}</div>` : "";
 
     // ETA is the unreliable part (cycle count ~2x uncertain) — keep it coarse and
     // secondary: an order-of-magnitude bucket, not a false-precise countdown.

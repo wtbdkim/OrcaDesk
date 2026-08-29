@@ -524,7 +524,6 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .bsub { display: inline-flex; align-items: center; gap: 6px; }
 .bmode-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
 .log-mode-toggle .bsub button { font-size: 11.5px; padding: 5px 10px; }
-.scf-pace { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); }
 .log-mode-toggle button {
   font-family: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px;
   border: 1px solid var(--border); background: var(--card); color: var(--muted-foreground);
@@ -559,9 +558,8 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .scf-prog-label { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .scf-prog-bar { height: 8px; background: var(--accent); border-radius: 4px; overflow: hidden; }
 .scf-prog-bar > span { display: block; height: 100%; background: var(--ok); border-radius: 4px; transition: width 0.3s; }
-/* flex row so the right-aligned pace chip (.scf-pace, margin-left:auto) can
-   share the line with the status text */
-.scf-prog-meta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 6px; display: flex; align-items: baseline; }
+/* one line of accurate status text under the bar (criteria met, measured rate) */
+.scf-prog-meta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 6px; }
 /* ETA is the uncertain part: keep it visually subordinate to the accurate signals */
 .scf-prog-eta { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 3px; opacity: 0.72; font-style: italic; }
 

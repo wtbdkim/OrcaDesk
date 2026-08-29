@@ -9,7 +9,7 @@
 // ONE log buffer — so the trackers are per calculation, keyed by the name the
 // backend tags each line with (LogLine.calc). The panel still shows one job at
 // a time: _jobPick when the user chose one, otherwise the newest running job.
-/** @typedef {{scf: any, geo: any, freq: any, tddft: any, crest: any, iterTimes: number[]}} JobTrackers */
+/** @typedef {{scf: any, geo: any, freq: any, tddft: any, crest: any}} JobTrackers */
 /** @type {Map<string, JobTrackers>} */
 const _jobs = new Map();
 let _jobPick = "";              // explicit job choice ("" = follow the run)
@@ -25,8 +25,6 @@ function _newJobTrackers() {
     freq: new SCFGraph.FreqTracker(),
     tddft: new SCFGraph.TddftTracker(),
     crest: new SCFGraph.CrestTracker(),
-    // arrival times (ms) of recent live SCF-iteration lines, for the s/cycle pace
-    iterTimes: /** @type {number[]} */ ([]),
   } : null;
 }
 /** The tracker bundle for `name`, created on first sight. An empty name (an
@@ -76,22 +74,6 @@ function shownCalc() {
   return name ? ((queue || []).find(c => c.name === name) || null) : null;
 }
 
-// Average wall-clock seconds per SCF iteration over the recent window. Uses
-// (last - first)/(n-1) so it stays accurate even though lines arrive batched
-// per 1s poll; null until there's enough of a time span to be meaningful.
-function scfSecPerIter() {
-  const b = curTrackers();
-  const t = b ? b.iterTimes : [];
-  if (t.length < 3) return null;
-  const span = t[t.length - 1] - t[0];
-  if (span < 800) return null;
-  return span / (t.length - 1) / 1000;
-}
-// display text for the pace chip ("" while there's no estimate yet)
-function scfPaceText() {
-  const p = scfSecPerIter();
-  return p == null ? "" : `~${p < 10 ? p.toFixed(1) : Math.round(p)} s / SCF cycle`;
-}
 let _logMode = "raw";
 let _graphKind = "auto";   // "auto" | "scf" | "geo"  (sub-mode inside graph)
 function currentRunningScf() {
@@ -170,11 +152,11 @@ function renderSCFPanel() {
   const isGeo = (kind === "geo" && b.geo.hasData());
   let body;
   if (isGeo) {
-    body = `<div class="graph-summary">${SCFGraph.renderGeoProgress(b.geo, scfPaceText())}</div>` +
+    body = `<div class="graph-summary">${SCFGraph.renderGeoProgress(b.geo)}</div>` +
            `<div class="graph-divider"></div>` +
            `<div class="graph-plot"></div>`;
   } else {
-    body = `<div class="graph-summary">${SCFGraph.renderSCFProgress(b.scf, currentRunningScf(), scfPaceText())}</div>` +
+    body = `<div class="graph-summary">${SCFGraph.renderSCFProgress(b.scf, currentRunningScf())}</div>` +
            `<div class="graph-divider"></div>` +
            `<div class="graph-plot"></div>`;
   }
@@ -339,12 +321,6 @@ function appendLog(msg, level, calc) {
     if (b.tddft.push(msg)) changed = true;
     if (b.crest.push(msg)) changed = true;
     if (changed) _scfDirty = true;
-    // record SCF-iteration arrival times for the s/cycle pace (live lines only;
-    // disk-seeded lines bypass appendLog so they don't skew the timing)
-    if (SCFGraph && SCFGraph.isScfIter(msg)) {
-      b.iterTimes.push(Date.now());
-      if (b.iterTimes.length > 40) b.iterTimes.shift();
-    }
   }
 }
 /** Drop the tracker bundles of calculations that have left the queue.
@@ -368,8 +344,6 @@ function pruneJobTrackers(liveNames) {
 function clearLog() {
   document.getElementById("log").innerHTML = "";
   updateLogJump();
-  const paceEl = document.getElementById("scf-pace");
-  if (paceEl) paceEl.textContent = "";
   if (SCFGraph) {
     _jobs.clear();
     _emptyJob = null;

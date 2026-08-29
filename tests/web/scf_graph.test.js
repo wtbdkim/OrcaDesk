@@ -410,7 +410,7 @@ test("geo ETA becomes available (non-stale) on a clean monotone worst-ratio seri
   assert.ok(["high", "med", "low"].indexOf(eta.conf) >= 0, "conf should be a fresh estimate, got " + eta.conf);
   assert.ok(eta.remainingSteps > 0 && eta.remainingSteps < 5, "remaining ~1 step, got " + eta.remainingSteps);
   assert.ok(eta.etaMs != null && eta.etaMs > 0 && eta.etaMs < 45000, "etaMs ~10s, got " + eta.etaMs);
-  const html = SCFGraph.renderGeoProgress(g, "");
+  const html = SCFGraph.renderGeoProgress(g);
   assert.ok(html.includes("more step"), "ETA line should render the remaining-steps text");
   assert.ok(html.includes("roughly under a minute left"), "a ~10s ETA falls in the first bucket");
 });
@@ -429,7 +429,7 @@ test("ETA bucket boundaries: 45s / 8m / 50m / 5h / 24h map to the documented coa
     [24 * 3600 * 1000, "a day or more"],
   ];
   cases.forEach(function (c) {
-    const html = SCFGraph.renderGeoProgress(geoWithStubbedEta(c[0]), "");
+    const html = SCFGraph.renderGeoProgress(geoWithStubbedEta(c[0]));
     assert.ok(
       html.includes("roughly " + c[1] + " left"),
       c[0] + " ms should render bucket '" + c[1] + "'"
@@ -438,7 +438,7 @@ test("ETA bucket boundaries: 45s / 8m / 50m / 5h / 24h map to the documented coa
 });
 
 test("ETA line omits the time bucket when etaMs is unknown but still shows remaining steps", function () {
-  const html = SCFGraph.renderGeoProgress(geoWithStubbedEta(null), "");
+  const html = SCFGraph.renderGeoProgress(geoWithStubbedEta(null));
   assert.ok(!html.includes("roughly"), "no bucket text without an etaMs");
   assert.ok(html.includes("~5 more steps"), "remaining-steps count still shown");
 });
@@ -453,7 +453,7 @@ test("renderSCFProgress returns an HTML string and never contains '100%' mid-con
     scfIterLine(1, "-100.0000000000", "-1.00e-02"),
     scfIterLine(2, "-100.0100000000", "-1.00e-05"),
   ]);
-  const html = SCFGraph.renderSCFProgress(t, "TightSCF", "");
+  const html = SCFGraph.renderSCFProgress(t, "TightSCF");
   assert.strictEqual(typeof html, "string");
   assert.ok(html.includes("SCF convergence 50%"));
   assert.ok(html.includes("width:50%"));
@@ -465,7 +465,7 @@ test("renderSCFProgress prefixes the geometry step label during an optimization"
   const t = new SCFGraph.SCFTracker();
   t.push("        *                GEOMETRY OPTIMIZATION CYCLE   3            *");
   t.push(scfIterLine(1, "-100.0000000000", "-1.00e-02"));
-  const html = SCFGraph.renderSCFProgress(t, "TightSCF", "");
+  const html = SCFGraph.renderSCFProgress(t, "TightSCF");
   assert.ok(html.includes("Geometry step 3"));
 });
 
@@ -473,7 +473,7 @@ test("renderGeoProgress never contains '100%' before convergence, and shows it o
   const g = new SCFGraph.GeoTracker();
   feed(g, geoCycleBlock(1, fiveRows("0.0140882096")));
   feed(g, geoCycleBlock(2, fiveRows("0.0050000000")));
-  const html = SCFGraph.renderGeoProgress(g, "");
+  const html = SCFGraph.renderGeoProgress(g);
   assert.strictEqual(typeof html, "string");
   assert.ok(html.includes("Optimization"));
   assert.ok(html.includes("criteria met"));
@@ -481,7 +481,7 @@ test("renderGeoProgress never contains '100%' before convergence, and shows it o
   assert.ok(!html.includes("100%"), "must not claim 100% before all criteria are met");
 
   g.push("                    ***  OPTIMIZATION RUN DONE  ***");
-  const doneHtml = SCFGraph.renderGeoProgress(g, "");
+  const doneHtml = SCFGraph.renderGeoProgress(g);
   assert.ok(doneHtml.includes("Optimization complete"));
   assert.ok(doneHtml.includes("100%"));
   assert.ok(doneHtml.includes("width:100%"));

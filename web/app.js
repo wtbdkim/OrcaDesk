@@ -283,11 +283,6 @@ async function pollTick() {
     // opt whose live stream didn't capture its history (see maybeSeedGraph)
     await maybeSeedGraph();
     await maybeSeedCrestGraph();
-    // small "~N s / SCF cycle" pace indicator — lives in the graph summary's
-    // progress meta line, so the span only exists while the SCF panel is shown;
-    // keep it fresh between (throttled) panel re-renders
-    const _paceEl = document.getElementById("scf-pace");
-    if (_paceEl) _paceEl.textContent = scfPaceText();
     // stepper clocks (current stage + total elapsed) tick in place between
     // full re-renders, so they don't freeze while the log is silent
     if (SCFGraph && _logMode === "graph") {
