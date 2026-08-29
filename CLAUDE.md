@@ -489,7 +489,10 @@ GPU option is enabled only when a ready env's probe reports CUDA (`_mlipCuda`,
 resolves through the very same `_resolve_geometry` path as an opt→freq handoff, so
 an MLIP pre-optimization can start from another calc's optimized geometry (e.g. a
 CREST best conformer). The model lives on
-`StepConfig.mlip_model` (+ `mlip_env_id`, `""` = first ready env; `mlip_device`);
+`StepConfig.mlip_model` (+ `mlip_env_id`, `""` = first ready env — the engine
+takes `mlip_envs[0]`, and the Bridge orders that list ready-first via
+`_mlip_envs_for_run` / `order_envs_by_readiness`, since readiness is a live
+probe result the engine never sees; `mlip_device`);
 `build_input` ignores those — an MLIP calc never produces an ORCA `.inp`. `_meta_line` shows
 the model instead of charge/mult for `mlip*` kinds, and `CalcSummary` also carries
 the model/method as **explicit fields** (`mlip_model`, `crest_method`) so the
@@ -523,8 +526,8 @@ ready — `applyMlipLock` in `app.js`, driven by the `get_mlip_status` poll
 `orcamgr/mlip/` (kept off ORCA's path): `runner.py` (`MlipRunner` +
 `write_mlip_run_files` + the `MACE_WORKER_SCRIPT`) and `parser.py`
 (`parse_mlip_result`). `QueueEngine._run_mlip_calc` resolves geometry (direct or
-reference) and the interpreter (`config.mlip_env_id`, else the first registered
-env, via `_resolve_mlip_python`), writes an input `.xyz` + a JSON config + the
+reference) and the interpreter (`config.mlip_env_id`, else `mlip_envs[0]`, via
+`_resolve_mlip_python`), writes an input `.xyz` + a JSON config + the
 worker script into the run folder, then runs the user's interpreter on it. The
 worker — running in the **user's** env, so it may import `torch`/`mace`/`ase`
 (ORCAdesk's env need not) — loads a MACE calculator via `parse_mace_model`,

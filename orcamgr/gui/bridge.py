@@ -27,6 +27,7 @@ from ..config import Settings, autodetect_orca
 from ..mlip.env import (
     probe_env, new_env_id, resolve_interpreter,
     env_payload_checking, env_payload_error, env_payload_from_probe, aggregate_status,
+    order_envs_by_readiness,
 )
 from ..crest.env import (
     probe_all as crest_probe_all, aggregate_status as crest_aggregate_status,
@@ -365,6 +366,21 @@ class Bridge(QObject):
         for e in targets:
             self._start_mlip_probe(e["id"], e.get("name", ""), e.get("python", ""))
         return self.get_mlip_status()
+
+    def _mlip_envs_for_run(self) -> list:
+        """The registered MLIP envs, ready ones first, for the engine to resolve
+        `mlip_env_id == ""` against.
+
+        The engine is handed only {id, name, python}: readiness is a live probe
+        result and lives here, so the documented `"" = first ready env` contract
+        can only be honoured by ORDERING the list before it goes out. Without
+        this, a broken first env captured every MLIP calc while the top-bar pill
+        read "ready" off a *different* env (D2: green means verified)."""
+        with self._mlip_lock:
+            envs = list(self.settings.mlip_envs)
+            states = {env_id: (st or {}).get("state", "checking")
+                      for env_id, st in self._mlip_envs_status.items()}
+        return order_envs_by_readiness(envs, states)
 
     @pyqtSlot(result=str)
     def get_mlip_status(self) -> str:
@@ -1042,7 +1058,7 @@ class Bridge(QObject):
             return json.dumps(OkResult(ok=False, error=ref_err))
         factory = make_engine_factory(self.store, self.settings.orca_path,
                                       self.settings.workspace_root, skip_names,
-                                      mlip_envs=self.settings.mlip_envs,
+                                      mlip_envs=self._mlip_envs_for_run(),
                                       crest_distro=self.settings.crest_distro,
                                       budget=self._budget())
         try:
@@ -1085,7 +1101,7 @@ class Bridge(QObject):
             return
         factory = make_engine_factory(self.store, self.settings.orca_path,
                                       self.settings.workspace_root,
-                                      mlip_envs=self.settings.mlip_envs,
+                                      mlip_envs=self._mlip_envs_for_run(),
                                       crest_distro=self.settings.crest_distro,
                                       budget=self._budget())
         try:

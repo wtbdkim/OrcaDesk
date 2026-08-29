@@ -30,7 +30,7 @@ from orcamgr.core.queue import (
     validate_result,
 )
 from orcamgr.core.runner import OrcaRunError
-from orcamgr.mlip.env import resolve_interpreter
+from orcamgr.mlip.env import order_envs_by_readiness, resolve_interpreter
 from orcamgr.mlip.parser import parse_mlip_result
 from orcamgr.mlip.runner import MlipRunner, parse_mace_model, write_mlip_run_files
 
@@ -623,3 +623,61 @@ def test_probe_env_non_dict_json_is_error_not_a_crash(monkeypatch, tmp_path):
     res = env_mod.probe_env(str(fake_exe))
     assert res["ready"] is False
     assert res["error"]
+
+
+# ---------------------------------------------------------------------------
+# Which env an "" (auto) mlip_env_id resolves to
+# ---------------------------------------------------------------------------
+# The engine receives only {id, name, python} -- readiness is a live probe
+# result held by the Bridge -- so the documented `mlip_env_id == "" -> first
+# ready env` contract is expressed as an ORDER on that list. These pin the
+# ordering; the engine's own "take envs[0]" is covered below.
+
+def _envs(*ids):
+    return [{"id": i, "name": i, "python": f"/py/{i}"} for i in ids]
+
+
+def test_a_ready_env_outranks_an_earlier_broken_one():
+    # The bug this pins: two registered envs, the FIRST one broken. The top-bar
+    # pill reads "ready" off the second, so the card unlocks -- and every MLIP
+    # calc used to route to the broken first env anyway.
+    out = order_envs_by_readiness(_envs("broken", "good"),
+                                  {"broken": "error", "good": "ready"})
+    assert [e["id"] for e in out] == ["good", "broken"]
+
+
+def test_registration_order_breaks_ties_so_one_env_is_untouched():
+    envs = _envs("a", "b", "c")
+    assert order_envs_by_readiness(envs, {k: "ready" for k in "abc"}) == envs
+    assert order_envs_by_readiness(_envs("solo"), {"solo": "error"})[0]["id"] == "solo"
+
+
+def test_an_unprobed_or_checking_env_outranks_a_failed_one_but_not_a_ready_one():
+    # "checking"/unknown is unproven, not disproven: better than a confirmed
+    # error, worse than a confirmed ready.
+    out = order_envs_by_readiness(_envs("err", "unprobed", "checking", "ready"),
+                                  {"err": "error", "checking": "checking",
+                                   "ready": "ready"})  # "unprobed" absent on purpose
+    assert [e["id"] for e in out] == ["ready", "unprobed", "checking", "err"]
+
+
+def test_nothing_is_dropped_when_every_env_failed():
+    # An all-error list must still reach the engine: it then fails with a real
+    # interpreter path and a real message, not "no MLIP environment registered".
+    out = order_envs_by_readiness(_envs("x", "y"), {"x": "error", "y": "error"})
+    assert [e["id"] for e in out] == ["x", "y"]
+
+
+def test_engine_runs_the_first_env_of_the_list_it_is_given(tmp_path):
+    # The other half of the contract: the engine takes envs[0] for an auto
+    # ("") mlip_env_id, so ordering the list is what decides the interpreter.
+    good = tmp_path / "good.exe"; good.write_text("")
+    broken = tmp_path / "broken.exe"; broken.write_text("")
+    ordered = order_envs_by_readiness(
+        [{"id": "b", "name": "b", "python": str(broken)},
+         {"id": "g", "name": "g", "python": str(good)}],
+        {"b": "error", "g": "ready"})
+    engine = QueueEngine("", str(tmp_path), mlip_envs=ordered)
+    calc = Calculation(name="m", kind="mlip_opt", xyz="H 0 0 0",
+                       config=StepConfig(kind="mlip_opt", mlip_env_id=""))
+    assert engine._resolve_mlip_python(calc) == str(good)

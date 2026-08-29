@@ -55,6 +55,15 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     once a second calculation has produced output.
 
 ### Fixed
+- **An MLIP calculation now runs in an environment that actually works.** With
+  more than one environment registered, every MLIP job went to the **first
+  registered** one — even when that environment was broken and the green *MLIP
+  ready* indicator was reporting a **different**, working one. The result was a
+  queue that failed every MLIP job while the top bar said it was ready. The
+  first *ready* environment is now the one that runs, as documented; ties keep
+  registration order, so a single-environment setup is unchanged. (Registering
+  several environments is the normal case — MACE and SevenNet pin conflicting
+  dependencies and cannot share one.)
 - ***Install CREST* no longer offers a click that can only fail.** With WSL
   present but **no Linux distribution installed**, the button stayed live;
   pressing it reported nothing but a line in the Log tab, so the install simply

@@ -242,6 +242,29 @@ def env_payload_from_probe(env_id: str, name: str, probe: dict) -> dict:
     }
 
 
+# Which env a calc with no explicit ``mlip_env_id`` runs in. The engine only
+# ever receives {id, name, python} from Settings -- readiness is a live probe
+# result that lives on the Bridge -- so "first ready" has to be expressed as an
+# ORDER on the list handed to the engine, which then keeps taking envs[0].
+_READINESS_RANK = {"ready": 0, "checking": 1, "error": 2}
+
+
+def order_envs_by_readiness(envs: list[dict], states: dict) -> list[dict]:
+    """Order registered envs [{id, name, python}] so a **ready** one comes
+    first, honouring the documented ``mlip_env_id == "" -> first ready env``
+    contract (`StepConfig.mlip_env_id`).
+
+    ``states`` maps env id -> probe state ("ready"/"checking"/"error"); an id
+    with no probe yet ranks with "checking" -- unproven, but not disproven.
+    The sort is **stable**, so registration order breaks ties and the common
+    single-env case is untouched. Nothing is dropped: an all-error list still
+    runs (and fails) with a real interpreter and a real error message, rather
+    than the engine's "no MLIP environment registered".
+    """
+    return sorted(envs, key=lambda e: _READINESS_RANK.get(
+        states.get(e.get("id"), "checking"), 1))
+
+
 def aggregate_status(envs: list[dict]) -> dict:
     """Roll a list of MlipEnvPayload up into the top-bar MlipStatusPayload.
     Aggregate state: ``ready`` if any env is ready, else ``checking`` if any is
