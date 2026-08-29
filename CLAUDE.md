@@ -530,7 +530,16 @@ temperature/pressure row (`#mlip-thermo-row` → `StepConfig.freq_temp_k` /
 thermochemistry. A **Device** selector (`#mlip-device` →
 `StepConfig.mlip_device`: `""` auto / `cpu` / `cuda`) picks the torch device; the
 GPU option is enabled only when a ready env's probe reports CUDA (`_mlipCuda`,
-`refreshMlipDeviceOptions`). A referenced `mlip_opt`/`mlip_opt_freq`
+`refreshMlipDeviceOptions`). Because the threads field means **different things
+per device** — always the worker's cap, but the queue's core charge only off the
+GPU (`declared_cores` returns 1 for an explicit `cuda`, which takes the GPU lane
+instead) — `onMlipDeviceChange` writes a per-device note into
+`#mlip-threads-note` (D2: unlabelled, "CPU threads: 6" beside "Device: GPU"
+reads as either a no-op or six reserved cores, and is neither). Every path that
+changes the device calls it: the `onchange`, `refreshMlipDeviceOptions` (which
+may itself clear a `cuda` value), and `fillMlipForm` **after** it assigns the
+value; `resetMlipForm` deliberately leaves the device alone, so the note stays
+valid across a reset. A referenced `mlip_opt`/`mlip_opt_freq`
 resolves through the very same `_resolve_geometry` path as an opt→freq handoff, so
 an MLIP pre-optimization can start from another calc's optimized geometry (e.g. a
 CREST best conformer). The model lives on

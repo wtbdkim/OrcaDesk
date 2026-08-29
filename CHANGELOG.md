@@ -86,6 +86,17 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     once a second calculation has produced output.
 
 ### Fixed
+- **The MLIP card now says what *CPU threads* does for the device you picked.**
+  The one field has two jobs and the device decides which apply, which the
+  screen never said: it always caps the worker's threads, but it is only what
+  the queue reserves off the GPU — an explicit **GPU (CUDA)** job is charged one
+  core and takes the single GPU lane instead. Next to *Device: GPU*, a
+  *CPU threads: 6* therefore read as either a no-op or six reserved cores, and
+  it is neither: the threads still cap the real CPU-side work (neighbour lists,
+  the optimizer, the finite-difference steps of a frequency run). A line under
+  the row now spells this out per device, including that **Auto** is charged as
+  a CPU job — ORCAdesk cannot know what the worker will pick, so taking the GPU
+  lane needs an explicit GPU choice.
 - **An MLIP calculation now runs in an environment that actually works.** With
   more than one environment registered, every MLIP job went to the **first
   registered** one — even when that environment was broken and the green *MLIP

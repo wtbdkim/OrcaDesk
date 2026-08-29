@@ -1717,6 +1717,27 @@ function refreshMlipDeviceOptions() {
     cuda.disabled = !_mlipCuda;
     if (!_mlipCuda && sel.value === "cuda") sel.value = "";
   }
+  onMlipDeviceChange();
+}
+/** Say what "CPU threads" actually does for the selected device (D2).
+ *
+ *  One field, two jobs, and the device decides which apply: the worker's thread
+ *  cap ALWAYS (`worker_threads` in core/resources.py ignores the device, and
+ *  the worker sets it before torch is even imported), but the queue's core
+ *  charge only off the GPU — `declared_cores` returns 1 for an explicit `cuda`,
+ *  which instead takes the single GPU lane. Unlabelled, a "CPU threads: 6" next
+ *  to "Device: GPU" reads as either a no-op or six reserved cores, and it is
+ *  neither. */
+function onMlipDeviceChange() {
+  const note = document.getElementById("mlip-threads-note");
+  if (!note) return;
+  const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById("mlip-device"));
+  const dev = sel ? sel.value : "";
+  note.textContent = dev === "cuda"
+    ? "CPU threads still applies on the GPU: it caps the CPU-side work (neighbour lists, the optimizer, finite-difference steps). A GPU job is charged one core and takes the single GPU lane, so the number here is not what the queue reserves."
+    : dev === "cpu"
+      ? "CPU threads caps the worker and is what the queue reserves for this job."
+      : "CPU threads caps the worker and is what the queue reserves. Auto is charged as a CPU job — ORCAdesk cannot know what the worker will pick — so choose GPU explicitly to take the GPU lane.";
 }
 // (geometry-source helpers for this card live in the shared "geometry source"
 //  section above: onMlipGeomSourceChange / refreshMlipRefSelect)
@@ -1901,6 +1922,7 @@ function fillMlipForm(c) {
   // back to CPU safely), so a device the worker couldn't load never sticks.
   refreshMlipDeviceOptions();
   document.getElementById("mlip-device").value = cfg.mlip_device || "";
+  onMlipDeviceChange();   // the note above was computed from the OLD value
   document.getElementById("mlip-threads").value =
     String(cfg.nprocs || (settings && settings.default_nprocs) || 6);
   document.getElementById("mlip-temp").value =
