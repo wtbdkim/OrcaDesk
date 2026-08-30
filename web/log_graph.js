@@ -90,7 +90,16 @@ function shownCalc() {
 }
 
 let _logMode = "raw";
-let _graphKind = "auto";   // "auto" | "scf" | "geo"  (sub-mode inside graph)
+let _graphKind = "auto";   // "auto" | "scf" | "geo" | "phase"  (view inside the graph panel)
+/** The phase chain this job ran, if any, as a view the sub-toggle can offer.
+ *  A run has at most one (CREST wins, then frequencies, then TD-DFT).
+ *  @param {JobTrackers} b */
+function phaseView(b) {
+  if (b.crest.hasData()) return { label: "Conformers", tracker: b.crest, render: SCFGraph.renderCrestProgress };
+  if (b.freq.hasData()) return { label: "Frequencies", tracker: b.freq, render: SCFGraph.renderFreqProgress };
+  if (b.tddft.hasData()) return { label: "TD-DFT", tracker: b.tddft, render: SCFGraph.renderTddftProgress };
+  return null;
+}
 function currentRunningScf() {
   const r = shownCalc();
   return r ? (r.scf_convergence || "TightSCF") : "TightSCF";
@@ -101,10 +110,17 @@ function runningIsOpt() {
 }
 // which graph to actually show: explicit choice, else geo if we have opt data
 function effectiveGraphKind() {
+  const b = curTrackers();
+  const phase = b ? phaseView(b) : null;
+  // an explicit pick is honoured while that view still exists — a pre-step
+  // Hessian's chain is cleared when the next optimization cycle starts, and
+  // the panel must fall back rather than render nothing
+  if (_graphKind === "phase" && phase) return "phase";
   if (_graphKind === "scf") return "scf";
   if (_graphKind === "geo") return "geo";
-  // auto: prefer geometry when the run is an opt and we have steps
-  const b = curTrackers();
+  // auto: the phase chain is the live edge of the run (an opt_freq is on its
+  // frequencies by the time one exists), then geometry for an opt, then SCF
+  if (phase) return "phase";
   if (b && b.geo.hasData() && runningIsOpt()) return "geo";
   return "scf";
 }
@@ -135,34 +151,38 @@ function renderSCFPanel() {
   // With more than one job in flight the panel has to say WHOSE curve this is,
   // and let the user follow the other one.
   const picker = jobPickerHtml();
-  // A phase-chain run — a CREST conformer search, or the frequency / TD-DFT
-  // pipeline — has no meaningful convergence curve below it: its stepper fills
-  // the whole panel, no secondary graph. (CREST wins, then freq, then TD-DFT.)
+  const kind = effectiveGraphKind();
+  const phase = phaseView(b);
+  // Sub-toggle: the views THIS job actually has, in pipeline order. A phase
+  // chain has no meaningful convergence curve *below* it (its stepper fills
+  // the panel), but a two-stage run has both — an opt_freq optimizes and then
+  // runs frequencies, and losing the optimization curve the moment the
+  // Hessian starts hid half the run. So the chain becomes a third view
+  // instead of taking the panel over. A job with only a chain (plain freq,
+  // CREST, TD-DFT) has nothing to toggle between, and shows no strip.
+  const views = [];
+  if (b.geo.hasData()) {
+    views.push({ k: "geo", label: "Optimization" });
+    views.push({ k: "scf", label: "Current SCF" });   // the pair an opt run always has
+  }
+  if (phase) views.push({ k: "phase", label: phase.label });
+  const head = views.length > 1
+    ? `<div class="graph-subtoggle">` + views.map(v =>
+        `<button class="${kind === v.k ? "active" : ""}" onclick="setGraphKind('${v.k}')">${v.label}</button>`
+      ).join("") + `</div>`
+    : "";
   // The stepper's rail follows the window height: pass the space left below
-  // the panel top (minus panel padding/border + the 16px window gutter); the
-  // renderer falls back to its compact strip when that can't fit the rows.
-  let phaseHtml = "";
-  const phaseOpts = {
-    height: Math.max(window.innerHeight - panel.getBoundingClientRect().top - 46
-                     - (picker ? 34 : 0), 0),
-  };
-  if (b.crest.hasData()) phaseHtml = SCFGraph.renderCrestProgress(b.crest, phaseOpts);
-  else if (b.freq.hasData()) phaseHtml = SCFGraph.renderFreqProgress(b.freq, phaseOpts);
-  else if (b.tddft.hasData()) phaseHtml = SCFGraph.renderTddftProgress(b.tddft, phaseOpts);
-  if (phaseHtml) {
-    panel.innerHTML = picker + phaseHtml;
+  // the panel top (minus panel padding/border + the 16px window gutter, and
+  // the strips above it); the renderer falls back to its compact strip when
+  // that can't fit the rows.
+  if (kind === "phase" && phase) {
+    const phaseOpts = {
+      height: Math.max(window.innerHeight - panel.getBoundingClientRect().top - 46
+                       - (picker ? 34 : 0) - (head ? 41 : 0), 0),   // strips: 34 / 41 tall
+    };
+    panel.innerHTML = picker + head + phase.render(phase.tracker, phaseOpts);
     _scfDirty = false;
     return;
-  }
-  const kind = effectiveGraphKind();
-  // sub-toggle (SCF vs geometry) — only meaningful for opt runs
-  const showToggle = b.geo.hasData();
-  let head = "";
-  if (showToggle) {
-    head = `<div class="graph-subtoggle">
-      <button class="${kind === 'geo' ? 'active' : ''}" onclick="setGraphKind('geo')">Optimization</button>
-      <button class="${kind === 'scf' ? 'active' : ''}" onclick="setGraphKind('scf')">Current SCF</button>
-    </div>`;
   }
   const isGeo = (kind === "geo" && b.geo.hasData());
   let body;

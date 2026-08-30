@@ -767,10 +767,23 @@ display (CREST / analytical freq / TD-DFT); per-stage times come from the
 tracker's stage-entry stamps and are suppressed on a disk-rebuilt tracker
 (`noTimes`, replayed in one burst).
 
+**Graph views** (`.graph-subtoggle`, above the graph body): one button per
+view the job actually has, in pipeline order — `Optimization` / `Current SCF`
+for a run with geometry steps, plus the phase chain it ran
+(`Frequencies` / `TD-DFT` / `Conformers`). A stepper still fills the panel
+when it is the selected view — a phase chain has no meaningful convergence
+curve *below* it — but it is a **view, not a takeover**: a two-stage run
+(opt_freq, ts_opt_freq) has a real optimization curve and a real chain, and
+hiding the curve the moment the Hessian starts loses half the run. Default is
+the live edge of the pipeline (the chain if there is one, else geometry for an
+opt, else SCF); an explicit pick holds until the job changes, falling back on
+its own if the view disappears (a pre-step Hessian's chain is cleared by the
+next optimization cycle). One view = no strip.
+
 **Graph job picker** (`.graph-jobpick`, above the panel): `flex; gap 8px;
 margin-bottom 8px`, a muted `Showing` label plus a `.graph-subtoggle` strip of
-mono buttons — one per job, matching the Optimization / Current SCF toggle
-directly below it. Rendered only when two or more calculations have **graph
+mono buttons — one per job, matching the view toggle directly below it.
+Rendered only when two or more calculations have **graph
 data**: a calc that merely logged a status line has a tracker bundle but nothing
 to draw, and offering it would open an empty graph. With one job the panel is
 byte-for-byte what it was. The panel shows one job at a time — the explicit

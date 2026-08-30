@@ -84,6 +84,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     and the queue a live *4 running / 16 of 16 cores* readout.
     A single-job run looks exactly as it did — the filter and picker only appear
     once a second calculation has produced output.
+- **A two-stage run keeps both of its graphs.** An `opt_freq` optimizes and
+  then runs frequencies, and the moment the Hessian started the frequency
+  stepper took the Graph tab over — the optimization curve it had just
+  finished was gone for the rest of the run. The graph now has a view
+  toggle per stage the job actually ran — *Optimization* / *Current SCF* /
+  *Frequencies* (or *TD-DFT* / *Conformers*) — so either half is one click
+  away. It still opens on the live edge of the run, and a job with only one
+  view (a plain frequency job, a CREST search) shows no toggle at all.
 - **An analytical frequency run now counts its nuclei as it goes.** The
   *Derivative integrals* step — the long one, hours on a large molecule —
   showed only the molecule's size (*144 nuclei*), so there was no way to tell
