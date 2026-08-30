@@ -491,6 +491,16 @@
  */
 
 /**
+ * get_output_tail(name, maxLines) result; "lines" is always present.
+ * @typedef {Object} LogTailResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {string[]} lines
+ * @property {string} [file]
+ * @property {boolean} [truncated]
+ */
+
+/**
  * export_conformers(name) / export_frames(...) result: how many .xyz files
  * were written and into which folder.
  * @typedef {Object} ExportResult

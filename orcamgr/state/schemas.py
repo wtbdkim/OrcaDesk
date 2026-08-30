@@ -381,6 +381,15 @@ class GraphLinesResult(_Ok, total=False):
     lines: "list[str]"
 
 
+class LogTailResult(_Ok, total=False):
+    """get_output_tail — the last lines of a run's .out, for the Raw log's
+    restored history after a reattach. "lines" is present on every branch."""
+    error: str
+    lines: "list[str]"
+    file: str        # basename shown in the restored-history marker
+    truncated: bool  # the file held more than the requested tail
+
+
 class FepPoint(TypedDict):
     name: str
     gibbs_eh: float

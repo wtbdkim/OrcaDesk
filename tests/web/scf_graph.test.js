@@ -389,6 +389,47 @@ test("uppercase boot banner activates the analytical chain and parses the nuclei
   assert.strictEqual(f.aStage, "cpscf");
 });
 
+test("derivative-integral BATCH lines turn the nuclei count into N/total", function () {
+  // real ORCA 6.1.1 shape (0-based atom indices, one atom per batch here)
+  const f = new SCFGraph.FreqTracker();
+  f.push("GEOMETRIC PERTURBATIONS (144 nuclei)");
+  assert.strictEqual(f._curSub(), "144 nuclei");   // stage just entered, nothing done
+  f.push("BATCH   0: Atoms    0 -    0 (  3 perturbations)");
+  assert.strictEqual(f._curSub(), "144 nuclei");   // batch 0 only STARTED
+  f.push("   => RI-J derivative integrals                    ... done (    18.9 sec)");
+  f.push("BATCH   1: Atoms    1 -    1 (  3 perturbations)");
+  assert.strictEqual(f._curSub(), "1/144 nuclei");
+  f.push("BATCH   2: Atoms    2 -    2 (  3 perturbations)");
+  assert.strictEqual(f._curSub(), "2/144 nuclei");
+  // a re-seen batch line never moves the count backwards
+  f.push("BATCH   1: Atoms    1 -    1 (  3 perturbations)");
+  assert.strictEqual(f._curSub(), "2/144 nuclei");
+  // leaving the stage completes it: the frozen row reads the plain total
+  f.push("                      ORCA SCF RESPONSE CALCULATION");
+  assert.strictEqual(f.aStage, "cpscf");
+  assert.strictEqual(f.subs[0], "144 nuclei");
+});
+
+test("a multi-atom batch credits its whole atom range", function () {
+  const f = new SCFGraph.FreqTracker();
+  f.push("GEOMETRIC PERTURBATIONS (12 nuclei)");
+  f.push("BATCH   0: Atoms    0 -    3 ( 12 perturbations)");
+  f.push("BATCH   1: Atoms    4 -    7 ( 12 perturbations)");
+  assert.strictEqual(f._curSub(), "4/12 nuclei");
+  f.push("BATCH   2: Atoms    8 -   11 ( 12 perturbations)");
+  assert.strictEqual(f._curSub(), "8/12 nuclei");
+});
+
+test("BATCH lines outside the integrals stage never touch the count", function () {
+  const f = new SCFGraph.FreqTracker();
+  f.push("GEOMETRIC PERTURBATIONS (6 nuclei)");
+  f.push("                      ORCA SCF RESPONSE CALCULATION");
+  f.push("BATCH   3: Atoms    3 -    3 (  3 perturbations)");
+  assert.strictEqual(f.aStage, "cpscf");
+  assert.strictEqual(f.atomsDone, 6);   // frozen complete when the stage was left
+  assert.strictEqual(f.batchIdx, -1);
+});
+
 // ============================================================
 // ETA: real estimator + bucket boundaries
 // ============================================================

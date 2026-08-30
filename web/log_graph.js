@@ -16,7 +16,22 @@ let _jobPick = "";              // explicit job choice ("" = follow the run)
 /** @type {JobTrackers|null} */
 let _emptyJob = null;           // stand-in bundle when no job has produced data
 let _seededGraph = new Set();   // calc names whose graph is already sourced (live stream or disk-seed)
+/** Calcs whose EARLIER output should be pulled back into the Raw log: a run
+ *  reattached at startup streams only what ORCA writes from that moment, so
+ *  the Raw tab opened empty on a job that had been going for hours. Filled
+ *  from the engine's own reattach line (below) rather than from queue state —
+ *  that line is the exact signal, and it can never fire for a job THIS
+ *  session started, whose log is complete already. @type {Set<string>} */
+const _restoreWanted = new Set();
 const _OPT_KINDS = ["opt", "ts_opt", "opt_freq", "ts_opt_freq"];
+/** ORCA-backend kinds: everything that is not the MLIP or CREST pipeline.
+ *  Their run folder holds a real ORCA .out, so every tracker the Graph tab
+ *  draws from — SCF, geometry, frequencies, TD-DFT — can be replayed out of
+ *  it. @param {string} kind */
+function isOrcaKind(kind) {
+  const k = kind || "";
+  return !k.startsWith("mlip") && !k.startsWith("crest");
+}
 
 function _newJobTrackers() {
   return SCFGraph ? {
@@ -280,6 +295,9 @@ document.addEventListener("click", (e) => {
 // CREST…", MLIP "optimizing with…" / "single-point energy with…". Matching them
 // resets that job's trackers so a re-run never inherits the previous curve.
 const _CALC_START_RE = /^\[(.+?)\]\s*\([^)]*\)\s*(?:running ORCA|running CREST|optimizing|single-point|frequencies)/i;
+// the engine's reattach line (core/queue.py): this job was already running
+// when ORCAdesk opened, so its earlier output exists only on disk.
+const _CALC_REATTACH_RE = /^\[(.+?)\]\s*reattaching to (?:ORCA|CREST) still running/i;
 /** @param {string} msg @param {string} level @param {string} [calc] owning calculation ("" = engine-level) */
 function appendLog(msg, level, calc) {
   const name = calc || "";
@@ -295,7 +313,9 @@ function appendLog(msg, level, calc) {
     // this session's live stream owns this calc's graph from the start, so the
     // reattach disk-seed (maybeSeedGraph) must not also rebuild it
     _seededGraph.add(name);
+    _restoreWanted.delete(name);   // nothing to restore: we have it all
   }
+  if (name && _CALC_REATTACH_RE.test(msg)) _restoreWanted.add(name);
   const box = document.getElementById("log");
   // only auto-follow if the user is already at (near) the bottom — don't yank
   // them down while they've scrolled up to read earlier output
@@ -323,6 +343,39 @@ function appendLog(msg, level, calc) {
     if (changed) _scfDirty = true;
   }
 }
+/** Put a reattached run's earlier output back at the TOP of the Raw log,
+ *  fenced by two markers so it can never be mistaken for live output. The
+ *  lines come straight from the .out (bridge.get_output_tail) and are NOT fed
+ *  to the trackers: the graph seed already rebuilds those from the whole file,
+ *  and pushing the same lines twice would double-count them.
+ *  @param {string} name @param {string[]} lines
+ *  @param {string} file basename of the output file, for the marker
+ *  @param {boolean} truncated the file holds more than these lines */
+function insertRestoredLog(name, lines, file, truncated) {
+  const box = document.getElementById("log");
+  if (!box || !lines || !lines.length) return false;
+  const frag = document.createDocumentFragment();
+  const add = (text, cls) => {
+    const d = document.createElement("div");
+    d.className = "log-line " + cls;
+    if (name) d.setAttribute("data-calc", name);   // the job filter covers history too
+    d.textContent = text;
+    d.hidden = _lineHidden(d);
+    frag.appendChild(d);
+  };
+  const what = (truncated ? "last " : "") + lines.length + " line" + (lines.length === 1 ? "" : "s");
+  add(`── restored history · ${file || name + ".out"} · ${what} ──`, "log-mark");
+  for (const ln of lines) add(ln, "log-restored");
+  add("── live output continues below ──", "log-mark");
+  const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.insertBefore(frag, box.firstChild);
+  // same cap as appendLog, and it trims from the top — so restored history is
+  // the first thing dropped once the live stream fills the box again
+  while (box.childElementCount > _LOG_MAX_LINES) box.removeChild(box.firstChild);
+  if (stick) box.scrollTop = box.scrollHeight;
+  updateLogJump();
+  return true;
+}
 /** Drop the tracker bundles of calculations that have left the queue.
  *  Without this the Map grows for the whole session -- five trackers and their
  *  point arrays per calculation ever seen -- and the job picker / log filter
@@ -334,6 +387,7 @@ function pruneJobTrackers(liveNames) {
     if (liveNames.has(name)) continue;
     _jobs.delete(name);
     _seededGraph.delete(name);   // a name reused later must be able to re-seed
+    _restoreWanted.delete(name);
     dropped = true;
   }
   if (!dropped) return;
@@ -349,6 +403,7 @@ function clearLog() {
     _emptyJob = null;
     _jobPick = "";
     _seededGraph.clear();   // allow every calc's graph to re-seed
+    _restoreWanted.clear();   // a cleared log stays cleared (the graph is a view, this is the text)
     refreshLogFilterOptions();
     if (_logMode === "graph") renderSCFPanel();
   }

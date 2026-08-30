@@ -283,6 +283,7 @@ async function pollTick() {
     // opt whose live stream didn't capture its history (see maybeSeedGraph)
     await maybeSeedGraph();
     await maybeSeedCrestGraph();
+    await maybeRestoreRawLogs();
     // stepper clocks (current stage + total elapsed) tick in place between
     // full re-renders, so they don't freeze while the log is silent
     if (SCFGraph && _logMode === "graph") {
@@ -294,25 +295,58 @@ async function pollTick() {
     if (_logMode === "graph" && _scfDirty) renderSCFPanel();
   } catch (e) { /* transient; try again next tick */ }
 }
-// Rebuild the SCF/opt graph history from the .out on disk for an opt calc the
+// How much of a reattached run's earlier output the Raw log gets back. The
+// log DOM is capped at _LOG_MAX_LINES, so the restored block has to leave
+// room for the live stream that follows it — and the point is the recent
+// past (what ORCA was doing when we came back), not the whole run.
+const _RESTORE_LOG_LINES = 500;
+// Pull that tail into the Raw log for every job the engine reattached to.
+// Queue state is deliberately NOT the trigger: the engine's own reattach line
+// is (see _CALC_REATTACH_RE), so a job this session started — whose log is
+// complete already — can never be restored over.
+async function maybeRestoreRawLogs() {
+  if (!_restoreWanted.size) return;
+  for (const name of [..._restoreWanted]) {
+    _restoreWanted.delete(name);   // before the await: one restore per reattach (P44)
+    try {
+      const r = /** @type {LogTailResult} */ (
+        JSON.parse(await bridge.get_output_tail(name, _RESTORE_LOG_LINES)));
+      if (r && r.ok && r.lines && r.lines.length) {
+        insertRestoredLog(name, r.lines, r.file || "", !!r.truncated);
+      }
+      // !ok is permanent (no output file yet) — don't retry it every tick
+    } catch (e) {
+      _restoreWanted.add(name);   // transient; try again next tick
+    }
+  }
+}
+
+// Rebuild the Graph tab's history from the .out on disk for an ORCA calc the
 // live stream never fully saw: a job reattached after a close (its monitor now
 // tails from EOF, so earlier cycles never stream) or one that FINISHED while
 // ORCAdesk was closed (no monitor ran at all). Fresh-launch calcs are skipped
 // because appendLog's start marker already added them to _seededGraph and the
 // live stream owns their graph. Idempotent: GeoTracker keys steps by cycle, so
 // any overlap with subsequent live lines overwrites rather than duplicates.
+//
+// ALL FOUR ORCA trackers are replayed, not just the convergence pair: a
+// frequency or TD-DFT run is a phase chain whose banners are minutes to hours
+// apart, so a restart mid-Hessian used to face an empty Graph tab until the
+// next banner happened to stream by. The two step-panel trackers are marked
+// noTimes — replayed in one burst, their wall-clock stamps would be fiction.
 async function maybeSeedGraph() {
   if (!SCFGraph) return;
-  let target = (queue || []).find(c => c.state === "running" && _OPT_KINDS.includes(c.kind));
+  let target = (queue || []).find(c => c.state === "running" && isOrcaKind(c.kind));
   // The done-calc fallback only fires while NOTHING is running: a live
-  // non-opt job (MLIP, CREST) must never have a finished calc's replayed
+  // non-ORCA job (MLIP, CREST) must never have a finished calc's replayed
   // graph seeded over its stream (e.g. a mid-run log Clear resets the
   // trackers and would otherwise trigger exactly that).
   const anyRunning = (queue || []).some(c => c.state === "running");
   const _cur = curTrackers();
-  if (!target && !anyRunning && _cur && !_cur.geo.hasData()) {
-    // no live opt running: fill an empty graph from the most recent done opt
-    const dones = (queue || []).filter(c => c.state === "done" && _OPT_KINDS.includes(c.kind));
+  if (!target && !anyRunning && _cur && !_cur.geo.hasData()
+      && !_cur.freq.hasData() && !_cur.tddft.hasData()) {
+    // nothing live: fill an empty panel from the most recent done ORCA calc
+    const dones = (queue || []).filter(c => c.state === "done" && isOrcaKind(c.kind));
     target = dones.length ? dones[dones.length - 1] : null;
   }
   if (!target || _seededGraph.has(target.name)) return;
@@ -322,9 +356,18 @@ async function maybeSeedGraph() {
     if (r && r.ok && r.lines && r.lines.length) {
       const t = new SCFGraph.SCFTracker();
       const g = new SCFGraph.GeoTracker();
-      for (const ln of r.lines) { t.push(ln); g.push(ln); }   // offline: never via appendLog (no DOM flood)
+      const fq = new SCFGraph.FreqTracker();
+      const td = new SCFGraph.TddftTracker();
+      // offline: never via appendLog (no DOM flood)
+      for (const ln of r.lines) { t.push(ln); g.push(ln); fq.push(ln); td.push(ln); }
+      fq.noTimes = true; td.noTimes = true;
       const b = jobTrackers(target.name);
-      b.scf = t; b.geo = g; _scfDirty = true;
+      b.scf = t; b.geo = g;
+      // only when the replay actually found a chain: an empty tracker would
+      // discard whatever the live stream has already put in the bundle
+      if (fq.hasData()) b.freq = fq;
+      if (td.hasData()) b.tddft = td;
+      _scfDirty = true;
     }
   } catch (e) {
     _seededGraph.delete(target.name);   // let a later tick retry

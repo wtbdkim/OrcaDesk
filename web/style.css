@@ -478,6 +478,12 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 .log-err  { color: var(--err); }
 .log-warn { color: var(--warn); }
 .log-orca { color: var(--orca); }
+/* Restored history: a reattached run's earlier .out, pulled back from disk.
+   It recedes (opacity, not a colour of its own — ORCA's own level colours
+   still apply) and is fenced by two `log-mark` rules, so history can never
+   be read as live output. */
+.log-restored { opacity: 0.62; }
+.log-mark { color: var(--muted-foreground); font-weight: 600; padding: 6px 0 2px; }
 
 /* ---- results ---- */
 .kv {

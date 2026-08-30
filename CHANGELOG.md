@@ -84,8 +84,35 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     and the queue a live *4 running / 16 of 16 cores* readout.
     A single-job run looks exactly as it did — the filter and picker only appear
     once a second calculation has produced output.
+- **An analytical frequency run now counts its nuclei as it goes.** The
+  *Derivative integrals* step — the long one, hours on a large molecule —
+  showed only the molecule's size (*144 nuclei*), so there was no way to tell
+  a run one nucleus in from one nearly finished. It now reads
+  *135/144 nuclei*, counted from ORCA's own per-batch progress, and settles
+  back to the plain total once the step completes.
 
 ### Fixed
+- **Restarting no longer loses a running job's progress panel.** Reopening
+  ORCAdesk while a calculation runs reattaches to it, but the Graph tab came
+  back **empty** for a frequency or TD-DFT run: only the optimization curve
+  was rebuilt from the output file, and a phase chain's next banner can be
+  hours away on a large molecule, so there was nothing to show until then.
+  The frequency and TD-DFT step panels are now rebuilt from the output too —
+  stage, nuclei counted so far, method and cores — and this applies to any
+  ORCA calculation, not only the optimization kinds. Per-stage times stay
+  blank for a rebuilt panel: the history is replayed in one burst, so those
+  clocks would be fiction.
+- **The Raw log comes back too.** Reopening ORCAdesk on a job that had been
+  running for hours showed a single line — *reattaching to ORCA still
+  running* — because the log is a live tail of the output file, and the tail
+  starts where the app came back. The last 500 lines of that job's output
+  are now put back at the top of the Raw tab, dimmed and fenced by
+  *── restored history · NAME.out · last 500 lines ──* and *── live output
+  continues below ──*, so recovered text is never mistaken for what is
+  happening now. It is read straight off the file — nothing is re-streamed
+  through the log buffer, so it cannot push out the rest of the log — it
+  follows the job filter like any other line, and only a job ORCAdesk
+  actually reattached to gets it.
 - **The MLIP card now says what *CPU threads* does for the device you picked.**
   The one field has two jobs and the device decides which apply, which the
   screen never said: it always caps the worker's threads, but it is only what

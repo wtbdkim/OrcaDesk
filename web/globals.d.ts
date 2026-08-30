@@ -59,6 +59,7 @@ interface OrcaBridge {
   get_log(since: number): Promise<string>;
   get_inp(name: string): Promise<string>;
   get_graph_lines(name: string): Promise<string>;
+  get_output_tail(name: string, max_lines: number): Promise<string>;
   export_conformers(name: string): Promise<string>;
   // 3D structure viewer (Results tab); both return FramesResult JSON:
   // {ok,title,frames:[{label,xyz,energy}]} | {ok:false,...}

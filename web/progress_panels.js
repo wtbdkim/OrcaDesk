@@ -66,6 +66,15 @@
   ];
   const AFREQ_RE = /ANALYTICAL FREQUENC|Analytic(?:al)? Hessian/;  // other analytical markers (no stage)
   const ANUCLEI_RE = /GEOMETRIC PERTURBATIONS\s*\((\d+)\s*nuclei\)/; // banner carries the atom count
+  // Inside the derivative-integrals stage ORCA works through the nuclei in
+  // batches, announcing each one ("BATCH 135: Atoms  135 -  135 (  3
+  // perturbations)"). On a large molecule that single stage runs for hours, so
+  // the batch line is the only progress signal there is — the atom range is
+  // what turns "144 nuclei" into "135/144 nuclei". Atoms per batch are summed
+  // from the ranges rather than read off the index, because the index is
+  // 0-based (verified on a real ORCA 6.1.1 run) and a batch may cover several
+  // atoms — a sum needs neither assumption.
+  const ABATCH_RE = /\bBATCH\s+(\d+)\s*:\s*Atoms\s+(\d+)\s*-\s*(\d+)/;
   const NPERT_RE = /Number of perturbations\s+\.*\s*(\d+)/i;               // CP-SCF total (= 3N)
   const CPSCF_DONE_RE = /(\d+)\s*\/\s*(\d+)\s+done/i;                      // "K/N done" per CP-SCF iter
   const ATERM_RE = /ORCA TERMINATED NORMALLY/;                             // job end -> chain complete
@@ -101,6 +110,9 @@
     this.aStage = "";      // analytical: key of the current A_STAGES entry ("" = not staged yet)
     this.aIdx = -1;        // analytical: index of aStage in A_STAGES (-1 = none)
     this.nuclei = 0;       // analytical: atom count (from the GEOMETRIC PERTURBATIONS banner)
+    this.atomsDone = 0;    // analytical: nuclei whose derivative integrals are finished
+    this.batchAtoms = 0;   // analytical: nuclei in the batch currently running
+    this.batchIdx = -1;    // analytical: index of that batch (monotonic guard)
     this.tempK = 0;        // analytical: thermochemistry temperature (K)
     this.finished = false; // analytical: ORCA TERMINATED NORMALLY seen — chain complete
     this.stageT = [];      // ms wall clock when each stage index was first entered
@@ -118,6 +130,9 @@
     this.mode = "analytical"; this.active = true;
     if (!this.t0) this.t0 = Date.now();
     if (idx > this.aIdx) {
+      // leaving the integrals stage: its last batch finished, so freeze the
+      // count as complete instead of the "N-1 of N" the last BATCH line left
+      if (this.aStage === "integrals") { this.atomsDone = this.nuclei; this.batchAtoms = 0; }
       if (this.aIdx >= 0) this.subs[this.aIdx] = this._curSub();
       this.aIdx = idx; this.aStage = A_STAGES[idx].key;
       if (this.stageT[idx] == null) this.stageT[idx] = Date.now();
@@ -129,7 +144,12 @@
   FreqTracker.prototype._curSub = function () {
     const dim3N = this.nuclei ? 3 * this.nuclei : this.perturbTotal;
     const cpTotal = this.perturbTotal || dim3N;
-    if (this.aStage === "integrals") return this.nuclei ? `${this.nuclei} nuclei` : "";
+    if (this.aStage === "integrals") {
+      if (!this.nuclei) return this.atomsDone ? `${this.atomsDone} nuclei` : "";
+      return this.atomsDone && this.atomsDone < this.nuclei
+        ? `${this.atomsDone}/${this.nuclei} nuclei`
+        : `${this.nuclei} nuclei`;
+    }
     if (this.aStage === "cpscf") return `${this.perturbDone}/${cpTotal || "?"} perturbations${this.cpscfIter ? ` · iter ${this.cpscfIter}` : ""}`;
     if (this.aStage === "hessian") return dim3N ? `${dim3N}×${dim3N}` : "";
     if (this.aStage === "freq" || this.aStage === "modes" || this.aStage === "ir") return dim3N ? `${dim3N} modes` : "";
@@ -142,6 +162,7 @@
     this.dispDone = false; this._times = [];
     this.perturbTotal = 0; this.perturbDone = 0; this.cpscfIter = 0;
     this.aStage = ""; this.aIdx = -1; this.nuclei = 0; this.tempK = 0;
+    this.atomsDone = 0; this.batchAtoms = 0; this.batchIdx = -1;
     this.finished = false;
     this.stageT = []; this.subs = []; this.t0 = 0; this.tEnd = 0;   // meta (method/cores) survives: same job
   };
@@ -185,6 +206,20 @@
       }
     }
     if (this.mode === "analytical") {
+      if (this.aStage === "integrals") {
+        const b = line.match(ABATCH_RE);
+        if (b) {
+          const k = parseInt(b[1], 10);
+          if (k > this.batchIdx) {
+            // the announced batch is only STARTING: what is finished is every
+            // batch before it, so credit the previous batch's atoms now
+            this.batchIdx = k;
+            this.atomsDone += this.batchAtoms;
+            this.batchAtoms = Math.max(parseInt(b[3], 10) - parseInt(b[2], 10) + 1, 1);
+          }
+          return true;
+        }
+      }
       // first NPERT wins: the geometric CP-SCF (the Hessian's 3N-ish solve) is
       // always the FIRST response solve in the pipeline; later property solves
       // (IR intensities, EPR/NMR blocks) print their own, smaller

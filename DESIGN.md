@@ -670,6 +670,19 @@ the bottom; otherwise the floating `↓ Latest` pill (`padding 5px 11px; 12px;
 --accent bg; radius 999px; shadow 0 2px 10px rgba(0,0,0,.35)`) appears
 bottom-right (offset 14px). DOM capped at 2000 lines.
 
+**Restored history** (after a reattach): a job already running
+when the app opened has its earlier output prepended to the log from the
+`.out` — muted (`.log-restored`, `opacity .62`, so ORCA's own level colours
+still read) and fenced by two `.log-mark` rules
+(`--muted-foreground; 600; padding 6px 0 2px`):
+`── restored history · NAME.out · last 500 lines ──` above,
+`── live output continues below ──` under it. Fencing is the whole point —
+unlabelled history reads as live output, and a stalled run and a restored one
+would look identical. The block carries `data-calc`, so the job filter covers
+it like any other line, and it sits at the top of the box, which is where the
+line cap trims first: history is the first thing dropped as the live stream
+fills the box again.
+
 **Job filter** (`.log-jobs`, in the mode-toggle row): one button per job plus
 *All*, at `11.5px mono; padding 5px 10px` — a step below the Raw/Graph buttons,
 so the mode choice stays the primary level (the same relationship as the Build

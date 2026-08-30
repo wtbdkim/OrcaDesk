@@ -511,8 +511,9 @@ its buffer at 5000 → the newest 4000 lines plus up to 500 older `[web] `
 console-capture lines retained preferentially (still a hard ~4500 bound;
 without the exemption a single ORCA run's stdout would evict every front-end
 error before it was read) — and a derived view that must outlive the
-buffer (graph history on reattach) is rebuilt from the `.out` on disk
-(`get_graph_lines`), never from the capped stream. When the document is
+buffer (on reattach: the convergence graph AND the freq/TD-DFT/CREST step
+panels) is rebuilt from the `.out` on disk (`get_graph_lines`), never from
+the capped stream. When the document is
 hidden, DOM/SVG work is skipped
 entirely and catches up from the counters later. Handlers: index-parameter
 interactions use inline `onclick` globals; interactions that must capture a

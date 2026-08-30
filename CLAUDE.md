@@ -39,8 +39,8 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 430 tests over the framework-free layers
-node tests/web/scf_graph.test.js       # 36 tracker/progress tests, no npm deps
+python -m pytest                       # 487 tests over the framework-free layers
+node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
 # Real-backend smoke matrix (opt-in): one answer-known input per calc kind,
@@ -58,7 +58,11 @@ parser on synthetic fixtures), `mlip/` (with a stdlib-only stub worker — no MA
 env needed), `crest/` (ensemble parser against a real ethanol corpus in
 `tests/crest/fixtures/`, CLI-flag building, and the QueueEngine path via a fake
 runner — no WSL/CREST needed), `config`, `procutil` (real child processes), and
-the phone HTTP API via `fastapi.testclient` (auto-skips without fastapi). The Qt bridge/window layers
+the phone HTTP API via `fastapi.testclient` (auto-skips without fastapi).
+The one exception to "framework-free" is `test_log_replay.py`, which imports
+`gui/bridge.py` for its module-level `.out`-filter patterns and tail reader
+only (no Bridge instance) to pin the filter against the tracker regexes it
+mirrors; it skips without PyQt6. The Qt bridge/window layers
 are thin adapters and are exercised manually. Tests that read the real ORCA output
 corpus auto-skip when the corpus directory is absent, so the suite is green on any
 machine. There is no linter configured. Parser/input-generator *evidence* still
@@ -302,8 +306,18 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   output path** (recorded at launch — without it the finished-while-closed →
   DONE judgment below has nothing to read). On the next
   launch, `reconcile_calcs` checks that identity: still alive → stays `RUNNING`
-  and is **reattached** (`OrcaRunner.adopt` + `monitor`, continuing the queue);
-  gone → judged from its output (`DONE` if terminated normally + valid, else
+  and is **reattached** (`OrcaRunner.adopt` + `monitor`, continuing the queue).
+  The monitor tails from the **current EOF** — replaying hours of output
+  through the capped buffer would evict the graph — so the UI rebuilds what
+  that tail missed from the file instead: the Graph panel (SCF/geo curve
+  **and** the freq/TD-DFT/CREST step chains) via `get_graph_lines` +
+  `maybeSeedGraph`, and the Raw log's last 500 lines via `get_output_tail` +
+  `insertRestoredLog`, fenced by `log-mark` rules so restored history never
+  reads as live output. The restore is triggered by the engine's own reattach
+  line (`_CALC_REATTACH_RE`), never by queue state — a job THIS session
+  started has a complete log and must never be restored over.
+  A process that is gone → judged from its output (`DONE` if terminated
+  normally + valid, else
   `FAILED`). The engine applies the **same judgment mid-run**
   (`_judge_dead_running`): a RUNNING calc whose process died while unmonitored
   (e.g. the startup reattach was declined and the job finished later) is

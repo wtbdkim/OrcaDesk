@@ -49,6 +49,7 @@ from ..state.schemas import (
     AboutPayload, AutodetectResult, ConflictsResult, ErrorPayload, ExistsResult,
     FepPoint,
     FepResult, GeomAtomPayload, GetCalcResult, GraphLinesResult, LoadResult,
+    LogTailResult,
     MlipStatusPayload, MlipInstallPayload, MlipInstallOptionsPayload,
     MutationResult, NmrPayload, OkResult, OrbitalPayload,
     ParsePayload, QrResult, ServerStatusPayload, SettingsPayload,
@@ -88,10 +89,62 @@ _CREST_GRAPH = re.compile(
     r"Change in topology detected|safety termination of CREST|"
     r"number of unique conformers for further calc|Initial Geometry Optimization|"
     r"iMTD-GC SAMPLING|Additional regular MDs|Final Geometry Optimization")
-# get_graph_lines keeps only this many most-recent relevant lines (~130 full
-# opt cycles' worth of graph history) so a pathological many-thousand-cycle
-# .out can't balloon the payload/JSON string.
+# Frequency (numerical + analytical CP-SCF) and TD-DFT phase-chain markers —
+# the mirror of web/progress_panels.js (A_STAGES / TD_STAGES and their
+# counters), so a reattached run rebuilds its STEP PANEL too, not just the
+# SCF/geometry curve: without these a restart mid-Hessian showed an empty
+# Graph tab until the next stage banner happened to stream by (hours, on a
+# large molecule). The stage banners are matched case-SENSITIVELY for the
+# same reason as _G_POST (ORCA prints them uppercase, and mixed-case
+# look-alikes appear in every output); the counter lines accept ORCA's own
+# capitalization, mirroring the /i on their JS regexes.
+_PHASE_GRAPH = re.compile(
+    r"ORCA NUMERICAL FREQUENCIES|[Nn]umber of displacements|[Dd]isplacement\s+\d+\s*/\s*\d+|"
+    r"\bNORMAL MODES\b|\bIR SPECTRUM\b|THERMOCHEMISTRY AT\s+[\d.]+|"
+    r"Analytic(?:al)? Hessian|[Nn]umber of perturbations|\d+\s*/\s*\d+\s+done|"
+    r"\bBATCH\s+\d+\s*:\s*Atoms\s+\d+\s*-\s*\d+|"
+    r"TD-DFT XC SETUP|RPA-DIAGONALIZATION|DAVIDSON-DIAGONALIZATION|"
+    r"TD-DFT(?:/TDA)? EXCITED STATES|ABSORPTION SPECTRUM VIA TRANSITION|"
+    r"CIS/TD-DFT TOTAL ENERGY|Number of roots to be determined|"
+    r"\*{4}\s*Iteration\s+\d+\s*\*{4}|ORCA TERMINATED NORMALLY")
+# The job meta the step panel's header line shows (method · cores): ORCA's own
+# echo of the input file (mirror of progress_panels.js _grabOrcaMeta).
+_G_META = re.compile(r"^\|\s*\d+>\s*(?:!|%pal\s+nprocs\b)")
+# get_graph_lines keeps only this many most-recent relevant lines, per KIND of
+# history (~130 full opt cycles' worth), so a pathological many-thousand-cycle
+# .out can't balloon the payload/JSON string. The two kinds are counted apart
+# so neither can evict the other: an opt_freq's per-nucleus Hessian batches
+# must not push the optimization's cycles out of the window, and the freq
+# chain must keep the boot banner that activates it.
 _GRAPH_LINES_MAX = 2000
+# get_output_tail bounds: at most this many lines, read as one block sized by
+# a deliberately generous bytes-per-line estimate — a real 78,846-line ORCA
+# opt+freq output averages 61 bytes/line, so 400 leaves room for the widest
+# tables and still bounds the read; hard-capped either way.
+_LOG_TAIL_MAX = 2000
+_LOG_TAIL_BYTES_PER_LINE = 400
+_LOG_TAIL_MAX_BYTES = 4 << 20
+
+
+def tail_lines(path, max_lines: int) -> "tuple[list[str], bool]":
+    """The last `max_lines` lines of a text file, plus whether more precede
+    them. Reads one bounded block from the END (never a full scan), so a
+    multi-hundred-MB .out costs the same as a small one; the first line of that
+    block is dropped when the block did not start at byte 0, because it is
+    usually a partial line. Decoding is lenient (errors="replace") — the block
+    boundary can also split a multi-byte character."""
+    n = max(1, min(int(max_lines or 0), _LOG_TAIL_MAX))
+    block = min(n * _LOG_TAIL_BYTES_PER_LINE, _LOG_TAIL_MAX_BYTES)
+    size = path.stat().st_size
+    start = max(0, size - block)
+    with open(path, "rb") as f:
+        f.seek(start)
+        raw = f.read()
+    lines = raw.decode("utf-8", errors="replace").splitlines()
+    if start > 0 and lines:
+        lines = lines[1:]
+    return lines[-n:], (start > 0 or len(lines) > n)
+
 
 
 class Bridge(QObject):
@@ -934,9 +987,10 @@ class Bridge(QObject):
 
     @pyqtSlot(str, result=str)
     def get_graph_lines(self, name: str) -> str:
-        """Return ONLY the SCF-iteration / geometry-convergence lines of a
-        calculation's .out, in file order, so the UI can rebuild the full live
-        SCF/optimization graph history — independent of the capped log buffer.
+        """Return ONLY the lines of a calculation's .out that the Graph tab is
+        built from — SCF iterations, geometry convergence, and the frequency /
+        TD-DFT / CREST phase chains — in file order, so the UI can rebuild the
+        full graph history independent of the capped log buffer.
 
         Takes the calc NAME and resolves the run folder server-side via
         _calc_run_dir (state-independent — works mid-run and for restored
@@ -944,45 +998,88 @@ class Bridge(QObject):
         keeps only the most recent _GRAPH_LINES_MAX relevant lines, so even a
         many-thousand-cycle .out yields a bounded payload (the trackers only
         need the recent history; dropped oldest cycles just shorten the
-        seeded graph's tail)."""
+        seeded graph's tail). Convergence history and phase-chain history get
+        a window EACH, merged back into file order, so a Hessian's hundreds of
+        per-nucleus batch lines cannot evict the optimization cycles that ran
+        before them — and a line both windows keep is emitted once."""
         try:
             out_path = self._calc_run_dir(name) / f"{name}.out"
             if not out_path.exists():
                 return json.dumps(GraphLinesResult(ok=False, error="no output", lines=[]))
-            lines: deque[str] = deque(maxlen=_GRAPH_LINES_MAX)
+            conv: deque[tuple[int, str]] = deque(maxlen=_GRAPH_LINES_MAX)   # SCF/geo/CREST curve
+            phase: deque[tuple[int, str]] = deque(maxlen=_GRAPH_LINES_MAX)  # freq/TD-DFT step chain
             in_table = False
             saw_item = False
             with open(out_path, "r", encoding="utf-8", errors="replace") as f:
-                for raw in f:
+                for i, raw in enumerate(f):
                     ln = raw.rstrip("\r\n")
                     if _G_CYCLE.search(ln):
-                        lines.append(ln)
+                        # also the phase chain's reset marker (a pre-step
+                        # Hessian belongs to the cycle it ran in), so it goes
+                        # in both windows
+                        conv.append((i, ln))
+                        phase.append((i, ln))
                     elif _G_TABLE.search(ln):
                         in_table = True
                         saw_item = False
-                        lines.append(ln)
+                        conv.append((i, ln))
                     elif in_table and _G_ITEM.search(ln):
                         saw_item = True
-                        lines.append(ln)
+                        conv.append((i, ln))
                     elif in_table and saw_item and (
                             ln.strip() == "" or _G_DASHES.search(ln) or _G_DOTS.search(ln)):
                         # table terminator — kept so GeoTracker commits the step
-                        lines.append(ln)
+                        conv.append((i, ln))
                         in_table = False
                         saw_item = False
-                    elif _G_DONE.search(ln) or _G_POST.search(ln):
-                        # opt-finished / post-opt-stage markers — kept so a
-                        # seeded graph flips to 100% / "running frequencies…"
-                        lines.append(ln)
+                    elif _G_DONE.search(ln):
+                        # opt-finished marker — a seeded graph flips to 100%
+                        conv.append((i, ln))
+                    elif _G_POST.search(ln):
+                        # post-opt-stage banners do double duty: they flip a
+                        # seeded opt graph to "running frequencies…" AND boot
+                        # the freq step chain, so they go in both windows
+                        conv.append((i, ln))
+                        phase.append((i, ln))
                     elif _G_ITER.match(ln):
-                        lines.append(ln)
+                        conv.append((i, ln))
                     elif _CREST_GRAPH.search(ln):
                         # CREST phase/energy markers (a CREST .out has no ORCA
                         # SCF/geo lines, so this branch is reached cleanly)
-                        lines.append(ln)
-            return json.dumps(GraphLinesResult(ok=True, lines=list(lines)))
+                        conv.append((i, ln))
+                    elif _PHASE_GRAPH.search(ln) or _G_META.match(ln):
+                        # freq / TD-DFT stage counters + the echoed method/cores
+                        phase.append((i, ln))
+            merged = sorted(set(conv) | set(phase))   # a shared line lands once
+            return json.dumps(GraphLinesResult(ok=True, lines=[ln for _, ln in merged]))
         except Exception as e:
             return json.dumps(GraphLinesResult(ok=False, error=str(e), lines=[]))
+
+    @pyqtSlot(str, int, result=str)
+    def get_output_tail(self, name: str, max_lines: int) -> str:
+        """The LAST `max_lines` lines of a calculation's .out, for the Raw
+        log's restored history after a reattach.
+
+        The live log is a tail, not a file view: a job reattached in a new
+        session streams only what ORCA writes from that moment, so the Raw tab
+        opened empty on a job that had been running for hours. This is the
+        recent past, read straight off disk and marked as history in the UI —
+        it deliberately does NOT go through the shared log buffer, which is
+        capped and shared with the phone client.
+
+        Reads from the END of the file (a bounded seek + decode, never a full
+        scan) so a multi-hundred-MB .out costs the same as a small one, and
+        drops the first line of the block read, which is usually a partial
+        line."""
+        try:
+            out_path = self._calc_run_dir(name) / f"{name}.out"
+            if not out_path.exists():
+                return json.dumps(LogTailResult(ok=False, error="no output", lines=[]))
+            lines, more = tail_lines(out_path, max_lines)
+            return json.dumps(LogTailResult(
+                ok=True, lines=lines, file=out_path.name, truncated=more))
+        except Exception as e:
+            return json.dumps(LogTailResult(ok=False, error=str(e), lines=[]))
 
     @pyqtSlot(str, result=str)
     def export_conformers(self, name: str) -> str:
