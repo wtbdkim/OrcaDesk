@@ -688,7 +688,9 @@ fills the box again.
 so the mode choice stays the primary level (the same relationship as the Build
 tab's `.bsub`), behind a 1px `--border` rule. Wraps rather than scrolls. Hidden
 until a **second** calculation has produced output — a sequential run must look
-exactly as it always did. Filtering hides every line not tagged with the chosen
+exactly as it always did — and hidden outside **Raw** mode: it filters log
+lines, the graph panel has its own job picker, and two identical strips where
+only one does anything in the current mode is a trap. Filtering hides every line not tagged with the chosen
 calculation, engine-level lines included (they are not that job's output).
 
 > Buttons, not a `<select>`: switching between running jobs is the frequent
@@ -768,9 +770,10 @@ tracker's stage-entry stamps and are suppressed on a disk-rebuilt tracker
 (`noTimes`, replayed in one burst).
 
 **Graph views** (`.graph-subtoggle`, above the graph body): one button per
-view the job actually has, in pipeline order — `Optimization` / `Current SCF`
-for a run with geometry steps, plus the phase chain it ran
-(`Frequencies` / `TD-DFT` / `Conformers`). A stepper still fills the panel
+view the job actually has, in pipeline order: `Optimization`, then the phase
+chain it ran (`Frequencies` / `TD-DFT` / `Conformers`), then `Current SCF`
+last — that one is not a stage but a drill-down into whichever single SCF is
+solving right now, so it sits after the pipeline it belongs to. A stepper still fills the panel
 when it is the selected view — a phase chain has no meaningful convergence
 curve *below* it — but it is a **view, not a takeover**: a two-stage run
 (opt_freq, ts_opt_freq) has a real optimization curve and a real chain, and

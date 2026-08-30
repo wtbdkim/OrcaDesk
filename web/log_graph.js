@@ -132,6 +132,7 @@ function setLogMode(mode) {
   document.getElementById("logmode-graph").classList.toggle("active", mode === "graph");
   document.getElementById("log").style.display = mode === "raw" ? "block" : "none";
   document.getElementById("scf-panel").style.display = mode === "graph" ? "block" : "none";
+  refreshLogFilterOptions();   // the raw filter hides itself in graph mode
   if (mode === "graph") renderSCFPanel();
   else scrollLogToBottom();   // entering raw: jump to latest and refresh the button
   updateLogJump();
@@ -160,12 +161,13 @@ function renderSCFPanel() {
   // Hessian starts hid half the run. So the chain becomes a third view
   // instead of taking the panel over. A job with only a chain (plain freq,
   // CREST, TD-DFT) has nothing to toggle between, and shows no strip.
+  // Order is the pipeline: optimization, then the chain that follows it.
+  // "Current SCF" is last because it is not a stage — it is a drill-down
+  // into whatever single SCF is solving right now.
   const views = [];
-  if (b.geo.hasData()) {
-    views.push({ k: "geo", label: "Optimization" });
-    views.push({ k: "scf", label: "Current SCF" });   // the pair an opt run always has
-  }
+  if (b.geo.hasData()) views.push({ k: "geo", label: "Optimization" });
   if (phase) views.push({ k: "phase", label: phase.label });
+  if (b.geo.hasData()) views.push({ k: "scf", label: "Current SCF" });
   const head = views.length > 1
     ? `<div class="graph-subtoggle">` + views.map(v =>
         `<button class="${kind === v.k ? "active" : ""}" onclick="setGraphKind('${v.k}')">${v.label}</button>`
@@ -290,6 +292,12 @@ function refreshLogFilterOptions() {
     _logFilter = "";
     applyLogFilter();
   }
+  // The filter drives the RAW log; in Graph mode the panel has its own job
+  // picker with different semantics (only jobs with a curve). Two identical
+  // strips where only one of them does anything is a trap, so this one is
+  // shown only where it works. Set before the early return below: a mode
+  // switch changes visibility without changing the buttons.
+  box.hidden = names.length < 2 || _logMode !== "raw";
   const wanted = _logFilter + "|" + names.join("|");
   if (box.dataset.state === wanted) return;
   box.dataset.state = wanted;
@@ -297,7 +305,6 @@ function refreshLogFilterOptions() {
     `<button data-job="${escapeHtml(value)}"` +
     `${value === _logFilter ? ' class="active"' : ""}>${escapeHtml(label)}</button>`;
   box.innerHTML = btn("", "All") + names.map(n => btn(n, n)).join("");
-  box.hidden = names.length < 2;
 }
 
 // One delegated handler for both button strips. Delegation (rather than an

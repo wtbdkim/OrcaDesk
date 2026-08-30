@@ -88,8 +88,8 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   then runs frequencies, and the moment the Hessian started the frequency
   stepper took the Graph tab over — the optimization curve it had just
   finished was gone for the rest of the run. The graph now has a view
-  toggle per stage the job actually ran — *Optimization* / *Current SCF* /
-  *Frequencies* (or *TD-DFT* / *Conformers*) — so either half is one click
+  toggle per stage the job actually ran — *Optimization* / *Frequencies* (or
+  *TD-DFT* / *Conformers*) / *Current SCF* — so either half is one click
   away. It still opens on the live edge of the run, and a job with only one
   view (a plain frequency job, a CREST search) shows no toggle at all.
 - **An analytical frequency run now counts its nuclei as it goes.** The
@@ -100,6 +100,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   back to the plain total once the step completes.
 
 ### Fixed
+- **The Log tab's job buttons no longer sit there doing nothing on the Graph
+  tab.** The job *filter* belongs to the raw log — it hides lines — but it
+  stayed on screen in Graph mode, where it looks exactly like the graph's own
+  job picker and clicking it changed nothing at all. It is now shown only in
+  Raw mode. (The graph's picker is the strip inside the panel, labelled
+  *Showing*, and it lists only calculations that actually have a curve — so a
+  job that merely logged *already done – skipping* never appears there.)
 - **Restarting no longer loses a running job's progress panel.** Reopening
   ORCAdesk while a calculation runs reattaches to it, but the Graph tab came
   back **empty** for a frequency or TD-DFT run: only the optimization curve
