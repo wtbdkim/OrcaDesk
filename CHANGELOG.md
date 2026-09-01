@@ -6,12 +6,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **Electrostatic potential maps, beside the orbitals.** The Results-tab 3D
-  viewer gains an **ESP map** pick: the electron-density surface coloured by the
-  molecule's electrostatic potential — red where it is negative (electron-rich,
-  where an electrophile approaches), blue where it is positive. It is the
-  picture you reach for to say where something attacks, and it used to mean
-  exporting cubes into another program.
+- **Electrostatic potential maps.** The Results tab gains an **Electrostatic
+  potential map** section of its own, directly under *Final geometry*: the
+  electron-density surface coloured by the molecule's electrostatic potential —
+  red where it is negative (electron-rich, where an electrophile approaches),
+  blue where it is positive. It is the picture you reach for to say where
+  something attacks, and it used to mean exporting cubes into another program.
+  *View ESP map in 3D* opens it on its own, with the frame list put away: it is
+  one figure, not another level to click through.
   - It is drawn from **two** grids, not one: the density gives the surface, the
     potential gives the colour, and both are computed on the same box so the
     colour can be sampled per surface vertex. ORCAdesk generates and caches both.

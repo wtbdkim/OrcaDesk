@@ -65,6 +65,7 @@ async function openMolViewer(title, frames, kind, ref) {
   } catch (e) { /* favorites are best-effort — never block the viewer */ }
   // energies drive the ΔE column; compute the min once for the whole set
   _mvEmin = Math.min(...frames.map(f => (typeof f.energy === "number" ? f.energy : Infinity)));
+  _mvListVisible(true);          // the ESP map puts it away; frames need it back
   renderMvList();
   if (!_mvOpenStage(title || "Structure viewer")) return;
   updateFavOnlyBtn();
@@ -395,24 +396,32 @@ function _sliderFromIso(iso) {
   return Math.max(0, Math.min(100, Math.round(v)));
 }
 
-/** Open the orbital / density viewer for the result on the Results tab — a
- *  queued calculation or a file opened from disk; both have a .gbw beside their
- *  output, which is all orca_plot needs.
- *  `orbs` is the orbital list the Results tab already parsed.
- *  @param {OrbitalPayload[]} orbs */
-async function viewOrbitals3D(orbs) {
-  const source = _currentResultName ? "calc:" + _currentResultName
-               : (_currentResultPath ? "file:" + _currentResultPath : "");
-  if (!source) return;
+/** Which wavefunction the Results tab is showing: a queued calc or a file
+ *  opened from disk — both have a .gbw beside their output, which is all
+ *  orca_plot needs. "" when there is no result on screen. */
+function _mvPlotSource() {
+  return _currentResultName ? "calc:" + _currentResultName
+       : (_currentResultPath ? "file:" + _currentResultPath : "");
+}
+
+/** Ask the backend what this result can be plotted as and adopt the answer into
+ *  the viewer's volume state. Shared by both entry points — the orbital browser
+ *  and the ESP map — so neither can drift from the other's idea of the grid
+ *  choices or the ESP conventions (P4).
+ *  @param {string} what named in the "no wavefunction" refusal
+ *  @returns {Promise<PlotOptionsResult|null>} null when it cannot be plotted */
+async function _mvVolSetup(what) {
+  const source = _mvPlotSource();
+  if (!source) return null;
   let opts;
   try { opts = /** @type {PlotOptionsResult} */ (JSON.parse(await bridge.get_plot_options(source))); }
-  catch (e) { failNotify("Could not read the result folder."); return; }
-  if (!opts.ok) { failNotify(opts.error || "Could not read the result folder."); return; }
+  catch (e) { failNotify("Could not read the result folder."); return null; }
+  if (!opts.ok) { failNotify(opts.error || "Could not read the result folder."); return null; }
   const base = opts.base || "";
   if (!opts.has_gbw) {
     failNotify("No wavefunction file (" + base + ".gbw) next to this result — " +
-               "3D orbitals need a finished ORCA job.");
-    return;
+               what + " needs a finished ORCA job.");
+    return null;
   }
   _mvMode = "volume";
   _mvVolSource = source;
@@ -425,16 +434,51 @@ async function viewOrbitals3D(orbs) {
   _mvEspSurfaceIso = opts.esp_surface_iso || 0.002;
   _mvEspRange = opts.esp_range || 0.05;
   _mvVolCached = opts.cached || [];
+  _mvVolData = null;
+  _mvEspData = null;
+  return opts;
+}
+
+/** Open the orbital / density viewer for the result on the Results tab.
+ *  `orbs` is the orbital list the Results tab already parsed.
+ *  @param {OrbitalPayload[]} orbs */
+async function viewOrbitals3D(orbs) {
+  const opts = await _mvVolSetup("3D orbitals");
+  if (!opts) return;
   _mvVolPicks = _mvBuildPicks(orbs || [], opts.kinds || ["mo"]);
   if (!_mvVolPicks.length) { failNotify("Nothing to plot for this calculation."); return; }
   // start on the HOMO when there is one — the orbital people actually want
   const homo = _mvVolPicks.findIndex(p => p.sub.indexOf("HOMO ") === 0);
   _mvVolIndex = homo >= 0 ? homo : 0;
-  _mvVolData = null;
+  _mvListVisible(true);
   _fillGridSelect();
   renderMvList();
-  if (!_mvOpenStage(base + " — orbitals & density")) return;
+  if (!_mvOpenStage((opts.base || "") + " — orbitals & density")) return;
   mvVolShow(_mvVolIndex);
+}
+
+/** Open the ESP map — its own entry point, from its own card on the Results
+ *  tab. It is one figure rather than a set to click through, so the frame list
+ *  is put away and the stage takes the whole panel. */
+async function viewEspMap() {
+  const opts = await _mvVolSetup("an ESP map");
+  if (!opts) return;
+  if ((opts.kinds || []).indexOf("esp") < 0) {
+    failNotify("This wavefunction has no SCF density to compute a potential from.");
+    return;
+  }
+  _mvVolPicks = [{ kind: "esp", index: 0, operator: 0, label: "ESP map", sub: "" }];
+  _mvVolIndex = 0;
+  _mvListVisible(false);
+  _fillGridSelect();
+  if (!_mvOpenStage((opts.base || "") + " — ESP map")) return;
+  mvVolShow(0);
+}
+
+/** Show or put away the left-hand pick list. @param {boolean} on */
+function _mvListVisible(on) {
+  const list = document.getElementById("mv-list");
+  if (list) list.style.display = on ? "" : "none";
 }
 
 /** Build the pick list: the densities this wavefunction supports, then every
@@ -444,8 +488,10 @@ function _mvBuildPicks(orbs, kinds) {
   /** @type {MvPick[]} */ const picks = [];
   if (kinds.indexOf("eldens") >= 0)
     picks.push({ kind: "eldens", index: 0, operator: 0, label: "Electron density", sub: "" });
-  if (kinds.indexOf("esp") >= 0)
-    picks.push({ kind: "esp", index: 0, operator: 0, label: "ESP map", sub: "minutes" });
+  // The ESP map is deliberately NOT in this list: it is not another orbital to
+  // click through. It costs minutes rather than a second, it is one figure
+  // rather than a set, and it answers a different question — so it has its own
+  // card under Final geometry and its own entry point (viewEspMap).
   if (kinds.indexOf("spindens") >= 0)
     picks.push({ kind: "spindens", index: 0, operator: 0, label: "Spin density", sub: "" });
   // An unrestricted run has two manifolds. They are separate orbital sets:
@@ -801,12 +847,19 @@ function _mvSyncEspControls(fromSlider) {
 }
 
 /** Show the colour-scale slider and the legend only for the ESP map — for every
- *  other pick they would describe nothing. @param {boolean} on */
+ *  other pick they would describe nothing. Stepping goes away whenever there is
+ *  only one plot to step through, which the ESP map's own entry point is.
+ *  @param {boolean} on */
 function _mvEspControls(on) {
   const ctl = document.getElementById("mv-esp-ctl");
   const key = document.getElementById("mv-esp-legend");
   if (ctl) ctl.style.display = on ? "" : "none";
   if (key) key.style.display = on ? "" : "none";
+  const many = _mvVolPicks.length > 1;
+  ["mv-vol-prev", "mv-vol-next"].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.style.display = many ? "" : "none";
+  });
 }
 
 /** Grid selector: this one DOES need a new cube, so it re-runs the current pick.

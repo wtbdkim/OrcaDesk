@@ -161,6 +161,10 @@ function renderResultSections(d) {
   // ORCA" action. Present-only (only crest_conf results carry it).
   if (d.is_conformer_search && d.conformers && d.conformers.length) renderConformers(d.conformers);
   if (geom && d.geometry && d.geometry.length) renderGeometry(d.geometry);
+  // The ESP map sits with the geometry it is painted on, not with the orbital
+  // levels — it is a picture of the molecule's surface, not of a level. Gated
+  // like the other electronic-structure sections: it needs a wavefunction.
+  if (elec) renderEspMap();
   if (elec && d.orbitals && d.orbitals.length) renderOrbitals(d.orbitals);
   if (elec && d.mulliken && d.mulliken.length) renderMulliken(d.mulliken);
   if (elec && d.loewdin && d.loewdin.length) renderLoewdin(d.loewdin);
@@ -271,6 +275,35 @@ async function copyGeometryXyz() {
   if (!_lastGeomXyz) return;
   try { await navigator.clipboard.writeText(_lastGeomXyz); toast("Geometry copied as .xyz."); }
   catch (e) { failNotify("Copy failed — clipboard unavailable."); }
+}
+
+/** The ESP map's own section, directly under the geometry it is drawn on.
+ *
+ *  It is deliberately not a row in the orbital viewer's list: an ESP map is one
+ *  figure rather than a set to click through, it answers a different question
+ *  (where a molecule is attacked, not what a level looks like), and it is the
+ *  one plot whose cost is minutes rather than a second. The card says that cost
+ *  before the click rather than after it (D2, D43). */
+function renderEspMap() {
+  const body = document.getElementById("result-body");
+  // Plotting reads the .gbw beside the output, so a queued calc and a result
+  // opened from disk are both plottable — either address is enough.
+  if (!(_currentResultName || _currentResultPath)) return;
+  body.innerHTML += `
+    <div class="divider"></div>
+    <div class="card-title">Electrostatic potential map</div>
+    <div class="card-desc">The electron-density surface coloured by the electrostatic
+      potential — <span style="color:var(--esp-neg)">red</span> where it is negative
+      (electron-rich, where an electrophile approaches),
+      <span style="color:var(--esp-pos)">blue</span> where it is positive.</div>
+    <div class="btn-group">
+      <button class="btn btn-sm" onclick="viewEspMap()"
+              title="Plot the density surface and the potential over it">View ESP map in 3D</button>
+    </div>
+    <div class="hint">Computed from this job's wavefunction — nothing is re-run. The
+      potential is a Coulomb sum at every grid point, so unlike an orbital it takes
+      <b>minutes</b> on a large molecule; it plots at a coarser grid for that reason,
+      and the result is cached.</div>`;
 }
 
 /** The orbital list currently on the Results tab, handed to the 3D viewer so it

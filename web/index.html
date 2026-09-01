@@ -715,7 +715,9 @@
           </div>
         </div>
         <div class="mv-bar" id="mv-vol-bar" style="display:none">
-          <button class="btn btn-sm" onclick="molViewerStep(-1)">← Prev</button>
+          <!-- stepping is hidden when there is only one plot to show (the ESP
+               map is one figure, not a set) -->
+          <button class="btn btn-sm" id="mv-vol-prev" onclick="molViewerStep(-1)">← Prev</button>
           <label class="mv-ctl" title="Re-meshes the cube already loaded — no recomputation">
             Isovalue
             <input type="range" id="mv-iso" min="0" max="100" step="1" value="63"
@@ -742,7 +744,7 @@
             Grid <select id="mv-grid" onchange="mvSetGrid(this.value)"></select>
           </label>
           <span id="mv-vol-caption" class="mv-caption"></span>
-          <button class="btn btn-sm" onclick="molViewerStep(1)">Next →</button>
+          <button class="btn btn-sm" id="mv-vol-next" onclick="molViewerStep(1)">Next →</button>
         </div>
         <div class="mv-bar" id="mv-bar">
           <button class="btn btn-sm" onclick="molViewerStep(-1)">← Prev</button>

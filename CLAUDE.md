@@ -1000,14 +1000,23 @@ Two things about that shell-out are load-bearing:
   `{name}.esp.cube` — get it wrong and every ESP looks like a failed plot,
   because the path the code looks for is never there.
 
-**The ESP map is the one pick built from two cubes.** A potential is not an
-isosurface of itself; the figure everyone means is the potential *painted on* an
-electron-density surface, so the map is `eldens` (shape) + `esp` (colour) at the
-same grid — 3Dmol's `addIsosurface(dens, {voldata: esp, volscheme})` samples the
-second field per surface vertex. `_mvEspParts()` issues the two requests in
-order through `_mvFetchCube` (the single-cube generate/poll/fetch loop, extracted
-for exactly this); both must ride the ESP grid or they would be two different
-boxes. Consequences worth knowing:
+**The ESP map is built from two cubes, and has its own entry point.** A
+potential is not an isosurface of itself; the figure everyone means is the
+potential *painted on* an electron-density surface, so the map is `eldens`
+(shape) + `esp` (colour) at the same grid — 3Dmol's
+`addIsosurface(dens, {voldata: esp, volscheme})` samples the second field per
+surface vertex. `_mvEspParts()` issues the two requests in order through
+`_mvFetchCube` (the single-cube generate/poll/fetch loop, extracted for exactly
+this); both must ride the ESP grid or they would be two different boxes.
+
+It is deliberately **not** a row in the orbital viewer's pick list. It gets its
+own Results-tab section under *Final geometry* (`renderEspMap` — with the
+geometry it is painted on, not with the orbital levels) and its own opener,
+`viewEspMap()`, which shows a single pick with the frame list put away: one
+figure, not a set to step through. `_mvVolSetup()` is the shared
+options-fetch-and-adopt both openers use, so neither can drift from the other's
+idea of the grid choices or the ESP conventions (P4). Consequences worth
+knowing:
 - The isovalue slider steers the **density** level here, opening at
   `cube.ESP_SURFACE_ISOVALUE` (0.002, the van-der-Waals-like contour) — *not*
   the enclosed-fraction fit, which exists because an orbital's peak varies with
