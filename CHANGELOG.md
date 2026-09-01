@@ -72,6 +72,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   split. A space (or `&`) in the **calculation name** is a different matter —
   it is the file name itself — so those are now refused as you type them,
   alongside the characters Windows already disallows.
+- **A calculation added while the last job is running now runs in that same
+  run**, instead of sitting at *Pending* while the queue reports *Queue
+  finished.* The dispatcher stopped scanning as soon as every row it already
+  knew about had been handled — which is true the moment the final job starts —
+  so anything you queued, edited or re-pointed during that window was simply
+  never looked at again. With the default one-job-at-a-time queue this was the
+  ordinary case of lining the next calculation up behind the running one.
 
 ## [0.7.0-beta] — 2026-08-28
 

@@ -1032,13 +1032,19 @@ class QueueEngine:
                         break
                     picked = self._pick_ready(calcs, seen, blocked_names)
                     if picked is None:
-                        if all(id(c) in seen for c in calcs):
-                            break                     # queue exhausted
                         if self._slots:
-                            # a job in flight will free budget (or satisfy the
-                            # dependency the rest are waiting on) and wake us
+                            # A job in flight will free budget (or satisfy the
+                            # dependency the rest are waiting on) and wake us.
+                            # This is checked BEFORE "every row is seen": the
+                            # queue is live (P29), so while a job runs the user
+                            # can still append/edit a row, and the walk has to
+                            # be here to see it. Exiting because the rows known
+                            # a moment ago were all handled would strand that
+                            # row PENDING in a run that says "Queue finished."
                             self._slot_cv.wait(_SLOT_POLL)
                             continue
+                        if all(id(c) in seen for c in calcs):
+                            break     # queue exhausted, nothing left in flight
                         # Nothing running and nothing affordable: let the first
                         # ready row through regardless of budget (see above).
                         picked = self._pick_ready(calcs, seen, blocked_names,

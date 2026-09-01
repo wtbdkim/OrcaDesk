@@ -917,6 +917,40 @@ def test_calc_added_mid_run_executes_in_same_run(tmp_path):
     assert late.state is CalcState.DONE
 
 
+def test_calc_added_while_last_job_runs_executes_in_same_run(tmp_path):
+    """The row lands while the ONLY job is in flight, from outside that job.
+
+    Every row the walk knows about is already `seen` at that moment, so the
+    dispatcher must keep waiting on the in-flight slot and rescan when it
+    frees — exiting the walk there would leave the new row PENDING for a run
+    that reports "Queue finished." (P29). The sibling test above adds from
+    inside the job's own callback, which usually wins the race against the
+    dispatcher's next scan; this one cannot.
+    """
+    harness = EngineHarness(tmp_path)
+    started, release = threading.Event(), threading.Event()
+    calcs = [make_calc("first")]
+    late = make_calc("late")
+
+    def hold(_c):
+        started.set()
+        release.wait(10)
+
+    harness.behaviors["first"] = hold
+    walk = threading.Thread(target=harness.engine.run_all, args=(calcs,))
+    walk.start()
+    try:
+        assert started.wait(10)
+        calcs.append(late)          # the user hits "Add to queue" mid-run
+        release.set()
+    finally:
+        release.set()
+        walk.join(20)
+
+    assert harness.calls == ["first", "late"]
+    assert late.state is CalcState.DONE
+
+
 def test_pending_calc_removed_mid_run_never_executes(tmp_path):
     harness = EngineHarness(tmp_path)
     first = make_calc("first")
