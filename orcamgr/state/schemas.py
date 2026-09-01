@@ -543,34 +543,6 @@ class AtomOrderPayload(TypedDict):
     formula_product: str
 
 
-class MeasureResult(_Ok, total=False):
-    """measure_structure — the internal coordinate named by a 2/3/4-atom
-    selection. "kind" is distance | angle | dihedral (Angstrom / degrees);
-    both it and "value" ride only the success branch."""
-    error: str
-    kind: str
-    value: float
-
-
-class StructureEditResult(_Ok, total=False):
-    """edit_structure — the edited coordinate block plus what it did. "xyz" and
-    "moved" (the indices that changed, for the viewer's highlight) ride only
-    success; "value" is the resulting measurement for a "set" op, absent for a
-    fragment move. A refused edit (a ring bond, a broken selection) comes back
-    ok=false with the reason in "error" — never a silently deformed structure."""
-    error: str
-    xyz: str
-    moved: "list[int]"
-    value: float
-
-
-class FragmentResult(_Ok, total=False):
-    """structure_fragment — the connected fragment an atom belongs to, as
-    0-based indices. "indices" rides only success."""
-    error: str
-    indices: "list[int]"
-
-
 # ---- orbital / density cubes (Results tab 3D viewer) --------------------------
 
 class WorkspaceResultPayload(TypedDict):

@@ -1,7 +1,7 @@
-"""Unit tests for structure screening and local editing (orcamgr.core.structure).
+"""Unit tests for structure screening (orcamgr.core.structure).
 
-Pure geometry, no Qt and no ORCA — the same functions the Build tab's Structure
-card and the structure editor call through the Bridge.
+Pure geometry, no Qt and no ORCA — the same functions the Build tab's geometry
+preview and NEB endpoint card call through the Bridge.
 
 The contracts pinned here:
 
@@ -14,8 +14,8 @@ The contracts pinned here:
   refuse is an error.
 * **P4** — ``input_generator.check_neb_atom_order`` is a projection of
   ``compare_atom_order``, not a second implementation.
-* **the editor invariant** — every edit preserves the atom ORDER and the
-  element symbols, which is what makes an edited reactant a valid NEB product.
+* everything here READS: there is no structure editing to test, because
+  building molecules is a molecular editor's job and not ORCAdesk's.
 """
 
 import math
@@ -24,14 +24,11 @@ import pytest
 
 from orcamgr.core.input_generator import check_neb_atom_order
 from orcamgr.core.structure import (
-    StructureError, atomic_number, bonds, check_geometry, compare_atom_order,
-    covalent_radius, electron_count, format_block, formula, fragment_of,
-    fragments, measure, normalize_symbol, parse_block, rotate_atoms,
-    set_internal, translate_atoms,
+    atomic_number, bonds, check_geometry, compare_atom_order, covalent_radius,
+    electron_count, formula, fragments, normalize_symbol, parse_block,
 )
 
-# trans-H2O2: the smallest structure with a real dihedral. Ordered H, O, O, H
-# so the dihedral is atoms 0-1-2-3 and the moving side of the O-O bond is {2,3}.
+# trans-H2O2 — a four-atom chain, so bond perception has something to chain.
 HOOH = (
     "H  -0.300   0.900   0.000\n"
     "O   0.000   0.000   0.000\n"
@@ -45,15 +42,6 @@ WATER = (
     "H   0.9584   0.0000   0.0000\n"
     "H  -0.2396   0.9273   0.0000"
 )
-
-# Cyclopropane's carbon skeleton — every C-C pair inside bonding range, so the
-# three atoms form a ring no rigid edit can open.
-RING = (
-    "C   0.000   0.000   0.000\n"
-    "C   1.500   0.000   0.000\n"
-    "C   0.750   1.299   0.000"
-)
-
 
 def _atoms(text):
     return parse_block(text)
@@ -87,13 +75,6 @@ def test_parse_block_accepts_a_full_xyz_header_and_skips_junk():
     assert [a.sym for a in atoms] == ["O", "H"]
 
 
-def test_format_block_round_trips_order_and_symbols():
-    atoms = _atoms(HOOH)
-    again = parse_block(format_block(atoms))
-    assert [a.sym for a in again] == ["H", "O", "O", "H"]
-    assert again[3].x == pytest.approx(1.750)
-
-
 def test_formula_is_hill_notation():
     assert formula(_atoms(WATER)) == "H2O"
     assert formula(parse_block("C 0 0 0\nH 1 0 0\nO 0 1 0\nH 0 0 1")) == "CH2O"
@@ -107,7 +88,6 @@ def test_bonds_and_fragments_of_a_single_molecule():
     atoms = _atoms(HOOH)
     assert sorted(bonds(atoms)) == [(0, 1), (1, 2), (2, 3)]
     assert fragments(atoms) == [[0, 1, 2, 3]]
-    assert fragment_of(atoms, 3) == [0, 1, 2, 3]
 
 
 def test_two_molecules_far_apart_are_two_fragments():
@@ -116,124 +96,6 @@ def test_two_molecules_far_apart_are_two_fragments():
     groups = fragments(_atoms(far))
     assert [len(g) for g in groups] == [3, 3]
     assert groups[0] == [0, 1, 2]        # ordered by lowest index, i.e. by file
-
-
-# ---------------------------------------------------------------------------
-# measuring
-# ---------------------------------------------------------------------------
-
-def test_measure_distance_angle_dihedral():
-    assert measure(_atoms(HOOH), [1, 2]) == pytest.approx(1.450)
-    assert measure(_atoms(WATER), [1, 0, 2]) == pytest.approx(104.5, abs=0.1)
-    assert abs(measure(_atoms(HOOH), [0, 1, 2, 3])) == pytest.approx(180.0, abs=1e-6)
-
-
-def test_measure_rejects_a_selection_it_cannot_name():
-    with pytest.raises(StructureError):
-        measure(_atoms(WATER), [0])
-    with pytest.raises(StructureError):
-        measure(_atoms(WATER), [0, 1, 2, 0, 1])
-    with pytest.raises(StructureError):
-        measure(_atoms(WATER), [0, 9])
-
-
-# ---------------------------------------------------------------------------
-# editing: the order-preserving invariant
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("indices, value", [
-    ([1, 2], 1.60),              # O-O bond length
-    ([0, 1, 2], 120.0),          # the H-O-O angle
-    ([0, 1, 2, 3], 90.0),        # the dihedral that builds a NEB product
-])
-def test_every_edit_preserves_atom_order_and_elements(indices, value):
-    """The editor invariant: an edited reactant is still a valid NEB product,
-    because nothing can reorder or relabel an atom."""
-    before = _atoms(HOOH)
-    after = set_internal(before, indices, value)
-    assert [a.sym for a in after] == [a.sym for a in before]
-    assert len(after) == len(before)
-
-
-def test_set_dihedral_rotates_only_the_far_side_and_stays_rigid():
-    before = _atoms(HOOH)
-    after = set_internal(before, [0, 1, 2, 3], 90.0)
-    assert measure(after, [0, 1, 2, 3]) == pytest.approx(90.0, abs=1e-6)
-    # the anchored side did not move...
-    assert after[0][1:] == before[0][1:]
-    assert after[1][1:] == before[1][1:]
-    # ...and the moving side kept its internal geometry (rigid rotation)
-    assert measure(after, [2, 3]) == pytest.approx(measure(before, [2, 3]))
-    assert measure(after, [1, 2, 3]) == pytest.approx(measure(before, [1, 2, 3]))
-
-
-def test_set_angle_opens_the_angle_and_keeps_the_bond():
-    before = _atoms(WATER)
-    after = set_internal(before, [1, 0, 2], 120.0)
-    assert measure(after, [1, 0, 2]) == pytest.approx(120.0, abs=1e-6)
-    assert measure(after, [0, 2]) == pytest.approx(measure(before, [0, 2]))
-    assert after[1][1:] == before[1][1:]     # first-named atom is the anchor
-
-
-def test_set_distance_moves_the_whole_far_side():
-    before = _atoms(HOOH)
-    after = set_internal(before, [1, 2], 2.00)
-    assert measure(after, [1, 2]) == pytest.approx(2.00)
-    # H on the far oxygen rode along, so its own bond is untouched
-    assert measure(after, [2, 3]) == pytest.approx(measure(before, [2, 3]))
-    assert after[0][1:] == before[0][1:]
-
-
-def test_set_distance_between_separate_fragments_moves_one_whole_molecule():
-    """The approach coordinate of a complex: the two are not bonded, so the
-    'far side' is simply the partner fragment."""
-    pair = WATER + "\n" + "\n".join(
-        f"{a.sym} {a.x + 8:.4f} {a.y:.4f} {a.z:.4f}" for a in _atoms(WATER))
-    before = _atoms(pair)
-    after = set_internal(before, [0, 3], 3.00)
-    assert measure(after, [0, 3]) == pytest.approx(3.00)
-    assert measure(after, [3, 4]) == pytest.approx(measure(before, [3, 4]))
-    assert after[0][1:] == before[0][1:]
-
-
-def test_a_ring_bond_is_refused_not_deformed():
-    """P26/P2: a rigid edit cannot change a ring's internal coordinate, and
-    saying so beats quietly deforming the ring."""
-    atoms = _atoms(RING)
-    with pytest.raises(StructureError, match="ring"):
-        set_internal(atoms, [0, 1], 2.0)
-
-
-def test_four_atoms_that_are_not_a_chain_are_refused():
-    """Rotating about the middle bond would not move the fourth atom, so the
-    dihedral would not change — saying so beats silently doing nothing."""
-    branched = HOOH + "\nH   0.000  -0.950   0.000"     # a second H on the first O
-    with pytest.raises(StructureError, match="far side"):
-        set_internal(parse_block(branched), [4, 1, 2, 0], 90.0)
-
-
-def test_the_same_atom_selected_twice_is_refused():
-    with pytest.raises(StructureError, match="twice"):
-        set_internal(_atoms(HOOH), [0, 1, 2, 0], 90.0)
-
-
-def test_collinear_atoms_have_no_angle_plane():
-    line = "H 0 0 0\nO 1 0 0\nH 2 0 0"
-    with pytest.raises(StructureError, match="straight line"):
-        set_internal(parse_block(line), [0, 1, 2], 120.0)
-
-
-def test_translate_and_rotate_preserve_order_and_shape():
-    before = _atoms(WATER)
-    moved = translate_atoms(before, fragment_of(before, 0), (1.0, 2.0, 3.0))
-    assert [a.sym for a in moved] == [a.sym for a in before]
-    assert moved[2].x == pytest.approx(before[2].x + 1.0)
-    assert measure(moved, [1, 0, 2]) == pytest.approx(measure(before, [1, 0, 2]))
-
-    spun = rotate_atoms(before, fragment_of(before, 0), (0, 0, 1), 90.0)
-    assert [a.sym for a in spun] == [a.sym for a in before]
-    assert measure(spun, [1, 0, 2]) == pytest.approx(measure(before, [1, 0, 2]))
-    assert measure(spun, [0, 1]) == pytest.approx(measure(before, [0, 1]))
 
 
 # ---------------------------------------------------------------------------
@@ -416,9 +278,13 @@ def test_the_grid_search_agrees_with_the_all_pairs_answer():
         f"{rnd.choice(syms)} {rnd.uniform(-9, 9):.4f} {rnd.uniform(-9, 9):.4f} "
         f"{rnd.uniform(-9, 9):.4f}" for _ in range(220)))
     radii = [covalent_radius(a.sym) for a in atoms]
+
+    def dist(a, b):
+        return math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+
     naive = [(i, j)
              for i in range(len(atoms)) for j in range(i + 1, len(atoms))
-             if measure(atoms, [i, j]) <= radii[i] + radii[j] + 0.45]
+             if dist(atoms[i], atoms[j]) <= radii[i] + radii[j] + 0.45]
     assert bonds(atoms) == naive
 
 

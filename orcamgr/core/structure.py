@@ -1,30 +1,29 @@
 """
-Structure screening and local coordinate editing for hand-built geometries.
+Structure screening for the geometry a calculation is about to run.
 
 Everything here is pure geometry over an ``.xyz`` coordinate block ("El x y z"
 lines, Angstrom) - no numpy, no chemistry toolkit, no Qt - so it unit-tests
 directly and the app keeps its three-package dependency list.
 
-Two jobs:
+*Screening* (:func:`check_geometry`) asks the cheap questions worth asking
+before a multi-hour ORCA launch (P26): does the electron count agree with the
+spin multiplicity, are two atoms sitting on top of each other, did a file in
+Bohr arrive where Angstrom was expected. Answers are reported, never fixed
+(P26), and a chemically legitimate oddity (a two-fragment complex) is a
+*warning*, not an error - the honest verdict is "look at this", not "this is
+wrong" (P2). :func:`compare_atom_order` is the same idea for a NEB endpoint
+pair.
 
-*Screening* (:func:`check_geometry`) - the cheap questions worth asking before
-a multi-hour ORCA launch (P26): does the electron count agree with the spin
-multiplicity, are two atoms sitting on top of each other, did a file in Bohr
-arrive where Angstrom was expected. Answers are reported, never fixed (P26),
-and a chemically legitimate oddity (a two-fragment complex) is a *warning*,
-not an error - the honest verdict is "look at this", not "this is wrong" (P2).
-
-*Editing* (:func:`measure`, :func:`set_internal`, :func:`translate_atoms`,
-:func:`rotate_atoms`) - rigid, order-preserving edits of one structure. The
-atom ORDER is never touched, which is what makes "copy the reactant, move some
-atoms, that is the product" a safe way to build a NEB endpoint: the mismatch
-:func:`compare_atom_order` exists to catch cannot arise from an edit made here.
+Everything here READS. There is deliberately no structure editing: building and
+modifying molecules is what a molecular editor is for, Avogadro2 and its peers
+do it properly, and a side feature here could only be a worse one. ORCAdesk's
+job is to tell you what the file you are about to run contains.
 
 Bond perception is distance-based: i and j are bonded when their separation is
 under the sum of their covalent radii plus :data:`BOND_TOLERANCE`. That is the
 standard cheap heuristic - it has no notion of bond order and will call a short
 hydrogen bond a bond. It is used only to group atoms into fragments and to
-decide which side of a bond a rigid edit moves. **ORCA never sees any of it.**
+report the findings below. **ORCA never sees any of it.**
 """
 
 from __future__ import annotations
@@ -33,14 +32,8 @@ import math
 import re
 from collections import Counter, namedtuple
 
-# One atom of a coordinate block. Immutable on purpose: every edit returns a
-# new list, so an editor can keep an undo stack by keeping the old one.
+# One atom of a coordinate block.
 Atom = namedtuple("Atom", ("sym", "x", "y", "z"))
-
-
-class StructureError(ValueError):
-    """A structure edit that cannot be carried out, with the reason in the
-    message - surfaced to the user verbatim (P28)."""
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +115,7 @@ def covalent_radius(sym: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# parsing / formatting
+# parsing
 # ---------------------------------------------------------------------------
 
 def parse_block(text: str) -> "list[Atom]":
@@ -151,14 +144,6 @@ def parse_block(text: str) -> "list[Atom]":
     return atoms
 
 
-def format_block(atoms) -> str:
-    """The coordinate block an edited structure goes back into the form as.
-    Fixed 8-decimal columns: the same structure edited twice must produce the
-    same text, so an unchanged edit never looks like a change."""
-    return "\n".join(f"{a.sym:<2s} {a.x:14.8f} {a.y:14.8f} {a.z:14.8f}"
-                     for a in atoms)
-
-
 def formula(atoms) -> str:
     """Hill-notation molecular formula (C, then H, then the rest alphabetical)."""
     tally = Counter(normalize_symbol(a.sym) or "?" for a in atoms)
@@ -179,44 +164,16 @@ def _sub(a, b):
     return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
 
 
-def _add(a, b):
-    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
-
-
-def _scale(v, k):
-    return (v[0] * k, v[1] * k, v[2] * k)
-
-
 def _dot(a, b):
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-
-def _cross(a, b):
-    return (a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0])
 
 
 def _norm(v):
     return math.sqrt(_dot(v, v))
 
 
-def _unit(v):
-    n = _norm(v)
-    if n < 1e-12:
-        raise StructureError("Two of the selected atoms are at the same position.")
-    return _scale(v, 1.0 / n)
-
-
 def _pos(a):
     return (a.x, a.y, a.z)
-
-
-def _rodrigues(v, axis, angle_rad):
-    """Rotate vector `v` about the unit vector `axis` by `angle_rad`."""
-    c, s = math.cos(angle_rad), math.sin(angle_rad)
-    return _add(_add(_scale(v, c), _scale(_cross(axis, v), s)),
-                _scale(axis, _dot(axis, v) * (1.0 - c)))
 
 
 # ---------------------------------------------------------------------------
@@ -295,189 +252,6 @@ def fragments(atoms, bond_list=None) -> "list[list]":
                     stack.append(b)
         groups.append(sorted(comp))
     return groups
-
-
-def fragment_of(atoms, index: int) -> "list[int]":
-    """Indices of the connected fragment containing `index` (itself included)."""
-    for group in fragments(atoms):
-        if index in group:
-            return group
-    return [index]
-
-
-def _moving_side(adj, anchor: int, moving: int):
-    """Indices rigidly attached to `moving` once the anchor-moving bond is cut:
-    everything reachable from `moving` without crossing that bond.
-
-    Returns None when `anchor` is still reachable - the two are in a ring (or
-    joined by some other path), and then no rigid rotation can change the
-    internal coordinate without deforming that path. Refusing is the honest
-    answer; silently deforming the ring would not be (P2).
-
-    When the two are not bonded at all the cut is a no-op, so this doubles as
-    "the whole fragment `moving` belongs to, provided `anchor` is not in it" -
-    which is exactly the wanted behaviour for setting the approach distance
-    between two separate fragments of a complex.
-    """
-    seen = {moving}
-    stack = [moving]
-    while stack:
-        a = stack.pop()
-        for b in adj[a]:
-            if (a == moving and b == anchor) or (a == anchor and b == moving):
-                continue                      # the cut bond
-            if b not in seen:
-                seen.add(b)
-                stack.append(b)
-    return None if anchor in seen else seen
-
-
-# ---------------------------------------------------------------------------
-# measuring
-# ---------------------------------------------------------------------------
-
-def measure(atoms, indices) -> float:
-    """Distance (2 indices, Angstrom), angle (3, degrees) or dihedral
-    (4, signed degrees) for the selected atoms, in selection order."""
-    n = len(indices)
-    if n not in (2, 3, 4):
-        raise StructureError("Select 2 atoms for a distance, 3 for an angle, "
-                             "4 for a dihedral.")
-    for i in indices:
-        if not 0 <= i < len(atoms):
-            raise StructureError(f"Atom #{i + 1} is not in this structure.")
-    p = [_pos(atoms[i]) for i in indices]
-    if n == 2:
-        return _norm(_sub(p[1], p[0]))
-    if n == 3:
-        u, v = _unit(_sub(p[0], p[1])), _unit(_sub(p[2], p[1]))
-        return math.degrees(math.acos(max(-1.0, min(1.0, _dot(u, v)))))
-    # IUPAC-signed dihedral via the standard atan2 form - stable near 0 and 180
-    # degrees, where taking an acos of the two plane normals loses both the sign
-    # and most of the precision.
-    b1, b2, b3 = _sub(p[1], p[0]), _sub(p[2], p[1]), _sub(p[3], p[2])
-    n1, n2 = _cross(b1, b2), _cross(b2, b3)
-    m = _cross(n1, _unit(b2))
-    return math.degrees(math.atan2(_dot(m, n2), _dot(n1, n2)))
-
-
-# ---------------------------------------------------------------------------
-# editing (rigid, order-preserving)
-# ---------------------------------------------------------------------------
-
-def _apply(atoms, moving, fn):
-    """New atom list with `fn(position)` applied to the `moving` indices. The
-    list is rebuilt in place order, so the atom ORDER is preserved by
-    construction - the property the whole editor exists to guarantee."""
-    out = []
-    for i, a in enumerate(atoms):
-        if i in moving:
-            x, y, z = fn(_pos(a))
-            out.append(Atom(a.sym, x, y, z))
-        else:
-            out.append(a)
-    return out
-
-
-def set_internal(atoms, indices, value: float) -> "list[Atom]":
-    """Set the internal coordinate named by `indices` to `value` (Angstrom for
-    2 indices, degrees for 3 or 4) and return the new atom list.
-
-    The side that moves is the one carrying the LAST selected atom, split at
-    the bond nearest it - the convention every structure editor uses, and the
-    one that makes "select outwards along the chain, then type a value" behave
-    the way it reads. Everything is rigid: bond lengths and angles inside the
-    moving side are untouched.
-    """
-    n = len(indices)
-    if n not in (2, 3, 4):
-        raise StructureError("Select 2 atoms for a distance, 3 for an angle, "
-                             "4 for a dihedral.")
-    if len(set(indices)) != n:
-        raise StructureError("The same atom is selected twice.")
-    for i in indices:
-        if not 0 <= i < len(atoms):
-            raise StructureError(f"Atom #{i + 1} is not in this structure.")
-
-    adj = _adjacency(len(atoms), bonds(atoms))
-    p = [_pos(atoms[i]) for i in indices]
-
-    if n == 2:
-        i, j = indices
-        if value <= 0:
-            raise StructureError("A bond length must be greater than zero.")
-        side = _moving_side(adj, i, j)
-        if side is None:
-            raise StructureError(
-                f"Atoms #{i + 1} and #{j + 1} are in a ring — moving them apart "
-                f"would have to stretch the rest of the ring, which a rigid "
-                f"edit cannot do.")
-        shift = _scale(_unit(_sub(p[1], p[0])), value - _norm(_sub(p[1], p[0])))
-        return _apply(atoms, side, lambda q: _add(q, shift))
-
-    if n == 3:
-        i, j, k = indices
-        side = _moving_side(adj, j, k)
-        if side is None:
-            raise StructureError(
-                f"Atoms #{j + 1} and #{k + 1} are in a ring — a rigid edit "
-                f"cannot open the angle without deforming it.")
-        axis_raw = _cross(_sub(p[0], p[1]), _sub(p[2], p[1]))
-        if _norm(axis_raw) < 1e-8:
-            raise StructureError("Those three atoms are in a straight line, so "
-                                 "the angle has no plane to open in.")
-        axis = _unit(axis_raw)
-        delta = math.radians(value - measure(atoms, indices))
-        origin = p[1]
-        return _apply(atoms, side,
-                      lambda q: _add(origin, _rodrigues(_sub(q, origin), axis, delta)))
-
-    i, j, k, l = indices
-    side = _moving_side(adj, j, k)
-    if side is None:
-        raise StructureError(
-            f"Atoms #{j + 1} and #{k + 1} are in a ring — a dihedral about a "
-            f"ring bond cannot be changed by a rigid rotation.")
-    if l not in side:
-        raise StructureError(
-            f"Atom #{l + 1} is not on the far side of the #{j + 1}-#{k + 1} "
-            f"bond, so rotating about it would not change this dihedral. "
-            f"Select the four atoms along the chain.")
-    # A right-handed rotation about the j->k axis *decreases* the dihedral it
-    # is measured from (the IUPAC sign convention runs the other way), so the
-    # step is current - target, not target - current. The angle case above has
-    # the opposite handedness because its axis is derived from the two arms.
-    axis = _unit(_sub(p[2], p[1]))
-    delta = math.radians(measure(atoms, indices) - value)
-    origin = p[1]
-    return _apply(atoms, side,
-                  lambda q: _add(origin, _rodrigues(_sub(q, origin), axis, delta)))
-
-
-def translate_atoms(atoms, indices, vector) -> "list[Atom]":
-    """Move the given atoms by `vector` (Angstrom), leaving the rest in place."""
-    v = (float(vector[0]), float(vector[1]), float(vector[2]))
-    return _apply(atoms, set(indices), lambda q: _add(q, v))
-
-
-def rotate_atoms(atoms, indices, axis, degrees: float, origin=None) -> "list[Atom]":
-    """Rotate the given atoms about `axis` through `origin` (their own centroid
-    when omitted) by `degrees`. Rotating a fragment about its own centroid is
-    the move that reorients a partner molecule without translating it away."""
-    moving = sorted(set(indices))
-    if not moving:
-        return list(atoms)
-    unit_axis = _unit((float(axis[0]), float(axis[1]), float(axis[2])))
-    if origin is None:
-        k = 1.0 / len(moving)
-        centre = (sum(atoms[i].x for i in moving) * k,
-                  sum(atoms[i].y for i in moving) * k,
-                  sum(atoms[i].z for i in moving) * k)
-    else:
-        centre = (float(origin[0]), float(origin[1]), float(origin[2]))
-    rad = math.radians(degrees)
-    return _apply(atoms, set(moving),
-                  lambda q: _add(centre, _rodrigues(_sub(q, centre), unit_axis, rad)))
 
 
 # ---------------------------------------------------------------------------

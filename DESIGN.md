@@ -904,11 +904,11 @@ Two shapes, one vocabulary — every WebGL stage in the app is one of these.
   `min(760px, 100vh − 48px)`, `--card` on `--radius-lg`, shadow
   `0 16px 48px rgba(0,0,0,.5)`. Head `12px 16px` + bottom border, title
   15px/600, hint 12px muted pushed right, then the close button. Body is a flex
-  row: an optional 220px list column (`--input-bg`, 6px padding, right border —
-  `.mv-list.right` moves the border and the column to the far side, 10px
-  padding for form fields) beside the stage. The stage's bar is `10px 16px` +
-  top border with a centred 13px mono caption. Used by the Results-tab
-  structure/orbital viewer and the Build-tab structure editor.
+  row: an optional 220px list column (`--input-bg`, 6px padding, right border)
+  beside the stage — put away entirely when there is only one thing to show, as
+  the ESP map does. The stage's bar is `10px 16px` + top border with a centred
+  13px mono caption. Used by the Results-tab structure/orbital viewer and the
+  ESP map.
 - **Inline panel** (`.struct-panel` / `.struct-gl` / `.struct-bar` /
   `.struct-caption`): the same bar (`8px 10px`, 12px mono caption) over a 220px
   media stage (§9.3), inset in a card at `--radius-sm` on `--background`
@@ -917,9 +917,9 @@ Two shapes, one vocabulary — every WebGL stage in the app is one of these.
 
 One rule governs both: **a stage's camera is reset (`zoomTo`) only when the
 scene is genuinely a different one.** These panels re-render on events that are
-not about the molecule at all — a charge keystroke, a tab entry, an applied
-edit — and re-zooming on each would throw away the orientation the user just
-set with the mouse (D60). Track a signature of what is drawn and zoom on the
+not about the molecule at all — a charge keystroke, a tab entry, a re-render —
+and re-zooming on each would throw away the orientation the user just set with
+the mouse (D60). Track a signature of what is drawn and zoom on the
 change, never on the redraw.
 
 ## 12. State → color matrix

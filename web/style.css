@@ -1134,12 +1134,3 @@ html[data-theme-variant="liquidglass"]:is([data-glass="vivid"],[data-glass="maxi
 }
 /* the screening verdict list: chips stack at the 4px in-row step */
 .struct-findings { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
-/* the structure editor reuses the 3D-viewer panel recipe; its side column sits
-   on the RIGHT of the stage (the frame list sits on the left) */
-.mv-list.right { border-right: none; border-left: 1px solid var(--border); padding: 10px; }
-.mv-list.right .field { margin-bottom: 10px; }
-/* a selection row carries its ordinal, so the four-atom order is readable */
-.mv-row-num {
-  flex: 0 0 auto; width: 16px; text-align: center;
-  color: var(--muted-foreground); font-size: 11px;
-}

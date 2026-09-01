@@ -66,19 +66,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     so the badge and the queue can never disagree.
   - With the reactant taken from another calculation the card says the order can
     only be checked when that geometry arrives, instead of judging a stale block.
-- **A structure editor: set a bond length, angle or dihedral, or move a whole
-  fragment.** *Edit structure…* opens the geometry in 3D; click 2 atoms for a
-  distance, 3 for an angle, 4 for a dihedral, type a value, and the far side of
-  the bond moves rigidly — every other bond length and angle untouched. A
-  fragment can also be translated or spun about its own centroid. Undo, revert,
-  and the atom count and edit count are on screen throughout.
-  - **The atom order is preserved by construction**, which is the point:
-    together with **Copy reactant → product**, a NEB product built here can
-    never have the atom mismatch the checker exists to find. The old advice to
-    "copy the reactant and move atoms" is now something the app does.
-  - An edit that cannot be made rigidly is **refused with the reason** — a
-    dihedral about a ring bond, four atoms that are not a chain — rather than
-    silently deforming the structure to make the number come out.
+
+ORCAdesk shows you a structure; it does not edit one. Building and modifying
+molecules is what a molecular editor is for — Avogadro2 and its peers do it
+properly, and a second-rate editor next to a good one helps nobody. Load the
+`.xyz` your editor wrote and ORCAdesk will tell you what is in it.
 
 ### Changed
 - The NEB product loader, its status and its verdict moved out of *Method &

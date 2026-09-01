@@ -43,12 +43,9 @@ interface OrcaBridge {
   load_inp_file(): Promise<string>;            // LoadResult JSON
   load_inp_path(path: string): Promise<string>; // LoadResult JSON
   load_choices(name: string): Promise<string>;
-  // structure screening + editing (Build tab; all over core/structure.py)
+  // structure screening (Build tab; both over core/structure.py — read-only)
   check_structure(xyz: string, charge: number, multiplicity: number): Promise<string>;  // StructureCheck JSON
   compare_structures(reactantXyz: string, productXyz: string): Promise<string>;         // AtomOrder JSON
-  measure_structure(xyz: string, indicesJson: string): Promise<string>;                 // MeasureResult JSON
-  structure_fragment(xyz: string, index: number): Promise<string>;                      // FragmentResult JSON
-  edit_structure(payloadJson: string): Promise<string>;                                 // StructureEdit JSON; {xyz,op,...}
   // parsing
   parse_out_file(): Promise<string>;
   parse_out_path(path: string): Promise<string>;

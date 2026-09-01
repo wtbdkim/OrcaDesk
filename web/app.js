@@ -1599,21 +1599,14 @@ function countAtoms(xyz) {
   return xyz.trim().split("\n").filter(l => l.trim().split(/\s+/).length >= 4).length;
 }
 
-/** The product loader's status line, and the buttons that only mean something
- *  once a product exists. One writer, because four call sites set it (load,
- *  copy-from-reactant, editor apply, and restoring a stored calc) and a label
- *  claiming "loaded" over an empty product is the one lie that matters here. */
+/** The product loader's status line. One writer, because three call sites set
+ *  it (the loader, the NEB card becoming visible, and restoring a stored calc)
+ *  and a label claiming "loaded" over an empty product is the one lie that
+ *  matters here. */
 function setNebProductStatus() {
   const st = document.getElementById("cfg-neb-prod-status");
   if (st) st.textContent = _nebProductXyz
     ? `loaded (${countAtoms(_nebProductXyz)} atoms)` : "no product loaded";
-  const edit = /** @type {HTMLButtonElement} */ (document.getElementById("neb-edit-btn"));
-  if (edit) {
-    edit.disabled = !_nebProductXyz;      // momentarily unavailable (13.3)
-    edit.title = _nebProductXyz
-      ? "Set a bond length, angle or dihedral; move a fragment"
-      : "Load or copy a product geometry first";
-  }
 }
 
 /** Read the method form into the config payload sent to Python.
