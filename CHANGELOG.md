@@ -79,6 +79,16 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   so anything you queued, edited or re-pointed during that window was simply
   never looked at again. With the default one-job-at-a-time queue this was the
   ordinary case of lining the next calculation up behind the running one.
+- **Composite methods (`r2SCAN-3c`, `B97-3c`, `HF-3c`, `PBEh-3c`, `B3LYP-3c`,
+  `wB97X-3c`) now run as themselves.** A 3c method is a functional bundled with
+  its own small basis set, its own counterpoise correction and a dispersion
+  correction fitted to that combination — and ORCA reads a basis set on the
+  keyword line as an override. ORCAdesk always wrote one, so picking
+  `r2SCAN-3c` quietly ran r2SCAN in the basis-set picker's basis instead: a job
+  that finishes normally, passes validation and reports a different energy
+  (water, single point: 43 basis functions and −76.417967 Eh, against
+  def2-mTZVPP's 34 and −76.418907 Eh). The basis and auxiliary basis are now
+  left to the method, and the generated `.inp` carries a line saying so.
 
 ## [0.7.0-beta] — 2026-08-28
 

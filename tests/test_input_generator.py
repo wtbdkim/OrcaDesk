@@ -29,6 +29,7 @@ from orcamgr.core.input_generator import (
     build_input,
     build_input_template,
     check_neb_atom_order,
+    is_composite_method,
     normalize_functional,
     render_raw_input,
 )
@@ -46,6 +47,51 @@ def _keyword_line(text: str) -> str:
     first = text.splitlines()[0]
     assert first.startswith("!"), f"expected keyword line, got {first!r}"
     return first
+
+
+# ---------------------------------------------------------------------------
+# Composite ("3c") methods bring their own basis
+#
+# ORCA takes an explicit basis on the ! line as an override, so emitting the
+# picker's default alongside r2SCAN-3c runs plain r2SCAN/def2-TZVP instead —
+# it terminates normally and validates DONE, so nothing else catches it.
+# Measured on ORCA 6.1.1 (water, single point): with def2-TZVP appended, 43
+# basis functions and -76.417967 Eh; without, def2-mTZVPP and -76.418907 Eh.
+# ---------------------------------------------------------------------------
+
+def test_composite_methods_are_recognized():
+    for name in ("HF-3c", "B97-3c", "r2SCAN-3c", "PBEh-3c", "B3LYP-3c", "wB97X-3c"):
+        assert is_composite_method(name), name
+    for name in ("B3LYP", "wB97X-D4", "PBE0", "B97-D3", "CAM-B3LYP", "M06-2X", ""):
+        assert not is_composite_method(name), name
+
+
+@pytest.mark.parametrize("functional", ["r2SCAN-3c", "HF-3c", "wB97X-3c"])
+def test_composite_method_keeps_its_own_basis(functional):
+    cfg = StepConfig(kind="sp", functional=functional, basis_set="def2-TZVP")
+    line = _keyword_line(build_input(cfg, WATER_XYZ))
+
+    assert functional in line
+    assert "def2-TZVP" not in line       # the picker's basis is NOT an override
+    assert DEFAULT_AUX not in line       # nor is an aux chosen from that basis
+
+
+def test_composite_method_says_why_the_basis_is_missing():
+    cfg = StepConfig(kind="sp", functional="r2SCAN-3c", basis_set="def2-TZVP")
+    text = build_input(cfg, WATER_XYZ)
+
+    note = [ln for ln in text.splitlines() if ln.startswith("#")]
+    assert len(note) == 1
+    assert "composite" in note[0] and "r2SCAN-3c" in note[0]
+
+
+def test_non_composite_functional_still_gets_its_basis_and_aux():
+    cfg = StepConfig(kind="sp", functional="B3LYP", basis_set="def2-TZVP")
+    text = build_input(cfg, WATER_XYZ)
+
+    assert "def2-TZVP" in _keyword_line(text)
+    assert DEFAULT_AUX in _keyword_line(text)
+    assert not [ln for ln in text.splitlines() if ln.startswith("#")]
 
 
 # ---------------------------------------------------------------------------

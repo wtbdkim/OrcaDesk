@@ -65,6 +65,39 @@ def normalize_functional(name: str) -> str:
     return _FUNCTIONAL_ALIASES.get(token.lower(), token)
 
 
+# ORCA's "3c" methods (HF-3c, PBEh-3c, B97-3c, B3LYP-3c, r2SCAN-3c, wB97X-3c)
+# are COMPOSITE methods, not functionals with a free basis choice: each is a
+# functional bundled with its OWN small basis (MINIX / def2-mSVP / def2-mTZVP /
+# def2-mTZVPP / vDZP), a geometrical counterpoise correction and a dispersion
+# correction, all parameterized together against that basis. ORCA reads an
+# explicit basis on the ! line as an OVERRIDE, so appending the picker's default
+# runs a different method that still terminates normally and validates DONE —
+# silently wrong science. Measured on ORCA 6.1.1 (water, single point):
+#
+#   ! r2SCAN-3c def2-TZVP  -> "utilizes the basis: def2-TZVP",   43 bf, -76.417967 Eh
+#   ! r2SCAN-3c            -> "utilizes the basis: def2-mTZVPP", 34 bf, -76.418907 Eh
+#
+# so for these the basis set — and the auxiliary basis, which is chosen FROM it
+# — are left off and ORCA supplies its own (it picks def2-mTZVPP/J itself). The
+# RI keyword is kept: the same measurement shows "! r2SCAN-3c RIJCOSX" gives the
+# composite's basis and energy to every digit, i.e. it is inert here.
+def is_composite_method(functional: str) -> bool:
+    """True for an ORCA composite ("3c") method, which brings its own basis.
+
+    Matched by the "-3c" suffix rather than a closed list, because the picker
+    lists are not closed enums (a method typed by hand is used verbatim) and
+    every ORCA composite is named this way.
+    """
+    return normalize_functional(functional).strip().lower().endswith("3c")
+
+
+def composite_basis_note(functional: str) -> str:
+    """The one-line .inp comment explaining why the basis picker was ignored."""
+    return (f"# {normalize_functional(functional).strip()} is a composite method: "
+            "it brings its own basis set, so the basis and auxiliary basis "
+            "selections are deliberately left off this line.")
+
+
 # Double-hybrid functionals: their MP2 correlation part needs a correlation-
 # fitting ("/C") auxiliary basis. Verified to run in ORCA 6.1.1 (the others
 # from the old list — B2PLYP-D/-D3, revDSD/revDOD-PBEP86-D4, B2PLYP21,
@@ -386,6 +419,10 @@ def _auto_aux(cfg: "StepConfig") -> str:
         # keyword, which ORCA aborts on)
         return ""
 
+    if is_composite_method(cfg.functional):
+        # the composite's own basis comes with its own fitting set
+        return ""
+
     if _needs_auxc(cfg.functional):
         # double hybrid / MP2: /C (and /J) needed unless RI is off
         return "" if _ri_is_off(cfg.ri_approximation) else "AutoAux"
@@ -406,7 +443,7 @@ def _keyword_line(cfg: StepConfig) -> str:
     parts = [
         "!",
         normalize_functional(cfg.functional),
-        cfg.basis_set,
+        "" if is_composite_method(cfg.functional) else cfg.basis_set,
         cfg.scf_convergence,
         cfg.ri_approximation,
     ]
@@ -468,6 +505,10 @@ def check_neb_atom_order(reactant_xyz: str, product_xyz: str) -> dict:
 def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 1) -> str:
     """Return the full text of an ORCA .inp file for this step."""
     lines = [_keyword_line(cfg)]
+    if is_composite_method(cfg.functional):
+        # P2: the dropped basis is reported, not silently swallowed. The .inp is
+        # what the Expert editor and the preview show, so the note lands there.
+        lines.append(composite_basis_note(cfg.functional))
     lines.append(f"%maxcore {cfg.maxcore_mb}")
     lines.append(f"%pal nprocs {cfg.nprocs} end")
 

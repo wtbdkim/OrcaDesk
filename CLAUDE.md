@@ -1022,6 +1022,18 @@ them there.
   `B97-D3`, `LC-BLYP`) are left untouched — the map is an exact dict, never a
   hyphen-stripping heuristic. When adding functionals, verify the spelling against the
   installed ORCA, not just the manual.
+- **Composite ("3c") methods bring their own basis; never append one.** HF-3c,
+  PBEh-3c, B97-3c, B3LYP-3c, r2SCAN-3c and wB97X-3c are functional + basis +
+  gCP + dispersion parameterized *together*, and ORCA treats an explicit basis
+  on the `!` line as an override — so appending the picker's default runs a
+  different method that terminates normally and validates DONE. `_keyword_line`
+  drops the basis (and `_auto_aux` the aux, which is chosen from it) when
+  `is_composite_method()` says so, and `build_input` writes a `#` note into the
+  `.inp` saying why (P2: reported, not silently swallowed). Detection is the
+  `-3c` suffix, not a closed list — the picker lists are not closed enums.
+  Measured on ORCA 6.1.1 (water, sp): `! r2SCAN-3c def2-TZVP` → def2-TZVP,
+  43 bf, −76.417967 Eh; `! r2SCAN-3c` → def2-mTZVPP, 34 bf, −76.418907 Eh.
+  The RI keyword is kept — the same measurement shows it is inert here.
 - **Dispersion: always write `D3BJ`, never a bare/combined `-D3`.** D3(BJ damping) and
   D3(zero damping) are different methods, and bare `-D3` is ambiguous; ORCA also rejects
   combined `FUNC-D3` tokens (it wants the dispersion as a separate keyword). So combined
