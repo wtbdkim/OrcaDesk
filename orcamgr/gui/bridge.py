@@ -36,6 +36,11 @@ from ..crest.wsl import list_distros as crest_list_distros
 from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL, user_data_root
 from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import CalcState, result_from_output
+from ..core.structure import (
+    StructureError, check_geometry, compare_atom_order, format_block,
+    fragment_of, measure, parse_block, rotate_atoms, set_internal,
+    translate_atoms,
+)
 from ..core.parser import parse_file
 from ..core.resources import ResourceBudget, auto_cores, auto_ram_mb
 from ..state.store import (
@@ -57,6 +62,8 @@ from ..state.schemas import (
     CrestStatusPayload, ConformerPayload,
     WallpaperResult, ExportResult, FramesResult, FavoritesResult,
     PlotOptionsResult, CubeJobPayload, CubeDataResult, WorkspaceResultsResult,
+    AtomOrderPayload, FragmentResult, MeasureResult, StructureCheckPayload,
+    StructureEditResult,
 )
 
 # Ceiling on the workspace scan behind the Results picker. Generous next to any
@@ -792,6 +799,110 @@ class Bridge(QObject):
         """Load a .xyz by PATH (drag-and-drop). Same LoadResult as
         load_xyz_file; loading does not change the workspace."""
         return self._load_result(path)
+
+    # --- structure screening + editing (Build tab) ---
+    # Thin adapters over core/structure.py: all the geometry lives there, pure
+    # and unit-tested, so the desktop and any later caller reach one
+    # implementation (P4). Every slot answers from the coordinate text the
+    # front-end holds — nothing here touches the store or the disk.
+
+    @pyqtSlot(str, int, int, result=str)
+    def check_structure(self, xyz: str, charge: int, multiplicity: int) -> str:
+        """Screen a coordinate block for the mistakes that cost a whole run
+        (P26): a spin multiplicity the electron count cannot produce, atoms on
+        top of each other, coordinates that are really in Bohr. Returns a
+        StructureCheckPayload; it never fails, because an unreadable block is
+        itself one of the findings."""
+        return json.dumps(StructureCheckPayload(
+            **check_geometry(xyz, charge, multiplicity)))
+
+    @pyqtSlot(str, str, result=str)
+    def compare_structures(self, reactant_xyz: str, product_xyz: str) -> str:
+        """Compare two coordinate blocks as NEB endpoints — the verdict the
+        Build tab badges, plus every diverging index for its mismatch table.
+        Returns an AtomOrderPayload."""
+        return json.dumps(AtomOrderPayload(
+            **compare_atom_order(reactant_xyz, product_xyz)))
+
+    @pyqtSlot(str, str, result=str)
+    def measure_structure(self, xyz: str, indices_json: str) -> str:
+        """The internal coordinate named by a 2/3/4-atom selection (0-based
+        indices, in selection order). Returns a MeasureResult."""
+        try:
+            indices = [int(i) for i in json.loads(indices_json or "[]")]
+        except (ValueError, TypeError) as e:
+            return json.dumps(MeasureResult(ok=False, error=str(e)))
+        kinds = {2: "distance", 3: "angle", 4: "dihedral"}
+        try:
+            value = measure(parse_block(xyz), indices)
+        except StructureError as e:
+            return json.dumps(MeasureResult(ok=False, error=str(e)))
+        return json.dumps(MeasureResult(
+            ok=True, kind=kinds[len(indices)], value=value))
+
+    @pyqtSlot(str, int, result=str)
+    def structure_fragment(self, xyz: str, index: int) -> str:
+        """The connected fragment `index` belongs to, as 0-based indices — what
+        a fragment move acts on, resolved here so the viewer can highlight it
+        before the user commits. Returns a FragmentResult."""
+        atoms = parse_block(xyz)
+        if not 0 <= index < len(atoms):
+            return json.dumps(FragmentResult(
+                ok=False, error=f"Atom #{index + 1} is not in this structure."))
+        return json.dumps(FragmentResult(ok=True, indices=fragment_of(atoms, index)))
+
+    @pyqtSlot(str, result=str)
+    def edit_structure(self, payload_json: str) -> str:
+        """Apply one rigid, order-preserving edit and return the new coordinate
+        block (StructureEditResult).
+
+        The payload is ``{xyz, op, ...}``:
+
+        * ``op: "set"`` — ``indices`` (2/3/4, selection order) and ``value``
+          (Angstrom or degrees): set that internal coordinate.
+        * ``op: "translate"`` — ``anchor`` and ``vector`` [dx, dy, dz]: move the
+          anchor's whole fragment.
+        * ``op: "rotate"`` — ``anchor``, ``axis`` [x, y, z] and ``degrees``:
+          spin the anchor's fragment about its own centroid.
+
+        An edit that cannot be done rigidly (a ring bond, four atoms that are
+        not a chain) comes back ``ok: false`` with the reason — the structure is
+        never quietly deformed to make the number come out (P2, P26).
+        """
+        try:
+            req = json.loads(payload_json or "{}")
+        except ValueError as e:
+            return json.dumps(StructureEditResult(ok=False, error=str(e)))
+        atoms = parse_block(req.get("xyz", ""))
+        if not atoms:
+            return json.dumps(StructureEditResult(
+                ok=False, error="No coordinates to edit."))
+        op = req.get("op", "set")
+        try:
+            if op == "set":
+                indices = [int(i) for i in req.get("indices", [])]
+                edited = set_internal(atoms, indices, float(req.get("value", 0.0)))
+                moved = [i for i, (a, b) in enumerate(zip(atoms, edited)) if a != b]
+                return json.dumps(StructureEditResult(
+                    ok=True, xyz=format_block(edited), moved=moved,
+                    value=measure(edited, indices)))
+            anchor = int(req.get("anchor", -1))
+            if not 0 <= anchor < len(atoms):
+                return json.dumps(StructureEditResult(
+                    ok=False, error=f"Atom #{anchor + 1} is not in this structure."))
+            moved = fragment_of(atoms, anchor)
+            if op == "translate":
+                edited = translate_atoms(atoms, moved, req.get("vector", (0, 0, 0)))
+            elif op == "rotate":
+                edited = rotate_atoms(atoms, moved, req.get("axis", (0, 0, 1)),
+                                      float(req.get("degrees", 0.0)))
+            else:
+                return json.dumps(StructureEditResult(
+                    ok=False, error=f"Unknown structure edit '{op}'."))
+            return json.dumps(StructureEditResult(
+                ok=True, xyz=format_block(edited), moved=moved))
+        except (StructureError, ValueError, TypeError, IndexError) as e:
+            return json.dumps(StructureEditResult(ok=False, error=str(e)))
 
     # --- option lists ---
     @pyqtSlot(str, result=str)

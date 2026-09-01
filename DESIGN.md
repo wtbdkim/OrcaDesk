@@ -407,10 +407,10 @@ are the desktop's; mobile drift is tracked in B6.
 | `--raw` | `#c084fc` | `#0f766e` (teal) | raw/MLIP special modes |
 
 Each semantic color also carries **tint tokens** on the §11.19 alpha ladder
-(`--ok-tint`/`--ok-tint-strong`, `--warn-tint`, `--err-tint`/`--err-tint-bg`/
-`--err-tint-hover`/`--err-outline`/`--err-stripe`, `--raw-tint`), redefined
-per theme next to their base colors — components consume the tint token,
-never a hand-mixed rgba (D13).
+(`--ok-tint`/`--ok-tint-strong`, `--warn-tint`/`--warn-tint-bg`,
+`--err-tint`/`--err-tint-bg`/`--err-tint-hover`/`--err-outline`/`--err-stripe`,
+`--raw-tint`), redefined per theme next to their base colors — components
+consume the tint token, never a hand-mixed rgba (D13).
 
 ### Chart criterion series (`--crit-*`)
 
@@ -505,7 +505,8 @@ Log box `height: calc(100vh − 220px)`, `min-height 160px` · combo list
 `max-height 280px` · Results table wrapper `max-height 280px` (nested
 sub-table 240px) · raw editor `min-height 320px` · `.inp-view`
 `max-height 60vh` · spectrum SVG height 220px · SCF plot inner height
-min 220. Wide content always scrolls inside its own wrapper
+min 220 · inline 3D stage (`.struct-gl`) height 220px · viewer-panel list
+column 220px. Wide content always scrolls inside its own wrapper
 (`overflow: auto`), never the page sideways.
 
 ## 10. Typography roles
@@ -626,9 +627,14 @@ Badge `.qstate`: `11px/600; padding 3px 9px; radius 999px; uppercase;
 takes `margin-left:auto`. Type tag (raw/MLIP, inside `.qname`): same class,
 `10px; padding 1px 7px` — reads as a tag, not a second status.
 
+**Verdict badges** (`.qstate.match` / `.qstate.mismatch`, Build-tab NEB
+endpoints) share the badge anatomy and the done/failed colour pair, but report
+a *comparison result*, not a run state — §12 keeps them on their own row so
+the two vocabularies never merge (a "done" endpoint pair would mean nothing).
+
 ### 11.8 Error chip and warning panel
 
-Two tiers, both `--err` text on an 8% err-tint:
+Three chips; the first two are `--err` text on an 8% err-tint:
 
 - **Inline error chip** `.qerror` (row-level messages, NEB mismatch):
   `12px; padding 5px 8px; border-left 2px solid --err; radius 4px;
@@ -636,6 +642,14 @@ Two tiers, both `--err` text on an 8% err-tint:
 - **Warning panel** `.freq-warn` (section-level, Results):
   `12px; padding 8px 10px; border 1px solid --err-outline; radius
   --radius-sm; lh 1.5; margin-top 8px`.
+- **Inline warning chip** `.qwarn` — the `.qerror` anatomy exactly, in warn
+  tokens (`--warn` on `--warn-tint-bg`, `border-left 2px solid --warn`). For a
+  finding that is *worth a look but not wrong*: a two-fragment complex, a
+  units suspicion. The two chips exist as a pair so a findings list (Build-tab
+  structure screening) says which is which without a legend — an error chip
+  alone would either overstate the warnings or hide them.
+
+A findings list stacks chips in a `.struct-findings` column at the 4px step.
 
 ### 11.9 List row (canonical)
 
@@ -652,7 +666,10 @@ selection, and row text (names, meta) must stay selectable/copyable.
 
 ### 11.10 Modal
 
-Overlay `rgba(0,0,0,.6)`, z-index 100. Box: `--card; border --border; radius
+Overlay `rgba(0,0,0,.6)`, **z-index 120 — above every other surface**,
+including the viewer panels at 110 (§11.21): a confirm can be raised from
+inside one (discarding structure edits), and a confirmation the user cannot see
+is worse than no confirmation at all. Box: `--card; border --border; radius
 --radius-lg; padding 20px; max-width 460px; width
 calc(100% − 40px); shadow 0 16px 48px rgba(0,0,0,.5)`. Title 15px/600,
 `margin-bottom 10px`. Body 13px muted, lh 1.6, `margin-bottom 18px`; bold
@@ -861,12 +878,51 @@ Two rules make a slider honest rather than decorative:
   and an orbital near 0.05; linear would bury the bottom decade in the first
   few pixels.
 
+### 11.21 Viewer panel (3D stages)
+
+Two shapes, one vocabulary — every WebGL stage in the app is one of these.
+
+- **Full panel** (`.mv-overlay` / `.mv-panel` / `.mv-head` / `.mv-body` /
+  `.mv-list` / `.mv-stage` / `.mv-gl` / `.mv-bar`): fixed overlay, z-index 110
+  over `rgba(0,0,0,.62)`; panel `min(1080px, 100vw − 48px)` ×
+  `min(760px, 100vh − 48px)`, `--card` on `--radius-lg`, shadow
+  `0 16px 48px rgba(0,0,0,.5)`. Head `12px 16px` + bottom border, title
+  15px/600, hint 12px muted pushed right, then the close button. Body is a flex
+  row: an optional 220px list column (`--input-bg`, 6px padding, right border —
+  `.mv-list.right` moves the border and the column to the far side, 10px
+  padding for form fields) beside the stage. The stage's bar is `10px 16px` +
+  top border with a centred 13px mono caption. Used by the Results-tab
+  structure/orbital viewer and the Build-tab structure editor.
+- **Inline panel** (`.struct-panel` / `.struct-gl` / `.struct-bar` /
+  `.struct-caption`): the same bar (`8px 10px`, 12px mono caption) over a 220px
+  media stage (§9.3), inset in a card at `--radius-sm` on `--background`
+  (§9.2's inset media surface). Used by the Build-tab geometry preview and the
+  NEB endpoint comparison.
+
+One rule governs both: **a stage's camera is reset (`zoomTo`) only when the
+scene is genuinely a different one.** These panels re-render on events that are
+not about the molecule at all — a charge keystroke, a tab entry, an applied
+edit — and re-zooming on each would throw away the orientation the user just
+set with the mouse (D60). Track a signature of what is drawn and zoom on the
+change, never on the redraw.
+
 ## 12. State → color matrix
 
 | Surface | pending | running | done | failed | cancelled | blocked | raw/MLIP tag |
 |---|---|---|---|---|---|---|---|
 | Badge bg | `--accent` | warn-15% | ok-15% | err-15% | `--accent` | `--accent` | raw-15% |
 | Badge text | muted | `--warn` | `--ok` | `--err` | muted | muted | `--raw` |
+
+Verdict badges (a comparison result, not a run state — §11.7):
+
+| Surface | match | mismatch |
+|---|---|---|
+| Badge bg | ok-15% | err-15% |
+| Badge text | `--ok` | `--err` |
+
+Structure findings: error-level chip `.qerror` (`--err` on err-8%),
+warn-level chip `.qwarn` (`--warn` on warn-8%); the atoms a finding names are
+marked `--err` in the 3D preview.
 
 Log levels: `info → --info`, `ok → --ok`, `warn → --warn`, `err → --err`,
 ORCA raw output → `--orca`. Pills: unset/checking dot muted, ready `--ok`,

@@ -36,6 +36,7 @@
   --ok-tint: rgba(74,222,128,.15);          /* 15% */
   --ok-tint-strong: rgba(74,222,128,.22);   /* 22% */
   --warn-tint: rgba(251,191,36,.15);        /* 15% */
+  --warn-tint-bg: rgba(251,191,36,.08);     /* 8% */
   --err-tint: rgba(248,113,113,.15);        /* 15% */
   --err-tint-bg: rgba(248,113,113,.08);     /* 8% */
   --err-tint-hover: rgba(248,113,113,.10);  /* 10% */
@@ -89,6 +90,7 @@ html[data-theme="light"] {
   --ok-tint: rgba(21,128,61,.15);           /* 15% */
   --ok-tint-strong: rgba(21,128,61,.22);    /* 22% */
   --warn-tint: rgba(180,83,9,.15);          /* 15% */
+  --warn-tint-bg: rgba(180,83,9,.08);       /* 8% */
   --err-tint: rgba(220,38,38,.15);          /* 15% */
   --err-tint-bg: rgba(220,38,38,.08);       /* 8% */
   --err-tint-hover: rgba(220,38,38,.10);    /* 10% */
@@ -415,6 +417,14 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   padding: 5px 8px; border-radius: 4px;
 }
 .queue-item .qerror { margin-top: 4px; }
+/* the same chip in warn tokens — a structure finding that is worth a look but
+   is not wrong (a two-fragment complex, a units suspicion). Two tiers of chip
+   let the Build tab's findings list say which is which without a legend. */
+.qwarn {
+  font-size: 12px; color: var(--warn); line-height: 1.45;
+  background: var(--warn-tint-bg); border-left: 2px solid var(--warn);
+  padding: 5px 8px; border-radius: 4px;
+}
 /* pill shape applies to every .qstate badge (queue rows AND the Build "raw"
    tag), so they look identical; only the right-push is queue-specific */
 .qstate {
@@ -437,6 +447,11 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
    error of this calc itself — so it reads like pending/cancelled, not failed */
 .qstate.blocked { background: var(--accent); color: var(--muted-foreground); }
 .qstate.raw { background: var(--raw-tint); color: var(--raw); }
+/* verdict badges (Build tab, NEB endpoint pair): the same ok/err pair as
+   done/failed, but the state being reported is a comparison result, not a run
+   — §12 carries them as their own row so the vocabularies stay separate. */
+.qstate.match    { background: var(--ok-tint); color: var(--ok); }
+.qstate.mismatch { background: var(--err-tint); color: var(--err); }
 .queue-empty { text-align: center; color: var(--muted-foreground); padding: 56px 40px; }
 .queue-empty-icon { color: var(--border); margin-bottom: 14px; }
 .queue-empty-title { font-size: 14px; font-weight: 600; color: var(--foreground); margin-bottom: 4px; }
@@ -682,8 +697,11 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .combo-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
 /* generic modal */
+/* A confirmation is always the topmost surface: it can be raised from ON a
+   viewer panel (z-index 110) — discarding structure edits — and a confirm the
+   user cannot see is worse than no confirm at all. */
 .modal-overlay {
-  position: fixed; inset: 0; z-index: 100;
+  position: fixed; inset: 0; z-index: 120;
   background: rgba(0,0,0,0.6);
   display: flex; align-items: center; justify-content: center;
 }
@@ -1047,4 +1065,35 @@ html[data-theme-variant="liquidglass"]:is([data-glass="vivid"],[data-glass="maxi
   font-size: 9px; font-weight: 600; text-align: center; padding: 2px 0;
   color: #fff; background: rgba(0,0,0,.35); border-radius: 0 0 var(--radius-sm) var(--radius-sm);
   text-transform: capitalize; letter-spacing: .02em;
+}
+
+/* ---- Build-tab structure tools (inline preview, screening, endpoint pair) ----
+   An inset media surface (§9.2) with its own bar, sized to the 220px media
+   height the spectrum and SCF plot already use — the same component serves the
+   geometry preview and the NEB endpoint comparison. */
+.struct-panel {
+  margin-top: 8px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--background);
+}
+.struct-gl { position: relative; height: 220px; }
+.struct-gl canvas { border-radius: 0; }
+.struct-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-top: 1px solid var(--border);
+}
+.struct-caption {
+  flex: 1 1 auto; min-width: 0; font-size: 12px;
+  font-family: var(--font-mono); color: var(--muted-foreground);
+}
+/* the screening verdict list: chips stack at the 4px in-row step */
+.struct-findings { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+/* the structure editor reuses the 3D-viewer panel recipe; its side column sits
+   on the RIGHT of the stage (the frame list sits on the left) */
+.mv-list.right { border-right: none; border-left: 1px solid var(--border); padding: 10px; }
+.mv-list.right .field { margin-bottom: 10px; }
+/* a selection row carries its ordinal, so the four-atom order is readable */
+.mv-row-num {
+  flex: 0 0 auto; width: 16px; text-align: center;
+  color: var(--muted-foreground); font-size: 11px;
 }

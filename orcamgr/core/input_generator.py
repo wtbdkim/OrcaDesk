@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields as dataclass_fields, asdict
 
+from .structure import compare_atom_order
+
 
 # ---- defaults (match the user's established workflow) -------------------
 DEFAULT_FUNCTIONAL = "wB97X-D4"
@@ -451,37 +453,16 @@ def check_neb_atom_order(reactant_xyz: str, product_xyz: str) -> dict:
 
     Returns {"ok": bool, "error": str, "mismatch_index": int|None}. On success
     error is "" and mismatch_index is None.
+
+    The comparison itself lives in ``core.structure.compare_atom_order``, which
+    the Build tab's checker calls for the same verdict plus the full mismatch
+    list it tabulates (P4: one judgment, two callers). This projection is the
+    three-key gate the generator and the queue engine have always used, kept
+    exactly so — adding keys here would change what those callers see.
     """
-    # Element symbols compare case-insensitively (ORCA itself is
-    # case-insensitive, and legacy tools write "CL"): normalize to
-    # capitalized form for both the comparison and the messages.
-    r = [el.capitalize() for el in _xyz_elements(reactant_xyz)]
-    p = [el.capitalize() for el in _xyz_elements(product_xyz)]
-    if not r or not p:
-        return {"ok": False, "error": "Could not read coordinates from reactant or product.", "mismatch_index": None}
-    if len(r) != len(p):
-        return {"ok": False,
-                "error": f"Atom count differs: reactant has {len(r)}, product has {len(p)}. "
-                         f"NEB-TS needs the same atoms in both.",
-                "mismatch_index": None}
-    # composition (multiset of elements) must match
-    from collections import Counter
-    if Counter(r) != Counter(p):
-        rc = ", ".join(f"{el}{n}" for el, n in sorted(Counter(r).items()))
-        pc = ", ".join(f"{el}{n}" for el, n in sorted(Counter(p).items()))
-        return {"ok": False,
-                "error": f"Element composition differs — reactant: {rc}; product: {pc}.",
-                "mismatch_index": None}
-    # same composition: check order, report first divergence
-    for i, (a, b) in enumerate(zip(r, p)):
-        if a != b:
-            return {"ok": False,
-                    "error": f"Atom order differs at atom #{i + 1}: reactant has {a}, product has {b}. "
-                             f"The atom order must be identical in both structures "
-                             f"(tip: build the product by copying the reactant and moving atoms, "
-                             f"so the order is preserved).",
-                    "mismatch_index": i}
-    return {"ok": True, "error": "", "mismatch_index": None}
+    rich = compare_atom_order(reactant_xyz, product_xyz)
+    return {"ok": rich["ok"], "error": rich["error"],
+            "mismatch_index": rich["mismatch_index"]}
 
 
 def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 1) -> str:

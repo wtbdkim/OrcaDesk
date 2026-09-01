@@ -51,6 +51,23 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   - **Geometry source** is either an `.xyz` file, or a **reference** to another
     queued calculation — in which case that calculation's optimized geometry is
     injected automatically at run time.
+  - A loaded `.xyz` is **drawn in 3D right there**, with its formula and atom /
+    electron count beside it, and is **screened before it can cost you hours**:
+    a spin multiplicity the electron count cannot produce (ORCA aborts on that
+    at the first SCF step), atoms sitting on top of each other, coordinates
+    that are really in Bohr, disconnected fragments. Findings are reported and
+    the atoms they name are highlighted — your structure is never edited for
+    you.
+  - **Edit structure…** opens the geometry in 3D: click 2 atoms for a distance,
+    3 for an angle, 4 for a dihedral, type a value, and the far side of that
+    bond moves rigidly; a fragment can also be translated or spun about its own
+    centre. The **atom order never changes**, and an edit that cannot be made
+    rigidly (a dihedral about a ring bond) is refused with the reason.
+  - **NEB-TS** gets its own *NEB endpoints* card: load a product, or **copy the
+    reactant** and edit it into one; see both structures side by side (or
+    overlaid) in a single scene, hover an atom to name it in *both*, and get a
+    **matched / atom mismatch** badge with a table of every atom that differs.
+    Building the product with the editor makes a mismatch impossible.
   - Calculation types: **Opt, Opt + Freq, TS Opt, TS Opt + Freq, Freq, TS Freq**
     (expects one imaginary mode), **NEB-TS** (find a TS), **IRC** (verify a TS),
     **TDDFT, NMR, SP**, and **General** (any). Freq variants accept a
@@ -196,6 +213,7 @@ orcamgr/
   core/
     parser.py                 ORCA .out parser (verified vs ORCA 6.1.1)
     input_generator.py        .inp generation (+ CPCM/SMD solvation)
+    structure.py              geometry screening + rigid, order-preserving edits
     runner.py                 detached ORCA subprocess; tail .out + reattach
     procutil.py               psutil process identity + tree-kill (reattach)
     queue.py                  multi-job pipeline orchestration

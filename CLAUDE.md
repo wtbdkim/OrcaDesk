@@ -104,7 +104,9 @@ live in their own files, loaded by `index.html` **before** `app.js` in this
 order: `scf_graph.js` → `progress_panels.js` → `combo.js` (combobox widget) →
 `appearance.js` (theme variant / wallpaper / Liquid-Glass pulse) →
 `log_graph.js` (log pane + progress trackers) → `results_render.js`
-(Results-tab section renderers) → `molviewer.js` (3D viewer + favorites).
+(Results-tab section renderers) → `molviewer.js` (3D viewer + favorites) →
+`structedit.js` (Build-tab structure preview / screening / NEB endpoint
+comparison / structure editor).
 Cross-file calls resolve at runtime, so only top-level statements may not touch
 a later file's bindings (TDZ) — keep new top-level code declaration-only.
 
@@ -412,6 +414,62 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   the opt kinds, False for sp/freq).
   `crest_conf` validation requires normal termination + at least one conformer.
   See the MLIP and CREST sections.
+
+### Structure screening and editing (Build tab)
+
+`orcamgr/core/structure.py` is the one place geometry is reasoned about. It is
+pure, numpy-free and Qt-free (`requirements.txt` stays at three packages), so it
+unit-tests directly (`tests/test_structure.py`); the front-end reaches it only
+through five thin Bridge slots — `check_structure`, `compare_structures`,
+`measure_structure`, `structure_fragment`, `edit_structure` — and holds **no**
+geometry logic of its own. That is deliberate (P4): the Build tab's NEB badge
+and `input_generator.check_neb_atom_order`'s gate are now the same judgment,
+where they used to be a Python implementation and a hand-mirrored JS copy that
+could drift. `check_neb_atom_order` is a three-key *projection* of
+`structure.compare_atom_order` and must stay one — the queue engine and the
+generator consume those three keys, and a test pins the projection.
+
+Two halves:
+
+- **Screening** (`check_geometry`) answers the questions worth asking before a
+  multi-hour launch (P26) and *reports* them (P2): a spin multiplicity the
+  electron count cannot produce, duplicate/overlapping atoms, coordinates that
+  are really in Bohr (they read as a molecule with no bonds), disconnected
+  fragments. `level` separates "ORCA will refuse this" (error) from "worth a
+  look" (warn) — a two-fragment complex never blocks the queue. Nothing is
+  auto-corrected.
+- **Editing** (`measure` / `set_internal` / `translate_atoms` / `rotate_atoms`)
+  makes rigid changes to one structure. The side that moves is the one carrying
+  the LAST selected atom, split at the bond nearest it; an edit that cannot be
+  made rigidly (a ring bond, four atoms that are not a chain) raises
+  `StructureError` with the reason rather than deforming the structure. **Every
+  edit preserves the atom order and the element symbols** — that invariant is
+  what makes "Copy reactant → product, then edit" a way of *constructing* a
+  valid NEB pair instead of checking one afterwards.
+
+Two implementation notes worth keeping:
+
+- **Bond perception is a uniform grid, not an all-pairs sweep.** These slots run
+  on the Qt UI thread on every charge keystroke and every Build-tab entry; with
+  the cell edge set to the longest possible bond, every partner is inside the 27
+  cells around an atom (~20 ms for 3000 atoms, vs. a visible freeze). It is
+  distance-based only — no bond orders — and is used solely for fragments,
+  for choosing an edit's moving side, and for the screening findings. **ORCA
+  never sees it.**
+- **The dihedral rotation sign is inverted relative to the measurement.** A
+  right-handed rotation about the j→k axis *decreases* the IUPAC-signed
+  dihedral, so `set_internal` steps by `current − target` for the 4-atom case
+  and by `target − current` for the 3-atom case (whose axis comes from the two
+  arms instead). Both directions are pinned by tests.
+
+Front-end side: `web/structedit.js` owns the geometry card's inline preview and
+findings list, the `card-neb` endpoint comparison, and the editor modal.
+`card-neb` lives in `index.html` rather than in the re-rendered method form
+**because a WebGL stage must not be re-created**: `renderConfigForm` replaces
+`#calc-config`'s innerHTML on every calc-type switch, which would orphan a
+viewer's GL context each time. For the same reason every stage re-renders on
+`switchTab("build")` and on the return to a DFT build mode — a canvas created
+while its card is `display:none` sizes to zero.
 
 ### Optional phone-sync server
 

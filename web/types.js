@@ -546,6 +546,94 @@
  * @property {string} [error]
  */
 
+/* ---- structure screening + editing (Build tab) --------------------------- */
+
+/**
+ * One screening finding. Mirror of the Python StructureIssuePayload (4 keys).
+ * "level" is "error" (ORCA will refuse this, or it is not the structure anyone
+ * meant) or "warn" (legitimate, but worth a look); "atoms" are 0-based indices
+ * the 3D preview highlights.
+ * @typedef {Object} StructureIssue
+ * @property {string} level
+ * @property {string} code
+ * @property {string} message
+ * @property {number[]} atoms
+ */
+
+/**
+ * check_structure(xyz, charge, multiplicity) result. Mirror of the Python
+ * StructureCheckPayload (7 keys). "ok" is the VERDICT (no error-level issues),
+ * not a call-succeeded flag — the slot cannot fail. "electrons" is null when a
+ * symbol is not an element, so the count is unknown rather than guessed.
+ * @typedef {Object} StructureCheck
+ * @property {boolean} ok
+ * @property {number} n_atoms
+ * @property {string} formula
+ * @property {number|null} electrons
+ * @property {number} n_bonds
+ * @property {number} n_fragments
+ * @property {StructureIssue[]} issues
+ */
+
+/**
+ * One diverging atom index in a NEB endpoint pair. Mirror of the Python
+ * AtomOrderMismatchPayload (3 keys); "index" is 0-based.
+ * @typedef {Object} AtomOrderMismatch
+ * @property {number} index
+ * @property {string} reactant
+ * @property {string} product
+ */
+
+/**
+ * compare_structures(reactant, product) result. Mirror of the Python
+ * AtomOrderPayload (9 keys). "mismatch_index" is the FIRST divergence (what
+ * input_generator.check_neb_atom_order projects to); "mismatches" is the capped
+ * table, "n_mismatches" the true total.
+ * @typedef {Object} AtomOrder
+ * @property {boolean} ok
+ * @property {string} error
+ * @property {number|null} mismatch_index
+ * @property {number} n_reactant
+ * @property {number} n_product
+ * @property {number} n_mismatches
+ * @property {AtomOrderMismatch[]} mismatches
+ * @property {string} formula_reactant
+ * @property {string} formula_product
+ */
+
+/**
+ * measure_structure(xyz, indicesJson) result. Mirror of the Python
+ * MeasureResult. "kind" is distance | angle | dihedral (Angstrom / degrees);
+ * both it and "value" ride only the success branch.
+ * @typedef {Object} MeasureResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {string} [kind]
+ * @property {number} [value]
+ */
+
+/**
+ * edit_structure(payloadJson) result. Mirror of the Python
+ * StructureEditResult. "xyz" and "moved" ride only success; "value" is the
+ * resulting measurement of a "set" op. A refused edit comes back ok=false with
+ * the reason — never a silently deformed structure.
+ * @typedef {Object} StructureEdit
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {string} [xyz]
+ * @property {number[]} [moved]
+ * @property {number} [value]
+ */
+
+/**
+ * structure_fragment(xyz, index) result. Mirror of the Python FragmentResult;
+ * "indices" (0-based) rides only success.
+ * @typedef {Object} FragmentResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {number[]} [indices]
+ */
+
 /**
  * One result found on disk under the workspace root. Mirror of the Python
  * WorkspaceResultPayload. "path" is the artifact to parse; "queued" marks the

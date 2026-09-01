@@ -476,6 +476,85 @@ class FavoritesResult(_Ok, total=False):
     labels: "list[str]"
 
 
+# ---- structure screening + editing (Build tab) --------------------------------
+
+class StructureIssuePayload(TypedDict):
+    """One finding from core.structure.check_geometry — 4 keys. "level" is
+    "error" (ORCA will refuse this, or it is not the structure anyone meant) or
+    "warn" (legitimate, but worth a look); "atoms" are 0-based indices the
+    front-end highlights in the 3D preview."""
+    level: str
+    code: str
+    message: str
+    atoms: "list[int]"
+
+
+class StructureCheckPayload(TypedDict):
+    """check_structure — 7 keys, exactly core.structure.check_geometry's dict.
+    "ok" is the *verdict* (no error-level issues), not a call-succeeded flag:
+    the slot cannot fail, since an unreadable block is itself a finding.
+    "electrons" is None when a symbol is not an element, so the count is
+    genuinely unknown rather than guessed (P2)."""
+    ok: bool
+    n_atoms: int
+    formula: str
+    electrons: "int | None"
+    n_bonds: int
+    n_fragments: int
+    issues: "list[StructureIssuePayload]"
+
+
+class AtomOrderMismatchPayload(TypedDict):
+    """One diverging index in a NEB endpoint pair — 3 keys, 0-based index."""
+    index: int
+    reactant: str
+    product: str
+
+
+class AtomOrderPayload(TypedDict):
+    """compare_structures — 9 keys, exactly core.structure.compare_atom_order's
+    dict. "mismatch_index" is the FIRST divergence (the three-key gate
+    input_generator.check_neb_atom_order projects); "mismatches" is the whole
+    list the Build tab tabulates, capped, with "n_mismatches" the true total."""
+    ok: bool
+    error: str
+    mismatch_index: "int | None"
+    n_reactant: int
+    n_product: int
+    n_mismatches: int
+    mismatches: "list[AtomOrderMismatchPayload]"
+    formula_reactant: str
+    formula_product: str
+
+
+class MeasureResult(_Ok, total=False):
+    """measure_structure — the internal coordinate named by a 2/3/4-atom
+    selection. "kind" is distance | angle | dihedral (Angstrom / degrees);
+    both it and "value" ride only the success branch."""
+    error: str
+    kind: str
+    value: float
+
+
+class StructureEditResult(_Ok, total=False):
+    """edit_structure — the edited coordinate block plus what it did. "xyz" and
+    "moved" (the indices that changed, for the viewer's highlight) ride only
+    success; "value" is the resulting measurement for a "set" op, absent for a
+    fragment move. A refused edit (a ring bond, a broken selection) comes back
+    ok=false with the reason in "error" — never a silently deformed structure."""
+    error: str
+    xyz: str
+    moved: "list[int]"
+    value: float
+
+
+class FragmentResult(_Ok, total=False):
+    """structure_fragment — the connected fragment an atom belongs to, as
+    0-based indices. "indices" rides only success."""
+    error: str
+    indices: "list[int]"
+
+
 # ---- orbital / density cubes (Results tab 3D viewer) --------------------------
 
 class WorkspaceResultPayload(TypedDict):

@@ -50,8 +50,11 @@ let _dftSub = "beginner";       // last DFT sub-mode — clicking the main DFT b
 // controls hidden in expert mode (the guided method form + charge/mult; the
 // raw text carries its own "* xyz charge mult" line)
 const _EXPERT_HIDDEN = ["card-method", "field-charge", "field-mult"];
-// the whole ORCA build UI — hidden in mlip/crest mode (which show their own card)
-const _ORCA_BUILD = ["card-calc", "card-geometry", "card-method", "raw-card", "build-actions"];
+// the whole ORCA build UI — hidden in mlip/crest mode (which show their own card).
+// card-neb rides this list to be HIDDEN with the rest; showing it is always
+// applyNebCard's call (it belongs to one calc kind), so every _showIds(..., true)
+// here is followed by one.
+const _ORCA_BUILD = ["card-calc", "card-geometry", "card-neb", "card-method", "raw-card", "build-actions"];
 function _showIds(ids, on) {
   ids.forEach(id => { const e = document.getElementById(id); if (e) e.style.display = on ? "" : "none"; });
 }
@@ -164,7 +167,8 @@ window.onXyzDropped = async function (path) {
     }
     switchTab("build");
     appendLog(`Dropped .xyz loaded (${n} atoms).`, n ? "ok" : "warn");
-    nebAtomCheck();   // a replaced reactant must never leave a stale ✓/⚠ verdict
+    refreshGeometryPanel();
+    refreshNebPanel();   // a replaced reactant must never leave a stale verdict
   } catch (e) { failNotify("Could not load the dropped file."); }
 };
 
@@ -1082,6 +1086,10 @@ function switchTab(name) {
   // the graph is sized by measuring its on-screen box, which is 0 while the Log
   // tab is hidden — so re-render on entry to get a correct measurement
   if (name === "log" && _logMode === "graph") renderSCFPanel();
+  // same measurement problem, same fix: a WebGL stage created while the Build
+  // tab is hidden sizes its canvas to 0, and a geometry can be loaded (or a
+  // calc opened for editing) from anywhere. Re-render on entry.
+  if (name === "build") { refreshGeometryPanel(); refreshNebPanel(); }
 }
 
 // ---------- geometry source ----------
@@ -1138,7 +1146,13 @@ function refreshRefSelectFor(prefix) {
 // Per-card bindings for the three functions above (index.html wires these to
 // the radios; the "current…" readers are gone — collectGeomSource calls
 // geomSourceFor directly).
-function onGeomSourceChange() { applyGeomSource(""); }
+function onGeomSourceChange() {
+  applyGeomSource("");
+  // the preview and the NEB verdict both describe the DIRECT block; switching
+  // to a reference must retract them rather than leave a stale claim standing
+  refreshGeometryPanel();
+  refreshNebPanel();
+}
 function refreshRefSelect() { refreshRefSelectFor(""); }
 function onMlipGeomSourceChange() { applyGeomSource("mlip-"); }
 function refreshMlipRefSelect() { refreshRefSelectFor("mlip-"); }
@@ -1185,7 +1199,8 @@ async function loadXyz() {
   const st = document.getElementById("xyz-status");
   st.textContent = n ? `loaded (${n} atoms)` : "No atoms in file.";
   appendLog(`${n} atoms loaded from .xyz.`, n ? "ok" : "warn");
-  nebAtomCheck();   // a replaced reactant must never leave a stale ✓/⚠ verdict
+  refreshGeometryPanel();
+  refreshNebPanel();   // a replaced reactant must never leave a stale verdict
 }
 
 // ---------- per-element basis / ECP ----------
@@ -1315,17 +1330,16 @@ function renderConfigForm(kind, preserve) {
       <div class="field"><label>.hess filename</label><input id="cfg-irc-hessfile" type="text" class="mono" placeholder="e.g. TS2.hess (auto-copied from the referenced calc's folder)"></div>
     </div>
     <div class="hint">IRC start point: a TS geometry — Geometry below to <b>reference</b> a TS calc. Fastest with a .hess from that TS's freq run, else recomputed here.</div>` : "";
+  // Only the band's own parameters live here; the endpoint PAIR (product
+  // loader, verdict, comparison) is the "NEB endpoints" card above — geometry
+  // belongs with geometry, and a card that is never re-rendered keeps its 3D
+  // stage across every calc-type switch.
   const nebRows = def.showNeb ? `
     <div class="field-row">
-      <div class="field"><label>Product geometry (.xyz)</label>
-        <button class="btn btn-sm" onclick="loadNebProduct()">Load product .xyz</button>
-        <span id="cfg-neb-prod-status" class="hint" style="margin-left:8px">no product loaded</span>
-      </div>
       <div class="field" style="flex:0 0 120px"><label>Images</label><input id="cfg-neb-nimages" type="number" value="8" min="3"></div>
       <div class="field"><label class="checkbox" style="margin-top:24px"><input id="cfg-neb-preopt" type="checkbox"> Endpoint pre-optimization</label></div>
     </div>
-    <div id="cfg-neb-atomcheck" class="hint" style="margin-top:4px"></div>
-    <div class="hint">NEB-TS: the TS between reactant (Geometry below) and product. <b>Identical atoms in identical order in both</b> — product built by copying the reactant and moving atoms, then loaded here.</div>` : "";
+    <div class="hint">NEB-TS finds the TS between the two endpoints set in <b>NEB endpoints</b> above.</div>` : "";
 
   host.innerHTML = `
     <div class="field-row">
@@ -1392,13 +1406,7 @@ function renderConfigForm(kind, preserve) {
     const tp = document.getElementById("cfg-temp"); if (tp && preserve.freq_temp != null) tp.value = preserve.freq_temp;
     const pr = document.getElementById("cfg-pressure"); if (pr && preserve.freq_pressure != null) pr.value = preserve.freq_pressure;
   }
-  // freshly rendered NEB rows: reflect a product that is still loaded (the
-  // global survives a kind round-trip — the label must not claim otherwise)
-  if (def.showNeb && _nebProductXyz) {
-    const nst = document.getElementById("cfg-neb-prod-status");
-    if (nst) nst.textContent = `loaded (${countAtoms(_nebProductXyz)} atoms)`;
-    nebAtomCheck();
-  }
+  applyNebCard();  // the endpoint card follows the kind this form now reflects
   onSolvChange();  // hide solvent if gas phase
 }
 
@@ -1424,58 +1432,30 @@ async function loadNebProduct() {
   if (!res.ok) { failNotify("Could not read that .xyz."); return; }  const xyz = parseXyzText(res.text);
   if (!xyz) { appendLog("No atoms in the product .xyz.", "warn"); return; }
   _nebProductXyz = xyz;
-  const st = document.getElementById("cfg-neb-prod-status");
-  if (st) st.textContent = `loaded (${countAtoms(xyz)} atoms)`;
-  nebAtomCheck();
+  setNebProductStatus();
+  appendLog(`${countAtoms(xyz)} atoms loaded as the NEB product.`, "ok");
+  refreshNebPanel();
 }
 
 function countAtoms(xyz) {
   return xyz.trim().split("\n").filter(l => l.trim().split(/\s+/).length >= 4).length;
 }
 
-// element sequence of an xyz block (for order comparison)
-function xyzElements(xyz) {
-  return xyz.trim().split("\n")
-    .map(l => l.trim().split(/\s+/))
-    .filter(p => p.length >= 4)
-    .map(p => p[0]);
-}
-
-// compare reactant (directXyz) vs product (_nebProductXyz) and show the result
-function nebAtomCheck() {
-  const box = document.getElementById("cfg-neb-atomcheck");
-  if (!box) return;
-  // the ✓ branch sets an inline green that would otherwise survive into a
-  // later ⚠ verdict (inline style beats .qerror's red) — reset it up front
-  box.style.color = "";
-  const react = directXyz, prod = _nebProductXyz;
-  if (!react || !prod) { box.className = "hint"; box.textContent = ""; return; }
-  // element symbols compare case-insensitively (ORCA itself does; legacy
-  // tools write "CL") — mirrors check_neb_atom_order on the Python side
-  const cap = (e) => e.charAt(0).toUpperCase() + e.slice(1).toLowerCase();
-  const r = xyzElements(react).map(cap), p = xyzElements(prod).map(cap);
-  if (r.length !== p.length) {
-    box.className = "qerror"; box.textContent = `⚠ Atom count differs: reactant ${r.length}, product ${p.length}. NEB-TS needs the same atoms in both.`;
-    return;
+/** The product loader's status line, and the buttons that only mean something
+ *  once a product exists. One writer, because four call sites set it (load,
+ *  copy-from-reactant, editor apply, and restoring a stored calc) and a label
+ *  claiming "loaded" over an empty product is the one lie that matters here. */
+function setNebProductStatus() {
+  const st = document.getElementById("cfg-neb-prod-status");
+  if (st) st.textContent = _nebProductXyz
+    ? `loaded (${countAtoms(_nebProductXyz)} atoms)` : "no product loaded";
+  const edit = /** @type {HTMLButtonElement} */ (document.getElementById("neb-edit-btn"));
+  if (edit) {
+    edit.disabled = !_nebProductXyz;      // momentarily unavailable (13.3)
+    edit.title = _nebProductXyz
+      ? "Set a bond length, angle or dihedral; move a fragment"
+      : "Load or copy a product geometry first";
   }
-  // composition
-  const tally = arr => arr.reduce((m, e) => (m[e] = (m[e]||0)+1, m), {});
-  const tr = tally(r), tp = tally(p);
-  const composMismatch = Object.keys({...tr, ...tp}).some(e => tr[e] !== tp[e]);
-  if (composMismatch) {
-    box.className = "qerror"; box.textContent = `⚠ Element composition mismatch between reactant and product.`;
-    return;
-  }
-  // order
-  for (let i = 0; i < r.length; i++) {
-    if (r[i] !== p[i]) {
-      box.className = "qerror";
-      box.textContent = `⚠ Atom order differs at atom #${i+1}: reactant ${r[i]}, product ${p[i]}. Order must match (build the product by copying the reactant and moving atoms).`;
-      return;
-    }
-  }
-  box.className = "hint"; box.style.color = "var(--ok)";
-  box.textContent = `✓ Reactant and product match (${r.length} atoms, same order).`;
 }
 
 /** Read the method form into the config payload sent to Python.
@@ -1520,6 +1500,25 @@ function collectConfig(kind) {
     neb_nimages: def.showNeb ? num("cfg-neb-nimages", 8) : 8,
     neb_preopt_ends: def.showNeb ? chk("cfg-neb-preopt") : false,
   };
+}
+
+/** The charge and multiplicity this build will actually run at.
+ *
+ *  In raw mode the .inp's own "* xyz C M" line runs verbatim, so the hidden
+ *  form fields are not the truth — the text is. Both the stored calc (so the
+ *  queue row shows the real charge state) and the structure screening (whose
+ *  whole job is checking the electron count against the multiplicity) need the
+ *  same answer, so it is derived once (P4).
+ *  @returns {[number, number]} */
+function readChargeMult() {
+  let charge = parseInt(/** @type {HTMLInputElement} */ (document.getElementById("calc-charge")).value, 10) || 0;
+  let multiplicity = parseInt(/** @type {HTMLInputElement} */ (document.getElementById("calc-mult")).value, 10) || 1;
+  if (rawMode) {
+    // both coordinate forms: "* xyz C M" (embedded) and "* xyzfile C M file.xyz"
+    const cm = rawText.match(/^\s*\*\s*xyz(?:file)?\s+([+-]?\d+)\s+(\d+)/im);
+    if (cm) { charge = parseInt(cm[1], 10); multiplicity = parseInt(cm[2], 10); }
+  }
+  return [charge, multiplicity];
 }
 
 // ---------- add / update queue ----------
@@ -1567,15 +1566,7 @@ function collectCalcFromForm(forPreview = false) {
       throw new Error("IRC 'read from .hess file' needs a .hess filename.");
   }
 
-  // a raw calc runs its own "* xyz C M" line verbatim — mirror those values on
-  // the stored calc so the queue row shows the charge state that actually runs
-  let charge = parseInt(document.getElementById("calc-charge").value, 10) || 0;
-  let multiplicity = parseInt(document.getElementById("calc-mult").value, 10) || 1;
-  if (rawMode) {
-    // both coordinate forms: "* xyz C M" (embedded) and "* xyzfile C M file.xyz"
-    const cm = rawText.match(/^\s*\*\s*xyz(?:file)?\s+([+-]?\d+)\s+(\d+)/im);
-    if (cm) { charge = parseInt(cm[1], 10); multiplicity = parseInt(cm[2], 10); }
-  }
+  const [charge, multiplicity] = readChargeMult();
 
   return {
     name, kind,
@@ -2073,6 +2064,7 @@ async function editCalc(i) {
   directXyz = c.xyz || "";
   document.getElementById("xyz-status").textContent =
     directXyz ? `loaded (${directXyz.split("\n").filter(Boolean).length} atoms)` : "";
+  refreshGeometryPanel();
   if (c.geometry_source !== "direct") {
     refreshRefSelect();
     document.getElementById("ref-select").value = c.ref_name;
@@ -2131,10 +2123,8 @@ function fillConfigForm(cfg) {
   const preopt = document.getElementById("cfg-neb-preopt");
   if (preopt && cfg.neb_preopt_ends != null) preopt.checked = cfg.neb_preopt_ends;
   _nebProductXyz = cfg.neb_product_xyz || "";
-  const nst = document.getElementById("cfg-neb-prod-status");
-  if (nst) nst.textContent = _nebProductXyz
-    ? `loaded (${countAtoms(_nebProductXyz)} atoms)` : "no product loaded";
-  nebAtomCheck();
+  setNebProductStatus();
+  refreshNebPanel();
   if (cfg.solvation) {
     set("cfg-solvmodel", cfg.solvation.model);
     setCombo("combo-solvent", cfg.solvation.solvent);
@@ -2279,6 +2269,10 @@ function setBuildMode(mode, persist = true, keepEdit = false) {
   const crest = (mode === "crest");
   // MLIP / CREST modes swap the entire ORCA build UI for a self-contained card.
   _showIds(_ORCA_BUILD, dft);
+  applyNebCard();   // ...but the endpoint card is a NEB-TS thing, not a DFT one
+  // a WebGL stage created while its card was hidden has a zero-width canvas —
+  // re-render now that the ORCA cards are back (same reason as switchTab)
+  if (dft) refreshGeometryPanel();
   _showIds(["card-mlip"], mlip);
   _showIds(["card-crest"], crest);
   if (hint) hint.textContent = "";
@@ -2815,6 +2809,7 @@ function resetBuild() {
   document.getElementById("calc-mult").value = "1";
   directXyz = "";
   _nebProductXyz = "";          // clear any loaded NEB product geometry
+  setNebProductStatus();
   document.getElementById("xyz-status").textContent = "";
   document.querySelector('input[name="geomsrc"][value="direct"]').checked = true;
   onGeomSourceChange();

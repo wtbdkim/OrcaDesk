@@ -3,6 +3,63 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **You can see the structure you are about to run, on the Build tab.** Loading
+  an `.xyz` now draws it in 3D right under the loader, with a one-line census
+  beside it (`C8H10N4O2 · 24 atoms · 102 electrons · 1 fragment`). Until now the
+  molecule was a line of text until the job was over.
+- **The mistakes that cost a whole run are caught in the form, not by ORCA.**
+  Under the preview, a screening panel reports what it finds and nothing more —
+  it never edits your structure:
+  - **A multiplicity the electron count cannot produce.** An even number of
+    electrons cannot have an even multiplicity, and ORCA aborts on it at the
+    first SCF step. The message says how many electrons the formula and charge
+    actually give and which multiplicity is nearest.
+  - **Atoms on top of each other** — the same atom pasted twice, or a pair far
+    closer than any bond between those elements (the threshold clears a real
+    C≡C triple bond, so a short bond is never flagged).
+  - **Coordinates in Bohr.** They read as a molecule with no bonds at all; the
+    warning names that cause rather than leaving you with an empty-looking
+    structure.
+  - **Disconnected fragments**, with their sizes — correct for a complex, a
+    sign of a truncated file otherwise. It is a warning, not an error: it never
+    blocks the queue.
+  - Every finding highlights the atoms it is about, in the preview.
+- **The NEB endpoint pair has its own card, and you can see both structures.**
+  *NEB endpoints* sits next to *Geometry source* and holds the product loader,
+  the verdict and the comparison:
+  - A **matched / atom mismatch** badge replaces the old one-line note, and a
+    table lists **every** atom that differs — not only the first one — so a
+    single swap is distinguishable from a whole shifted block at a glance.
+  - The two structures are drawn **side by side** in one scene (or overlaid,
+    with the product ghosted). They rotate together, and hovering an atom names
+    it in *both* — the check that is impossible to do by eye. Mismatching atoms
+    are marked in red in both structures.
+  - The verdict is now taken by the same code the input generator's gate uses,
+    so the badge and the queue can never disagree.
+  - With the reactant taken from another calculation the card says the order can
+    only be checked when that geometry arrives, instead of judging a stale block.
+- **A structure editor: set a bond length, angle or dihedral, or move a whole
+  fragment.** *Edit structure…* opens the geometry in 3D; click 2 atoms for a
+  distance, 3 for an angle, 4 for a dihedral, type a value, and the far side of
+  the bond moves rigidly — every other bond length and angle untouched. A
+  fragment can also be translated or spun about its own centroid. Undo, revert,
+  and the atom count and edit count are on screen throughout.
+  - **The atom order is preserved by construction**, which is the point:
+    together with **Copy reactant → product**, a NEB product built here can
+    never have the atom mismatch the checker exists to find. The old advice to
+    "copy the reactant and move atoms" is now something the app does.
+  - An edit that cannot be made rigidly is **refused with the reason** — a
+    dihedral about a ring bond, four atoms that are not a chain — rather than
+    silently deforming the structure to make the number come out.
+
+### Changed
+- The NEB product loader, its status and its verdict moved out of *Method &
+  options* into the new *NEB endpoints* card; **Images** and **Endpoint
+  pre-optimization** stay with the method, since they are band parameters.
+
 ## [0.7.0-beta] — 2026-08-28
 
 ### Added

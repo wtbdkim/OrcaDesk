@@ -128,8 +128,10 @@
               <option value="general">General (any)</option>
             </select>
           </div>
-          <div class="field" id="field-charge" style="flex:0 0 100px"><label>Charge</label><input id="calc-charge" type="number" value="0"></div>
-          <div class="field" id="field-mult" style="flex:0 0 110px"><label>Mult.</label><input id="calc-mult" type="number" value="1" min="1"></div>
+          <!-- charge/mult feed the structure screening below (the electron count
+               is a function of both), so a change re-runs it -->
+          <div class="field" id="field-charge" style="flex:0 0 100px"><label>Charge</label><input id="calc-charge" type="number" value="0" onchange="refreshGeometryPanel()"></div>
+          <div class="field" id="field-mult" style="flex:0 0 110px"><label>Mult.</label><input id="calc-mult" type="number" value="1" min="1" onchange="refreshGeometryPanel()"></div>
         </div>
       </div>
 
@@ -144,6 +146,18 @@
             <button class="btn btn-sm" onclick="loadXyz()">Load .xyz</button>
             <span id="xyz-status" class="hint" style="margin:0;align-self:center"></span>
           </div>
+          <!-- What was loaded, in 3D, before it costs hours: a wrong file, a
+               units mistake or a broken fragment is visible here and nowhere
+               else in the form. Screening findings sit under it. -->
+          <div class="struct-panel" id="struct-direct" style="display:none">
+            <div class="struct-gl" id="struct-gl-direct"></div>
+            <div class="struct-bar">
+              <span class="struct-caption" id="struct-cap-direct"></span>
+              <button class="btn btn-sm" onclick="openStructureEditor('direct')"
+                      title="Set a bond length, angle or dihedral; move a fragment">Edit structure…</button>
+            </div>
+          </div>
+          <div class="struct-findings" id="struct-findings-direct"></div>
         </div>
         <div id="geom-reference" style="display:none">
           <div class="field">
@@ -152,6 +166,32 @@
           </div>
           <div class="hint">Referenced calc's optimized geometry, injected here at run time (it runs first).</div>
         </div>
+      </div>
+
+      <!-- NEB-TS endpoint pair. It lives beside Geometry source rather than
+           inside Method & options because a product geometry IS geometry — and
+           because this card is never re-rendered, so its WebGL stage survives
+           every calc-type switch. Shown only for kind = neb_ts. -->
+      <div class="card" id="card-neb" style="display:none">
+        <div class="card-title">NEB endpoints</div>
+        <div class="card-desc">Reactant is the geometry above; the product goes here. <b>Identical atoms in identical order in both</b> — the surest way is to copy the reactant and move atoms, which never reorders anything.</div>
+        <div class="btn-group" style="margin-bottom:4px;flex-wrap:wrap">
+          <button class="btn btn-sm" onclick="loadNebProduct()">Load product .xyz</button>
+          <button class="btn btn-sm" id="neb-copy-btn" onclick="copyReactantToProduct()"
+                  title="Seed the product from the reactant, then edit it — the atom order is preserved by construction">Copy reactant → product</button>
+          <button class="btn btn-sm" id="neb-edit-btn" onclick="openStructureEditor('product')">Edit product…</button>
+          <span id="cfg-neb-prod-status" class="hint" style="margin:0;align-self:center">no product loaded</span>
+        </div>
+        <div id="cfg-neb-verdict" style="margin-top:8px"></div>
+        <div class="struct-panel" id="struct-neb" style="display:none">
+          <div class="struct-gl" id="struct-gl-neb"></div>
+          <div class="struct-bar">
+            <button class="btn btn-sm" id="neb-mode-btn" onclick="toggleNebCompareMode()"
+                    title="Side by side, or both in their own coordinates">Overlay</button>
+            <span class="struct-caption" id="struct-cap-neb"></span>
+          </div>
+        </div>
+        <div id="cfg-neb-mismatch"></div>
       </div>
 
       <div class="card" id="card-method">
@@ -587,6 +627,67 @@
   </div>
 </div>
 
+<!-- structure editor: rigid, order-preserving edits of the geometry in the form.
+     Reuses the 3D-viewer panel recipe; the side column carries the selection and
+     the tools. Nothing here can reorder or relabel an atom, which is what makes
+     an edited reactant a usable NEB product. -->
+<div id="struct-editor" class="mv-overlay" style="display:none">
+  <div class="mv-panel">
+    <div class="mv-head">
+      <div class="mv-title" id="se-title">Edit structure</div>
+      <div class="mv-hint">click atoms to select&nbsp;&nbsp;·&nbsp;&nbsp;2 distance, 3 angle, 4 dihedral&nbsp;&nbsp;·&nbsp;&nbsp;Esc&nbsp; close&nbsp;&nbsp;·&nbsp;&nbsp;drag to rotate</div>
+      <button class="btn btn-sm btn-ghost" onclick="closeStructureEditor()">Close ✕</button>
+    </div>
+    <div class="mv-body">
+      <div class="mv-stage">
+        <div id="se-gl" class="mv-gl"></div>
+        <div class="mv-bar">
+          <button class="btn btn-sm" id="se-undo-btn" onclick="seUndo()">Undo</button>
+          <button class="btn btn-sm btn-ghost" id="se-revert-btn" onclick="seRevert()">Revert all</button>
+          <span class="mv-caption" id="se-caption"></span>
+          <button class="btn btn-sm btn-primary" onclick="seApply()">Use this structure</button>
+        </div>
+      </div>
+      <div class="mv-list right">
+        <div class="field">
+          <label>Selection</label>
+          <div id="se-sel"></div>
+        </div>
+        <div class="field" id="se-measure-field" style="display:none">
+          <label id="se-measure-label">Distance (Å)</label>
+          <div class="btn-group">
+            <input id="se-measure-value" type="number" step="0.01" class="mono" style="min-width:0">
+            <button class="btn btn-sm" onclick="seSetInternal()">Set</button>
+          </div>
+        </div>
+        <div class="divider"></div>
+        <div class="field">
+          <label>Move fragment (Å)</label>
+          <div class="field-row" style="gap:6px">
+            <input id="se-dx" type="number" step="0.1" value="0" class="mono" title="dx">
+            <input id="se-dy" type="number" step="0.1" value="0" class="mono" title="dy">
+            <input id="se-dz" type="number" step="0.1" value="0" class="mono" title="dz">
+          </div>
+          <button class="btn btn-sm" onclick="seTranslate()">Move</button>
+        </div>
+        <div class="field">
+          <label>Rotate fragment</label>
+          <div class="field-row" style="gap:6px">
+            <select id="se-axis">
+              <option value="x">about X</option>
+              <option value="y">about Y</option>
+              <option value="z">about Z</option>
+            </select>
+            <input id="se-deg" type="number" step="5" value="90" class="mono" title="degrees">
+          </div>
+          <button class="btn btn-sm" onclick="seRotate()">Rotate</button>
+        </div>
+        <div class="hint" id="se-frag-hint"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- in-app 3D structure viewer (bundled locally; no external CDN) -->
 <div id="mol-viewer" class="mv-overlay" style="display:none">
   <div class="mv-panel">
@@ -643,6 +744,7 @@
 <script src="log_graph.js"></script>
 <script src="results_render.js"></script>
 <script src="molviewer.js"></script>
+<script src="structedit.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
