@@ -60,6 +60,19 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   options* into the new *NEB endpoints* card; **Images** and **Endpoint
   pre-optimization** stay with the method, since they are band parameters.
 
+### Fixed
+- **A space in the path to your workspace no longer fails every ORCA job.**
+  ORCA hands the input path it is given on to its own sub-programs without
+  quoting it, so one space truncated it: *Error: Cannot open input file
+  C:/Users/John*, an error termination in Startup, and a calculation left in
+  the locked FAILED state — every job, serial and parallel alike. Since the
+  default workspace sits under your Windows account folder, a **user name with
+  a space in it broke ORCAdesk completely**. ORCA is now started from inside
+  the job's own folder and given only the file name, which has no path to
+  split. A space (or `&`) in the **calculation name** is a different matter —
+  it is the file name itself — so those are now refused as you type them,
+  alongside the characters Windows already disallows.
+
 ## [0.7.0-beta] — 2026-08-28
 
 ### Added

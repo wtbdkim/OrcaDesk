@@ -54,6 +54,16 @@ def _new_pin() -> str:
 # validated at this single shared serialization point — the only client-side
 # guard lives in the desktop JS and is bypassed by the phone/HTTP path.
 _BAD_NAME_CHARS = re.compile(r'[\\/:*?"<>|]')
+# ...and it is also what ORCA is invoked with. ORCA 6 splits its own argument on
+# whitespace before handing it to orca_startup, so a space or an '&' in the file
+# name makes every run of that calculation die in Startup ("Cannot open input
+# file <first word>" / "no input files") — a FAILED calc, and FAILED is locked
+# (P24), so the name can never be run again. Measured on 6.1.1: '&' and space
+# fail; '(', ')', "'", ',', '=' and ';' all run normally, so this stays a
+# two-character rule rather than a general "safe characters" list. The FOLDER
+# may contain spaces — OrcaRunner.launch passes the bare file name from inside
+# the folder, which is what makes a workspace under "C:\Users\John Smith" work.
+_ORCA_HOSTILE_CHARS = re.compile(r"[\s&]")
 _RESERVED_NAMES = {"con", "prn", "aux", "nul",
                    *(f"com{i}" for i in range(1, 10)),
                    *(f"lpt{i}" for i in range(1, 10))}
@@ -64,6 +74,9 @@ def _validate_calc_name(name: str) -> None:
     Allows Unicode (e.g. Korean) — only path-dangerous patterns are blocked."""
     if _BAD_NAME_CHARS.search(name):
         raise ValueError('Name contains characters not allowed in a folder name: \\ / : * ? " < > |')
+    if _ORCA_HOSTILE_CHARS.search(name):
+        raise ValueError("Name must not contain spaces or '&' — ORCA cannot open "
+                         "an input file whose name has either.")
     if ".." in name:
         raise ValueError("Name must not contain '..'.")
     if name.endswith("."):

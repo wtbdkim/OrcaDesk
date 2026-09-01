@@ -219,7 +219,21 @@ The `core/` pipeline:
   (verbatim text with a `{{GEOMETRY}}` placeholder), and NEB-TS side `.xyz` files.
 - `runner.py` — `OrcaRunner` launches ORCA **detached**, with ORCA writing its own
   stdout straight to the `.out` file (not via a Python pipe), so a run survives
-  ORCAdesk closing. Live log/progress come from **tailing** the `.out`. Verbs:
+  ORCAdesk closing. It is invoked with the input's **bare file name** and `cwd`
+  set to the run folder, never an absolute path: ORCA 6 passes its own argument
+  on to `orca_startup` and the MPI ranks **unquoted**, so a single space
+  anywhere in the path truncates it (`Cannot open input file C:/Users/John`,
+  error termination in Startup — measured on 6.1.1, serial and 2-rank MPI).
+  The default workspace lives under the user profile, so this is what lets an
+  account named `John Smith` run at all. The *file name* still cannot contain a
+  space — see the name rule below. It is invoked with the input's **bare file name** and `cwd`
+  set to the run folder, never an absolute path: ORCA 6 passes its own argument
+  on to `orca_startup` and the MPI ranks **unquoted**, so a single space
+  anywhere in the path truncates it (`Cannot open input file C:/Users/John`,
+  error termination in Startup — measured on 6.1.1, serial and 2-rank MPI).
+  The default workspace lives under the user profile, so this is what lets an
+  account named `John Smith` run at all. The *file name* still cannot contain a
+  space — see the name rule below. Live log/progress come from **tailing** the `.out`. Verbs:
   `launch()` (returns `(pid, create_time)` to persist), `adopt()` (reattach to a
   process from a previous session), `monitor()` (tail until exit/cancel/detach),
   `cancel()` (kill the tree), `detach()` (stop monitoring, leave ORCA running).
@@ -322,7 +336,13 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   **case-insensitively** — Windows resolves `water` and `Water` to the same
   folder, so accepting both would share one `.out` between two calcs. The
   invariant holds on every entry path: `add`/`replace` **and session
-  restore** (`load_session` dedups, first occurrence wins).
+  restore** (`load_session` dedups, first occurrence wins). The name is also
+  the `.inp` file name ORCA is *invoked* with, so on top of the Windows
+  path-dangerous set it refuses a **space or `&`** (`_ORCA_HOSTILE_CHARS`):
+  ORCA 6 splits its own argument on whitespace, and the run then dies in
+  Startup — a FAILED calc, which is locked (P24), so the name could never be
+  run again. Measured on 6.1.1; `(`, `)`, `'`, `,`, `=`, `;` all run normally,
+  which is why this is a two-character rule and not a safe-character list.
 - **The queue autosaves to `%APPDATA%\ORCAdesk\session.json`** on every mutation
   (`QueueStore._bump_and_save`) and is restored on startup (`load_session`). A
   `RUNNING` calc persists its detached ORCA's `(pid, create_time)` **and its

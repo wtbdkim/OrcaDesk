@@ -415,7 +415,12 @@ Client input is validated where all clients converge — `calc_from_dict` —
 because a guard in the desktop JS is bypassed by the phone/HTTP path. Calc
 names become on-disk folder names, so they are checked for path-dangerous
 characters, `..`, and Windows reserved names (Unicode, e.g. Korean, is
-allowed). Settings accept only allowlisted keys (on save and on load) and
+allowed). A calc name is *also* the `.inp` file name ORCA is invoked with, so
+a space or `&` is refused there too — ORCA splits its own argument on
+whitespace, and the run it then fails is locked (P24). What the backend
+cannot be *made* to accept is refused at the boundary; what it can, is
+accommodated instead (the run folder may contain spaces, because the runner
+names the input relative to it). Settings accept only allowlisted keys (on save and on load) and
 allowlisted enum values on the bridge save path; values already on disk are
 trusted at load time. The front-end validates too, but for message quality —
 the shared layer is the security boundary.

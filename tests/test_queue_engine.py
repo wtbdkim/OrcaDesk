@@ -861,6 +861,43 @@ def test_reattach_prefers_persisted_output_path_over_current_workspace(tmp_path,
     assert calc.output_path == str(old_out)
 
 
+# ---- how ORCA is invoked ----------------------------------------------------
+# ORCA 6 hands its own argument on to orca_startup and the MPI ranks unquoted,
+# so an absolute path with a space in it truncates: "Error: Cannot open input
+# file C:/Users/John" and an error termination in Startup (verified on 6.1.1,
+# serial and 2-rank MPI). The default workspace sits under the user profile, so
+# an account name with a space would break every run. Naming the input relative
+# to the folder we already run in leaves nothing to split.
+
+def test_orca_is_launched_with_the_bare_input_file_name(tmp_path, monkeypatch):
+    import orcamgr.core.runner as runner_mod
+
+    folder = tmp_path / "John Smith" / "work space"
+    folder.mkdir(parents=True)
+    inp = folder / "h2.inp"
+    inp.write_text("! B3LYP\n", encoding="utf-8")
+    orca = tmp_path / "orca.exe"
+    orca.write_text("", encoding="utf-8")
+    seen = {}
+
+    class _Proc:
+        pid = 4321
+
+    def fake_popen(cmd, cwd=None, **kw):
+        seen["cmd"], seen["cwd"] = cmd, cwd
+        return _Proc()
+
+    monkeypatch.setattr(runner_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runner_mod, "create_time_of", lambda pid: 1.0, raising=False)
+
+    runner = runner_mod.OrcaRunner(str(orca))
+    runner.launch(inp, folder / "h2.out")
+
+    assert seen["cmd"][1] == "h2.inp"          # not the absolute path
+    assert " " not in seen["cmd"][1]
+    assert Path(seen["cwd"]) == folder         # ...which is why cwd must be it
+
+
 # ---- P29: the walked queue is LIVE ------------------------------------------
 # run_all picks the first unhandled row of the (shared) list each iteration,
 # so structural mutations that land mid-run take effect in the SAME run:

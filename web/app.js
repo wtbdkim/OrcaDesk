@@ -1653,6 +1653,12 @@ function readCalcName(inputId) {
   if (!name) throw new Error("Name is required.");
   if (/[\\/:*?"<>|]/.test(name))
     throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
+  // The name is also the .inp file name, and ORCA splits its own argument on
+  // whitespace before passing it to orca_startup: a space or an "&" makes every
+  // run of this calculation die in Startup, and a failed calc is locked (P24).
+  // Refused at the store too — this is the early, Add-time feedback.
+  if (/[\s&]/.test(name))
+    throw new Error(`Name must not contain spaces or "&" — ORCA cannot open an input file whose name has either.`);
   if (queue.some((c) => c.name === name && c.name !== editName))
     throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
   return name;

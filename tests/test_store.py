@@ -117,6 +117,27 @@ def test_empty_name_rejected():
         make_calc("   ")  # whitespace-only strips to empty
 
 
+# A calc name is also the .inp file name ORCA is invoked with, and ORCA 6
+# splits its own argument on whitespace before handing it to orca_startup: a
+# space or an "&" gives "Cannot open input file <first word>" / "no input
+# files" and an error termination in Startup — every run of that calculation,
+# serial and parallel alike, and a failed calc is locked (P24). Measured on
+# 6.1.1, where "(", ")", "\'", ",", "=" and ";" all run normally, which is why
+# this is a two-character rule and not a safe-character list. The FOLDER may
+# hold spaces: OrcaRunner.launch names the input relative to it.
+
+@pytest.mark.parametrize("name", ["water opt", "a&b", "two  spaces", "tab\tname"])
+def test_name_orca_cannot_open_rejected(name):
+    with pytest.raises(ValueError):
+        make_calc(name)
+
+
+@pytest.mark.parametrize("name", ["water_opt", "water-opt", "a(b)", "a,b",
+                                  "a=b", "a;b", "a\'b"])
+def test_name_orca_can_open_accepted(name):
+    assert make_calc(name).name == name
+
+
 def test_unicode_korean_name_allowed():
     calc = make_calc("물분자_최적화")
     assert calc.name == "물분자_최적화"

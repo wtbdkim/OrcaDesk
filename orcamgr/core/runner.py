@@ -111,7 +111,18 @@ class OrcaRunner:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        cmd = [str(self.orca_path), str(input_path)]
+        # The input is named RELATIVE to the folder we are about to run in,
+        # never as an absolute path: ORCA 6 hands its argument on to its own
+        # sub-programs (orca_startup and the MPI ranks) unquoted, so one space
+        # anywhere in the path truncates it — "Error: Cannot open input file
+        # C:/.../John" and an error termination in Startup, on ORCA 6.1.1,
+        # serial and parallel alike. The default workspace lives under the
+        # user profile, so an account name with a space would otherwise break
+        # every run. cwd is that folder already, and a bare file name has no
+        # path to split; verified with a 2-rank MPI job under a folder named
+        # "h2 sp". The file name itself still may not contain a space (or an
+        # '&') — _validate_calc_name in state/store.py refuses those.
+        cmd = [str(self.orca_path), input_path.name]
         creationflags = 0
         start_new_session = False
         if sys.platform.startswith("win"):
