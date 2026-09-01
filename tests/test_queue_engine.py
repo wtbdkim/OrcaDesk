@@ -898,6 +898,102 @@ def test_orca_is_launched_with_the_bare_input_file_name(tmp_path, monkeypatch):
     assert Path(seen["cwd"]) == folder         # ...which is why cwd must be it
 
 
+# ---- stale ORCA restart files in a reused run folder -------------------------
+# ORCA 6 reads a {name}.gbw sitting beside {name}.inp as the SCF's initial guess
+# without being asked (AutoStart). Workspace folders are never deleted and a
+# queue name is unique only within the current queue, so that file may be from
+# another molecule; ORCA then dies in GUESS ("Input geometry does not match
+# current geometry", exit 55 on 6.1.1) and the calc is FAILED — locked (P24).
+
+_H2_INP = """! B3LYP def2-SVP
+* xyz 0 1
+H 0.0 0.0 0.0
+H 0.0 0.0 0.74
+*
+"""
+_H2O_INP = """! B3LYP def2-SVP
+* xyz 0 1
+O 0.0 0.0 0.117
+H 0.0 0.757 -0.469
+H 0.0 -0.757 -0.469
+*
+"""
+
+
+def _folder_with_previous_run(tmp_path, prev_inp_text):
+    """A run folder as an earlier run of 'y' left it: its .inp and its .gbw."""
+    d = tmp_path / "y"
+    d.mkdir(parents=True, exist_ok=True)
+    if prev_inp_text is not None:
+        (d / "y.inp").write_text(prev_inp_text, encoding="utf-8")
+    (d / "y.gbw").write_bytes(b"binary orbitals")
+    return d
+
+
+def test_restart_file_from_another_structure_is_set_aside(tmp_path):
+    harness = EngineHarness(tmp_path)
+    d = _folder_with_previous_run(tmp_path, _H2_INP)
+
+    harness.engine._set_aside_stale_guess(make_calc("y"), d, _H2O_INP)
+
+    assert not (d / "y.gbw").exists()
+    assert (d / "y.gbw.bak").read_bytes() == b"binary orbitals"
+    assert "different structure" in harness.log_text()
+
+
+def test_restart_file_from_the_same_structure_is_kept(tmp_path):
+    """A re-run of a cancelled job: the warm start is valid and free."""
+    harness = EngineHarness(tmp_path)
+    d = _folder_with_previous_run(tmp_path, _H2_INP)
+
+    harness.engine._set_aside_stale_guess(make_calc("y"), d, _H2_INP)
+
+    assert (d / "y.gbw").exists()
+    assert not (d / "y.gbw.bak").exists()
+
+
+def test_restart_file_is_kept_when_the_input_asks_to_read_it(tmp_path):
+    harness = EngineHarness(tmp_path)
+    d = _folder_with_previous_run(tmp_path, _H2_INP)
+    reads_it = ('! B3LYP def2-SVP MORead\n%moinp "y.gbw"\n' + _H2O_INP)
+
+    harness.engine._set_aside_stale_guess(make_calc("y"), d, reads_it)
+
+    assert (d / "y.gbw").exists()
+
+
+def test_restart_file_is_set_aside_when_the_previous_input_is_gone(tmp_path):
+    """Cannot tell -> cold start. The two answers do not cost the same: a
+    needless SCF restart against a permanently locked calculation."""
+    harness = EngineHarness(tmp_path)
+    d = _folder_with_previous_run(tmp_path, None)
+
+    harness.engine._set_aside_stale_guess(make_calc("y"), d, _H2O_INP)
+
+    assert (d / "y.gbw.bak").exists()
+
+
+def test_charge_change_alone_sets_the_restart_file_aside(tmp_path):
+    harness = EngineHarness(tmp_path)
+    d = _folder_with_previous_run(tmp_path, _H2_INP)
+    cation = _H2_INP.replace("* xyz 0 1", "* xyz 1 2")
+
+    harness.engine._set_aside_stale_guess(make_calc("y"), d, cation)
+
+    assert (d / "y.gbw.bak").exists()
+
+
+def test_no_restart_file_is_a_no_op(tmp_path):
+    harness = EngineHarness(tmp_path)
+    d = tmp_path / "y"
+    d.mkdir()
+
+    harness.engine._set_aside_stale_guess(make_calc("y"), d, _H2O_INP)
+
+    assert list(d.iterdir()) == []
+    assert harness.log_text() == ""
+
+
 # ---- P29: the walked queue is LIVE ------------------------------------------
 # run_all picks the first unhandled row of the (shared) list each iteration,
 # so structural mutations that land mid-run take effect in the SAME run:

@@ -89,6 +89,17 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   (water, single point: 43 basis functions and −76.417967 Eh, against
   def2-mTZVPP's 34 and −76.418907 Eh). The basis and auxiliary basis are now
   left to the method, and the generated `.inp` carries a line saying so.
+- **Re-running a name whose folder holds an older run of a different molecule
+  no longer aborts.** ORCA picks up an orbital file (`<name>.gbw`) left in the
+  folder as its starting guess without being asked, and refuses to start when
+  the atoms do not match — *Input geometry does not match current geometry* —
+  which failed the calculation, and a failed calculation is locked, so the same
+  name could never be run again. Result folders are never deleted, so this hit
+  the flows the overwrite prompt explicitly offers: reusing a removed
+  calculation's name, or pointing one at a different `.xyz`. Such a file is now
+  renamed aside (to `<name>.gbw.bak`) with a line in the log. One from the same
+  structure is kept — that is a free warm start for a re-run — and so is one
+  your own raw input asks for with `MOREAD`.
 
 ## [0.7.0-beta] — 2026-08-28
 

@@ -28,6 +28,7 @@ The engine is GUI-agnostic: it communicates only through callbacks.
 
 from __future__ import annotations
 
+import os
 import shutil
 import threading
 from dataclasses import dataclass
@@ -149,6 +150,28 @@ def _raw_coordinate_block(inp_text: str) -> str:
                 block.append(follow)
             return "\n".join(block)
     return ""
+
+
+# ORCA 6 restart files it will pick up on its own (AutoStart): a {base}.gbw
+# left beside {base}.inp becomes the SCF's initial guess with nothing in the
+# input asking for it.
+_RESTART_SUFFIXES = (".gbw", ".ges")
+
+
+def _guess_signature(inp_text: str) -> str:
+    """What a restart file in this folder must have been produced from — the
+    charge/multiplicity of the ``* xyz`` line plus the element sequence of its
+    coordinate block. '' when the text has no readable block (an ``* xyzfile``
+    reference, a hand-written input we cannot judge), which callers must treat
+    as "cannot tell", never as a match."""
+    header = ""
+    for ln in inp_text.splitlines():
+        low = ln.strip().lower()
+        if low.startswith("*") and low[1:].strip().startswith("xyz") and "xyzfile" not in low:
+            header = " ".join(low[1:].split()[1:3])   # charge, multiplicity
+            break
+    els = [e.capitalize() for e in _xyz_elements(_raw_coordinate_block(inp_text))]
+    return f"{header}|{','.join(els)}" if els else ""
 
 
 def _kept_result_matches(calc: Calculation, result: ParseResult) -> str:
@@ -563,6 +586,9 @@ class QueueEngine:
                 # (e.g. IRC InitHess "read" without a filename) — surface that
                 # as a normal run failure, not an "Unexpected error".
                 raise OrcaRunError(str(e))
+        # Must happen while the PREVIOUS .inp is still on disk — it is what
+        # says whether the restart files beside it belong to this structure.
+        self._set_aside_stale_guess(calc, calc_dir, text)
         inp_path.write_text(text, encoding="utf-8")
 
         self._prepare_neb_side_files(calc, calc_dir, xyz, text)
@@ -585,6 +611,65 @@ class QueueEngine:
         self.cb.calc_update(index, calc)
 
         self._monitor_and_finish(calc, index, out_path)
+
+    def _set_aside_stale_guess(self, calc: Calculation, calc_dir: Path,
+                               text: str) -> None:
+        """Rename a restart file left in the run folder by a run of a DIFFERENT
+        structure, so ORCA does not abort on it.
+
+        Workspace folders are never deleted and a queue name is unique only
+        within the current queue, so the folder we are about to run in may hold
+        a {name}.gbw from another molecule — a removed row's name reused, or the
+        same row pointed at a new .xyz, both flows the overwrite modal
+        explicitly allows. ORCA 6 reads that file as the SCF's initial guess
+        without being asked (AutoStart) and, when the atoms differ, dies in
+        GUESS: "Error: Input geometry does not match current geometry", exit
+        code 55 (verified on 6.1.1). That is a FAILED calc, and FAILED is locked
+        (P24) — the name can then never be run again, and the reported reason
+        says nothing about a stale file the user cannot see.
+
+        A restart from the SAME structure and charge/multiplicity is left alone:
+        that is a free warm start, and it is what a re-run of a cancelled job
+        has. So is one an input asks for explicitly (MOREAD/%moinp) — the whole
+        point of that input is to read those orbitals.
+
+        The file is renamed, never deleted (no result in a workspace folder is
+        ever destroyed): {name}.gbw -> {name}.gbw.bak.
+        """
+        stale = [calc_dir / f"{calc.name}{suf}" for suf in _RESTART_SUFFIXES]
+        stale = [p for p in stale if p.exists()]
+        if not stale:
+            return
+        low = text.lower()
+        if "moread" in low or "%moinp" in low:
+            return
+
+        prev_inp = calc_dir / f"{calc.name}.inp"
+        prev_sig = ""
+        if prev_inp.exists():
+            try:
+                prev_sig = _guess_signature(
+                    prev_inp.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                prev_sig = ""
+        now_sig = _guess_signature(text)
+        # Unreadable on either side means "cannot tell", and the cost of the two
+        # answers is not symmetric: a needless cold SCF start against a locked
+        # calculation. So only a positive match keeps the file.
+        if prev_sig and prev_sig == now_sig:
+            return
+
+        for p in stale:
+            try:
+                os.replace(p, p.parent / f"{p.name}.bak")
+            except OSError as e:
+                self.cb.log(f"[{calc.name}] could not set aside {p.name} "
+                            f"({e}); ORCA may refuse to start.", "warn", calc.name)
+                continue
+            self.cb.log(
+                f"[{calc.name}] {p.name} in this folder is from a different "
+                f"structure — renamed to {p.name}.bak so ORCA does not read it "
+                "as the initial guess.", "warn", calc.name)
 
     def _prepare_neb_side_files(self, calc: Calculation, calc_dir: Path,
                                 xyz: str, text: str) -> None:

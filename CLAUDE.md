@@ -397,6 +397,20 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   the possibly-stale `calc.xyz` — folders survive removal, so a new calc
   reusing a removed calc's name must not adopt the old output); otherwise
   the calc runs.
+- **A stale ORCA restart file in the run folder is renamed aside before a
+  launch** (`_set_aside_stale_guess`). ORCA 6 reads a `{name}.gbw` sitting
+  beside `{name}.inp` as the SCF's initial guess on its own (AutoStart), and
+  aborts in GUESS when the atoms differ: `Error: Input geometry does not match
+  current geometry`, exit 55 (verified on 6.1.1). Folders survive removal and a
+  name is unique only within the *current* queue, so that file may be from
+  another molecule — a reused name, or the same row pointed at a new `.xyz`,
+  both flows the overwrite modal allows — and the result is a FAILED calc,
+  which is locked (P24), for a reason the user cannot see. The decision is made
+  from the PREVIOUS `.inp` still on disk (`_guess_signature`: the `* xyz` line's
+  charge/multiplicity plus the element sequence), so a same-structure restart is
+  kept as a free warm start and only a mismatch — or an unreadable comparison —
+  moves the file to `{name}.gbw.bak`. An input that asks for those orbitals
+  itself (`MOREAD`/`%moinp`) is never touched. Renamed, never deleted.
 - **Pre-launch guards run for raw calcs too.** The engine writes NEB-TS side
   files (`product.xyz` / `ts_guess.xyz`) from config at run time in both form
   and raw mode — but for a raw calc **only when its text actually uses the
