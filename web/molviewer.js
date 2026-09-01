@@ -311,6 +311,59 @@ function _cssColor(name) {
   return v || "#888888";
 }
 
+/** The isovalue enclosing `frac` of the field's total psi-squared — i.e. the
+ *  surface that contains that much of the electron probability. Computed from
+ *  the values 3Dmol has already parsed, so it costs a sort and no round-trip.
+ *  @param {ArrayLike<number>} data @param {number} frac */
+function _isoForFraction(data, frac) {
+  const n = data.length;
+  if (!n) return 0;
+  // NaN-safe on purpose. 3Dmol builds this array with
+  // Float32Array.from(text.split(/[\s\r]+/), parseFloat), and a cube file's
+  // trailing separator yields one empty token — so `data` carries a single NaN
+  // past the real values (216001 entries for a 60³ grid). One NaN poisons the
+  // sum, `total > 0` goes false, and the whole fit silently returns 0.
+  const sq = new Float64Array(n);
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const x = data[i];
+    const v = Number.isFinite(x) ? x * x : 0;
+    sq[i] = v; total += v;
+  }
+  if (!(total > 0)) return 0;
+  sq.sort();                       // typed-array sort is numeric, ascending
+  let run = 0;
+  for (let i = n - 1; i >= 0; i--) {
+    run += sq[i];
+    if (run >= frac * total) return Math.sqrt(sq[i]);
+  }
+  return 0;
+}
+
+/** Where to open the isovalue slider for this field.
+ *
+ *  A fixed 0.05 is the convention for an orbital, and it is right — for a small
+ *  molecule. It is not a property of orbitals, it is a property of *localized*
+ *  ones. CB8's HOMO is spread over eight carbonyls and peaks at 0.0996, so only
+ *  222 of 216,000 grid points clear 0.05: the surface exists, and is invisible.
+ *  The viewer looked broken on exactly the molecules worth looking at.
+ *
+ *  So take the conventional value as a CEILING and lower it when the data has
+ *  nothing up there, using the level that encloses 90% of psi-squared. Measured:
+ *  that level is 0.060 for water's HOMO (so the cap holds and the conventional
+ *  picture is unchanged) and 0.0097 for CB8's (so it drops, and a real surface
+ *  appears). Never raises — a level above convention would be a claim about the
+ *  orbital that convention does not make.
+ *  @param {ArrayLike<number>} data @param {number} cap per-kind conventional value */
+function _defaultIso(data, cap) {
+  const fitted = _isoForFraction(data, ISO_ENCLOSED_FRACTION);
+  if (!(fitted > 0)) return cap;
+  return Math.max(ISO_MIN, Math.min(cap, fitted));
+}
+
+const ISO_ENCLOSED_FRACTION = 0.90;
+const ISO_MIN = 0.001;             // the slider's floor; below it nothing reads
+
 /** Slider position (0..100) to isovalue, on a log scale from 0.001 to 0.5.
  *  Linear would be useless: a spin density is drawn near 0.005 and an orbital
  *  near 0.05, a factor of ten apart at the bottom of the range. */
@@ -438,6 +491,8 @@ async function mvVolShow(i) {
 
   const seq = ++_mvVolSeq;
   _mvVolBusy = true;
+  const onDisk = _mvVolCached.indexOf(_mvCubeName(pick)) >= 0;
+  _mvVolBusyOverlay(!onDisk, pick.label);
   _mvVolCaption(pick.label + " — generating at " + _mvVolGrid + "³ …");
   const payload = JSON.stringify({
     source: _mvVolSource, kind: pick.kind, index: pick.index,
@@ -478,13 +533,9 @@ async function mvVolShow(i) {
 
   const $3Dmol = window["$3Dmol"] || window["3Dmol"];
   _mvVolBusy = false;
+  _mvVolBusyOverlay(false);
   _mvVolTitle = data.title || pick.label;
   _mvVolSigned = data.signed !== false;
-  _mvIso = data.isovalue || 0.05;
-  const slider = /** @type {HTMLInputElement} */ (document.getElementById("mv-iso"));
-  if (slider) slider.value = String(_sliderFromIso(_mvIso));
-  const lbl = document.getElementById("mv-iso-val");
-  if (lbl) lbl.textContent = _mvIso.toFixed(3);
   // remember that this one is on disk now, so the list dot flips to "instant"
   const fname = _mvCubeName(pick);
   if (_mvVolCached.indexOf(fname) < 0) { _mvVolCached.push(fname); renderMvVolList(); }
@@ -495,6 +546,10 @@ async function mvVolShow(i) {
   _mvViewer.addModel(data.text, "cube");
   _mvViewer.setStyle({}, { stick: { radius: 0.1 }, sphere: { scale: 0.18 } });
   _mvVolData = new $3Dmol.VolumeData(data.text, "cube");
+  // the opening isovalue needs the values, so it is picked here, not by the
+  // backend, which only supplies the per-kind conventional ceiling
+  _mvIso = _defaultIso(_mvVolData.data, data.isovalue || 0.05);
+  _mvSyncIsoControls();
   mvRenderCube(true);
 }
 
@@ -507,10 +562,25 @@ function _mvJobIs(job, pick) {
       && job.operator === pick.operator && job.grid === _mvVolGrid;
 }
 
+/** Show or hide the "plotting" overlay. Only raised when orca_plot will really
+ *  run: a cube already on disk opens straight into the stage, and an overlay
+ *  that flashed on every pick would be noise rather than information.
+ *  @param {boolean} on @param {string} [label] */
+function _mvVolBusyOverlay(on, label) {
+  const box = document.getElementById("mv-vol-busy");
+  if (!box) return;
+  if (on) {
+    const t = document.getElementById("mv-busy-title");
+    if (t) t.textContent = `Plotting ${label || ""}…`.replace("  ", " ");
+  }
+  /** @type {HTMLElement} */ (box).hidden = !on;
+}
+
 /** @param {number} seq @param {string} msg */
 function _mvVolFail(seq, msg) {
   if (seq !== _mvVolSeq) return;
   _mvVolBusy = false;
+  _mvVolBusyOverlay(false);
   _mvVolCaption(msg);
   failNotify(msg);
 }
@@ -544,6 +614,14 @@ function _mvVolCaption(text) {
   if (el) el.textContent = text;
 }
 
+/** Push _mvIso onto the slider and its readout (after a cube load picks it). */
+function _mvSyncIsoControls() {
+  const slider = /** @type {HTMLInputElement} */ (document.getElementById("mv-iso"));
+  if (slider) slider.value = String(_sliderFromIso(_mvIso));
+  const lbl = document.getElementById("mv-iso-val");
+  if (lbl) lbl.textContent = _mvIso.toFixed(3);
+}
+
 /** Isovalue slider: re-mesh the cube already in memory — no backend call, which
  *  is the whole reason a coarse grid is enough. @param {string|number} v */
 function mvSetIso(v) {
@@ -562,6 +640,7 @@ function mvSetGrid(g) {
 
 function mvVolReset() {
   _mvVolSeq++;              // orphan any in-flight generate
+  _mvVolBusyOverlay(false);
   _mvVolPicks = []; _mvVolData = null; _mvVolBusy = false;
   _mvVolSource = ""; _mvVolBase = "";
 }

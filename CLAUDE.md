@@ -986,7 +986,22 @@ cubes gets `smoothness: 8` (Laplacian mesh smoothing) and the isovalue slider
 re-meshes the `VolumeData` already in memory — no backend round-trip — which is
 why 60³ is the default and the grid selector is the rare escape hatch.
 Per-kind display defaults live in `cube.py` (`DEFAULT_ISOVALUES`,
-`SIGNED_KINDS`: mo/spindens draw a ± pair, an electron density one surface).
+`SIGNED_KINDS`: mo/spindens draw a ± pair, an electron density one surface) —
+but `DEFAULT_ISOVALUES` is a **ceiling, not the opening value**. 0.05 is the
+convention for a *localized* orbital, which is not the same as for an orbital:
+CB8's HOMO peaks at 0.0996, so at 0.05 only 222 of 216,000 points clear the
+level and the surface is invisible — the viewer looked broken on exactly the
+molecules worth looking at. `_defaultIso` (molviewer.js) therefore fits the
+level enclosing 90% of ψ² from the values 3Dmol has already parsed and takes
+`min(convention, fit)`; measured, that is 0.060 for water's HOMO (cap holds,
+conventional picture unchanged) and 0.0097 for CB8's. It never raises above
+convention. The fit must be **NaN-safe**: 3Dmol builds its value array with
+`Float32Array.from(split(...), parseFloat)`, and a cube's trailing separator
+leaves one NaN past the data (216001 entries for a 60³ grid) — one NaN poisons
+a sum and silently voids the whole fit. While orca_plot is actually running for
+a pick (`#mv-vol-busy`), the stage shows a *Plotting…* overlay; a cube already
+on disk opens with no flash. Measured cost of what it covers: a density on a
+144-atom / 3648-BF system is 22 s at 60³, against 0.34 s for one MO.
 
 **Bridge slots**: `get_plot_options(source)` (base, has_gbw, the kinds this
 wavefunction supports — spin density only when the run is open-shell — grids,

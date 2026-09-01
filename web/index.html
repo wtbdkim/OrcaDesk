@@ -701,6 +701,16 @@
       <div class="mv-list" id="mv-list"></div>
       <div class="mv-stage">
         <div id="mv-gl" class="mv-gl"></div>
+        <!-- shown only while orca_plot is actually running for this pick; a
+             cached cube opens straight into the stage with no flash -->
+        <div class="mv-busy" id="mv-vol-busy" hidden>
+          <div class="mv-busy-card">
+            <div class="mv-busy-title" id="mv-busy-title">Plotting…</div>
+            <div class="mv-busy-sub">ORCA is computing the grid. An orbital takes
+              about a second; an electron density can take half a minute on a
+              large molecule.</div>
+          </div>
+        </div>
         <div class="mv-bar" id="mv-vol-bar" style="display:none">
           <button class="btn btn-sm" onclick="molViewerStep(-1)">← Prev</button>
           <label class="mv-ctl" title="Re-meshes the cube already loaded — no recomputation">

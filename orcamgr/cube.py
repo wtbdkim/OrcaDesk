@@ -22,12 +22,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Isosurface levels the viewer opens at, per plot kind, in atomic units. These
-# are conventional display values, not derived from the data: an MO is normally
-# drawn at 0.05, a total electron density lower (0.02 sits between the tight
-# bonding view and the ~0.002 van-der-Waals-like surface), and a spin density
-# lower still because it is a small difference of two large numbers. The viewer
-# exposes a slider — these only decide what the first frame looks like.
+# Conventional isosurface levels per plot kind, in atomic units: an MO is
+# normally drawn at 0.05, a total electron density lower (0.02 sits between the
+# tight bonding view and the ~0.002 van-der-Waals-like surface), and a spin
+# density lower still because it is a small difference of two large numbers.
+#
+# The viewer treats these as a CEILING, not the answer. 0.05 is right for a
+# *localized* orbital, which is not the same as right for an orbital: CB8's HOMO
+# is spread over eight carbonyls and peaks at 0.0996, so at 0.05 only 222 of
+# 216,000 grid points clear the level and the surface is invisible. So
+# web/molviewer.js `_defaultIso` lowers it to the level enclosing 90% of
+# psi-squared when the data has nothing up here, and never raises it above the
+# convention. Fitting needs the values; this file only reads the header.
 DEFAULT_ISOVALUES = {"mo": 0.05, "eldens": 0.02, "spindens": 0.005}
 
 # Which kinds have meaningful negative lobes and are drawn as a ± pair. A total

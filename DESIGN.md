@@ -882,6 +882,11 @@ Two rules make a slider honest rather than decorative:
   is 0..100 mapped onto 0.001–0.5, because a spin density is read near 0.005
   and an orbital near 0.05; linear would bury the bottom decade in the first
   few pixels.
+- **Open it where the data is, not where the convention is.** A conventional
+  default that renders an empty stage is worse than no default: the user reads
+  it as a broken feature, not as a slider to move. Fit the opening value to the
+  data and let the convention cap it — never raise past the convention, which
+  would be a claim the convention does not make.
 
 ### 11.21 Viewer panel (3D stages)
 

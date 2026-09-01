@@ -202,6 +202,19 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     job's `.gbw` wavefunction, so nothing is re-computed and no job is re-run.
     One orbital takes about **0.2 s** on a 52-atom molecule, an electron
     density about **10 s**.
+  - **The viewer opens at an isovalue that actually shows the orbital.** The
+    textbook 0.05 is right for a small molecule and useless for a large one:
+    a big molecule's frontier orbital is spread over many centres, so its peak
+    amplitude is far lower and a 0.05 surface is a few invisible specks. On a
+    144-atom host molecule the viewer looked like it had failed. It now fits
+    the opening level to the data (the surface enclosing 90% of the orbital's
+    probability) and uses the conventional value only as a ceiling — so small
+    molecules look exactly as before, and large ones finally show something.
+  - **A *Plotting…* notice covers the wait.** Generating a surface shells out
+    to ORCA, which is a fraction of a second for an orbital but around half a
+    minute for an electron density on a large molecule — during which the
+    viewer used to sit empty and look broken. Surfaces already on disk still
+    open instantly, with no notice.
   - **The isovalue slider is instant.** Moving it re-draws the surface from the
     data already loaded, with no recalculation — so finding the level that shows
     what you mean is a drag, not a wait. A grid selector (40³ / 60³ / 80³) is
