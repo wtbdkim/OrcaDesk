@@ -40,8 +40,18 @@
   // credits ("pre 5.0 version of the SCF Hessian") and the property-block echo
   // ("Properties with geometric perturbations:", "SCF Hessian ... NO").
   const NFREQ_START_RE = /ORCA NUMERICAL FREQUENCIES/;
-  const NDISP_RE = /Number of displacements\s+\.*\s*(\d+)/i;
-  const DISP_RE = /displacement\s+(\d+)\s*\/\s*(\d+)/i;   // numerical: "...for displacement K / N"
+  // Both patterns are what ORCA 6.1.1 actually prints, taken from a real
+  // NumFreq run (HF/STO-3G, water):
+  //   "Number of displacements        ... 18 - 6"
+  //   "\t<< Calculating gradient on displaced geometry   1 (of  12) >>"
+  // The header's figure is 3N*2 MINUS the six it does not run (translations and
+  // rotations), written as a subtraction — reading only the first number gave a
+  // total of 18 against a real 12. The counter line has no "K / N" form at all,
+  // so the panel sat at "displacement 0/18 · estimating…" for the whole run and
+  // only jumped at the VIBRATIONAL FREQUENCIES banner. The counter's own
+  // "(of N)" is authoritative and supersedes the header either way.
+  const NDISP_RE = /Number of displacements\s+\.*\s*(\d+)(?:\s*-\s*(\d+))?/i;
+  const DISP_RE = /displaced geometry\s+(\d+)\s*\(\s*of\s+(\d+)\s*\)/i;
   const VFREQ_RE = /VIBRATIONAL FREQUENCIES/;
   // analytical Hessian via coupled-perturbed SCF (CP-SCF). Not a black box: ORCA
   // prints an UPPERCASE banner for each stage of the pipeline, always in the
@@ -181,11 +191,19 @@
     // numerical markers take precedence and lock the mode
     if (NFREQ_START_RE.test(line)) { this.mode = "numerical"; this.active = true; return true; }
     const h = line.match(NDISP_RE);
-    if (h) { this.total = parseInt(h[1], 10); this.mode = "numerical"; this.active = true; return true; }
+    if (h) {
+      const gross = parseInt(h[1], 10);
+      const dropped = h[2] ? parseInt(h[2], 10) : 0;
+      this.total = Math.max(1, gross - dropped);
+      this.mode = "numerical"; this.active = true; return true;
+    }
     const d = line.match(DISP_RE);
     if (d) {
       const k = parseInt(d[1], 10), n = parseInt(d[2], 10);
       if (n > 0) this.total = n;
+      // ">" not "=": with -nprocs > 1 the displacements finish out of order
+      // ("... 6 (of 12)" before "... 5 (of 12)"), so the counter is a high-water
+      // mark, never a last-wins assignment.
       if (k > this.cur) { this.cur = k; this._times.push(Date.now()); if (this._times.length > 40) this._times.shift(); }
       this.mode = "numerical"; this.active = true;
       return true;

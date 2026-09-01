@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .tailer import decode_orca_line
+
 
 # ---- physical constants -------------------------------------------------
 HARTREE_TO_EV = 27.211386245988
@@ -38,6 +40,10 @@ class Orbital:
     occ: float
     energy_eh: float
     energy_ev: float
+    # "" for a restricted calculation (one manifold), else "a"/"b" — an
+    # unrestricted run prints SPIN UP and SPIN DOWN as two separate tables and
+    # the index restarts at 0 in each, so it does not identify an orbital alone.
+    spin: str = ""
 
 
 @dataclass
@@ -48,6 +54,12 @@ class Transition:
     energy_cm: float
     wavelength_nm: float
     fosc: float
+    # Spin multiplicity of the excited state, read from the "N-3A" suffix of
+    # ORCA's transition label (1 = singlet, 3 = triplet). With `triplets true`
+    # both manifolds are printed in ONE energy-sorted table and the state number
+    # restarts per multiplicity, so without this the state number is ambiguous
+    # and the row count is twice the root count.
+    mult: int = 1
 
 
 @dataclass
@@ -151,6 +163,10 @@ class ParseResult:
     orbitals: list[Orbital] = field(default_factory=list)
     homo_index: Optional[int] = None
     lumo_index: Optional[int] = None
+    # which manifold the frontier orbital is in ("" restricted, else "a"/"b"):
+    # in an unrestricted run the index alone does not identify an orbital
+    homo_spin: str = ""
+    lumo_spin: str = ""
     homo_ev: Optional[float] = None
     lumo_ev: Optional[float] = None
     gap_ev: Optional[float] = None
@@ -249,9 +265,11 @@ class ParseResult:
                 "converged" if self.opt_converged else "NOT converged")
         # orbital / dipole / rotational props (electronic)
         if self.homo_ev is not None:
-            add("HOMO", f"#{self.homo_index}  {self.homo_ev:.4f} eV", "elec")
+            add("HOMO", f"#{self.homo_index}{_spin_tag(self.homo_spin)}  "
+                        f"{self.homo_ev:.4f} eV", "elec")
         if self.lumo_ev is not None:
-            add("LUMO", f"#{self.lumo_index}  {self.lumo_ev:.4f} eV", "elec")
+            add("LUMO", f"#{self.lumo_index}{_spin_tag(self.lumo_spin)}  "
+                        f"{self.lumo_ev:.4f} eV", "elec")
         add_scalars(_SUMMARY_PROP_ROWS)
         if self.rot_const_cm:
             add("Rotational const.",
@@ -265,7 +283,17 @@ class ParseResult:
         # per the "all rows are always emitted" contract above.
         add_scalars(_SUMMARY_THERMO_ROWS)
         if self.has_tddft:
-            add("TD-DFT states", str(len(self.transitions)))
+            # Counting rows says "6 states" for `nroots 3 / triplets true`,
+            # which is three singlets and three triplets. Say which.
+            by_mult: dict[int, int] = {}
+            for t in self.transitions:
+                by_mult[t.mult] = by_mult.get(t.mult, 0) + 1
+            if len(by_mult) > 1:
+                add("TD-DFT states", " + ".join(
+                    f"{n} {_MULT_NAMES.get(m, str(m) + '-plet')}"
+                    for m, n in sorted(by_mult.items())))
+            else:
+                add("TD-DFT states", str(len(self.transitions)))
             bright = self.brightest_transition()
             if bright:
                 add("Brightest", f"{bright.wavelength_nm:.1f} nm  (f={bright.fosc:.4f})")
@@ -305,6 +333,19 @@ def _scan_scalars(lines: list[str], r: ParseResult, spec: dict) -> None:
                     setattr(r, attr, cast(m.group(1)))
                 except ValueError:
                     pass
+
+
+# Spin multiplicity names for the TD-DFT state count. Only the ones ORCA can
+# actually print in one absorption table (a closed-shell reference gives
+# singlets and, with `triplets true`, triplets).
+_MULT_NAMES = {1: "singlet", 2: "doublet", 3: "triplet", 4: "quartet", 5: "quintet"}
+
+
+def _spin_tag(spin: str) -> str:
+    """" (alpha)"/" (beta)" for a frontier orbital in an unrestricted run, "" for
+    a restricted one — where there is only one manifold and the label would be
+    noise."""
+    return {"a": " (alpha)", "b": " (beta)"}.get(spin, "")
 
 
 def _scan_rows(lines: list[str], start: int, row_re: re.Pattern, build, stop=None) -> list:
@@ -401,8 +442,12 @@ class OrcaOutParser:
         if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
             text = raw.decode("utf-16", errors="replace")
         else:
-            text = raw.decode("utf-8", errors="replace")
-        lines = _clean_lines(text)
+            # surrogateescape + per-line repair: the file is mixed-encoding on
+            # Windows (ORCA's own strings UTF-8, argv paths in the ANSI code
+            # page). See tailer.decode_orca_line — the same judgment the live
+            # log uses, so the Log tab and the Results tab agree.
+            text = raw.decode("utf-8", errors="surrogateescape")
+        lines = [decode_orca_line(ln) for ln in _clean_lines(text)]
 
         r = ParseResult(filename=self.filename, path=self.path)
 
@@ -490,10 +535,23 @@ class OrcaOutParser:
                 (r"^\s*Dispersion correction\s+(-?\d+\.\d+)\s*$", float),
         })
 
+    # An optimization keyword is a whole TOKEN on the ! line, never a substring
+    # of one. "opt" in the keyword line also matched the shipped basis labels
+    # cc-pVDZ-F12-OptRI / cc-pVTZ-F12-OptRI and the option ExtOpt, so a
+    # perfectly good single point was reported as an optimization that did NOT
+    # converge — a red row and a "Final geometry" section on a job that never
+    # moved an atom. Anchored so OptTS/TightOpt/... still match and OptRI does
+    # not; the marker below is the second, independent witness.
+    _OPT_KEYWORD = re.compile(
+        r"(?:^|\s)(?:(?:very)?tight|loose|normal)?opt(?:ts)?(?:$|\s)", re.I)
+
     def _parse_optimization(self, lines, r):
-        kw = r.input_keywords.lower()
-        r.is_optimization = ("opt" in kw)
         r.opt_converged = any("THE OPTIMIZATION HAS CONVERGED" in ln for ln in lines)
+        r.is_optimization = bool(
+            self._OPT_KEYWORD.search(r.input_keywords)
+            # A raw .inp may drive the optimization from a %geom block with no
+            # keyword at all, so the output's own cycle banner counts too.
+            or any("GEOMETRY OPTIMIZATION CYCLE" in ln for ln in lines))
 
     def _parse_geometry(self, lines, r):
         idxs = _find_all(lines, "CARTESIAN COORDINATES (ANGSTROEM)")
@@ -507,35 +565,67 @@ class OrcaOutParser:
         r.geometry = atoms
         r.n_atoms = len(atoms)
 
+    _ORBITAL_ROW = re.compile(
+        r"(\d+)\s+(\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)")
+
     def _parse_orbitals(self, lines, r):
+        """Orbital energies — BOTH manifolds when the run is unrestricted.
+
+        UKS/UHF prints "SPIN UP ORBITALS" and "SPIN DOWN ORBITALS" as two
+        tables separated by a blank line. Reading rows until the first blank
+        stopped at the end of the alpha table, so an open-shell system's
+        HOMO/LUMO and gap came from alpha alone — and for a radical the true
+        LUMO is in the OTHER manifold. Measured on ORCA 6.1.1, OH radical
+        (UKS B3LYP/def2-SVP, mult 2): alpha-only reports LUMO #5 at +1.5038 eV
+        and a 10.3498 eV gap, while across both manifolds the highest occupied
+        orbital is beta #3 (-8.1108 eV) and the lowest virtual is beta #4
+        (-4.0376 eV) — a 4.0732 eV gap. The frontier pair is therefore taken by
+        ENERGY across everything parsed, not by index within one table.
+        """
         idxs = _find_all(lines, "ORBITAL ENERGIES")
         if not idxs:
             return
         start = idxs[-1]
-        header = _find_header(lines, start, 8,
-                              lambda ln: "OCC" in ln and "E(eV)" in ln)
-        if header is None:
-            return
-        orbs: list[Orbital] = _scan_rows(
-            lines, header + 1,
-            re.compile(r"(\d+)\s+(\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)"),
-            lambda m: Orbital(int(m.group(1)), float(m.group(2)),
-                              float(m.group(3)), float(m.group(4))))
+        orbs: list[Orbital] = []
+        # Each spin table has its own "NO OCC E(Eh) E(eV)" header; a restricted
+        # run has exactly one, so the same walk covers both cases.
+        cursor, spins = start, ["a", "b"]
+        while True:
+            header = _find_header(lines, cursor, 8,
+                                  lambda ln: "OCC" in ln and "E(eV)" in ln)
+            if header is None:
+                break
+            unrestricted = any("SPIN UP ORBITALS" in ln or "SPIN DOWN ORBITALS" in ln
+                               for ln in lines[cursor:header + 1])
+            spin = spins.pop(0) if unrestricted and spins else ""
+            block = _scan_rows(
+                lines, header + 1, self._ORBITAL_ROW,
+                lambda m, _s=spin: Orbital(int(m.group(1)), float(m.group(2)),
+                                           float(m.group(3)), float(m.group(4)),
+                                           spin=_s))
+            if not block:
+                break
+            orbs.extend(block)
+            if not unrestricted:
+                break
+            cursor = header + 1 + len(block)
         if not orbs:
             return
         r.orbitals = orbs
-        homo = None
-        for o in orbs:
-            if o.occ > 0.01:
-                homo = o
-        if homo is not None:
-            r.homo_index = homo.index
-            r.homo_ev = homo.energy_ev
-            lumo = next((o for o in orbs if o.index == homo.index + 1), None)
-            if lumo is not None:
-                r.lumo_index = lumo.index
-                r.lumo_ev = lumo.energy_ev
-                r.gap_ev = lumo.energy_ev - homo.energy_ev
+        occupied = [o for o in orbs if o.occ > 0.01]
+        virtual = [o for o in orbs if o.occ <= 0.01]
+        if not occupied:
+            return
+        homo = max(occupied, key=lambda o: o.energy_ev)
+        r.homo_index = homo.index
+        r.homo_ev = homo.energy_ev
+        r.homo_spin = homo.spin
+        if virtual:
+            lumo = min(virtual, key=lambda o: o.energy_ev)
+            r.lumo_index = lumo.index
+            r.lumo_ev = lumo.energy_ev
+            r.lumo_spin = lumo.spin
+            r.gap_ev = lumo.energy_ev - homo.energy_ev
 
     def _parse_atomic_charges(self, lines, marker) -> list[tuple[str, float]]:
         """MULLIKEN/LOEWDIN ATOMIC CHARGES share one table shape; only the
@@ -661,18 +751,24 @@ class OrcaOutParser:
         r.has_tddft = True
         start = idxs[-1]
         trans: list[Transition] = []
+        # "0-1A  ->  2-3A": the digit before the letter is the excited state's
+        # spin multiplicity, and it must be kept. With `triplets true` ORCA
+        # prints singlets and triplets in ONE energy-sorted table, so the state
+        # number restarts per multiplicity — discarding it gave two rows called
+        # "state 2" and a state count of twice the root count.
         row = re.compile(
-            r"->\s*(\d+)-\S+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)"
+            r"->\s*(\d+)-(\d+)\S*\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)"
         )
         for ln in lines[start:start + 400]:
             m = row.search(ln)
             if m:
                 trans.append(Transition(
                     state=int(m.group(1)),
-                    energy_ev=float(m.group(2)),
-                    energy_cm=float(m.group(3)),
-                    wavelength_nm=float(m.group(4)),
-                    fosc=float(m.group(5)),
+                    mult=int(m.group(2)),
+                    energy_ev=float(m.group(3)),
+                    energy_cm=float(m.group(4)),
+                    wavelength_nm=float(m.group(5)),
+                    fosc=float(m.group(6)),
                 ))
             elif trans and ln.strip() == "":
                 # rows are contiguous (verified on real ORCA 6.x output), so

@@ -151,6 +151,18 @@ def probe_env(python_path: str, timeout: float = 30.0) -> dict:
         base["error"] = f"Could not launch interpreter: {e}"
         return base
 
+    # A non-zero exit means the interpreter never ran the probe, which is not
+    # the same thing as an interpreter without torch. A venv whose base Python
+    # was uninstalled prints "No Python at ..." on stderr and exits 103 with
+    # empty stdout, and reading that as an empty package list produced the
+    # confidently wrong "Missing core packages: torch, ase" — sending the user
+    # off to pip install into an interpreter that cannot start.
+    if proc.returncode != 0:
+        msg = ((proc.stderr or "").strip() or (proc.stdout or "").strip()
+               or f"Interpreter exited with code {proc.returncode}.")
+        base["error"] = msg[:500]
+        return base
+
     lines = (proc.stdout or "").strip().splitlines()
     try:
         data = json.loads(lines[-1]) if lines else {}

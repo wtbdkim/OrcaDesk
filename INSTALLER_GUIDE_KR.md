@@ -1,6 +1,6 @@
 # 설치 파일(setup.exe) 만드는 법
 
-ORCAdesk를 친구에게 줄 수 있는 설치 마법사(`ORCAdesk-Setup.exe`)로
+ORCAdesk를 친구에게 줄 수 있는 설치 마법사(`ORCAdesk-<버전>-Setup.exe`)로
 만드는 전체 과정입니다. 순서대로 따라 하세요.
 
 순서는 반드시 이렇습니다:
@@ -16,7 +16,8 @@ Inno Setup만 미리 설치해 두면(아래 2단계 참고), 그 다음부터�
 
   1. (한 번만) Python 설치, Inno Setup 설치
   2. `make_installer.bat` 더블클릭
-  3. 끝나면 `installer_output\ORCAdesk-Setup.exe` 완성
+  3. 끝나면 `installer_output\ORCAdesk-<버전>-Setup.exe` 완성
+     (`installer.iss`의 `OutputBaseFilename`이 버전을 이름에 넣습니다)
 
 자동으로 안 되거나 무슨 일이 일어나는지 알고 싶으면 아래 수동 단계를
 참고하세요.
@@ -60,7 +61,7 @@ python -m PyInstaller build.spec --noconfirm
 방법 A (간단):
 1. 프로젝트 폴더의 `installer.iss` 파일을 더블클릭 → Inno Setup이 열림
 2. 상단 메뉴에서 **Build → Compile** (또는 F9)
-3. 완료되면 `installer_output\ORCAdesk-Setup.exe` 가 생성됩니다
+3. 완료되면 `installer_output\ORCAdesk-<버전>-Setup.exe` 가 생성됩니다
 
 방법 B (명령창):
 ```
@@ -71,9 +72,9 @@ python -m PyInstaller build.spec --noconfirm
 
 ## 완성
 
-`installer_output\ORCAdesk-Setup.exe` 이 파일 하나가 설치 마법사입니다.
+`installer_output\ORCAdesk-<버전>-Setup.exe` 이 파일 하나가 설치 마법사입니다.
 
-친구에게는 이 `ORCAdesk-Setup.exe` 하나만 주면 됩니다.
+친구에게는 이 `ORCAdesk-<버전>-Setup.exe` 하나만 주면 됩니다.
 친구는 더블클릭 → 다음 → 설치 → 시작 메뉴에서 실행.
 
 주의사항:

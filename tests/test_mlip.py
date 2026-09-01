@@ -615,6 +615,7 @@ def test_probe_env_non_dict_json_is_error_not_a_crash(monkeypatch, tmp_path):
     fake_exe.write_text("")
 
     class _Proc:
+        returncode = 0        # it RAN; what it printed is the problem
         stdout = "42\n"
         stderr = ""
 
@@ -681,3 +682,32 @@ def test_engine_runs_the_first_env_of_the_list_it_is_given(tmp_path):
     calc = Calculation(name="m", kind="mlip_opt", xyz="H 0 0 0",
                        config=StepConfig(kind="mlip_opt", mlip_env_id=""))
     assert engine._resolve_mlip_python(calc) == str(good)
+
+
+# ---------------------------------------------------------------------------
+# Probing an environment that cannot start
+# ---------------------------------------------------------------------------
+
+def test_an_interpreter_that_fails_to_start_is_reported_as_such(monkeypatch, tmp_path):
+    """A venv whose base Python was uninstalled prints "No Python at ..." on
+    stderr and exits non-zero with empty stdout. Reading that as an empty
+    package list produced the confidently wrong "Missing core packages: torch,
+    ase" — sending the user off to pip install into an interpreter that cannot
+    run at all."""
+    import orcamgr.mlip.env as env_mod
+
+    fake_exe = tmp_path / "python.exe"
+    fake_exe.write_text("", encoding="utf-8")
+
+    class _Proc:
+        returncode = 103
+        stdout = ""
+        stderr = "No Python at 'C:\\gone\\python.exe'"
+
+    monkeypatch.setattr(env_mod.subprocess, "run", lambda *a, **k: _Proc())
+    probe = env_mod.probe_env(str(fake_exe))
+
+    assert probe["ready"] is False
+    assert "No Python at" in (probe["error"] or "")
+    assert probe["error"]        # not None: the payload must not fall back to
+                                 # "missing packages" for an env that never ran

@@ -33,7 +33,9 @@ from ..crest.env import (
     probe_all as crest_probe_all, aggregate_status as crest_aggregate_status,
 )
 from ..crest.wsl import list_distros as crest_list_distros
-from ..paths import APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL, user_data_root
+from ..paths import (APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL,
+                     config_file, user_data_root)
+from ..textio import repair_ansi_line
 from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import CalcState, result_from_output
 from ..core.structure import (
@@ -112,7 +114,11 @@ _CREST_GRAPH = re.compile(
 # look-alikes appear in every output); the counter lines accept ORCA's own
 # capitalization, mirroring the /i on their JS regexes.
 _PHASE_GRAPH = re.compile(
-    r"ORCA NUMERICAL FREQUENCIES|[Nn]umber of displacements|[Dd]isplacement\s+\d+\s*/\s*\d+|"
+    # "displaced geometry K (of N)" is what ORCA 6.1.1 prints; the old
+    # "displacement K / N" matched nothing, so a graph rebuilt after a restart
+    # was as blank as the live one. Mirrors DISP_RE in web/progress_panels.js.
+    r"ORCA NUMERICAL FREQUENCIES|[Nn]umber of displacements|"
+    r"displaced geometry\s+\d+\s*\(\s*of\s+\d+\s*\)|"
     r"\bNORMAL MODES\b|\bIR SPECTRUM\b|THERMOCHEMISTRY AT\s+[\d.]+|"
     r"Analytic(?:al)? Hessian|[Nn]umber of perturbations|\d+\s*/\s*\d+\s+done|"
     r"\bBATCH\s+\d+\s*:\s*Atoms\s+\d+\s*-\s*\d+|"
@@ -153,7 +159,12 @@ def tail_lines(path, max_lines: int) -> "tuple[list[str], bool]":
     with open(path, "rb") as f:
         f.seek(start)
         raw = f.read()
-    lines = raw.decode("utf-8", errors="replace").splitlines()
+    # surrogateescape + per-line repair, like the live tail: an ORCA .out is
+    # mixed-encoding on Windows (its own strings UTF-8, argv paths in the ANSI
+    # code page), so a Korean calc name or workspace decoded as pure UTF-8 came
+    # back as a run of U+FFFD. See orcamgr/textio.py.
+    lines = [repair_ansi_line(ln)
+             for ln in raw.decode("utf-8", errors="surrogateescape").splitlines()]
     if start > 0 and lines:
         lines = lines[1:]
     return lines[-n:], (start > 0 or len(lines) > n)
@@ -225,7 +236,7 @@ class Bridge(QObject):
 
     # --- settings ---
     @pyqtSlot(result=str)
-    def get_settings(self) -> str:
+    def get_settings(self, save_error: str = "") -> str:
         return json.dumps(SettingsPayload(
             orca_path=self.settings.orca_path,
             workspace_root=self.settings.workspace_root,
@@ -245,6 +256,7 @@ class Bridge(QObject):
             build_mode=self.settings.build_mode,
             crest_distro=self.settings.crest_distro,
             orca_valid=self.settings.orca_is_valid(),
+            save_error=save_error,
         ))
 
     @pyqtSlot(str, result=str)
@@ -258,6 +270,15 @@ class Bridge(QObject):
                         # Path(orca_path) on every later call, every session
                         raise ValueError(f"{k} must be a string.")
                     setattr(self.settings, k, data[k])
+            # An empty workspace root is not "unset, fall back to the default":
+            # Settings.load() only fills the default at the NEXT launch, so for
+            # the rest of this session every run builds Path("")/name and writes
+            # its calculation folders into the process's working directory —
+            # wherever the app happened to be started from (in a frozen build,
+            # beside the .exe). Refuse it while the old value is still live.
+            if not self.settings.workspace_root.strip():
+                self.settings.workspace_root = Settings.load().workspace_root
+                raise ValueError("Workspace folder cannot be empty.")
             for k in ("default_nprocs", "default_maxcore_mb"):
                 if k in data:
                     setattr(self.settings, k, int(data[k]))
@@ -295,8 +316,11 @@ class Bridge(QObject):
             if "wallpaper" in data and data["wallpaper"] in (
                     "aurora", "aqua", "sunset", "grape", "graphite", "ocean", "custom"):
                 self.settings.wallpaper = data["wallpaper"]
-            self.settings.save()
-            return self.get_settings()
+            saved = self.settings.save()
+            return self.get_settings(
+                "" if saved else
+                f"Settings could not be written to {config_file()}. They apply "
+                "to this session but will be lost when ORCAdesk is closed.")
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             return json.dumps(ErrorPayload(error=str(e)))
 
@@ -410,7 +434,8 @@ class Bridge(QObject):
                         and self._mlip_probe_seq.get(env_id) == seq):
                     self._mlip_envs_status[env_id] = result
 
-        threading.Thread(target=_worker, daemon=True).start()
+        threading.Thread(target=_worker, daemon=True,
+                         name="orcadesk-mlip-probe").start()
 
     @pyqtSlot(str, result=str)
     def add_mlip_env(self, payload_json: str) -> str:
@@ -454,6 +479,13 @@ class Bridge(QObject):
                        if not env_id or e.get("id") == env_id]
         for e in targets:
             self._start_mlip_probe(e["id"], e.get("name", ""), e.get("python", ""))
+        if not env_id:
+            # A full re-check also re-detects the base interpreters and the GPU.
+            # That ran once, in __init__, while the card told the user to
+            # "install Python ... then Re-check" — advice nothing could act on:
+            # after installing Python they had to restart ORCAdesk, and nothing
+            # said so.
+            self._start_mlip_install_probe()
         return self.get_mlip_status()
 
     def _mlip_envs_for_run(self) -> list:
@@ -469,6 +501,9 @@ class Bridge(QObject):
             envs = list(self.settings.mlip_envs)
             states = {env_id: (st or {}).get("state", "checking")
                       for env_id, st in self._mlip_envs_status.items()}
+        # ...and publish it, so the phone's /api/run can apply the same order:
+        # it has no probe of its own, and the contract is not a desktop one.
+        self.store.set_mlip_readiness(states)
         return order_envs_by_readiness(envs, states)
 
     @pyqtSlot(result=str)
@@ -501,16 +536,19 @@ class Bridge(QObject):
                         # the wrong one installs fine and dies at the first
                         # kernel launch, which is not a thing to discover later
                         "cuda_index": cuda_index_for(gpu["capability"]),
-                        "backends": list(MLIP_BACKENDS.keys())}
+                        "backends": [{"key": k, "label": v["label"]}
+                                     for k, v in MLIP_BACKENDS.items()]}
             except Exception as e:   # detection must never kill the panel
                 opts = {"state": "ready", "base_pythons": [], "gpu": False,
                         "gpu_name": "", "cuda_index": "",
-                        "backends": list(MLIP_BACKENDS.keys())}
+                        "backends": [{"key": k, "label": v["label"]}
+                                     for k, v in MLIP_BACKENDS.items()]}
                 self.store.append_log(f"MLIP base-Python detection failed: {e}", "warn")
             with self._mlip_install_lock:
                 self._mlip_install_opts = opts
 
-        threading.Thread(target=_worker, daemon=True).start()
+        threading.Thread(target=_worker, daemon=True,
+                         name="orcadesk-mlip-install").start()
 
     @pyqtSlot(result=str)
     def get_mlip_install_options(self) -> str:
@@ -601,7 +639,8 @@ class Bridge(QObject):
                     "error": "" if res.get("ok") else (res.get("error") or ""),
                     "cancelled": bool(res.get("cancelled"))}
 
-        threading.Thread(target=_worker, daemon=True).start()
+        threading.Thread(target=_worker, daemon=True,
+                         name="orcadesk-crest-probe").start()
         return self.get_mlip_install_status()
 
     @pyqtSlot(result=str)
@@ -634,7 +673,8 @@ class Bridge(QObject):
                 if not self._crest_installing and self._crest_probe_seq == seq:
                     self._crest_status = status
 
-        threading.Thread(target=_worker, daemon=True).start()
+        threading.Thread(target=_worker, daemon=True,
+                         name="orcadesk-crest-install").start()
 
     @pyqtSlot(result=str)
     def get_crest_status(self) -> str:
@@ -724,7 +764,8 @@ class Bridge(QObject):
                 self._crest_installing = False
                 self._crest_status = {**status, "install_error": install_error}
 
-        threading.Thread(target=_worker, daemon=True).start()
+        threading.Thread(target=_worker, daemon=True,
+                         name="orcadesk-cube").start()
         return self.get_crest_status()
 
     @pyqtSlot(str, result=str)
@@ -759,10 +800,17 @@ class Bridge(QObject):
                 ok=True, cancelled=True, text="", name="", error=""))
         try:
             p = Path(path)
+            # utf-8-SIG, not utf-8: Notepad, VS Code and PowerShell all write a
+            # UTF-8 BOM, and it survived into rawText where it is invisible in
+            # the textarea. The engine then wrote it back into the .inp and ORCA
+            # refused the file outright ("non-ASCII character(s) found in words
+            # on line 1") — every run, and a failed calculation is locked (P24),
+            # so the only way out was to rebuild it. utf-8-sig reads plain UTF-8
+            # unchanged, so this costs nothing for a file without one.
             # errors="replace": a stray non-UTF-8 byte must degrade to a
             # visible replacement char, not escape the OSError handling as a
             # UnicodeDecodeError crossing the JS boundary.
-            text = p.read_text(encoding="utf-8", errors="replace")
+            text = p.read_text(encoding="utf-8-sig", errors="replace")
         except OSError as e:
             return json.dumps(LoadResult(
                 ok=False, cancelled=False, text="", name="", error=str(e)))
@@ -1075,7 +1123,12 @@ class Bridge(QObject):
                     for a in r.geometry
                 ],
                 orbitals=[
-                    OrbitalPayload(idx=o.index, occ=o.occ, ev=o.energy_ev)
+                    OrbitalPayload(
+                        idx=o.index, occ=o.occ, ev=o.energy_ev, spin=o.spin,
+                        frontier=("homo" if (o.index == r.homo_index
+                                             and o.spin == r.homo_spin) else
+                                  "lumo" if (o.index == r.lumo_index
+                                             and o.spin == r.lumo_spin) else ""))
                     for o in r.orbitals
                 ],
                 loewdin=r.loewdin_charges,
@@ -1224,9 +1277,10 @@ class Bridge(QObject):
             phase: deque[tuple[int, str]] = deque(maxlen=_GRAPH_LINES_MAX)  # freq/TD-DFT step chain
             in_table = False
             saw_item = False
-            with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+            with open(out_path, "r", encoding="utf-8",
+                      errors="surrogateescape") as f:
                 for i, raw in enumerate(f):
-                    ln = raw.rstrip("\r\n")
+                    ln = repair_ansi_line(raw.rstrip("\r\n"))
                     if _G_CYCLE.search(ln):
                         # also the phase chain's reset marker (a pre-step
                         # Hessian belongs to the cycle it ran in), so it goes
@@ -1390,11 +1444,25 @@ class Bridge(QObject):
             out_dir = base / "favorites"
             out_dir.mkdir(parents=True, exist_ok=True)
             count = 0
+            used: set = set()
             for fr in frames:
                 xyz = fr.get("xyz", "")
-                if not xyz:
+                if not isinstance(xyz, str) or not xyz:
+                    # a malformed frame must not abort the export half-way and
+                    # leave the user with some of their favorites on disk
                     continue
-                fname = re.sub(r"[^A-Za-z0-9._-]+", "_", str(fr.get("label", "frame"))).strip("_") or "frame"
+                # The label is sanitized to ASCII, so two labels that differ
+                # only in non-ASCII characters — every all-Korean pair, which
+                # collapses to "frame" — produced ONE file while the toast
+                # counted them all. Number the collisions instead of losing them.
+                stem = re.sub(r"[^A-Za-z0-9._-]+", "_",
+                              str(fr.get("label") or "frame")).strip("_") or "frame"
+                fname = stem
+                n = 2
+                while fname.lower() in used:
+                    fname = f"{stem}_{n}"
+                    n += 1
+                used.add(fname.lower())
                 text = xyz if xyz.endswith("\n") else xyz + "\n"
                 (out_dir / f"{fname}.xyz").write_text(text, encoding="utf-8")
                 count += 1
@@ -1595,6 +1663,26 @@ class Bridge(QObject):
         return json.dumps(FepResult(ok=True, points=pts))
 
     @pyqtSlot(result=str)
+    def _overwrite_conflicts(self) -> set:
+        """Names of queued calculations whose folder already holds a result they
+        would overwrite. Shared by the Run-button check below and the startup
+        resume, so the two cannot disagree about what "would be clobbered"
+        means (P4)."""
+        ws = Path(self.settings.workspace_root)
+        # DONE is skipped by the run loop anyway; FAILED is locked (P24) and
+        # never runs again; a CANCELLED calc overwriting its own partial .out is
+        # the point of a retry; a RUNNING one is appending to its own file.
+        skip = {CalcState.DONE, CalcState.FAILED, CalcState.CANCELLED,
+                CalcState.RUNNING}
+        out = set()
+        for c in self.store.list():
+            if c.state in skip:
+                continue
+            d = ws / c.name
+            if (d / f"{c.name}.out").exists() or (d / f"{c.name}.mlip.json").exists():
+                out.add(c.name)
+        return out
+
     def check_overwrite_conflicts(self) -> str:
         """Return the names of queued calculations that would overwrite an
         existing result on disk (a {name}.out already in the workspace), so the
@@ -1605,19 +1693,8 @@ class Bridge(QObject):
         loss worth warning about. The warning exists for PENDING/BLOCKED name
         reuse — a fresh calc whose name would clobber an earlier good result."""
         try:
-            ws = Path(self.settings.workspace_root)
-            conflicts = []
-            # RUNNING is excluded too: a reattached (or reattachable) detached
-            # job keeps appending to its own .out — that is not an overwrite.
-            skip = {CalcState.DONE, CalcState.FAILED, CalcState.CANCELLED,
-                    CalcState.RUNNING}
-            for c in self.store.list():
-                if c.state in skip:
-                    continue
-                out_path = ws / c.name / f"{c.name}.out"
-                if out_path.exists():
-                    conflicts.append(c.name)
-            return json.dumps(ConflictsResult(ok=True, conflicts=conflicts))
+            return json.dumps(ConflictsResult(
+                ok=True, conflicts=sorted(self._overwrite_conflicts())))
         except Exception as e:
             return json.dumps(ConflictsResult(ok=False, error=str(e), conflicts=[]))
 
@@ -1697,11 +1774,32 @@ class Bridge(QObject):
                 "A calculation from the previous session is still running, but the "
                 "ORCA path is invalid — cannot reattach. Fix it in Settings.", "warn")
             return
+        # This starts a full run over the RESTORED queue — every PENDING row
+        # runs too, exactly as if Run had been pressed. But nobody pressed it:
+        # there is no one at the keyboard to answer the overwrite modal the Run
+        # button shows, so a queued row whose folder already holds a result
+        # would silently recompute over it. Keep those results instead (the
+        # engine re-validates each before adopting it, and falls through to a
+        # real run when one does not hold up), and say which ones.
+        keep = self._overwrite_conflicts()
+        if keep:
+            self.store.append_log(
+                "Keeping the existing results of " + ", ".join(sorted(keep))
+                + " — a resumed run cannot ask before overwriting them. "
+                  "Re-run them from the Run button to recompute.", "info")
         factory = make_engine_factory(self.store, self.settings.orca_path,
-                                      self.settings.workspace_root,
+                                      self.settings.workspace_root, keep,
                                       mlip_envs=self._mlip_envs_for_run(),
                                       crest_distro=self.settings.crest_distro,
                                       budget=self._budget())
+        # The other screen the Run button applies. A reference whose parent is
+        # gone cannot be refused here — the running job must still be
+        # reattached — so it is reported, and the engine blocks that row rather
+        # than failing it (a FAILED calc is locked, P24; a BLOCKED one can be
+        # re-pointed).
+        ref_err = find_dangling_reference(self.store.list())
+        if ref_err:
+            self.store.append_log(ref_err, "warn")
         try:
             self.store.start_run(factory)
             self.store.append_log(

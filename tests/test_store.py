@@ -138,6 +138,17 @@ def test_name_orca_can_open_accepted(name):
     assert make_calc(name).name == name
 
 
+@pytest.mark.parametrize("kind", ["mlip_opt", "mlip_sp", "crest_conf"])
+def test_the_orca_name_rule_does_not_reach_the_other_backends(kind):
+    # The MLIP and CREST pipelines pass the name as a subprocess argv element /
+    # a shell-quoted variable, so a space is genuinely fine there. Refusing it
+    # for every kind would also DROP such a calculation from the queue at the
+    # next launch, since load_session skips entries that fail validation.
+    c = calc_from_dict({"name": "water opt", "kind": kind, "xyz": "H 0 0 0",
+                        "config": {"kind": kind}})
+    assert c.name == "water opt"
+
+
 def test_unicode_korean_name_allowed():
     calc = make_calc("물분자_최적화")
     assert calc.name == "물분자_최적화"
@@ -519,6 +530,36 @@ def test_valid_json_non_dict_session_degrades_to_empty_queue(session_root, conte
     store = QueueStore()
     store.load_session()  # must not raise
     assert store.names() == []
+
+
+@pytest.mark.parametrize("value", ["null", "42", "true"])
+def test_session_with_a_non_list_calculations_value_degrades(session_root, value):
+    # the top level was guarded but the value under "calculations" was not:
+    # null/a number is not iterable, and the TypeError propagated out of
+    # MainWindow.__init__ — the app would not start until the file was deleted
+    (session_root / "session.json").write_text(
+        '{"schema": 1, "calculations": %s}' % value, encoding="utf-8")
+    store = QueueStore()
+    store.load_session()   # must not raise
+    assert store.names() == []
+
+
+def test_session_save_survives_a_string_no_encoder_will_take(session_root):
+    """json.loads turns the escape "\\ud800" into a lone surrogate, which
+    cannot be encoded to UTF-8. That is a ValueError, so it escaped
+    save_session's OSError guard and propagated out of _bump_and_save — and the
+    calc was already in the list, so EVERY later mutation raised too and the
+    session was never written again."""
+    store = QueueStore()
+    store.add(make_calc("first"))
+    poison = make_calc("second")
+    poison.message = "done \ud800"          # not a name: names are refused these
+
+    store.add(poison)                       # must not raise
+    store.add(make_calc("third"))           # ...and the store must still work
+
+    assert store.names() == ["first", "second", "third"]
+    assert not (session_root / "session.json.tmp").exists()
 
 
 def test_corrupt_session_entry_skipped_others_restored(session_root):

@@ -202,6 +202,15 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[shutdown] server stop failed: {e}", file=sys.stderr)
         try:
+            # An environment install is NOT like a calculation: there is nothing
+            # to reattach to, its pip children are not detached, and what it
+            # leaves behind is a half-built directory that refuses its own name
+            # on the next launch. Downloading 2.5 GB into a folder nobody will
+            # ever register is not a background job worth keeping.
+            self.bridge.cancel_mlip_install()
+        except Exception as e:
+            print(f"[shutdown] MLIP install cancel failed: {e}", file=sys.stderr)
+        try:
             self.store.pause_run()      # stop monitoring; do NOT kill ORCA
         except Exception as e:
             print(f"[shutdown] pause failed: {e}", file=sys.stderr)

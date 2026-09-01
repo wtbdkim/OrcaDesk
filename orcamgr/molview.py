@@ -68,12 +68,17 @@ def iter_xyz_frames(text: str):
         i += count + 2
 
 
+# .xyz files come from arbitrary Windows tools, which write a UTF-8 BOM freely.
+# int("\ufeff3") raises, so the very first header line failed to parse and the
+# frame loop ended before it began: an ensemble showed "No structures found",
+# and a browsed folder just lost those files from the list with no message.
+# utf-8-sig reads a file without a BOM identically, so this costs nothing.
 def frames_from_file(path, label_prefix: str = "") -> list[dict]:
     """Frames for one ``.xyz`` file. Each dict is ``{label, xyz, energy}`` with
     ``energy`` a float (Hartree) or None. Labels are ``{prefix}{k}`` (1-based)
     for a multi-frame file, or the bare prefix for a single frame."""
     path = Path(path)
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
     frames = list(iter_xyz_frames(text))
     out: list[dict] = []
     multi = len(frames) > 1

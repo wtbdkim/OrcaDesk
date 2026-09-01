@@ -81,6 +81,23 @@ def normalize_functional(name: str) -> str:
 # — are left off and ORCA supplies its own (it picks def2-mTZVPP/J itself). The
 # RI keyword is kept: the same measurement shows "! r2SCAN-3c RIJCOSX" gives the
 # composite's basis and energy to every digit, i.e. it is inert here.
+# Methods ORCA refuses to run with an RI approximation at all. Measured on
+# 6.1.1 with the picker's default RIJCOSX: HF-3c gives "Error (ORCA_MAIN):
+# Incompatible choice for integral handling" and Native-GFN-xTB / Native-GFN2-
+# xTB give "Error: Native xTB not compatible with RI. Job aborted." — exit 55
+# in both cases, i.e. a locked FAILED calculation (P24) for a method the picker
+# offers. With no RI keyword both run normally. HF-3c is the one composite that
+# does this: r2SCAN-3c, B97-3c, PBEh-3c and wB97X-3c all accept RIJCOSX (and
+# ignore it in favour of their own settings).
+_NO_RI_METHODS = frozenset({"hf-3c", "native-gfn-xtb", "native-gfn2-xtb",
+                            "native-gfn1-xtb", "native-gfnff"})
+
+
+def method_forbids_ri(functional: str) -> bool:
+    """True when ORCA rejects any RI keyword alongside this method."""
+    return normalize_functional(functional).strip().lower() in _NO_RI_METHODS
+
+
 def is_composite_method(functional: str) -> bool:
     """True for an ORCA composite ("3c") method, which brings its own basis.
 
@@ -146,14 +163,30 @@ _SOLVENT_ALIASES = {
     "1,2-dichlorobenzene": "o-dichlorobenzene",
     "dma": "n,n-dimethylacetamide",
     "methyl acetate": "methyl ethanoate",
+    # its sibling was mapped and it was not: ORCA 6.1.1 rejects "ethyl acetate"
+    # in both models ("Solvent name not found") and accepts "ethyl ethanoate"
+    "ethyl acetate": "ethyl ethanoate",
     "methyl formate": "methyl methanoate",
     "liquid ammonia": "ammonia",
 }
 
 
+# ORCA's SMD library is not its CPCM library. Every name in data/solvents.json
+# was scanned against ORCA 6.1.1 in both models (88 names x 2 = 176 runs): these
+# three are the only ones CPCM knows and SMD does not — SMD aborts at startup
+# with "SMD solvent not found!" (block form) or an UNRECOGNIZED KEYWORD
+# (keyword form), which locks the calculation (P24). Names are post-alias.
+_SMD_UNSUPPORTED = frozenset({"phenol", "ammonia"})
+
+
 def normalize_solvent(name: str) -> str:
     token = (name or "").strip()
     return _SOLVENT_ALIASES.get(token.lower(), token)
+
+
+def smd_supports(solvent: str) -> bool:
+    """Whether ORCA's SMD library knows this solvent (post-alias)."""
+    return normalize_solvent(solvent).strip().lower() not in _SMD_UNSUPPORTED
 
 
 @dataclass
@@ -166,15 +199,35 @@ class Solvation:
         # double quotes would terminate the %cpcm block string early
         return normalize_solvent(self.solvent).replace('"', "")
 
+    def _check_model(self, solv: str) -> None:
+        """Refuse an SMD solvent ORCA's SMD library does not have.
+
+        Emitting it anyway produces an input ORCA aborts on at startup, and a
+        failed calculation is locked (P24) — hours after the queue accepted it.
+        Raised here, the trust boundary, so a phone/API payload fails loudly
+        too (same shape as the IRC "InitHess read" refusal).
+        """
+        if self.model.upper() == "SMD" and solv and not smd_supports(solv):
+            raise ValueError(
+                f"ORCA's SMD solvent library does not include "
+                f"'{self.solvent.strip()}'. Use CPCM for it, or pick another "
+                "solvent for SMD.")
+
     def keyword(self) -> str:
         """Simple-input keyword fragment, e.g. 'CPCM(Water)'. Empty if gas phase."""
         if not self.model:
             return ""
         solv = self._resolved()
+        self._check_model(solv)
         if not solv:
-            # CPCM alone = infinite dielectric (a valid ORCA shortcut);
-            # SMD requires a named solvent, so without one we emit nothing.
-            return "CPCM" if self.model.upper() == "CPCM" else ""
+            # CPCM alone = infinite dielectric (a valid ORCA shortcut).
+            if self.model.upper() == "CPCM":
+                return "CPCM"
+            # SMD has no such shortcut — it is parameterized per solvent. Emitting
+            # nothing ran the job in GAS PHASE and stamped it DONE, so the user
+            # got a converged number for a calculation they did not ask for.
+            raise ValueError("SMD needs a solvent. Pick one, or choose CPCM "
+                             "(which can run without a named solvent).")
         if any(ch.isspace() for ch in solv):
             # ORCA's simple-input parser splits on whitespace, so CPCM(Diethyl
             # Ether) is an INPUT ERROR; space-named solvents go through the
@@ -189,6 +242,7 @@ class Solvation:
         if not self.model:
             return ""
         solv = self._resolved()
+        self._check_model(solv)
         if not solv or not any(ch.isspace() for ch in solv):
             return ""
         if self.model.upper() == "SMD":
@@ -325,6 +379,17 @@ class StepConfig:
         for f in dataclass_fields(cfg.solvation):
             if isinstance(f.default, str) and not isinstance(getattr(cfg.solvation, f.name), str):
                 setattr(cfg.solvation, f.name, f.default)
+        # Booleans are untrusted too, and they are read for TRUTHINESS — so a
+        # JSON string, which is what a phone/API payload or an older
+        # session.json can carry, turned every flag ON: "false" and "0" are both
+        # truthy strings, and the %tddft block and build_crest_argv simply
+        # believed them (`triplets true` for tddft_triplets="false", `--nci` for
+        # crest_nci="0"). It round-trips through the session file, so the wrong
+        # setting is permanent. Coerce here, at the boundary, reading the
+        # strings people actually write.
+        for f in dataclass_fields(cfg):
+            if isinstance(f.default, bool):
+                setattr(cfg, f.name, _as_bool(getattr(cfg, f.name), f.default))
         # Coerce/clamp untrusted numeric fields. A phone-API payload reaches here
         # via calc_from_dict, and these values are interpolated verbatim into
         # %pal/%maxcore/%geom/%tddft — so a string (line injection) or an absurd
@@ -364,6 +429,25 @@ class StepConfig:
         cfg.crest_mddump_fs = _clamp_int(cfg.crest_mddump_fs, 0, 0, 10_000_000)
         cfg.crest_vbdump_ps = _clamp_float(cfg.crest_vbdump_ps, 0.0, 0.0, 100_000.0)
         return cfg
+
+
+_FALSE_WORDS = {"false", "0", "no", "off", "none", "null", ""}
+
+
+def _as_bool(value, default: bool) -> bool:
+    """Coerce an untrusted value to a bool, reading the words people write.
+
+    A real bool passes through; a string is judged by its content, not its
+    truthiness (which is what made "false" mean True); anything else falls back
+    to the field's default rather than guessing.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in _FALSE_WORDS
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
 
 
 def _clamp_int(v, default: int, lo: int, hi: int) -> int:
@@ -412,15 +496,25 @@ def _auto_aux(cfg: "StepConfig") -> str:
       bases that is the universal def2/J. Other bases are left to the user."""
     opts = (cfg.options or "").upper()
     ri_raw = (cfg.ri_approximation or "").upper()
-    if "/J" in opts or "AUTOAUX" in opts or "/J" in ri_raw or "AUTOAUX" in ri_raw:
+    # "/JK" is an exchange+Coulomb set for RIJK; it is NOT an AuxJ, and ORCA
+    # under RIJCOSX then aborts with "RIJ is chosen with no AuxJ basis set!"
+    # (verified on 6.1.1 with "! HF def2-SVP RIJCOSX def2/JK"). A substring test
+    # for "/J" matched def2/JK, cc-pVTZ/JK and friends — all offered in the
+    # basis picker — and suppressed the aux that was actually needed. Match the
+    # whole token instead, so a real "/J" set still counts as user-supplied.
+    def _has_auxj(text: str) -> bool:
+        return any(tok.endswith("/J") or tok == "AUTOAUX" for tok in text.split())
+
+    if _has_auxj(opts) or _has_auxj(ri_raw):
         # user already supplied an aux — in extra options OR as the RI picker
         # choice itself ("AutoAux" is in data/ri_approximations.json, and it
         # goes on the ! line verbatim; adding another would emit a duplicated
         # keyword, which ORCA aborts on)
         return ""
 
-    if is_composite_method(cfg.functional):
-        # the composite's own basis comes with its own fitting set
+    if is_composite_method(cfg.functional) or method_forbids_ri(cfg.functional):
+        # the composite's own basis comes with its own fitting set; and a method
+        # that cannot use RI has nothing to fit
         return ""
 
     if _needs_auxc(cfg.functional):
@@ -445,7 +539,7 @@ def _keyword_line(cfg: StepConfig) -> str:
         normalize_functional(cfg.functional),
         "" if is_composite_method(cfg.functional) else cfg.basis_set,
         cfg.scf_convergence,
-        cfg.ri_approximation,
+        "" if method_forbids_ri(cfg.functional) else cfg.ri_approximation,
     ]
     if cfg.calculation_type.strip():
         parts.append(cfg.calculation_type)
@@ -509,6 +603,10 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         # P2: the dropped basis is reported, not silently swallowed. The .inp is
         # what the Expert editor and the preview show, so the note lands there.
         lines.append(composite_basis_note(cfg.functional))
+    if method_forbids_ri(cfg.functional) and cfg.ri_approximation.strip():
+        lines.append(f"# {normalize_functional(cfg.functional).strip()} cannot be "
+                     "combined with an RI approximation (ORCA refuses the input), "
+                     "so the RI selection was left off this line.")
     lines.append(f"%maxcore {cfg.maxcore_mb}")
     lines.append(f"%pal nprocs {cfg.nprocs} end")
 
@@ -570,7 +668,11 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         direction = (cfg.irc_direction or "both").strip().lower()
         if direction in ("forward", "backward"):
             lines.append(f"  Direction {direction}")
-        init = (cfg.irc_init_hess or "calc_anfreq").strip()
+        # lowercased like irc_direction just above: "READ" from a phone/API
+        # payload fell through to the else branch and silently ran calc_anfreq
+        # instead — a different, and possibly far more expensive, method than
+        # the one selected, with the named .hess quietly ignored.
+        init = (cfg.irc_init_hess or "calc_anfreq").strip().lower()
         if init == "read":
             hess = cfg.irc_hess_file.strip()
             if not hess:

@@ -303,8 +303,14 @@ lazily (parse-on-miss), never eagerly at startup.
 
 **Removal never touches disk.** The × control stays available in every
 state except RUNNING, but it is strictly a queue-list operation — ORCAdesk
-never deletes a calculation's workspace folder (already true of every code
-path: the app contains no file-deletion code; this makes it binding). For
+never deletes a calculation's workspace folder, and nothing on the removal
+path touches the filesystem at all. (The app is not free of file deletion in
+general: a run clears what the PREVIOUS attempt in that folder left behind —
+the MLIP worker's `vib/` scratch and stale result JSON, CREST's markers and
+ensemble, the WSL scratch directory — and the MLIP installer removes a
+half-built environment of its own before retrying that name. All of those
+delete work this app produced and is about to replace; none of them is
+reachable from ×, and no code path deletes a finished result.) For
 PENDING that is a plain removal (nothing on disk yet); removing a
 DONE/FAILED row deletes only the queue entry — the on-disk results survive,
 the unique name is freed for reuse, and calculations that referenced the
@@ -406,8 +412,10 @@ item-by-item rather than losing the queue; a broken `data/*.json` empties
 only that list. Writes are best-effort (a save failure must never break the
 running app) and the session file is replaced atomically (tmp +
 `os.replace`). Every queue mutation autosaves (`_bump_and_save`). The session
-payload carries a `schema` version for future migrations. (Known gap:
-`Settings.save` is not yet atomic — Appendix A.)
+payload carries a `schema` version for future migrations. `Settings.save`
+uses the same tmp + `os.replace` (A1, since 0.4.3-beta) and now *reports*
+whether the write landed — swallowing the error is right, but telling the
+caller nothing let the UI answer "Saved." to a write that never happened.
 
 ### P33 — Validate at the shared choke point; allowlist settings
 
@@ -415,12 +423,17 @@ Client input is validated where all clients converge — `calc_from_dict` —
 because a guard in the desktop JS is bypassed by the phone/HTTP path. Calc
 names become on-disk folder names, so they are checked for path-dangerous
 characters, `..`, and Windows reserved names (Unicode, e.g. Korean, is
-allowed). A calc name is *also* the `.inp` file name ORCA is invoked with, so
-a space or `&` is refused there too — ORCA splits its own argument on
-whitespace, and the run it then fails is locked (P24). What the backend
-cannot be *made* to accept is refused at the boundary; what it can, is
-accommodated instead (the run folder may contain spaces, because the runner
-names the input relative to it). Settings accept only allowlisted keys (on save and on load) and
+allowed), for control characters and lone surrogates, and for a length
+Windows can actually use — the first two reach `mkdir` (a localized WinError)
+or the session encoder (a `UnicodeEncodeError` that used to poison autosave
+for the life of the app), and neither is typeable in the desktop's own field:
+they arrive through the phone/HTTP path, which is exactly why the check lives
+here. A calc name is *also* the `.inp` file name ORCA is invoked with, so for an
+ORCA-backed kind a space or `&` is refused too — ORCA splits its own argument on whitespace, and
+the run it then fails is locked (P24). What the backend cannot be *made* to
+accept is refused at the boundary; what it can, is accommodated instead (the
+run folder may contain spaces, because the runner names the input relative to
+it). Settings accept only allowlisted keys (on save and on load) and
 allowlisted enum values on the bridge save path; values already on disk are
 trusted at load time. The front-end validates too, but for message quality —
 the shared layer is the security boundary.
@@ -482,7 +495,9 @@ job — so `tests/test_no_lock_reentry.py` walks the AST for it (P56).
 ### P38 — Background threads are named daemons
 
 Long-running helpers run as `daemon=True` threads with identifying names
-(`orcadesk-run`, `orcadesk-server`) so they never block process exit and are
+(`orcadesk-run`, `orcadesk-server`, `orcadesk-job-<calc>`, and the Bridge's
+`orcadesk-mlip-probe` / `-mlip-install` / `-crest-probe` / `-crest-install` /
+`-cube` workers) so they never block process exit and are
 identifiable in diagnostics.
 
 ---

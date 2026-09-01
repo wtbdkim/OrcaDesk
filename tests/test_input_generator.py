@@ -30,7 +30,9 @@ from orcamgr.core.input_generator import (
     build_input_template,
     check_neb_atom_order,
     is_composite_method,
+    method_forbids_ri,
     normalize_functional,
+    smd_supports,
     render_raw_input,
 )
 
@@ -92,6 +94,89 @@ def test_non_composite_functional_still_gets_its_basis_and_aux():
     assert "def2-TZVP" in _keyword_line(text)
     assert DEFAULT_AUX in _keyword_line(text)
     assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+
+
+# ---------------------------------------------------------------------------
+# What ORCA refuses to run — measured, not assumed
+#
+# Every entry in data/solvents.json was run against ORCA 6.1.1 in both models
+# (88 names x 2). Exactly five combinations fail, and all five are here.
+# ---------------------------------------------------------------------------
+
+def test_ethyl_acetate_uses_the_spelling_orca_accepts():
+    # "Ethyl Acetate" is "Solvent name not found" in BOTH models; its sibling
+    # "Methyl Acetate" was mapped and this one was not
+    cfg = StepConfig(kind="sp", solvation=Solvation("CPCM", "Ethyl Acetate"))
+    assert 'solvent "ethyl ethanoate"' in build_input(cfg, WATER_XYZ)
+
+
+@pytest.mark.parametrize("solvent", ["Phenol", "Ammonia", "Liquid Ammonia"])
+def test_smd_refuses_solvents_only_cpcm_has(solvent):
+    # SMD aborts at startup on these ("SMD solvent not found!"), which leaves
+    # the calculation FAILED — and FAILED is locked (P24). Refuse up front.
+    assert smd_supports(solvent) is False
+    with pytest.raises(ValueError) as e:
+        build_input(StepConfig(kind="sp", solvation=Solvation("SMD", solvent)),
+                    WATER_XYZ)
+    assert "SMD" in str(e.value)
+
+
+@pytest.mark.parametrize("solvent", ["Phenol", "Ammonia", "Liquid Ammonia"])
+def test_cpcm_still_accepts_them(solvent):
+    text = build_input(StepConfig(kind="sp", solvation=Solvation("CPCM", solvent)),
+                       WATER_XYZ)
+    assert "CPCM" in text
+
+
+@pytest.mark.parametrize("solvent", ["Water", "Ethanol", "Toluene", "DMSO"])
+def test_ordinary_solvents_work_in_both_models(solvent):
+    for model in ("CPCM", "SMD"):
+        build_input(StepConfig(kind="sp", solvation=Solvation(model, solvent)),
+                    WATER_XYZ)   # must not raise
+
+
+def test_a_jk_aux_does_not_suppress_the_coulomb_aux():
+    """def2/JK fits Coulomb AND exchange for RIJK; it is not an AuxJ. Under
+    RIJCOSX, ORCA aborts with "RIJ is chosen with no AuxJ basis set!" — the
+    substring test for "/J" matched "/JK" and dropped the aux that was needed."""
+    cfg = StepConfig(kind="sp", functional="HF", basis_set="def2-SVP",
+                     ri_approximation="RIJCOSX", options="def2/JK")
+    line = _keyword_line(build_input(cfg, WATER_XYZ))
+
+    assert DEFAULT_AUX in line      # def2/J is still added
+    assert "def2/JK" in line        # ...and what the user typed is untouched
+
+
+def test_a_real_coulomb_aux_still_counts_as_user_supplied():
+    cfg = StepConfig(kind="sp", functional="HF", basis_set="def2-SVP",
+                     ri_approximation="RIJCOSX", options="def2/J")
+    assert _keyword_line(build_input(cfg, WATER_XYZ)).count("def2/J") == 1
+
+
+@pytest.mark.parametrize("functional", ["HF-3c", "Native-GFN2-xTB", "Native-GFN-xTB"])
+def test_methods_that_cannot_use_ri_get_no_ri_keyword(functional):
+    """ORCA 6.1.1 refuses these outright with the picker's default RIJCOSX —
+    "Incompatible choice for integral handling" / "Native xTB not compatible
+    with RI", exit 55 — and runs them fine with no RI keyword at all."""
+    assert method_forbids_ri(functional) is True
+    cfg = StepConfig(kind="sp", functional=functional, ri_approximation="RIJCOSX")
+    text = build_input(cfg, WATER_XYZ)
+    line = _keyword_line(text)
+
+    assert "RIJCOSX" not in line
+    assert DEFAULT_AUX not in line
+    assert any("RI approximation" in ln for ln in text.splitlines()
+               if ln.startswith("#"))
+
+
+@pytest.mark.parametrize("functional", ["r2SCAN-3c", "B97-3c", "PBEh-3c", "wB97X-3c",
+                                        "B3LYP", "wB97X-D4"])
+def test_methods_that_accept_ri_keep_it(functional):
+    # HF-3c is the one composite ORCA refuses RI for; the others take RIJCOSX
+    # and simply use their own settings (same energy to every digit)
+    assert method_forbids_ri(functional) is False
+    cfg = StepConfig(kind="sp", functional=functional, ri_approximation="RIJCOSX")
+    assert "RIJCOSX" in _keyword_line(build_input(cfg, WATER_XYZ))
 
 
 # ---------------------------------------------------------------------------

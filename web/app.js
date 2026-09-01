@@ -129,10 +129,17 @@ window.onInpDropped = async function (path) {
     // a drop starts a NEW calc: never load into an in-progress edit (the
     // same-mode no-op in setBuildMode would otherwise leave the edit active
     // and Update would silently overwrite the edited calc with this file)
-    if (editName !== null) exitEditMode();
+    const wasEditing = editName !== null;
+    if (wasEditing) exitEditMode();
     setBuildMode("expert");
     enterRawWithText(res.text);
     const nameEl = document.getElementById("calc-name");
+    // ...and the name field still holds the EDITED calculation's name, which
+    // editCalc put there — not something the user typed for this new one. The
+    // "don't clobber a typed value" rule (D60) does not apply to it, and
+    // leaving it meant a new calculation carrying an existing queue entry's
+    // name, so every Add was refused as a duplicate until the user noticed.
+    if (nameEl && wasEditing) nameEl.value = "";
     if (nameEl && res.name && !nameEl.value.trim()) nameEl.value = res.name;
     switchTab("build");
     appendLog(`Dropped .inp loaded${res.name ? " (" + res.name + ")" : ""}. Next: calc type, then Add to queue.`, "ok");
@@ -154,7 +161,7 @@ window.onXyzDropped = async function (path) {
     const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_path(path)));
     if (res.cancelled) return;   // deliberate dismissal, never an error
     if (!res.ok) { failNotify("Could not read that .xyz."); return; }
-    directXyz = parseXyzText(res.text);
+    directXyz = parseXyzTextNoticed(res.text, "The dropped .xyz");
     const n = directXyz ? directXyz.split("\n").length : 0;
     const st = document.getElementById("xyz-status");
     if (st) st.textContent = n ? `loaded (${n} atoms)` : "No atoms in file.";
@@ -187,7 +194,7 @@ async function dropXyzIntoBackendCard(path) {
     const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_path(path)));
     if (res.cancelled) return;   // deliberate dismissal, never an error
     if (!res.ok) { failNotify("Could not read that .xyz."); return; }
-    const coords = parseXyzText(res.text);
+    const coords = parseXyzTextNoticed(res.text, "The dropped .xyz");
     const n = coords ? coords.split("\n").length : 0;
     if (isMlip) mlipXyz = coords; else crestXyz = coords;
     const st = document.getElementById(isMlip ? "mlip-xyz-status" : "crest-xyz-status");
@@ -260,6 +267,12 @@ async function pollTick() {
       if (document.getElementById("geom-reference")?.style.display === "block") refreshRefSelect();
       if (document.getElementById("mlip-geom-reference")?.style.display === "block") refreshMlipRefSelect();
       if (document.getElementById("crest-geom-reference")?.style.display === "block") refreshCrestRefSelect();
+      // ...and the edit banner: updateEditUI already handles "the edited entry
+      // vanished", but nothing called it when the entry vanished through the
+      // POLL — a phone remove, or a × in another window. The Build tab went on
+      // saying "Editing: <name>" with the button reading "Update" while a click
+      // would perform an add (D64: a control must say what it does).
+      updateEditUI();
       // Names that left the queue via a non-desktop path (e.g. a phone
       // client's remove) never pass through
       // removeCalc/clearQueue's invalidation — sweep the display caches here so
@@ -482,6 +495,7 @@ async function refreshQueue() {
     if (document.getElementById("geom-reference")?.style.display === "block") refreshRefSelect();
     if (document.getElementById("mlip-geom-reference")?.style.display === "block") refreshMlipRefSelect();
     if (document.getElementById("crest-geom-reference")?.style.display === "block") refreshCrestRefSelect();
+    updateEditUI();   // the edit target may have left the queue (see pollTick)
   } catch (e) { /* ignore */ }
 }
 
@@ -806,6 +820,23 @@ function renderMlipInstallOptions() {
     }
     if (prev && bases.some(b => b.python === prev)) sel.value = prev;
   }
+  // The backend list is a registry (MLIP_BACKENDS) that rides on the options
+  // payload precisely so this dropdown does not have to be a second copy of it
+  // — it was hardcoded in index.html, so adding a backend meant editing two
+  // places and one of them would be forgotten.
+  const bsel = document.getElementById("mlip-new-backend");
+  const backends = (opts && opts.backends) || [];
+  if (bsel && backends.length) {
+    const prevB = bsel.value;
+    bsel.textContent = "";
+    for (const b of backends) {
+      const o = document.createElement("option");
+      o.value = b.key;
+      o.textContent = b.label;
+      bsel.appendChild(o);
+    }
+    if (prevB && backends.some(b => b.key === prevB)) bsel.value = prevB;
+  }
   const usable = bases.some(b => b.supported);
   const device = document.getElementById("mlip-new-device");
   const wantsGpu = !!device && device.value === "cuda";
@@ -859,7 +890,11 @@ function renderMlipInstall(st) {
   }
   if (!running) renderMlipInstallOptions();
   if (detail && st.state === "error" && st.error) {
-    detail.textContent = (st.cancelled ? "Cancelled — " : "Failed — ") + st.error;
+    // the installer's own cancel text is literally "Cancelled.", which the
+    // prefix turned into "Cancelled — Cancelled."
+    detail.textContent = st.cancelled
+      ? "Cancelled. The half-built environment is removed when you retry that name."
+      : "Failed — " + st.error;
     detail.style.color = st.cancelled ? "" : "var(--err)";
   }
 }
@@ -981,6 +1016,12 @@ function renderCrestSettings(st) {
   if (detail) {
     const installErr = (st && st.install_error) || "";
     if (installErr) detail.textContent = "Install failed — " + installErr;
+    // A probe in flight has not found anything YET, which is not the same as
+    // having found nothing: during the cold-start WSL probe the payload carries
+    // state "checking" with an empty distro list, and the card told a machine
+    // that has Ubuntu to go and install Ubuntu — while the pill beside it
+    // correctly read "CREST checking…". Say what is actually happening.
+    else if (st && st.state === "checking") detail.textContent = "Checking WSL for CREST…";
     else if (st && !st.wsl) detail.textContent = "WSL is not available on this machine.";
     else if (!distros.length) detail.textContent = "No usable WSL distribution found. Install one, e.g. `wsl --install -d Ubuntu`.";
     else {
@@ -1058,6 +1099,14 @@ async function saveSettings() {
   if (SCFGraph && SCFGraph.setGeoMode) SCFGraph.setGeoMode(settings.geo_graph_mode);
   if (_logMode === "graph") renderSCFPanel();   // redraw with the new style
   const s = document.getElementById("set-saved");
+  // A write that could not land is still applied in memory for this session,
+  // so the settings on screen are real — but saying "Saved." would be a lie
+  // and the values are gone at the next launch. Say which one happened.
+  if (settings.save_error) {
+    s.textContent = "";
+    failNotify(settings.save_error);
+    return;
+  }
   s.textContent = "Saved."; setTimeout(() => s.textContent = "", 2000);
 }
 async function pickOrca() { const p = await bridge.pick_orca_executable(); if (p) document.getElementById("set-orca").value = p; }
@@ -1162,12 +1211,27 @@ function refreshCrestRefSelect() { refreshRefSelectFor("crest-"); }
 // Parse a raw .xyz file's text into a normalized "El x y z" coordinate block.
 // The load_* slots return a LoadResult JSON envelope; callers feed this the
 // envelope's .text field (the file body itself is plain text, not JSON).
+/** Coordinate block of the FIRST structure in .xyz text.
+ *
+ *  A .xyz file may hold many frames back to back — a CREST ensemble
+ *  (crest_conformers.xyz), an optimization trajectory — and taking every
+ *  coordinate-looking line built one molecule out of all of them: "loaded
+ *  (6 atoms)" for a two-frame water file, and a calculation queued on a
+ *  nonsense super-molecule. When the header gives an atom count, that count is
+ *  the frame boundary; without one (a bare coordinate block, which the Build
+ *  tab also accepts) every line is one structure.
+ *  @param {string} content */
 function parseXyzText(content) {
   const lines = (content || "").split(/\r?\n/);
   let start = 0;
-  if (lines.length >= 2 && /^\s*\d+\s*$/.test(lines[0])) start = 2;  // skip count+comment
+  let want = -1;
+  if (lines.length >= 2 && /^\s*\d+\s*$/.test(lines[0])) {
+    want = parseInt(lines[0].trim(), 10);   // atoms in the first frame
+    start = 2;                              // skip count + comment
+  }
   const coords = [];
   for (let i = start; i < lines.length; i++) {
+    if (want >= 0 && coords.length >= want) break;   // the next frame starts here
     const p = lines[i].trim().split(/\s+/);
     if (p.length < 4) continue;
     const [e, x, y, z] = p;
@@ -1175,6 +1239,38 @@ function parseXyzText(content) {
     coords.push(`${e} ${x} ${y} ${z}`);
   }
   return coords.join("\n");
+}
+
+/** parseXyzText, plus a note when the file held more than one structure.
+ *
+ *  Taking the first frame is the right answer — the Build tab runs one
+ *  structure — but doing it silently would leave the user to wonder which of
+ *  their 40 conformers is queued (P2: reported, never quietly corrected).
+ *  @param {string} content @param {string} [what] */
+function parseXyzTextNoticed(content, what) {
+  const n = countXyzFrames(content);
+  if (n > 1) {
+    toast(`${what || "That .xyz"} holds ${n} structures — loaded the first.`);
+    appendLog(`.xyz contained ${n} structures; the first was loaded.`, "info");
+  }
+  return parseXyzText(content);
+}
+
+/** How many structures the .xyz text holds (1 when it is a plain one).
+ *  Counting is only possible with the atom-count headers, so a header-less
+ *  block is one frame by definition.
+ *  @param {string} content */
+function countXyzFrames(content) {
+  const lines = (content || "").split(/\r?\n/);
+  let i = 0, frames = 0;
+  while (i < lines.length) {
+    if (!/^\s*\d+\s*$/.test(lines[i])) { i++; continue; }
+    const n = parseInt(lines[i].trim(), 10);
+    if (!(n > 0)) { i++; continue; }
+    frames++;
+    i += 2 + n;                              // count + comment + n atoms
+  }
+  return Math.max(1, frames);
 }
 
 // In raw mode the text runs verbatim: without a {{GEOMETRY}} placeholder a
@@ -1194,7 +1290,7 @@ async function loadXyz() {
   if (rawBlocksXyzLoad()) return;
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;   // deliberate dismissal, never an error
-  if (!res.ok) { failNotify("Could not read that .xyz."); return; }  directXyz = parseXyzText(res.text);
+  if (!res.ok) { failNotify("Could not read that .xyz."); return; }  directXyz = parseXyzTextNoticed(res.text);
   const n = directXyz ? directXyz.split("\n").length : 0;
   const st = document.getElementById("xyz-status");
   st.textContent = n ? `loaded (${n} atoms)` : "No atoms in file.";
@@ -1248,6 +1344,15 @@ function fillBasisRows(list) {
 // must not shadow the NEW kind's default (switching to NEB-TS must regain its
 // FREQ option; opt→freq must still bump TightSCF→VeryTightSCF), while an
 // explicit user override always survives.
+// Whether the user has actually SET these two fields, as opposed to looking at
+// the kind's default. Inferring it by comparing the value to the old kind's
+// default is wrong after two hops: opt (user picks VeryTightSCF) -> freq, whose
+// default happens to be VeryTightSCF -> opt, where the value now looks like an
+// untouched default and was silently reset to TightSCF. An override is a fact
+// about what the user did, so it is recorded when they do it.
+let _scfTouched = false;
+let _optionsTouched = false;
+
 function collectPreserve(newKind) {
   const val = (id) => { const e = document.getElementById(id); return e ? e.value : null; };
   const oldDef = KIND_DEFS[_configKind] || null;
@@ -1267,10 +1372,14 @@ function collectPreserve(newKind) {
     scf: /** @type {string|null} */ (null),
   };
   const opts = val("cfg-options");
-  if (opts != null && (!oldDef || opts !== oldDef.options)) p.options = opts;
+  if (opts != null && (_optionsTouched || !oldDef || opts !== oldDef.options))
+    p.options = opts;
   const scf = val("cfg-scf");
-  if (scf && oldDef && newDef
-      && (scf !== oldDef.scfDefault || oldDef.scfDefault === newDef.scfDefault)) p.scf = scf;
+  if (scf && (_scfTouched
+              || (oldDef && newDef
+                  && (scf !== oldDef.scfDefault
+                      || oldDef.scfDefault === newDef.scfDefault))))
+    p.scf = scf;
   return p;
 }
 
@@ -1281,6 +1390,13 @@ function onKindChange() {
 }
 
 function renderConfigForm(kind, preserve) {
+  // A kind string this build does not know can reach the shared queue through
+  // POST /api/queue or a session.json written by another version — the store
+  // takes kind verbatim. Dereferencing an undefined KIND_DEFS entry threw right
+  // after editCalc had already set editName, so edit mode stayed armed while
+  // the button still read "Add to queue" — and the next add REPLACED that
+  // calculation instead of adding one.
+  if (!KIND_DEFS[kind]) throw new Error(`Unknown calculation type "${kind}".`);
   const def = KIND_DEFS[kind];
   _configKind = kind;   // which kind the form's rows currently reflect
   const host = document.getElementById("calc-config");
@@ -1372,6 +1488,7 @@ function renderConfigForm(kind, preserve) {
           <input type="text" class="mono combo-input" autocomplete="off" placeholder="searchable — or your own value">
           <div class="combo-list" style="display:none"></div>
         </div>
+        <div class="hint" id="cfg-solvent-warn" style="display:none;color:var(--warn)"></div>
       </div>
     </div>
     <div class="field-row">
@@ -1389,6 +1506,14 @@ function renderConfigForm(kind, preserve) {
   setupCombo("combo-functional", choicesCache.functionals, (preserve && preserve.functional) || "wB97X-D4");
   setupCombo("combo-basis", choicesCache.basis_sets, (preserve && preserve.basis_set) || "def2-TZVP");
   fillSelect(document.getElementById("cfg-scf"), flatItems(choicesCache.scf_convergences), (preserve && preserve.scf) || def.scfDefault);
+  // A preserved value carries the override forward; a value that came from the
+  // kind's default does not.
+  _scfTouched = !!(preserve && preserve.scf);
+  _optionsTouched = !!(preserve && preserve.options);
+  const _scfEl = document.getElementById("cfg-scf");
+  if (_scfEl) _scfEl.addEventListener("change", () => { _scfTouched = true; });
+  const _optEl = document.getElementById("cfg-options");
+  if (_optEl) _optEl.addEventListener("input", () => { _optionsTouched = true; });
   fillSelect(document.getElementById("cfg-ri"), flatItems(choicesCache.ri_approximations), (preserve && preserve.ri) || "RIJCOSX");
   if (def.allTypes) {
     fillSelect(document.getElementById("cfg-calc"), flatItems(choicesCache.calculation_types), "SP");
@@ -1396,6 +1521,12 @@ function renderConfigForm(kind, preserve) {
     fillSelect(document.getElementById("cfg-calc"), flatItems(choicesCache.calculation_types, def.calcGroup), def.calcDefault);
   }
   setupCombo("combo-solvent", choicesCache.solvents, (preserve && preserve.solvent) || "Water");
+  // the form is rebuilt on every kind switch, so these never stack up
+  const solvInput = document.querySelector("#combo-solvent .combo-input");
+  if (solvInput) {
+    solvInput.addEventListener("change", updateSolventWarning);
+    solvInput.addEventListener("input", updateSolventWarning);
+  }
   // restore the preserved kind-independent fields (see collectPreserve)
   if (preserve) {
     const sm = document.getElementById("cfg-solvmodel"); if (sm && preserve.solvmodel != null) sm.value = preserve.solvmodel;
@@ -1415,6 +1546,27 @@ function onSolvChange() {
   const model = document.getElementById("cfg-solvmodel").value;
   const field = document.getElementById("cfg-solvent-field");
   if (field) field.style.display = model ? "block" : "none";
+  updateSolventWarning();
+}
+
+// ORCA's SMD solvent library is not its CPCM library. Scanned against ORCA
+// 6.1.1, these are the only picker entries that work under CPCM and make SMD
+// abort at startup — which leaves the calculation FAILED, and FAILED is locked.
+// input_generator refuses them at the trust boundary; this is the same verdict
+// shown while the form is still being filled in (matched post-alias, so
+// "Liquid Ammonia" is covered by "ammonia").
+const SMD_UNSUPPORTED = ["phenol", "ammonia", "liquid ammonia"];
+
+function updateSolventWarning() {
+  const warn = document.getElementById("cfg-solvent-warn");
+  const model = document.getElementById("cfg-solvmodel");
+  if (!warn || !model) return;
+  const typed = comboValue("combo-solvent").trim();
+  const bad = model.value === "SMD" && SMD_UNSUPPORTED.indexOf(typed.toLowerCase()) >= 0;
+  warn.textContent = bad
+    ? `ORCA's SMD library has no "${typed}" — it works with CPCM, but SMD will refuse to start.`
+    : "";
+  warn.style.display = bad ? "block" : "none";
 }
 
 // ---- IRC / NEB-TS form helpers ----
@@ -1429,7 +1581,7 @@ function onIrcHessChange() {
 async function loadNebProduct() {
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;   // deliberate dismissal, never an error
-  if (!res.ok) { failNotify("Could not read that .xyz."); return; }  const xyz = parseXyzText(res.text);
+  if (!res.ok) { failNotify("Could not read that .xyz."); return; }  const xyz = parseXyzTextNoticed(res.text, "The product .xyz");
   if (!xyz) { appendLog("No atoms in the product .xyz.", "warn"); return; }
   _nebProductXyz = xyz;
   setNebProductStatus();
@@ -1460,13 +1612,22 @@ function setNebProductStatus() {
 
 /** Read the method form into the config payload sent to Python.
  * @param {string} kind @returns {Partial<StepConfigPayload>} */
+/** A numeric field's value, falling back to `d` only when it is blank or not a
+ *  number. NOT `parseFloat(...) || d`: an explicit 0 (0 K thermochemistry, 0
+ *  atm) is falsy and would silently become the default. Shared, because the
+ *  MLIP card writes the same StepConfig fields from the same inputs.
+ *  @param {string} id @param {number} d */
+function fnum(id, d) {
+  const e = document.getElementById(id);
+  if (!e) return d;
+  const x = parseFloat(/** @type {HTMLInputElement} */ (e).value);
+  return Number.isFinite(x) ? x : d;
+}
+
 function collectConfig(kind) {
   const def = KIND_DEFS[kind];
   const v = (id) => { const e = document.getElementById(id); return e ? e.value : ""; };
   const num = (id, d) => { const e = document.getElementById(id); return e ? (parseInt(e.value,10) || d) : d; };
-  // NOT `parseFloat(...) || d`: an explicit 0 (e.g. 0 K thermochemistry) is
-  // falsy and would silently become the default — only blank/garbage falls back
-  const fnum = (id, d) => { const e = document.getElementById(id); if (!e) return d; const x = parseFloat(e.value); return Number.isFinite(x) ? x : d; };
   const chk = (id) => { const e = document.getElementById(id); return e ? e.checked : false; };
   // calc type: use the selector if present (form-group or general), else the
   // kind's fixed default (e.g. nmr -> "NMR", tddft -> "")
@@ -1619,12 +1780,26 @@ async function submitCalc(calc, opts) {
     ? editName : null;
 
   if (oldName) {
+    // A rename is a new folder, so the same overwrite question applies as to a
+    // plain add: the renamed row is picked by the live walk and would clobber
+    // whatever is already under the new name. (Renaming to itself is not an
+    // overwrite — that folder is this calculation's own.)
+    if (calc.name !== oldName && !await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.update_calc(oldName, JSON.stringify(calc))));
     if (!res.ok) { appendLog("Could not update: " + res.error, "err"); toast(res.error); await refreshQueue(); return; }
     if (oldName !== calc.name) delete localCalcs[oldName];
     localCalcs[calc.name] = calc;
     appendLog(`"${calc.name}" updated.`, "ok");
-    exitEditMode();
+    // exitEditMode() clears rawText, which must survive an MLIP/CREST
+    // excursion — the same reason those cards do not pass exitEditOnAdd. An
+    // Update from one of them was clearing the Expert editor the user had
+    // typed an .inp into.
+    if (buildMode === "mlip" || buildMode === "crest") {
+      editName = null;
+      updateEditUI();
+    } else {
+      exitEditMode();
+    }
   } else {
     if (!await confirmMidRunOverwrite(calc.name)) return;
     const res = /** @type {MutationResult} */ (JSON.parse(await bridge.add_calc(JSON.stringify(calc))));
@@ -1637,6 +1812,13 @@ async function submitCalc(calc, opts) {
     localCalcs[calc.name] = calc;
     appendLog(opts.addedLog, "ok");
     if (opts.exitEditOnAdd) exitEditMode();
+    // The MLIP/CREST cards do NOT call exitEditMode here (it clears rawText,
+    // which must survive their excursion), so the edit target has to be
+    // dropped on its own — this branch runs when the target had vanished and
+    // the update degraded to an add. Leaving editName set meant a later
+    // calculation of that name, added from anywhere, became the target of the
+    // next Add: silently replaced and renamed.
+    else if (editName !== null) { editName = null; updateEditUI(); }
   }
   if (opts.reset) opts.reset();
   await refreshQueue();
@@ -1648,16 +1830,19 @@ async function submitCalc(calc, opts) {
  *  Windows refuses, and unique in the queue (the calc being edited excluded —
  *  renaming it to itself is not a clash).
  *  @param {string} inputId @returns {string} */
-function readCalcName(inputId) {
+function readCalcName(inputId, kind) {
   const name = document.getElementById(inputId).value.trim();
   if (!name) throw new Error("Name is required.");
   if (/[\\/:*?"<>|]/.test(name))
     throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
-  // The name is also the .inp file name, and ORCA splits its own argument on
-  // whitespace before passing it to orca_startup: a space or an "&" makes every
-  // run of this calculation die in Startup, and a failed calc is locked (P24).
-  // Refused at the store too — this is the early, Add-time feedback.
-  if (/[\s&]/.test(name))
+  // The name is also the .inp file name ORCA is invoked with, and ORCA splits
+  // its own argument on whitespace: a space or an "&" makes every run of this
+  // calculation die in Startup, and a failed calc is locked (P24). ORCA-backed
+  // kinds only — the MLIP and CREST pipelines pass the name as an argv element
+  // / a shell-quoted variable, where a space is fine. Refused at the store too
+  // (with the same kind scope); this is the early, Add-time feedback.
+  const _orcaKind = !/^(mlip|crest)/.test(kind || "");
+  if (_orcaKind && /[\s&]/.test(name))
     throw new Error(`Name must not contain spaces or "&" — ORCA cannot open an input file whose name has either.`);
   if (queue.some((c) => c.name === name && c.name !== editName))
     throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
@@ -1715,7 +1900,7 @@ function renderMlipForm() {
 async function loadMlipXyz() {
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;   // deliberate dismissal, never an error
-  if (!res.ok) { failNotify("Could not read that .xyz."); return; }  mlipXyz = parseXyzText(res.text);
+  if (!res.ok) { failNotify("Could not read that .xyz."); return; }  mlipXyz = parseXyzTextNoticed(res.text);
   const n = mlipXyz ? mlipXyz.split("\n").length : 0;
   document.getElementById("mlip-xyz-status").textContent =
     n ? `loaded (${n} atoms)` : "No atoms in file.";
@@ -1781,7 +1966,7 @@ function onMlipDeviceChange() {
 async function addMlipCalcToQueue() {
   try {
     if (!_mlipReady) throw new Error("Ready MACE environment required (see Settings).");
-    const name = readCalcName("mlip-name");
+    const name = readCalcName("mlip-name", "mlip");
     const model = document.getElementById("mlip-model").value;
     const { src, xyz, ref_name } = collectGeomSource("mlip-", name, mlipXyz);
     const charge = parseInt(document.getElementById("mlip-charge").value, 10) || 0;
@@ -1795,8 +1980,8 @@ async function addMlipCalcToQueue() {
                      // job against the core budget (core/resources.py)
                      nprocs: Math.max(1, parseInt(document.getElementById("mlip-threads").value, 10) || 1) };
     if (task === "freq" || task === "opt_freq") {
-      config.freq_temp_k = parseFloat(document.getElementById("mlip-temp").value) || 298.15;
-      config.freq_pressure_atm = parseFloat(document.getElementById("mlip-pressure").value) || 1.0;
+      config.freq_temp_k = fnum("mlip-temp", 298.15);
+      config.freq_pressure_atm = fnum("mlip-pressure", 1.0);
     }
     const calc = /** @type {CalcInput} */ ({
       name, kind,
@@ -1823,7 +2008,7 @@ let crestXyz = "";              // last loaded .xyz coordinate block for the CRE
 async function loadCrestXyz() {
   const res = /** @type {LoadResult} */ (JSON.parse(await bridge.load_xyz_file()));
   if (res.cancelled) return;
-  if (!res.ok) { failNotify("Could not read that .xyz."); return; }  crestXyz = parseXyzText(res.text);
+  if (!res.ok) { failNotify("Could not read that .xyz."); return; }  crestXyz = parseXyzTextNoticed(res.text);
   const n = crestXyz ? crestXyz.split("\n").length : 0;
   document.getElementById("crest-xyz-status").textContent =
     n ? `loaded (${n} atoms)` : "No atoms in file.";
@@ -1863,7 +2048,7 @@ function resetCrestForm() {
 async function addCrestCalcToQueue() {
   try {
     if (!_crestReady) throw new Error("CREST in a WSL distribution required (see Settings → CREST).");
-    const name = readCalcName("crest-name");
+    const name = readCalcName("crest-name", "crest");
     const { src, xyz, ref_name } = collectGeomSource("crest-", name, crestXyz);
     const charge = parseInt(document.getElementById("crest-charge").value, 10) || 0;
     const mult = Math.max(1, parseInt(document.getElementById("crest-mult").value, 10) || 1);
@@ -1958,7 +2143,15 @@ function fillMlipForm(c) {
   // clears a "cuda" value the current machine has no GPU for (Auto still falls
   // back to CPU safely), so a device the worker couldn't load never sticks.
   refreshMlipDeviceOptions();
-  document.getElementById("mlip-device").value = cfg.mlip_device || "";
+  // ...and the assignment must respect that: Chromium happily selects a
+  // DISABLED option programmatically, so a calc stored with mlip_device "cuda"
+  // (a restored session, a phone add, a machine that lost its GPU) reopened
+  // with the greyed-out GPU option selected and Update saved "cuda" again —
+  // the dispatcher then charged the single GPU lane and the worker died at
+  // torch's device load. Fall back to Auto, which resolves in the worker.
+  const _dev = cfg.mlip_device || "";
+  document.getElementById("mlip-device").value =
+    (_dev === "cuda" && !_mlipCuda) ? "" : _dev;
   onMlipDeviceChange();   // the note above was computed from the OLD value
   document.getElementById("mlip-threads").value =
     String(cfg.nprocs || (settings && settings.default_nprocs) || 6);
@@ -2034,6 +2227,16 @@ async function editCalc(i) {
   // them there (mirrors this function's load-full-calc + set-editName dance).
   const kind = mirror.kind || "";
   if (kind.startsWith("mlip") || kind.startsWith("crest")) { await editBackendCalc(mirror, i); return; }
+  // Checked here, before anything is armed: the form for an unknown kind
+  // throws, and by then editName was already set — edit mode stayed on while
+  // the button still read "Add to queue", so the next add REPLACED this
+  // calculation. A kind this build does not know can arrive from the phone API
+  // or a session.json written by another version.
+  if (!KIND_DEFS[kind]) {
+    failNotify(`"${mirror.name}" has a calculation type this version does not `
+               + `know ("${kind}") — it cannot be edited here.`);
+    return;
+  }
   // raw calcs edit in the Expert editor, form calcs in the Beginner form —
   // align the mode (this also leaves MLIP/CREST mode if we're in it, and drops
   // any previous in-progress edit; editName is set below, after the switch)
@@ -2098,6 +2301,14 @@ async function editCalc(i) {
  * @param {Partial<StepConfigPayload>} cfg */
 function fillConfigForm(cfg) {
   if (!cfg) return;
+  // What a stored calc carries IS the user's setup — but only where it differs
+  // from the kind's default; matching the default must still follow the kind
+  // across a later type change.
+  const _def = KIND_DEFS[_configKind];
+  if (_def) {
+    if (cfg.scf_convergence != null) _scfTouched = cfg.scf_convergence !== _def.scfDefault;
+    if (cfg.options != null) _optionsTouched = cfg.options !== _def.options;
+  }
   const set = (id, val) => { const e = document.getElementById(id); if (e != null && val != null) e.value = val; };
   const setCombo = (cid, val) => { if (_combos[cid] && val != null) _combos[cid].set(val); };
   setCombo("combo-functional", cfg.functional);
@@ -2604,7 +2815,14 @@ async function reorderCalc(from, to) {
     return;
   }
   try {
-    await bridge.reorder_calc(from, to);
+    // The store returns its refusals as data, never as an exception (the catch
+    // below only covers a broken channel), so throwing the envelope away made
+    // every refusal silent: the row sprang back with no explanation. The JS
+    // pre-check above cannot stand in for it — `queue` is a 1-second poll
+    // mirror, so a drag issued just after a calculation started is judged
+    // against a stale state.
+    const res = /** @type {MutationResult} */ (JSON.parse(await bridge.reorder_calc(from, to)));
+    if (!res.ok) failNotify(res.error || "Could not reorder.");
     await refreshQueue();
   } catch (e) { failNotify("Reorder failed."); }
 }
@@ -2630,8 +2848,14 @@ async function removeCalc(i) {
   await refreshQueue();
 }
 async function clearQueue() {
-  if (isRunning()) return;
-  if (!queue.length) return;
+  // Silence is not a refusal the user can act on: the button looked live, the
+  // modal never appeared, and nothing said why (D65 / B23 — a failed operation
+  // goes through failNotify, on both channels).
+  if (isRunning()) {
+    failNotify("Cannot clear the queue while a run is in progress. Stop the run first.");
+    return;
+  }
+  if (!queue.length) { toast("The queue is already empty."); return; }
   if (!await confirmModal({ title: "Clear the whole queue?",
       body: `Remove all <b>${queue.length}</b> ${queue.length === 1 ? "calculation" : "calculations"} from the queue? This can't be undone.`,
       confirm: "Clear all", danger: true })) return;
@@ -2756,16 +2980,27 @@ async function cancelQueue() {
   if (!_running) return;
   // Cancel kills the running ORCA job and skips the rest — irreversible, so confirm.
   if (!await confirmModal({ title: "Stop the running job?",
-      body: "This <b>kills the running ORCA process</b> and cancels the remaining queue. " +
-            "Progress on the current job is lost. (To finish the current job first, use " +
-            "<b>Stop after current</b> instead.)",
+      // What the engine actually does (_should_stop): it kills the in-flight
+      // job and stops the walk, leaving every remaining row PENDING — stopping
+      // a run does not discard the queued plan. The old copy promised the
+      // opposite ("cancels the remaining queue"), which is the one thing a user
+      // would want to know before clicking.
+      body: "This <b>kills the running ORCA process</b> and stops the run. " +
+            "Progress on the current job is lost; the calculations still queued " +
+            "stay pending and will run again next time you press Run. " +
+            "(To finish the current job first, use <b>Stop after current</b> instead.)",
       confirm: "Stop run", cancel: "Keep running", danger: true })) return;
   await bridge.cancel_queue();
 }
 async function stopAfterCurrent() {
-  _stopRequested = true;                  // one-shot for this run
-  setRunUI(_running);
   const res = /** @type {OkResult} */ (JSON.parse(await bridge.stop_after_current()));
+  // Set only if a run actually took the request. Setting it unconditionally
+  // left the flag on after a click with nothing running, and it is cleared only
+  // on the desktop Run path — so the NEXT run seen through the poll (a phone
+  // /api/run, a startup resume) came up with "Stop after current" disabled for
+  // its whole life, offering only the destructive Cancel.
+  _stopRequested = !!res.ok;
+  setRunUI(_running);
   appendLog(res.ok ? "Stop scheduled after the current job finishes."
                     : "Nothing running.", "info");
 }

@@ -20,6 +20,10 @@ function setupCombo(containerId, groups, def) {
     for (const it of items) entries.push({ value: it, group: label });
   }
   let activeIdx = -1;    // highlighted row index (into the currently rendered list)
+  // whether activeIdx came from an arrow key (the user's pick) rather than the
+  // auto-highlight that every keystroke applies — Enter honours the first, and
+  // an exact match for the typed text beats the second
+  let userMoved = false;
   let rendered = [];     // current filtered entries (flat, excluding headers)
 
   function render(filter) {
@@ -85,22 +89,33 @@ function setupCombo(containerId, groups, def) {
     render(input.value);
     list.style.display = "block";
     // auto-highlight the first match so Enter picks it right away
+    userMoved = false;
     if (rendered.length) setActive(0);
   });
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "ArrowDown") {
       ev.preventDefault();
       if (!isOpen()) { open(); if (rendered.length) setActive(0); return; }
+      userMoved = true;
       setActive(Math.min(activeIdx + 1, rendered.length - 1));
     } else if (ev.key === "ArrowUp") {
       ev.preventDefault();
       if (!isOpen()) return;
+      userMoved = true;
       setActive(Math.max(activeIdx - 1, 0));
     } else if (ev.key === "Enter") {
-      // pick the highlighted row, or the first match if none highlighted
+      // Pick the highlighted row — but never OVER an exact match for what was
+      // typed. The filter is a substring match in list order, so an entry that
+      // merely contains the text can precede the one that is the text: with
+      // [PBE0, PBE], typing "PBE" highlighted row 0 and Enter committed PBE0,
+      // silently running a different functional than the one written. An
+      // explicit arrow-key choice still wins; only the auto-highlight defers.
       if (isOpen() && rendered.length) {
         ev.preventDefault();
-        const pick = activeIdx >= 0 ? activeIdx : 0;
+        const typed = input.value.trim().toLowerCase();
+        const exact = rendered.findIndex((r) => r.value.toLowerCase() === typed);
+        const pick = (exact >= 0 && (activeIdx < 0 || !userMoved)) ? exact
+                   : (activeIdx >= 0 ? activeIdx : 0);
         choose(rendered[pick].value);
       }
     } else if (ev.key === "Escape") {

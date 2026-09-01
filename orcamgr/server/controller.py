@@ -3,8 +3,10 @@ ServerController — lets the desktop app start/stop the FastAPI server in a
 background thread, sharing the SAME QueueStore the GUI uses (so the phone and
 the desktop see one queue).
 
-Stage 3: LAN only (binds 0.0.0.0 so other devices on the same Wi-Fi can reach
-it). The Cloudflare tunnel + QR + token auth come in later stages.
+LAN only: it binds 0.0.0.0 so other devices on the same Wi-Fi can reach it,
+and access is gated by the per-launch PIN (P35 — the loopback exemption applies
+only when the bind really is loopback). A QR code for the URL is available from
+the desktop; an outbound tunnel is not built.
 
 uvicorn is driven via its programmatic Server API so we can stop it cleanly.
 Requires fastapi + uvicorn (see requirements-server.txt). If they're missing,

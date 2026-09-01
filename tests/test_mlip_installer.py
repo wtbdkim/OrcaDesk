@@ -183,16 +183,26 @@ def test_a_short_path_is_accepted(monkeypatch):
 
 def test_an_overlong_path_is_refused_and_says_how_much_to_cut(monkeypatch):
     monkeypatch.setattr(installer_mod, "long_paths_enabled", lambda: False)
-    room = MAX_PATH - 1 - DEEPEST_PACKAGE_PATH
-    err = path_budget_error("x" * (room + 5))
+    err = path_budget_error("x" * (installer_mod.path_budget() + 5))
     assert err and "5 character(s)" in err
 
 
 def test_the_boundary_is_exactly_the_measured_budget(monkeypatch):
+    # asserted against the module's own budget, not a second copy of the
+    # arithmetic — the copy is what let an off-by-one live in the real one
     monkeypatch.setattr(installer_mod, "long_paths_enabled", lambda: False)
-    room = MAX_PATH - 1 - DEEPEST_PACKAGE_PATH
+    room = installer_mod.path_budget()
     assert path_budget_error("x" * room) == ""
     assert path_budget_error("x" * (room + 1)) != ""
+
+
+def test_the_budget_leaves_room_for_the_separator_and_the_248_directory_cap():
+    # A path is env_dir + SEPARATOR + the deepest package path, and it must fit
+    # under BOTH limits: MAX_PATH (260, counting the NUL) for the file and 248
+    # for creating the directories it sits in.
+    room = installer_mod.path_budget()
+    assert room + 1 + DEEPEST_PACKAGE_PATH < MAX_PATH
+    assert room + 1 + DEEPEST_PACKAGE_PATH <= installer_mod._MAX_DIR_PATH
 
 
 def test_the_gate_lifts_when_windows_long_paths_are_enabled(monkeypatch):

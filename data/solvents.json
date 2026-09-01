@@ -1,6 +1,7 @@
 {
   "_source": "ORCA 6.1.1 Manual section 2.13 (Implicit Solvation), Table 2.56 (SMD library, 179 solvents)",
-  "_note": "Every name here exists in ORCA 6.1.1's solvent table (verified against the binary's embedded list). Labels ORCA spells differently are mapped by input_generator._SOLVENT_ALIASES; names containing spaces are routed through the %cpcm block (solvent/smdsolvent) because the simple-input keyword cannot carry them. Names are case-insensitive in ORCA.",
+  "_note": "Every name here exists in ORCA 6.1.1's solvent table (verified by running all 88 names in both models against the binary, 176 runs). Labels ORCA spells differently are mapped by input_generator._SOLVENT_ALIASES; names containing spaces are routed through the %cpcm block (solvent/smdsolvent) because the simple-input keyword cannot carry them. Names are case-insensitive in ORCA.",
+  "_smd_exceptions": "SMD's library is NOT CPCM's. Phenol, Ammonia and Liquid Ammonia are CPCM-only: SMD aborts at startup with 'SMD solvent not found!'. input_generator._SMD_UNSUPPORTED refuses them and the Build tab warns; they stay listed because they are valid CPCM choices.",
   "_full_smd_list_size": 179,
   "_full_smd_list_reference": "ORCA 6.1.1 Manual Table 2.56 — https://orca-manual.mpi-muelheim.mpg.de/contents/essentialelements/solvationmodels.html",
 

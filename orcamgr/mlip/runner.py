@@ -32,6 +32,7 @@ from typing import Callable, Optional
 from ..core.procutil import no_window_flags
 from ..core.runner import OrcaRunError, OrcaCancelled, OrcaDetached
 from ..core.xyzutil import as_xyz_file
+from ..textio import decode_process_output
 
 
 LogCallback = Callable[[str], None]
@@ -360,10 +361,15 @@ class MlipRunner:
         # — clearing would erase exactly that signal.
         cmd = [str(py), str(script_path), *[str(a) for a in (args or [])]]
         try:
+            # Binary pipe, decoded per line (see orcamgr/textio): the worker is
+            # a CPython child in the USER's environment, and on Windows it
+            # encodes stdout with the locale ANSI code page. Its traceback is
+            # the whole diagnosis when a run fails, and it is written to the
+            # calculation's .out as well as the live log — so mis-decoding it
+            # persisted the corruption.
             proc = subprocess.Popen(
                 cmd, cwd=str(cwd) if cwd else None,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", bufsize=1,
                 creationflags=no_window_flags(),
             )
         except OSError as e:
@@ -387,12 +393,13 @@ class MlipRunner:
                     self._terminate(proc)
                     return
 
-        watcher = threading.Thread(target=_watch, daemon=True)
+        watcher = threading.Thread(target=_watch, daemon=True,
+                                   name="orcadesk-mlip-watch")
         watcher.start()
         try:
             with open(output_path, "w", encoding="utf-8", errors="replace") as outf:
-                for line in (proc.stdout or ()):
-                    line = line.rstrip("\r\n")
+                for raw_line in (proc.stdout or ()):
+                    line = decode_process_output(raw_line).rstrip("\r\n")
                     outf.write(line + "\n")
                     outf.flush()
                     if on_line is not None:

@@ -89,4 +89,12 @@ def run_bash(distro: str, bash_cmd: str, timeout: float = 20.0,
         return 127, "", "wsl-not-found"
     except subprocess.TimeoutExpired:
         return 124, "", "timeout"
+    except (subprocess.SubprocessError, OSError) as e:
+        # Same envelope as wsl_available/list_distros in this module. Anything
+        # else escaping here lands in CrestRunner._liveness, whose entire
+        # purpose is that "a single transient wsl.exe failure must not abandon a
+        # healthy run" — an exception walks straight past that guard, out of
+        # monitor(), and FAILS (and therefore locks, P24) a CREST job that is
+        # still running happily in WSL. Errors are data here (P6).
+        return 125, "", f"wsl-error: {e}"
     return p.returncode, (p.stdout or ""), (p.stderr or "")

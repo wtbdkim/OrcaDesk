@@ -225,6 +225,7 @@
  * @property {"beginner"|"expert"|"mlip"|"crest"} build_mode
  * @property {string} crest_distro     preferred WSL distro for CREST ("" = auto-detect)
  * @property {boolean} orca_valid
+ * @property {string} save_error  why the settings on screen are not on disk ("" = they are)
  */
 
 /**
@@ -276,7 +277,8 @@
  * @property {boolean} gpu        an NVIDIA GPU is visible to the driver
  * @property {string} gpu_name    e.g. "NVIDIA GeForce RTX 5080", or ""
  * @property {string} cuda_index  torch wheel index its architecture needs, e.g. "cu128"
- * @property {string[]} backends  installable backend keys
+ * @property {{key: string, label: string}[]} backends  installable backends,
+ *   in registry order — the install card's dropdown is built from this
  */
 
 /**
@@ -399,6 +401,8 @@
  * @property {number} idx
  * @property {number} occ
  * @property {number} ev
+ * @property {string} spin      "" restricted, else "a"/"b" (two manifolds)
+ * @property {string} frontier  "homo" | "lumo" | ""
  */
 
 /**

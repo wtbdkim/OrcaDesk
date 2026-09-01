@@ -338,11 +338,21 @@ def test_a_keep_existing_row_still_goes_through_admission(tmp_path):
     # let it reach _start_job with no room, where waiting parks the single
     # dispatcher and head-of-line blocks every row behind it.
     harness = EngineHarness(tmp_path, skip_names={"maybe"})
-    assert harness.engine._handled_without_running(make_calc("maybe"), set()) is False
+    assert harness.engine._handled_without_running(make_calc("maybe")) is False
     # a state-decided row IS free -- those checks are certain
     done = make_calc("done", state=CalcState.DONE)
-    assert harness.engine._handled_without_running(done, set()) is True
-    assert harness.engine._handled_without_running(make_calc("x"), {"x"}) is True
+    assert harness.engine._handled_without_running(done) is True
+    # ...and so is one a failed dependency will block. That verdict now comes
+    # from the live queue (_blocked_by walks the reference chain) rather than
+    # from a set of NAMES captured at run start, which outlived the rows it was
+    # about: a blocked row edited to point at a healthy parent kept its name and
+    # was blocked again.
+    boom = make_calc("boom", state=CalcState.FAILED)
+    dep = make_calc("dep", ref="boom")
+    harness.engine._by_name = {"boom": boom, "dep": dep}
+    assert harness.engine._handled_without_running(dep) is True
+    boom.state = CalcState.DONE
+    assert harness.engine._handled_without_running(dep) is False
 
 
 def test_every_per_calc_line_carries_its_tag(tmp_path):
@@ -441,3 +451,42 @@ def test_the_first_job_starts_however_low_memory_is(tmp_path, monkeypatch):
     harness.engine.run_all([calc])
 
     assert calc.state is CalcState.DONE
+
+
+# ---- a row that stops fitting between the pick and the start ----------------
+# _pick_ready's memory test reads the machine's LIVE free RAM, which can fall
+# before _start_job re-checks it. Waiting there parked the single dispatcher on
+# that one row — still in _active_names, so not even editable — and head-of-line
+# blocked every smaller row behind it, which is the opposite of the documented
+# "a row that does not fit is skipped OVER" rule.
+
+def test_a_row_that_stops_fitting_is_handed_back_to_the_scan(tmp_path, monkeypatch):
+    harness = EngineHarness(tmp_path, budget=ResourceBudget(max_jobs=4, cores=64,
+                                                            ram_mb=64_000))
+    engine = harness.engine
+    monkeypatch.setattr(queue_mod, "_REFIT_GIVE_UP", 0.05)
+    # something in flight (so the "run alone" escape does not apply) and a slot
+    # that will never fit
+    engine._slots["running"] = queue_mod._JobSlot(name="running", cores=1,
+                                                  ram_mb=1, gpu=False)
+    monkeypatch.setattr(engine, "_fits", lambda _slot: False)
+
+    calc = make_calc("big")
+    engine._active_names.add(calc.name)
+    threads = []
+
+    assert engine._start_job(calc, 0, [calc], threads) == "requeue"
+    assert threads == []                       # nothing was started
+    assert calc.name not in engine._active_names   # ...and the row is free again
+    assert "big" not in engine._slots
+
+
+def test_a_row_that_fits_still_starts(tmp_path):
+    harness = EngineHarness(tmp_path)
+    calc = make_calc("ok")
+    threads = []
+
+    assert harness.engine._start_job(calc, 0, [calc], threads) is True
+    for t in threads:
+        t.join(10)
+    assert harness.calls == ["ok"]

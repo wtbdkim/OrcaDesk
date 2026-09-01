@@ -23,12 +23,14 @@ as the MLIP run pipeline (``mlip/runner.py``).
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+from ..textio import decode_process_output
 from .env import MLIP_BACKENDS
 
 # Where pip fetches torch from. Pinning the index (rather than letting plain
@@ -98,14 +100,33 @@ def long_paths_enabled() -> bool:
         return False
 
 
+# CreateDirectory refuses at 248 characters, eight below MAX_PATH — the deepest
+# package path is made of directories before it is a file, so this is the real
+# ceiling for an install.
+_MAX_DIR_PATH = 248
+
+
+def path_budget() -> int:
+    """How many characters an environment directory may use.
+
+    MAX_PATH counts the terminating NUL, and the env dir is joined to the
+    package path by a SEPARATOR that also has to fit — so the room is two less
+    than the naive subtraction, not one (which allowed a name producing a path
+    exactly one character over the limit). Windows also caps DIRECTORY creation
+    at 248, eight below MAX_PATH, and every component of the deepest package
+    path is a directory before it is a file — so that is the real ceiling.
+    """
+    return min(MAX_PATH - 2 - DEEPEST_PACKAGE_PATH,
+               _MAX_DIR_PATH - 1 - DEEPEST_PACKAGE_PATH)
+
+
 def path_budget_error(env_dir) -> str:
     """"" if a full install fits under the path limit, else why it will not --
     naming the number of characters to cut, because the only fix the user has
     is a shorter environment name (the envs root is not theirs to move)."""
     if long_paths_enabled():
         return ""
-    room = MAX_PATH - 1 - DEEPEST_PACKAGE_PATH
-    over = len(str(Path(env_dir))) - room
+    over = len(str(Path(env_dir))) - path_budget()
     if over <= 0:
         return ""
     return (f"The path would be {over} character(s) too long for Windows: "
@@ -126,12 +147,12 @@ def python_version(path: str, timeout: float = 15.0) -> tuple:
     try:
         p = subprocess.run([str(path), "-c",
                             "import sys;print('%d.%d' % sys.version_info[:2])"],
-                           capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout,
+                           capture_output=True, timeout=timeout,
                            creationflags=_no_window_flags())
     except (OSError, subprocess.SubprocessError):
         return ()
-    m = re.search(r"(\d+)\.(\d+)", (p.stdout or "") + (p.stderr or ""))
+    m = re.search(r"(\d+)\.(\d+)",
+                  decode_process_output(p.stdout) + decode_process_output(p.stderr))
     return (int(m.group(1)), int(m.group(2))) if m else ()
 
 
@@ -152,10 +173,9 @@ def find_base_pythons() -> list[dict]:
     cands: list[str] = []
     if sys.platform.startswith("win"):
         try:  # the py launcher knows every registered install
-            p = subprocess.run(["py", "-0p"], capture_output=True, text=True,
-                               encoding="utf-8", errors="replace", timeout=15,
+            p = subprocess.run(["py", "-0p"], capture_output=True, timeout=15,
                                creationflags=_no_window_flags())
-            for line in (p.stdout or "").splitlines():
+            for line in decode_process_output(p.stdout).splitlines():
                 m = re.search(r"([A-Za-z]:\\[^\r\n]*?python\.exe)", line)
                 if m:
                     cands.append(m.group(1))
@@ -166,10 +186,15 @@ def find_base_pythons() -> list[dict]:
     exe = "python.exe" if sys.platform.startswith("win") else "python3"
     try:
         which = "where" if sys.platform.startswith("win") else "which"
-        p = subprocess.run([which, exe], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=15,
+        # `where` prints the console code page, so a python.exe under a Hangul
+        # folder decoded as UTF-8 became mojibake, Path.exists() said no, and
+        # the interpreter silently vanished from the list — leaving a frozen
+        # build (which has no interpreter of its own) with "No supported Python
+        # found" and the Create button disabled.
+        p = subprocess.run([which, exe], capture_output=True, timeout=15,
                            creationflags=_no_window_flags())
-        cands += [ln.strip() for ln in (p.stdout or "").splitlines() if ln.strip()]
+        cands += [ln.strip() for ln in decode_process_output(p.stdout).splitlines()
+                  if ln.strip()]
     except (OSError, subprocess.SubprocessError):
         pass
 
@@ -205,14 +230,14 @@ def detect_gpu() -> dict:
     try:
         p = subprocess.run(["nvidia-smi", "--query-gpu=name,compute_cap",
                             "--format=csv,noheader"],
-                           capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=20,
+                           capture_output=True, timeout=20,
                            creationflags=_no_window_flags())
     except (OSError, subprocess.SubprocessError):
         return blank
     if p.returncode != 0:
         return blank
-    line = next((l for l in (p.stdout or "").splitlines() if l.strip()), "")
+    line = next((l for l in decode_process_output(p.stdout).splitlines()
+                 if l.strip()), "")
     if not line:
         return blank
     name, _, cap = line.partition(",")
@@ -285,6 +310,24 @@ def install_plan(base_python: str, env_dir, backend: str = "mace",
     ]
 
 
+def _is_half_built(env_dir: Path) -> bool:
+    """Whether ``env_dir`` is a partial environment ORCAdesk itself left behind.
+
+    A finished env has a working interpreter; anything else under mlip_envs/ is
+    either an aborted attempt of ours or an empty directory. Deliberately narrow
+    — it decides what may be deleted — so a directory that is not recognisable
+    as a venv-in-progress is left alone and refused by name instead.
+    """
+    try:
+        if venv_python(env_dir).exists():
+            return False       # a usable interpreter: not ours to remove
+        names = {p.name.lower() for p in env_dir.iterdir()}
+    except OSError:
+        return False
+    return bool(names) and names <= {"scripts", "bin", "lib", "lib64",
+                                     "include", "share", "pyvenv.cfg", ".gitignore"}
+
+
 class MlipEnvInstaller:
     """Runs an install plan, streaming each command's output. Cancellable from
     another thread (the UI's), like MlipRunner: the signal terminates the child
@@ -312,9 +355,14 @@ class MlipEnvInstaller:
 
     def _stream(self, argv: list, on_line: Callable[[str], None]) -> int:
         try:
+            # Binary pipe, decoded per line: `python -m venv` and `pip` are
+            # CPython children, and on Windows a CPython child encodes its pipe
+            # output with the locale ANSI code page, not UTF-8. The failure path
+            # here says "See the log for pip's own message" — so the one
+            # diagnostic a failed install has was the thing being corrupted
+            # (a localized WinError, a path under a Hangul user profile).
             proc = subprocess.Popen(
                 argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", bufsize=1,
                 creationflags=_no_window_flags())
         except OSError as e:
             on_line(f"Failed to launch: {e}")
@@ -326,8 +374,8 @@ class MlipEnvInstaller:
         if self._cancel.is_set():
             self._terminate(proc)
         try:
-            for line in proc.stdout or ():
-                line = line.rstrip()
+            for raw_line in proc.stdout or ():
+                line = decode_process_output(raw_line).rstrip()
                 if line:
                     on_line(line)
             return proc.wait()
@@ -357,9 +405,27 @@ class MlipEnvInstaller:
                               f"publishes wheels for ({lo}-{hi}). "
                               "Pick another interpreter.")}
         if env_dir.exists() and any(env_dir.iterdir()):
-            return {"ok": False, "python": "", "cancelled": False,
-                    "error": f"'{env_dir.name}' already exists. "
-                             "Choose another name."}
+            if _is_half_built(env_dir):
+                # Our own leftovers from a cancel or a failed step (a network
+                # error mid-torch), not a working environment: nothing has been
+                # registered in Settings and nothing else can be using it. Left
+                # in place it refused its own name forever — including the
+                # default "MACE" the card fills in — with a message that does
+                # not say why.
+                say(f"--- removing the incomplete {env_dir.name} left by an "
+                    "earlier attempt ---")
+                try:
+                    shutil.rmtree(env_dir)
+                except OSError as e:
+                    return {"ok": False, "python": "", "cancelled": False,
+                            "error": f"'{env_dir.name}' is left over from an "
+                                     f"interrupted install and could not be "
+                                     f"removed ({e}). Delete it, or choose "
+                                     f"another name."}
+            else:
+                return {"ok": False, "python": "", "cancelled": False,
+                        "error": f"'{env_dir.name}' already exists. "
+                                 "Choose another name."}
         # Before the download, not after it: this failure otherwise arrives
         # minutes in (2.5 GB in, for a GPU env) as an opaque pip OSError.
         too_long = path_budget_error(env_dir)

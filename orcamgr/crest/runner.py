@@ -192,7 +192,22 @@ class CrestRunner:
         pid_file = out_path.parent / f"{name}.crest.pid"
         start_file = out_path.parent / f"{name}.crest.start"
         rc_file = out_path.parent / f"{name}.crest.rc"
-        for f in (pid_file, start_file, rc_file):
+        # The markers AND everything the last attempt produced. Folders are
+        # never deleted and a name can be reused, so an attempt that fails
+        # leaves an ensemble behind that parse_crest_result reads as this run's
+        # result: the Results tab showed the previous molecule and the real
+        # diagnosis was replaced by "CREST did not report normal termination".
+        # The .out is the same story from the other side — monitor() tails from
+        # position 0, so the old content was replayed into the live log as this
+        # calculation's output, and once the detached script truncated the file
+        # the tailer's position was past the new EOF and the first real lines
+        # were lost. The ORCA runner opens its .out "w" before launching and the
+        # MLIP runner unlinks its stale JSON; this is the same rule.
+        for f in (pid_file, start_file, rc_file, out_path,
+                  out_path.parent / "crest_conformers.xyz",
+                  out_path.parent / "crest_best.xyz",
+                  out_path.parent / "crest.energies",
+                  out_path.parent / "crest_rotamers.xyz"):
             try:
                 f.unlink()
             except OSError:

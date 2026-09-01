@@ -233,7 +233,7 @@ alignment) are the only thing allowed in container-scoped rules.
 `.btn` (secondary surface + border) is the default; `.btn-primary`
 (achromatic inversion) for the main action; `.btn-ghost` for low-emphasis;
 `.btn-danger` (red text, red tint on hover) for destructive; `.btn.on`
-(ok-tinted) for active toggles; `.btn-sm` / `.btn-block` for size. Pick from
+(ok-tinted) for active toggles; `.btn-sm` for size. Pick from
 this vocabulary — don't style one-off buttons.
 
 ### D52 — Empty states answer "what's missing and where it comes from"
@@ -384,7 +384,7 @@ are the desktop's; mobile drift is tracked in B6.
 |---|---|---|
 | `--background` | `#09090b` | `#fffff0` (ivory) |
 | `--foreground` | `#fafafa` | `#09090b` |
-| `--card` / `--popover` / `--muted` | `#18181b` | `#f5f5dc` (beige) / `#fffff0` / `#ece8ce` |
+| `--card` / `--popover` | `#18181b` | `#f5f5dc` (beige) / `#fffff0` |
 | `--border` / `--input` | `#27272a` | `#dad6b8` |
 | `--input-bg` | `#0e0e10` | `#fffff0` |
 | `--code-bg` (terminal surface: log, raw editor) | `#050506` | `#f2efd8` |
@@ -408,7 +408,7 @@ are the desktop's; mobile drift is tracked in B6.
 
 Each semantic color also carries **tint tokens** on the §11.19 alpha ladder
 (`--ok-tint`/`--ok-tint-strong`, `--warn-tint`/`--warn-tint-bg`,
-`--err-tint`/`--err-tint-bg`/`--err-tint-hover`/`--err-outline`/`--err-stripe`,
+`--err-tint`/`--err-tint-bg`/`--err-tint-hover`/`--err-outline`,
 `--raw-tint`), redefined per theme next to their base colors — components
 consume the tint token, never a hand-mixed rgba (D13).
 
@@ -712,8 +712,13 @@ fills the box again.
 *All*, at `11.5px mono; padding 5px 10px` — a step below the Raw/Graph buttons,
 so the mode choice stays the primary level (the same relationship as the Build
 tab's `.bsub`), behind a 1px `--border` rule. Wraps rather than scrolls. Hidden
-until a **second** calculation has produced output — a sequential run must look
-exactly as it always did — and hidden outside **Raw** mode: it filters log
+until a **second** calculation has produced output — a single-calculation run
+must look exactly as it always did, and a strip with one job to choose between
+offers nothing. (It is keyed on how many calculations have EMITTED output, not
+on whether they overlap, so a sequential run of several also grows the strip
+once the second one starts. That is intended: by then the log genuinely holds
+two jobs' lines and separating them is worth a row of buttons.) Hidden outside
+**Raw** mode: it filters log
 lines, the graph panel has its own job picker, and two identical strips where
 only one does anything in the current mode is a trap. Filtering hides every line not tagged with the chosen
 calculation, engine-level lines included (they are not that job's output).
@@ -854,7 +859,7 @@ Tints are the semantic color at a fixed alpha ladder, implemented as the
 `.freq-warn`) · **10%** hover of danger actions (`--err-tint-hover`) ·
 **15%** badge/toggle fills (`--ok-tint`, `--warn-tint`, `--err-tint`,
 `--raw-tint`) · **22%** toggle hover (`--ok-tint-strong`) · **30%** warning
-outline (`--err-outline`) · **55%** (`--err-stripe`, currently unused —
+outline (`--err-outline`) · **55%** (a stripe tint, not currently defined —
 retired with the old HUD's hazard stripes). Consume
 the token; adding a new tint means adding a token on this ladder first.
 
@@ -1203,3 +1208,4 @@ Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
 | B26 | Second 0.5.0-beta copy sweep (post-B24 strings, mostly the Appearance card): the free-energy-profile placeholder said *FREQ jobs* (§14.2 job/calculation + kind-label casing); the Appearance `.card-desc` and three hints were multi-sentence verb-form (§11.1/§14.1 noun-form one-liners); two glass-intensity tooltips were subject-verb clauses among noun-phrase siblings (§14.1); and the `#card-mlip` title "MLIP pre-optimization" misdescribed the card's `mlip_sp` single-point task (§14.1 accurate noun phrase / D2) | §11.1, §14.1, §14.2, D2 | resolved (0.5.0-beta — all eight strings rewritten to conform; card retitled "MLIP calculation") |
 | B27 | The MLIP/CREST card lock disabled only a hand-written list of field ids, so CREST's whole *Advanced settings* block (preset, NCI, solvent model, the MD/MTD numbers, the five toggles) and both cards' geometry-source radios stayed enabled under the grey — pretend-disabled chrome around live controls | D41 | resolved (0.6.1-beta — the lock disables every control the card's own DOM contains, so the list cannot drift from the markup again; the CUDA `<option>`'s separate disabled state is deliberately left to `refreshMlipDeviceOptions`) |
 | B28 | Settings → CREST's *Install CREST* button was pretend-enabled: it disabled only once CREST was already installed, never when there was **no WSL distro to install into** (the one prerequisite ORCAdesk cannot script). The click's only feedback was a Log-tab line, so a failed install read as a dead button — and the installer's actionable diagnostics never reached the card | D41, D2, §13.2 | resolved (0.7.0-beta — the button disables with the reason in its tooltip when WSL or a distro is absent, or while a probe is in flight; the install outcome is published on `CrestStatusPayload.install_error` and surfaced as the card's detail line + a toast) |
+| B29 | Two color literals had come back after B3/B5 removed the pattern: `renderInputEcho`'s `<pre>` used a raw `rgba(127,127,127,0.08)` (a theme-independent grey that is neither a token nor an alpha-ladder value), and the 3D viewer fell back to the literal `#18181b` — the DARK `--card` — when its token read came back empty, painting the stage near-black on a light theme | D10, D13, §15.1 | resolved (unreleased — the echo uses `--input-bg`; the viewer passes no background at all when the token is unreadable, rather than the wrong theme's value) |

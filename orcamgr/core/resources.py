@@ -68,11 +68,16 @@ _CREST_RAM_FLOOR_MB = 256
 _RAM_RESERVE_MB = 2048
 
 # `%pal nprocs 8 end`, or the `nprocs 8` line inside a multi-line %pal block.
-_PAL_NPROCS_RE = re.compile(r"^\s*(?:%pal\s+)?nprocs\s+(\d+)", re.IGNORECASE | re.MULTILINE)
+# The "=" is not decoration: ORCA 6.1.1 accepts `nprocs=2` and `nprocs = 2` and
+# runs both on 2 MPI ranks (verified), and requiring whitespace read them as
+# "declares nothing" — so a parallel raw job was charged one core and the
+# dispatcher could admit several of them at once (P57).
+_PAL_NPROCS_RE = re.compile(r"^\s*(?:%pal\s+)?nprocs\s*=?\s*(\d+)",
+                            re.IGNORECASE | re.MULTILINE)
 # The `PAL8` / `! ... PAL8` simple-input keyword (ORCA accepts PAL2..PAL8).
 _PAL_KEYWORD_RE = re.compile(r"(?:^|\s)PAL(\d+)(?:\s|$)", re.IGNORECASE | re.MULTILINE)
-# `%maxcore 4000`
-_MAXCORE_RE = re.compile(r"^\s*%maxcore\s+(\d+)", re.IGNORECASE | re.MULTILINE)
+# `%maxcore 4000` (same "=" spelling as %pal)
+_MAXCORE_RE = re.compile(r"^\s*%maxcore\s*=?\s*(\d+)", re.IGNORECASE | re.MULTILINE)
 
 
 def auto_cores() -> int:
@@ -157,26 +162,56 @@ class ResourceBudget:
         )
 
 
-def _raw_int(pattern: re.Pattern, text: str) -> int:
-    m = pattern.search(text or "")
-    if not m:
-        return 0
-    try:
-        return int(m.group(1))
-    except (TypeError, ValueError):
-        return 0
+def _without_comments(text: str) -> str:
+    """``text`` with ORCA's ``#`` comments blanked out (length preserved, so
+    match positions still order correctly).
+
+    ORCA ignores everything after a ``#``, and the core accounting has to agree
+    with it: "# PAL8" left in a raw input as a note charged the job eight cores
+    it never used, and that budget is denied to jobs that would.
+    """
+    out = []
+    for line in (text or "").split("\n"):
+        i = line.find("#")
+        out.append(line if i < 0 else line[:i] + " " * (len(line) - i))
+    return "\n".join(out)
 
 
 def raw_nprocs(raw_text: str) -> int:
     """The core count a hand-written `.inp` declares (`%pal nprocs N` or `PALn`),
-    or 0 when it declares none (ORCA then runs serial)."""
-    n = _raw_int(_PAL_NPROCS_RE, raw_text)
-    return n or _raw_int(_PAL_KEYWORD_RE, raw_text)
+    or 0 when it declares none (ORCA then runs serial).
+
+    The LAST declaration wins, whichever form it is in — that is what ORCA does,
+    measured on 6.1.1: `! ... PAL2` followed by `%pal nprocs 1 end` runs serial,
+    the same two swapped runs on 2 ranks, and `%pal nprocs 2 end` followed by
+    `%pal nprocs 4 end` runs on 4. Taking the first match, and preferring the
+    block form regardless of order, charged the wrong number in both directions;
+    under-charging is the one that matters, because it lets the dispatcher
+    admit jobs the machine cannot actually run at once (P57).
+    """
+    text = _without_comments(raw_text or "")
+    last = 0
+    pos = -1
+    for pattern in (_PAL_NPROCS_RE, _PAL_KEYWORD_RE):
+        for m in pattern.finditer(text):
+            if m.start() > pos:
+                try:
+                    last, pos = int(m.group(1)), m.start()
+                except (TypeError, ValueError):
+                    pass
+    return last
 
 
 def raw_maxcore_mb(raw_text: str) -> int:
-    """The `%maxcore` a hand-written `.inp` declares, or 0."""
-    return _raw_int(_MAXCORE_RE, raw_text)
+    """The `%maxcore` a hand-written `.inp` declares, or 0. Last one wins, as
+    with %pal."""
+    matches = list(_MAXCORE_RE.finditer(_without_comments(raw_text or "")))
+    if not matches:
+        return 0
+    try:
+        return int(matches[-1].group(1))
+    except (TypeError, ValueError):
+        return 0
 
 
 def declared_cores(calc) -> int:

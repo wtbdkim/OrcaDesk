@@ -560,3 +560,71 @@ def test_crest_monitor_gives_up_when_the_job_is_definitively_gone(tmp_path, monk
 
     assert rc is None                                   # no marker to read
     assert seen == ["partial line without a newline"]   # flushed, not swallowed
+
+
+# ---------------------------------------------------------------------------
+# A re-run must not inherit the previous attempt's files
+#
+# Folders are never deleted and a name can be reused, so a second attempt in the
+# same folder found the first one's ensemble and .out still there. The ensemble
+# was parsed as this run's result (the Results tab showed the previous
+# molecule, and the real diagnosis was replaced by "CREST did not report normal
+# termination"); the .out was replayed into the live log as this run's output,
+# and once the detached script truncated it the tailer's position was past the
+# new EOF and the first real lines were lost. The ORCA runner opens its .out "w"
+# before launching and the MLIP runner unlinks its stale JSON — this is the same
+# rule, applied to the one backend that was missing it.
+# ---------------------------------------------------------------------------
+
+def test_launch_clears_the_previous_attempts_output_and_ensemble(tmp_path, monkeypatch):
+    import orcamgr.crest.runner as runner_mod
+
+    d = tmp_path / "conf"
+    d.mkdir()
+    out = d / "conf.out"
+    stale = {
+        out: "OLD RUN line 1\nOLD RUN line 2\n",
+        d / "crest_conformers.xyz": "3\n -1.0\nO 0 0 0\nH 0 0 1\nH 0 1 0\n",
+        d / "crest_best.xyz": "3\n -1.0\nO 0 0 0\nH 0 0 1\nH 0 1 0\n",
+        d / "crest.energies": "1 -1.0\n",
+        d / "conf.crest.rc": "0\n",
+        d / "conf.crest.pid": "1234\n",
+    }
+    for p, text in stale.items():
+        p.write_text(text, encoding="utf-8")
+    script = d / "run_crest.sh"
+    script.write_text("#!/bin/bash\n", encoding="utf-8")
+
+    # the launch itself is a WSL round-trip; only the cleanup is under test
+    monkeypatch.setattr(runner_mod, "run_bash",
+                        lambda *a, **k: (0, "4242\n", ""))
+    monkeypatch.setattr(runner_mod.CrestRunner, "_read_start_time",
+                        lambda self, pid: 1, raising=False)
+
+    runner = runner_mod.CrestRunner("Ubuntu")
+    try:
+        runner.launch(script, "conf", out)
+    except Exception:
+        pass          # the WSL half is stubbed; the files are the assertion
+
+    for p in stale:
+        assert not p.exists(), f"{p.name} survived the relaunch"
+
+
+def test_a_wsl_failure_is_data_not_an_exception(monkeypatch):
+    """run_bash's siblings in the same module already catch OSError. Anything
+    escaping here lands in CrestRunner._liveness, whose whole purpose is that a
+    single transient wsl.exe failure must not abandon a healthy run — an
+    exception walks straight past that guard and FAILS (locking, P24) a job that
+    is still running fine in WSL."""
+    import subprocess
+    import orcamgr.crest.wsl as wsl_mod
+
+    def boom(*_a, **_kw):
+        raise OSError(1450, "Insufficient system resources")
+
+    monkeypatch.setattr(wsl_mod.subprocess, "run", boom)
+    rc, out, err = wsl_mod.run_bash("Ubuntu", "true")
+
+    assert rc != 0 and out == ""
+    assert "wsl-error" in err

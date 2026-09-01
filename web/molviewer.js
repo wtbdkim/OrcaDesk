@@ -73,8 +73,10 @@ async function openMolViewer(title, frames, kind, ref) {
 
 /** Show the modal, create/resize the shared GLViewer, install the key handler,
  *  and switch the footer bar to the active mode. Returns false when 3Dmol is
- *  missing (the only way this fails). Shared by both modes — one WebGL context
- *  for the whole app, created lazily on first open and reused. */
+ *  missing or the display cannot give it a WebGL context — the caller must
+ *  stop, since neither the viewer nor its key handler exists. Shared by both
+ *  modes — one WebGL context for the whole app, created lazily on first open
+ *  and reused. */
 function _mvOpenStage(title) {
   const $3Dmol = window["$3Dmol"] || window["3Dmol"];
   if (!$3Dmol) { failNotify("3D viewer failed to load."); return false; }
@@ -88,10 +90,31 @@ function _mvOpenStage(title) {
   document.getElementById("mv-hint-vol").style.display = vol ? "" : "none";
   // create the GLViewer lazily, after the container is visible & sized
   if (!_mvViewer) {
+    // No hex fallback (DESIGN §15.1: tokens only): "#18181b" is the DARK
+    // --card, so on a light theme a token read that came back empty painted the
+    // viewer near-black. An empty string lets 3Dmol use its own default, which
+    // is at least not the wrong theme's colour.
     const bg = getComputedStyle(document.documentElement)
-      .getPropertyValue("--card").trim() || "#18181b";
-    _mvViewer = $3Dmol.createViewer(document.getElementById("mv-gl"),
-      { backgroundColor: bg });
+      .getPropertyValue("--card").trim();
+    try {
+      _mvViewer = $3Dmol.createViewer(document.getElementById("mv-gl"),
+        bg ? { backgroundColor: bg } : {});
+    } catch (e) {
+      // No WebGL context (a remote desktop, a VM, a blocklisted GPU, a driver
+      // reset). Thrown from here the whole open() rejected: the overlay was
+      // already display:flex, the key handler was never installed, and the user
+      // got a full-screen empty modal with a dead Esc and no message at all.
+      _mvViewer = null;
+      overlay.style.display = "none";
+      failNotify("3D rendering is unavailable on this display — the graphics "
+                 + "driver would not provide a WebGL context.");
+      return false;
+    }
+    if (!_mvViewer) {
+      overlay.style.display = "none";
+      failNotify("3D rendering is unavailable on this display.");
+      return false;
+    }
   }
   _mvViewer.resize();
   if (!_mvKeyHandler) {
@@ -183,6 +206,14 @@ async function toggleFav(i) {
     const r = /** @type {FavoritesResult} */ (JSON.parse(await bridge.toggle_favorite(_mvSource, f.label, on)));
     if (r.ok) _mvFavs = new Set(r.labels || []);
   } catch (e) { /* keep the optimistic state if the persist call fails */ }
+  // Unstarring the LAST favorite leaves "★ only" filtering to nothing: the
+  // visible list is empty, so the arrows and Prev/Next go dead while the button
+  // still reads as on. The filter refuses to be switched on with no favorites;
+  // it must switch itself off for the same reason.
+  if (_mvFavOnly && !_mvFrames.some(fr => _mvFavs.has(fr.label))) {
+    _mvFavOnly = false;
+    updateFavOnlyBtn();
+  }
   renderMvList();
 }
 
@@ -335,19 +366,31 @@ function _mvBuildPicks(orbs, kinds) {
     picks.push({ kind: "eldens", index: 0, operator: 0, label: "Electron density", sub: "" });
   if (kinds.indexOf("spindens") >= 0)
     picks.push({ kind: "spindens", index: 0, operator: 0, label: "Spin density", sub: "" });
-  let homoI = -1;
-  orbs.forEach((o, i) => { if (o.occ > 0.01) homoI = i; });
-  orbs.forEach((o, i) => {
-    let sub = "";
-    if (homoI >= 0) {
-      if (i === homoI) sub = "HOMO";
-      else if (i === homoI + 1) sub = "LUMO";
-      else if (i < homoI) sub = "HOMO-" + (homoI - i);
-      else sub = "LUMO+" + (i - homoI - 1);
-    }
-    picks.push({ kind: "mo", index: o.idx, operator: 0,
-                 label: "MO " + o.idx, sub: sub + "  " + o.ev.toFixed(2) + " eV" });
-  });
+  // An unrestricted run has two manifolds. They are separate orbital sets:
+  // orca_plot addresses them by OPERATOR (0 = alpha, 1 = beta) and the index
+  // restarts at 0 in each, so "MO 4" alone names two different orbitals — and
+  // HOMO/LUMO are relative to the manifold they live in, while the overall
+  // frontier pair (which the parser decides, across both) may straddle them.
+  const spinName = { a: "\u03b1", b: "\u03b2" };
+  const manifolds = [...new Set(orbs.map(o => o.spin))];
+  for (const spin of manifolds) {
+    const set = orbs.filter(o => o.spin === spin);
+    let homoI = -1;
+    set.forEach((o, i) => { if (o.occ > 0.01) homoI = i; });
+    set.forEach((o, i) => {
+      let sub = "";
+      if (homoI >= 0) {
+        if (i === homoI) sub = "HOMO";
+        else if (i === homoI + 1) sub = "LUMO";
+        else if (i < homoI) sub = "HOMO-" + (homoI - i);
+        else sub = "LUMO+" + (i - homoI - 1);
+      }
+      const tag = spin ? " " + (spinName[spin] || spin) : "";
+      picks.push({ kind: "mo", index: o.idx, operator: spin === "b" ? 1 : 0,
+                   label: "MO " + o.idx + tag,
+                   sub: sub + tag + "  " + o.ev.toFixed(2) + " eV" });
+    });
+  }
   return picks;
 }
 

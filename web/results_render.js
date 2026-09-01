@@ -259,14 +259,18 @@ async function copyGeometryXyz() {
 function renderOrbitals(orbs) {
   const body = document.getElementById("result-body");
   _lastOrbitals = orbs;
-  let homoI = -1;
-  orbs.forEach((o, i) => { if (o.occ > 0.01) homoI = i; });
+  // An unrestricted run has two manifolds, each numbered from 0, and the
+  // frontier orbitals can sit in different ones — so which row is HOMO/LUMO is
+  // decided by the parser (over both, by energy) and rides on the payload.
+  const unrestricted = orbs.some(o => o.spin);
+  const spinName = { a: "α", b: "β" };
   let rows = "";
-  orbs.forEach((o, i) => {
+  orbs.forEach((o) => {
     let tag = "", color = "";
-    if (i === homoI) { tag = " ← HOMO"; color = "color:var(--ok);font-weight:600"; }
-    else if (i === homoI + 1) { tag = " ← LUMO"; color = "color:var(--warn);font-weight:600"; }
-    rows += `<tr><td>${o.idx}</td><td>${o.occ.toFixed(3)}</td><td style="${color}">${o.ev.toFixed(4)}${tag}</td></tr>`;
+    if (o.frontier === "homo") { tag = " ← HOMO"; color = "color:var(--ok);font-weight:600"; }
+    else if (o.frontier === "lumo") { tag = " ← LUMO"; color = "color:var(--warn);font-weight:600"; }
+    const spinCell = unrestricted ? `<td>${spinName[o.spin] || ""}</td>` : "";
+    rows += `<tr><td>${o.idx}</td>${spinCell}<td>${o.occ.toFixed(3)}</td><td style="${color}">${o.ev.toFixed(4)}${tag}</td></tr>`;
   });
   // Plotting reads the .gbw sitting beside the output, so it works for a queued
   // calc AND for a result opened from disk — either address is enough.
@@ -280,7 +284,7 @@ function renderOrbitals(orbs) {
     <div class="card-title">Orbital energies (${orbs.length} levels)</div>
     <div style="max-height:280px;overflow:auto">
       <table class="data">
-        <thead><tr><th>#</th><th>Occ</th><th>E (eV)</th></tr></thead>
+        <thead><tr><th>#</th>${unrestricted ? "<th>Spin</th>" : ""}<th>Occ</th><th>E (eV)</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -385,7 +389,7 @@ function renderTddftStates(states) {
 /** @param {string} [keywords] @param {string} [block] */
 function renderInputEcho(keywords, block) {
   const body = document.getElementById("result-body");
-  const pre = (t) => `<pre class="mono" style="white-space:pre-wrap;word-break:break-word;font-size:12px;background:rgba(127,127,127,0.08);padding:10px;border-radius:var(--radius-sm);margin:6px 0 0;overflow:auto">${escapeHtml(t)}</pre>`;
+  const pre = (t) => `<pre class="mono" style="white-space:pre-wrap;word-break:break-word;font-size:12px;background:var(--input-bg);padding:10px;border-radius:var(--radius-sm);margin:6px 0 0;overflow:auto">${escapeHtml(t)}</pre>`;
   let html = `<div class="divider"></div><div class="card-title">Input echo</div>`;
   if (keywords) html += `<div class="hint" style="margin-top:8px">Keywords</div>${pre(keywords)}`;
   if (block) html += `<div class="hint" style="margin-top:8px">Input block</div>${pre(block)}`;
@@ -397,7 +401,14 @@ async function openOutFile() {
   /** @type {ParsePayload} */
   let data; try { data = JSON.parse(raw); } catch { return; }
   if (data.cancelled) return; // user closed the picker — not an error
-  if (!data.summary) { appendLog("Could not parse file.", "err"); return; }
+  // The backend's own reason, on both channels (D65 / B23): "Could not parse
+  // file." on the log alone went unseen unless the Log tab happened to be open,
+  // and it threw away the `{"error": "..."}` the bridge returns — which is the
+  // only thing that says WHY (missing file, permission, not an ORCA output).
+  if (!data.summary) {
+    failNotify(data.error || "Could not read that output file.");
+    return;
+  }
   _currentResultName = "";   // an external file, not a queued calc → no conformer->ORCA action
   // …but keep its PATH: the .gbw sits beside it, so orbitals and density are
   // still plottable for a file from anywhere on disk

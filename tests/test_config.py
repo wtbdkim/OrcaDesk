@@ -17,6 +17,7 @@ reach them because config.py imports them at module top.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import fields as dataclass_fields
 
 import pytest
@@ -151,8 +152,32 @@ def test_save_failure_does_not_raise(monkeypatch, tmp_path):
     blocker.write_text("I am a file, not a directory", encoding="utf-8")
     monkeypatch.setattr(config_mod, "config_file",
                         lambda: blocker / "settings.json")
-    Settings().save()  # must swallow the failure, never break the app
+    assert Settings().save() is False   # swallowed, but reported
     assert blocker.read_text(encoding="utf-8").startswith("I am a file")
+
+
+def test_save_reports_success(settings_file):
+    # The caller cannot tell "written" from "silently lost" without this:
+    # Bridge.save_settings answered "Saved." to a write that never happened,
+    # and every setting was gone at the next launch.
+    assert Settings(theme="light").save() is True
+    assert '"theme": "light"' in settings_file.read_text(encoding="utf-8")
+
+
+def test_failed_save_leaves_no_tmp_file_behind(monkeypatch, tmp_path):
+    # the tmp write can succeed and only the replace fail (the file is locked,
+    # read-only, held by a virus scanner) — the intended content must not be
+    # left lying beside settings.json under a .tmp name
+    target = tmp_path / "settings.json"
+    monkeypatch.setattr(config_mod, "config_file", lambda: target)
+
+    def boom(*_a, **_kw):
+        raise OSError("locked")
+
+    monkeypatch.setattr(config_mod.os, "replace", boom)
+
+    assert Settings().save() is False
+    assert list(tmp_path.iterdir()) == []
 
 
 # ---- 3. legacy mlip_python -> mlip_envs migration --------------------------
@@ -210,6 +235,39 @@ def test_orca_is_valid_requires_existing_file(tmp_path):
     exe = tmp_path / "orca.exe"
     exe.write_bytes(b"fake orca binary")
     assert Settings(orca_path=str(exe)).orca_is_valid() is True
+
+
+def test_orca_is_valid_rejects_a_directory(tmp_path):
+    # The ORCA install FOLDER is the natural thing to pick in a browser, and
+    # exists() said yes to it: Settings showed ORCA as valid, the run pre-flight
+    # passed, and the calculation died at launch with a WinError — which locks
+    # it (P24).
+    d = tmp_path / "ORCA_6.1.1"
+    d.mkdir()
+    assert Settings(orca_path=str(d)).orca_is_valid() is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="executable extensions are a Windows rule")
+def test_orca_is_valid_rejects_a_non_executable_file(tmp_path):
+    doc = tmp_path / "EULA_ORCA.rtf"
+    doc.write_text("not a program", encoding="utf-8")
+    assert Settings(orca_path=str(doc)).orca_is_valid() is False
+
+
+def test_infinity_in_settings_file_does_not_crash_the_launch(settings_file):
+    """`Infinity` and `NaN` are valid JSON to Python's decoder, and
+    int(float("inf")) raises OverflowError — which the coercion guard did not
+    catch, so it propagated out of Settings.load -> Bridge.__init__ and the app
+    could not start at all until the file was edited by hand (P32)."""
+    settings_file.write_text(
+        '{"max_total_ram_mb": Infinity, "max_total_cores": -Infinity, '
+        '"default_nprocs": NaN}', encoding="utf-8")
+
+    s = Settings.load()   # must not raise
+
+    assert s.max_total_ram_mb == 0
+    assert s.max_total_cores == 0
+    assert s.default_nprocs == 6
 
 
 def test_mlip_env_lookup_by_id():

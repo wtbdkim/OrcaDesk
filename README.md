@@ -79,8 +79,9 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   - **Expert (raw `.inp`)** mode lets you hand-edit the full input for anything the
     form doesn't cover (e.g. per-element basis/ECP via `%basis newgto/newecp`,
     `%plots`, custom blocks). Use `{{GEOMETRY}}` where coordinates go.
-- **MLIP calculations**: relax a structure (or get a quick single-point energy)
-  with a **MACE** model (MLIP) — fast, and a relaxed structure is a good starting
+- **MLIP calculations**: relax a structure, get a single-point energy, or run a
+  **frequency / relax-then-frequency** job with full ideal-gas thermochemistry,
+  all with a **MACE** model (MLIP) — fast, and a relaxed structure is a good starting
   geometry for the DFT job. It runs in a dedicated Python environment
   (PyTorch + mace-torch + ASE) managed under **Settings → MLIP environments**:
   press **Create** and ORCAdesk builds one for you — pick **CPU** (~150 MB) or
@@ -139,9 +140,8 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   phase chain over ORCA's real pipeline (analytical Hessian: integrals →
   CP-SCF with a perturbation counter → Hessian → modes → thermochemistry;
   TD-DFT: setup → diagonalization with an iteration counter → states →
-  spectra); numerical frequencies keep a displacement progress bar. A
-  `s / SCF cycle` pace readout and a "jump to latest" button keep long runs
-  readable.
+  spectra); numerical frequencies keep a displacement progress bar with an
+  ETA. A "jump to latest" button keeps long runs readable.
 - **Theme**: toggle **dark / light** from the top bar (☀/☽), and pick a theme
   *style* in **Settings → Appearance** — the default **shadcn (flat)** look or
   **Liquid Glass** (a refracting frosted top bar / tabs over a wallpaper, five

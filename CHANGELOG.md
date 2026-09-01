@@ -70,8 +70,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   a space in it broke ORCAdesk completely**. ORCA is now started from inside
   the job's own folder and given only the file name, which has no path to
   split. A space (or `&`) in the **calculation name** is a different matter —
-  it is the file name itself — so those are now refused as you type them,
-  alongside the characters Windows already disallows.
+  it is the file name itself, and ORCA splits its own argument on whitespace —
+  so those are now refused as you type them, alongside the characters Windows
+  already disallows. MLIP and CREST calculations are unaffected: their names are
+  not passed through anything that splits on spaces.
 - **A calculation added while the last job is running now runs in that same
   run**, instead of sitting at *Pending* while the queue reports *Queue
   finished.* The dispatcher stopped scanning as soon as every row it already
@@ -100,6 +102,80 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   renamed aside (to `<name>.gbw.bak`) with a line in the log. One from the same
   structure is kept — that is a free warm start for a re-run — and so is one
   your own raw input asks for with `MOREAD`.
+
+- **The results of an unrestricted (open-shell) calculation are right.** Only the
+  spin-up orbitals were being read, so for a radical the reported LUMO and the
+  HOMO–LUMO gap came from half the picture — for the OH radical, a LUMO at
+  +1.50 eV and a 10.35 eV gap, where across both sets the frontier pair is
+  spin-down #3 (−8.11 eV) and spin-down #4 (−4.04 eV) — a 4.07 eV gap. Both manifolds are now read, the frontier pair is taken across
+  both, the table gains a spin column, and the 3D viewer plots the orbital you
+  picked rather than the same-numbered one from the other set.
+- **A TD-DFT run with triplets no longer reports twice as many states as you
+  asked for.** Singlet and triplet transitions share one table and their state
+  numbers restart, so `nroots 3` was summarized as "6 states" with two rows
+  called state 2. The summary now reads "3 singlet + 3 triplet".
+- **A single point is no longer labelled an optimization that did not converge**
+  — the check looked for "opt" anywhere in the keyword line, which the basis
+  label `cc-pVDZ-F12-OptRI` and the option `ExtOpt` both contain.
+- **Solvent selections ORCA would refuse are caught.** All 88 solvents were run
+  against ORCA in both models: `Ethyl Acetate` needed a different spelling (it
+  failed in both), and `Phenol`, `Ammonia` and `Liquid Ammonia` are CPCM-only —
+  picking them with SMD aborted the run at startup, which locks the calculation.
+  The Build tab now says so while you are still choosing.
+- **Methods that cannot use an RI approximation no longer fail on the default
+  one.** `HF-3c` and the Native-GFN-xTB methods are refused by ORCA outright
+  with RIJCOSX; the RI selection is left off for them and the input says why.
+  A `/JK` auxiliary basis typed into *Extra options* no longer suppresses the
+  `/J` set the run actually needs.
+- **The Log tab shows Korean (and any non-ASCII) paths correctly.** ORCA writes
+  its own text as UTF-8 but echoes paths in the Windows code page; the whole
+  file was read as UTF-8, so every line naming your workspace or calculation
+  arrived as a row of replacement characters. The same fix reaches the Results
+  tab, the restored log after a restart, the MLIP installer's Python detection
+  (an interpreter under a Hangul folder was silently dropped from the list) and
+  a failed install's error message.
+- **A long burst of output no longer freezes the log or delays Stop.** Draining
+  a few megabytes took tens of seconds and the cancel signal was only checked
+  between drains; 8 MB now takes 0.2 s instead of 47 s.
+- **The numerical-frequency progress panel advances again** — it was watching
+  for a line ORCA does not print, so it sat at "displacement 0/18" (against a
+  real total of 12) until the run was over.
+- **ORCAdesk starts even when its settings or session file is damaged.** A
+  `null` calculation list, or `Infinity` in settings.json, crashed every launch
+  until the file was deleted by hand.
+- **Settings that could not be written say so.** A read-only or locked
+  settings.json was answered with "Saved." and everything was gone at the next
+  launch. The ORCA path is also checked properly now — the install *folder*, or
+  any file in it, used to pass as a valid executable.
+- **A resumed run no longer overwrites earlier results without asking.** When
+  ORCAdesk reopens onto a job that is still running it continues the queue, and
+  that path never showed the overwrite prompt because nobody is there to answer
+  it — existing results are kept instead, and the log says which.
+- **A reference to a calculation that is no longer in the queue blocks the
+  dependent instead of failing it**, so it can be re-pointed rather than rebuilt.
+- **Re-running a CREST search starts clean.** The previous attempt's ensemble
+  was read as the new run's result (the Results tab showed the old molecule) and
+  its log was replayed as the new run's output.
+- **A calculation queued while another is running is no longer charged the wrong
+  number of cores.** `%pal nprocs=2` (with an equals sign) was read as "no
+  declaration", a commented-out `PAL8` was counted, and where a raw input
+  declares the count twice, ORCAdesk now takes the last one — as ORCA does.
+- **An .inp saved with a byte-order mark runs.** The invisible marker survived
+  into the file ORCAdesk wrote and ORCA refused every run of that calculation.
+- **Loading a multi-structure .xyz takes the first structure**, instead of
+  merging every frame of an ensemble or trajectory into one impossible molecule.
+- Smaller fixes: an environment install that was cancelled or failed no longer
+  blocks its own name forever, and closing the app during one stops it rather
+  than leaving pip downloading; an environment whose interpreter cannot start is
+  reported as such instead of "missing packages"; a phone can no longer queue a
+  calculation with no geometry, and a calculation whose name contains an
+  apostrophe can be removed from the phone; the queue's drag-and-drop says why a
+  reorder was refused; *Clear all* explains itself during a run; the Stop
+  confirmation describes what stopping actually does (the rest of the queue stays
+  queued); *Stop after current* is available for a run started from the phone;
+  the 3D viewer reports a display that cannot render instead of opening an empty
+  window; and starred-structure export no longer overwrites files whose names
+  differ only outside ASCII.
 
 ## [0.7.0-beta] — 2026-08-28
 

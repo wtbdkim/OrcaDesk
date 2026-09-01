@@ -173,7 +173,13 @@ class Settings:
             if type(f.default) is int:
                 try:
                     setattr(s, f.name, int(getattr(s, f.name)))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
+                    # OverflowError is the one json can hand us that the other
+                    # two do not: `Infinity` is valid JSON to Python's decoder,
+                    # and int(float("inf")) raises it. Uncaught, that is a crash
+                    # in Settings.load -> Bridge.__init__ on EVERY launch until
+                    # the file is edited by hand — exactly what P32 forbids.
+                    # (NaN is already a ValueError.)
                     setattr(s, f.name, f.default)
 
         # mlip_envs is iterated (and .get()-ed) at startup by the Bridge, so a
@@ -208,22 +214,48 @@ class Settings:
             s.mlip_envs = [{"id": mig_id, "name": "MLIP", "python": legacy}]
         return s
 
-    def save(self) -> None:
+    def save(self) -> bool:
         """Persist settings atomically (same tmp + os.replace pattern as
         QueueStore.save_session). Writing settings.json in place could leave a
         half-written file on a crash/power loss, which the next session's
         load() would reject — silently losing every setting. Best-effort: a
-        save failure must never break the running app."""
+        save failure must never break the running app (P32).
+
+        Returns whether it landed. Swallowing the error is right; telling the
+        caller nothing is not — Bridge.save_settings answered "Saved." to a
+        write that never happened, and the settings were simply gone at the next
+        launch (a read-only settings.json, a locked %APPDATA%, a full disk). A
+        leftover .tmp is cleaned up so a failed save leaves nothing behind."""
         path = config_file()
         tmp = path.with_name(path.name + ".tmp")
         try:
             tmp.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
             os.replace(tmp, path)
+            return True
         except OSError:
-            pass
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return False
 
     def orca_is_valid(self) -> bool:
-        return bool(self.orca_path) and Path(self.orca_path).exists()
+        """Whether orca_path points at something that could BE the executable.
+
+        exists() alone said yes to the install directory itself — the natural
+        thing to pick in a folder browser — and to any file in it (a .rtf, a
+        .txt). Settings then showed ORCA as valid, the run pre-flight passed,
+        and the calculation failed at launch with a WinError, which locks it
+        (P24). is_file() plus, on Windows, an executable extension is as far as
+        this can go without running the thing."""
+        if not self.orca_path:
+            return False
+        p = Path(self.orca_path)
+        if not p.is_file():
+            return False
+        if os.name == "nt":
+            return p.suffix.lower() in (".exe", ".bat", ".cmd", ".com")
+        return True
 
     def mlip_env(self, env_id: str) -> dict | None:
         """The registered MLIP environment with this id, or None."""

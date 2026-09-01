@@ -298,6 +298,19 @@ function refreshLogFilterOptions() {
   // shown only where it works. Set before the early return below: a mode
   // switch changes visibility without changing the buttons.
   box.hidden = names.length < 2 || _logMode !== "raw";
+  // A hidden strip has no "All" button, so a filter left active behind it is
+  // unclearable: with jobs A and B, filtering on A and then B leaving the queue
+  // hid the strip while _logFilter stayed "A" — every other job's lines AND
+  // every engine-level line ("Queue finished.", errors) silently gone, with no
+  // control on screen to explain or undo it. Hiding the control means dropping
+  // the state it controls. (In graph mode the strip is only hidden because the
+  // panel has its own picker; the raw log underneath is not on screen either,
+  // and switching back re-shows the strip — so clear only when it is the job
+  // count that hid it.)
+  if (_logFilter && names.length < 2) {
+    _logFilter = "";
+    applyLogFilter();
+  }
   const wanted = _logFilter + "|" + names.join("|");
   if (box.dataset.state === wanted) return;
   box.dataset.state = wanted;

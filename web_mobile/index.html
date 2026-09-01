@@ -311,7 +311,7 @@ html,body{height:100%;background:var(--background);color:var(--foreground);
           </div>
         </div>
         <div class="field" id="geom-direct-field">
-          <select id="n-xyz"><option value="">(select an uploaded .xyz on PC)</option></select>
+          <select id="n-xyz" disabled><option value="">Loading a geometry from the phone is not available yet — build it on the PC, or reference a calculation already in the queue</option></select>
         </div>
         <div class="field" id="geom-ref-field" style="display:none">
           <label>Take geometry from</label>
@@ -672,8 +672,12 @@ function renderQueue(calcs){
     const editable = c.state==="pending";   // pending: drag + delete
     const rawBadge=c.is_raw?'<span class="badge-raw">raw</span>':'';
     const bar=c.state==="running"?'<div class="running-bar"><span></span></div>':'';
+    // The name goes in a data attribute, not into the handler's SOURCE: esc()
+    // escapes & < > " but not an apostrophe, and the store allows one — a calc
+    // named it's produced delCalc('it's'), a SyntaxError, and × silently did
+    // nothing at all. (The desktop queue solved the same problem the same way.)
     const delBtn = editable
-      ? `<button class="qdel" onclick="delCalc('${esc(c.name)}')" title="Remove">×</button>` : '';
+      ? `<button class="qdel" data-del="${esc(c.name)}" title="Remove">×</button>` : '';
     const handle = editable
       ? `<span class="qhandle" data-index="${idx}" title="Drag to reorder">≡</span>` : '';
     div.innerHTML=`<div class="qmain">
@@ -684,6 +688,8 @@ function renderQueue(calcs){
       <span class="qstate ${c.state}">${c.state}</span>
       ${delBtn}
       ${handle}`;
+    const db = div.querySelector("[data-del]");
+    if (db) db.addEventListener("click", () => delCalc(c.name));
     el.appendChild(div);
   });
   attachTouchDrag();
@@ -1003,13 +1009,24 @@ async function addCalc(){
   const name=document.getElementById("n-name").value.trim();
   if(!name){toast("Name is required");return;}
   const kind=document.getElementById("n-kind").value;
+  // The phone cannot load an .xyz — it has no file to load — so "direct" here
+  // means "no coordinates", and the API accepted it happily: the calculation sat
+  // in the queue looking fine and became FAILED at run time ("No coordinates
+  // provided"), which locks it (P24). The desktop refuses the same input in the
+  // build form; refuse it here too, where it can still be corrected.
+  const ref = geomSource==="reference" ? document.getElementById("n-ref").value : "";
+  if(geomSource!=="reference"){
+    toast("Load the geometry on the PC, or reference another calculation");
+    return;
+  }
+  if(!ref){ toast("Pick the calculation to take the geometry from"); return; }
   const payload={
     name, kind,
     charge:parseInt(document.getElementById("n-charge").value,10)||0,
     multiplicity:parseInt(document.getElementById("n-mult").value,10)||1,
     geometry_source:geomSource,
-    xyz: geomSource==="direct" ? "" : "",   // .xyz upload handled on PC; phone references existing
-    ref_name: geomSource==="reference" ? document.getElementById("n-ref").value : "",
+    xyz: "",                               // .xyz upload happens on the PC
+    ref_name: ref,
     config: collectConfig(kind),
   };
   try{

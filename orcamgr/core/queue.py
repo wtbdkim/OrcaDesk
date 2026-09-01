@@ -51,6 +51,12 @@ from .xyzutil import as_xyz_file
 # How long the dispatcher sleeps between re-scans while it waits for a job to
 # finish. A finishing job also notifies _slot_cv, so this is only a backstop.
 _SLOT_POLL = 0.25
+# How long _start_job waits for a row it already admitted to fit again before
+# handing it back to the scan. The pick's memory test reads the machine's live
+# free RAM, which can fall between the pick and the start; waiting indefinitely
+# there parks the single dispatcher on one row and blocks every smaller row
+# behind it.
+_REFIT_GIVE_UP = 5.0
 
 
 class CalcState(str, Enum):
@@ -174,6 +180,29 @@ def _guess_signature(inp_text: str) -> str:
     return f"{header}|{','.join(els)}" if els else ""
 
 
+# What an output MUST contain to be a given kind's result. Only sections whose
+# absence is unambiguous are listed: a freq output without a frequency table is
+# not a frequency calculation, whatever else it is. (Convergence and the
+# imaginary-mode count stay with validate_result — this is identity, not quality.)
+def _missing_section_for_kind(kind: str, result: ParseResult) -> str:
+    kind = kind or ""
+    if kind in ("freq", "ts_freq", "opt_freq", "ts_opt_freq", "mlip_freq",
+                "mlip_opt_freq") and not result.frequencies:
+        return "frequencies"
+    if kind in ("opt", "ts_opt", "opt_freq", "ts_opt_freq", "mlip_opt",
+                "mlip_opt_freq") and not result.is_optimization:
+        return "optimization"
+    if kind == "tddft" and not result.has_tddft:
+        return "TD-DFT transitions"
+    if kind == "nmr" and not result.nmr_shieldings:
+        return "NMR shieldings"
+    if kind == "crest_conf" and not getattr(result, "conformers", None):
+        return "conformers"
+    if kind in ("neb_ts", "irc") and not result.neb_path:
+        return "reaction path"
+    return ""
+
+
 def _kept_result_matches(calc: Calculation, result: ParseResult) -> str:
     """'' when an on-disk result plausibly belongs to this calc, else a
     human-readable mismatch reason. Workspace folders are never deleted and
@@ -185,6 +214,15 @@ def _kept_result_matches(calc: Calculation, result: ParseResult) -> str:
     without running."""
     if not result.geometry:
         return ""
+    # Element sequence alone does not make an output this calculation's result:
+    # a folder left by an `opt` run has the right atoms for a `freq` calc of the
+    # same molecule, and the freq rule ("no imaginary modes") is vacuously true
+    # of an output with no frequencies at all — so the opt output was adopted as
+    # a finished frequency job, with no frequencies and no thermochemistry.
+    # Check for the section the kind is defined by.
+    missing = _missing_section_for_kind(calc.kind, result)
+    if missing:
+        return f"existing result has no {missing}"
     expected = ""
     if calc.geometry_source == GeometrySource.DIRECT:
         if calc.is_raw and GEOMETRY_PLACEHOLDER not in calc.raw_text:
@@ -346,6 +384,9 @@ class QueueEngine:
         # calculations the user chose to skip this run (e.g. to keep existing
         # results on disk instead of overwriting them)
         self._skip_names = set(skip_names or ())
+        # Which ROWS those names were about; filled at run start (see run_all),
+        # because a name outlives the calculation that carried it.
+        self._skip_ids: set[int] = set()
         # The list run_all walks is LIVE (P29): when wired to a store,
         # queue_lock IS the store's own lock (make_engine_factory), so user
         # mutations of the queue and the walk's pick step are serialized.
@@ -452,10 +493,21 @@ class QueueEngine:
     # -- geometry resolution --
     def _resolve_geometry(self, calc: Calculation) -> str:
         if calc.geometry_source == GeometrySource.DIRECT:
-            # In raw+direct mode the coordinates live inside raw_text already,
-            # so an empty xyz here is fine (placeholder won't be used).
-            if not calc.xyz.strip() and not calc.is_raw:
-                raise OrcaRunError("No coordinates provided (direct source is empty).")
+            # In raw+direct mode the coordinates normally live inside raw_text,
+            # so an empty xyz is fine — UNLESS the text has the placeholder,
+            # which is a promise that coordinates will be injected here. With
+            # none loaded, render_raw_input substituted "" and ORCA was launched
+            # on "* xyz 0 1 \n *", failing minutes later into a locked FAILED
+            # (P24) instead of being refused before anything started.
+            if not calc.xyz.strip():
+                if not calc.is_raw:
+                    raise OrcaRunError(
+                        "No coordinates provided (direct source is empty).")
+                if GEOMETRY_PLACEHOLDER in calc.raw_text:
+                    raise OrcaRunError(
+                        f"Raw input has a {GEOMETRY_PLACEHOLDER} placeholder but "
+                        "no geometry was loaded for it. Load an .xyz, or paste "
+                        "the coordinates into the input itself.")
             return calc.xyz
         # REFERENCE
         if calc.ref_name == calc.name:
@@ -560,6 +612,11 @@ class QueueEngine:
 
         # Fresh launch.
         calc.state = CalcState.RUNNING
+        # ...and it is a NEW run: a re-run of a CANCELLED calc (or a BLOCKED one
+        # that was re-pointed) kept showing "Cancelled by user." / "Skipped: a
+        # dependency failed." for the whole time it was running. The MLIP and
+        # CREST entry points already clear it.
+        calc.message = ""
         self.cb.calc_update(index, calc)
 
         xyz = self._resolve_geometry(calc)
@@ -735,7 +792,13 @@ class QueueEngine:
                     src = self.workspace_root / calc.ref_name / hess_name
                     looked.append(str(src))
                     if src.exists():
-                        shutil.copyfile(src, calc_dir / hess_name)
+                        dest = calc_dir / hess_name
+                        # the name may carry a sub-path ("sub/x.hess"), whose
+                        # parent does not exist in a fresh run folder —
+                        # FileNotFoundError escaped as "Unexpected error: [Errno
+                        # 2]" instead of this guard's own clear message
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(src, dest)
                         self.cb.log(f"[{calc.name}] copied {hess_name} from "
                                     f"{calc.ref_name}'s folder.", "info",
                                     calc.name)
@@ -992,22 +1055,35 @@ class QueueEngine:
                     f"to conformers/.", "info", calc.name)
 
     # -- dependency-scoped failure propagation --
-    def _dependents_of(self, calcs: list[Calculation], failed_name: str) -> set[str]:
-        """All calc names that depend on failed_name, directly or transitively."""
-        blocked: set[str] = set()
-        bad = {failed_name}
-        changed = True
-        while changed:
-            changed = False
-            for c in calcs:
-                if c.name in blocked:
-                    continue
-                if (c.geometry_source == GeometrySource.REFERENCE
-                        and c.ref_name in bad):
-                    blocked.add(c.name)
-                    bad.add(c.name)
-                    changed = True
-        return blocked
+    def _blocked_by(self, calc: Calculation) -> "Optional[Calculation]":
+        """The FAILED/BLOCKED calculation this row's geometry reference chain
+        reaches, or None.
+
+        Read live from the queue every time, rather than from a set of names
+        filled in at run start. The queue is live (P29) and rows are tracked by
+        object identity, but a name is not an identity: a BLOCKED row edited to
+        point at a healthy parent — or removed and re-added with DIRECT
+        geometry — kept its old name and was blocked again by a run-start
+        decision about a calculation that no longer exists.
+
+        Walking the chain also makes transitivity independent of queue order: a
+        row whose parent is still PENDING but whose grandparent has FAILED is
+        blocked on the spot, without waiting for the parent to be stamped first.
+        A dangling or self-reference is NOT blocked here — _resolve_geometry
+        reports those precisely, and a vague "a dependency failed" would be a
+        worse message.
+        """
+        cur, walked = calc, set()
+        while (cur.geometry_source == GeometrySource.REFERENCE and cur.ref_name
+               and cur.ref_name not in walked):
+            walked.add(cur.ref_name)
+            parent = self._by_name.get(cur.ref_name)
+            if parent is None or parent is cur:
+                return None
+            if parent.state in (CalcState.FAILED, CalcState.BLOCKED):
+                return parent
+            cur = parent
+        return None
 
     def _failure_reason(self, calc: Calculation, runner_msg: str) -> str:
         """Turn a raw runner error into a user-facing reason. If ORCA wrote an
@@ -1028,7 +1104,14 @@ class QueueEngine:
         if not self._orca_launched:
             return runner_msg
         try:
-            out_path = self.workspace_root / calc.name / f"{calc.name}.out"
+            # calc.output_path is where THIS attempt wrote, recorded at launch —
+            # and a reattached job (or one from a session whose workspace has
+            # since changed) does not write under the current workspace root.
+            # Re-deriving the path there read a stale .out from an unrelated,
+            # same-named run and quoted its cause; on a FAILED calc that
+            # diagnosis is permanent, because FAILED is locked (P24).
+            out_path = Path(calc.output_path) if calc.output_path else (
+                self.workspace_root / calc.name / f"{calc.name}.out")
             if out_path.exists():
                 r = parse_file(str(out_path))
                 if r.error_message:
@@ -1045,23 +1128,18 @@ class QueueEngine:
     def run_all(self, calcs: list[Calculation]) -> None:
         with self._queue_lock:
             self._by_name = {c.name: c for c in calcs}
-            blocked_names: set[str] = set()
-            # Calcs already FAILED from a previous run are failure seeds (P24:
-            # FAILED is locked, never re-run): block their transitive dependents
-            # up front, exactly as a live failure would — otherwise a dependent
-            # would launch and die later in reference resolution with a murkier
-            # message.
-            for c in calcs:
-                if c.state == CalcState.FAILED:
-                    blocked_names |= self._dependents_of(calcs, c.name)
-
-            # The symmetric normalization: a row still BLOCKED from a previous
-            # run whose ancestry is now clean (its failed parent was removed, or
-            # its reference re-pointed) WILL run this pass — reset it up front so
-            # the visible queue never shows a will-run row labelled with the
-            # stale "Skipped: a dependency failed." until the walk reaches it.
+            # Pin the keep-existing answers to the rows they were given about.
+            self._skip_ids = {id(c) for c in calcs if c.name in self._skip_names}
+            # A row still BLOCKED from a previous run whose ancestry is now
+            # clean (its failed parent was removed, or its reference
+            # re-pointed) WILL run this pass — reset it up front so the visible
+            # queue never shows a will-run row still labelled with the stale
+            # "Skipped: a dependency failed." until the walk reaches it. The
+            # converse — a dependent of a calc that is ALREADY FAILED (P24:
+            # locked, never re-run) — needs no seeding: _blocked_by reads the
+            # live chain at pick time, so it is blocked when it is reached.
             for idx, c in enumerate(calcs):
-                if c.state == CalcState.BLOCKED and c.name not in blocked_names:
+                if c.state == CalcState.BLOCKED and self._blocked_by(c) is None:
                     c.state = CalcState.PENDING
                     c.message = ""
                     self.cb.calc_update(idx, c)
@@ -1077,14 +1155,13 @@ class QueueEngine:
         # removed row's id can't be recycled onto a new row mid-run.
         seen: dict[int, Calculation] = {}
         try:
-            self._run_walk(calcs, seen, blocked_names)
+            self._run_walk(calcs, seen)
         finally:
             with self._queue_lock:
                 self._active_names.clear()
                 self._slots.clear()
 
-    def _run_walk(self, calcs: list[Calculation], seen: dict,
-                  blocked_names: set) -> None:
+    def _run_walk(self, calcs: list[Calculation], seen: dict) -> None:
         """One pass over the live queue, running up to `budget.max_jobs`
         calculations at a time.
 
@@ -1115,7 +1192,7 @@ class QueueEngine:
                 with self._slot_cv:
                     if self._should_stop(calcs):
                         break
-                    picked = self._pick_ready(calcs, seen, blocked_names)
+                    picked = self._pick_ready(calcs, seen)
                     if picked is None:
                         if self._slots:
                             # A job in flight will free budget (or satisfy the
@@ -1132,7 +1209,7 @@ class QueueEngine:
                             break     # queue exhausted, nothing left in flight
                         # Nothing running and nothing affordable: let the first
                         # ready row through regardless of budget (see above).
-                        picked = self._pick_ready(calcs, seen, blocked_names,
+                        picked = self._pick_ready(calcs, seen,
                                                   ignore_budget=True)
                         if picked is None:
                             # ...and nothing is even dependency-ready, with no
@@ -1142,13 +1219,21 @@ class QueueEngine:
                     i, calc = picked
                     seen[id(calc)] = calc
                     self._active_names.add(calc.name)
-                if not self._precheck(calc, i, blocked_names):
+                if not self._precheck(calc, i):
                     self._release(calc.name)
                     continue
                 if self._try_keep_existing(calc, i):
                     self._release(calc.name)
                     continue
-                if not self._start_job(calc, i, calcs, blocked_names, threads):
+                started = self._start_job(calc, i, calcs, threads)
+                if started == "requeue":
+                    # It stopped fitting while we waited (live memory moved).
+                    # Un-see it so the scan can offer it again — and meanwhile
+                    # reach the rows behind it, which may well fit.
+                    with self._slot_cv:
+                        seen.pop(id(calc), None)
+                    continue
+                if not started:
                     break
         finally:
             # The run is over only when every job it started has come back:
@@ -1158,7 +1243,7 @@ class QueueEngine:
                 t.join()
 
     def _pick_ready(self, calcs: list[Calculation], seen: dict,
-                    blocked_names: set, ignore_budget: bool = False):
+                    ignore_budget: bool = False):
         """(index, calc) of the first row that may be handled now, or None.
 
         Caller must hold the lock: the name map, the seen-stamp and the
@@ -1172,9 +1257,17 @@ class QueueEngine:
         for j, c in enumerate(calcs):
             if id(c) in seen:
                 continue
+            # Asked BEFORE _deps_ready: a DONE/FAILED/blocked row is disposed
+            # of by _precheck without launching anything, so waiting for its
+            # geometry reference is pointless — and when those references form
+            # a cycle it left the row unhandled all the way to
+            # _block_unreachable, which used to stamp a frozen DONE result (or
+            # a locked FAILED, or a reattachable RUNNING job) BLOCKED.
+            if self._handled_without_running(c):
+                return j, c
             if not self._deps_ready(c, seen):
                 continue
-            if ignore_budget or self._handled_without_running(c, blocked_names):
+            if ignore_budget:
                 return j, c
             if self._fits(self._slot_for(c)):
                 return j, c
@@ -1210,8 +1303,7 @@ class QueueEngine:
         return not (parent.state in (CalcState.PENDING, CalcState.CANCELLED)
                     and id(parent) not in seen)
 
-    def _handled_without_running(self, calc: Calculation,
-                                 blocked_names: set) -> bool:
+    def _handled_without_running(self, calc: Calculation) -> bool:
         """True when _precheck will dispose of this row without launching
         anything, so it needs no share of the budget. These are pure state
         checks, and therefore certain.
@@ -1223,7 +1315,7 @@ class QueueEngine:
         park the single dispatcher and head-of-line block every row behind it.
         """
         return (calc.state in (CalcState.DONE, CalcState.FAILED)
-                or calc.name in blocked_names)
+                or self._blocked_by(calc) is not None)
 
     def _slot_for(self, calc: Calculation) -> "_JobSlot":
         return _JobSlot(name=calc.name, cores=declared_cores(calc),
@@ -1275,6 +1367,14 @@ class QueueEngine:
             if id(c) in seen:
                 continue
             seen[id(c)] = c
+            # Only a row that was actually going to run can be blocked. A DONE
+            # result is frozen, a FAILED one is locked with its diagnosis (P24),
+            # and a RUNNING one has a detached ORCA behind it — stamping any of
+            # them here would unfreeze, unlock or orphan them. They cannot be in
+            # this loop any more (see _pick_ready), so this is the second lock
+            # on the door, not the first.
+            if c.state in (CalcState.DONE, CalcState.FAILED, CalcState.RUNNING):
+                continue
             c.state = CalcState.BLOCKED
             c.message = "Skipped: its geometry reference can never complete."
             self.cb.log(f"[{c.name}] blocked (circular geometry reference).",
@@ -1282,20 +1382,33 @@ class QueueEngine:
             self.cb.calc_update(j, c)
 
     def _start_job(self, calc: Calculation, i: int, calcs: list[Calculation],
-                   blocked_names: set, threads: list) -> bool:
-        """Reserve this calc's resources and run it in its own thread. Returns
-        False if a stop landed while waiting for room (nothing was started)."""
+                   threads: list):
+        """Reserve this calc's resources and run it in its own thread.
+
+        Returns True when it started, False when a stop landed while waiting for
+        room (nothing was started, and the walk ends), and "requeue" when the
+        row stopped fitting while we waited — the walk then un-sees it and moves
+        on to the rows behind it."""
         slot = self._slot_for(calc)
         with self._slot_cv:
-            # Belt and braces: _pick_ready already admitted this row, and only
-            # this dispatcher starts jobs, so it still fits. The wait is here in
-            # case that ever stops holding — it stops as soon as nothing is in
-            # flight, which is the run-alone rule that keeps big jobs from
-            # starving.
+            # _pick_ready already admitted this row — but its RAM test consults
+            # the machine's live free memory, which can drop between the pick
+            # and here. Waiting it out parked the dispatcher on this one row
+            # (still in _active_names, so not even editable) and head-of-line
+            # blocked every smaller row behind it, which contradicts the
+            # "a row that does not fit is skipped OVER" rule. Only wait while
+            # something is in flight that will free room, and re-offer the row
+            # to the scan instead of holding it.
+            waited = 0.0
             while self._slots and not self._fits(slot):
                 if self._stop_pending():
                     break
+                if waited >= _REFIT_GIVE_UP:
+                    self._active_names.discard(calc.name)
+                    self._slot_cv.notify_all()
+                    return "requeue"
                 self._slot_cv.wait(_SLOT_POLL)
+                waited += _SLOT_POLL
             if self._stop_pending():
                 self._active_names.discard(calc.name)
                 self._slot_cv.notify_all()
@@ -1311,7 +1424,7 @@ class QueueEngine:
         def _work() -> None:
             self._job_local.slot = slot
             try:
-                if not self._dispatch_and_handle(calc, i, calcs, blocked_names):
+                if not self._dispatch_and_handle(calc, i, calcs):
                     self._shutdown_seen.set()   # app is closing: stop the walk
             finally:
                 with self._slot_cv:
@@ -1385,13 +1498,12 @@ class QueueEngine:
             return True
         return False
 
-    def _precheck(self, calc: Calculation, i: int, blocked_names: set) -> bool:
+    def _precheck(self, calc: Calculation, i: int) -> bool:
         """State screening before a calc may run. False → the row was handled
-        here (the walk skips it); True → proceed to run. May add to
-        blocked_names (a mid-run add whose parent already failed)."""
+        here (the walk skips it); True → proceed to run."""
         # Already finished successfully on a previous run: don't recompute
         # (that would waste time and overwrite good results). Checked BEFORE
-        # blocked_names so a frozen DONE result is never re-stamped BLOCKED
+        # the dependency check so a frozen DONE result is never re-stamped BLOCKED
         # by a dependency that failed later. CANCELLED calculations DO
         # re-run, so the user can retry them.
         if calc.state == CalcState.DONE:
@@ -1400,26 +1512,35 @@ class QueueEngine:
             return False
 
         # FAILED is locked (P24): never re-run a failed calc; a retry is a
-        # NEW calculation. Checked before blocked_names so the failure
+        # NEW calculation. Checked before the dependency check so the failure
         # diagnosis is never re-stamped BLOCKED.
         if calc.state == CalcState.FAILED:
             self.cb.log(f"[{calc.name}] failed previously — locked; "
                         "build a new calculation to retry.", "warn", calc.name)
             return False
 
-        # A row added (or edited) mid-run postdates run_all's blocked_names
-        # bookkeeping, so also judge its DIRECT parent's live state:
-        # referencing a FAILED/BLOCKED calc blocks it exactly like a
-        # dependent known at seed time. (Transitively sound: mid-run adds
-        # append, so a parent is always visited before its new dependent.)
-        if calc.name not in blocked_names and calc.ref_name and (
-                calc.geometry_source == GeometrySource.REFERENCE):
-            parent = self._by_name.get(calc.ref_name)
-            if parent is not None and parent.state in (
-                    CalcState.FAILED, CalcState.BLOCKED):
-                blocked_names.add(calc.name)
+        # A reference to a calculation that is not in the queue at all. Both
+        # run entry points screen for this up front (find_dangling_reference),
+        # but the startup resume cannot refuse — it has a running job to
+        # reattach — and a mid-run add is never screened. Reaching
+        # _resolve_geometry it became a FAILED calc, which is LOCKED (P24), so
+        # a queue the user could have fixed by re-pointing one row needed that
+        # row rebuilt instead. BLOCKED says the same thing and stays editable.
+        if (calc.geometry_source == GeometrySource.REFERENCE and calc.ref_name
+                and calc.ref_name != calc.name
+                and self._by_name.get(calc.ref_name) is None):
+            calc.state = CalcState.BLOCKED
+            calc.message = (f"Skipped: referenced calculation "
+                            f"'{calc.ref_name}' is not in the queue.")
+            self.cb.log(f"[{calc.name}] blocked (referenced calculation "
+                        f"'{calc.ref_name}' is not in the queue).", "warn", calc.name)
+            self.cb.calc_update(i, calc)
+            return False
 
-        if calc.name in blocked_names:
+        # Whether a dependency failed is decided from the queue as it is NOW
+        # (see _blocked_by), so a row edited or re-added mid-run is judged on
+        # what it references now, not on a name recorded at run start.
+        if self._blocked_by(calc) is not None:
             calc.state = CalcState.BLOCKED
             calc.message = "Skipped: a dependency failed."
             self.cb.log(f"[{calc.name}] blocked (a dependency failed).",
@@ -1443,7 +1564,13 @@ class QueueEngine:
         hold up, "keep" is impossible; the honest fallback is to run
         the calc, never to mark it FAILED (the user asked to preserve
         a result, not to lock the calc over a stale one)."""
-        if calc.name not in self._skip_names:
+        # Identity, not name: _skip_names comes from the overwrite modal, which
+        # was shown for the rows in the queue at run start. The queue is live
+        # (P29), so a row removed and re-added — or edited in place — under the
+        # same name is a DIFFERENT calculation, and it must not inherit a "keep
+        # the existing result" answer given about the old one (it would be
+        # stamped DONE from an output it never produced).
+        if id(calc) not in self._skip_ids:
             return False
         if calc.kind.startswith("mlip"):
             out_path = self.workspace_root / calc.name / f"{calc.name}.mlip.json"
@@ -1488,10 +1615,10 @@ class QueueEngine:
         return True
 
     def _dispatch_and_handle(self, calc: Calculation, i: int,
-                             calcs: list[Calculation], blocked_names: set) -> bool:
+                             calcs: list[Calculation]) -> bool:
         """Run one calc through its backend and translate the outcome into a
         queue state. False → break out of the walk (app shutdown); True →
-        walk on to the next row. May add to blocked_names (dependency-scoped
+        walk on to the next row. (Failure propagation is dependency-scoped
         failure propagation)."""
         # No launch has happened for this attempt yet — until _run_calc
         # reports one, _failure_reason must not trust an on-disk .out (A22).
@@ -1547,8 +1674,6 @@ class QueueEngine:
             calc.create_time = None
             self.cb.log(f"[{calc.name}] FAILED: {calc.message}", "err", calc.name)
             self.cb.calc_update(i, calc)
-            with self._queue_lock:
-                blocked_names |= self._dependents_of(calcs, calc.name)
         except Exception as e:  # defensive
             calc.state = CalcState.FAILED
             calc.message = f"Unexpected error: {e}"
@@ -1556,6 +1681,4 @@ class QueueEngine:
             calc.create_time = None
             self.cb.log(f"[{calc.name}] FAILED: {e}", "err", calc.name)
             self.cb.calc_update(i, calc)
-            with self._queue_lock:
-                blocked_names |= self._dependents_of(calcs, calc.name)
         return True

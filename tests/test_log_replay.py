@@ -36,8 +36,14 @@ PHASE_LINES = [
     "                              IR SPECTRUM",
     "THERMOCHEMISTRY AT 298.15K",
     "ORCA NUMERICAL FREQUENCIES",
-    "Number of displacements            ...     30",
-    "... for displacement    7 /   30",
+    # Verbatim from a real ORCA 6.1.1 NumFreq run (HF/STO-3G, water). The
+    # header writes the total as a SUBTRACTION, and the per-displacement line
+    # says "displaced geometry K (of N)" — there is no "displacement K / N"
+    # anywhere in ORCA's output, which is why the numerical-frequency panel
+    # never advanced.
+    "Number of displacements        ... 18 - 6",
+    "	<< Calculating gradient on displaced geometry   1 (of  12) >>",
+    "	<< Calculating gradient on displaced geometry  12 (of  12) >>",
     "                       TD-DFT XC SETUP",
     "               RPA-DIAGONALIZATION",
     "                     TD-DFT/TDA EXCITED STATES",

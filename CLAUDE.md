@@ -241,6 +241,16 @@ The `core/` pipeline:
   against PID reuse via `create_time`.
 - `procutil.py` — psutil-backed `process_matches(pid, create_time)` and
   `kill_tree(...)`, used for reattach and reliable tree termination.
+- `tailer.py` — `FileTailer`, the incremental tail behind the live log for both
+  the ORCA and CREST runners, plus `decode_orca_line`. It reads with
+  `errors="surrogateescape"` and repairs each line through
+  `orcamgr/textio.py`: an ORCA `.out` on Windows is **mixed-encoding** — ORCA
+  writes its own (ASCII) strings as UTF-8 but echoes the paths it was handed on
+  argv in the **process ANSI code page** — so decoding the file as UTF-8 turned
+  every line naming a Korean calc name or workspace into U+FFFD. The buffer is
+  split once per drain, not sliced per line: the old quadratic loop took 47 s on
+  an 8 MB burst (ORCA emits those) and the monitor only checks cancel/detach
+  *between* drains, so Stop went unanswered for that whole time.
 - `resources.py` — what a calculation *costs* (`declared_cores`,
   `estimated_ram_mb`, reading a raw `.inp`'s own `%pal`/`%maxcore`), the
   `ResourceBudget` the dispatcher admits against, and `ram_headroom_mb()` —
@@ -310,8 +320,10 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   the explicit pick (`setGraphJob`) else the newest running job — and the job
   picker (only jobs with an actual curve — `graphJobs()`) and the raw-log filter
   (every job that produced a line) are **button strips**, not selects, and only
-  appear once a second calc has produced output, so a sequential run is visually
-  unchanged. The job name rides in `data-job` with one delegated click handler:
+  appear once a second calc has produced output — so a single-calculation run is
+  visually unchanged, and a sequential run of several grows the strip when the
+  second one starts (that is when the log first holds two jobs' lines, which is
+  what the strip is for). The job name rides in `data-job` with one delegated click handler:
   a calc name may contain a quote, which would break an inline `onclick`. `QueueSnapshot.resources` feeds the
   queue's occupancy strip.
 - **The queue stays editable while it runs (live queue, P29).** `start_run`
@@ -330,15 +342,23 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   mutations. A mid-run add whose name already has a result on disk is
   confirmed in the UI first (`bridge.has_existing_output`) — the Run-click
   overwrite modal never sees it, and the engine's keep-existing set is
-  fixed at run start, so it would otherwise overwrite silently.
+  fixed at run start, so it would otherwise overwrite silently. The
+  keep-existing answers from the Run-click modal are pinned to the ROWS they
+  were given about (`_skip_ids`, taken at run start): a row removed and re-added
+  — or edited in place — under the same name mid-run is a different
+  calculation and must actually run, not be stamped DONE from an output it never
+  produced.
 - **Calculation `name` is unique and is used as the on-disk folder name**
   (`{workspace}/{name}/`). Uniqueness is enforced in the store,
   **case-insensitively** — Windows resolves `water` and `Water` to the same
   folder, so accepting both would share one `.out` between two calcs. The
   invariant holds on every entry path: `add`/`replace` **and session
   restore** (`load_session` dedups, first occurrence wins). The name is also
-  the `.inp` file name ORCA is *invoked* with, so on top of the Windows
-  path-dangerous set it refuses a **space or `&`** (`_ORCA_HOSTILE_CHARS`):
+  the `.inp` file name ORCA is *invoked* with, so for an ORCA-backed kind it
+  refuses a **space or `&`** on top of the Windows path-dangerous set
+  (`_ORCA_HOSTILE_CHARS`; `mlip*`/`crest*` are exempt — those pipelines pass the
+  name as an argv element or a shell-quoted variable, and refusing it for every
+  kind would drop such a calculation from a restored session):
   ORCA 6 splits its own argument on whitespace, and the run then dies in
   Startup — a FAILED calc, which is locked (P24), so the name could never be
   run again. Measured on 6.1.1; `(`, `)`, `'`, `,`, `=`, `;` all run normally,
@@ -359,6 +379,12 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   reads as live output. The restore is triggered by the engine's own reattach
   line (`_CALC_REATTACH_RE`), never by queue state — a job THIS session
   started has a complete log and must never be restored over.
+  The resume is a **third run entry point** and applies the Run button's two
+  pre-run screens as far as it can: it passes the overwrite-conflict names as
+  the keep-existing set (nobody is at the keyboard to answer the modal, so
+  existing results are preserved rather than recomputed over, and the log says
+  which), and reports a dangling reference — which it cannot refuse, having a
+  running job to reattach, but which the engine now blocks rather than fails.
   A process that is gone → judged from its output (`DONE` if terminated
   normally + valid, else
   `FAILED`). The engine applies the **same judgment mid-run**
@@ -379,14 +405,32 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   structure automatically.
 - **Failure propagation is dependency-scoped, not whole-queue.** If a calc fails,
   every calc that references it (transitively) is marked `BLOCKED` and skipped;
-  unrelated calcs continue.
+  unrelated calcs continue. The verdict is read from the LIVE queue every time
+  (`_blocked_by` walks the row's reference chain), never from a set of names
+  captured at run start: a name is not an identity, and the queue is live (P29),
+  so a BLOCKED row edited to point at a healthy parent — or removed and re-added
+  with its own coordinates — was being blocked again by a decision about a
+  calculation that no longer existed. Walking the chain also makes transitivity
+  independent of queue order. A reference to a calculation that is **not in the
+  queue at all** blocks the dependent too (both run entry points screen for it
+  up front, but the startup resume cannot refuse and a mid-run add is never
+  screened) — BLOCKED rather than FAILED, because FAILED is locked and a
+  re-pointable row must stay editable.
+- **A stale ORCA restart file is set aside before a launch**, and the
+  keep-existing skip set is keyed by row IDENTITY, not by name — see the two
+  bullets below.
 - **`DONE` calcs are never recomputed** on a re-run (the result is frozen);
   **`FAILED` calcs are locked** at the moment of failure (P24): no re-run,
   no edit, no reorder — a re-run skips them and blocks their dependents up
   front; retrying means building a new calculation. Their remaining
   interactions are read-only diagnosis and × removal, which is
-  queue-list-only — workspace folders are never deleted (no file-deletion
-  code exists; a binding rule). Only `CANCELLED` (a deliberate user stop)
+  queue-list-only — a workspace folder is never deleted, and nothing on the
+  removal path touches the filesystem at all (a binding rule). Deletion does
+  exist elsewhere, and only ever for work this app produced and is about to
+  replace: a re-run clears what the previous attempt left in the run folder
+  (the MLIP worker's `vib/` scratch and stale result JSON, CREST's markers and
+  ensemble, the WSL scratch dir), and the MLIP installer removes a half-built
+  environment before retrying that name. Only `CANCELLED` (a deliberate user stop)
   re-runs. `EDITABLE_STATES` is `PENDING`/`CANCELLED`/`BLOCKED` — BLOCKED
   stays editable so a dependent can be re-pointed after its failed parent
   is removed. The keep-existing ("skip") run option parses the kept output
@@ -395,8 +439,13 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   (`_kept_result_matches`: case-insensitive atom element sequence; a
   no-placeholder raw calc is judged by its raw text's coordinate block, not
   the possibly-stale `calc.xyz` — folders survive removal, so a new calc
-  reusing a removed calc's name must not adopt the old output); otherwise
-  the calc runs.
+  reusing a removed calc's name must not adopt the old output) **and the output
+  contains the section the kind is defined by** (`_missing_section_for_kind`: a
+  freq output has frequencies, an opt output is an optimization, …). The element
+  sequence alone is not identity — an `opt` run's folder has the right atoms for
+  a `freq` calc of the same molecule, and the freq rule "no imaginary modes" is
+  vacuously true of an output with no frequency table, so an opt result was
+  adopted as a finished frequency job. Otherwise the calc runs.
 - **A stale ORCA restart file in the run folder is renamed aside before a
   launch** (`_set_aside_stale_guess`). ORCA 6 reads a `{name}.gbw` sitting
   beside `{name}.inp` as the SCF's initial guess on its own (AutoStart), and
@@ -796,7 +845,9 @@ WSL analogue of `procutil.process_matches`; `reconcile_calcs` special-cases
 `crest*` via `_crest_calc_alive`).
 
 `parse_crest_result` reads `crest_conformers.xyz` (comment line = absolute energy
-in Hartree, energy-sorted) + `crest.energies` into the shared `ParseResult` — new
+in Hartree, energy-sorted) into the shared `ParseResult` — `crest.energies` is
+copied back out of WSL but not parsed: the relative energies are computed from
+the absolute ones in the `.xyz`, which is the single source of truth — new
 `conformers: list[Conformer]` + `is_conformer_search`, with `geometry` /
 `final_energy_eh` set to the lowest conformer so the existing best-geometry
 reference path still works. `validate_result` requires normal termination
@@ -965,6 +1016,27 @@ script (D41). The Build tab gains the
 distro has CREST), and a **Settings → CREST** distro picker + Install button. Wire
 shapes: `CrestStatusPayload` / `CrestDistroPayload` / `ConformerPayload` in
 `state/schemas.py`, mirrored in `web/types.js`.
+
+### Text that Windows does not write in UTF-8
+
+`orcamgr/textio.py` is the one place that judgment lives (Qt-free, stdlib-only,
+so `core/`, `mlip/`, `gui/` and the installers can all share it — P4):
+
+* `decode_process_output(bytes)` — UTF-8 if valid, else the ANSI code page, else
+  UTF-8 with replacement. A CPython child (`pip`, `python -m venv`, the MLIP
+  worker) encodes its pipe output with `locale.getencoding()`, and console tools
+  (`where`, `py -0p`) print in the console code page — so those callers pass
+  **bytes** (no `text=True`, no `encoding=`) and decode here. It never raises: a
+  diagnostic that cannot be read still beats an exception thrown while
+  reporting an error.
+* `repair_ansi_line(str)` — for the genuinely mixed file (the ORCA `.out`), read
+  with `surrogateescape` and repaired per line. A line with no surrogates is
+  already valid UTF-8 and is returned untouched.
+
+WSL is deliberately NOT in this: `crest/wsl.py` sets `WSL_UTF8=1`, so its output
+really is UTF-8. Picked/dropped `.inp` and `.xyz` files are read `utf-8-sig`,
+because Notepad/VS Code/PowerShell write a BOM freely and ORCA refuses an input
+that starts with one.
 
 ### Paths: dev vs PyInstaller-frozen
 

@@ -64,19 +64,46 @@ _BAD_NAME_CHARS = re.compile(r'[\\/:*?"<>|]')
 # may contain spaces — OrcaRunner.launch passes the bare file name from inside
 # the folder, which is what makes a workspace under "C:\Users\John Smith" work.
 _ORCA_HOSTILE_CHARS = re.compile(r"[\s&]")
+# Control characters and lone surrogates are not typeable in the desktop's
+# single-line input but arrive freely through calc_from_dict (the phone/HTTP
+# path, a hand-edited session.json). A control character reaches mkdir and dies
+# with a localized WinError 123, which stamps the calc FAILED — locked (P24);
+# a surrogate cannot be encoded to UTF-8 at all and used to poison session
+# autosave for the rest of the app's life.
+_UNUSABLE_NAME_CHARS = re.compile(r"[\x00-\x1f\x7f\ud800-\udfff]")
+# Windows caps a path component at 255 characters, and the workspace path plus
+# "{name}/{name}.inp" is spent twice over on top of it. The cap is here rather
+# than at mkdir so the refusal is a sentence instead of a WinError 3.
+_MAX_NAME_LEN = 120
 _RESERVED_NAMES = {"con", "prn", "aux", "nul",
                    *(f"com{i}" for i in range(1, 10)),
                    *(f"lpt{i}" for i in range(1, 10))}
 
 
-def _validate_calc_name(name: str) -> None:
+def _validate_calc_name(name: str, kind: str = "") -> None:
     """Reject names that could escape the workspace or break on Windows.
-    Allows Unicode (e.g. Korean) — only path-dangerous patterns are blocked."""
+    Allows Unicode (e.g. Korean) — only path-dangerous patterns are blocked.
+
+    ``kind`` selects the ORCA-only rule below. It defaults to "" (apply it),
+    because a caller that does not know the kind is building an ORCA calc or
+    checking a name in the abstract, and the stricter answer is the safe one.
+    """
     if _BAD_NAME_CHARS.search(name):
         raise ValueError('Name contains characters not allowed in a folder name: \\ / : * ? " < > |')
-    if _ORCA_HOSTILE_CHARS.search(name):
+    # ORCA's constraint, applied where ORCA runs. The MLIP and CREST pipelines
+    # pass the name as a subprocess argv element / a shell-quoted variable, so a
+    # space is genuinely fine for them — and refusing it for every kind would
+    # DROP an existing MLIP/CREST calculation from the queue at the next launch
+    # (load_session skips entries that fail validation).
+    if not (kind or "").startswith(("mlip", "crest")) and _ORCA_HOSTILE_CHARS.search(name):
         raise ValueError("Name must not contain spaces or '&' — ORCA cannot open "
                          "an input file whose name has either.")
+    if _UNUSABLE_NAME_CHARS.search(name):
+        raise ValueError("Name contains a character that cannot be used in a "
+                         "folder name.")
+    if len(name) > _MAX_NAME_LEN:
+        raise ValueError(f"Name is too long ({len(name)} characters); "
+                         f"keep it under {_MAX_NAME_LEN}.")
     if ".." in name:
         raise ValueError("Name must not contain '..'.")
     if name.endswith("."):
@@ -216,7 +243,7 @@ def calc_from_dict(d: dict) -> Calculation:
     name = raw_name.strip()
     if not name:
         raise ValueError("Calculation name is required.")
-    _validate_calc_name(name)
+    _validate_calc_name(name, str(d.get("kind", "") or ""))
     # charge/multiplicity are f-string-interpolated into the .inp's
     # "* xyz {charge} {multiplicity}" line. int() already blocks string
     # injection, but not absurd magnitudes — clamp to physically generous
@@ -427,6 +454,9 @@ class QueueStore:
         # log buffer: list of (seq, level, message, calc); clients poll with ?since=
         self._log: list[tuple[int, str, str, str]] = []
         self._log_seq = 0
+        # env id -> MLIP probe state, published by the desktop Bridge so the
+        # phone's /api/run can resolve mlip_env_id == "" the same way (P4)
+        self._mlip_readiness: dict = {}
         # the background engine + thread while a run is in progress
         self._engine = None
         self._thread: Optional[threading.Thread] = None
@@ -843,6 +873,26 @@ class QueueStore:
         self._version += 1
         self.save_session()
 
+    # --- MLIP readiness (published by the desktop probe, read by both runs) ---
+    def set_mlip_readiness(self, states: dict) -> None:
+        """Publish env id -> probe state ("ready"/"checking"/"error").
+
+        Readiness is a live probe result that only the desktop Bridge produces
+        (it costs an interpreter launch and a torch import), but BOTH run entry
+        points have to honour `mlip_env_id == "" -> first ready env`. Putting it
+        on the shared store is what lets the phone's /api/run order the env list
+        the same way the desktop does, instead of taking settings order and
+        sending a phone-started calculation into a broken interpreter while the
+        desktop pill reads "ready" off a different env.
+        """
+        with self._lock:
+            self._mlip_readiness = dict(states or {})
+
+    def mlip_readiness(self) -> dict:
+        """The last published readiness map ({} before the first probe)."""
+        with self._lock:
+            return dict(self._mlip_readiness)
+
     def save_session(self) -> None:
         """Persist the full queue to the session file (atomic replace). Best-
         effort: a save failure must never break the running app."""
@@ -856,8 +906,19 @@ class QueueStore:
             tmp = path.with_name(path.name + ".tmp")
             tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             os.replace(tmp, path)
-        except OSError:
-            pass
+        except (OSError, UnicodeError):
+            # UnicodeError is not hypothetical: json.loads turns the escape
+            # "\ud800" into a lone surrogate, which no UTF-8 encoder will take.
+            # It is a ValueError, so it escaped this guard and propagated out of
+            # _bump_and_save and out of add/remove/replace/reorder — and since
+            # the calc is already in the list by then, EVERY later mutation
+            # raised too and the session was never written again. Names are
+            # refused surrogates at the validator now; this is the backstop for
+            # every other persisted string.
+            try:
+                tmp.unlink()
+            except (OSError, NameError, UnboundLocalError):
+                pass
 
     def load_session(self) -> None:
         """Restore the queue from the session file and reconcile it with reality
@@ -873,9 +934,16 @@ class QueueStore:
         # user deletes session.json by hand (same guard as Settings.load, P32).
         if not isinstance(data, dict):
             return
+        # ...and neither is the value under "calculations" necessarily a list:
+        # null or a number is not iterable, and the TypeError would propagate
+        # out of MainWindow.__init__ — the app would not start at all until the
+        # file was deleted by hand (P32).
+        entries = data.get("calculations", [])
+        if not isinstance(entries, list):
+            entries = []
         restored = []
         seen_names: set[str] = set()
-        for d in data.get("calculations", []):
+        for d in entries:
             try:
                 c = calc_from_session_dict(d)
             except Exception:

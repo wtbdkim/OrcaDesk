@@ -2,15 +2,19 @@
 FastAPI application exposing the shared QueueStore over HTTP.
 
 This is intentionally a THIN layer over QueueStore (which is already unit
-tested without FastAPI). Stage 1 endpoints:
+tested without FastAPI). The endpoints cover the whole queue lifecycle —
+health, the queue snapshot, add/remove/reorder, run/cancel/stop-after,
+log tailing and parse results — and /api/run launches the real QueueEngine on
+the shared store, with the same budget and the same env/distro resolution the
+desktop uses.
 
-    GET  /api/health           -> {"status": "ok", ...}
-    GET  /api/queue            -> full queue snapshot
-    POST /api/queue            -> add a calculation (JSON body)
-    DELETE /api/queue/{name}   -> remove a calculation
+Auth is a per-launch PIN (see P35): every /api call needs it except from
+loopback, and only when the server is genuinely bound to loopback. Not yet
+built: the outbound tunnel and websockets (the phone polls).
 
-Run it with orcamgr/server/run.py (uvicorn). Real ORCA execution, auth, QR,
-the tunnel and websockets come in later stages.
+Run it inside the desktop app via ServerController, or standalone for API
+testing with orcamgr/server/run.py — but not both at once (run.py builds its
+own store).
 
 NOTE: requires `fastapi` and `uvicorn` (and `pydantic`, pulled in by FastAPI).
 Install with:  pip install fastapi uvicorn
@@ -30,6 +34,7 @@ from ..state.schemas import (
     RunStartedResult,
 )
 from ..core.resources import ResourceBudget
+from ..mlip.env import order_envs_by_readiness
 from ..paths import APP_VERSION, web_mobile_dir
 from ..config import Settings
 
@@ -44,7 +49,7 @@ from ..config import Settings
 _LOCAL_HOSTS = {"127.0.0.1", "::1"}
 
 # paths that never require a token (serving the UI shell + token entry)
-_OPEN_PATHS = {"/", "/manifest.webmanifest", "/api/ping"}
+_OPEN_PATHS = {"/", "/manifest.webmanifest", "/orcadesk_logo.png", "/api/ping"}
 
 
 def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") -> FastAPI:
@@ -141,7 +146,7 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
         try:
             f = int(payload.get("from"))
             t = int(payload.get("to"))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise HTTPException(status_code=400, detail="from/to indices required.")
         try:
             store.reorder(f, t)
@@ -168,13 +173,18 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
         if ref_err:
             raise HTTPException(status_code=400, detail=ref_err)
         # mlip_envs must ride along or a phone-started MLIP calc would find
-        # no interpreter and fail even with a ready env registered (A18);
+        # no interpreter and fail even with a ready env registered (A18) — and
+        # in the ready-first order the desktop uses, since `mlip_env_id == ""`
+        # means "first READY env" and settings order is not that (the readiness
+        # map is published onto the shared store by the desktop's probe);
         # crest_distro likewise so a phone-started CREST calc resolves its WSL distro.
         # The parallel-run budget rides along too, so a phone-started run obeys
         # the same core/RAM limits as a desktop-started one (P4, same reason as
         # mlip_envs/crest_distro above).
         factory = make_engine_factory(store, settings.orca_path, settings.workspace_root,
-                                      mlip_envs=settings.mlip_envs,
+                                      mlip_envs=order_envs_by_readiness(
+                                          settings.mlip_envs,
+                                          store.mlip_readiness()),
                                       crest_distro=settings.crest_distro,
                                       budget=ResourceBudget.from_settings(settings))
         try:
@@ -224,6 +234,18 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
         if m.exists():
             return FileResponse(str(m), media_type="application/manifest+json")
         raise HTTPException(status_code=404, detail="No manifest.")
+
+    @app.get("/orcadesk_logo.png")
+    def mobile_logo():
+        # index.html shows the logo twice (header and PIN gate) and there is no
+        # static mount, so both were a 404 — a broken-image icon on the first
+        # screen a phone ever sees. Served by name rather than by mounting the
+        # folder: the mobile UI is one page plus this one asset, and a mount
+        # would expose whatever else lands in web_mobile/.
+        f = web_mobile_dir() / "orcadesk_logo.png"
+        if f.exists():
+            return FileResponse(str(f), media_type="image/png")
+        raise HTTPException(status_code=404, detail="Logo not found.")
 
     @app.get("/scf_graph.js")
     def scf_graph_js():

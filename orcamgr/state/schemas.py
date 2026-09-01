@@ -142,6 +142,11 @@ class SettingsPayload(TypedDict):
     build_mode: str           # "beginner" | "expert" | "mlip" | "crest"
     crest_distro: str         # preferred WSL distro for CREST ("" = auto-detect)
     orca_valid: bool
+    # Why the settings on screen are not the settings on disk. "" = they are.
+    # Settings.save() is best-effort by design (P32 — a failed write must not
+    # break the running app), but the UI used to answer "Saved." to a write
+    # that never happened and lose everything at the next launch.
+    save_error: str
 
 
 class MlipBackend(TypedDict):
@@ -193,7 +198,10 @@ class MlipInstallOptionsPayload(TypedDict):
     gpu: bool                 # an NVIDIA GPU is visible to the driver
     gpu_name: str             # e.g. "NVIDIA GeForce RTX 5080", or ""
     cuda_index: str           # torch wheel index its architecture needs, e.g. "cu128"
-    backends: "list[str]"     # backend keys installable (MLIP_BACKENDS order)
+    # {key, label} per installable backend, in MLIP_BACKENDS order — the
+    # install card builds its Backend dropdown from this rather than
+    # hardcoding a second copy of the registry.
+    backends: "list[dict]"
 
 
 class MlipInstallPayload(TypedDict):
@@ -297,6 +305,14 @@ class OrbitalPayload(TypedDict):
     idx: int
     occ: float
     ev: float
+    # "" for a restricted run, else "a"/"b": an unrestricted calculation prints
+    # two manifolds whose indices both start at 0, so idx alone is ambiguous.
+    spin: str
+    # "homo" | "lumo" | "": which frontier orbital this is, decided by the
+    # parser across BOTH manifolds. The front-end used to re-derive it as "the
+    # last row with occupation" — right for one manifold, wrong for two (P4:
+    # one judgment, made where the data is).
+    frontier: str
 
 
 class TddftStatePayload(TypedDict):
