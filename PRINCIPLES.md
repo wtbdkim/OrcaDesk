@@ -464,6 +464,16 @@ under the lock before publishing (a probe result for a removed env is
 dropped). (Known tensions: session-save I/O under the store lock — accepted;
 see Appendix A.)
 
+**Never call a sibling method that takes a lock you already hold.** The
+Bridge's locks are plain `threading.Lock`, so this deadlocks — and it
+deadlocks on Qt's UI thread, which means the window stops responding rather
+than one call failing. The shape is inviting: a "busy" branch wants to hand
+back the status slot's payload (`return self.get_x_status()`) from inside
+`with self._x_lock`. Snapshot the state under the lock and serialize it
+after releasing, keeping any check-and-set inside a single acquisition.
+It hides well — the branch only runs on a *second* click during a running
+job — so `tests/test_no_lock_reentry.py` walks the AST for it (P56).
+
 ### P38 — Background threads are named daemons
 
 Long-running helpers run as `daemon=True` threads with identifying names

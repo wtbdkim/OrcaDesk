@@ -100,6 +100,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   back to the plain total once the step completes.
 
 ### Fixed
+- **Clicking a long-running button a second time no longer freezes the whole
+  window.** *Create MLIP environment* and *Install CREST* both answered a
+  second click by asking their own status slot for a progress report — while
+  already holding that slot's lock. The lock is not reentrant and the caller is
+  the interface thread, so instead of the click being ignored, ORCAdesk stopped
+  responding entirely until it was killed. Both now report progress without
+  re-entering, and a test walks the code for the same shape so it cannot come
+  back.
 - **The Log tab's job buttons no longer sit there doing nothing on the Graph
   tab.** The job *filter* belongs to the raw log — it hides lines — but it
   stayed on screen in Graph mode, where it looks exactly like the graph's own

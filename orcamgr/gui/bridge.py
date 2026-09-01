@@ -529,7 +529,10 @@ class Bridge(QObject):
 
         with self._mlip_install_lock:
             if self._mlip_install.get("state") == "running":
-                return self.get_mlip_install_status()
+                # Inline, not get_mlip_install_status(): that slot re-takes this
+                # non-reentrant lock, so a second click during an install would
+                # deadlock Qt's UI thread and freeze the window.
+                return json.dumps(MlipInstallPayload(**self._mlip_install))
             self._mlip_install = {"state": "running", "step": 0, "steps": 4,
                                   "label": "Starting…", "error": "",
                                   "cancelled": False}
@@ -634,13 +637,24 @@ class Bridge(QObject):
         """Auto-install the static CREST binary into ``distro`` (or the first
         usable distro) in a background thread. Returns the current status
         immediately; the UI polls get_crest_status(). No-op if already installing."""
+        # The check-and-set stays inside ONE lock (two would let a second click
+        # slip between them and start a parallel install). What must not happen
+        # inside it is a call to get_crest_status(): that slot re-takes this
+        # non-reentrant lock, so the busy branch would deadlock Qt's UI thread
+        # and freeze the window. Snapshot here, serialize after the release.
         with self._crest_lock:
-            if self._crest_installing:
-                return self.get_crest_status()
-            self._crest_installing = True
-            self._crest_status = {"state": "checking",
-                                  "distros": self._crest_status.get("distros", []),
-                                  "wsl": self._crest_status.get("wsl", True)}
+            busy = dict(self._crest_status) if self._crest_installing else None
+            if busy is None:
+                self._crest_installing = True
+                self._crest_status = {"state": "checking",
+                                      "distros": self._crest_status.get("distros", []),
+                                      "wsl": self._crest_status.get("wsl", True)}
+        if busy is not None:
+            busy.setdefault("state", "checking")
+            busy.setdefault("distros", [])
+            busy.setdefault("wsl", True)
+            busy.setdefault("install_error", "")
+            return json.dumps(CrestStatusPayload(**busy))
 
         def _worker() -> None:
             from ..crest.installer import install_crest as do_install

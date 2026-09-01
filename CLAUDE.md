@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 487 tests over the framework-free layers
+python -m pytest                       # 477 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -59,6 +59,11 @@ env needed), `crest/` (ensemble parser against a real ethanol corpus in
 `tests/crest/fixtures/`, CLI-flag building, and the QueueEngine path via a fake
 runner — no WSL/CREST needed), `config`, `procutil` (real child processes), and
 the phone HTTP API via `fastapi.testclient` (auto-skips without fastapi).
+Two tests are **static guards over the source** rather than behaviour:
+`test_no_undefined_names.py` (a name bound nowhere in its module) and
+`test_no_lock_reentry.py` (a `self.foo()` called under a lock `foo` itself
+takes — a UI-thread deadlock that only a second click during a running job
+reaches, so no behavioural test finds it; P37).
 The one exception to "framework-free" is `test_log_replay.py`, which imports
 `gui/bridge.py` for its module-level `.out`-filter patterns and tail reader
 only (no Bridge instance) to pin the filter against the tracker regexes it
