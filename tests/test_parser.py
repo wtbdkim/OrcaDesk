@@ -518,3 +518,62 @@ def test_orca_version_row_only_when_parsed():
     assert "ORCA version" not in labels
     r.orca_version = "6.1.1"
     assert ("ORCA version", "6.1.1", "") in r.summary_rows()
+
+
+# ---------------------------------------------------------------------------
+# read_multiplicity — the head-scan used by the orbital viewer to decide
+# whether a *spin density* is worth offering, for a result that has no queue
+# entry to ask. Deliberately not a full parse: one integer, bounded read.
+# ---------------------------------------------------------------------------
+
+def _out_with_mult(mult, lead=0, tail=""):
+    head = "\n".join(f"filler line {i}" for i in range(lead))
+    body = (f"  Total Charge           Charge          ....    0\n"
+            f"  Multiplicity           Mult            ....    {mult}\n"
+            f"  Number of Electrons    NEL             ....   10\n")
+    return (head + "\n" if head else "") + body + tail
+
+
+def test_read_multiplicity_reads_the_value(tmp_path):
+    from orcamgr.core.parser import read_multiplicity
+    p = tmp_path / "a.out"
+    p.write_text(_out_with_mult(2), encoding="utf-8")
+    assert read_multiplicity(p) == 2
+
+
+def test_read_multiplicity_handles_crlf(tmp_path):
+    from orcamgr.core.parser import read_multiplicity
+    p = tmp_path / "a.out"
+    p.write_bytes(_out_with_mult(3).replace("\n", "\r\n").encode())
+    assert read_multiplicity(p) == 3
+
+
+def test_read_multiplicity_is_none_when_absent(tmp_path):
+    """None means "the file never said" — the caller must not read that as a
+    closed shell it can assert (P2)."""
+    from orcamgr.core.parser import read_multiplicity
+    p = tmp_path / "a.out"
+    p.write_text("nothing useful here\n" * 10, encoding="utf-8")
+    assert read_multiplicity(p) is None
+
+
+def test_read_multiplicity_is_none_for_a_missing_file(tmp_path):
+    from orcamgr.core.parser import read_multiplicity
+    assert read_multiplicity(tmp_path / "gone.out") is None
+
+
+def test_read_multiplicity_stops_after_the_scan_window(tmp_path):
+    """The bound is what keeps a file that never contains the line from costing
+    a full read — ORCA prints it in the input summary, near the top."""
+    from orcamgr.core.parser import read_multiplicity, _MULT_SCAN_LINES
+    p = tmp_path / "a.out"
+    p.write_text(_out_with_mult(2, lead=_MULT_SCAN_LINES + 50), encoding="utf-8")
+    assert read_multiplicity(p) is None          # past the window: not found
+
+
+def test_read_multiplicity_agrees_with_the_full_parse(tmp_path):
+    """One number, two routes — they must not drift."""
+    from orcamgr.core.parser import parse_file, read_multiplicity
+    p = tmp_path / "a.out"
+    p.write_text(_out_with_mult(4), encoding="utf-8")
+    assert read_multiplicity(p) == parse_file(str(p)).multiplicity == 4

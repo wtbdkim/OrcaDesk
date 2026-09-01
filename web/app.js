@@ -28,7 +28,8 @@ const _resultExtras = {};       // name -> full parsed payload (everything but i
 let showAllResults = false;     // "Show all" toggle: ignore per-calc-type gating
 /** @type {ParsePayload|null} */
 let _currentResult = null;      // last-rendered payload, for re-render on toggle
-let _currentResultName = "";    // queue calc name of the shown result ("" for an external Open .out) — the CREST conformer->ORCA action needs it
+let _currentResultName = "";    // queue calc name of the shown result ("" for a file opened from disk) — the CREST conformer->ORCA action needs it
+let _currentResultPath = "";    // path of the shown result when it is NOT a queued calc — the 3D orbital viewer plots from the .gbw beside it
 /** @type {Object<string, CalcInput|CalcFull>} */
 const localCalcs = {};          // name -> full calc (config/xyz/raw) added on THIS PC,
                                 // so editing keeps the details the store snapshot omits
@@ -209,6 +210,7 @@ window.onOutDropped = async function (path) {
     // an external file, not a queued calc (mirror openOutFile): a stale queued
     // name here would route Export-as-.xyz to the WRONG calc's ensemble
     _currentResultName = "";
+    _currentResultPath = path;   // keeps the 3D orbital viewer available
     _currentResult = data;
     renderResult(data);
     switchTab("results");

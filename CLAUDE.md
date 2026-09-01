@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 477 tests over the framework-free layers
+python -m pytest                       # 522 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -57,7 +57,9 @@ framework-free layers: `state/` (store, schemas, session persistence), `core/`
 parser on synthetic fixtures), `mlip/` (with a stdlib-only stub worker — no MACE
 env needed), `crest/` (ensemble parser against a real ethanol corpus in
 `tests/crest/fixtures/`, CLI-flag building, and the QueueEngine path via a fake
-runner — no WSL/CREST needed), `config`, `procutil` (real child processes), and
+runner — no WSL/CREST needed), `config`, `procutil` (real child processes),
+`cube` + `core/plot` (cube-header parsing and the `orca_plot` menu sequences /
+trust-boundary clamp / pre-flight refusals, all without ORCA), and
 the phone HTTP API via `fastapi.testclient` (auto-skips without fastapi).
 Two tests are **static guards over the source** rather than behaviour:
 `test_no_undefined_names.py` (a name bound nowhere in its module) and
@@ -176,7 +178,9 @@ dispatches per backend heuristically (an engine-written `*.mlip.json` → the ML
 parser; `crest_conformers.xyz`/`crest_best.xyz` siblings → the CREST parser; else
 the ORCA parser). Keep the heuristic OFF the queued path: workspace folders
 survive removal, so a calc reusing a removed CREST calc's name would otherwise
-parse as a conformer search. Both paths
+parse as a conformer search.
+
+Both paths
 send the *whole* `ParseResult` (every section the parser found) plus two gating flags
 — `is_optimization` and `show_elec` (`= ParseResult.shows_electronic_props`) — and the
 front-end (`web/results_render.js` `renderResultSections` / `renderSummary`) decides what to show
@@ -777,6 +781,68 @@ takes the frames' xyz straight from the front-end (favorites are few) and
 sanitizes each label into a filename, so it needs no re-parse. `browse_xyz_folder`
 also returns the picked `folder` path (the export/favorites source for a browsed
 set).
+
+**Orbital / electron-density surfaces (the viewer's second mode).** The same
+modal and the **same GLViewer instance** render volumetric data: `_mvMode` is
+`"frames"` (the .xyz list above) or `"volume"`, and `renderMvList` /
+`molViewerShow` / `molViewerStep` dispatch on it, so one WebGL context serves
+both. Entry is **View in 3D** on the Results tab's *Orbital energies* card
+(`viewOrbitals3D(_lastOrbitals)`) — the front-end passes the orbital list it
+already parsed rather than the payload carrying a second copy (P4).
+
+Cubes come from **`orca_plot`**, shelled out post-hoc against a finished run's
+`.gbw` (`orcamgr/core/plot.py`, Qt-free): nothing is recomputed and no job is
+re-run, so a DONE calc from any earlier session plots. The wavefunction is
+addressed by a **source string** — `calc:<name>` (folder via `_calc_run_dir`,
+multiplicity from the `Calculation`) or `file:<path>` (folder = the file's
+parent, base = its stem, multiplicity read back out of the `.out` by
+`parser.read_multiplicity`) — resolved in `Bridge._plot_source`. So a result
+that was never in the queue, or came from outside ORCAdesk entirely, plots the
+same way. The prefix is required, not sniffed: a Windows path always contains
+the `:` that a calc name never can. Measured on ORCA 6.1.1
+(52 atoms / 987 basis functions): one MO at 60³ = **0.17 s / 3.1 MB**, an SCF
+density over the same grid = **9.9 s**; a grid is 0.9 / 3.1 / 7.3 MB at
+40 / 60 / 80. `orcamgr/cube.py` reads only the cube **header** and hands the
+file through verbatim — 3Dmol parses cube text itself, and ORCA writes the
+*orbital* variant (negative atom count + an extra MO-index line), which 3Dmol's
+own parser already handles.
+
+Two things about that shell-out are load-bearing:
+- **`orca_plot` is driven through its interactive menu, not the advertised
+  `plot-inputfile`.** That file's parser reads ~17 positional fields in an
+  undocumented order; the menu sequences in `_SEQUENCES`/`_menu_sequence` were
+  each *run* against the real binary and confirmed (`tests/test_plot.py` pins
+  them character for character, P56). Verified: MO = `5,7,4,G,1,1,3,op,2,n,11,12`;
+  density/spin = `5,7,4,G,1,2|3,y,11,12` — the `y` answers a density-filename
+  prompt the MO path never sees, and **omitting it desynchronizes the run**,
+  after which orca_plot spins forever on EOF printing `Invalid input`
+  (observed: 3 min of CPU and 2 GB of accumulated output). Hence the bounded
+  read + hard timeout + explicit desync check in `_run_bounded`.
+- **The stored filename is grid-qualified** (`{name}.mo4a.g60.cube` in a
+  `cubes/` subfolder), because orca_plot's own name is not: it names a plot by
+  *what* it is, so the reuse check would otherwise hand back a 60³ cube under
+  an 80³ label. `plot_output_name()` is what orca_plot writes,
+  `cube_filename()` what we keep; `web/molviewer.js` `_mvCubeName` mirrors the
+  latter so the list's "already generated" dots track the selected grid.
+
+Rendering separates **sampling** from **smoothness**: an MO is a sum of
+Gaussians, so a coarse grid is missing *mesh*, not physics. 3Dmol's marching
+cubes gets `smoothness: 8` (Laplacian mesh smoothing) and the isovalue slider
+re-meshes the `VolumeData` already in memory — no backend round-trip — which is
+why 60³ is the default and the grid selector is the rare escape hatch.
+Per-kind display defaults live in `cube.py` (`DEFAULT_ISOVALUES`,
+`SIGNED_KINDS`: mo/spindens draw a ± pair, an electron density one surface).
+
+**Bridge slots**: `get_plot_options(source)` (base, has_gbw, the kinds this
+wavefunction supports — spin density only when the run is open-shell — grids,
+and the cubes already on disk), `generate_cube(payload)` / `get_cube_status()` /
+`get_cube_data()`. Generation is a background thread + UI polling like the MLIP
+probe, guarded by `Bridge._cube_lock`; the ~3 MB cube rides `get_cube_data()`
+**once**, never the poll. Only one orca_plot runs at a time (it writes a fixed
+filename beside the `.gbw`, so two would race), and a refused request returns
+the *in-flight* job's status — so the front-end checks `_mvJobIs(job, pick)`
+before adopting a result, or it draws the previous orbital under this one's
+label. Wire shapes: `PlotOptionsResult` / `CubeJobPayload` / `CubeDataResult`.
 
 **Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
 `set_crest_distro`) follow

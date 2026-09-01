@@ -17,6 +17,7 @@ function showSelectedResult() {
   const name = document.getElementById("result-select").value;
   if (!name || name === "—") return;
   _currentResultName = name;   // a queued calc — enables the conformer->ORCA action
+  _currentResultPath = "";     // … and not a file opened from disk
   _currentResult = _resultExtras[name] || null;
   renderResult(_currentResult);
 }
@@ -165,9 +166,14 @@ async function copyGeometryXyz() {
   catch (e) { failNotify("Copy failed — clipboard unavailable."); }
 }
 
+/** The orbital list currently on the Results tab, handed to the 3D viewer so it
+ *  need not re-parse the .out for something the tab already holds (P4). */
+/** @type {OrbitalPayload[]} */ let _lastOrbitals = [];
+
 /** @param {OrbitalPayload[]} orbs */
 function renderOrbitals(orbs) {
   const body = document.getElementById("result-body");
+  _lastOrbitals = orbs;
   let homoI = -1;
   orbs.forEach((o, i) => { if (o.occ > 0.01) homoI = i; });
   let rows = "";
@@ -177,6 +183,13 @@ function renderOrbitals(orbs) {
     else if (i === homoI + 1) { tag = " ← LUMO"; color = "color:var(--warn);font-weight:600"; }
     rows += `<tr><td>${o.idx}</td><td>${o.occ.toFixed(3)}</td><td style="${color}">${o.ev.toFixed(4)}${tag}</td></tr>`;
   });
+  // Plotting reads the .gbw sitting beside the output, so it works for a queued
+  // calc AND for a result opened from disk — either address is enough.
+  const actions = (_currentResultName || _currentResultPath)
+    ? `<div class="btn-group">
+         <button class="btn btn-sm" onclick="viewOrbitals3D(_lastOrbitals)"
+                 title="Render orbitals and electron density in 3D">View in 3D</button>
+       </div>` : "";
   body.innerHTML += `
     <div class="divider"></div>
     <div class="card-title">Orbital energies (${orbs.length} levels)</div>
@@ -185,7 +198,8 @@ function renderOrbitals(orbs) {
         <thead><tr><th>#</th><th>Occ</th><th>E (eV)</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-    </div>`;
+    </div>
+    ${actions}`;
 }
 
 /** @param {[string, number][]} mulliken */
@@ -300,6 +314,9 @@ async function openOutFile() {
   if (data.cancelled) return; // user closed the picker — not an error
   if (!data.summary) { appendLog("Could not parse file.", "err"); return; }
   _currentResultName = "";   // an external file, not a queued calc → no conformer->ORCA action
+  // …but keep its PATH: the .gbw sits beside it, so orbitals and density are
+  // still plottable for a file from anywhere on disk
+  _currentResultPath = data.path || "";
   _currentResult = data;
   renderResult(data);
   switchTab("results");

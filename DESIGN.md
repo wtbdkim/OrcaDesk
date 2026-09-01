@@ -444,6 +444,14 @@ never a hand-mixed rgba (D13).
   rate-limit 5s/signature; log auto-follow threshold 40px.
 - ETA buckets: under a minute (<45s) / a few minutes (<8m) / tens of minutes
   (<50m) / a few hours (<5h) / many hours (<24h) / a day or more.
+- **Isosurface colors** (`--orb-pos` `#4f86f7` · `--orb-neg` `#f2555a` ·
+  `--orb-dens` `#5eead4`) are the one token group defined **once, outside every
+  theme block**, and the one read from JS rather than applied as CSS —
+  `molviewer.js` hands them to 3Dmol as WebGL material colors. The blue/red
+  phase pair is a convention of the chemistry literature, not a UI accent: an
+  orbital whose lobes changed color with the app theme would be a figure that
+  means something different in each. Adding a surface color means adding it
+  here, not a literal in the viewer.
 
 ---
 
@@ -832,6 +840,26 @@ Tints are the semantic color at a fixed alpha ladder, implemented as the
 outline (`--err-outline`) · **55%** (`--err-stripe`, currently unused —
 retired with the old HUD's hazard stripes). Consume
 the token; adding a new tint means adding a token on this ladder first.
+
+### 11.20 Slider (continuous control)
+
+For a value the user *hunts for* rather than knows — the viewer's isovalue,
+where the right level is whatever shows the feature. A labelled `.mv-ctl`
+wrapper (`flex; gap 8px; 12px muted`) holds the label, `input[type=range]`
+(`width 120px; accent-color --primary`), and a **fixed-width mono readout**
+(`.mv-ctl-val`, `min-width 42px`, `--foreground`) — fixed so the caption beside
+it does not jog while dragging.
+
+Two rules make a slider honest rather than decorative:
+- **It must be cheap to move.** A slider invites dragging, so its `oninput`
+  may only touch data already in memory. Anything that re-fetches or
+  recomputes belongs on a `<select>` or a button, where one deliberate choice
+  costs one wait — which is exactly why the viewer pairs the instant isovalue
+  *slider* with a grid *selector*.
+- **Log-scale when the range spans orders of magnitude.** The isovalue slider
+  is 0..100 mapped onto 0.001–0.5, because a spin density is read near 0.005
+  and an orbital near 0.05; linear would bury the bottom decade in the first
+  few pixels.
 
 ## 12. State → color matrix
 

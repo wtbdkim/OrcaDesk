@@ -72,6 +72,15 @@ interface OrcaBridge {
   get_favorites(source: string): Promise<string>;            // FavoritesResult JSON: {ok, labels[]}
   toggle_favorite(source: string, label: string, on: boolean): Promise<string>;  // FavoritesResult JSON: {ok, labels[]}
   export_frames(destKind: string, dest: string, framesJson: string): Promise<string>;  // ExportResult JSON: {ok, count, folder}
+  // orbital / density cubes (orca_plot on a finished calc's .gbw). generate_cube
+  // runs on a background thread: it returns the status, the UI polls
+  // get_cube_status(), then fetches the cube once with get_cube_data() — the
+  // ~3 MB payload must never ride the poll.
+  // source is "calc:<name>" (a queued calc) or "file:<path>" (a result on disk)
+  get_plot_options(source: string): Promise<string>;         // PlotOptionsResult JSON
+  generate_cube(payloadJson: string): Promise<string>;       // CubeJob JSON; {source,kind,index,operator,grid}
+  get_cube_status(): Promise<string>;                        // CubeJob JSON
+  get_cube_data(): Promise<string>;                          // CubeDataResult JSON
   // run / results
   get_free_energy_profile(): Promise<string>;
   check_overwrite_conflicts(): Promise<string>;

@@ -56,6 +56,7 @@ from ..state.schemas import (
     StartServerResult, TextResult, TransitionPayload,
     CrestStatusPayload, ConformerPayload,
     WallpaperResult, ExportResult, FramesResult, FavoritesResult,
+    PlotOptionsResult, CubeJobPayload, CubeDataResult,
 )
 
 
@@ -179,6 +180,17 @@ class Bridge(QObject):
                                          "gpu": False, "gpu_name": "",
                                          "cuda_index": "", "backends": []}
         self._start_mlip_install_probe()
+        # Orbital / density cubes for the Results-tab 3D viewer. orca_plot runs
+        # from ~0.2 s (one MO) to ~10 s (an SCF density) on a mid-sized system —
+        # short, but not short enough to block Qt's UI thread — so it follows the
+        # probe pattern: background thread, UI polls get_cube_status(). The cube
+        # itself is fetched once by get_cube_data() and never rides the poll; at
+        # ~3 MB per file that would be megabytes a second across the channel.
+        self._cube_lock = threading.Lock()
+        self._cube: dict = {"state": "idle", "label": "", "error": "", "kind": "",
+                            "index": 0, "operator": 0, "grid": 0,
+                            "cached": False, "seconds": 0.0}
+        self._cube_path = ""              # finished cube, for get_cube_data()
         # Live CREST status (WSL distro probe). Like MLIP the probe is slow (it
         # spawns wsl.exe + runs `crest --version`), so it runs in a background
         # thread and the UI polls get_crest_status(). Guarded by its own lock.
@@ -531,7 +543,8 @@ class Bridge(QObject):
             if self._mlip_install.get("state") == "running":
                 # Inline, not get_mlip_install_status(): that slot re-takes this
                 # non-reentrant lock, so a second click during an install would
-                # deadlock Qt's UI thread and freeze the window.
+                # deadlock Qt's UI thread and freeze the window (same defect as
+                # the cube slot's busy branch).
                 return json.dumps(MlipInstallPayload(**self._mlip_install))
             self._mlip_install = {"state": "running", "step": 0, "steps": 4,
                                   "label": "Starting…", "error": "",
@@ -641,7 +654,8 @@ class Bridge(QObject):
         # slip between them and start a parallel install). What must not happen
         # inside it is a call to get_crest_status(): that slot re-takes this
         # non-reentrant lock, so the busy branch would deadlock Qt's UI thread
-        # and freeze the window. Snapshot here, serialize after the release.
+        # and freeze the window — same defect as the cube and MLIP-install busy
+        # branches. Snapshot here, serialize after the lock is released.
         with self._crest_lock:
             busy = dict(self._crest_status) if self._crest_installing else None
             if busy is None:
@@ -836,17 +850,22 @@ class Bridge(QObject):
                 r = parse_crest_result(path)
             else:
                 r = parse_file(path)
-            return self._payload_json(r)
+            return self._payload_json(r, path=path)
         except Exception as e:
             return json.dumps(ErrorPayload(error=str(e)))
 
-    def _payload_json(self, r) -> str:
+    def _payload_json(self, r, path: str = "") -> str:
             # Send everything that was parsed plus the gating flags; the
             # front-end decides what to show per calc kind (and "Show all"
             # overrides it). is_optimization gates "Final geometry"; show_elec
             # gates general electronic-structure sections; is_conformer_search
             # gates the CREST ensemble list.
+            # `path` rides only the path-addressed routes (_parse_path): the
+            # front-end keeps it so a result opened from disk can still plot its
+            # orbitals, which need the .gbw sitting beside it. A calc parsed by
+            # NAME is addressed by name and gets no path.
             return json.dumps(ParsePayload(
+                path=path,
                 summary=r.summary_rows(),
                 is_optimization=r.is_optimization,
                 show_elec=r.shows_electronic_props,
@@ -1201,6 +1220,157 @@ class Bridge(QObject):
             return json.dumps(ExportResult(ok=True, count=count, folder=str(out_dir)))
         except Exception as e:
             return json.dumps(ExportResult(ok=False, error=str(e)))
+
+    # --- orbital / density cubes (Results tab 3D viewer) ---
+    def _plot_source(self, source: str) -> tuple:
+        """Resolve a plot source to ``(run_dir, base, open_shell, error)``.
+
+        Two addressing schemes, mirroring the viewer's existing favorites keys:
+
+        * ``calc:<name>`` — a queued calculation. The folder comes from
+          :meth:`_calc_run_dir`, so a session-restored calc living in an old
+          workspace still resolves, and the multiplicity from the Calculation.
+        * ``file:<path>`` — a result opened from disk (*Open file…* or a drop),
+          which has no queue entry at all. ORCA writes ``{base}.gbw`` beside
+          ``{base}.out``, so the folder is the file's parent and the base its
+          stem; the multiplicity is read back out of the ``.out``.
+
+        An unprefixed string is a calc name (names are folder-safe, so they
+        cannot contain the ``:`` that a Windows path always does — which is why
+        the prefix is required rather than sniffed).
+        """
+        from ..core.parser import read_multiplicity
+        src = (source or "").strip()
+        if src.startswith("file:"):
+            p = Path(src[5:])
+            if not p.exists():
+                return None, "", False, "That file is no longer on disk."
+            base = p.name[:-4] if p.name.lower().endswith(".out") else p.stem
+            mult = read_multiplicity(p)
+            # None = the .out never said. Not knowing is not the same as knowing
+            # it is closed-shell, but the honest fallback is still to withhold
+            # the spin-density option: offering one that cannot work is worse
+            # than omitting one that might have (P2).
+            return p.parent, base, bool(mult and mult > 1), ""
+        name = src[5:] if src.startswith("calc:") else src
+        if not name:
+            return None, "", False, "No calculation selected."
+        calc = self.store.get(name)
+        return (self._calc_run_dir(name), name,
+                bool(calc is not None and calc.multiplicity > 1), "")
+
+    @pyqtSlot(str, result=str)
+    def get_plot_options(self, source: str) -> str:
+        """What a finished result can be visualized as: whether its ``.gbw`` is on
+        disk, which plot kinds this wavefunction supports, the grid choices, and
+        which cubes already exist (those open instantly). ``source`` is
+        ``calc:<name>`` or ``file:<path>`` — see :meth:`_plot_source`.
+
+        Spin density is offered only for an open-shell run: a closed-shell one
+        writes no spin density for orca_plot to read, and a button that can only
+        fail is exactly the reassurance P2 rules out. The orbital list is not
+        returned — the Results tab already holds it from the parse payload."""
+        from ..core.plot import GRID_CHOICES, DEFAULT_GRID
+        try:
+            run_dir, base, open_shell, err = self._plot_source(source)
+            if err:
+                return json.dumps(PlotOptionsResult(ok=False, error=err))
+            has_gbw = (run_dir / f"{base}.gbw").exists()
+            cubes = run_dir / "cubes"
+            cached = sorted(p.name for p in cubes.glob("*.cube")) if cubes.is_dir() else []
+        except OSError as e:
+            return json.dumps(PlotOptionsResult(ok=False, error=str(e)))
+        return json.dumps(PlotOptionsResult(
+            ok=True, base=base, has_gbw=has_gbw, open_shell=open_shell,
+            kinds=["mo", "eldens"] + (["spindens"] if open_shell else []),
+            grids=list(GRID_CHOICES), default_grid=DEFAULT_GRID, cached=cached))
+
+    @pyqtSlot(str, result=str)
+    def generate_cube(self, payload_json: str) -> str:
+        """Run orca_plot for one ``{source, kind, index, operator, grid}`` request
+        on a background thread; returns the status immediately and the UI polls
+        get_cube_status(), then fetches get_cube_data() once when it is done.
+        ``source`` addresses a queued calc or a file on disk (:meth:`_plot_source`).
+
+        Refuses while another cube is in flight: orca_plot writes a *fixed*
+        filename beside the ``.gbw``, so two runs in one folder would race for the
+        same path and the loser would be served the winner's data."""
+        from ..core.plot import CubeRequest, DEFAULT_GRID, KIND_LABELS
+        from ..core.plot import generate_cube as _generate
+        try:
+            d = json.loads(payload_json or "{}")
+        except json.JSONDecodeError as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+        run_dir, base, _open_shell, err = self._plot_source(str(d.get("source") or ""))
+        if err:
+            return json.dumps(ErrorPayload(error=err))
+        req = CubeRequest(kind=str(d.get("kind") or "mo"),
+                          index=int(d.get("index") or 0),
+                          operator=int(d.get("operator") or 0),
+                          grid=int(d.get("grid") or DEFAULT_GRID)).normalized()
+        label = (f"{KIND_LABELS['mo']} {req.index}{'β' if req.operator else 'α'}"
+                 if req.kind == "mo" else KIND_LABELS.get(req.kind, req.kind))
+
+        with self._cube_lock:
+            if self._cube.get("state") == "running":
+                # Serialize inline, NOT via get_cube_status(): that slot takes
+                # this same non-reentrant lock, so calling it here deadlocks —
+                # and it deadlocks on Qt's UI thread, freezing the whole window
+                # rather than failing one click. Reproduced.
+                return json.dumps(CubeJobPayload(**self._cube))
+            self._cube = {"state": "running", "label": label, "error": "",
+                          "kind": req.kind, "index": req.index,
+                          "operator": req.operator, "grid": req.grid,
+                          "cached": False, "seconds": 0.0}
+            self._cube_path = ""
+
+        orca_path = self.settings.orca_path
+
+        def _worker() -> None:
+            try:
+                res = _generate(orca_path, run_dir, base, req,
+                                on_log=lambda m: self.store.append_log(m, "info"))
+            except Exception as e:          # a crash must still release the UI
+                res = {"ok": False, "error": str(e)}
+            if not res.get("ok"):
+                self.store.append_log(
+                    f"Could not plot {label} for {base}: {res.get('error', '')}", "err")
+            with self._cube_lock:
+                self._cube_path = res.get("path", "") if res.get("ok") else ""
+                self._cube.update({
+                    "state": "done" if res.get("ok") else "error",
+                    "error": "" if res.get("ok") else str(res.get("error") or ""),
+                    "cached": bool(res.get("cached")),
+                    "seconds": float(res.get("seconds") or 0.0)})
+
+        threading.Thread(target=_worker, name="orca-plot", daemon=True).start()
+        return self.get_cube_status()
+
+    @pyqtSlot(result=str)
+    def get_cube_status(self) -> str:
+        """Progress of the running (or last) cube generation. Deliberately tiny —
+        it is polled, and the cube itself goes through get_cube_data()."""
+        with self._cube_lock:
+            return json.dumps(CubeJobPayload(**self._cube))
+
+    @pyqtSlot(result=str)
+    def get_cube_data(self) -> str:
+        """The finished cube, for 3Dmol's ``addVolumetricData(text, "cube")``.
+        Fetched once per generation, never from the poll."""
+        from ..core.plot import MAX_CUBE_BYTES
+        from ..cube import load_cube
+        with self._cube_lock:
+            path = self._cube_path
+            kind = str(self._cube.get("kind") or "mo")
+        if not path:
+            return json.dumps(CubeDataResult(ok=False, error="No cube to show yet."))
+        d = load_cube(path, kind, max_bytes=MAX_CUBE_BYTES)
+        if not d.get("ok"):
+            return json.dumps(CubeDataResult(ok=False, error=str(d.get("error") or "")))
+        return json.dumps(CubeDataResult(
+            ok=True, text=d["text"], title=d["title"], npoints=d["npoints"],
+            dims=d["dims"], bytes=d["bytes"], isovalue=d["isovalue"],
+            signed=d["signed"]))
 
     # --- run / cancel ---
     @pyqtSlot(result=str)

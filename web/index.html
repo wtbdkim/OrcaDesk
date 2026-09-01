@@ -591,14 +591,29 @@
   <div class="mv-panel">
     <div class="mv-head">
       <div class="mv-title" id="mv-title">Structure viewer</div>
-      <div class="mv-hint">← / →&nbsp; step&nbsp;&nbsp;·&nbsp;&nbsp;Esc&nbsp; close&nbsp;&nbsp;·&nbsp;&nbsp;drag to rotate</div>
+      <div class="mv-hint" id="mv-hint">← / →&nbsp; step&nbsp;&nbsp;·&nbsp;&nbsp;F&nbsp; favorite&nbsp;&nbsp;·&nbsp;&nbsp;Esc&nbsp; close&nbsp;&nbsp;·&nbsp;&nbsp;drag to rotate</div>
+      <div class="mv-hint" id="mv-hint-vol" style="display:none">← / →&nbsp; step&nbsp;&nbsp;·&nbsp;&nbsp;Esc&nbsp; close&nbsp;&nbsp;·&nbsp;&nbsp;drag to rotate</div>
       <button class="btn btn-sm btn-ghost" onclick="closeMolViewer()">Close ✕</button>
     </div>
     <div class="mv-body">
       <div class="mv-list" id="mv-list"></div>
       <div class="mv-stage">
         <div id="mv-gl" class="mv-gl"></div>
-        <div class="mv-bar">
+        <div class="mv-bar" id="mv-vol-bar" style="display:none">
+          <button class="btn btn-sm" onclick="molViewerStep(-1)">← Prev</button>
+          <label class="mv-ctl" title="Re-meshes the cube already loaded — no recomputation">
+            Isovalue
+            <input type="range" id="mv-iso" min="0" max="100" step="1" value="63"
+                   oninput="mvSetIso(this.value)">
+            <span id="mv-iso-val" class="mv-ctl-val">0.050</span>
+          </label>
+          <label class="mv-ctl" title="Grid points per axis — a finer grid re-runs orca_plot">
+            Grid <select id="mv-grid" onchange="mvSetGrid(this.value)"></select>
+          </label>
+          <span id="mv-vol-caption" class="mv-caption"></span>
+          <button class="btn btn-sm" onclick="molViewerStep(1)">Next →</button>
+        </div>
+        <div class="mv-bar" id="mv-bar">
           <button class="btn btn-sm" onclick="molViewerStep(-1)">← Prev</button>
           <button class="btn btn-sm" id="mv-fav-btn" onclick="toggleFavCurrent()"
                   title="Star this structure (F)">☆ Favorite</button>

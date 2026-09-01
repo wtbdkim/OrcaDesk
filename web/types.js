@@ -423,7 +423,9 @@
  * {error} is present; parse_out_file returns {cancelled: true} on a
  * cancelled file dialog, so every field is optional.
  * @typedef {Object} ParsePayload
- * @property {boolean} [cancelled]   true only for a cancelled Open-.out dialog
+ * @property {boolean} [cancelled]   true only for a cancelled Open-file dialog
+ * @property {string} [path]         set only on the path-addressed parses, so a
+ *                                   result opened from disk stays plottable
  * @property {[string, string, string][]} [summary]   label/value/category rows
  * @property {boolean} [is_optimization]         gates "Final geometry"
  * @property {boolean} [show_elec]               gates electronic-structure sections
@@ -541,6 +543,57 @@
  * @typedef {Object} FavoritesResult
  * @property {boolean} ok
  * @property {string[]} labels
+ * @property {string} [error]
+ */
+
+/**
+ * get_plot_options(source) result. Mirror of the Python PlotOptionsResult —
+ * what a finished calculation can be visualized as. "kinds" is a subset of
+ * ["mo","eldens","spindens"] (spin density only for an open-shell calc);
+ * "cached" names the cube files already on disk, which open instantly.
+ * The orbital list is NOT here — the Results tab already holds it.
+ * @typedef {Object} PlotOptionsResult
+ * @property {boolean} ok
+ * @property {string} [base]         filename stem the cubes are named from
+ * @property {boolean} [has_gbw]
+ * @property {boolean} [open_shell]
+ * @property {string[]} [kinds]
+ * @property {number[]} [grids]
+ * @property {number} [default_grid]
+ * @property {string[]} [cached]
+ * @property {string} [error]
+ */
+
+/**
+ * generate_cube(payload) / get_cube_status() payload. Mirror of the Python
+ * CubeJobPayload. state is "idle" | "running" | "done" | "error";
+ * "cached" marks a result served from an existing file, not a fresh run.
+ * @typedef {Object} CubeJob
+ * @property {string} state
+ * @property {string} [label]
+ * @property {string} [error]
+ * @property {string} [kind]
+ * @property {number} [index]
+ * @property {number} [operator]
+ * @property {number} [grid]
+ * @property {boolean} [cached]
+ * @property {number} [seconds]
+ */
+
+/**
+ * get_cube_data() result. Mirror of the Python CubeDataResult. "text" is the
+ * cube file verbatim, for 3Dmol's addVolumetricData(text, "cube"); "title" is
+ * ORCA's own description of what it plotted; isovalue/signed seed the surface
+ * controls (signed = draw a ± pair).
+ * @typedef {Object} CubeDataResult
+ * @property {boolean} ok
+ * @property {string} [text]
+ * @property {string} [title]
+ * @property {number} [npoints]
+ * @property {number[]} [dims]
+ * @property {number} [bytes]
+ * @property {number} [isovalue]
+ * @property {boolean} [signed]
  * @property {string} [error]
  */
 

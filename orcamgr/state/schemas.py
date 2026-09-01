@@ -322,7 +322,9 @@ class ParsePayload(TypedDict, total=False):
     failure branch sends ErrorPayload and parse_out_file's cancelled dialog
     sends only {"cancelled": true}; a successful parse emits every data key
     it has."""
-    cancelled: bool           # True only for a cancelled Open-.out dialog (A2)
+    cancelled: bool           # True only for a cancelled Open-file dialog (A2)
+    path: str                 # set only on the path-addressed routes (_parse_path),
+                              # so a result opened from disk stays plottable
     summary: "list[tuple[str, str, str]]"     # label/value/category rows
     is_optimization: bool                     # gates "Final geometry" (front-end)
     show_elec: bool                           # gates electronic-structure sections
@@ -472,6 +474,57 @@ class FavoritesResult(_Ok, total=False):
     ([] on failure)."""
     error: str
     labels: "list[str]"
+
+
+# ---- orbital / density cubes (Results tab 3D viewer) --------------------------
+
+class PlotOptionsResult(_Ok, total=False):
+    """get_plot_options — what a finished calculation can be visualized as.
+    "kinds" holds only what this wavefunction actually supports (spin density
+    needs an open-shell calc) and "cached" names the cubes already on disk, so
+    the UI can mark which picks are instant. The orbital *list* is deliberately
+    absent: the Results tab already holds it from the parse payload, and a
+    second copy would be a second source of truth (P4). "base" is the filename
+    stem the cubes are named from — the calc name for a queued source, the
+    file's stem for one opened from disk."""
+    error: str
+    base: str
+    has_gbw: bool
+    open_shell: bool
+    kinds: "list[str]"
+    grids: "list[int]"
+    default_grid: int
+    cached: "list[str]"
+
+
+class CubeJobPayload(TypedDict, total=False):
+    """get_cube_status / generate_cube — progress of the running (or last) cube
+    generation. "state" is idle | running | done | error; "cached" marks a
+    result served from an existing file rather than a fresh orca_plot run."""
+    state: str
+    label: str
+    error: str
+    kind: str
+    index: int
+    operator: int
+    grid: int
+    cached: bool
+    seconds: float
+
+
+class CubeDataResult(_Ok, total=False):
+    """get_cube_data — the finished cube, ready for 3Dmol's
+    addVolumetricData(text, "cube"). "text" is the file verbatim; "title" is
+    ORCA's own description of what it plotted, "isovalue"/"signed" seed the
+    viewer's surface controls."""
+    error: str
+    text: str
+    title: str
+    npoints: int
+    dims: "list[int]"
+    bytes: int
+    isovalue: float
+    signed: bool
 
 
 # ---- phone-sync server (bridge slots + HTTP endpoints) ------------------------

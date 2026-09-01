@@ -833,3 +833,35 @@ class OrcaOutParser:
 
 def parse_file(path: str) -> ParseResult:
     return OrcaOutParser(path).parse()
+
+
+# ORCA echoes the multiplicity in its input summary, near the top of the run.
+_MULT_RE = re.compile(r"Multiplicity\s+Mult\s+\.+\s*(\d+)")
+_MULT_SCAN_LINES = 4000
+
+
+def read_multiplicity(path) -> Optional[int]:
+    """The spin multiplicity of a finished run, read from its ``.out`` alone.
+
+    A cheap head-scan rather than a full :func:`parse_file`: the caller (the
+    orbital viewer deciding whether to offer a *spin density*) needs one integer,
+    and re-parsing a multi-megabyte output for it would be absurd. ORCA prints
+    the line in its input summary, so the scan stops early — and stops
+    unconditionally after ``_MULT_SCAN_LINES`` so a file that never contains it
+    costs a bounded read, not the whole file.
+
+    Returns None when the file is unreadable or the line is absent — "unknown",
+    which the caller must treat as *not known to be open-shell* rather than as
+    a closed shell it can assert (P2).
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i >= _MULT_SCAN_LINES:
+                    break
+                m = _MULT_RE.search(line)
+                if m:
+                    return int(m.group(1))
+    except OSError:
+        return None
+    return None

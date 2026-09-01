@@ -145,7 +145,12 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   *Browse .xyz…* opens any folder of `.xyz` files (e.g. a `conformers/` folder)
   as one browsable set — no external viewer needed. **Star** the ones worth
   keeping (the **F** key); starred structures persist, can be stepped through on
-  their own, and exported to a `favorites/` folder.
+  their own, and exported to a `favorites/` folder. The same viewer draws
+  **molecular orbitals and electron density**: *View in 3D* on the orbital
+  energies card opens the HOMO, with every level listed beside it (plus the
+  electron density, and the spin density for open-shell jobs). Surfaces are
+  generated from the finished job's wavefunction — nothing is re-run — and the
+  isovalue slider re-draws instantly.
 - **Settings**: ORCA executable path, **MLIP environments** (create one for CPU
   or GPU in a click, or register your own MACE-capable Python interpreters;
   backends are auto-detected), workspace folder,
