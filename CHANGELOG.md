@@ -3,7 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.0-beta] — 2026-09-01
 
 ### Added
 - **Electrostatic potential maps.** The Results tab gains an **Electrostatic
