@@ -78,6 +78,13 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
   pre-optimization** stay with the method, since they are band parameters.
 
 ### Fixed
+- **The 3D viewers no longer draw into hidden panels.** 3Dmol.js redraws every
+  viewer it has ever created on each window resize, whether or not it is on
+  screen, and a viewer in a hidden panel has a zero-sized canvas — so resizing
+  the window filled the console with `GL_INVALID_FRAMEBUFFER_OPERATION` from
+  all three viewers (the Results-tab modal and the two Build-tab previews) and
+  spent GPU work on frames nobody could see. Closing the 3D viewer did the same
+  thing once more, because it hid the window before releasing the scene.
 - **A space in the path to your workspace no longer fails every ORCA job.**
   ORCA hands the input path it is given on to its own sub-programs without
   quoting it, so one space truncated it: *Error: Cannot open input file

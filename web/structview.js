@@ -45,15 +45,21 @@ function _stCss(name) {
 }
 
 /** The viewer for a container, created on first use. Returns null while the
- *  container is not laid out yet (a hidden panel would size its canvas to 0).
+ *  container is not laid out yet (a hidden panel would size its canvas to 0 —
+ *  height as well as width: the Build tab's preview card keeps its width while
+ *  it is collapsed).
  *  @param {string} id @returns {any} */
 function _stViewer(id) {
   const node = document.getElementById(id);
-  if (!node || !node.clientWidth) return null;
+  if (!node || !node.clientWidth || !node.clientHeight) return null;
   if (!_stViewers[id]) {
     const $3Dmol = _st3Dmol();
     if (!$3Dmol) return null;
-    _stViewers[id] = $3Dmol.createViewer(node, { backgroundColor: _stCss("--card") });
+    // glGuardViewer (molviewer.js) — 3Dmol's own window-resize listener redraws
+    // every viewer it has made, so these two would keep drawing into a 0x0
+    // canvas for as long as the app is open on any other tab.
+    _stViewers[id] = glGuardViewer(
+      $3Dmol.createViewer(node, { backgroundColor: _stCss("--card") }), node);
   }
   const v = _stViewers[id];
   // the card colour follows the theme toggle, and the viewer outlives it

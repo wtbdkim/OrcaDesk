@@ -31,6 +31,44 @@ let _mvFavOnly = false;         // "★ only" filter active?
 // but nothing else, so the three list/step entry points dispatch on this.
 let _mvMode = "frames";
 
+/** Stop a 3Dmol viewer from drawing into a container that is currently hidden.
+ *
+ *  3Dmol registers its OWN window-resize listener per viewer
+ *  (`addEventListener("resize", this.resize.bind(this))`) and that listener
+ *  renders unconditionally — its resize() ends in `this.show()`, which calls
+ *  `renderer.render(scene, camera)` whatever the size is. A hidden container is
+ *  a 0x0 canvas, so every window resize made EVERY viewer this app has ever
+ *  created draw into a zero-size framebuffer: one
+ *  GL_INVALID_FRAMEBUFFER_OPERATION for the glClear and one for the
+ *  glDrawElements, per viewer, per resize. Wasted GPU work, a console the real
+ *  warnings drown in, and on some drivers a step toward a lost context.
+ *
+ *  The listener is bound to the prototype method at construction, so replacing
+ *  the instance's resize() would not intercept it — but resize() reaches the
+ *  GL through `this.show()` on the instance, and `this` is the viewer itself
+ *  (3Dmol sets `this._viewer = this`). Guarding show() and render() there
+ *  catches every path. Nothing is lost by skipping: a hidden canvas has no
+ *  pixels to keep, and both call sites (_mvOpenStage, _stViewer) resize() the
+ *  viewer once its container is visible again, which redraws it.
+ *
+ *  @param {any} v the viewer from createViewer
+ *  @param {HTMLElement} node its container
+ *  @returns {any} v */
+function glGuardViewer(v, node) {
+  if (!v || v._odSizeGuarded) return v;
+  const drawable = () => !!(node && node.clientWidth && node.clientHeight);
+  for (const name of ["show", "render"]) {
+    const inner = v[name];
+    if (typeof inner !== "function") continue;
+    v[name] = function (/** @type {any[]} */ ...args) {
+      if (!drawable()) return this;
+      return inner.apply(this, args);
+    };
+  }
+  v._odSizeGuarded = true;
+  return v;
+}
+
 /** View a queued CREST search's conformers in 3D (button in renderConformers). */
 async function viewConformers3D() {
   if (!_currentResultName) return;
@@ -97,9 +135,10 @@ function _mvOpenStage(title) {
     // is at least not the wrong theme's colour.
     const bg = getComputedStyle(document.documentElement)
       .getPropertyValue("--card").trim();
+    const glNode = document.getElementById("mv-gl");
     try {
-      _mvViewer = $3Dmol.createViewer(document.getElementById("mv-gl"),
-        bg ? { backgroundColor: bg } : {});
+      _mvViewer = glGuardViewer(
+        $3Dmol.createViewer(glNode, bg ? { backgroundColor: bg } : {}), glNode);
     } catch (e) {
       // No WebGL context (a remote desktop, a VM, a blocklisted GPU, a driver
       // reset). Thrown from here the whole open() rejected: the overlay was
@@ -267,9 +306,12 @@ async function exportFavorites() {
 }
 
 function closeMolViewer() {
-  document.getElementById("mol-viewer").style.display = "none";
-  // release GPU memory: clear the scene but keep the viewer/context for reuse
+  // Release GPU memory: clear the scene but keep the viewer/context for reuse.
+  // Before the overlay is hidden, not after — a render into an already
+  // display:none container draws into a 0x0 framebuffer, which is both an
+  // invalid GL op and a no-op that leaves the old buffers on the card.
   if (_mvViewer) { _mvViewer.clear(); _mvViewer.render(); }
+  document.getElementById("mol-viewer").style.display = "none";
   _mvFrames = [];
   mvVolReset();
 }
