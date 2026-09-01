@@ -56,8 +56,13 @@ from ..state.schemas import (
     StartServerResult, TextResult, TransitionPayload,
     CrestStatusPayload, ConformerPayload,
     WallpaperResult, ExportResult, FramesResult, FavoritesResult,
-    PlotOptionsResult, CubeJobPayload, CubeDataResult,
+    PlotOptionsResult, CubeJobPayload, CubeDataResult, WorkspaceResultsResult,
 )
+
+# Ceiling on the workspace scan behind the Results picker. Generous next to any
+# real workspace, and the point is only that a pathological folder cannot turn a
+# tab switch into an unbounded directory crawl.
+_WORKSPACE_SCAN_MAX = 500
 
 
 # Line patterns the SCF/geo graph trackers care about (mirror of web/scf_graph.js
@@ -797,8 +802,13 @@ class Bridge(QObject):
     # --- parse an external .out (Results tab) ---
     @pyqtSlot(result=str)
     def parse_out_file(self) -> str:
+        # Not just ORCA: _parse_path routes an engine-written {name}.mlip.json
+        # to the MLIP parser and a folder holding crest_conformers.xyz to the
+        # CREST one, so the dialog should offer what it can actually read.
         path, _ = QFileDialog.getOpenFileName(
-            self.window, "Open ORCA .out", "", "ORCA output (*.out);;All files (*.*)"
+            self.window, "Open a result file", "",
+            "Results (*.out *.mlip.json);;ORCA output (*.out);;"
+            "MLIP result (*.mlip.json);;All files (*.*)"
         )
         if not path:
             # closing the picker is a deliberate choice, not a parse failure —
@@ -813,6 +823,66 @@ class Bridge(QObject):
         if not path or not Path(path).exists():
             return json.dumps(ErrorPayload(error="file not found"))
         return self._parse_path(path)
+
+    @pyqtSlot(result=str)
+    def list_workspace_results(self) -> str:
+        """Every result sitting in the workspace, whether or not it is still in
+        the queue — so the Results tab's picker can open any of them in a click
+        instead of sending the user through a file dialog.
+
+        A run folder is ORCAdesk's own unit (``{workspace}/{name}/``), and those
+        folders **survive removal from the queue** — that is exactly why this is
+        worth listing: last week's calculation, or one cleared from the queue, is
+        still on disk and still interpretable. Each entry names the artifact the
+        parser should read: the engine-written ``{name}.mlip.json`` for an MLIP
+        run, else ``{name}.out``.
+
+        ``queued`` marks the ones the queue also knows about, because the two are
+        parsed by *different* routes: a queued calc must go through
+        ``parse_calc_output`` (dispatch on its KIND), never the folder heuristic
+        in ``_parse_path`` — a calc reusing a removed CREST calc's name would
+        otherwise be read as a conformer search. The front-end keeps that split.
+
+        Newest first, and bounded: a workspace with thousands of folders must not
+        turn a tab switch into a directory crawl.
+        """
+        root = Path(self.settings.workspace_root or "")
+        if not root.is_dir():
+            return json.dumps(WorkspaceResultsResult(
+                ok=False, error="The workspace folder is not set or does not exist.",
+                results=[], root=str(root)))
+        queued = {c.name.casefold() for c in self.store.list()}
+        found: list[tuple[float, dict]] = []
+        try:
+            for entry in root.iterdir():
+                if len(found) >= _WORKSPACE_SCAN_MAX:
+                    break
+                if not entry.is_dir():
+                    continue
+                name = entry.name
+                mlip = entry / f"{name}.mlip.json"
+                out = entry / f"{name}.out"
+                if mlip.exists():
+                    artifact, kind = mlip, "mlip"
+                elif out.exists():
+                    artifact = out
+                    kind = ("crest" if (entry / "crest_conformers.xyz").exists()
+                            or (entry / "crest_best.xyz").exists() else "orca")
+                else:
+                    continue        # a folder with no result is not a result
+                try:
+                    mtime = artifact.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                found.append((mtime, {"name": name, "path": str(artifact),
+                                      "queued": name.casefold() in queued,
+                                      "kind": kind}))
+        except OSError as e:
+            return json.dumps(WorkspaceResultsResult(
+                ok=False, error=str(e), results=[], root=str(root)))
+        found.sort(key=lambda t: t[0], reverse=True)
+        return json.dumps(WorkspaceResultsResult(
+            ok=True, results=[d for _, d in found], root=str(root)))
 
     @pyqtSlot(str, result=str)
     def parse_calc_output(self, name: str) -> str:

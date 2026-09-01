@@ -68,6 +68,8 @@ interface OrcaBridge {
   // has a cancel branch: {ok:false, cancelled:true} when the picker is closed
   // (a deliberate dismissal, not an error)
   browse_xyz_folder(): Promise<string>;
+  // every result on disk under the workspace root, queued or not (newest first)
+  list_workspace_results(): Promise<string>;                  // WorkspaceResultsResult JSON
   // viewer favorites (starred structures)
   get_favorites(source: string): Promise<string>;            // FavoritesResult JSON: {ok, labels[]}
   toggle_favorite(source: string, label: string, on: boolean): Promise<string>;  // FavoritesResult JSON: {ok, labels[]}

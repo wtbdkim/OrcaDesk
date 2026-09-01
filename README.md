@@ -137,7 +137,10 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   warnings) and full thermochemistry, TD-DFT transitions + a UV-Vis plot and the
   excited-state composition, NMR shieldings, and the NEB path. Sections are shown
   for the relevant calculation type; a **`Show all`** toggle reveals everything
-  regardless of type. You can also open any external `.out` file. A **free-energy
+  regardless of type. The picker lists **every result in your workspace**, not
+  only the queued ones — a calculation cleared from the queue, or one from an
+  earlier session, opens in a click — and *Open file…* reads a result from
+  anywhere on disk. A **free-energy
   profile** view plots relative Gibbs free energy across finished frequency
   calculations in queue order. A built-in **3D structure viewer** shows
   geometries in the window and lets you flip through many structures with the

@@ -173,14 +173,26 @@ endpoints keep `-> dict` and only *construct* through the schema types.
 The **Results tab** is purely presentational over `ParsePayload`. A QUEUED
 calc's result is fetched by NAME through `bridge.parse_calc_output`, which
 dispatches on the calc's **kind** (`result_from_output`); external files
-(drag-drop / Open .out) go through `bridge._parse_path`, which has no kind and
+(drag-drop / *Open file…*) go through `bridge._parse_path`, which has no kind and
 dispatches per backend heuristically (an engine-written `*.mlip.json` → the MLIP
 parser; `crest_conformers.xyz`/`crest_best.xyz` siblings → the CREST parser; else
 the ORCA parser). Keep the heuristic OFF the queued path: workspace folders
 survive removal, so a calc reusing a removed CREST calc's name would otherwise
 parse as a conformer search.
 
-Both paths
+**The result picker lists more than the queue.** Those same surviving folders
+are results the user still wants — `bridge.list_workspace_results()` scans
+`{workspace}/*/` for `{name}.mlip.json` else `{name}.out` (newest first, capped
+at `_WORKSPACE_SCAN_MAX`) and the Results `<select>` shows them in two
+`<optgroup>`s. The grouping is the parse-route split above, not decoration:
+an option's value is a **source string** (`calc:<name>` / `file:<path>`, the
+same addressing the cube slots take), and `queued` comes from the store, never
+from "have we parsed it yet" — grouping by `calcResults` would file a queued
+calc under the workspace and send it through the folder heuristic. Picking a
+queued calc not yet fetched parses it by name on demand. The scan runs on entry
+to the tab (`switchTab`), never from the 1-second poll — it touches the disk.
+
+Both parse paths
 send the *whole* `ParseResult` (every section the parser found) plus two gating flags
 — `is_optimization` and `show_elec` (`= ParseResult.shows_electronic_props`) — and the
 front-end (`web/results_render.js` `renderResultSections` / `renderSummary`) decides what to show

@@ -1078,7 +1078,7 @@ async function autodetectOrca() {
 function switchTab(name) {
   document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
   document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.dataset.panel === name));
-  if (name === "results") loadFreeEnergyProfile();
+  if (name === "results") { loadFreeEnergyProfile(); refreshWorkspaceResults(); }
   // the graph is sized by measuring its on-screen box, which is 0 while the Log
   // tab is hidden — so re-render on entry to get a correct measurement
   if (name === "log" && _logMode === "graph") renderSCFPanel();

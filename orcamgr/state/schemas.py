@@ -478,6 +478,26 @@ class FavoritesResult(_Ok, total=False):
 
 # ---- orbital / density cubes (Results tab 3D viewer) --------------------------
 
+class WorkspaceResultPayload(TypedDict):
+    """One result found in the workspace. "path" is the artifact to parse
+    ({name}.mlip.json for an MLIP run, else {name}.out); "queued" marks the ones
+    the queue also holds — those must be parsed by NAME (kind dispatch), not by
+    path (folder heuristic), so the front-end keeps the two routes apart.
+    "kind" is a display hint only."""
+    name: str
+    path: str
+    queued: bool
+    kind: str                 # "orca" | "mlip" | "crest"
+
+
+class WorkspaceResultsResult(_Ok, total=False):
+    """list_workspace_results — every result on disk under the workspace root,
+    newest first. "results" is present on every branch ([] on failure)."""
+    error: str
+    root: str
+    results: "list[WorkspaceResultPayload]"
+
+
 class PlotOptionsResult(_Ok, total=False):
     """get_plot_options — what a finished calculation can be visualized as.
     "kinds" holds only what this wavefunction actually supports (spin density

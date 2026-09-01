@@ -6,6 +6,15 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [0.7.0-beta] — 2026-08-28
 
 ### Added
+- **The Results tab lists every result in your workspace, not just the queue.**
+  The picker now has two groups — *In the queue* and *In the workspace* — so a
+  calculation you cleared from the queue, or one from last week, is one click
+  away instead of a trip through a file dialog. Run folders were always kept;
+  they just were not reachable. Everything a listed result offers works the
+  same, including the 3D viewer below. The scan runs when you open the tab.
+  - **Open .out is now Open file…**, and its dialog offers what ORCAdesk can
+    actually read — an ORCA `.out`, an MLIP result, a CREST search — rather
+    than naming only one of the three.
 - **Molecular orbitals and electron density can now be viewed in 3D, from the
   Results tab.** The *Orbital energies* card gained a **View in 3D** button: it
   opens the structure viewer on the HOMO, with every parsed level in a list

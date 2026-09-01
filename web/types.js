@@ -547,6 +547,28 @@
  */
 
 /**
+ * One result found on disk under the workspace root. Mirror of the Python
+ * WorkspaceResultPayload. "path" is the artifact to parse; "queued" marks the
+ * ones the queue also holds — those are parsed by NAME (kind dispatch), never
+ * by path (folder heuristic). "kind" is a display hint only.
+ * @typedef {Object} WorkspaceResult
+ * @property {string} name
+ * @property {string} path
+ * @property {boolean} queued
+ * @property {string} kind          "orca" | "mlip" | "crest"
+ */
+
+/**
+ * list_workspace_results() result. Mirror of the Python WorkspaceResultsResult;
+ * "results" is present on every branch ([] on failure), newest first.
+ * @typedef {Object} WorkspaceResultsResult
+ * @property {boolean} ok
+ * @property {WorkspaceResult[]} [results]
+ * @property {string} [root]
+ * @property {string} [error]
+ */
+
+/**
  * get_plot_options(source) result. Mirror of the Python PlotOptionsResult —
  * what a finished calculation can be visualized as. "kinds" is a subset of
  * ["mo","eldens","spindens"] (spin density only for an open-shell calc);

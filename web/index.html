@@ -402,7 +402,8 @@
             <select id="result-select" style="width:auto" onchange="showSelectedResult()"></select>
             <button id="btn-showall" class="btn btn-sm btn-ghost" onclick="toggleShowAll()"
                     title="Every parsed value, ignoring per-calc-type filtering">Show all</button>
-            <button class="btn btn-sm" onclick="openOutFile()">Open .out</button>
+            <button class="btn btn-sm" onclick="openOutFile()"
+                    title="Open any result file — an ORCA .out, an MLIP result, a CREST search">Open file…</button>
             <button class="btn btn-sm" onclick="browseXyzFolder()"
                     title="Pick a folder of .xyz files and flip through them in 3D (← / →)">Browse .xyz…</button>
           </div>

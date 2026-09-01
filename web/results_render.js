@@ -4,22 +4,107 @@
 // script, loaded before app.js.
 
 // ---------- results ----------
-function refreshResultSelect() {
-  const sel = document.getElementById("result-select");
-  const prev = sel.value;
-  sel.innerHTML = "";
-  const names = Object.keys(calcResults);
-  if (!names.length) { sel.innerHTML = `<option>—</option>`; return; }
-  for (const n of names) { const e = document.createElement("option"); e.value=n; e.textContent=n; sel.appendChild(e); }
-  if (names.includes(prev)) sel.value = prev;
+/* The picker addresses a result the same way the 3D viewer does: an option's
+ * value is a SOURCE string, "calc:<name>" or "file:<path>". Run folders survive
+ * removal from the queue, so the workspace holds results the queue no longer
+ * knows about — last week's job, one cleared from the list — and those are
+ * worth one click, not a file dialog.
+ *
+ * The two groups are not cosmetic. A queued calc is parsed by NAME so the
+ * backend dispatches on its KIND; a workspace-only result is parsed by PATH,
+ * through the folder heuristic. Sending a queued calc down the path route
+ * would let a leftover crest_conformers.xyz in a reused folder name read an
+ * ORCA job as a conformer search (see bridge.parse_calc_output). */
+
+/** @type {WorkspaceResult[]} results on disk under the workspace root */
+let _wsResults = [];
+
+/** Re-scan the workspace for results and repaint the picker. Called on entry to
+ *  the Results tab, not from the poll — it touches the disk. */
+async function refreshWorkspaceResults() {
+  try {
+    const r = /** @type {WorkspaceResultsResult} */ (JSON.parse(await bridge.list_workspace_results()));
+    _wsResults = r.ok ? (r.results || []) : [];
+  } catch (e) { _wsResults = []; }   // the picker still lists the queue
+  refreshResultSelect();
 }
-function showSelectedResult() {
-  const name = document.getElementById("result-select").value;
-  if (!name || name === "—") return;
+
+function refreshResultSelect() {
+  const sel = /** @type {HTMLSelectElement} */ (document.getElementById("result-select"));
+  const prev = sel.value;
+  // Whether a result is IN THE QUEUE is the backend's answer (it holds the
+  // store), not "have we parsed it yet" — grouping by calcResults would file a
+  // queued calc under the workspace and parse it by path, through the folder
+  // heuristic that parse_calc_output exists to avoid.
+  const names = [];
+  const seen = new Set();
+  const add = (n) => { const k = n.toLowerCase(); if (!seen.has(k)) { seen.add(k); names.push(n); } };
+  // already-parsed results first (they keep their fetch order), then any other
+  // queued calc the workspace scan found — including, via calcResults, one whose
+  // folder lives OUTSIDE the workspace (a session restored from an old one).
+  Object.keys(calcResults).forEach(add);
+  _wsResults.filter(w => w.queued).forEach(w => add(w.name));
+  const onDisk = _wsResults.filter(w => !w.queued);
+  if (!names.length && !onDisk.length) { sel.innerHTML = `<option>—</option>`; return; }
+  const opt = (v, label) => `<option value="${escapeHtml(v)}">${escapeHtml(label)}</option>`;
+  let html = "";
+  if (names.length) {
+    html += `<optgroup label="In the queue">` +
+            names.map(n => opt("calc:" + n, n)).join("") + `</optgroup>`;
+  }
+  if (onDisk.length) {
+    html += `<optgroup label="In the workspace">` +
+            onDisk.map(w => opt("file:" + w.path,
+                                w.kind === "orca" ? w.name : `${w.name}  (${w.kind.toUpperCase()})`)).join("") +
+            `</optgroup>`;
+  }
+  sel.innerHTML = html;
+  // etiquette: a re-render must not move the user's selection (DESIGN 15.11)
+  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
+
+async function showSelectedResult() {
+  const src = /** @type {HTMLSelectElement} */ (document.getElementById("result-select")).value;
+  if (!src || src === "—") return;
+  if (src.startsWith("file:")) return showWorkspaceResult(src.slice(5));
+  const name = src.startsWith("calc:") ? src.slice(5) : src;
   _currentResultName = name;   // a queued calc — enables the conformer->ORCA action
-  _currentResultPath = "";     // … and not a file opened from disk
+  _currentResultPath = "";
+  // The picker now lists every queued calc, not only the ones already fetched,
+  // so a first pick may have nothing cached yet. Parse it BY NAME so the
+  // backend dispatches on its kind.
+  if (!_resultExtras[name]) {
+    try {
+      const d = /** @type {ParsePayload} */ (JSON.parse(await bridge.parse_calc_output(name)));
+      if (d && d.summary) { calcResults[name] = d.summary; _resultExtras[name] = d; }
+    } catch (e) { /* fall through to the empty render below */ }
+  }
   _currentResult = _resultExtras[name] || null;
+  if (!_currentResult) { failNotify(`No readable output for "${name}" yet.`); return; }
   renderResult(_currentResult);
+}
+
+/** Point the picker at `value` when it lists it, so the box never names one
+ *  result while the body shows another. Silent when it does not — a file opened
+ *  from outside the workspace has no option to select. @param {string} value */
+function _selectResultOption(value) {
+  const sel = /** @type {HTMLSelectElement} */ (document.getElementById("result-select"));
+  if (sel && [...sel.options].some(o => o.value === value)) sel.value = value;
+}
+
+/** Open a result that is on disk but not in the queue. @param {string} path */
+async function showWorkspaceResult(path) {
+  let data;
+  try { data = /** @type {ParsePayload} */ (JSON.parse(await bridge.parse_out_path(path))); }
+  catch (e) { failNotify("Could not read that result."); return; }
+  if (!data || !data.summary) { failNotify("Could not parse that result."); return; }
+  // not a queued calc: no conformer->ORCA action, but the plot source is the
+  // file itself, so the 3D viewer still works (see viewOrbitals3D)
+  _currentResultName = "";
+  _currentResultPath = path;
+  _currentResult = data;
+  _selectResultOption("file:" + path);
+  renderResult(data);
 }
 
 /** Render summary + every applicable section for a parsed payload. @param {ParsePayload} [d] */
@@ -320,6 +405,8 @@ async function openOutFile() {
   _currentResult = data;
   renderResult(data);
   switchTab("results");
+  // switchTab re-scans the workspace; point the picker at this file if it is one
+  if (_currentResultPath) _selectResultOption("file:" + _currentResultPath);
 }
 /** @param {TransitionPayload[]} transitions */
 function renderSpectrum(transitions) {
