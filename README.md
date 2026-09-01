@@ -171,6 +171,11 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   electron density, and the spin density for open-shell jobs). Surfaces are
   generated from the finished job's wavefunction — nothing is re-run — and the
   isovalue slider re-draws instantly.
+  The same list offers an **ESP map** — the electron-density surface coloured by
+  the electrostatic potential (red negative, blue positive), with sliders for
+  the surface level and the colour scale. It is the one plot that costs minutes
+  rather than seconds (the potential is a Coulomb sum at every grid point), so
+  it opens at a coarser grid and says so before you pick it.
 - **Settings**: ORCA executable path, **MLIP environments** (create one for CPU
   or GPU in a click, or register your own MACE-capable Python interpreters;
   backends are auto-detected), workspace folder,

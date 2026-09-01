@@ -303,6 +303,23 @@ let _mvIso = 0.05;
 let _mvVolSigned = true;
 let _mvVolTitle = "";
 let _mvVolBusy = false;
+
+/* ---- the ESP map ----
+ * The one pick built from TWO cubes: the potential is not an isosurface of
+ * itself, it is a colour painted on the electron-density surface, so the map is
+ * `eldens` (the shape) plus `esp` (the colour) sampled on the same grid. The
+ * isovalue slider therefore steers the DENSITY level here, and a second slider
+ * steers the colour scale — two independent knobs over one drawing.
+ *
+ * ESP is also the one plot whose cost is minutes rather than seconds (49 s at
+ * 40³ on 52 atoms / 987 basis functions; ~2.8 min at 60³), which is why it
+ * keeps its own, coarser grid instead of sharing the orbitals'. */
+/** @type {any} */ let _mvEspData = null;        // the potential's VolumeData
+let _mvEspRange = 0.05;                          // colour-scale half-width, a.u.
+let _mvEspSurfaceIso = 0.002;                    // density level the map is drawn on
+// Grid per KIND, not per viewer: switching from an orbital to the ESP map must
+// not silently re-plot the orbital at 40³, nor the map at 60³ (D60).
+/** @type {Object<string, number>} */ const _mvGridByKind = {};
 // Bumped on every pick/grid change; an in-flight generate compares against it
 // before touching the stage, so clicking through orbitals never renders a
 // stale cube over a newer one (P44).
@@ -402,6 +419,11 @@ async function viewOrbitals3D(orbs) {
   _mvVolBase = base;
   _mvVolGrids = (opts.grids && opts.grids.length) ? opts.grids : [40, 60, 80];
   _mvVolGrid = opts.default_grid || 60;
+  // per-kind grid + the ESP conventions, all decided by the backend (P4)
+  _mvGridByKind.mo = _mvGridByKind.eldens = _mvGridByKind.spindens = _mvVolGrid;
+  _mvGridByKind.esp = opts.esp_grid || 40;
+  _mvEspSurfaceIso = opts.esp_surface_iso || 0.002;
+  _mvEspRange = opts.esp_range || 0.05;
   _mvVolCached = opts.cached || [];
   _mvVolPicks = _mvBuildPicks(orbs || [], opts.kinds || ["mo"]);
   if (!_mvVolPicks.length) { failNotify("Nothing to plot for this calculation."); return; }
@@ -422,6 +444,8 @@ function _mvBuildPicks(orbs, kinds) {
   /** @type {MvPick[]} */ const picks = [];
   if (kinds.indexOf("eldens") >= 0)
     picks.push({ kind: "eldens", index: 0, operator: 0, label: "Electron density", sub: "" });
+  if (kinds.indexOf("esp") >= 0)
+    picks.push({ kind: "esp", index: 0, operator: 0, label: "ESP map", sub: "minutes" });
   if (kinds.indexOf("spindens") >= 0)
     picks.push({ kind: "spindens", index: 0, operator: 0, label: "Spin density", sub: "" });
   // An unrestricted run has two manifolds. They are separate orbital sets:
@@ -457,17 +481,49 @@ function _mvBuildPicks(orbs, kinds) {
  *  Grid-qualified like the Python side, so switching the grid correctly shows
  *  the not-yet-generated picks as not generated.
  *  @param {MvPick} p */
-function _mvCubeName(p) {
+function _mvCubeName(p, grid) {
+  const g = grid || _mvGridFor(p.kind);
+  // orca_plot names an ESP after the DENSITY it came from, not after the plot
+  // type — water.scfp.esp.cube, not water.esp.cube (core/plot.plot_output_name).
   const stem = p.kind === "mo"
     ? _mvVolBase + ".mo" + p.index + (p.operator ? "b" : "a")
-    : _mvVolBase + "." + p.kind;
-  return stem + ".g" + _mvVolGrid + ".cube";
+    : (p.kind === "esp" ? _mvVolBase + ".scfp.esp" : _mvVolBase + "." + p.kind);
+  return stem + ".g" + g + ".cube";
+}
+
+/** The grid this kind plots at. @param {string} kind */
+function _mvGridFor(kind) {
+  return _mvGridByKind[kind] || _mvVolGrid;
+}
+
+/** The two requests an ESP map is built from, in the order they are fetched.
+ *  Both ride the ESP grid: the colour is sampled per density-surface vertex, so
+ *  the two fields have to be on the SAME grid — plotting the density at the
+ *  orbitals' 60³ and the potential at 40³ would be two different boxes.
+ *  @returns {MvPick[]} */
+function _mvEspParts() {
+  return [{ kind: "eldens", index: 0, operator: 0, label: "density surface", sub: "" },
+          { kind: "esp", index: 0, operator: 0, label: "potential", sub: "" }];
+}
+
+/** Every cube a pick needs on disk before it can open instantly. The ESP map is
+ *  the only pick that needs two. @param {MvPick} p @returns {string[]} */
+function _mvCubesFor(p) {
+  if (p.kind !== "esp") return [_mvCubeName(p)];
+  return _mvEspParts().map(q => _mvCubeName(q, _mvGridFor("esp")));
+}
+
+/** Is every cube this pick needs already on disk? @param {MvPick} p */
+function _mvPickCached(p) {
+  return _mvCubesFor(p).every(n => _mvVolCached.indexOf(n) >= 0);
 }
 
 function renderMvVolList() {
   document.getElementById("mv-list").innerHTML = _mvVolPicks.map((p, i) => {
-    const ready = _mvVolCached.indexOf(_mvCubeName(p)) >= 0;
-    const tip = ready ? "Already generated — opens instantly" : "Not generated yet";
+    const ready = _mvPickCached(p);
+    const tip = ready ? "Already generated — opens instantly"
+      : (p.kind === "esp" ? "Not generated yet — the potential takes minutes"
+                          : "Not generated yet");
     return '<div class="mv-row ' + (i === _mvVolIndex ? "active" : "") + '" data-i="' + i + '"' +
            ' onclick="mvVolShow(' + i + ')">' +
            '<span class="mv-star mv-dot' + (ready ? " ready" : "") + '" title="' + tip + '">' +
@@ -484,66 +540,114 @@ function _fillGridSelect() {
     '<option value="' + g + '"' + (g === _mvVolGrid ? " selected" : "") + ">" + g + "³</option>").join("");
 }
 
-/** Select pick i: generate its cube if needed, then draw it. @param {number} i */
+/** Generate (if needed) and read ONE cube. Returns its CubeDataResult, or null
+ *  when the request was superseded or failed — the caller has already been told
+ *  in the failure case.
+ *
+ *  The backend runs one orca_plot at a time and REFUSES a second, handing back
+ *  the status of the job already in flight. That reply describes someone else's
+ *  request, so it must not be mistaken for ours: polling it to "done" and then
+ *  fetching the cube would draw the previous orbital under this one's label.
+ *  Observed exactly that way. So: keep asking until the backend reports it is
+ *  working on OUR request, and check again before taking data.
+ *  @param {MvPick} part what to plot @param {number} grid
+ *  @param {number} seq the caller's _mvVolSeq stamp
+ *  @param {string} waitLabel what the caption calls this while it runs */
+async function _mvFetchCube(part, grid, seq, waitLabel) {
+  const payload = JSON.stringify({
+    source: _mvVolSource, kind: part.kind, index: part.index,
+    operator: part.operator, grid: grid });
+  /** @type {CubeJob|null} */ let job = null;
+  const mine = (j) => !!j && j.kind === part.kind && j.index === part.index
+    && j.operator === part.operator && j.grid === grid;
+  for (;;) {
+    try { job = /** @type {CubeJob} */ (JSON.parse(await bridge.generate_cube(payload))); }
+    catch (e) { _mvVolFail(seq, "Could not start orca_plot."); return null; }
+    if (seq !== _mvVolSeq) return null;                // superseded by a newer pick
+    if (mine(job)) break;
+    _mvVolCaption(waitLabel + " — waiting for the previous plot …");
+    await new Promise(r => setTimeout(r, 250));
+    if (seq !== _mvVolSeq) return null;
+  }
+  while (job && job.state === "running") {
+    await new Promise(r => setTimeout(r, 250));
+    if (seq !== _mvVolSeq) return null;
+    try { job = /** @type {CubeJob} */ (JSON.parse(await bridge.get_cube_status())); }
+    catch (e) { _mvVolFail(seq, "Lost contact with orca_plot."); return null; }
+    if (seq !== _mvVolSeq) return null;
+  }
+  if (!job || job.state !== "done" || !mine(job)) {
+    _mvVolFail(seq, (job && job.error) || "orca_plot failed."); return null;
+  }
+  let data;
+  try { data = /** @type {CubeDataResult} */ (JSON.parse(await bridge.get_cube_data())); }
+  catch (e) { _mvVolFail(seq, "Could not read the cube file."); return null; }
+  if (seq !== _mvVolSeq) return null;
+  if (!data.ok) { _mvVolFail(seq, data.error || "Could not read the cube file."); return null; }
+  // it is on disk now, so the list dot flips to "instant"
+  const fname = _mvCubeName(part, grid);
+  if (_mvVolCached.indexOf(fname) < 0) { _mvVolCached.push(fname); renderMvVolList(); }
+  return data;
+}
+
+/** Select pick i: generate its cube(s) if needed, then draw it. @param {number} i */
 async function mvVolShow(i) {
   const n = _mvVolPicks.length;
   if (!n || !_mvViewer) return;
   _mvVolIndex = ((i % n) + n) % n;
   const pick = _mvVolPicks[_mvVolIndex];
+  const grid = _mvGridFor(pick.kind);
+  _mvVolGrid = grid;                   // the selector shows this kind's grid
+  _fillGridSelect();
+  _mvEspControls(pick.kind === "esp");
   renderMvVolList();
   const active = document.querySelector('#mv-list .mv-row[data-i="' + _mvVolIndex + '"]');
   if (active) active.scrollIntoView({ block: "nearest" });
 
   const seq = ++_mvVolSeq;
   _mvVolBusy = true;
-  const onDisk = _mvVolCached.indexOf(_mvCubeName(pick)) >= 0;
-  _mvVolBusyOverlay(!onDisk, pick.label);
-  _mvVolCaption(pick.label + " — generating at " + _mvVolGrid + "³ …");
-  const payload = JSON.stringify({
-    source: _mvVolSource, kind: pick.kind, index: pick.index,
-    operator: pick.operator, grid: _mvVolGrid });
-
-  // The backend runs one orca_plot at a time and REFUSES a second, handing back
-  // the status of the job already in flight. That reply describes someone
-  // else's request, so it must not be mistaken for ours: polling it to "done"
-  // and then fetching the cube would draw the previous orbital under this
-  // one's label. Observed exactly that way. So: keep asking until the backend
-  // reports it is working on OUR request, and check again before taking data.
-  let job = null;
-  for (;;) {
-    try { job = /** @type {CubeJob} */ (JSON.parse(await bridge.generate_cube(payload))); }
-    catch (e) { _mvVolFail(seq, "Could not start orca_plot."); return; }
-    if (seq !== _mvVolSeq) return;                     // superseded by a newer pick
-    if (_mvJobIs(job, pick)) break;
-    _mvVolCaption(pick.label + " — waiting for the previous plot …");
-    await new Promise(r => setTimeout(r, 250));
-    if (seq !== _mvVolSeq) return;
-  }
-  while (job && job.state === "running") {
-    await new Promise(r => setTimeout(r, 250));
-    if (seq !== _mvVolSeq) return;
-    try { job = /** @type {CubeJob} */ (JSON.parse(await bridge.get_cube_status())); }
-    catch (e) { _mvVolFail(seq, "Lost contact with orca_plot."); return; }
-    if (seq !== _mvVolSeq) return;
-  }
-  if (!job || job.state !== "done" || !_mvJobIs(job, pick)) {
-    _mvVolFail(seq, (job && job.error) || "orca_plot failed."); return;
-  }
-
-  let data;
-  try { data = /** @type {CubeDataResult} */ (JSON.parse(await bridge.get_cube_data())); }
-  catch (e) { _mvVolFail(seq, "Could not read the cube file."); return; }
-  if (seq !== _mvVolSeq) return;
-  if (!data.ok) { _mvVolFail(seq, data.error || "Could not read the cube file."); return; }
+  _mvVolBusyOverlay(!_mvPickCached(pick), pick.label, pick.kind);
+  _mvVolCaption(pick.label + " — generating at " + grid + "³ …");
 
   const $3Dmol = window["$3Dmol"] || window["3Dmol"];
+
+  if (pick.kind === "esp") {
+    // Two cubes, in order: the density that gives the surface, then the
+    // potential that colours it. Sequential because the backend serializes
+    // orca_plot anyway — one folder, one fixed output name per plot.
+    const [densPart, espPart] = _mvEspParts();
+    const dens = await _mvFetchCube(densPart, grid, seq, "ESP map — density surface");
+    if (!dens) return;
+    _mvVolCaption("ESP map — computing the potential at " + grid + "³ …");
+    const esp = await _mvFetchCube(espPart, grid, seq, "ESP map — potential");
+    if (!esp) return;
+    _mvVolBusy = false;
+    _mvVolBusyOverlay(false);
+    _mvVolTitle = "ESP map";
+    _mvVolSigned = false;              // the surface is a density: one surface
+    _mvViewer.clear();
+    _mvViewer.addModel(dens.text, "cube");
+    _mvViewer.setStyle({}, { stick: { radius: 0.1 }, sphere: { scale: 0.18 } });
+    _mvVolData = new $3Dmol.VolumeData(dens.text, "cube");
+    _mvEspData = new $3Dmol.VolumeData(esp.text, "cube");
+    // The density level here is the ESP convention (~0.002, the van-der-Waals-
+    // like surface), NOT the enclosed-fraction fit: that fit exists because an
+    // orbital's peak varies with how delocalized it is, while a total density's
+    // 0.002 contour is the same physical surface in every molecule.
+    _mvIso = _mvEspSurfaceIso;
+    _mvSyncIsoControls();
+    _mvSyncEspControls();
+    mvRenderCube(true);
+    return;
+  }
+
+  _mvEspData = null;
+  const data = await _mvFetchCube(pick, grid, seq, pick.label);
+  if (!data) return;
   _mvVolBusy = false;
   _mvVolBusyOverlay(false);
   _mvVolTitle = data.title || pick.label;
   _mvVolSigned = data.signed !== false;
-  // remember that this one is on disk now, so the list dot flips to "instant"
-  const fname = _mvCubeName(pick);
-  if (_mvVolCached.indexOf(fname) < 0) { _mvVolCached.push(fname); renderMvVolList(); }
 
   // Parse the cube ONCE: the molecule comes from its atom block and the volume
   // from its values, and the isovalue slider re-meshes this same object.
@@ -558,25 +662,32 @@ async function mvVolShow(i) {
   mvRenderCube(true);
 }
 
-/** Does this job status describe the plot we asked for? The status carries the
- *  full request (kind/index/operator/grid) precisely so the answer is decidable
- *  — without it a refused request is indistinguishable from an accepted one.
- *  @param {CubeJob} job @param {MvPick} pick */
-function _mvJobIs(job, pick) {
-  return !!job && job.kind === pick.kind && job.index === pick.index
-      && job.operator === pick.operator && job.grid === _mvVolGrid;
-}
+/* The "is this status describing MY request?" check that used to live here is
+ * now local to _mvFetchCube — it has to compare against the grid of the request
+ * being fetched, not the viewer's current one, because an ESP map issues two
+ * requests and the viewer-global grid is not the right authority for either. */
 
 /** Show or hide the "plotting" overlay. Only raised when orca_plot will really
  *  run: a cube already on disk opens straight into the stage, and an overlay
  *  that flashed on every pick would be noise rather than information.
- *  @param {boolean} on @param {string} [label] */
-function _mvVolBusyOverlay(on, label) {
+ *  @param {boolean} on @param {string} [label] @param {string} [kind] */
+function _mvVolBusyOverlay(on, label, kind) {
   const box = document.getElementById("mv-vol-busy");
   if (!box) return;
   if (on) {
     const t = document.getElementById("mv-busy-title");
     if (t) t.textContent = `Plotting ${label || ""}…`.replace("  ", " ");
+    // The wait is per-kind and the ESP one is an order of magnitude longer, so
+    // the copy has to say which is happening rather than average them (D2).
+    const s = document.getElementById("mv-busy-sub");
+    if (s) {
+      s.textContent = kind === "esp"
+        ? "Two grids: the electron density, then the potential over it. The "
+          + "potential is a Coulomb sum at every grid point — minutes on a large "
+          + "molecule, and longer at a finer grid."
+        : "ORCA is computing the grid. An orbital takes about a second; an "
+          + "electron density can take half a minute on a large molecule.";
+    }
   }
   /** @type {HTMLElement} */ (box).hidden = !on;
 }
@@ -600,6 +711,26 @@ function mvRenderCube(zoom) {
   // instead would cost cube-of-the-number bytes and seconds for detail an
   // isosurface cannot show.
   const common = { opacity: 0.85, smoothness: 8 };
+  if (_mvEspData) {
+    // The ESP map: ONE surface — the density isocontour — with the potential
+    // sampled per vertex and run through the colour ramp. `voldata` is the
+    // second field, `volscheme` the mapping; the ramp's ends come from the
+    // design tokens so the legend swatch and the surface cannot disagree.
+    const $3Dmol = window["$3Dmol"] || window["3Dmol"];
+    _mvViewer.addIsosurface(_mvVolData, Object.assign({
+      isoval: _mvIso,
+      voldata: _mvEspData,
+      volscheme: new $3Dmol.Gradient.CustomLinear(
+        -_mvEspRange, _mvEspRange,
+        [_cssColor("--esp-neg"), _cssColor("--esp-mid"), _cssColor("--esp-pos")]),
+    }, common, { opacity: 0.92 }));
+    if (zoom) _mvViewer.zoomTo();
+    _mvViewer.render();
+    _mvVolCaption("ESP map  ·  density surface " + _mvIso.toFixed(3) +
+                  " e/bohr³  ·  scale ±" + _mvEspRange.toFixed(3) +
+                  " a.u.  ·  grid " + _mvVolGrid + "³  ·  red −, blue +");
+    return;
+  }
   if (_mvVolSigned) {
     _mvViewer.addIsosurface(_mvVolData, Object.assign({ isoval: _mvIso, color: _cssColor("--orb-pos") }, common));
     _mvViewer.addIsosurface(_mvVolData, Object.assign({ isoval: -_mvIso, color: _cssColor("--orb-neg") }, common));
@@ -628,7 +759,8 @@ function _mvSyncIsoControls() {
 }
 
 /** Isovalue slider: re-mesh the cube already in memory — no backend call, which
- *  is the whole reason a coarse grid is enough. @param {string|number} v */
+ *  is the whole reason a coarse grid is enough. In ESP mode it steers the
+ *  DENSITY surface the map is painted on. @param {string|number} v */
 function mvSetIso(v) {
   _mvIso = _isoFromSlider(v);
   const lbl = document.getElementById("mv-iso-val");
@@ -636,16 +768,62 @@ function mvSetIso(v) {
   if (!_mvVolBusy) mvRenderCube(false);
 }
 
+/* ---- the ESP colour scale ----
+ * Log-scaled 0.005 … 0.5 a.u. so the conventional ±0.05 lands at the middle of
+ * the track, and so a charged species (whose potential is offset by whole units)
+ * is still reachable without the neutral case living in the first few pixels —
+ * the same argument as the isovalue slider's scale. */
+function _espFromSlider(v) { return 0.005 * Math.pow(100, Number(v) / 100); }
+function _sliderFromEsp(r) {
+  const v = 100 * Math.log(Math.max(0.005, r) / 0.005) / Math.log(100);
+  return Math.max(0, Math.min(100, Math.round(v)));
+}
+
+/** Colour-scale slider: re-colours the surface already meshed, no backend call.
+ *  @param {string|number} v */
+function mvSetEspRange(v) {
+  _mvEspRange = _espFromSlider(v);
+  _mvSyncEspControls(true);
+  if (!_mvVolBusy) mvRenderCube(false);
+}
+
+/** Push _mvEspRange onto the slider readout and the legend's end labels.
+ *  @param {boolean} [fromSlider] skip writing back to the slider the user holds */
+function _mvSyncEspControls(fromSlider) {
+  const slider = /** @type {HTMLInputElement} */ (document.getElementById("mv-esp"));
+  if (slider && !fromSlider) slider.value = String(_sliderFromEsp(_mvEspRange));
+  const lbl = document.getElementById("mv-esp-val");
+  if (lbl) lbl.textContent = _mvEspRange.toFixed(3);
+  const lo = document.getElementById("mv-esp-lo");
+  const hi = document.getElementById("mv-esp-hi");
+  if (lo) lo.textContent = "−" + _mvEspRange.toFixed(2);
+  if (hi) hi.textContent = "+" + _mvEspRange.toFixed(2);
+}
+
+/** Show the colour-scale slider and the legend only for the ESP map — for every
+ *  other pick they would describe nothing. @param {boolean} on */
+function _mvEspControls(on) {
+  const ctl = document.getElementById("mv-esp-ctl");
+  const key = document.getElementById("mv-esp-legend");
+  if (ctl) ctl.style.display = on ? "" : "none";
+  if (key) key.style.display = on ? "" : "none";
+}
+
 /** Grid selector: this one DOES need a new cube, so it re-runs the current pick.
+ *  The choice is remembered per KIND — the ESP map's grid is its own (its cost
+ *  is minutes, not seconds), and moving back to an orbital must not inherit it.
  *  @param {string|number} g */
 function mvSetGrid(g) {
+  const pick = _mvVolPicks[_mvVolIndex];
   _mvVolGrid = Number(g) || 60;
+  if (pick) _mvGridByKind[pick.kind] = _mvVolGrid;
   mvVolShow(_mvVolIndex);
 }
 
 function mvVolReset() {
   _mvVolSeq++;              // orphan any in-flight generate
   _mvVolBusyOverlay(false);
-  _mvVolPicks = []; _mvVolData = null; _mvVolBusy = false;
+  _mvEspControls(false);
+  _mvVolPicks = []; _mvVolData = null; _mvEspData = null; _mvVolBusy = false;
   _mvVolSource = ""; _mvVolBase = "";
 }

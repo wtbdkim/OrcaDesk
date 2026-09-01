@@ -665,9 +665,12 @@
 /**
  * get_plot_options(source) result. Mirror of the Python PlotOptionsResult —
  * what a finished calculation can be visualized as. "kinds" is a subset of
- * ["mo","eldens","spindens"] (spin density only for an open-shell calc);
+ * ["mo","eldens","esp","spindens"] (spin density only for an open-shell calc);
  * "cached" names the cube files already on disk, which open instantly.
  * The orbital list is NOT here — the Results tab already holds it.
+ * The esp_* fields are the ESP map's own conventions: it costs minutes rather
+ * than seconds so it opens at a coarser grid, and it is drawn from two cubes —
+ * a density surface at esp_surface_iso, coloured over ±esp_range.
  * @typedef {Object} PlotOptionsResult
  * @property {boolean} ok
  * @property {string} [base]         filename stem the cubes are named from
@@ -677,6 +680,9 @@
  * @property {number[]} [grids]
  * @property {number} [default_grid]
  * @property {string[]} [cached]
+ * @property {number} [esp_grid]
+ * @property {number} [esp_surface_iso]
+ * @property {number} [esp_range]
  * @property {string} [error]
  */
 

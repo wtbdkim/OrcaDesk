@@ -6,6 +6,29 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Electrostatic potential maps, beside the orbitals.** The Results-tab 3D
+  viewer gains an **ESP map** pick: the electron-density surface coloured by the
+  molecule's electrostatic potential — red where it is negative (electron-rich,
+  where an electrophile approaches), blue where it is positive. It is the
+  picture you reach for to say where something attacks, and it used to mean
+  exporting cubes into another program.
+  - It is drawn from **two** grids, not one: the density gives the surface, the
+    potential gives the colour, and both are computed on the same box so the
+    colour can be sampled per surface vertex. ORCAdesk generates and caches both.
+  - **Two independent knobs.** The isovalue slider moves the density surface the
+    map is painted on — it opens at 0.002 e/bohr³, the van-der-Waals-like
+    contour, which is where a potential is a statement about *approach*. A
+    second slider sets the colour scale, opening at the conventional ±0.05 a.u.
+    Both redraw what is already loaded, with no recomputation.
+  - **It says what it costs before you click.** The potential is a Coulomb sum
+    over the whole density at every grid point: measured at **49 s** on a
+    52-atom molecule at 40³ and ~2.8 min at 60³, where an orbital is 0.17 s. So
+    the ESP map keeps its own, coarser default grid (the potential is smooth and
+    long-ranged, so it loses little), the list marks it as taking minutes, and
+    the progress card says which of the two grids is being computed. The finer
+    grids stay available — they are just no longer the silent default.
+  - Offered for any finished ORCA run that can already plot its electron
+    density; both come from the same SCF density.
 - **You can see the structure you are about to run, on the Build tab.** Loading
   an `.xyz` now draws it in 3D right under the loader, with a one-line census
   beside it (`C8H10N4O2 · 24 atoms · 102 electrons · 1 fragment`). Until now the

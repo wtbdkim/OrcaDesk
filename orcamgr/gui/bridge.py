@@ -1573,8 +1573,13 @@ class Bridge(QObject):
         Spin density is offered only for an open-shell run: a closed-shell one
         writes no spin density for orca_plot to read, and a button that can only
         fail is exactly the reassurance P2 rules out. The orbital list is not
-        returned — the Results tab already holds it from the parse payload."""
-        from ..core.plot import GRID_CHOICES, DEFAULT_GRID
+        returned — the Results tab already holds it from the parse payload.
+
+        The ESP map rides the same availability as the electron density: both are
+        computed from the SCF density orca_plot lists as ``<base>.scfp``, so a run
+        that can plot one can plot the other."""
+        from ..core.plot import GRID_CHOICES, DEFAULT_GRID, default_grid_for
+        from ..cube import ESP_SURFACE_ISOVALUE, ESP_DEFAULT_RANGE
         try:
             run_dir, base, open_shell, err = self._plot_source(source)
             if err:
@@ -1586,8 +1591,10 @@ class Bridge(QObject):
             return json.dumps(PlotOptionsResult(ok=False, error=str(e)))
         return json.dumps(PlotOptionsResult(
             ok=True, base=base, has_gbw=has_gbw, open_shell=open_shell,
-            kinds=["mo", "eldens"] + (["spindens"] if open_shell else []),
-            grids=list(GRID_CHOICES), default_grid=DEFAULT_GRID, cached=cached))
+            kinds=["mo", "eldens", "esp"] + (["spindens"] if open_shell else []),
+            grids=list(GRID_CHOICES), default_grid=DEFAULT_GRID, cached=cached,
+            esp_grid=default_grid_for("esp"),
+            esp_surface_iso=ESP_SURFACE_ISOVALUE, esp_range=ESP_DEFAULT_RANGE))
 
     @pyqtSlot(str, result=str)
     def generate_cube(self, payload_json: str) -> str:

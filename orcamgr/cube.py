@@ -34,11 +34,32 @@ from pathlib import Path
 # web/molviewer.js `_defaultIso` lowers it to the level enclosing 90% of
 # psi-squared when the data has nothing up here, and never raises it above the
 # convention. Fitting needs the values; this file only reads the header.
-DEFAULT_ISOVALUES = {"mo": 0.05, "eldens": 0.02, "spindens": 0.005}
+DEFAULT_ISOVALUES = {"mo": 0.05, "eldens": 0.02, "spindens": 0.005, "esp": 0.05}
 
 # Which kinds have meaningful negative lobes and are drawn as a ± pair. A total
 # electron density is positive everywhere, so a second surface would be noise.
 SIGNED_KINDS = {"mo", "spindens"}
+
+# ---- the ESP map --------------------------------------------------------
+# An ESP map is not an isosurface of the potential; it is the potential painted
+# ON an electron-density surface, and it therefore needs TWO cubes on the same
+# grid. These two constants are the convention it is drawn by, kept here so the
+# front-end does not carry a second copy of them (P4).
+
+#: The density isosurface an ESP map is painted on, in e/bohr³. 0.002 is the
+#: literature's isodensity surface — it traces the molecule at roughly its
+#: van-der-Waals boundary, which is where an electrostatic potential is a
+#: statement about *approach*. Deliberately NOT the 0.02 above: that level sits
+#: in the bonding region, where the potential is dominated by the nuclei and the
+#: map would be uniformly positive and say nothing.
+ESP_SURFACE_ISOVALUE = 0.002
+
+#: Half-width of the colour scale, in atomic units (±0.05 Eh/e is the usual
+#: figure). Measured on neutral water at def2-SVP: the potential runs −0.097 to
+#: +20.1 over the whole box, but its 1st and 99th percentiles are −0.051 and
+#: +0.114, so ±0.05 spans the range that is actually on the surface while
+#: keeping the near-nucleus spike from flattening everything to one colour.
+ESP_DEFAULT_RANGE = 0.05
 
 
 def _floats(line: str) -> list[float]:

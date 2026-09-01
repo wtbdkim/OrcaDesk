@@ -610,6 +610,15 @@ class PlotOptionsResult(_Ok, total=False):
     grids: "list[int]"
     default_grid: int
     cached: "list[str]"
+    # ESP is the one kind whose cost is minutes rather than seconds, and the one
+    # drawn from two cubes instead of one, so it carries its own defaults rather
+    # than sharing the others': the grid it should open at, the density level its
+    # surface is drawn at, and the half-width of its colour scale. All three are
+    # conventions defined in orcamgr/cube.py and core/plot.py — sent here so the
+    # front-end never holds a second copy (P4).
+    esp_grid: int
+    esp_surface_iso: float
+    esp_range: float
 
 
 class CubeJobPayload(TypedDict, total=False):

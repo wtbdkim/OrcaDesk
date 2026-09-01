@@ -15,8 +15,8 @@ import pytest
 
 from orcamgr.core.plot import (
     DEFAULT_GRID, GRID_CHOICES, MAX_CUBE_BYTES, PLOT_KINDS,
-    CubeRequest, _menu_sequence, cube_filename, generate_cube, orca_plot_exe,
-    plot_output_name,
+    CubeRequest, _menu_sequence, cube_filename, default_grid_for, generate_cube,
+    orca_plot_exe, plot_output_name,
 )
 
 
@@ -167,3 +167,56 @@ def test_payload_cap_leaves_room_for_the_largest_offered_grid():
     """80³ on a typical box is ~7.3 MB measured; the cap must not refuse what
     the UI itself can produce."""
     assert MAX_CUBE_BYTES > 8_000_000
+
+
+# --- the electrostatic potential ---------------------------------------------
+# ESP is the third sequence shape, and none of the other two's assumptions hold
+# for it: its density prompt takes a typed NAME (not a y/n), orca_plot names its
+# output after that density rather than after the plot type, and it costs minutes
+# rather than seconds. All three are pinned here.
+
+def test_esp_sequence_types_the_density_name_in_full():
+    """43 = Electrostatic Potential, then the density name. This prompt is NOT
+    the density kinds' y/n: an empty answer is met with "Wrong Density Name
+    selected" and drops orca_plot into the endless Invalid-input loop. Verified
+    against ORCA 6.1.1."""
+    seq = _menu_sequence(CubeRequest(kind="esp", grid=40), "water")
+    assert seq == "5\n7\n4\n40\n1\n43\nwater.scfp\n11\n12\n"
+
+
+def test_esp_output_is_named_after_its_density_not_its_plot_type():
+    """The one kind whose file is not <base>.<kind>.cube — orca_plot writes
+    water.scfp.esp.cube. Getting this wrong makes every ESP look like a failed
+    plot, because the file the code looks for is never there."""
+    assert plot_output_name("water", CubeRequest(kind="esp")) == "water.scfp.esp.cube"
+    assert cube_filename("water", CubeRequest(kind="esp", grid=40)) \
+        == "water.scfp.esp.g40.cube"
+
+
+def test_esp_defaults_to_the_coarse_grid():
+    """Measured: 49.3 s at 40³ on 52 atoms / 987 basis functions, ~2.8 min at
+    60³. The potential is smooth and long-ranged, so the coarse grid costs it
+    far less than it would cost an orbital — and the other kinds keep theirs."""
+    assert default_grid_for("esp") == 40
+    assert CubeRequest(kind="esp", grid=0).normalized().grid == 40
+    for kind in ("mo", "eldens", "spindens"):
+        assert default_grid_for(kind) == DEFAULT_GRID
+        assert CubeRequest(kind=kind, grid=0).normalized().grid == DEFAULT_GRID
+
+
+def test_a_refused_density_name_is_not_reported_as_a_menu_mismatch(tmp_path, monkeypatch):
+    """A wrong density name makes orca_plot print its own complaint and THEN
+    desync, so the generic "this ORCA build's menu differs" sentence would blame
+    the wrong thing. The specific reason has to win (P28)."""
+    from orcamgr.core import plot as plot_mod
+    (tmp_path / "w.gbw").write_text("")
+    exe = tmp_path / "orca_plot.exe"
+    exe.write_text("")
+    monkeypatch.setattr(plot_mod, "_run_bounded",
+                        lambda *a, **k: ("Wrong Density Name selected\n"
+                                         "Invalid input. Please try again\n", False))
+    r = generate_cube(tmp_path / "orca.exe", tmp_path, "w",
+                      CubeRequest(kind="esp", grid=40))
+    assert r["ok"] is False
+    assert "w.scfp" in r["error"]
+    assert "plot menu differs" not in r["error"]

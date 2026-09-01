@@ -706,9 +706,12 @@
         <div class="mv-busy" id="mv-vol-busy" hidden>
           <div class="mv-busy-card">
             <div class="mv-busy-title" id="mv-busy-title">Plotting…</div>
-            <div class="mv-busy-sub">ORCA is computing the grid. An orbital takes
-              about a second; an electron density can take half a minute on a
-              large molecule.</div>
+            <!-- text is per-kind, written by _mvVolBusyOverlay: an ESP map is
+                 minutes where an orbital is a second, and one averaged sentence
+                 would be wrong for both -->
+            <div class="mv-busy-sub" id="mv-busy-sub">ORCA is computing the grid.
+              An orbital takes about a second; an electron density can take half
+              a minute on a large molecule.</div>
           </div>
         </div>
         <div class="mv-bar" id="mv-vol-bar" style="display:none">
@@ -719,6 +722,22 @@
                    oninput="mvSetIso(this.value)">
             <span id="mv-iso-val" class="mv-ctl-val">0.050</span>
           </label>
+          <!-- ESP map only: the colour scale is a second, independent knob from
+               the isovalue above (which picks the density surface it is painted
+               on). Like the isovalue it only re-meshes what is already loaded. -->
+          <label class="mv-ctl" id="mv-esp-ctl" style="display:none"
+                 title="Half-width of the colour scale — re-colours the surface already loaded">
+            Scale ±
+            <input type="range" id="mv-esp" min="0" max="100" step="1" value="50"
+                   oninput="mvSetEspRange(this.value)">
+            <span id="mv-esp-val" class="mv-ctl-val">0.050</span>
+          </label>
+          <span class="mv-legend" id="mv-esp-legend" style="display:none"
+                title="Electrostatic potential on the density surface, in atomic units">
+            <span id="mv-esp-lo">−0.05</span>
+            <span class="mv-legend-ramp"></span>
+            <span id="mv-esp-hi">+0.05</span>
+          </span>
           <label class="mv-ctl" title="Grid points per axis — a finer grid re-runs orca_plot">
             Grid <select id="mv-grid" onchange="mvSetGrid(this.value)"></select>
           </label>

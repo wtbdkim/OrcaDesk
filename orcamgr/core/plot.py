@@ -15,6 +15,14 @@ rather than one MO vector, but still seconds, not minutes (P3). Both are
 trivial next to the SCF that produced the ``.gbw``, which is the point: the
 expensive work is already paid for.
 
+The **electrostatic potential** breaks that pattern and is the one kind whose
+cost the UI has to say out loud. It is a Coulomb sum over the entire density at
+every grid point, and it measured **49.3 s at 40³** on that same system — ~2.8
+min at 60³ and ~6.6 min at 80³ by the cubic scaling. It also scales with the
+basis: the same plot on water at def2-SVP (24 basis functions) is **0.2 s**. So
+ESP defaults to the coarse grid (:data:`DEFAULT_GRIDS`), which costs it little —
+the potential is a smooth, long-ranged field, unlike an orbital.
+
 Why the interactive menu and not ``orca_plot gbw-file plot-inputfile``
 ---------------------------------------------------------------------
 ``orca_plot`` advertises a non-interactive plot-input-file mode, but its parser
@@ -54,6 +62,21 @@ from .procutil import no_window_flags
 GRID_CHOICES = (40, 60, 80)
 DEFAULT_GRID = 60
 
+# Per-kind default grid, for the kinds whose cost is not the others'. An MO is
+# 0.17 s and a density 9.9 s at 60³, but the electrostatic potential is a
+# Coulomb sum over the whole density at EVERY grid point: measured 49.3 s at
+# 40³ on that same 52-atom / 987-basis-function system, which the cubic scaling
+# puts at ~2.8 min at 60³ and ~6.6 min at 80³ (P3). The potential is also a
+# smooth, long-ranged field, so a coarse grid costs it much less than it costs
+# an orbital. 40 is therefore the honest default for ESP — the higher grids stay
+# selectable, and the UI says what they cost before the click.
+DEFAULT_GRIDS = {"esp": 40}
+
+
+def default_grid_for(kind: str) -> int:
+    """The grid an unconfigured request of this kind should use."""
+    return DEFAULT_GRIDS.get(kind, DEFAULT_GRID)
+
 # Refuse to ship anything larger than this to the front-end. Nothing we can
 # generate through GRID_CHOICES comes close; this catches a stale hand-made cube
 # sitting in the folder, which would otherwise freeze the UI on load.
@@ -70,14 +93,24 @@ _OUTPUT_CAP_BYTES = 200_000
 
 _FINISHED = "*** PLOTTING FINISHED ***"
 _DESYNC = "Invalid input. Please try again"
+# The ESP path's own failure: orca_plot refused the density name we typed. It
+# then falls into the desync loop, so this must be checked FIRST — otherwise the
+# generic "this ORCA build's menu differs" sentence would blame the wrong thing.
+_BAD_DENSITY = "Wrong Density Name selected"
 _BAD_MO = "Invalid MO requested for plot"
 
-PLOT_KINDS = ("mo", "eldens", "spindens")
+PLOT_KINDS = ("mo", "eldens", "spindens", "esp")
 
 #: Human labels for the kinds, for log lines and viewer titles.
 KIND_LABELS = {"mo": "Molecular orbital",
                "eldens": "Electron density",
-               "spindens": "Spin density"}
+               "spindens": "Spin density",
+               "esp": "Electrostatic potential"}
+
+#: The SCF density orca_plot's ESP prompt is answered with. It is the density
+#: the menu itself lists as available for "(scf) electron density" (``scfp``),
+#: so a run that can plot a density can plot its potential.
+_SCF_DENSITY_SUFFIX = ".scfp"
 
 
 @dataclass
@@ -93,7 +126,8 @@ class CubeRequest:
         """Clamp to what the menu sequences actually accept. This is the trust
         boundary — the request arrives as JSON from the front-end (P34)."""
         kind = self.kind if self.kind in PLOT_KINDS else "mo"
-        grid = min(GRID_CHOICES, key=lambda g: abs(g - int(self.grid or DEFAULT_GRID)))
+        grid = min(GRID_CHOICES,
+                   key=lambda g: abs(g - int(self.grid or default_grid_for(kind))))
         return CubeRequest(kind=kind, index=max(0, int(self.index or 0)),
                            operator=1 if int(self.operator or 0) == 1 else 0,
                            grid=grid)
@@ -106,9 +140,15 @@ def plot_output_name(base: str, req: CubeRequest) -> str:
 
     Note what is *absent*: the grid. orca_plot names a plot by what it is, not by
     how finely it was sampled, so two resolutions of one orbital collide here —
-    which is why the stored name below adds it."""
+    which is why the stored name below adds it.
+
+    ESP is the odd one out: orca_plot names it after the DENSITY it was computed
+    from, not after the plot type, so the file is ``water.scfp.esp.cube`` rather
+    than ``water.esp.cube``. Verified against ORCA 6.1.1."""
     if req.kind == "mo":
         return f"{base}.mo{req.index}{'b' if req.operator else 'a'}.cube"
+    if req.kind == "esp":
+        return f"{base}{_SCF_DENSITY_SUFFIX}.esp.cube"
     return f"{base}.{req.kind}.cube"
 
 
@@ -124,7 +164,7 @@ def cube_filename(base: str, req: CubeRequest) -> str:
     return f"{stem}.g{req.grid}.cube"
 
 
-def _menu_sequence(req: CubeRequest) -> str:
+def _menu_sequence(req: CubeRequest, base: str = "") -> str:
     """The keystrokes that drive ``orca_plot``'s interactive menu.
 
     Common prefix selects the output format and the grid:
@@ -136,11 +176,19 @@ def _menu_sequence(req: CubeRequest) -> str:
                the default density name the program offers (``<base>.scfp`` /
                ``.scfr``) — this prompt is the one that has no analogue in the MO
                path, and omitting it is exactly what desynchronizes the run.
+      esp      ``43`` → Electrostatic Potential, then the density name **typed
+               in full** (``<base>.scfp``). Note it is neither of the other two
+               shapes: the density prompt here is not a y/n confirmation, and an
+               empty line answers it with "Wrong Density Name selected" and drops
+               straight into the endless ``Invalid input`` loop the module
+               docstring describes. Observed while adding this kind.
     Finally ``11`` generates the plot and ``12`` exits.
     """
     head = f"5\n7\n4\n{req.grid}\n"
     if req.kind == "mo":
         body = f"1\n1\n3\n{req.operator}\n2\n{req.index}\n"
+    elif req.kind == "esp":
+        body = f"1\n43\n{base}{_SCF_DENSITY_SUFFIX}\n"
     else:
         body = f"1\n{2 if req.kind == 'eldens' else 3}\ny\n"
     return head + body + "11\n12\n"
@@ -271,12 +319,18 @@ def generate_cube(orca_path: str | Path, run_dir: str | Path, base: str,
 
     started = time.time()
     out, timed_out = _run_bounded([str(exe), gbw.name, "-i"],
-                                  _menu_sequence(req), run_dir, timeout)
+                                  _menu_sequence(req, base), run_dir, timeout)
     elapsed = time.time() - started
 
     if timed_out:
         return {"ok": False, "error": f"orca_plot did not finish within "
                                       f"{int(timeout)} s and was stopped."}
+    if _BAD_DENSITY in out:
+        return {"ok": False,
+                "error": f"orca_plot has no density named {base}{_SCF_DENSITY_SUFFIX} "
+                         f"for this wavefunction, so the electrostatic potential "
+                         f"cannot be computed from it. A finished SCF writes one; "
+                         f"a restarted or converted .gbw may not."}
     if _DESYNC in out:
         # The menu numbering is printed with a computed index, so a different
         # ORCA build could renumber it. Say that plainly instead of leaving a

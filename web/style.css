@@ -806,6 +806,25 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
   --orb-pos:  #4f86f7;   /* positive lobe */
   --orb-neg:  #f2555a;   /* negative lobe */
   --orb-dens: #5eead4;   /* an unsigned density (single surface) */
+  /* ESP map ramp — same rule, same reason: red = negative potential (electron
+     rich, where an electrophile approaches), white = neutral, blue = positive.
+     That mapping is how every ESP figure in the literature is read, so it is
+     fixed in both themes. molviewer.js hands these to 3Dmol as a
+     Gradient.CustomLinear and the legend below re-uses them, so the swatch and
+     the surface cannot drift apart. */
+  --esp-neg: #f2555a;
+  --esp-mid: #f5f5f5;
+  --esp-pos: #4f86f7;
+}
+/* the ESP colour key: a ramp swatch between its two end labels */
+.mv-legend {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-family: var(--font-mono); color: var(--muted-foreground);
+}
+.mv-legend-ramp {
+  width: 72px; height: 10px; border-radius: 999px;
+  border: 1px solid var(--border);
+  background: linear-gradient(to right, var(--esp-neg), var(--esp-mid), var(--esp-pos));
 }
 /* orbital/density mode: the list dot is status, not an action (unlike the ★),
    so it never takes a pointer and reads "ready" in the success colour. */

@@ -452,6 +452,12 @@ consume the tint token, never a hand-mixed rgba (D13).
   orbital whose lobes changed color with the app theme would be a figure that
   means something different in each. Adding a surface color means adding it
   here, not a literal in the viewer.
+- **ESP map ramp** (`--esp-neg` `#f2555a` · `--esp-mid` `#f5f5f5` · `--esp-pos`
+  `#4f86f7`) joins that group under the same rule and for the same reason: red =
+  negative potential, white = neutral, blue = positive is how every ESP figure
+  is read. The viewer hands the three to 3Dmol as a `Gradient.CustomLinear` and
+  the `.mv-legend-ramp` swatch is a CSS gradient over the same tokens, so the
+  key and the surface cannot drift apart.
 
 ---
 

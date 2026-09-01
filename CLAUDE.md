@@ -983,12 +983,43 @@ Two things about that shell-out are load-bearing:
   after which orca_plot spins forever on EOF printing `Invalid input`
   (observed: 3 min of CPU and 2 GB of accumulated output). Hence the bounded
   read + hard timeout + explicit desync check in `_run_bounded`.
+  ESP is a **third** shape and shares neither's assumptions:
+  `5,7,4,G,1,43,<base>.scfp,11,12` — plot type 43 is `Electrostatic Potential`,
+  and its density prompt takes the name **typed in full**, not a y/n. An empty
+  answer draws `Wrong Density Name selected` and then the same endless loop,
+  which is why `_BAD_DENSITY` is checked *before* `_DESYNC`: otherwise the
+  generic "this ORCA build's plot menu differs" sentence blames the wrong thing.
 - **The stored filename is grid-qualified** (`{name}.mo4a.g60.cube` in a
   `cubes/` subfolder), because orca_plot's own name is not: it names a plot by
   *what* it is, so the reuse check would otherwise hand back a 60³ cube under
   an 80³ label. `plot_output_name()` is what orca_plot writes,
   `cube_filename()` what we keep; `web/molviewer.js` `_mvCubeName` mirrors the
-  latter so the list's "already generated" dots track the selected grid.
+  latter so the list's "already generated" dots track the selected grid. ESP is
+  the exception to *what orca_plot writes*: it names the file after the DENSITY
+  it was computed from, so the file is `{name}.scfp.esp.cube`, not
+  `{name}.esp.cube` — get it wrong and every ESP looks like a failed plot,
+  because the path the code looks for is never there.
+
+**The ESP map is the one pick built from two cubes.** A potential is not an
+isosurface of itself; the figure everyone means is the potential *painted on* an
+electron-density surface, so the map is `eldens` (shape) + `esp` (colour) at the
+same grid — 3Dmol's `addIsosurface(dens, {voldata: esp, volscheme})` samples the
+second field per surface vertex. `_mvEspParts()` issues the two requests in
+order through `_mvFetchCube` (the single-cube generate/poll/fetch loop, extracted
+for exactly this); both must ride the ESP grid or they would be two different
+boxes. Consequences worth knowing:
+- The isovalue slider steers the **density** level here, opening at
+  `cube.ESP_SURFACE_ISOVALUE` (0.002, the van-der-Waals-like contour) — *not*
+  the enclosed-fraction fit, which exists because an orbital's peak varies with
+  delocalization, while a total density's 0.002 contour is the same physical
+  surface in every molecule. A second slider sets the colour half-width
+  (`ESP_DEFAULT_RANGE`, ±0.05 a.u.); both re-draw in place.
+- **The grid is remembered per kind** (`_mvGridByKind`), because ESP costs
+  minutes where an orbital costs a second: measured **49.3 s at 40³** on that
+  same 52-atom system (~2.8 min at 60³, ~6.6 min at 80³), and 0.2 s on water at
+  def2-SVP — it scales with the basis as well as the grid. `DEFAULT_GRIDS` in
+  `plot.py` opens ESP at 40³ and `default_grid_for()` is the accessor; the busy
+  card's copy is per-kind so neither wait is described by the other's sentence.
 
 Rendering separates **sampling** from **smoothness**: an MO is a sum of
 Gaussians, so a coarse grid is missing *mesh*, not physics. 3Dmol's marching
