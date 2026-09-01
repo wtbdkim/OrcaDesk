@@ -640,3 +640,55 @@ def test_a_conventional_correlated_method_still_honours_nori():
     cfg = StepConfig(kind="sp", functional="MP2", basis_set="def2-SVP",
                      ri_approximation="NoRI")
     assert "AutoAux" not in _keyword_line(build_input(cfg, WATER_XYZ))
+
+
+# ---- a numerical frequency never gets more ranks than it has displacements ---
+# Measured on ORCA 6.1.1: CO2 (3 atoms, 12 displacements) with %pal nprocs 15
+# wrote every displacement gradient and then spun on one core forever; the same
+# input at nprocs 12 finished in 38 s. The surplus ranks had nothing to compute,
+# so the cap costs no wall-clock at all.
+
+def _pal_line(text: str) -> str:
+    return next(ln for ln in text.splitlines() if ln.startswith("%pal"))
+
+
+def test_numfreq_caps_the_ranks_at_the_displacement_count():
+    cfg = StepConfig(kind="freq", calculation_type="NumFreq", nprocs=15)
+    text = build_input(cfg, WATER_XYZ)          # 3 atoms -> 12 displacements
+
+    assert _pal_line(text) == "%pal nprocs 12 end"
+
+
+def test_the_capped_input_says_it_was_capped():
+    # The number came from the form's field; a silently different one in the
+    # .inp is noticed far too late, so the file carries the reason (P2).
+    cfg = StepConfig(kind="freq", calculation_type="NumFreq", nprocs=15)
+    note = " ".join(ln for ln in build_input(cfg, WATER_XYZ).splitlines()
+                    if ln.startswith("#"))
+
+    assert "12" in note and "15" in note
+    assert "displaced-geometry gradient per" in note
+
+
+def test_a_request_that_already_fits_is_left_exactly_as_asked():
+    for nprocs in (1, 6, 12):
+        cfg = StepConfig(kind="freq", calculation_type="NumFreq", nprocs=nprocs)
+        text = build_input(cfg, WATER_XYZ)
+        assert _pal_line(text) == f"%pal nprocs {nprocs} end"
+        assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+
+
+def test_an_analytic_freq_is_never_capped():
+    # No displacements, no ceiling — capping it would cost real parallelism.
+    cfg = StepConfig(kind="freq", calculation_type="Freq", nprocs=64)
+    text = build_input(cfg, WATER_XYZ)
+
+    assert _pal_line(text) == "%pal nprocs 64 end"
+    assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+
+
+def test_numfreq_asked_for_in_the_extra_options_is_capped_too():
+    # The keyword can arrive from the options field rather than the picker; the
+    # cap reads the composed keyword line, so both spellings reach it (P4).
+    cfg = StepConfig(kind="sp", calculation_type="", options="NumFreq", nprocs=15)
+    assert _pal_line(build_input(cfg, WATER_XYZ)) == "%pal nprocs 12 end"

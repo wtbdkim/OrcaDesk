@@ -255,8 +255,13 @@ The `core/` pipeline:
   `estimated_ram_mb`, reading a raw `.inp`'s own `%pal`/`%maxcore`), the
   `ResourceBudget` the dispatcher admits against, and `ram_headroom_mb()` —
   the machine's real free memory minus a reserve, consulted before a **second**
-  job starts because the memory estimates are wrong in both directions. Qt-free, psutil for the
-  machine's physical core count / installed RAM.
+  job starts because the memory estimates are wrong in both directions. It also
+  owns the one *ceiling* on parallelism that is not a budget:
+  `numfreq_rank_cap()` — a numerical frequency runs one displaced-geometry
+  gradient per process and deadlocks when given more processes than it has
+  displacements (`6N - 6`), so the generator caps a generated `%pal nprocs` to
+  it with a `#` note and the engine warns about a raw one (P57). Qt-free, psutil
+  for the machine's physical core count / installed RAM.
 - `queue.py` — `QueueEngine` orchestrates the pipeline (details below). Validation
   is the module-level `validate_result()` (shared by the engine and session
   reconciliation). Cancel verbs: hard `cancel()` (kill the in-flight job → it

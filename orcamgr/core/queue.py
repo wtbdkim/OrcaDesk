@@ -49,7 +49,8 @@ from .input_generator import (
     _xyz_elements,
 )
 from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
-                        ram_headroom_mb, uses_gpu, worker_threads)
+                        numfreq_rank_cap, ram_headroom_mb, raw_nprocs, uses_gpu,
+                        worker_threads)
 from .runner import OrcaRunner, OrcaRunError, OrcaCancelled, OrcaDetached
 from .parser import parse_file, ParseResult
 from .procutil import process_matches
@@ -715,6 +716,7 @@ class QueueEngine:
                 # (e.g. IRC InitHess "read" without a filename) — surface that
                 # as a normal run failure, not an "Unexpected error".
                 raise OrcaRunError(str(e))
+        self._warn_numfreq_ranks(calc, text)
         # Must happen while the PREVIOUS .inp is still on disk — it is what
         # says whether the restart files beside it belong to this structure.
         self._set_aside_stale_guess(calc, calc_dir, text)
@@ -740,6 +742,29 @@ class QueueEngine:
         self.cb.calc_update(index, calc)
 
         self._monitor_and_finish(calc, index, out_path)
+
+    def _warn_numfreq_ranks(self, calc, text: str) -> None:
+        """Say so when a numerical frequency is about to run on more processes
+        than it has displacements — the ORCA deadlock measured in
+        resources.numfreq_rank_cap.
+
+        The generated path has already capped itself, so in practice this fires
+        for a hand-written `.inp`, which is exactly the one ORCAdesk will not
+        edit: raw text is the user's own (P26). It reports and runs; refusing to
+        launch would be ORCAdesk overruling an input someone typed on purpose,
+        and the ceiling here is measured on one ORCA build rather than
+        documented by ORCA.
+        """
+        cap = numfreq_rank_cap(text, len(_xyz_elements(_raw_coordinate_block(text))),
+                               raw_nprocs(text))
+        if not cap:
+            return
+        self.cb.log(
+            f"[{calc.name}] this numerical frequency has {cap} displacements "
+            f"but asks for {raw_nprocs(text)} processes. ORCA runs one "
+            f"displacement per process and hangs after the last gradient when "
+            f"it is given more — set %pal nprocs to {cap} or fewer. Running as "
+            f"written.", "warn", calc.name)
 
     def _set_aside_stale_guess(self, calc: Calculation, calc_dir: Path,
                                text: str) -> None:

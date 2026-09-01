@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields as dataclass_fields, asdict
 
-from .structure import compare_atom_order
+from .resources import numfreq_rank_cap
+from .structure import compare_atom_order, parse_block
 
 
 # ---- defaults (match the user's established workflow) -------------------
@@ -622,7 +623,24 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
                      "combined with an RI approximation (ORCA refuses the input), "
                      "so the RI selection was left off this line.")
     lines.append(f"%maxcore {cfg.maxcore_mb}")
-    lines.append(f"%pal nprocs {cfg.nprocs} end")
+    # A NumFreq runs one displaced-geometry gradient per rank and deadlocks when
+    # asked for more ranks than it has displacements (resources.numfreq_rank_cap
+    # carries the measurement). The surplus ranks had no work to do, so capping
+    # costs nothing — but the number came from the form's field, and a silently
+    # different one in the .inp is exactly the kind of edit that is noticed too
+    # late, so the file says what happened (P2), where the Expert editor and the
+    # input preview both show it.
+    nprocs = cfg.nprocs
+    cap = numfreq_rank_cap(lines[0], len(parse_block(xyz)), nprocs)
+    if cap:
+        lines.append(
+            "# A numerical frequency runs one displaced-geometry gradient per\n"
+            f"# process and this molecule has {cap}, so the {nprocs} processes "
+            f"requested\n# were reduced to {cap}. ORCA hangs after the last "
+            "gradient when it is\n# given more, and the extra processes "
+            "would have had nothing to run.")
+        nprocs = cap
+    lines.append(f"%pal nprocs {nprocs} end")
 
     solv_block = cfg.solvation.block()
     if solv_block:

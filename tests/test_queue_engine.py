@@ -1423,3 +1423,60 @@ def test_active_names_expose_every_calc_being_handled(tmp_path):
 
     assert seen == [{"only"}]                     # set while handling
     assert harness.engine.active_names == set()   # cleared when the run ends
+
+
+# ---- a hand-written NumFreq is warned about, never rewritten -----------------
+# ORCA runs one displaced-geometry gradient per rank and hangs after the last
+# one when it is given more ranks than displacements (measured on 6.1.1: CO2 at
+# nprocs 15 spun for 20 minutes, at nprocs 12 it finished in 38 s). The
+# generated path caps itself; raw text is the user's own and is left alone
+# (P26), so here the engine reports and runs.
+
+_CO2_NUMFREQ = """! wB97M-V def2-QZVPP VeryTightSCF RIJCOSX TightOpt NumFreq
+%maxcore 3000
+%pal nprocs 15 end
+* xyz 0 1
+C -5.7587182242 1.7728411732 -0.0000024862
+O -4.5968066976 1.6752829290 0.0000048413
+O -6.9206296202 1.8704017487 -0.0000098136
+*
+"""
+
+
+def test_raw_numfreq_with_too_many_ranks_is_warned_about(tmp_path):
+    h = EngineHarness(tmp_path)
+    h.engine._warn_numfreq_ranks(make_calc("CO2"), _CO2_NUMFREQ)
+
+    warnings = [(msg, lvl) for msg, lvl in h.logs if lvl == "warn"]
+    assert len(warnings) == 1
+    msg = warnings[0][0]
+    assert "12 displacements" in msg and "15 processes" in msg
+    # it says what to do, and that it is not doing it for you
+    assert "12 or fewer" in msg and "Running as written." in msg
+
+
+def test_the_warning_does_not_touch_the_input_text(tmp_path):
+    h = EngineHarness(tmp_path)
+    text = _CO2_NUMFREQ
+    h.engine._warn_numfreq_ranks(make_calc("CO2"), text)
+
+    assert text == _CO2_NUMFREQ          # P26: raw text is never edited
+
+
+def test_a_raw_numfreq_that_fits_is_not_warned_about(tmp_path):
+    h = EngineHarness(tmp_path)
+    h.engine._warn_numfreq_ranks(make_calc("CO2"),
+                                 _CO2_NUMFREQ.replace("nprocs 15", "nprocs 12"))
+
+    assert not [msg for msg, lvl in h.logs if lvl == "warn"]
+
+
+def test_an_unknowable_geometry_is_not_guessed_at(tmp_path):
+    # "* xyzfile" points at a file the engine cannot see, so the atom count —
+    # and with it the ceiling — is genuinely unknown. Say nothing (P2).
+    h = EngineHarness(tmp_path)
+    h.engine._warn_numfreq_ranks(
+        make_calc("CO2"),
+        "! B3LYP NumFreq\n%pal nprocs 64 end\n* xyzfile 0 1 mol.xyz\n")
+
+    assert not [msg for msg, lvl in h.logs if lvl == "warn"]

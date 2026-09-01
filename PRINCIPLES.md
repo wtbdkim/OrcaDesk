@@ -703,6 +703,18 @@ the verbatim rule (P26) precisely where the user was most explicit. The
 cost is therefore *read* from what will actually execute — a raw input's
 own text, not the hidden form field.
 
+The one number ORCAdesk *does* change is a **generated** input's `%pal nprocs`
+when the run is a numerical frequency asking for more processes than it has
+displacements. ORCA runs one displaced-geometry gradient per process and hangs
+after the last one when given more — measured on 6.1.1: CO2 (12 displacements)
+at `nprocs 15` wrote every gradient and then spun on a single core with no MPI
+children left, while the same input at `nprocs 12` finished in 38 s. That is not
+a budget edit and costs no wall-clock, because the surplus processes had no
+displacement to work on; and it is not silent — the cap is written into the
+`.inp` as a `#` note, where the Expert editor and the input preview both show it
+(P2). A hand-written `.inp` is still never touched: the engine logs the ceiling
+and runs the text as typed (`core/resources.numfreq_rank_cap`).
+
 Three consequences the sequential engine got for free and the dispatcher
 must now state outright:
 

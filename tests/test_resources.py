@@ -11,9 +11,9 @@ from __future__ import annotations
 from orcamgr.core.input_generator import StepConfig
 from orcamgr.core.queue import Calculation
 from orcamgr.core.resources import (
-    ResourceBudget, auto_cores, auto_ram_mb, declared_cores, estimated_ram_mb,
-    free_ram_mb, ram_headroom_mb, raw_maxcore_mb, raw_nprocs, uses_gpu,
-    worker_threads,
+    ResourceBudget, auto_cores, auto_ram_mb, declared_cores, declares_numerical_freq,
+    estimated_ram_mb, free_ram_mb, numfreq_displacements, numfreq_rank_cap,
+    ram_headroom_mb, raw_maxcore_mb, raw_nprocs, uses_gpu, worker_threads,
 )
 
 
@@ -199,3 +199,48 @@ def test_free_memory_is_reported_or_honestly_zero():
     if free:
         # headroom keeps a reserve for the OS and everything else
         assert ram_headroom_mb() < free
+
+
+# ---- numerical frequencies: more ranks than displacements deadlocks ----------
+
+def test_numerical_freq_is_told_apart_from_an_analytic_one():
+    # Only the numerical run displaces geometries, so only it has a ceiling.
+    assert declares_numerical_freq("! wB97M-V def2-QZVPP TightOpt NumFreq") is True
+    assert declares_numerical_freq("! B3LYP def2-SVP Opt Freq") is False
+    # the %irc spelling runs the same displacement machinery
+    assert declares_numerical_freq("%irc InitHess calc_numfreq end") is True
+    assert declares_numerical_freq("%irc InitHess calc_anfreq end") is False
+    # a comment is not an instruction — the rule raw_nprocs applies to "# PAL8"
+    assert declares_numerical_freq("! B3LYP Opt   # NumFreq next time") is False
+    assert declares_numerical_freq("") is False
+
+
+def test_displacement_count_matches_what_orca_prints():
+    # ORCA prints "Number of displacements ... 18 - 6" for a 3-atom molecule:
+    # central differences over 3N coordinates, less translation invariance.
+    assert numfreq_displacements(3) == 12
+    assert numfreq_displacements(24) == 138
+    assert numfreq_displacements(1) == 0
+    assert numfreq_displacements(0) == 0
+
+
+def test_rank_cap_fires_only_on_a_numfreq_that_overflows():
+    numfreq = "! wB97M-V def2-QZVPP TightOpt NumFreq"
+    # CO2 on 15 ranks with 12 displacements: the run that hung for 20 minutes.
+    assert numfreq_rank_cap(numfreq, 3, 15) == 12
+    # exactly one displacement per rank is the fastest safe shape, not a problem
+    assert numfreq_rank_cap(numfreq, 3, 12) is None
+    assert numfreq_rank_cap(numfreq, 3, 6) is None
+    # an analytic Freq has no displacements to run out of
+    assert numfreq_rank_cap("! B3LYP def2-SVP Opt Freq", 3, 64) is None
+    # a molecule big enough that no plausible core count reaches the ceiling
+    assert numfreq_rank_cap(numfreq, 24, 15) is None
+
+
+def test_rank_cap_answers_nothing_rather_than_guessing():
+    # An unknown atom count (an "* xyzfile" geometry we cannot see) is not a
+    # licence to invent a ceiling — P2: say nothing rather than guess.
+    numfreq = "! wB97M-V def2-QZVPP NumFreq"
+    assert numfreq_rank_cap(numfreq, 0, 15) is None
+    assert numfreq_rank_cap(numfreq, 3, 0) is None
+    assert numfreq_rank_cap(numfreq, None, 15) is None

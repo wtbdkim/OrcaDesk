@@ -78,6 +78,21 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
   pre-optimization** stay with the method, since they are band parameters.
 
 ### Fixed
+- **A numerical frequency no longer hangs forever when it is given more
+  processes than it has displacements.** ORCA splits a `NumFreq` over its
+  displaced geometries, one gradient per process. Ask for more processes than
+  there are displacements and it computes every gradient, then stops dead: on
+  ORCA 6.1.1, CO2 (3 atoms, 12 displacements) at `%pal nprocs 15` finished all
+  12 in twenty seconds and then span on a single core for as long as it was
+  left running — no output, no error, and the calculation sitting at *Running*
+  because the process really was alive. The same input at `nprocs 12` finished
+  in 38 seconds. ORCAdesk now knows the ceiling (`6N - 6`) and caps a generated
+  input's `%pal nprocs` to it, writing the reason into the `.inp` as a comment
+  rather than quietly changing the number you typed in the form. Nothing is
+  lost by the cap — the surplus processes had no displacement to work on, so
+  the run takes exactly as long. A **hand-written** input is left exactly as
+  written, as always: the Log tab says what the ceiling is and the job runs as
+  typed.
 - **The 3D viewers no longer draw into hidden panels.** 3Dmol.js redraws every
   viewer it has ever created on each window resize, whether or not it is on
   screen, and a viewer in a hidden panel has a zero-sized canvas — so resizing

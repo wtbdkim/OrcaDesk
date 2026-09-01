@@ -214,6 +214,70 @@ def raw_maxcore_mb(raw_text: str) -> int:
         return 0
 
 
+# ---------------------------------------------------------------------------
+# numerical frequencies: more ranks than displacements is a deadlock
+# ---------------------------------------------------------------------------
+# ORCA parallelises a NumFreq over its displaced geometries, one gradient per
+# rank. Ask for more ranks than there are displacements and the run finishes
+# every gradient and then hangs forever in the collect step: measured on ORCA
+# 6.1.1 (Windows, MS-MPI), CO2 with `%pal nprocs 15` wrote all 12 displacement
+# gradients in 20 seconds and then spun at 100% of one core with no MPI
+# children left and no further output. The same input at `nprocs 12` finished
+# in 38 seconds. Nothing is lost by capping: the surplus ranks had no
+# displacement to work on in the first place, so the wall-clock is identical.
+
+#: `NumFreq` as a simple-input keyword, and the `%irc InitHess calc_numfreq`
+#: spelling — both run the displacement machinery. Analytic `Freq` is not one,
+#: and the `(?:calc_)?` prefix is what keeps `Freq` from matching here at all.
+_NUMFREQ_RE = re.compile(r"(?<![A-Za-z0-9_])(?:calc_)?numfreq(?![A-Za-z0-9_])",
+                         re.IGNORECASE)
+
+
+def declares_numerical_freq(text: str) -> bool:
+    """Does this `.inp` text ask for a NUMERICAL frequency run?
+
+    Comments are stripped first, so a `# NumFreq` note left in a raw input does
+    not count — the same rule `raw_nprocs` applies to `# PAL8`.
+    """
+    return bool(_NUMFREQ_RE.search(_without_comments(text or "")))
+
+
+def numfreq_displacements(n_atoms: int) -> int:
+    """How many displaced-geometry gradients a NumFreq of ``n_atoms`` runs.
+
+    Central differences over every Cartesian coordinate (6N), less the 6 ORCA
+    takes back from translation invariance — the "Number of displacements
+    ... 18 - 6" a 3-atom .out prints. Those are ORCA 6's defaults, which are
+    what ORCAdesk writes; an input that turns translation invariance off runs
+    6 more, so this count is the conservative one (capping to it can only ever
+    leave a rank idle, never deadlock).
+    """
+    return max(0, 6 * int(n_atoms) - 6)
+
+
+def numfreq_rank_cap(text: str, n_atoms: int, nprocs: int):
+    """The `%pal nprocs` a numerical-frequency run must not exceed, or None
+    when this request is already safe (or is not a NumFreq at all).
+
+    A judgment, not an edit: the callers decide what to do with it — the input
+    generator caps the number it is about to write and says so in the file, the
+    queue engine only warns about a raw `.inp`, because raw text is never
+    rewritten on the user's behalf (P26).
+    """
+    if not declares_numerical_freq(text):
+        return None
+    try:
+        n_atoms, nprocs = int(n_atoms), int(nprocs)
+    except (TypeError, ValueError):
+        return None
+    if n_atoms < 1 or nprocs < 1:
+        return None
+    displacements = numfreq_displacements(n_atoms)
+    if displacements < 1 or nprocs <= displacements:
+        return None
+    return displacements
+
+
 def declared_cores(calc) -> int:
     """How many cores this calculation will occupy while it runs.
 
