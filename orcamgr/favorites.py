@@ -42,9 +42,15 @@ def get(source: str) -> list[str]:
     return load_all().get(source, [])
 
 
-def toggle(source: str, label: str, on: bool) -> list[str]:
+def toggle(source: str, label: str, on: bool) -> "tuple[list[str], bool]":
     """Star (``on=True``) or unstar (``on=False``) ``label`` under ``source``,
-    persist, and return the updated label list. Idempotent."""
+    persist, and return ``(labels, saved)``. Idempotent.
+
+    ``saved`` is why this returns a pair: the write is best-effort (P32 — a
+    failed save must never break the viewer), but the star lighting up IS the
+    confirmation, and reporting success for a write that did not happen meant a
+    user could star their way through a 100-conformer ensemble and find every
+    star gone at the next launch."""
     data = load_all()
     labels = data.get(source, [])
     if on:
@@ -56,17 +62,23 @@ def toggle(source: str, label: str, on: bool) -> list[str]:
         data[source] = labels
     else:
         data.pop(source, None)   # keep the file tidy — no empty source keys
-    _save(data)
-    return labels
+    return labels, _save(data)
 
 
-def _save(data: dict) -> None:
+def _save(data: dict) -> bool:
     """Atomic write (tmp + os.replace, same pattern as Settings.save). Best
-    effort: a write failure must never break the viewer."""
+    effort: a write failure must never break the viewer — but it must be
+    REPORTED, so the caller can stop claiming the star was kept. Returns
+    whether it landed, and leaves no .tmp behind when it did not."""
     path = _fav_file()
     tmp = path.with_name(path.name + ".tmp")
     try:
         tmp.write_text(json.dumps(data, indent=0), encoding="utf-8")
         os.replace(tmp, path)
+        return True
     except OSError:
-        pass
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False

@@ -163,17 +163,27 @@ def probe_env(python_path: str, timeout: float = 30.0) -> dict:
         base["error"] = msg[:500]
         return base
 
+    # Scan BACKWARDS for the probe's own object rather than demanding it be the
+    # very last line: an atexit hook, an import-time print, a wrapper script's
+    # echo or a conda banner all print after it, and a perfectly good
+    # environment was then reported as "did not return a valid probe result".
+    # Backwards so the probe's line still wins over anything printed before it.
     lines = (proc.stdout or "").strip().splitlines()
-    try:
-        data = json.loads(lines[-1]) if lines else {}
-    except (json.JSONDecodeError, ValueError):
+    data = None
+    for ln in reversed(lines):
+        ln = ln.strip()
+        if not ln.startswith("{"):
+            continue
+        try:
+            obj = json.loads(ln)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict) and "packages" in obj:
+            data = obj
+            break
+    if data is None:
         msg = (proc.stderr or "").strip() or "Interpreter did not return a valid probe result."
         base["error"] = msg[:500]
-        return base
-    if not isinstance(data, dict):
-        # valid JSON but not the probe's object (a wrapper script or
-        # sitecustomize printing after our line) — treat like unparseable
-        base["error"] = "Interpreter did not return a valid probe result."
         return base
 
     packages = data.get("packages", {}) or {}

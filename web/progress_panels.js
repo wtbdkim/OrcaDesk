@@ -444,8 +444,18 @@
     return { sec: (now - t.t0) / 1000, live: true, startMs: t.t0 };
   }
 
+  /** Escape text destined for innerHTML. @param {string} s */
+  function _escMeta(s) {
+    return String(s).replace(/[&<>"]/g, (c) => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+
   function _stepMetaHtml(m) {
-    const parts = m.meta.slice();
+    // m.meta carries text echoed by ORCA/CREST (the "! ..." keyword token, the
+    // --alpb solvent name), and this string is assigned with innerHTML. The
+    // tokens are whitespace-free so nothing reachable today can carry markup,
+    // but "it cannot contain a space" is not an escaping rule — escape it.
+    const parts = m.meta.map(_escMeta);
     if (m.elapsed) {
       parts.push(`elapsed <span${m.elapsed.live ? ` data-clock="${m.elapsed.startMs}"` : ""}>${_fmtClock(m.elapsed.sec)}</span>`);
     }

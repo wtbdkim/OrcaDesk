@@ -30,13 +30,14 @@ import time
 import pytest
 
 from orcamgr.core.input_generator import StepConfig
-from orcamgr.core.parser import ParseResult
+from orcamgr.core.parser import Atom, ParseResult
 from orcamgr.core.queue import (
     CalcState,
     Calculation,
     GeometrySource,
     QueueCallbacks,
     QueueEngine,
+    _kept_result_matches,
 )
 from orcamgr.core.resources import ResourceBudget
 from orcamgr.core.runner import OrcaCancelled, OrcaRunError
@@ -1049,6 +1050,118 @@ def test_raw_input_with_its_own_coordinates_still_needs_no_xyz(tmp_path):
     calc.xyz = ""
 
     assert harness.engine._resolve_geometry(calc) == ""
+
+
+# ---- a DONE parent ends the dependency chain --------------------------------
+
+def test_a_dependent_of_a_done_parent_runs_even_when_its_grandparent_failed(tmp_path):
+    """A -> B -> C with A FAILED and B DONE: B's geometry is on disk and frozen
+    (P24), so C is perfectly runnable. Propagation walked straight through B and
+    blocked C — whatever A was needed for already happened."""
+    harness = EngineHarness(tmp_path)
+    a = make_calc("A", state=CalcState.FAILED)
+    b = make_calc("B", ref="A", state=CalcState.DONE)
+    b.result = ParseResult(terminated_normally=True,
+                           geometry=[Atom("H", 0.0, 0.0, 0.0)])
+    b.output_path = str(tmp_path / "B" / "B.out")
+    c = make_calc("C", ref="B")
+
+    harness.engine.run_all([a, b, c])
+
+    assert c.state is CalcState.DONE
+    assert harness.calls == ["C"]
+
+
+def test_a_dependent_of_a_failed_parent_is_still_blocked(tmp_path):
+    harness = EngineHarness(tmp_path)
+    a = make_calc("A", state=CalcState.FAILED)
+    b = make_calc("B", ref="A")
+
+    harness.engine.run_all([a, b])
+
+    assert b.state is CalcState.BLOCKED
+    assert harness.calls == []
+
+
+# ---- keep-existing: "cannot tell" is not "does not match" -------------------
+
+def test_keep_existing_does_not_reject_a_raw_calc_whose_geometry_it_cannot_see(tmp_path):
+    """A raw '* xyzfile' input reads its geometry from a file the app never
+    parses, so calc.xyz is whatever was last loaded — stale by its own
+    docstring. Judging the on-disk result against it answered "different
+    structure" about a perfectly matching result, and the run the user asked to
+    KEEP was recomputed over it."""
+    calc = make_calc("raw", kind="sp")
+    calc.is_raw = True
+    calc.raw_text = "! HF STO-3G\n* xyzfile 0 1 external.xyz\n"
+    calc.xyz = "H 0.0 0.0 0.0\nH 0.0 0.0 0.74"          # stale, 2 atoms
+    disk = ParseResult(terminated_normally=True,
+                       geometry=[Atom("O", 0.0, 0.0, 0.0),
+                                 Atom("H", 0.0, 0.0, 1.0),
+                                 Atom("H", 0.0, 1.0, 0.0)])
+
+    assert _kept_result_matches(calc, disk) == ""
+
+
+def test_keep_existing_still_rejects_a_raw_calc_whose_block_it_can_read(tmp_path):
+    calc = make_calc("raw", kind="sp")
+    calc.is_raw = True
+    calc.raw_text = "! HF STO-3G\n* xyz 0 1\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n*\n"
+    disk = ParseResult(terminated_normally=True,
+                       geometry=[Atom("O", 0.0, 0.0, 0.0),
+                                 Atom("H", 0.0, 0.0, 1.0),
+                                 Atom("H", 0.0, 1.0, 0.0)])
+
+    assert "different structure" in _kept_result_matches(calc, disk)
+
+
+# ---- the raw IRC gets its Hessian staged too --------------------------------
+
+def test_a_raw_irc_reading_a_hessian_gets_it_staged(tmp_path):
+    """Raw inputs were exempt from the staging guard, so the ts->irc handoff —
+    the whole point of it — did not happen in Expert mode: ORCA launched with no
+    .hess and died inside."""
+    harness = EngineHarness(tmp_path)
+    (tmp_path / "ts").mkdir(parents=True)
+    (tmp_path / "ts" / "ts.hess").write_text("hessian", encoding="utf-8")
+    run_dir = tmp_path / "ircraw"
+    run_dir.mkdir()
+    calc = make_calc("ircraw", kind="irc", ref="ts")
+    calc.is_raw = True
+    calc.raw_text = ('! B3LYP def2-SVP IRC\n%irc\n  InitHess read\n'
+                     '  Hess_Filename "ts.hess"\nend\n')
+
+    harness.engine._stage_irc_hessian(calc, run_dir)
+
+    assert (run_dir / "ts.hess").read_text(encoding="utf-8") == "hessian"
+
+
+def test_a_raw_irc_that_computes_its_own_hessian_is_left_alone(tmp_path):
+    harness = EngineHarness(tmp_path)
+    run_dir = tmp_path / "ircraw"
+    run_dir.mkdir(parents=True)
+    calc = make_calc("ircraw", kind="irc", ref="ts")
+    calc.is_raw = True
+    calc.raw_text = "! B3LYP def2-SVP IRC\n%irc\n  InitHess calc_anfreq\nend\n"
+
+    harness.engine._stage_irc_hessian(calc, run_dir)   # must not raise
+
+    assert list(run_dir.iterdir()) == []
+
+
+def test_a_raw_irc_whose_hessian_is_nowhere_fails_with_a_clear_message(tmp_path):
+    harness = EngineHarness(tmp_path)
+    run_dir = tmp_path / "ircraw"
+    run_dir.mkdir(parents=True)
+    calc = make_calc("ircraw", kind="irc", ref="ts")
+    calc.is_raw = True
+    calc.raw_text = ('! B3LYP IRC\n%irc\n  InitHess read\n'
+                     '  Hess_Filename "missing.hess"\nend\n')
+
+    with pytest.raises(OrcaRunError) as e:
+        harness.engine._stage_irc_hessian(calc, run_dir)
+
+    assert "missing.hess" in str(e.value)
 
 
 # ---- how ORCA is invoked ----------------------------------------------------

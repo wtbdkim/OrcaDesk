@@ -223,6 +223,7 @@ window.onOutDropped = async function (path) {
     _currentResultName = "";
     _currentResultPath = path;   // keeps the 3D orbital viewer available
     _currentResult = data;
+    noteExternalResult(path);    // the picker must not name a different result
     renderResult(data);
     switchTab("results");
     appendLog("Dropped .out parsed.", "ok");
@@ -1384,8 +1385,13 @@ function collectPreserve(newKind) {
 }
 
 function onKindChange() {
-  if (rawMode) return;  // raw calcs are locked to their text; kind change ignored
   const kind = document.getElementById("calc-kind").value;
+  // The Type select stays enabled in Expert, and what runs there is the raw
+  // text — but the CONFIG is still collected from the (hidden) method form and
+  // persisted. Returning early left it rendered for the previous kind, so a
+  // tddft raw calc was stored carrying calculation_type "TightOpt", which is
+  // what a later re-edit and the session file then showed. The form is hidden
+  // either way; re-rendering it just keeps the stored config honest.
   renderConfigForm(kind, collectPreserve(kind));
 }
 
@@ -1675,8 +1681,12 @@ function readChargeMult() {
   let charge = parseInt(/** @type {HTMLInputElement} */ (document.getElementById("calc-charge")).value, 10) || 0;
   let multiplicity = parseInt(/** @type {HTMLInputElement} */ (document.getElementById("calc-mult")).value, 10) || 1;
   if (rawMode) {
-    // both coordinate forms: "* xyz C M" (embedded) and "* xyzfile C M file.xyz"
-    const cm = rawText.match(/^\s*\*\s*xyz(?:file)?\s+([+-]?\d+)\s+(\d+)/im);
+    // Every coordinate keyword ORCA takes, not just the two cartesian ones:
+    // "* int C M" / "* internal C M" / "* gzmt C M" carry the charge and
+    // multiplicity in exactly the same place, and missing them meant the queue
+    // row showed the hidden form's charge state instead of the input's own.
+    const cm = rawText.match(
+      /^\s*\*\s*(?:xyzfile|xyz|internal|int|gzmt)\s+([+-]?\d+)\s+(\d+)/im);
     if (cm) { charge = parseInt(cm[1], 10); multiplicity = parseInt(cm[2], 10); }
   }
   return [charge, multiplicity];
@@ -2240,6 +2250,19 @@ async function editCalc(i) {
   // raw calcs edit in the Expert editor, form calcs in the Beginner form —
   // align the mode (this also leaves MLIP/CREST mode if we're in it, and drops
   // any previous in-progress edit; editName is set below, after the switch)
+  // Opening a FORM calc drops out of Expert, and setBuildMode's Beginner
+  // branch clears rawText — so an .inp pasted but not yet added would vanish
+  // without a word. setDftSub already asks before that same discard; asking
+  // here too is the same promise, kept on the other route in.
+  if (!mirror.is_raw && rawMode && rawText.trim()) {
+    const keep = await confirmModal({
+      title: "Discard the raw input?",
+      body: "The editor holds an .inp that has not been added to the queue. "
+            + "Opening this calculation for editing will discard it.",
+      confirm: "Discard and edit", cancel: "Keep editing", danger: true,
+    });
+    if (!keep) return;
+  }
   setBuildMode(mirror.is_raw ? "expert" : "beginner", false);
   // prefer the full local copy (has config/xyz/raw_text added on this PC)
   let c = localCalcs[mirror.name];
@@ -2297,6 +2320,21 @@ async function editCalc(i) {
   switchTab("build");
 }
 
+/** Make sure a <select> can show `value`, adding it as an option if the list
+ *  does not have it. Used when loading a stored calculation: the stored value
+ *  is what will RUN, so the form must be able to show it rather than replacing
+ *  it with a blank.
+ *  @param {string} id @param {string|undefined} value */
+function _ensureOption(id, value) {
+  const el = /** @type {HTMLSelectElement} */ (document.getElementById(id));
+  if (!el || !value) return;
+  if ([...el.options].some((o) => o.value === value)) return;
+  const o = document.createElement("option");
+  o.value = value;
+  o.textContent = value + "  (from this calculation)";
+  el.appendChild(o);
+}
+
 /** Push a stored config back into the method form (inverse of collectConfig).
  * @param {Partial<StepConfigPayload>} cfg */
 function fillConfigForm(cfg) {
@@ -2315,6 +2353,12 @@ function fillConfigForm(cfg) {
   setCombo("combo-basis", cfg.basis_set);
   set("cfg-scf", cfg.scf_convergence);
   set("cfg-ri", cfg.ri_approximation);
+  // A <select> silently becomes "" when told to show a value it has no option
+  // for — and a calc built on the phone, or restored from an older session, can
+  // carry a run type this build's picker does not list. An untouched Update
+  // then saved the blank: for an opt that drops the Opt keyword and ORCA runs a
+  // single point, which validates DONE. Give the value an option instead.
+  _ensureOption("cfg-calc", cfg.calculation_type);
   set("cfg-calc", cfg.calculation_type);
   set("cfg-options", cfg.options);
   set("cfg-maxcore", cfg.maxcore_mb);
@@ -2741,8 +2785,18 @@ function renderQueue() {
     // would fall back to a bogus generated preview — hide the button for them.
     const viewBtn = (isMlip || isCrest) ? ""
       : `<button class="btn btn-sm btn-ghost" onclick="viewInp(${i})" title="Input (.inp)">.inp</button>`;
-    const editBtn = editable
-      ? `<button class="btn btn-sm btn-ghost" onclick="editCalc(${i})">edit</button>` : "";
+    // An MLIP/CREST calc is edited in its own card, which is locked until its
+    // backend is ready — so the button would open nothing. Say that on the
+    // button instead of answering the click with a toast (D41/D64: a control
+    // shows what it can do).
+    const backendDown = (isMlip && !_mlipReady) || (isCrest && !_crestReady);
+    const editBtn = !editable ? ""
+      : backendDown
+        ? `<button class="btn btn-sm btn-ghost" disabled title="${
+            isMlip ? "Needs a ready MACE environment (Settings → MLIP)"
+                   : "Needs CREST in a WSL distribution (Settings → CREST)"
+          }">edit</button>`
+        : `<button class="btn btn-sm btn-ghost" onclick="editCalc(${i})">edit</button>`;
     const delBtn = removable
       ? `<button class="btn btn-sm btn-ghost" onclick="removeCalc(${i})" title="Remove">×</button>` : "";
     div.innerHTML = `

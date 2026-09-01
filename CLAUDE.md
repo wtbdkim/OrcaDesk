@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 522 tests over the framework-free layers
+python -m pytest                       # 704 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -348,6 +348,12 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   — or edited in place — under the same name mid-run is a different
   calculation and must actually run, not be stamped DONE from an output it never
   produced.
+- **`kind` is a closed set** (`KNOWN_KINDS` in `core/queue.py`), validated in
+  `calc_from_dict` alongside the name. It selects the pipeline (ORCA / the MLIP
+  worker / CREST), the per-kind validation and the Results gating, so it is not
+  a free-text field the way a functional name is (P30) — an unknown one used to
+  be taken verbatim from an HTTP payload and run through the ORCA runner with
+  default settings.
 - **Calculation `name` is unique and is used as the on-disk folder name**
   (`{workspace}/{name}/`). Uniqueness is enforced in the store,
   **case-insensitively** — Windows resolves `water` and `Water` to the same
@@ -405,7 +411,9 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   structure automatically.
 - **Failure propagation is dependency-scoped, not whole-queue.** If a calc fails,
   every calc that references it (transitively) is marked `BLOCKED` and skipped;
-  unrelated calcs continue. The verdict is read from the LIVE queue every time
+  unrelated calcs continue. The chain STOPS at a `DONE` parent — its geometry is
+  on disk and frozen (P24), so whatever failed further up was needed to produce
+  it and already has. The verdict is read from the LIVE queue every time
   (`_blocked_by` walks the row's reference chain), never from a set of names
   captured at run start: a name is not an identity, and the queue is live (P29),
   so a BLOCKED row edited to point at a healthy parent — or removed and re-added
@@ -476,8 +484,10 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   by `build_input` itself (`ValueError` — the trust boundary, so phone/API
   payloads fail loudly too).
 - **Result validation is per-kind**: `opt`/`ts_opt` (and the combined
-  `opt_freq`/`ts_opt_freq`) must converge; `freq`/`opt_freq` must have zero
-  imaginary frequencies; `ts_freq`/`ts_opt_freq` must have exactly one;
+  `opt_freq`/`ts_opt_freq`) must converge; every freq kind must have PRODUCED
+  frequencies at all (the imaginary-mode rule is vacuously true of an empty
+  table, so a run that never computed a Hessian used to pass);
+  `freq`/`opt_freq` must have zero imaginary frequencies; `ts_freq`/`ts_opt_freq` must have exactly one;
   `neb_ts` must have exactly one when frequencies were computed. A
   validation failure marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`,
   `freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `irc`, `tddft`, `sp`,
@@ -1076,7 +1086,11 @@ them there.
   desktop UI (the top-bar badge + About dialog, via the `get_about()` bridge slot →
   `AboutPayload.version`, set in `app.js loadAbout()`). **Never hardcode a version
   string in `web/`** — to release, bump only `APP_VERSION` (and the prose in
-  `CHANGELOG.md` / `README.md`).
+  `CHANGELOG.md` / `README.md`). The one version that cannot derive from it is
+  `installer.iss`'s `MyAppVersion` / `MyAppVersionFull` — Inno Setup cannot
+  read `paths.py` — so those two constants are part of the release bump and
+  are worth checking whenever `APP_VERSION` moves (they had fallen two
+  releases behind).
 - Bridge slots and API endpoints exchange **JSON strings**, typically
   `{"ok": bool, ...}` or `{"error": "..."}`; errors are returned as data, not raised
   across the JS boundary.

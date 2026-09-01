@@ -205,7 +205,12 @@ async function toggleFav(i) {
   try {
     const r = /** @type {FavoritesResult} */ (JSON.parse(await bridge.toggle_favorite(_mvSource, f.label, on)));
     if (r.ok) _mvFavs = new Set(r.labels || []);
-  } catch (e) { /* keep the optimistic state if the persist call fails */ }
+    // The star lighting up IS the confirmation, so a star that could not be
+    // written must say so — otherwise the user works through a whole ensemble
+    // and finds every star gone at the next launch. The list still follows what
+    // the backend holds in memory, so the session itself keeps working.
+    else if (r.error) { _mvFavs = new Set(r.labels || _mvFavs); failNotify(r.error); }
+  } catch (e) { /* keep the optimistic state if the channel call itself fails */ }
   // Unstarring the LAST favorite leaves "★ only" filtering to nothing: the
   // visible list is empty, so the arrows and Prev/Next go dead while the button
   // still reads as on. The filter refuses to be switched on with no favorites;

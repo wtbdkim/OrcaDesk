@@ -424,7 +424,8 @@ because a guard in the desktop JS is bypassed by the phone/HTTP path. Calc
 names become on-disk folder names, so they are checked for path-dangerous
 characters, `..`, and Windows reserved names (Unicode, e.g. Korean, is
 allowed), for control characters and lone surrogates, and for a length
-Windows can actually use — the first two reach `mkdir` (a localized WinError)
+Windows can actually use; `kind` is validated against the known set for the
+same reason (it chooses the pipeline, not a label) — the first two reach `mkdir` (a localized WinError)
 or the session encoder (a `UnicodeEncodeError` that used to poison autosave
 for the life of the app), and neither is typeable in the desktop's own field:
 they arrive through the phone/HTTP path, which is exactly why the check lives
@@ -664,9 +665,13 @@ rules:
   `config`, `procutil`, and the HTTP API via `fastapi.testclient`. The Qt
   bridge/window are thin adapters and are exercised manually — the logic
   under them is what the suite pins.
-- **Tests cite the contract they pin** (a principle ID in the docstring) and
-  are named for the invariant (`test_failed_calc_never_reruns`), so a red
-  test tells you *which rule* broke.
+- **Tests say what they pin**, in a name that reads as the invariant
+  (`test_failed_calc_never_reruns`), so a red test tells you *which rule*
+  broke. Where the rule is a principle, the docstring cites its ID; where it
+  is a MEASURED fact about a backend — ORCA rejecting `HF-3c` with an RI
+  keyword, a `.out` mixing UTF-8 with the ANSI code page — the docstring
+  carries the measurement instead, since that is the thing a future reader
+  would otherwise have to re-derive (P3).
 - **A red test is a bug** — in the test or in the product. Never weaken a
   test to make wrong behavior pass; a product bug found by a test is fixed
   (or tracked in Appendix A with the test marked `xfail(reason=…)`).

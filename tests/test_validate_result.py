@@ -232,3 +232,45 @@ def test_sp_is_not_subject_to_optimization_convergence():
     # a single point never fails for lacking an optimization convergence.
     result = make_result(is_optimization=False, opt_converged=False)
     validate_result(make_calc("sp"), result)
+
+
+# ---------------------------------------------------------------------------
+# A frequency job has to have produced frequencies
+#
+# The imaginary-mode rule is vacuously satisfied by an EMPTY table
+# (n_imaginary == 0), so a freq run that never computed a Hessian was stamped
+# DONE with no frequencies and no thermochemistry — while the symmetric
+# opt-that-never-optimized case correctly fails. Reachable in Expert mode,
+# where the raw text owns the keyword line.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kind", ["freq", "ts_freq", "opt_freq", "ts_opt_freq"])
+def test_a_frequency_kind_with_no_frequency_table_fails(kind):
+    calc = make_calc(kind)
+    result = make_result(opt_converged=True, frequencies=[], n_imaginary=0)
+
+    with pytest.raises(OrcaRunError) as e:
+        validate_result(calc, result)
+
+    assert "no vibrational frequencies" in str(e.value).lower()
+
+
+def test_neb_ts_without_frequencies_still_passes():
+    # its FREQ step is optional — the imaginary-mode rule is gated on the table
+    # existing, and that is deliberate
+    validate_result(make_calc("neb_ts"), make_result(frequencies=[]))
+
+
+def test_a_zero_imaginary_mode_is_named_in_the_message():
+    """ORCA prints a numerically-zero imaginary mode as "-0.00", and
+    `-0.0 < 0` is False — so re-deriving the list by sign reported "1 imaginary
+    frequency (cm^-1: none)", which says two contradictory things."""
+    calc = make_calc("freq")
+    result = make_result(frequencies=[-0.0, 1500.0],
+                         imaginary_frequencies=[-0.0], n_imaginary=1)
+
+    with pytest.raises(OrcaRunError) as e:
+        validate_result(calc, result)
+
+    assert "none" not in str(e.value)
+    assert "-0.00" in str(e.value)

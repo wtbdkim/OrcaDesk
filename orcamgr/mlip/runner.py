@@ -377,8 +377,16 @@ class MlipRunner:
         with self._lock:
             self._proc = proc
 
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        # From here the worker is RUNNING. Anything that fails while setting up
+        # the plumbing has to take it down with it — an escaping OSError used to
+        # leave it computing against a closed pipe, free to write its result
+        # JSON into a folder the engine had already given up on.
+        try:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self._terminate(proc)
+            raise OrcaRunError(f"Could not prepare the MLIP output file: {e}") from e
         # The read loop blocks in readline, so a cancel/detach while the worker
         # is SILENT (model download, a long optimizer step) would otherwise be
         # acted on only when the next stdout line arrives — possibly minutes
@@ -397,7 +405,13 @@ class MlipRunner:
                                    name="orcadesk-mlip-watch")
         watcher.start()
         try:
-            with open(output_path, "w", encoding="utf-8", errors="replace") as outf:
+            try:
+                outf = open(output_path, "w", encoding="utf-8", errors="replace")
+            except OSError as e:
+                self._terminate(proc)
+                raise OrcaRunError(
+                    f"Could not open the MLIP output file: {e}") from e
+            with outf:
                 for raw_line in (proc.stdout or ()):
                     line = decode_process_output(raw_line).rstrip("\r\n")
                     outf.write(line + "\n")

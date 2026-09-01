@@ -79,7 +79,16 @@ def user_data_root() -> Path:
     else:
         base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     root = Path(base) / APP_NAME
-    root.mkdir(parents=True, exist_ok=True)
+    # Best-effort, like every other write in the app (P32). This runs on EVERY
+    # config_file()/user_data_root() call, including the one inside
+    # Settings.save()'s own try/except — which evaluates config_file() BEFORE
+    # entering it, so an unusable %APPDATA% (pointing at a file, a revoked
+    # roaming profile, a full disk) escaped the "a save failure must never break
+    # the running app" guarantee and crashed the launch outright.
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     return root
 
 

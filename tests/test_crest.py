@@ -628,3 +628,31 @@ def test_a_wsl_failure_is_data_not_an_exception(monkeypatch):
 
     assert rc != 0 and out == ""
     assert "wsl-error" in err
+
+
+# ---------------------------------------------------------------------------
+# Conformer energies: a Fortran exponent, and a real 0.0
+# ---------------------------------------------------------------------------
+
+def test_a_fortran_exponent_is_read_as_a_number():
+    from orcamgr.crest.parser import _first_float
+
+    assert _first_float("  -0.765D+02  ") == pytest.approx(-76.5)
+    assert _first_float("  -76.5  ") == pytest.approx(-76.5)
+    assert _first_float("  no numbers here  ") is None
+
+
+def test_an_energy_of_exactly_zero_is_a_value_not_a_missing_one(tmp_path):
+    """`if best.energy_eh:` treated 0.0 as absent, so the result came back with
+    no final energy at all."""
+    from orcamgr.crest.parser import parse_crest_result
+
+    d = tmp_path / "z"
+    d.mkdir()
+    (d / "crest_conformers.xyz").write_text(
+        "2\n        0.00000000\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n",
+        encoding="utf-8")
+    (d / "z.out").write_text("CREST terminated normally.\n", encoding="utf-8")
+    r = parse_crest_result(str(d / "z.out"))
+
+    assert r.final_energy_eh == 0.0

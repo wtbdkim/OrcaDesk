@@ -543,7 +543,9 @@
 
 /**
  * get_favorites(source) / toggle_favorite(...) result. Mirror of the Python
- * FavoritesResult; "labels" is present on every branch ([] on failure).
+ * FavoritesResult; "labels" is present on every branch — the backend's
+ * in-memory list, so a star that could not be PERSISTED still reports
+ * ok:false with an error and the labels the session is working with.
  * @typedef {Object} FavoritesResult
  * @property {boolean} ok
  * @property {string[]} labels

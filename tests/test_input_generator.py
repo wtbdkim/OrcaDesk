@@ -617,3 +617,26 @@ def test_clamp_int_infinite_value_degrades_to_default():
                                 "maxcore_mb": float("-inf")})
     assert cfg.nprocs == StepConfig().nprocs
     assert cfg.maxcore_mb == StepConfig().maxcore_mb
+
+
+# ---------------------------------------------------------------------------
+# DLPNO is RI by construction
+#
+# Turning RI off does not give a DLPNO method a conventional path, it gives it
+# no path at all. Measured on ORCA 6.1.1: "! DLPNO-CCSD(T) def2-SVP NoRI"
+# aborts in mdci_check; the same line plus AutoAux runs normally; and plain
+# "! MP2 def2-SVP NoRI" runs fine, which is why the NoRI escape stays for
+# everything else.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("functional", ["DLPNO-CCSD(T)", "DLPNO-CCSD", "DLPNO-MP2"])
+def test_dlpno_gets_an_aux_even_with_ri_switched_off(functional):
+    cfg = StepConfig(kind="sp", functional=functional, basis_set="def2-SVP",
+                     ri_approximation="NoRI")
+    assert "AutoAux" in _keyword_line(build_input(cfg, WATER_XYZ))
+
+
+def test_a_conventional_correlated_method_still_honours_nori():
+    cfg = StepConfig(kind="sp", functional="MP2", basis_set="def2-SVP",
+                     ri_approximation="NoRI")
+    assert "AutoAux" not in _keyword_line(build_input(cfg, WATER_XYZ))

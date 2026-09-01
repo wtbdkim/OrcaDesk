@@ -24,6 +24,8 @@ Format verified against a real CREST 3.0.2 run (ethanol, GFN2) — see
 
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 from ..core.parser import ParseResult, Atom, Conformer, HARTREE_TO_KCAL
@@ -84,11 +86,22 @@ def _parse_multi_xyz(text: str) -> list[tuple[float | None, list[Atom]]]:
     return frames
 
 
+_FORTRAN_EXP = re.compile(r"^[+-]?\d*\.?\d+[Dd][+-]?\d+$")
+
+
 def _first_float(s: str) -> float | None:
     for tok in s.split():
         try:
             return float(tok)
         except ValueError:
+            # Fortran writes exponents with a D ("-0.765D+02"), which float()
+            # does not take. Only worth trying when the token really looks like
+            # one, so an ordinary word is not mangled into a number.
+            if _FORTRAN_EXP.match(tok):
+                try:
+                    return float(tok.replace("D", "E").replace("d", "e"))
+                except ValueError:
+                    continue
             continue
     return None
 
@@ -232,7 +245,9 @@ def parse_crest_result(output_path: str) -> ParseResult:
     best = conformers[0]
     r.geometry = best.geometry
     r.n_atoms = len(best.geometry)
-    if best.energy_eh:
+    # `is not None`, not truthiness: a conformer energy of exactly 0.0 Eh is a
+    # real (if unusual) value, and treating it as "missing" dropped it.
+    if best.energy_eh is not None:
         r.final_energy_eh = best.energy_eh
 
     # Success detection: prefer the explicit marker in the .out; if the .out is

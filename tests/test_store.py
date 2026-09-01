@@ -26,6 +26,7 @@ import pytest
 
 import orcamgr.state.store as store_mod
 from orcamgr.core.queue import CalcState, Calculation, GeometrySource
+from orcamgr.core.queue import KNOWN_KINDS
 from orcamgr.state.store import (
     EDITABLE_STATES,
     QueueStore,
@@ -845,10 +846,28 @@ def test_calc_from_dict_infinite_charge_is_valueerror():
 
 
 def test_calc_from_dict_non_string_passthrough_fields_degrade():
-    c = calc_from_dict({"name": "x", "kind": 7, "xyz": 1,
+    c = calc_from_dict({"name": "x", "kind": "sp", "xyz": 1,
                         "ref_name": ["a"], "raw_text": {"t": 1}})
-    assert isinstance(c.kind, str)
     assert c.xyz == "" and c.ref_name == "" and c.raw_text == ""
+
+
+@pytest.mark.parametrize("kind", [7, "", "__bogus__", "Opt", None, ["opt"]])
+def test_an_unknown_kind_is_refused_rather_than_degraded(kind):
+    """`kind` is not a pass-through string like ref_name: it selects the
+    PIPELINE (ORCA / the MLIP worker / CREST), the per-kind validation and what
+    the Results tab shows. Coercing it to a string let an arbitrary HTTP payload
+    queue a calculation that ran through the ORCA runner with default settings,
+    that no validation rule could judge, and that the Build tab could not open.
+    """
+    with pytest.raises(ValueError, match="[Uu]nknown calculation type"):
+        calc_from_dict({"name": "x", "kind": kind, "xyz": "H 0 0 0",
+                        "config": {"kind": "sp"}})
+
+
+@pytest.mark.parametrize("kind", sorted(KNOWN_KINDS))
+def test_every_known_kind_is_accepted(kind):
+    assert calc_from_dict({"name": "x", "kind": kind, "xyz": "H 0 0 0",
+                           "config": {"kind": kind}}).kind == kind
 
 
 # ---- session restore: wrong-typed runtime fields + name dedup (P32) ----------

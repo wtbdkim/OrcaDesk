@@ -188,7 +188,9 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
                                       crest_distro=settings.crest_distro,
                                       budget=ResourceBudget.from_settings(settings))
         try:
-            store.start_run(factory)
+            # screened under the store lock against the live list, so an add
+            # landing between the check and the start cannot slip through
+            store.start_run(factory, precheck=find_dangling_reference)
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e))   # already running
         except ValueError as e:

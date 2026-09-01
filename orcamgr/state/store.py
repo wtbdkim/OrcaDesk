@@ -21,8 +21,8 @@ import threading
 from typing import Optional
 
 from ..core.queue import (
-    Calculation, CalcState, GeometrySource, QueueEngine, QueueCallbacks,
-    result_from_output, validate_result,
+    KNOWN_KINDS, Calculation, CalcState, GeometrySource, QueueEngine,
+    QueueCallbacks, result_from_output, validate_result,
 )
 from ..core.input_generator import StepConfig
 from ..core.runner import OrcaRunError
@@ -243,7 +243,12 @@ def calc_from_dict(d: dict) -> Calculation:
     name = raw_name.strip()
     if not name:
         raise ValueError("Calculation name is required.")
-    _validate_calc_name(name, str(d.get("kind", "") or ""))
+    kind = str(d.get("kind", "") or "").strip()
+    if kind not in KNOWN_KINDS:
+        raise ValueError(
+            f"Unknown calculation type '{kind}'. Supported types: "
+            + ", ".join(sorted(KNOWN_KINDS)) + ".")
+    _validate_calc_name(name, kind)
     # charge/multiplicity are f-string-interpolated into the .inp's
     # "* xyz {charge} {multiplicity}" line. int() already blocks string
     # injection, but not absurd magnitudes — clamp to physically generous
@@ -315,7 +320,11 @@ def calc_from_session_dict(d: dict) -> Calculation:
         c.state = CalcState(st)
     except ValueError:
         c.state = CalcState.PENDING
-    c.message = d.get("message", "")
+    # type-checked like output_path/pid below: it rides the CalcSummary wire
+    # declared `str`, and a dict from a hand-edited session.json rendered as
+    # "[object Object]" in the queue row
+    msg = d.get("message", "")
+    c.message = msg if isinstance(msg, str) else ""
     out = d.get("output_path", "") or ""
     c.output_path = out if isinstance(out, str) else ""
     # pid/create_time flow into psutil.Process(int(pid)) during reconciliation;
@@ -776,7 +785,7 @@ class QueueStore:
     # resetting it would corrupt every client's since-cursor.)
 
     # ---- run management ----
-    def start_run(self, engine_factory) -> None:
+    def start_run(self, engine_factory, precheck=None) -> None:
         """
         Start running the queue in a background thread.
 
@@ -784,14 +793,26 @@ class QueueStore:
         that update THIS store (log -> append_log, calc_update -> touch). We
         keep store framework-agnostic by having the caller build the engine.
 
-        Raises RuntimeError if a run is already in progress, or ValueError if
-        the queue is empty.
+        ``precheck(calcs) -> str | None`` is the caller's pre-run screen, run
+        HERE, under the lock, against the live list. Callers used to screen
+        their own snapshot and then call this — and `add()` only enforces
+        reference integrity while a run is in progress, so a calculation added
+        in that window (another window, a phone client) slipped past both
+        guards and was FAILED-locked at run time for a reference the screen
+        would have refused. Returning a message aborts the start.
+
+        Raises RuntimeError if a run is already in progress, ValueError if the
+        queue is empty or the precheck refuses.
         """
         with self._lock:
             if self._running:
                 raise RuntimeError("A run is already in progress.")
             if not self._calcs:
                 raise ValueError("The queue is empty.")
+            if precheck is not None:
+                problem = precheck(list(self._calcs))
+                if problem:
+                    raise ValueError(problem)
             # the engine walks the store's OWN list (live queue, P29) — the
             # factory also hands it this store's lock, so its per-iteration
             # pick and the user mutations above are serialized
@@ -1009,6 +1030,13 @@ def find_dangling_reference(calcs: "list[Calculation]") -> "str | None":
         src = c.geometry_source
         is_ref = src == GeometrySource.REFERENCE or str(
             getattr(src, "value", src)) == "reference"
+        if is_ref and c.ref_name == c.name:
+            # Trivially "in the queue", so the name test below waves it
+            # through; the engine then fails it at run time, and FAILED is
+            # locked (P24). A calculation cannot be its own geometry source, and
+            # that is knowable before anything starts.
+            return (f"'{c.name}' uses its own geometry as its input. "
+                    "Pick another calculation, or load coordinates directly.")
         if is_ref and c.ref_name not in names:
             return (f"'{c.name}' references '{c.ref_name}', "
                     "which is not in the queue.")

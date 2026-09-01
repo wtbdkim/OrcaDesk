@@ -8,14 +8,14 @@ ORCAdesk를 친구에게 줄 수 있는 설치 마법사(`ORCAdesk-<버전>-Setu
 
 ---
 
-## 가장 쉬운 방법 — 원클릭 (추천)
+## 가장 쉬운 방법 — 두 단계 (추천)
 
 Inno Setup만 미리 설치해 두면(아래 2단계 참고), 그 다음부터는
-**`make_installer.bat` 더블클릭 한 번**으로 빌드부터 설치파일 생성까지
-전부 자동으로 끝납니다.
+**`build.bat` 실행 → `installer.iss` 컴파일** 두 단계로 설치파일까지
+끝납니다.
 
   1. (한 번만) Python 설치, Inno Setup 설치
-  2. `make_installer.bat` 더블클릭
+  2. `build.bat` 실행 → 끝나면 `installer.iss`를 더블클릭(Inno Setup)
   3. 끝나면 `installer_output\ORCAdesk-<버전>-Setup.exe` 완성
      (`installer.iss`의 `OutputBaseFilename`이 버전을 이름에 넣습니다)
 

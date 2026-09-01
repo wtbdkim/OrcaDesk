@@ -113,6 +113,13 @@ _CREST_GRAPH = re.compile(
 # same reason as _G_POST (ORCA prints them uppercase, and mixed-case
 # look-alikes appear in every output); the counter lines accept ORCA's own
 # capitalization, mirroring the /i on their JS regexes.
+# ORCA's own per-cycle wall time. GeoTracker reads it as the PRIMARY source for
+# the "~N s/step" figure and the ETA (its Date.now fallback drops gaps under
+# 500 ms, so a burst replay yields nothing) — and this filter mirrored every
+# other tracker regex but not this one, so a graph re-seeded from disk after a
+# restart came back without the timing it had before the restart.
+_G_ITERTIME = re.compile(r"Time for complete geometry iter\s*:\s*[\d.]+\s*s", re.I)
+
 _PHASE_GRAPH = re.compile(
     # "displaced geometry K (of N)" is what ORCA 6.1.1 prints; the old
     # "displacement K / N" matched nothing, so a graph rebuilt after a restart
@@ -169,6 +176,15 @@ def tail_lines(path, max_lines: int) -> "tuple[list[str], bool]":
         lines = lines[1:]
     return lines[-n:], (start > 0 or len(lines) > n)
 
+
+
+# Windows refuses these as file or directory names whatever the extension, and
+# "nul" is worse than refused: it is a path that always exists and cannot be
+# listed. Mirrors _RESERVED_NAMES in state/store.py, which guards calc names for
+# the same reason.
+_WINDOWS_DEVICE_NAMES = {"con", "prn", "aux", "nul",
+                         *(f"com{i}" for i in range(1, 10)),
+                         *(f"lpt{i}" for i in range(1, 10))}
 
 
 class Bridge(QObject):
@@ -279,9 +295,15 @@ class Bridge(QObject):
             if not self.settings.workspace_root.strip():
                 self.settings.workspace_root = Settings.load().workspace_root
                 raise ValueError("Workspace folder cannot be empty.")
-            for k in ("default_nprocs", "default_maxcore_mb"):
+            # Range-clamped like the three budgets below, and for the same
+            # reason: these seed every new calculation's %pal/%maxcore and the
+            # MLIP threads field. A bare int() saved -5, 0, or a 100-digit
+            # number, which then rode into the build form as the default the
+            # run silently clamps somewhere else.
+            for k, lo, hi in (("default_nprocs", 1, 1024),
+                              ("default_maxcore_mb", 64, 1_000_000)):
                 if k in data:
-                    setattr(self.settings, k, int(data[k]))
+                    setattr(self.settings, k, max(lo, min(hi, int(data[k]))))
             # Parallel-run budgets — clamped here, the trust boundary: these ride
             # straight into admission control, where a negative or absurd value
             # would either stall the queue forever or let it oversubscribe the
@@ -321,7 +343,13 @@ class Bridge(QObject):
                 "" if saved else
                 f"Settings could not be written to {config_file()}. They apply "
                 "to this session but will be lost when ORCAdesk is closed.")
-        except (json.JSONDecodeError, ValueError, TypeError) as e:
+        except (json.JSONDecodeError, ValueError, TypeError, AttributeError,
+                OverflowError) as e:
+            # A slot may not raise: PyQt treats an unhandled exception in a
+            # Qt-invoked slot as fatal. Valid-but-non-object JSON (null, [],
+            # "x") reaches d.get() as an AttributeError, and a JSON number like
+            # 1e999 decodes to inf, where int() raises OverflowError — neither
+            # is a decode error or a ValueError. Errors are data here (P6).
             return json.dumps(ErrorPayload(error=str(e)))
 
     # --- Liquid-Glass custom wallpaper ---
@@ -456,7 +484,8 @@ class Bridge(QObject):
             self.settings.save()
             self._start_mlip_probe(env_id, name, python)
             return self.get_mlip_status()
-        except (json.JSONDecodeError, ValueError, TypeError) as e:
+        except (json.JSONDecodeError, ValueError, TypeError, AttributeError,
+                OverflowError) as e:   # a slot may not raise — see save_settings
             return json.dumps(ErrorPayload(error=str(e)))
 
     @pyqtSlot(str, result=str)
@@ -585,8 +614,18 @@ class Bridge(QObject):
                 found = list(self._mlip_install_opts.get("base_pythons") or [])
             base = found[0]["python"] if found else ""
         # The folder name is user-typed and becomes a real directory: keep it to
-        # characters that cannot escape the envs root or trip Windows.
+        # characters that cannot escape the envs root or trip Windows. The
+        # character filter is not enough on its own — Windows' reserved DEVICE
+        # names survive it unchanged, and "nul" in particular is a path that
+        # always "exists" and cannot be listed, so it reached the installer's
+        # non-empty check and came back as a raw WinError (localized mojibake on
+        # a Korean system) instead of a sentence.
         slug = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-") or "mlip"
+        if slug.split(".")[0].lower() in _WINDOWS_DEVICE_NAMES:
+            return json.dumps(MlipInstallPayload(
+                state="error", step=0, steps=0, label="",
+                error=f"'{name}' is a name Windows reserves for a device. "
+                      "Choose another one.", cancelled=False))
         env_dir = user_data_root() / "mlip_envs" / slug
 
         with self._mlip_install_lock:
@@ -1163,7 +1202,8 @@ class Bridge(QObject):
         try:
             d = json.loads(calc_json)
             calc = calc_from_dict(d)
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError,
+                AttributeError, OverflowError) as e:   # a slot may not raise
             return json.dumps(MutationResult(ok=False, error=f"Invalid calculation data: {e}"))
         try:
             self.store.add(calc)
@@ -1201,7 +1241,8 @@ class Bridge(QObject):
         try:
             d = json.loads(calc_json)
             calc = calc_from_dict(d)
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError,
+                AttributeError, OverflowError) as e:   # a slot may not raise
             return json.dumps(MutationResult(ok=False, error=f"Invalid calculation data: {e}"))
         try:
             self.store.replace(old_name, calc)
@@ -1310,6 +1351,11 @@ class Bridge(QObject):
                         conv.append((i, ln))
                         phase.append((i, ln))
                     elif _G_ITER.match(ln):
+                        conv.append((i, ln))
+                    elif _G_ITERTIME.search(ln):
+                        # ORCA's own per-cycle wall time — GeoTracker's PRIMARY
+                        # source for "~N s/step" and the ETA, so a graph seeded
+                        # from disk kept its curve but lost its timing
                         conv.append((i, ln))
                     elif _CREST_GRAPH.search(ln):
                         # CREST phase/energy markers (a CREST .out has no ORCA
@@ -1425,7 +1471,16 @@ class Bridge(QObject):
         label list. {"ok": true, "labels": [...]}."""
         from ..favorites import toggle as _toggle
         try:
-            return json.dumps(FavoritesResult(ok=True, labels=_toggle(source, label, on)))
+            labels, saved = _toggle(source, label, on)
+            # The star lighting up IS the confirmation, so a write that did not
+            # land must not report ok — the user would star their way through an
+            # ensemble and find every star gone at the next launch.
+            if not saved:
+                return json.dumps(FavoritesResult(
+                    ok=False, labels=labels,
+                    error="The star could not be saved — favorites.json is not "
+                          "writable, so it will be gone when ORCAdesk restarts."))
+            return json.dumps(FavoritesResult(ok=True, labels=labels))
         except Exception as e:
             return json.dumps(FavoritesResult(ok=False, error=str(e), labels=[]))
 
@@ -1727,17 +1782,15 @@ class Bridge(QObject):
             skip_names = set(json.loads(skip_names_json)) if skip_names_json else set()
         except Exception:
             skip_names = set()
-        # validate references resolve to existing names (shared with /api/run)
-        ref_err = find_dangling_reference(calcs)
-        if ref_err:
-            return json.dumps(OkResult(ok=False, error=ref_err))
         factory = make_engine_factory(self.store, self.settings.orca_path,
                                       self.settings.workspace_root, skip_names,
                                       mlip_envs=self._mlip_envs_for_run(),
                                       crest_distro=self.settings.crest_distro,
                                       budget=self._budget())
         try:
-            self.store.start_run(factory)
+            # the reference screen runs inside start_run's lock, against the
+            # live list — see start_run(precheck=...)
+            self.store.start_run(factory, precheck=find_dangling_reference)
         except RuntimeError as e:
             return json.dumps(OkResult(ok=False, error=str(e)))
         except ValueError as e:

@@ -143,6 +143,12 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self._drop_child = None
         self.view.loadFinished.connect(self._install_drop_filter)
+        # ...and check that it loaded at all. An absent or unreadable
+        # web/index.html (a broken bundle, web/ quarantined by an antivirus)
+        # otherwise left Chromium's own ERR_FILE_NOT_FOUND page on screen, in
+        # the OS language, with nothing in the log and the backend running
+        # happily behind it.
+        self.view.loadFinished.connect(self._check_ui_loaded)
 
         # If a calculation from the previous session is still running, reattach
         # and continue the queue from where it left off.
@@ -179,6 +185,47 @@ class MainWindow(QMainWindow):
         # persist (writes config_file so this dialog won't show again)
         settings.save()
 
+    def _check_ui_loaded(self, ok: bool) -> None:
+        """Say so when the bundled UI could not be shown (see the connect)."""
+        if ok:
+            return
+        index = web_dir() / "index.html"
+        detail = ("it is missing" if not index.exists()
+                  else "it could not be read")
+        msg = (f"The application UI could not be loaded from {index} — "
+               f"{detail}. The window will be blank; reinstall ORCAdesk, or "
+               f"check whether an antivirus has quarantined its web folder.")
+        try:
+            self.store.append_log(msg, "err")
+        except Exception:
+            pass
+        try:
+            QMessageBox.critical(self, "ORCAdesk could not start", msg)
+        except Exception:
+            pass
+
+    def _shutdown_note(self, msg: str) -> None:
+        """Report a failed teardown step on a channel that exists.
+
+        build.spec ships with `console=False`, so a windowed CPython has no
+        standard handles at all: sys.stdout/sys.stderr are None and
+        `print(..., file=None)` returns silently. Every one of these handlers
+        was therefore a no-op in the deployed app — including the one on the
+        final save_session, the write that records the detached ORCA's pid so
+        the next launch can reattach instead of locking the job as failed. The
+        store's log is persisted and visible in the Log tab; stderr still gets
+        it when there IS a console (running from source).
+        """
+        try:
+            self.store.append_log(f"[shutdown] {msg}", "err")
+        except Exception:
+            pass
+        if sys.stderr is not None:
+            try:
+                print(f"[shutdown] {msg}", file=sys.stderr)
+            except Exception:
+                pass
+
     def shutdown(self):
         """Idempotent teardown. The in-flight ORCA is deliberately LEFT RUNNING
         so closing ORCAdesk doesn't stop a calculation: we stop the phone
@@ -200,7 +247,7 @@ class MainWindow(QMainWindow):
             # monitors and wait_for_run no longer waits on
             self.server_ctl.stop()
         except Exception as e:
-            print(f"[shutdown] server stop failed: {e}", file=sys.stderr)
+            self._shutdown_note("server stop failed: {e}")
         try:
             # An environment install is NOT like a calculation: there is nothing
             # to reattach to, its pip children are not detached, and what it
@@ -209,19 +256,19 @@ class MainWindow(QMainWindow):
             # ever register is not a background job worth keeping.
             self.bridge.cancel_mlip_install()
         except Exception as e:
-            print(f"[shutdown] MLIP install cancel failed: {e}", file=sys.stderr)
+            self._shutdown_note("MLIP install cancel failed: {e}")
         try:
             self.store.pause_run()      # stop monitoring; do NOT kill ORCA
         except Exception as e:
-            print(f"[shutdown] pause failed: {e}", file=sys.stderr)
+            self._shutdown_note("pause failed: {e}")
         try:
             self.store.wait_for_run(timeout=10)
         except Exception as e:
-            print(f"[shutdown] wait_for_run failed: {e}", file=sys.stderr)
+            self._shutdown_note("wait_for_run failed: {e}")
         try:
             self.store.save_session()   # persist queue + running pid for reattach
         except Exception as e:
-            print(f"[shutdown] save_session failed: {e}", file=sys.stderr)
+            self._shutdown_note("save_session failed: {e}")
 
     # ------------------------------------------------------------- drag & drop
     def _drop_path(self, mime):

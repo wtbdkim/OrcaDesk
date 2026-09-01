@@ -182,6 +182,12 @@ class ParseResult:
     # --- frequencies / thermochemistry ---
     has_frequencies: bool = False
     frequencies: list[float] = field(default_factory=list)
+    # The subset ORCA itself marked "***imaginary mode***". Kept separately
+    # because the marker is the authority, not the sign: ORCA prints a
+    # numerically-zero mode as "-0.00", and -0.0 < 0 is False in IEEE
+    # arithmetic — so re-deriving the list from the values reported "1
+    # imaginary frequency (cm^-1: none)".
+    imaginary_frequencies: list[float] = field(default_factory=list)
     n_imaginary: int = 0
     zpe_eh: Optional[float] = None
     total_thermal_eh: Optional[float] = None
@@ -396,6 +402,33 @@ _ERROR_SIGNATURES = [
 ]
 
 
+# How far back to look for the line that explains an abort. ORCA prints the
+# cause and then the banner, usually within a couple of lines.
+_CAUSE_LOOKBACK = 12
+
+
+def _nearest_cause(lines: list[str], upper: list[str], i: int) -> str:
+    """The line worth quoting for the signature that matched at ``i``.
+
+    The matched line is often the banner, not the reason: ORCA prints
+    "Error: Cannot open input file ..." and then ".... aborting the run", and
+    quoting the match verbatim handed the user the second one — literally the
+    words "aborting the run", which is what they already knew. Every real
+    failure this app has seen (a space in the run path, a stale .gbw, an
+    incompatible RI choice) prints its cause a line or two above. Prefer the
+    nearest preceding "Error:" line; fall back to the matched line itself.
+    """
+    matched = lines[i].strip()
+    if "ERROR:" in upper[i]:
+        return matched
+    for j in range(i - 1, max(-1, i - _CAUSE_LOOKBACK) - 1, -1):
+        if "ERROR:" in upper[j]:
+            cause = lines[j].strip()
+            if cause:
+                return cause
+    return matched
+
+
 def _extract_orca_error(lines: list[str]) -> str:
     """Best-effort explanation of why an ORCA run failed, read from its .out.
 
@@ -408,7 +441,7 @@ def _extract_orca_error(lines: list[str]) -> str:
     for needle, explanation in _ERROR_SIGNATURES:
         for i, u in enumerate(upper):
             if needle in u:
-                raw = lines[i].strip()
+                raw = _nearest_cause(lines, upper, i)
                 return (f"{explanation} (ORCA: \"{raw[:160]}\")") if raw else explanation
     # 2) generic error-ish line, searched from the end
     for ln in reversed(lines):
@@ -500,17 +533,26 @@ class OrcaOutParser:
                 r.run_time_string = " ".join(parts)
                 break
 
+    # ORCA's own framing between the "INPUT FILE" banner and the first echoed
+    # line: an "=====" rule and a "NAME = job.inp". Neither is input text, and
+    # both were showing up at the top of the Results tab's input echo (the rule
+    # is 80 characters, which also stretched the block).
+    _ECHO_FRAMING = re.compile(r"^\s*(=+\s*$|NAME\s*=)")
+
     def _parse_input_block(self, lines, r):
         starts = _find_all(lines, "INPUT FILE")
         if not starts:
             return
-        start = starts[-1]
+        # start + 1: the banner line itself is not input text
+        start = starts[-1] + 1
         block, keywords = [], []
         for ln in lines[start: start + 400]:
             if "END OF INPUT" in ln:
                 break
             m = re.match(r"\|\s*\d+>\s?(.*)", ln)
             content = m.group(1) if m else ln
+            if m is None and self._ECHO_FRAMING.match(content):
+                continue           # ORCA's "=====" rule / "NAME = job.inp"
             block.append(content.rstrip())
             if content.lstrip().startswith("!"):
                 keywords.append(content.lstrip()[1:].strip())
@@ -716,6 +758,7 @@ class OrcaOutParser:
         r.has_frequencies = True
         start = idxs[-1]
         freqs: list[float] = []
+        imag_vals: list[float] = []
         n_imag = 0
         for ln in lines[start:]:
             m = re.match(r"\s*\d+:\s*(-?\d+\.\d+)\s*cm\*\*-1", ln)
@@ -724,12 +767,21 @@ class OrcaOutParser:
                 if "imaginary" in ln.lower():
                     n_imag += 1
                     freqs.append(val)
+                    imag_vals.append(val)
                 elif abs(val) > 1e-6:
                     freqs.append(val)
             elif "NORMAL MODES" in ln and freqs:
                 break
-        n_imag = max(n_imag, sum(1 for f in freqs if f < 0))
+        # a mode can be negative without the marker (older/partial output), so
+        # the count is the larger of the two readings and the value list is the
+        # union — both stay consistent with each other
+        by_sign = [f for f in freqs if f < 0]
+        n_imag = max(n_imag, len(by_sign))
+        for f in by_sign:
+            if f not in imag_vals:
+                imag_vals.append(f)
         r.frequencies = freqs
+        r.imaginary_frequencies = imag_vals
         r.n_imaginary = n_imag
 
     def _parse_thermochemistry(self, lines, r):

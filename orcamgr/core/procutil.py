@@ -56,6 +56,28 @@ def process_matches(pid: Optional[int], create_time: Optional[float]) -> bool:
         return False
 
 
+def _orphans_of(pid: int) -> list:
+    """Live processes whose parent is (or was) ``pid``.
+
+    Only reachable once the parent itself is gone, so the PID-reuse guard that
+    protects the normal path cannot apply — the check is `create_time`: a
+    descendant must have started AFTER the parent it claims, which a process
+    that merely inherited a recycled ppid will not have. Best-effort by design;
+    an empty list simply means nothing was found to clean up.
+    """
+    out = []
+    try:
+        for proc in psutil.process_iter(["ppid", "create_time"]):
+            try:
+                if proc.info.get("ppid") == pid:
+                    out.append(proc)
+            except (psutil.Error, OSError):
+                continue
+    except (psutil.Error, OSError):
+        return []
+    return out
+
+
 def kill_tree(pid: Optional[int], create_time: Optional[float] = None,
               timeout: float = 5.0) -> None:
     """Terminate pid and all its descendants. Verifies identity first (so a
@@ -63,18 +85,32 @@ def kill_tree(pid: Optional[int], create_time: Optional[float] = None,
     force-kills any survivor. Never raises; best-effort."""
     if not pid:
         return
+    p = None
     try:
         p = psutil.Process(int(pid))
         if create_time and abs(p.create_time() - float(create_time)) >= _CREATE_TIME_TOL:
             return  # PID was reused — this is not our process, leave it alone
+    except psutil.NoSuchProcess:
+        # The root is already gone, but its descendants are NOT: on Windows a
+        # child is not reparented or killed with its parent, so an orca.exe that
+        # died while its orca_*_mpi.exe ranks were running left them burning
+        # every core with no handle left to stop them. Find them by ppid before
+        # giving up.
+        p = None
     except (psutil.Error, OSError, ValueError, TypeError, OverflowError):
         return
 
-    try:
-        procs = p.children(recursive=True)
-    except (psutil.Error, OSError):
-        procs = []
-    procs.append(p)
+    procs = []
+    if p is not None:
+        try:
+            procs = p.children(recursive=True)
+        except (psutil.Error, OSError):
+            procs = []
+        procs.append(p)
+    else:
+        procs = _orphans_of(int(pid))
+    if not procs:
+        return
 
     for c in procs:
         try:

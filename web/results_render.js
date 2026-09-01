@@ -84,6 +84,28 @@ async function showSelectedResult() {
   renderResult(_currentResult);
 }
 
+/** Give the picker an entry for a file opened from OUTSIDE the workspace, and
+ *  select it. Without one the box went on naming the previously selected
+ *  calculation while the body showed the dropped file — and because re-picking
+ *  the same option fires no change event, there was no way back to it either.
+ *  @param {string} path */
+function noteExternalResult(path) {
+  const sel = /** @type {HTMLSelectElement} */ (document.getElementById("result-select"));
+  if (!sel || !path) return;
+  const value = "file:" + path;
+  if (![...sel.options].some(o => o.value === value)) {
+    const name = path.replace(/\\/g, "/").split("/").pop() || path;
+    const group = document.createElement("optgroup");
+    group.label = "Opened file";
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = name;
+    group.appendChild(o);
+    sel.insertBefore(group, sel.firstChild);
+  }
+  sel.value = value;
+}
+
 /** Point the picker at `value` when it lists it, so the box never names one
  *  result while the body shows another. Silent when it does not — a file opened
  *  from outside the workspace has no option to select. @param {string} value */
@@ -414,6 +436,7 @@ async function openOutFile() {
   // still plottable for a file from anywhere on disk
   _currentResultPath = data.path || "";
   _currentResult = data;
+  noteExternalResult(_currentResultPath);
   renderResult(data);
   switchTab("results");
   // switchTab re-scans the workspace; point the picker at this file if it is one

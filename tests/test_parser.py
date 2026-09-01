@@ -390,6 +390,41 @@ ABORTING THE RUN
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
+# Which modes ORCA marked imaginary
+# ---------------------------------------------------------------------------
+
+IMAG_ZERO_OUT = (
+    "VIBRATIONAL FREQUENCIES\n"
+    "-----------------------\n"
+    "   0:        -0.00 cm**-1 ***imaginary mode***\n"
+    "   1:      1500.00 cm**-1\n"
+    "NORMAL MODES\n"
+    "****ORCA TERMINATED NORMALLY****\n"
+)
+
+
+def test_a_marked_zero_mode_is_recorded_as_imaginary(tmp_path):
+    # the marker is the authority, not the sign: -0.0 < 0 is False
+    r = parse_file(_write_out(tmp_path, IMAG_ZERO_OUT, "z.out"))
+
+    assert r.n_imaginary == 1
+    assert r.imaginary_frequencies == [-0.0]
+
+
+def test_a_negative_mode_without_the_marker_still_counts(tmp_path):
+    text = ("VIBRATIONAL FREQUENCIES\n"
+            "-----------------------\n"
+            "   0:      -350.00 cm**-1\n"
+            "   1:      1500.00 cm**-1\n"
+            "NORMAL MODES\n"
+            "****ORCA TERMINATED NORMALLY****\n")
+    r = parse_file(_write_out(tmp_path, text, "n.out"))
+
+    assert r.n_imaginary == 1
+    assert r.imaginary_frequencies == [-350.0]
+
+
+# ---------------------------------------------------------------------------
 # Unrestricted output has TWO orbital manifolds
 #
 # UKS/UHF prints "SPIN UP ORBITALS" and "SPIN DOWN ORBITALS" as separate tables
@@ -729,3 +764,43 @@ def test_read_multiplicity_agrees_with_the_full_parse(tmp_path):
     p = tmp_path / "a.out"
     p.write_text(_out_with_mult(4), encoding="utf-8")
     assert read_multiplicity(p) == parse_file(str(p)).multiplicity == 4
+
+
+# ---------------------------------------------------------------------------
+# The failure diagnosis quotes the CAUSE, not the banner
+# ---------------------------------------------------------------------------
+
+def test_the_error_message_quotes_orcas_reason_not_the_abort_banner(tmp_path):
+    """ORCA prints the reason and then ".... aborting the run"; quoting the
+    matched line handed the user the second one — literally the words the
+    signature matched. Every real failure this app has seen prints its cause a
+    line or two above."""
+    text = ("[file x]: Error: Cannot open input file C:/Users/John\n"
+            "  .... aborting the run\n")
+    r = parse_file(_write_out(tmp_path, text, "e.out"))
+
+    assert "Cannot open input file" in r.error_message
+    assert "aborting the run\")" not in r.error_message
+
+
+def test_a_matched_error_line_is_still_quoted_when_it_is_the_cause(tmp_path):
+    text = "UNRECOGNIZED OR DUPLICATED KEYWORD(S) IN SIMPLE INPUT LINE\n"
+    r = parse_file(_write_out(tmp_path, text, "e.out"))
+    assert "UNRECOGNIZED" in r.error_message
+
+
+def test_the_input_echo_starts_at_the_input(tmp_path):
+    """The echo began with ORCA's framing — the banner, an 80-character "="
+    rule and "NAME = job.inp" — none of which is input text."""
+    text = ("INPUT FILE\n"
+            "=" * 80 + "\n"
+            "NAME = job.inp\n"
+            "|  1> ! B3LYP def2-SVP\n"
+            "|  2> * xyz 0 1\n"
+            "|  3> *\n"
+            "                          ****END OF INPUT****\n")
+    r = parse_file(_write_out(tmp_path, text, "i.out"))
+
+    assert r.input_block.splitlines()[0] == "! B3LYP def2-SVP"
+    assert "NAME =" not in r.input_block
+    assert "====" not in r.input_block

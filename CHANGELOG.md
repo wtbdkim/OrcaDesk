@@ -177,6 +177,58 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   window; and starred-structure export no longer overwrites files whose names
   differ only outside ASCII.
 
+- **A frequency job that never computed a Hessian is no longer reported as
+  finished.** The "no imaginary modes" rule is satisfied by an empty frequency
+  table, so such a run was stamped *Done* with no frequencies and no
+  thermochemistry — while an optimization that never optimized correctly fails.
+  A zero-valued imaginary mode is also named in the message now, instead of
+  "1 imaginary frequency (cm⁻¹: none)".
+- **A calculation whose parent finished is no longer blocked because its
+  grandparent failed.** A finished result is frozen and self-sufficient; the
+  chain now stops there.
+- **`InitHess read` works in Expert mode.** A hand-written IRC input asking to
+  read a `.hess` never had it staged from the referenced calculation's folder —
+  the one thing that guard exists for — so ORCA started without it and died.
+- **A DLPNO calculation with RI switched off no longer aborts.** DLPNO is
+  RI-based by construction, so it needs its fitting basis whatever the RI
+  picker says; conventional MP2 keeps the old behaviour, which is correct for
+  it. (Verified against ORCA 6.1.1 both ways.)
+- **When ORCA aborts, ORCAdesk quotes the reason rather than the word
+  "aborting".** The failure line it showed was the banner ORCA prints after the
+  cause — so *Error: Cannot open input file …* was replaced by *.... aborting
+  the run*. The input echo on the Results tab also starts at your input now,
+  not at ORCA's banner and 80-character rule.
+- **A run can no longer start with a reference the check would have refused.**
+  The pre-run screen and the start are one step now, so a calculation added in
+  between (another window, a phone) cannot slip past both.
+- **A calculation type the queue does not know is refused when it is added**,
+  rather than being run as a plain ORCA job with default settings.
+- **A calculation cannot use its own geometry as its input** — it passed every
+  check and then failed at run time, which locks it.
+- **A star that could not be saved says so** instead of lighting up and being
+  gone at the next launch; the same for settings written to an unusable
+  `%APPDATA%`, which no longer stops ORCAdesk from starting at all.
+- **Killing a run also kills the ranks it left behind.** If ORCA's own process
+  died first, its MPI workers survived with nothing left to stop them.
+- **The MLIP environment check no longer calls a working environment broken**
+  because something printed a line after its report, and an environment named
+  after a Windows device (`nul`, `COM1`) is refused with a sentence rather than
+  a raw system error.
+- **The window says when its own interface could not be loaded**, instead of
+  leaving Chromium's error page on screen; and the messages from a failed
+  shutdown now reach the log, where the packaged build can actually show them.
+- Smaller fixes: a run type this build does not list survives an edit instead of
+  being blanked (which turned an optimization into a single point); the raw
+  editor reads charge and multiplicity from `* int` / `* gzmt` inputs too;
+  changing the type in Expert no longer stores settings belonging to the
+  previous one; opening a calculation for editing asks before discarding
+  unsaved raw input; the Results picker follows a dropped file instead of naming
+  a different result; a locked CREST card looks locked; an *edit* button that
+  cannot open anything is disabled with the reason; the default cores/memory
+  fields are range-checked like the budgets beside them; and a keep-existing
+  check no longer discards a matching result just because it could not see the
+  geometry to compare.
+
 ## [0.7.0-beta] — 2026-08-28
 
 ### Added

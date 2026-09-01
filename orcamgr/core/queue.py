@@ -8,8 +8,15 @@ geometry comes from one of two sources:
 * REFERENCE -- the optimized geometry of another calculation in the queue,
                named explicitly by the user
 
-Calculations run in queue order. When a calculation references another, the
-engine injects the referenced calculation's final geometry at run time.
+Calculations are DISPATCHED in queue order, and several may be in flight at
+once — `_run_walk` admits a row when its declared cores and estimated memory
+still fit the run's ResourceBudget (see core/resources.py), then runs it in its
+own thread. `max_concurrent_jobs` defaults to 1, so the classic
+one-at-a-time queue is what a user sees until they raise it. When a calculation
+references another, the engine injects the referenced calculation's final
+geometry at run time — and a row whose reference may still become DONE is
+deferred rather than dispatched, which is what sequential order used to
+guarantee for free.
 
 Failure propagation: if a calculation fails, any calculation that depends on it
 (directly or transitively) is marked BLOCKED and skipped. Unrelated calculations
@@ -29,6 +36,7 @@ The engine is GUI-agnostic: it communicates only through callbacks.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import threading
 from dataclasses import dataclass
@@ -226,9 +234,17 @@ def _kept_result_matches(calc: Calculation, result: ParseResult) -> str:
     expected = ""
     if calc.geometry_source == GeometrySource.DIRECT:
         if calc.is_raw and GEOMETRY_PLACEHOLDER not in calc.raw_text:
-            # a no-placeholder raw calc runs its embedded coordinate block
-            # verbatim — calc.xyz may be stale against an edited text
-            expected = _raw_coordinate_block(calc.raw_text) or (calc.xyz or "")
+            # A no-placeholder raw calc runs its embedded coordinate block
+            # verbatim, so calc.xyz may be stale against an edited text. When
+            # the text has no inline block at all — "* xyzfile 0 1 mol.xyz", a
+            # geometry in a file we cannot see — the structure is simply not
+            # knowable here, and falling back to that stale calc.xyz answered
+            # "different structure" about a result that matched perfectly: the
+            # run the user asked to KEEP was recomputed over it. Unknowable is
+            # the same case as a reference calc, which is skipped.
+            expected = _raw_coordinate_block(calc.raw_text)
+            if not expected.strip():
+                return ""
         else:
             expected = calc.xyz or ""
     # element symbols compare case-insensitively (ORCA accepts "CL"/"cl" and
@@ -251,9 +267,35 @@ def _kept_result_matches(calc: Calculation, result: ParseResult) -> str:
 def _imaginary_detail(result: ParseResult) -> str:
     """The imaginary frequencies of a result as a short "cm^-1" list (up to 5),
     for the validation messages below. "none" when there are none, so a caller
-    reporting an unexpected count always has something to print."""
-    imag = [f for f in result.frequencies if f < 0]
+    reporting an unexpected count always has something to print.
+
+    Taken from the modes ORCA MARKED imaginary, not re-derived by sign: ORCA
+    prints a numerically-zero imaginary mode as "-0.00", and `-0.0 < 0` is
+    False — which produced the self-contradicting "1 imaginary frequency
+    (cm^-1: none)". Falls back to the sign test for a result parsed before the
+    marked list existed (a session restored from an older build).
+    """
+    imag = list(getattr(result, "imaginary_frequencies", None) or
+                [f for f in result.frequencies if f < 0])
     return ", ".join(f"{v:.2f}" for v in imag[:5]) if imag else "none"
+
+
+# Every calculation kind this build knows. `kind` is not a free-text field the
+# way a functional or basis name is (P30): it selects the PIPELINE (ORCA vs the
+# MLIP worker vs CREST in WSL), the per-kind validation below, and what the
+# Results tab shows. An unknown one was taken verbatim from an HTTP payload and
+# run through the ORCA runner with StepConfig defaults — a calculation nobody
+# asked for, that no rule here can judge, and that the Build tab cannot open.
+KNOWN_KINDS = frozenset({
+    "sp", "opt", "ts_opt", "freq", "ts_freq", "opt_freq", "ts_opt_freq",
+    "irc", "tddft", "nmr", "neb_ts", "general",
+    "mlip_opt", "mlip_sp", "mlip_freq", "mlip_opt_freq",
+    "crest_conf",
+})
+
+# ORCA kinds whose whole point is a Hessian. neb_ts is deliberately NOT here:
+# its FREQ step is optional (the check below is gated on frequencies existing).
+_FREQ_KINDS = ("freq", "ts_freq", "opt_freq", "ts_opt_freq")
 
 
 def validate_result(calc: Calculation, result: ParseResult) -> None:
@@ -292,6 +334,18 @@ def validate_result(calc: Calculation, result: ParseResult) -> None:
         return
     if calc.kind in ("opt", "ts_opt", "opt_freq", "ts_opt_freq") and not result.opt_converged:
         raise OrcaRunError("Optimization did not converge.")
+    # A frequency job that produced no frequency table at all is not a passing
+    # frequency job: the imaginary-mode rule below is vacuously satisfied by an
+    # empty table (n_imaginary == 0), so such a run was stamped DONE with no
+    # frequencies and no thermochemistry — while the symmetric opt-that-never-
+    # optimized case correctly fails. Reachable in Expert mode, where the raw
+    # text owns the keyword line and may simply not ask for frequencies.
+    if calc.kind in _FREQ_KINDS and not result.frequencies:
+        raise OrcaRunError(
+            "No vibrational frequencies in the output — this run did not "
+            "compute a Hessian. Check that the input asks for it (Freq / "
+            "NumFreq / AnFreq)."
+        )
     if calc.kind in ("freq", "opt_freq") and result.n_imaginary > 0:
         raise OrcaRunError(
             f"{result.n_imaginary} imaginary frequency/frequencies "
@@ -520,16 +574,34 @@ class QueueEngine:
         # output now. Dispatch on kind: an MLIP ref's output is the worker's JSON
         # result, NOT an ORCA .out — parsing it with the ORCA parser would yield
         # no geometry and break the handoff after a restart.
+        # Why the re-read failed, if it did — a DONE calc's output is normally
+        # right there, so "could not be read" and "held no geometry" are
+        # different problems and only one of them is the parent's fault.
+        reread_problem = ""
         if ref.state == CalcState.DONE and not ref.result and ref.output_path:
-            try:
-                ref.result = result_from_output(ref)
-            except Exception:
-                pass  # leave result None; the checks below give a clear error
+            out = Path(ref.output_path)
+            if not out.exists():
+                reread_problem = (f"its output file is missing ({out}) — the "
+                                  "folder may have been moved or deleted")
+            else:
+                try:
+                    ref.result = result_from_output(ref)
+                except Exception as e:
+                    reread_problem = f"its output could not be read ({e})"
         if ref.state == CalcState.DONE and ref.result and ref.result.geometry:
             return _xyz_from_geometry(ref.result)
         if ref.state in (CalcState.FAILED, CalcState.BLOCKED, CalcState.CANCELLED):
             raise OrcaRunError(f"Referenced calculation '{calc.ref_name}' did not succeed.")
         if ref.state == CalcState.DONE and (not ref.result or not ref.result.geometry):
+            if reread_problem:
+                # Not "produced no geometry": the calculation finished and very
+                # likely produced one — we just cannot get at it. Saying the
+                # wrong thing here is expensive, because the dependent is
+                # FAILED and FAILED is locked (P24).
+                raise OrcaRunError(
+                    f"Referenced calculation '{calc.ref_name}' finished, but "
+                    f"{reread_problem}."
+                )
             raise OrcaRunError(
                 f"Referenced calculation '{calc.ref_name}' produced no geometry "
                 "(was it an optimization?)."
@@ -773,40 +845,72 @@ class QueueEngine:
                 if guess:
                     (calc_dir / "ts_guess.xyz").write_text(as_xyz_file(guess), encoding="utf-8")
 
+    @staticmethod
+    def _raw_irc_hess_file(raw_text: str) -> str:
+        """The .hess a raw ``%irc`` block asks to READ, or "".
+
+        Read from the text rather than the stored config, which is dead state
+        for a raw calc. Only an explicit ``InitHess read`` counts — the same
+        rule the raw NEB-TS guard uses for its side files: an input that
+        computes its own Hessian must not have one staged for it.
+        """
+        text = raw_text or ""
+        if not re.search(r"^\s*inithess\s+read\b", text, re.M | re.I):
+            return ""
+        m = re.search(r'^\s*hess_filename\s+"([^"]+)"', text, re.M | re.I)
+        return m.group(1).strip() if m else ""
+
     def _stage_irc_hessian(self, calc: Calculation, calc_dir: Path) -> None:
-        """IRC pre-launch guard for a read-in Hessian: the generated input
-        references the file relative to the run folder, but nothing guarantees
-        it is there (the folder may not even exist before the first run). Stage
-        it from the referenced calc's folder when possible; otherwise fail fast
-        with a clear message instead of a cryptic ORCA abort. No-op for every
-        other kind (and for raw IRC inputs)."""
-        if (calc.kind == "irc" and not calc.is_raw
-                and (calc.config.irc_init_hess or "").strip() == "read"):
+        """IRC pre-launch guard for a read-in Hessian: the input references the
+        file relative to the run folder, but nothing guarantees it is there (the
+        folder may not even exist before the first run). Stage it from the
+        referenced calc's folder when possible; otherwise fail fast with a clear
+        message instead of a cryptic ORCA abort.
+
+        Raw inputs are covered too. They used to be exempt, so the ts->irc
+        Hessian handoff — the whole point of the guard — simply did not happen
+        in Expert mode: ORCA launched with no .hess and died inside. What the
+        raw text asks for is read from the text (`_raw_irc_hess_file`), the way
+        the raw NEB-TS guard reads its own side-file reference.
+
+        No-op for every other kind.
+        """
+        if calc.kind != "irc":
+            return
+        if calc.is_raw:
+            hess_name = self._raw_irc_hess_file(calc.raw_text)
+        elif (calc.config.irc_init_hess or "").strip().lower() == "read":
             hess_name = (calc.config.irc_hess_file or "").strip()
-            hess_path = Path(hess_name)
-            if not hess_path.is_absolute():
-                hess_path = calc_dir / hess_name
-            if hess_name and not hess_path.exists():
-                looked = [str(hess_path)]
-                if calc.geometry_source == GeometrySource.REFERENCE and calc.ref_name:
-                    src = self.workspace_root / calc.ref_name / hess_name
-                    looked.append(str(src))
-                    if src.exists():
-                        dest = calc_dir / hess_name
-                        # the name may carry a sub-path ("sub/x.hess"), whose
-                        # parent does not exist in a fresh run folder —
-                        # FileNotFoundError escaped as "Unexpected error: [Errno
-                        # 2]" instead of this guard's own clear message
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copyfile(src, dest)
-                        self.cb.log(f"[{calc.name}] copied {hess_name} from "
-                                    f"{calc.ref_name}'s folder.", "info",
-                                    calc.name)
-                if not hess_path.exists():
-                    raise OrcaRunError(
-                        f'IRC needs the Hessian file "{hess_name}", but it was '
-                        f"not found (looked in: {'; '.join(looked)})."
-                    )
+        else:
+            hess_name = ""
+        if not hess_name:
+            return
+
+        hess_path = Path(hess_name)
+        if not hess_path.is_absolute():
+            hess_path = calc_dir / hess_name
+        if hess_path.exists():
+            return
+
+        looked = [str(hess_path)]
+        if calc.geometry_source == GeometrySource.REFERENCE and calc.ref_name:
+            src = self.workspace_root / calc.ref_name / hess_name
+            looked.append(str(src))
+            if src.exists():
+                dest = calc_dir / hess_name
+                # the name may carry a sub-path ("sub/x.hess"), whose parent
+                # does not exist in a fresh run folder — FileNotFoundError
+                # escaped as "Unexpected error: [Errno 2]" instead of this
+                # guard's own clear message
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dest)
+                self.cb.log(f"[{calc.name}] copied {hess_name} from "
+                            f"{calc.ref_name}'s folder.", "info", calc.name)
+        if not hess_path.exists():
+            raise OrcaRunError(
+                f'IRC needs the Hessian file "{hess_name}", but it was '
+                f"not found (looked in: {'; '.join(looked)})."
+            )
 
     def _finish_ok(self, calc: Calculation, index: int, result, out_path,
                    message: str = "Completed.", log_msg: str = "done.") -> None:
@@ -1082,6 +1186,13 @@ class QueueEngine:
                 return None
             if parent.state in (CalcState.FAILED, CalcState.BLOCKED):
                 return parent
+            if parent.state == CalcState.DONE:
+                # The chain ENDS at a finished parent. Its geometry is on disk
+                # and frozen (P24), so it is self-sufficient — whatever failed
+                # further up the chain was needed to PRODUCE it, and that
+                # already happened. Walking past it blocked a row whose direct
+                # parent was DONE and perfectly usable.
+                return None
             cur = parent
         return None
 

@@ -135,6 +135,12 @@ _DOUBLE_HYBRIDS = frozenset({
 _CORRELATED_MARKERS = ("ccsd", "bccd", "cisd", "nevpt", "caspt", "mrci", "adc2")
 
 
+def _is_dlpno(functional: str) -> bool:
+    """True for a DLPNO method, which is RI-based by construction: turning RI
+    off does not give it a conventional path, it gives it no path at all."""
+    return "dlpno" in normalize_functional(functional).lower()
+
+
 def _needs_auxc(functional: str) -> bool:
     """True if the method needs a correlation-fitting (/C) aux basis: any MP2/MP3
     or coupled-cluster/multireference-PT method, or a double hybrid (the
@@ -518,6 +524,14 @@ def _auto_aux(cfg: "StepConfig") -> str:
         return ""
 
     if _needs_auxc(cfg.functional):
+        # A DLPNO method is RI by construction — there IS no conventional path
+        # to fall back to, so it needs its fitting sets whatever the RI picker
+        # says. Verified on ORCA 6.1.1: "! DLPNO-CCSD(T) def2-SVP NoRI" aborts
+        # in mdci_check, and the same line plus AutoAux runs normally; plain
+        # "! MP2 def2-SVP NoRI" runs fine, which is why the NoRI escape below
+        # stays for everything else.
+        if _is_dlpno(cfg.functional):
+            return "AutoAux"
         # double hybrid / MP2: /C (and /J) needed unless RI is off
         return "" if _ri_is_off(cfg.ri_approximation) else "AutoAux"
 

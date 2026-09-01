@@ -208,7 +208,16 @@ class Settings:
         # deterministic id (hash of the interpreter path) rather than a random
         # one, so that if the app is reloaded before the first save() lands, the
         # re-migration yields the SAME env id instead of churning it.
+        # The entry guard above runs BEFORE this, so anything migrated here
+        # bypasses it: {"mlip_python": 123} produced an env whose `python` was
+        # an int, which the Bridge then probed ("'int' object has no attribute
+        # 'strip'") and showed as a broken environment. Apply the same shape
+        # rule the guard applies.
         legacy = data.get("mlip_python")
+        if not isinstance(legacy, str) or not legacy.strip():
+            legacy = ""
+        else:
+            legacy = legacy.strip()
         if legacy and not s.mlip_envs:
             mig_id = hashlib.sha1(str(legacy).encode("utf-8")).hexdigest()[:8]
             s.mlip_envs = [{"id": mig_id, "name": "MLIP", "python": legacy}]
