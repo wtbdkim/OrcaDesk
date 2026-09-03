@@ -3,57 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Changed
-- **The Results tab reads one result two ways: `Output` and `Visual`.** Output is
-  what the parser extracted — the summary and every table, chart and section it
-  builds. Visual is everything that can be *drawn* from the same result. The
-  picker and the file button are shared, so switching modes never changes which
-  calculation you are looking at.
-  - **Visual finds what there is to show; it does not ask.** It lists the
-    structure the result ends on, every `.xyz` set sitting in the run folder —
-    the CREST ensemble, the per-conformer `conformers/` export, an optimization
-    trajectory, a starred `favorites/` folder — and, when there is a `.gbw`
-    beside the output, the orbital browser and the ESP map. One row each, one
-    button each; everything opens the same 3D viewer.
-  - This replaced *Browse .xyz…*, a folder picker that asked you to know where
-    ORCAdesk had put things. There is now **one** *Open file…* button, and it
-    takes a `.xyz` as readily as an `.out`: a structure file goes straight to
-    Visual, an output to Output. A file opened from outside the workspace also
-    keeps its place in the picker now, instead of losing it on the next entry to
-    the tab.
-- **Plotting happens under the button, not behind an empty viewer.** *Plot* on
-  the ESP map row becomes **Plotting… 1:23** and runs orca_plot in place; the
-  viewer opens only once there is a finished figure to draw. Before, the modal
-  covered the whole window for the minutes an ESP map takes, with nothing on the
-  stage and nothing else reachable. The row also marks whether the cubes are
-  already on disk (a filled dot), so a map you have already plotted opens
-  straight away and says so before the click.
-  - The same is true of the orbital browser: it opens onto the HOMO already
-    plotted. Stepping to another level *inside* the viewer still draws its
-    progress on the stage, which is the right place for it — the stage is
-    already on screen and something has to say why it has not changed yet.
-- **A folder of structures with no `.xyz` of its own reads its `conformers/`
-  subfolder.** Pointing the viewer at a finished CREST run means the
-  per-conformer export; the caller no longer has to know that.
-- The *View in 3D* buttons on the Output tab's orbital and conformer cards are
-  gone, and the ESP map is no longer a section there — those are Visual's rows
-  now. *Export as .xyz* stays with the conformer table: it writes files, it does
-  not draw.
-
-### Fixed
-- **The overwrite warning before a run actually appears.** Clicking *Run queue*
-  with results already on disk is supposed to ask — Cancel / Keep existing /
-  Overwrite. The check behind it was never reachable from the UI (the Bridge
-  method had no `@pyqtSlot`, so QWebChannel did not expose it, and the call site
-  swallowed the failure), so every run overwrote earlier results in silence.
-  Found while auditing the slot surface for the Results-tab work; it had been
-  that way since the first release. A test now pins **every** `bridge.X` the
-  front-end calls to a real slot, so this class of silent breakage cannot
-  return.
-
-## [0.8.0-beta] — 2026-09-01
+## [0.8.0-beta] — 2026-09-04
 
 ### Added
 - **Electrostatic potential maps.** The Results tab gains an **Electrostatic
@@ -123,11 +73,55 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
 `.xyz` your editor wrote and ORCAdesk will tell you what is in it.
 
 ### Changed
+- **The Results tab reads one result two ways: `Output` and `Visual`.** Output is
+  what the parser extracted — the summary and every table, chart and section it
+  builds. Visual is everything that can be *drawn* from the same result. The
+  picker and the file button are shared, so switching modes never changes which
+  calculation you are looking at.
+  - **Visual finds what there is to show; it does not ask.** It lists the
+    structure the result ends on, every `.xyz` set sitting in the run folder —
+    the CREST ensemble, the per-conformer `conformers/` export, an optimization
+    trajectory, a starred `favorites/` folder — and, when there is a `.gbw`
+    beside the output, the orbital browser and the ESP map. One row each, one
+    button each; everything opens the same 3D viewer.
+  - This replaced *Browse .xyz…*, a folder picker that asked you to know where
+    ORCAdesk had put things. There is now **one** *Open file…* button, and it
+    takes a `.xyz` as readily as an `.out`: a structure file goes straight to
+    Visual, an output to Output. A file opened from outside the workspace also
+    keeps its place in the picker now, instead of losing it on the next entry to
+    the tab.
+- **Plotting happens under the button, not behind an empty viewer.** *Plot* on
+  the ESP map row becomes **Plotting… 1:23** and runs orca_plot in place; the
+  viewer opens only once there is a finished figure to draw. Before, the modal
+  covered the whole window for the minutes an ESP map takes, with nothing on the
+  stage and nothing else reachable. The row also marks whether the cubes are
+  already on disk (a filled dot), so a map you have already plotted opens
+  straight away and says so before the click.
+  - The same is true of the orbital browser: it opens onto the HOMO already
+    plotted. Stepping to another level *inside* the viewer still draws its
+    progress on the stage, which is the right place for it — the stage is
+    already on screen and something has to say why it has not changed yet.
+- **A folder of structures with no `.xyz` of its own reads its `conformers/`
+  subfolder.** Pointing the viewer at a finished CREST run means the
+  per-conformer export; the caller no longer has to know that.
+- The *View in 3D* buttons on the Output tab's orbital and conformer cards are
+  gone, and the ESP map is no longer a section there — those are Visual's rows
+  now. *Export as .xyz* stays with the conformer table: it writes files, it does
+  not draw.
 - The NEB product loader, its status and its verdict moved out of *Method &
   options* into the new *NEB endpoints* card; **Images** and **Endpoint
   pre-optimization** stay with the method, since they are band parameters.
 
 ### Fixed
+- **The overwrite warning before a run actually appears.** Clicking *Run queue*
+  with results already on disk is supposed to ask — Cancel / Keep existing /
+  Overwrite. The check behind it was never reachable from the UI (the Bridge
+  method had no `@pyqtSlot`, so QWebChannel did not expose it, and the call site
+  swallowed the failure), so every run overwrote earlier results in silence.
+  Found while auditing the slot surface for the Results-tab work; it had been
+  that way since the first release. A test now pins **every** `bridge.X` the
+  front-end calls to a real slot, so this class of silent breakage cannot
+  return.
 - **A numerical frequency no longer hangs forever when it is given more
   processes than it has displacements.** ORCA splits a `NumFreq` over its
   displaced geometries, one gradient per process. Ask for more processes than
