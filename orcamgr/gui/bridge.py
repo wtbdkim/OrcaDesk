@@ -59,6 +59,7 @@ from ..state.schemas import (
     StartServerResult, TextResult, TransitionPayload,
     CrestStatusPayload, ConformerPayload,
     WallpaperResult, ExportResult, FramesResult, FavoritesResult,
+    StructureSetsResult, PickedResultPayload,
     PlotOptionsResult, CubeJobPayload, CubeDataResult, WorkspaceResultsResult,
     AtomOrderPayload, StructureCheckPayload,
 )
@@ -67,6 +68,11 @@ from ..state.schemas import (
 # real workspace, and the point is only that a pathological folder cannot turn a
 # tab switch into an unbounded directory crawl.
 _WORKSPACE_SCAN_MAX = 500
+
+# The two files a CREST run leaves its ensemble in. Their frames are labelled
+# after the RUN ("{run}_c1", the name the per-conformer export writes) rather
+# than after the file, because those labels key the favorites store.
+_CREST_ENSEMBLE = {"crest_conformers.xyz", "crest_best.xyz"}
 
 
 # Line patterns the SCF/geo graph trackers care about (mirror of web/scf_graph.js
@@ -913,23 +919,31 @@ class Bridge(QObject):
         # uses the shared loader so PC and phone always see identical options
         return json.dumps(load_choice_groups(name))
 
-    # --- parse an external .out (Results tab) ---
+    # --- open an external result (the Results tab's one file button) ---
     @pyqtSlot(result=str)
-    def parse_out_file(self) -> str:
-        # Not just ORCA: _parse_path routes an engine-written {name}.mlip.json
-        # to the MLIP parser and a folder holding crest_conformers.xyz to the
-        # CREST one, so the dialog should offer what it can actually read.
+    def pick_result_file(self) -> str:
+        """Pick any result file and say which way it should be read.
+
+        One button for both Results modes, because the user is choosing a
+        *result*, not a route: an ``.out`` / ``.mlip.json`` is parsed into the
+        Output mode (``route="parse"``), a ``.xyz`` is a structure and opens in
+        the 3D viewer (``route="structure"``). The routing is by suffix and it
+        is the only thing this slot decides — the caller does the reading, so
+        the two routes stay the ones the tab already has.
+
+        Closing the picker is a deliberate choice, not a parse failure — a bare
+        "{}" was indistinguishable from a bad parse and made the UI log a
+        spurious error on every cancel (A2).
+        """
         path, _ = QFileDialog.getOpenFileName(
             self.window, "Open a result file", "",
-            "Results (*.out *.mlip.json);;ORCA output (*.out);;"
-            "MLIP result (*.mlip.json);;All files (*.*)"
+            "Results (*.out *.mlip.json *.xyz);;ORCA output (*.out);;"
+            "MLIP result (*.mlip.json);;Structure (*.xyz);;All files (*.*)"
         )
         if not path:
-            # closing the picker is a deliberate choice, not a parse failure —
-            # a bare "{}" was indistinguishable from a bad parse and made the
-            # UI log a spurious error on every cancel (A2)
-            return json.dumps(ParsePayload(cancelled=True))
-        return self._parse_path(path)
+            return json.dumps(PickedResultPayload(ok=False, cancelled=True))
+        route = "structure" if path.lower().endswith(".xyz") else "parse"
+        return json.dumps(PickedResultPayload(ok=True, path=path, route=route))
 
     @pyqtSlot(str, result=str)
     def parse_out_path(self, path: str) -> str:
@@ -1328,47 +1342,52 @@ class Bridge(QObject):
 
     # --- in-app 3D structure viewer (Results tab) ---
     @pyqtSlot(str, result=str)
-    def get_conformer_frames(self, name: str) -> str:
-        """Frames for a queued CREST search's ensemble, for the in-app 3D viewer:
-        reads {run}/crest_conformers.xyz (or crest_best.xyz) and returns
-        {ok, title, frames:[{label, xyz, energy}]} — xyz is raw frame text 3Dmol
-        parses directly. On-demand (not in the result payload) so the normal
-        Results render stays light even for a 100-conformer ensemble."""
-        from ..molview import frames_from_file
-        try:
-            folder = self._calc_run_dir(name)
-            p = folder / "crest_conformers.xyz"
-            if not p.exists():
-                p = folder / "crest_best.xyz"
-            if not p.exists():
-                return json.dumps(FramesResult(ok=False, error="No conformer ensemble on disk."))
-            frames = frames_from_file(p, label_prefix=f"{name}_c")
-        except OSError as e:
-            return json.dumps(FramesResult(ok=False, error=str(e)))
-        if not frames:
-            return json.dumps(FramesResult(ok=False, error="No structures found in the ensemble."))
-        return json.dumps(FramesResult(ok=True, title=name, frames=frames))
+    def list_structure_sets(self, source: str) -> str:
+        """Every ``.xyz`` set sitting with a result that the 3D viewer can open —
+        the CREST ensemble, the per-conformer ``conformers/`` export, an
+        optimization trajectory. ``source`` is ``calc:<name>`` or ``file:<path>``
+        (:meth:`_plot_source` resolves the folder; a file's folder is its
+        parent), so a queued calculation and a result opened from disk are both
+        addressable.
 
-    @pyqtSlot(result=str)
-    def browse_xyz_folder(self) -> str:
-        """Pick any folder and return every ``*.xyz`` structure in it (natural
-        filename order; each file may itself be multi-frame) as viewer frames —
-        {ok, title, frames:[{label, xyz, energy}]}. General: works on any folder
-        (e.g. a CREST ``conformers/`` folder). {ok:false, cancelled:true} when the
-        picker is closed, {ok:false, error} otherwise."""
-        folder = QFileDialog.getExistingDirectory(
-            self.window, "Select a folder of .xyz structures")
-        if not folder:
-            return json.dumps(FramesResult(ok=False, cancelled=True))
-        from ..molview import frames_from_folder
+        This replaced a folder picker. Everything worth opening already sits in
+        the result's own run folder, so the tab lists what is there instead of
+        asking the user to know where ORCAdesk put it.
+        """
+        from ..molview import discover_structure_sets
         try:
-            frames = frames_from_folder(folder)
+            run_dir, base, _open_shell, err = self._plot_source(source)
+            if err:
+                return json.dumps(StructureSetsResult(ok=False, error=err))
+            sets = discover_structure_sets(run_dir, base)
+        except OSError as e:
+            return json.dumps(StructureSetsResult(ok=False, error=str(e)))
+        return json.dumps(StructureSetsResult(ok=True, sets=sets))
+
+    @pyqtSlot(str, result=str)
+    def get_structure_frames(self, path: str) -> str:
+        """Viewer frames for one structure set: a folder of ``.xyz`` files
+        (natural filename order, each possibly multi-frame) or a single
+        ``.xyz``. Returns {ok, title, folder, frames:[{label, xyz, energy}]};
+        ``folder`` is the favorites/export destination — the folder itself, or a
+        file's parent."""
+        from ..molview import frames_from_file, frames_from_folder
+        p = Path(path or "")
+        if not path or not p.exists():
+            return json.dumps(FramesResult(ok=False, error="That structure is no longer on disk."))
+        # A CREST ensemble's frames are labelled the way its exported files are
+        # named ({run}_c1 …, c1 = the best conformer), not after the file they
+        # happen to live in: those labels are what the favorites store is keyed
+        # on and what "Export ★" writes, so the two must agree.
+        prefix = f"{p.parent.name}_c" if p.name.lower() in _CREST_ENSEMBLE else ""
+        try:
+            frames = frames_from_folder(p) if p.is_dir() else frames_from_file(p, prefix)
         except OSError as e:
             return json.dumps(FramesResult(ok=False, error=str(e)))
         if not frames:
-            return json.dumps(FramesResult(ok=False, error="No .xyz structures in that folder."))
-        return json.dumps(FramesResult(ok=True, title=Path(folder).name,
-                                       folder=folder, frames=frames))
+            return json.dumps(FramesResult(ok=False, error="No .xyz structures there."))
+        folder = str(p if p.is_dir() else p.parent)
+        return json.dumps(FramesResult(ok=True, title=p.name, folder=folder, frames=frames))
 
     # --- 3D viewer favorites (starred conformers/structures) ---
     @pyqtSlot(str, result=str)
@@ -1661,6 +1680,7 @@ class Bridge(QObject):
                 out.add(c.name)
         return out
 
+    @pyqtSlot(result=str)
     def check_overwrite_conflicts(self) -> str:
         """Return the names of queued calculations that would overwrite an
         existing result on disk (a {name}.out already in the workspace), so the

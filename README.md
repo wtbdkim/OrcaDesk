@@ -143,36 +143,36 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   **Liquid Glass** (a refracting frosted top bar / tabs over a wallpaper, five
   intensity levels + six wallpaper presets or a custom image). Both styles work
   in dark and light; the choice is remembered across launches.
-- **Results**: per-calculation summary plus every value the parser extracts —
-  final geometry (with *Copy .xyz*), orbital energies (HOMO/LUMO), Mulliken &
-  Löwdin charges, Mayer bond orders/valences, dipole moment, rotational
-  constants, SCF energy decomposition, frequencies (with imaginary-mode
-  warnings) and full thermochemistry, TD-DFT transitions + a UV-Vis plot and the
-  excited-state composition, NMR shieldings, and the NEB path. Sections are shown
-  for the relevant calculation type; a **`Show all`** toggle reveals everything
-  regardless of type. The picker lists **every result in your workspace**, not
-  only the queued ones — a calculation cleared from the queue, or one from an
-  earlier session, opens in a click — and *Open file…* reads a result from
-  anywhere on disk. A **free-energy
-  profile** view plots relative Gibbs free energy across finished frequency
-  calculations in queue order. A built-in **3D structure viewer** shows
-  geometries in the window and lets you flip through many structures with the
-  **← / →** keys: *View in 3D* steps through a CREST conformer ensemble, and
-  *Browse .xyz…* opens any folder of `.xyz` files (e.g. a `conformers/` folder)
-  as one browsable set — no external viewer needed. **Star** the ones worth
-  keeping (the **F** key); starred structures persist, can be stepped through on
-  their own, and exported to a `favorites/` folder. The same viewer draws
-  **molecular orbitals and electron density**: *View in 3D* on the orbital
-  energies card opens the HOMO, with every level listed beside it (plus the
-  electron density, and the spin density for open-shell jobs). Surfaces are
-  generated from the finished job's wavefunction — nothing is re-run — and the
-  isovalue slider re-draws instantly.
-  An **Electrostatic potential map** has its own section under *Final geometry*:
-  the electron-density surface coloured by the electrostatic potential (red
-  negative, blue positive), with sliders for the surface level and the colour
-  scale. It is the one plot that costs minutes rather than seconds — the
-  potential is a Coulomb sum at every grid point — so it opens at a coarser grid
-  and the card says so before you click.
+- **Results**: one selected result, read two ways — **Output** and **Visual**.
+  - **Output** is what the parser extracted: the per-calculation summary, final
+    geometry (with *Copy .xyz*), orbital energies (HOMO/LUMO), Mulliken &
+    Löwdin charges, Mayer bond orders/valences, dipole moment, rotational
+    constants, SCF energy decomposition, frequencies (with imaginary-mode
+    warnings) and full thermochemistry, TD-DFT transitions + a UV-Vis plot and
+    the excited-state composition, NMR shieldings, and the NEB path. Sections
+    are shown for the relevant calculation type; a **`Show all`** toggle reveals
+    everything regardless of type. A **free-energy profile** view plots relative
+    Gibbs free energy across finished frequency calculations in queue order.
+  - **Visual** is everything that can be *drawn* from the same result, and it
+    finds it for you: the structure, any `.xyz` set sitting in the run folder
+    (the CREST ensemble, the per-conformer `conformers/` export, an optimization
+    trajectory), the **molecular orbitals and electron density**, and the
+    **electrostatic potential map**. No folder picker — the tab lists what is
+    there. Each row opens the built-in **3D viewer**: flip through structures
+    with the **← / →** keys, **star** the ones worth keeping (the **F** key —
+    starred structures persist, can be stepped through on their own, and
+    exported to a `favorites/` folder).
+  - Surfaces are generated from the finished job's wavefunction — nothing is
+    re-run — and the isovalue slider re-draws instantly. The ESP map is the one
+    plot that costs minutes rather than seconds (the potential is a Coulomb sum
+    at every grid point), so its row says so, marks whether it is already on
+    disk, and does the plotting **under the button** — the rest of the tab stays
+    usable while it runs, and the viewer opens onto a finished figure.
+  - The picker lists **every result in your workspace**, not only the queued
+    ones — a calculation cleared from the queue, or one from an earlier session,
+    opens in a click — and one *Open file…* button reads a result from anywhere
+    on disk: an ORCA `.out`, an MLIP result, a CREST search, or a `.xyz`, which
+    goes straight to Visual.
 - **Settings**: ORCA executable path, **MLIP environments** (create one for CPU
   or GPU in a click, or register your own MACE-capable Python interpreters;
   backends are auto-detected), workspace folder,

@@ -335,7 +335,7 @@ class ConformerPayload(TypedDict):
 
 class ParsePayload(TypedDict, total=False):
     """Successful parse of a .out. All keys optional on the wire because the
-    failure branch sends ErrorPayload and parse_out_file's cancelled dialog
+    failure branch sends ErrorPayload and a cancelled dialog
     sends only {"cancelled": true}; a successful parse emits every data key
     it has."""
     cancelled: bool           # True only for a cancelled Open-file dialog (A2)
@@ -475,14 +475,42 @@ class MolFramePayload(TypedDict):
 
 
 class FramesResult(_Ok, total=False):
-    """get_conformer_frames / browse_xyz_folder — viewer frame lists.
-    "folder" rides only browse_xyz_folder's success (the picked path, used as
-    the export/favorites source); "cancelled" only its closed picker."""
-    cancelled: bool
+    """get_structure_frames — viewer frame lists. "folder" is the
+    favorites/export destination: the folder itself, or a file's parent."""
     error: str
     title: str
     folder: str
     frames: "list[MolFramePayload]"
+
+
+class StructureSetPayload(TypedDict):
+    """One openable ``.xyz`` set found beside a result (molview
+    .discover_structure_sets). "kind" is "folder" (a subfolder of .xyz files,
+    e.g. the conformers/ export) or "file" (one possibly multi-frame .xyz);
+    "count" is files for a folder and frames for a file, 0 when unknown."""
+    key: str
+    label: str
+    kind: str
+    path: str
+    count: int
+
+
+class StructureSetsResult(_Ok, total=False):
+    """list_structure_sets — what the Visual mode can open for a result without
+    sending the user through a file dialog."""
+    error: str
+    sets: "list[StructureSetPayload]"
+
+
+class PickedResultPayload(_Ok, total=False):
+    """pick_result_file — the Results tab's one *Open file…* button. "route" is
+    "parse" (an .out / .mlip.json, read by the parser into the Output mode) or
+    "structure" (a .xyz, opened in the 3D viewer); "cancelled" marks a closed
+    picker, which is a choice rather than a failure."""
+    cancelled: bool
+    error: str
+    path: str
+    route: str
 
 
 class FavoritesResult(_Ok, total=False):

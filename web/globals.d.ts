@@ -47,7 +47,9 @@ interface OrcaBridge {
   check_structure(xyz: string, charge: number, multiplicity: number): Promise<string>;  // StructureCheck JSON
   compare_structures(reactantXyz: string, productXyz: string): Promise<string>;         // AtomOrder JSON
   // parsing
-  parse_out_file(): Promise<string>;
+  // the Results tab's one file button: picks a result file and says how to read
+  // it — {ok, path, route:"parse"|"structure"} | {ok:false, cancelled:true}
+  pick_result_file(): Promise<string>;                        // PickedResultPayload JSON
   parse_out_path(path: string): Promise<string>;
   parse_calc_output(name: string): Promise<string>;
   build_inp_preview(calcJson: string): Promise<string>;
@@ -64,13 +66,13 @@ interface OrcaBridge {
   get_graph_lines(name: string): Promise<string>;
   get_output_tail(name: string, max_lines: number): Promise<string>;
   export_conformers(name: string): Promise<string>;
-  // 3D structure viewer (Results tab); both return FramesResult JSON:
-  // {ok,title,frames:[{label,xyz,energy}]} | {ok:false,...}
-  get_conformer_frames(name: string): Promise<string>;
-  // FramesResult JSON; also returns "folder" (the picked path) on success, and
-  // has a cancel branch: {ok:false, cancelled:true} when the picker is closed
-  // (a deliberate dismissal, not an error)
-  browse_xyz_folder(): Promise<string>;
+  // 3D structure viewer (Results › Visual). The .xyz sets sitting with a result
+  // — the CREST ensemble, the conformers/ export, a trajectory — discovered
+  // rather than picked from a folder dialog. source is "calc:<name>"|"file:<path>"
+  list_structure_sets(source: string): Promise<string>;       // StructureSetsResult JSON
+  // frames for one of those sets: a folder of .xyz, or one (multi-frame) .xyz.
+  // FramesResult JSON; "folder" is the favorites/export destination
+  get_structure_frames(path: string): Promise<string>;
   // every result on disk under the workspace root, queued or not (newest first)
   list_workspace_results(): Promise<string>;                  // WorkspaceResultsResult JSON
   // viewer favorites (starred structures)

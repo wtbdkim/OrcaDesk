@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 704 tests over the framework-free layers
+python -m pytest                       # 727 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -61,11 +61,16 @@ runner — no WSL/CREST needed), `config`, `procutil` (real child processes),
 `cube` + `core/plot` (cube-header parsing and the `orca_plot` menu sequences /
 trust-boundary clamp / pre-flight refusals, all without ORCA), and
 the phone HTTP API via `fastapi.testclient` (auto-skips without fastapi).
-Two tests are **static guards over the source** rather than behaviour:
-`test_no_undefined_names.py` (a name bound nowhere in its module) and
+Three tests are **static guards over the source** rather than behaviour:
+`test_no_undefined_names.py` (a name bound nowhere in its module),
 `test_no_lock_reentry.py` (a `self.foo()` called under a lock `foo` itself
 takes — a UI-thread deadlock that only a second click during a running job
-reaches, so no behavioural test finds it; P37).
+reaches, so no behavioural test finds it; P37), and `test_bridge_slots.py`
+(every `bridge.X` the front-end calls is a real `@pyqtSlot`, and every slot
+`web/globals.d.ts` declares still exists). QWebChannel exposes **slots**, not
+methods, and every bridge call site is wrapped in a `try` — so a missing
+decorator is a feature that silently does nothing. `check_overwrite_conflicts`
+shipped that way and the Run-click overwrite screen never appeared.
 The one exception to "framework-free" is `test_log_replay.py`, which imports
 `gui/bridge.py` for its module-level `.out`-filter patterns and tail reader
 only (no Bridge instance) to pin the filter against the tracker regexes it
@@ -172,7 +177,15 @@ the front-end. Don't annotate FastAPI endpoints with these TypedDicts as return 
 — FastAPI would infer a response_model and put pydantic between the dict and the wire;
 endpoints keep `-> dict` and only *construct* through the schema types.
 
-The **Results tab** is purely presentational over `ParsePayload`. A QUEUED
+The **Results tab has two modes over one selected result**: `Output` (what the
+parser read) and `Visual` (what can be *drawn* from it) — `setResultsMode` in
+`results_render.js` flips `#result-body` / `#visual-body`. The picker and the
+single *Open file…* button are **shared**, so switching modes never changes
+which calculation is on screen; `Show all` and the free-energy-profile card are
+Output's and are hidden in Visual. See the Visual-mode note below for what the
+mode discovers and why plotting happens on its rows.
+
+The Output mode is purely presentational over `ParsePayload`. A QUEUED
 calc's result is fetched by NAME through `bridge.parse_calc_output`, which
 dispatches on the calc's **kind** (`result_from_output`); external files
 (drag-drop / *Open file…*) go through `bridge._parse_path`, which has no kind and
@@ -193,6 +206,18 @@ from "have we parsed it yet" — grouping by `calcResults` would file a queued
 calc under the workspace and send it through the folder heuristic. Picking a
 queued calc not yet fetched parses it by name on demand. The scan runs on entry
 to the tab (`switchTab`), never from the 1-second poll — it touches the disk.
+A result opened from **outside** that scan is remembered in `_openedPaths` and
+re-emitted as an "Opened file" `<optgroup>` on every rebuild: the scan lists
+only `.out`/`.mlip.json` under the workspace root, so an option merely *inserted*
+into the live `<select>` was lost on the next tab entry — and never survived at
+all for a `.xyz`, which the scan does not list.
+
+*Open file…* is **one** button for both modes because the user is choosing a
+result, not a route: `bridge.pick_result_file()` picks the file and returns
+`{route: "parse"|"structure"}` by suffix, and the front-end reads it through
+`parse_out_path` or `get_structure_frames`. A `.xyz` becomes the shown result in
+Visual mode with nothing parsed (`_currentResult = null`), which is also the
+route `showWorkspaceResult` takes when such a path is re-picked.
 
 Both parse paths
 send the *whole* `ParseResult` (every section the parser found) plus two gating flags
@@ -203,7 +228,42 @@ sections (orbitals, charges, Mayer, dipole, rotational, SCF decomposition, and t
 `"elec"`-tagged summary rows) show only for sp/opt; freq/tddft/nmr/neb sections are
 present-only. The Results header's **`Show all`** toggle (`showAllResults` in `app.js`)
 overrides the gating to reveal everything parsed. Keep the gating on the front-end (not
-the payload) so the toggle re-renders without a re-fetch.
+the payload) so the toggle re-renders without a re-fetch. Nothing in Output
+*draws* — no 3D entry points live there — so a section that only had a "View in
+3D" button (the ESP map) is gone from it entirely.
+
+**Visual mode discovers what there is to show.** `renderVisual` asks two slots
+about the selected result's source string and builds one row per openable thing:
+the parsed geometry (no backend call — P4), every `.xyz` set
+`bridge.list_structure_sets(source)` found beside the result
+(`molview.discover_structure_sets`: direct subfolders holding `.xyz` — the
+`conformers/` export sorts first — then the folder's own `.xyz`, each labelled
+by what it *is*; past `_MANY_XYZ` unnamed ones they collapse into a single
+whole-folder set, so a hundreds-strong export is one row and not a hundred file
+reads on a tab switch), and, when a `.gbw` sits there, the orbital browser and
+the ESP map. Each row opens the same `#mol-viewer`; a set opens through
+`bridge.get_structure_frames(path)`, which takes a file or a folder. This
+replaced a *Browse .xyz…* folder picker (`browse_xyz_folder`) and the
+CREST-only `get_conformer_frames`, both removed: everything worth opening
+already sits in the run folder, so the tab lists it rather than asking the user
+to find it. `frames_from_folder` reads a folder's `conformers/` child when the
+folder itself holds no `.xyz`, so pointing it at a CREST run means the export.
+The CREST ensemble keeps its `calc:<name>` favorites key and its `{run}_c1`
+frame labels (`_CREST_ENSEMBLE` in `bridge.py`) — labels key the favorites store
+and name what *Export ★* writes, so the two must agree.
+
+**Plotting happens on the row, not behind the modal.** `mvVolShow` was split
+into `_mvVolFetch` (generate/read the cube(s)) + `_mvVolDraw` (touch the
+GLViewer) + `_mvVolSelect` (the stage's chrome), because the two halves now
+happen in different places: `viewOrbitals3D` / `viewEspMap` fetch **first** and
+call `_mvOpenStage` only once there is something to draw, while a pick clicked
+*inside* the viewer keeps the in-stage busy overlay (the stage is already on
+screen, so something has to say why it has not changed). The Visual row's
+`visOpen` wrapper is what reports the wait — the button reads `Plotting… m:ss`
+and every row is disabled (the backend serializes orca_plot anyway), leaving the
+rest of the tab usable for the minutes an ESP map takes. The ESP row also shows
+an on-disk dot via `mvEspCubeNames(base, grid)`, which goes through
+`_mvCubeName` so the dot and the fetch cannot disagree about the filename.
 
 ### Running the queue: core/ is GUI-agnostic
 
@@ -917,38 +977,42 @@ Results tab (`#mol-viewer` in `index.html`, `openMolViewer`/`molViewerShow`/
 `closeMolViewer` in `web/molviewer.js`) and flips through a list of **frames** with the
 ←/→ keys (Esc closes, drag rotates). A frame is `{label, xyz, energy}`; `xyz`
 is raw `.xyz` text 3Dmol parses directly, and the caption shows ΔE vs the
-lowest-energy frame when energies are present. Two entry points: **View in 3D**
-on a CREST conformer result (`bridge.get_conformer_frames(name)` reads the run's
-`crest_conformers.xyz`) and **Browse .xyz…** in the Results header
-(`bridge.browse_xyz_folder` picks any folder — general, e.g. a `conformers/`
-folder). Frames are read on demand (never in the result payload, so a
-100-conformer render stays light) by the Qt-free `orcamgr/molview.py`
-(`frames_from_file` / `frames_from_folder`, unit-tested). The GLViewer is created
-lazily on first open and reused; closing clears the scene but keeps the WebGL
-context.
+lowest-energy frame when energies are present. Every entry point is a **Visual**
+row (see the Results-tab note): the parsed structure, or one of the `.xyz` sets
+discovered beside the result, opened through `bridge.get_structure_frames(path)`
+— one slot for a file or a folder. Frames are read on demand (never in the
+result payload, so a 100-conformer render stays light) by the Qt-free
+`orcamgr/molview.py` (`frames_from_file` / `frames_from_folder` /
+`discover_structure_sets`, unit-tested). The GLViewer is created lazily on first
+open and reused; closing clears the scene but keeps the WebGL context.
 
 **Viewer favorites (starred structures).** In the viewer the user stars
 structures worth following up (the **F** key or the list star); stars persist
 across sessions via the Qt-free `orcamgr/favorites.py` (a small
 `favorites.json` in `user_data_root`, **not** `settings.json` — which is
 rewritten on every queue mutation), keyed by a namespaced *source*:
-`"calc:<name>"` for a CREST ensemble, `"folder:<path>"` for a browsed folder, so
-two sources never share a star set. **★ only** steps the ←/→ keys through
+`"calc:<name>"` for a queued calculation's own CREST ensemble,
+`"folder:<path>"` for any other structure set, so two sources never share a star
+set. That is why a queued ensemble is opened as kind `"calc"` even though its
+frames now come from the generic `get_structure_frames`: stars set before the
+Visual mode existed still resolve. **★ only** steps the ←/→ keys through
 starred frames alone; **Export ★** writes them to a `favorites/` subfolder next
 to the source. Bridge slots: `get_favorites(source)`, `toggle_favorite(source,
 label, on)`, `export_frames(dest_kind, dest, frames_json)` — `export_frames`
 takes the frames' xyz straight from the front-end (favorites are few) and
-sanitizes each label into a filename, so it needs no re-parse. `browse_xyz_folder`
-also returns the picked `folder` path (the export/favorites source for a browsed
-set).
+sanitizes each label into a filename, so it needs no re-parse.
+`get_structure_frames` returns a `folder` (the set's own folder, or a file's
+parent) — the export/favorites destination.
 
 **Orbital / electron-density surfaces (the viewer's second mode).** The same
 modal and the **same GLViewer instance** render volumetric data: `_mvMode` is
 `"frames"` (the .xyz list above) or `"volume"`, and `renderMvList` /
 `molViewerShow` / `molViewerStep` dispatch on it, so one WebGL context serves
-both. Entry is **View in 3D** on the Results tab's *Orbital energies* card
-(`viewOrbitals3D(_lastOrbitals)`) — the front-end passes the orbital list it
-already parsed rather than the payload carrying a second copy (P4).
+both. Entry is the **Orbitals & density** row in Visual
+(`viewOrbitals3D(_visOrbitals())`) — the front-end passes the orbital list it
+already parsed rather than the payload carrying a second copy (P4);
+`_visOrbitals()` falls back to the payload's own list because Visual is not
+gated by calc kind the way Output's sections are.
 
 Cubes come from **`orca_plot`**, shelled out post-hoc against a finished run's
 `.gbw` (`orcamgr/core/plot.py`, Qt-free): nothing is recomputed and no job is
@@ -1004,14 +1068,15 @@ surface vertex. `_mvEspParts()` issues the two requests in order through
 `_mvFetchCube` (the single-cube generate/poll/fetch loop, extracted for exactly
 this); both must ride the ESP grid or they would be two different boxes.
 
-It is deliberately **not** a row in the orbital viewer's pick list. It gets its
-own Results-tab section under *Final geometry* (`renderEspMap` — with the
-geometry it is painted on, not with the orbital levels) and its own opener,
-`viewEspMap()`, which shows a single pick with the frame list put away: one
-figure, not a set to step through. `_mvVolSetup()` is the shared
+It is deliberately **not** a row in the orbital viewer's pick list: it is one
+figure, not a set to step through, and it answers a different question. It is
+its own **Visual** row with its own opener, `viewEspMap()`, which shows a single
+pick with the frame list put away. `_mvVolSetup()` is the shared
 options-fetch-and-adopt both openers use, so neither can drift from the other's
-idea of the grid choices or the ESP conventions (P4). Consequences worth
-knowing:
+idea of the grid choices or the ESP conventions (P4). Its row is also the one
+that carries an on-disk dot and reads *Plot* rather than *View* — the cost is
+minutes, so the button names it before the click and then reports the wait
+(`visOpen`). Consequences worth knowing:
 - The isovalue slider steers the **density** level here, opening at
   `cube.ESP_SURFACE_ISOVALUE` (0.002, the van-der-Waals-like contour) — *not*
   the enclosed-fraction fit, which exists because an orbital's peak varies with
@@ -1043,12 +1108,18 @@ conventional picture unchanged) and 0.0097 for CB8's. It never raises above
 convention. The fit must be **NaN-safe**: 3Dmol builds its value array with
 `Float32Array.from(split(...), parseFloat)`, and a cube's trailing separator
 leaves one NaN past the data (216001 entries for a 60³ grid) — one NaN poisons
-a sum and silently voids the whole fit. While orca_plot is actually running for
-a pick (`#mv-vol-busy`), the stage shows a *Plotting…* overlay; a cube already
-on disk opens with no flash. Measured cost of what it covers: a density on a
-144-atom / 3648-BF system is 22 s at 60³, against 0.34 s for one MO.
+a sum and silently voids the whole fit. While orca_plot runs for a pick chosen
+*inside* the viewer, the stage shows a *Plotting…* overlay (`#mv-vol-busy`); a
+cube already on disk opens with no flash. The overlay belongs to that path only
+— the wait for the pick a Visual row *opens with* is reported on the row's own
+button instead, so the viewer never covers the window with an empty stage.
+Measured cost of what it covers: a density on a 144-atom / 3648-BF system is
+22 s at 60³, against 0.34 s for one MO.
 
-**Bridge slots**: `get_plot_options(source)` (base, has_gbw, the kinds this
+**Bridge slots**: `list_structure_sets(source)` / `get_structure_frames(path)`
+(the Visual mode's discovery and its one opener),
+`pick_result_file()` (the tab's one file button; routes by suffix),
+`get_plot_options(source)` (base, has_gbw, the kinds this
 wavefunction supports — spin density only when the run is open-shell — grids,
 and the cubes already on disk), `generate_cube(payload)` / `get_cube_status()` /
 `get_cube_data()`. Generation is a background thread + UI polling like the MLIP

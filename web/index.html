@@ -431,22 +431,33 @@
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
           <div>
             <div class="card-title">Results</div>
-            <div class="card-desc" style="margin:0">A completed calculation, or any .out file.</div>
+            <div class="card-desc" style="margin:0">A completed calculation, or any result file.</div>
           </div>
           <div class="btn-group">
             <select id="result-select" style="width:auto" onchange="showSelectedResult()"></select>
-            <button id="btn-showall" class="btn btn-sm btn-ghost" onclick="toggleShowAll()"
-                    title="Every parsed value, ignoring per-calc-type filtering">Show all</button>
+            <!-- one file button for both modes: the user is choosing a RESULT,
+                 not a route. An .out/.mlip.json is parsed into Output, a .xyz
+                 opens in the viewer (bridge.pick_result_file decides which). -->
             <button class="btn btn-sm" onclick="openOutFile()"
-                    title="Open any result file — an ORCA .out, an MLIP result, a CREST search">Open file…</button>
-            <button class="btn btn-sm" onclick="browseXyzFolder()"
-                    title="Pick a folder of .xyz files and flip through them in 3D (← / →)">Browse .xyz…</button>
+                    title="Open any result — an ORCA .out, an MLIP result, a CREST search, or a .xyz structure">Open file…</button>
           </div>
         </div>
+        <!-- Output = what the parser read; Visual = what can be drawn from the
+             same result (structures, orbitals, the ESP map). One selected
+             result, two ways of reading it — so the picker above is shared and
+             only the mode-specific action sits in this row. -->
+        <div class="log-mode-toggle on-card">
+          <button id="rmode-output" class="active" onclick="setResultsMode('output')">Output</button>
+          <button id="rmode-visual" onclick="setResultsMode('visual')">Visual</button>
+          <button id="btn-showall" class="btn btn-sm btn-ghost" style="margin-left:auto"
+                  onclick="toggleShowAll()"
+                  title="Every parsed value, ignoring per-calc-type filtering">Show all</button>
+        </div>
         <div id="result-body"><div class="hint">No result selected.</div></div>
+        <div id="visual-body" hidden><div class="hint">No result selected.</div></div>
       </div>
 
-      <div class="card">
+      <div class="card" id="card-fep">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
           <div>
             <div class="card-title">Free energy profile</div>

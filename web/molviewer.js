@@ -69,24 +69,6 @@ function glGuardViewer(v, node) {
   return v;
 }
 
-/** View a queued CREST search's conformers in 3D (button in renderConformers). */
-async function viewConformers3D() {
-  if (!_currentResultName) return;
-  let r; try { r = /** @type {FramesResult} */ (JSON.parse(await bridge.get_conformer_frames(_currentResultName))); }
-  catch (e) { failNotify("Could not load conformers."); return; }
-  if (!r.ok) { failNotify(r.error || "Could not load conformers."); return; }
-  await openMolViewer(r.title, r.frames, "calc", _currentResultName);
-}
-
-/** Pick any folder of .xyz files and browse them in 3D (Results header button). */
-async function browseXyzFolder() {
-  let r; try { r = /** @type {FramesResult} */ (JSON.parse(await bridge.browse_xyz_folder())); }
-  catch (e) { failNotify("Could not open the folder."); return; }
-  if (r.cancelled) return;               // picker closed — not an error
-  if (!r.ok) { failNotify(r.error || "Could not open the folder."); return; }
-  await openMolViewer(r.title, r.frames, "folder", r.folder || "");
-}
-
 /** @param {string} title @param {MolFrame[]} frames
  *  @param {"calc"|"folder"} kind @param {string} ref calc name or folder path */
 async function openMolViewer(title, frames, kind, ref) {
@@ -491,12 +473,16 @@ async function viewOrbitals3D(orbs) {
   if (!_mvVolPicks.length) { failNotify("Nothing to plot for this calculation."); return; }
   // start on the HOMO when there is one — the orbital people actually want
   const homo = _mvVolPicks.findIndex(p => p.sub.indexOf("HOMO ") === 0);
-  _mvVolIndex = homo >= 0 ? homo : 0;
+  const pick = _mvVolPicks[homo >= 0 ? homo : 0];
+  // Plot the opening pick first, then open onto it. The caller (a Visual row)
+  // is what says it is working meanwhile; the stage never opens empty.
+  const got = await _mvVolFetch(pick, _mvGridFor(pick.kind), ++_mvVolSeq);
+  if (!got) return;
   _mvListVisible(true);
-  _fillGridSelect();
   renderMvList();
   if (!_mvOpenStage((opts.base || "") + " — orbitals & density")) return;
-  mvVolShow(_mvVolIndex);
+  _mvVolSelect(homo >= 0 ? homo : 0);
+  _mvVolDraw(pick, got);
 }
 
 /** Open the ESP map — its own entry point, from its own card on the Results
@@ -510,11 +496,16 @@ async function viewEspMap() {
     return;
   }
   _mvVolPicks = [{ kind: "esp", index: 0, operator: 0, label: "ESP map", sub: "" }];
-  _mvVolIndex = 0;
+  // Two grids and a Coulomb sum at every point of them — minutes on a large
+  // molecule. That wait used to happen under a modal covering the whole window
+  // with an empty stage on it; it now happens under the Visual row's own
+  // button, which leaves the rest of the tab usable while it runs.
+  const got = await _mvVolFetch(_mvVolPicks[0], _mvGridFor("esp"), ++_mvVolSeq);
+  if (!got) return;
   _mvListVisible(false);
-  _fillGridSelect();
   if (!_mvOpenStage((opts.base || "") + " — ESP map")) return;
-  mvVolShow(0);
+  _mvVolSelect(0);
+  _mvVolDraw(_mvVolPicks[0], got);
 }
 
 /** Show or put away the left-hand pick list. @param {boolean} on */
@@ -568,15 +559,26 @@ function _mvBuildPicks(orbs, kinds) {
  *  can mark which picks are already on disk (those open with no orca_plot run).
  *  Grid-qualified like the Python side, so switching the grid correctly shows
  *  the not-yet-generated picks as not generated.
- *  @param {MvPick} p */
-function _mvCubeName(p, grid) {
+ *  @param {MvPick} p @param {number} [grid] @param {string} [base] */
+function _mvCubeName(p, grid, base) {
   const g = grid || _mvGridFor(p.kind);
+  const b = base || _mvVolBase;
   // orca_plot names an ESP after the DENSITY it came from, not after the plot
   // type — water.scfp.esp.cube, not water.esp.cube (core/plot.plot_output_name).
   const stem = p.kind === "mo"
-    ? _mvVolBase + ".mo" + p.index + (p.operator ? "b" : "a")
-    : (p.kind === "esp" ? _mvVolBase + ".scfp.esp" : _mvVolBase + "." + p.kind);
+    ? b + ".mo" + p.index + (p.operator ? "b" : "a")
+    : (p.kind === "esp" ? b + ".scfp.esp" : b + "." + p.kind);
   return stem + ".g" + g + ".cube";
+}
+
+/** The cube files an ESP map needs on disk for a result whose stem is `base`,
+ *  at `grid`. The Results tab's Visual row uses it to say whether the map opens
+ *  instantly or costs a plot — through _mvCubeName, so the row's dot and the
+ *  fetch that follows it can never disagree about the filename (P4). It is the
+ *  one plot worth a dot: an orbital is a second, this is minutes.
+ *  @param {string} base @param {number} grid @returns {string[]} */
+function mvEspCubeNames(base, grid) {
+  return _mvEspParts().map(q => _mvCubeName(q, grid, base));
 }
 
 /** The grid this kind plots at. @param {string} kind */
@@ -678,46 +680,52 @@ async function _mvFetchCube(part, grid, seq, waitLabel) {
   return data;
 }
 
-/** Select pick i: generate its cube(s) if needed, then draw it. @param {number} i */
-async function mvVolShow(i) {
-  const n = _mvVolPicks.length;
-  if (!n || !_mvViewer) return;
-  _mvVolIndex = ((i % n) + n) % n;
-  const pick = _mvVolPicks[_mvVolIndex];
-  const grid = _mvGridFor(pick.kind);
-  _mvVolGrid = grid;                   // the selector shows this kind's grid
-  _fillGridSelect();
-  _mvEspControls(pick.kind === "esp");
-  renderMvVolList();
-  const active = document.querySelector('#mv-list .mv-row[data-i="' + _mvVolIndex + '"]');
-  if (active) active.scrollIntoView({ block: "nearest" });
-
-  const seq = ++_mvVolSeq;
-  _mvVolBusy = true;
-  _mvVolBusyOverlay(!_mvPickCached(pick), pick.label, pick.kind);
-  _mvVolCaption(pick.label + " — generating at " + grid + "³ …");
-
-  const $3Dmol = window["$3Dmol"] || window["3Dmol"];
-
+/** Fetch every cube a pick needs, generating what is not on disk. Returns the
+ *  fetched data ({dens, esp} for an ESP map, {data} otherwise), or null when
+ *  the request failed or was superseded — the caller has already been told in
+ *  the failure case.
+ *
+ *  Separate from the drawing below because the two happen in different places:
+ *  a pick clicked INSIDE the viewer fetches with the stage already open, while
+ *  the Results tab's Visual rows fetch first and open the stage only once there
+ *  is something to draw. Plotting behind an empty stage was the worse half of
+ *  that: the modal covered the whole window for the minutes an ESP map takes,
+ *  with nothing on it and nothing else reachable.
+ *  @param {MvPick} pick @param {number} grid @param {number} seq */
+async function _mvVolFetch(pick, grid, seq) {
   if (pick.kind === "esp") {
     // Two cubes, in order: the density that gives the surface, then the
     // potential that colours it. Sequential because the backend serializes
     // orca_plot anyway — one folder, one fixed output name per plot.
     const [densPart, espPart] = _mvEspParts();
     const dens = await _mvFetchCube(densPart, grid, seq, "ESP map — density surface");
-    if (!dens) return;
+    if (!dens) return null;
     _mvVolCaption("ESP map — computing the potential at " + grid + "³ …");
     const esp = await _mvFetchCube(espPart, grid, seq, "ESP map — potential");
-    if (!esp) return;
-    _mvVolBusy = false;
-    _mvVolBusyOverlay(false);
+    if (!esp) return null;
+    return { dens: dens, esp: esp };
+  }
+  const data = await _mvFetchCube(pick, grid, seq, pick.label);
+  return data ? { data: data } : null;
+}
+
+/** Draw fetched cube(s) onto the stage. The stage must be open — this is the
+ *  half of the old mvVolShow that touches the GLViewer.
+ *  @param {MvPick} pick @param {{dens?:CubeDataResult, esp?:CubeDataResult, data?:CubeDataResult}} got */
+function _mvVolDraw(pick, got) {
+  const $3Dmol = window["$3Dmol"] || window["3Dmol"];
+  if (!_mvViewer || !$3Dmol) return;
+  _mvVolBusy = false;
+  _mvVolBusyOverlay(false);
+
+  if (pick.kind === "esp") {
     _mvVolTitle = "ESP map";
     _mvVolSigned = false;              // the surface is a density: one surface
     _mvViewer.clear();
-    _mvViewer.addModel(dens.text, "cube");
+    _mvViewer.addModel(got.dens.text, "cube");
     _mvViewer.setStyle({}, { stick: { radius: 0.1 }, sphere: { scale: 0.18 } });
-    _mvVolData = new $3Dmol.VolumeData(dens.text, "cube");
-    _mvEspData = new $3Dmol.VolumeData(esp.text, "cube");
+    _mvVolData = new $3Dmol.VolumeData(got.dens.text, "cube");
+    _mvEspData = new $3Dmol.VolumeData(got.esp.text, "cube");
     // The density level here is the ESP convention (~0.002, the van-der-Waals-
     // like surface), NOT the enclosed-fraction fit: that fit exists because an
     // orbital's peak varies with how delocalized it is, while a total density's
@@ -729,11 +737,8 @@ async function mvVolShow(i) {
     return;
   }
 
+  const data = got.data;
   _mvEspData = null;
-  const data = await _mvFetchCube(pick, grid, seq, pick.label);
-  if (!data) return;
-  _mvVolBusy = false;
-  _mvVolBusyOverlay(false);
   _mvVolTitle = data.title || pick.label;
   _mvVolSigned = data.signed !== false;
 
@@ -748,6 +753,40 @@ async function mvVolShow(i) {
   _mvIso = _defaultIso(_mvVolData.data, data.isovalue || 0.05);
   _mvSyncIsoControls();
   mvRenderCube(true);
+}
+
+/** Point the volume stage's chrome at pick i — the grid selector, the ESP
+ *  controls, the list highlight. @param {number} i @returns {MvPick} */
+function _mvVolSelect(i) {
+  const n = _mvVolPicks.length;
+  _mvVolIndex = ((i % n) + n) % n;
+  const pick = _mvVolPicks[_mvVolIndex];
+  _mvVolGrid = _mvGridFor(pick.kind);   // the selector shows this kind's grid
+  _fillGridSelect();
+  _mvEspControls(pick.kind === "esp");
+  renderMvVolList();
+  const active = document.querySelector('#mv-list .mv-row[data-i="' + _mvVolIndex + '"]');
+  if (active) active.scrollIntoView({ block: "nearest" });
+  return pick;
+}
+
+/** Select pick i from INSIDE the open viewer: generate its cube(s) if needed,
+ *  then draw it. The busy overlay belongs to this path only — the stage is
+ *  already on screen, so something has to say why it has not changed yet.
+ *  @param {number} i */
+async function mvVolShow(i) {
+  if (!_mvVolPicks.length || !_mvViewer) return;
+  const pick = _mvVolSelect(i);
+  const grid = _mvVolGrid;
+
+  const seq = ++_mvVolSeq;
+  _mvVolBusy = true;
+  _mvVolBusyOverlay(!_mvPickCached(pick), pick.label, pick.kind);
+  _mvVolCaption(pick.label + " — generating at " + grid + "³ …");
+
+  const got = await _mvVolFetch(pick, grid, seq);
+  if (!got) return;
+  _mvVolDraw(pick, got);
 }
 
 /* The "is this status describing MY request?" check that used to live here is

@@ -18,6 +18,13 @@
 
 /** @type {WorkspaceResult[]} results on disk under the workspace root */
 let _wsResults = [];
+/** Paths opened from OUTSIDE the workspace scan, in the order they were opened.
+ *  The scan lists only .out/.mlip.json under the workspace root, so without
+ *  this a result opened from anywhere else — and every .xyz, which the scan
+ *  never lists — lost its option on the next entry to the tab, leaving the box
+ *  naming one result while the body showed another.
+ *  @type {string[]} */
+let _openedPaths = [];
 
 /** Re-scan the workspace for results and repaint the picker. Called on entry to
  *  the Results tab, not from the poll — it touches the disk. */
@@ -45,7 +52,9 @@ function refreshResultSelect() {
   Object.keys(calcResults).forEach(add);
   _wsResults.filter(w => w.queued).forEach(w => add(w.name));
   const onDisk = _wsResults.filter(w => !w.queued);
-  if (!names.length && !onDisk.length) { sel.innerHTML = `<option>—</option>`; return; }
+  if (!names.length && !onDisk.length && !_openedPaths.length) {
+    sel.innerHTML = `<option>—</option>`; return;
+  }
   const opt = (v, label) => `<option value="${escapeHtml(v)}">${escapeHtml(label)}</option>`;
   let html = "";
   if (names.length) {
@@ -57,6 +66,16 @@ function refreshResultSelect() {
             onDisk.map(w => opt("file:" + w.path,
                                 w.kind === "orca" ? w.name : `${w.name}  (${w.kind.toUpperCase()})`)).join("") +
             `</optgroup>`;
+  }
+  // A file opened from outside the scan keeps its own group, first — and only
+  // while the scan has not since found it under the workspace root.
+  const listed = new Set(names.map(n => "calc:" + n).concat(onDisk.map(w => "file:" + w.path)));
+  const opened = _openedPaths.filter(pth => !listed.has("file:" + pth));
+  if (opened.length) {
+    html = `<optgroup label="Opened file">` +
+           opened.map(pth => opt("file:" + pth,
+                                 pth.replace(/\\/g, "/").split("/").pop() || pth)).join("") +
+           `</optgroup>` + html;
   }
   sel.innerHTML = html;
   // etiquette: a re-render must not move the user's selection (DESIGN 15.11)
@@ -88,22 +107,18 @@ async function showSelectedResult() {
  *  select it. Without one the box went on naming the previously selected
  *  calculation while the body showed the dropped file — and because re-picking
  *  the same option fires no change event, there was no way back to it either.
+ *
+ *  It is remembered rather than inserted into the live `<select>`: the workspace
+ *  re-scan on every entry to the tab rebuilds that element, and the scan lists
+ *  only .out/.mlip.json under the workspace root — so an inserted option
+ *  survived until the next tab switch and no longer at all for a .xyz, which
+ *  the scan never lists.
  *  @param {string} path */
 function noteExternalResult(path) {
-  const sel = /** @type {HTMLSelectElement} */ (document.getElementById("result-select"));
-  if (!sel || !path) return;
-  const value = "file:" + path;
-  if (![...sel.options].some(o => o.value === value)) {
-    const name = path.replace(/\\/g, "/").split("/").pop() || path;
-    const group = document.createElement("optgroup");
-    group.label = "Opened file";
-    const o = document.createElement("option");
-    o.value = value;
-    o.textContent = name;
-    group.appendChild(o);
-    sel.insertBefore(group, sel.firstChild);
-  }
-  sel.value = value;
+  if (!path) return;
+  if (_openedPaths.indexOf(path) < 0) _openedPaths.push(path);
+  refreshResultSelect();          // rebuilds the groups, this file's included
+  _selectResultOption("file:" + path);
 }
 
 /** Point the picker at `value` when it lists it, so the box never names one
@@ -116,6 +131,10 @@ function _selectResultOption(value) {
 
 /** Open a result that is on disk but not in the queue. @param {string} path */
 async function showWorkspaceResult(path) {
+  // The picker can hold a .xyz (an "Opened file" entry), which has no output
+  // for the parser to read — re-picking it must take the structure route the
+  // open did, not fail as an unparseable result.
+  if (/\.xyz$/i.test(path)) return openStructureFile(path);
   let data;
   try { data = /** @type {ParsePayload} */ (JSON.parse(await bridge.parse_out_path(path))); }
   catch (e) { failNotify("Could not read that result."); return; }
@@ -134,6 +153,9 @@ function renderResult(d) {
   if (!d) return;
   if (d.summary) renderSummary(d.summary, d);
   renderResultSections(d);
+  // Visual reads the same result, so a new one has to re-discover what it can
+  // draw — otherwise the rows go on describing the previous calculation.
+  if (_resultsMode === "visual") renderVisual();
 }
 
 /** Toggle "Show all": reveal every parsed value regardless of calc-type gating. */
@@ -152,6 +174,10 @@ function toggleShowAll() {
  */
 function renderResultSections(d) {
   if (!d) return;
+  // Reset the orbital cache first: Visual reads it on its own now (its Orbitals
+  // row counts the levels), so a result without orbitals must not go on
+  // reporting the previous one's.
+  _lastOrbitals = [];
   // "Final geometry" → opt jobs; electronic-structure sections → sp/opt jobs.
   // "Show all" overrides both. Specialty sections (freq/tddft/nmr/neb) are
   // present-only — they only exist for their kind, so no extra gating needed.
@@ -161,10 +187,8 @@ function renderResultSections(d) {
   // ORCA" action. Present-only (only crest_conf results carry it).
   if (d.is_conformer_search && d.conformers && d.conformers.length) renderConformers(d.conformers);
   if (geom && d.geometry && d.geometry.length) renderGeometry(d.geometry);
-  // The ESP map sits with the geometry it is painted on, not with the orbital
-  // levels — it is a picture of the molecule's surface, not of a level. Gated
-  // like the other electronic-structure sections: it needs a wavefunction.
-  if (elec) renderEspMap();
+  // Everything that DRAWS this result — its structures, its orbitals, the ESP
+  // map — is in Visual mode, so Output stays what the parser read.
   if (elec && d.orbitals && d.orbitals.length) renderOrbitals(d.orbitals);
   if (elec && d.mulliken && d.mulliken.length) renderMulliken(d.mulliken);
   if (elec && d.loewdin && d.loewdin.length) renderLoewdin(d.loewdin);
@@ -177,6 +201,264 @@ function renderResultSections(d) {
   if (d.neb_path && d.neb_path.length) renderNebPath(d.neb_path, d.neb_path_kind || "neb");
   if (d.input_keywords || d.input_block) renderInputEcho(d.input_keywords, d.input_block);
 }
+/* ---------- Results › Visual ----------
+ * Output is what the parser read; Visual is what can be DRAWN from the same
+ * result. One selected result, two ways of reading it — so the picker and the
+ * file button are shared and only the mode changes underneath them.
+ *
+ * The rows are discovered, not asked for. Everything openable already sits in
+ * the result's own folder — the CREST ensemble, the per-conformer conformers/
+ * export, a trajectory, and the .gbw the orbitals and the ESP map are computed
+ * from — so the tab lists what is there. That is what replaced a "Browse .xyz…"
+ * folder picker, which asked the user to know where ORCAdesk had put things.
+ *
+ * Plotting happens on the ROW, not behind the modal. An ESP map is minutes; the
+ * old flow opened a full-window modal onto an empty stage for all of it, with
+ * nothing else reachable. Now the row's button says it is working, the rest of
+ * the tab stays usable, and the viewer opens onto a finished plot. */
+
+let _resultsMode = "output";                     // "output" | "visual"
+/** @type {StructureSetPayload[]} */ let _visSets = [];
+/** @type {PlotOptionsResult|null} */ let _visPlot = null;
+let _visBusy = "";        // key of the row currently plotting ("" = none)
+let _visBusyAt = 0;       // when it started, for the elapsed clock
+/** @type {any} */ let _visBusyTimer = null;
+let _visSeq = 0;          // discards a discovery that lands after a newer one
+
+/** Switch the Results tab between Output and Visual. @param {string} mode */
+function setResultsMode(mode) {
+  _resultsMode = mode === "visual" ? "visual" : "output";
+  const vis = _resultsMode === "visual";
+  document.getElementById("rmode-output").classList.toggle("active", !vis);
+  document.getElementById("rmode-visual").classList.toggle("active", vis);
+  /** @type {HTMLElement} */ (document.getElementById("result-body")).hidden = vis;
+  /** @type {HTMLElement} */ (document.getElementById("visual-body")).hidden = !vis;
+  // "Show all" gates the parsed sections and the free-energy profile is a chart
+  // over parsed numbers: both are Output's, and neither says anything in Visual.
+  const showall = document.getElementById("btn-showall");
+  if (showall) showall.style.display = vis ? "none" : "";
+  const fep = document.getElementById("card-fep");
+  if (fep) fep.style.display = vis ? "none" : "";
+  if (vis) renderVisual();
+}
+
+/** Discover what the selected result can be drawn as, then paint the rows.
+ *  Two backend reads (the folder's .xyz sets, and what its wavefunction
+ *  supports); both touch the disk, so this runs on entry to the mode and on a
+ *  result change, never from the poll. */
+async function renderVisual() {
+  const body = document.getElementById("visual-body");
+  if (!body) return;
+  // the same address the plot slots take: "calc:<name>" or "file:<path>"
+  const source = _mvPlotSource();
+  if (!source) {
+    body.innerHTML = `<div class="hint">No result selected — pick one above, or <b>Open file…</b>.</div>`;
+    return;
+  }
+  const seq = ++_visSeq;
+  body.innerHTML = `<div class="hint">Looking for what this result can show…</div>`;
+  _visSets = []; _visPlot = null;
+  try {
+    const r = /** @type {StructureSetsResult} */ (JSON.parse(await bridge.list_structure_sets(source)));
+    if (seq !== _visSeq) return;
+    if (r.ok) _visSets = r.sets || [];
+  } catch (e) { /* a folder we cannot read still leaves the plot rows */ }
+  try {
+    const o = /** @type {PlotOptionsResult} */ (JSON.parse(await bridge.get_plot_options(source)));
+    if (seq !== _visSeq) return;
+    if (o.ok) _visPlot = o;
+  } catch (e) { /* no wavefunction rows, then */ }
+  if (seq !== _visSeq) return;
+  renderVisualRows();
+}
+
+/** @typedef {{key:string, label:string, sub:string, call:string, ready:boolean, dot:boolean}} VisRow */
+
+/** The rows Visual offers for the current result, in the order they are useful:
+ *  the structure first (it is what the calculation produced), then the .xyz
+ *  sets found on disk, then the two things that must be computed from the .gbw.
+ *  @returns {VisRow[]} */
+function _visualRows() {
+  /** @type {VisRow[]} */ const rows = [];
+  const geom = _currentResult && _currentResult.geometry;
+  if (geom && geom.length)
+    rows.push({ key: "geom", label: "Structure",
+                sub: geom.length + " atoms — the geometry this result ends on",
+                call: "viewFinalGeometry()", ready: true, dot: false });
+  for (const st of _visSets) {
+    const what = st.kind === "folder"
+      ? st.count + " file" + (st.count === 1 ? "" : "s")
+      : (st.count ? st.count + " structure" + (st.count === 1 ? "" : "s") : "structure file");
+    rows.push({ key: st.key, label: st.label,
+                sub: what + " — " + st.path,
+                call: "openStructureSet(" + _jsArg(st.path) + ", " + _jsArg(st.label) + ")",
+                ready: true, dot: false });
+  }
+  if (_visPlot && _visPlot.has_gbw) {
+    const orbs = _visOrbitals().length;
+    rows.push({ key: "mo", label: "Orbitals & density",
+                sub: (orbs ? orbs + " levels — " : "") +
+                     "opens on the HOMO; step with ← / →. About a second each.",
+                call: "viewOrbitals3D(_visOrbitals())", ready: true, dot: false });
+    if ((_visPlot.kinds || []).indexOf("esp") >= 0) {
+      const grid = _visPlot.esp_grid || 40;
+      const cached = _visPlot.cached || [];
+      const ready = mvEspCubeNames(_visPlot.base || "", grid)
+        .every(n => cached.indexOf(n) >= 0);
+      rows.push({ key: "esp", label: "Electrostatic potential map",
+                  sub: ready
+                    ? "Already plotted at " + grid + "³ — opens straight away."
+                    : "The density surface coloured by the potential, at " + grid + "³. " +
+                      "A Coulomb sum at every grid point: minutes on a large molecule.",
+                  call: "viewEspMap()", ready: ready, dot: true });
+    }
+  }
+  return rows;
+}
+
+/** The orbital list to plot from: the one Output rendered when it did, else
+ *  the parsed payload's own. Visual is not gated by calc kind the way Output's
+ *  sections are, so a job whose levels Output hides is still plottable.
+ *  @returns {OrbitalPayload[]} */
+function _visOrbitals() {
+  return _lastOrbitals.length ? _lastOrbitals
+       : ((_currentResult && _currentResult.orbitals) || []);
+}
+
+/** Paint the rows. Separate from the discovery above so the busy clock can
+ *  repaint a button every second without touching the disk again. */
+function renderVisualRows() {
+  const body = document.getElementById("visual-body");
+  if (!body) return;
+  const rows = _visualRows();
+  if (!rows.length) {
+    body.innerHTML = `<div class="hint">Nothing to draw for this result — no structure was
+      parsed, no <code>.xyz</code> sits in its folder, and there is no <code>.gbw</code>
+      to compute orbitals from.</div>`;
+    return;
+  }
+  body.innerHTML = rows.map(r => {
+    const busy = _visBusy === r.key;
+    // A row that must run orca_plot says "Plot", not "View": the button names
+    // what the click costs, and then changes to the state it is in.
+    const face = busy ? "Plotting… " + _visElapsed()
+                      : (r.dot && !r.ready ? "Plot" : "View");
+    const dot = r.dot
+      ? `<span class="vis-dot ${r.ready ? "ready" : ""}" title="${r.ready ?
+           "Already on disk — opens instantly" : "Not plotted yet"}">${r.ready ? "●" : "○"}</span>`
+      : "";
+    return `<div class="vis-row">
+      ${dot}
+      <div class="vis-row-main">
+        <div class="vis-row-label">${escapeHtml(r.label)}</div>
+        <div class="vis-row-sub" title="${escapeHtml(r.sub)}">${escapeHtml(r.sub)}</div>
+      </div>
+      <button class="btn btn-sm ${busy ? "vis-busy" : ""}" ${_visBusy ? "disabled" : ""}
+              onclick="visOpen(${_jsArg(r.key)}, () => ${r.call})">${escapeHtml(face)}</button>
+    </div>`;
+  }).join("") + `<div class="hint" style="margin-top:8px">Everything here opens the same
+    viewer: ← / → steps, <b>F</b> stars a structure, Esc closes, drag rotates.</div>`;
+}
+
+/** A string as a JS single-quoted literal, safe inside an HTML attribute. A
+ *  label or a Windows path may hold a backslash or a quote, either of which
+ *  would end the literal (or the attribute) early — the same hazard the Log
+ *  tab's job strip avoids with data-job.
+ *  @param {string} v */
+function _jsArg(v) {
+  return "'" + String(v)
+    .replace(/\\/g, "\\\\").replace(/'/g, "\\'")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;") + "'";
+}
+
+/** Elapsed time on the running plot, m:ss. */
+function _visElapsed() {
+  const s = Math.max(0, Math.round((Date.now() - _visBusyAt) / 1000));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+/** Run one row's action with the row marked busy. The wait is the row's, not a
+ *  modal's: the button says it is working, every row is disabled while it runs
+ *  (the backend serializes orca_plot anyway), and the rest of the tab — Output
+ *  included — stays usable while a multi-minute ESP map computes.
+ *  @param {string} key @param {() => any} fn */
+async function visOpen(key, fn) {
+  if (_visBusy) return;
+  _visBusy = key; _visBusyAt = Date.now();
+  renderVisualRows();
+  _visBusyTimer = setInterval(() => { if (_visBusy) renderVisualRows(); }, 1000);
+  try { await fn(); }
+  catch (e) { failNotify("Could not open that."); }
+  finally {
+    clearInterval(_visBusyTimer); _visBusyTimer = null;
+    _visBusy = "";
+    // a plot that just ran is on disk now, so its dot flips — re-read the
+    // options rather than guessing which file appeared
+    renderVisual();
+  }
+}
+
+/** Open one discovered .xyz set: a folder of them, or one multi-frame file.
+ *  @param {string} path @param {string} label */
+async function openStructureSet(path, label) {
+  /** @type {FramesResult} */ let r;
+  try { r = JSON.parse(await bridge.get_structure_frames(path)); }
+  catch (e) { failNotify("Could not read that structure."); return; }
+  if (!r.ok) { failNotify(r.error || "Could not read that structure."); return; }
+  // Favorites and "Export ★" are keyed by SOURCE. A queued calculation's own
+  // CREST ensemble keeps its "calc:<name>" key, so stars set before this tab
+  // existed still resolve; every other set is keyed by the folder it came from.
+  const ensemble = /crest_(conformers|best)\.xyz$/i.test(path);
+  const title = _visTitle(label || r.title || "");
+  if (ensemble && _currentResultName)
+    await openMolViewer(title, r.frames, "calc", _currentResultName);
+  else
+    await openMolViewer(title, r.frames, "folder", r.folder || "");
+}
+
+/** The geometry the parsed result ends on, as a single viewer frame. No
+ *  backend call — the Results tab already holds it (P4). */
+async function viewFinalGeometry() {
+  const geom = _currentResult && _currentResult.geometry;
+  if (!geom || !geom.length) { failNotify("No geometry in this result."); return; }
+  const name = _currentResultName || _visBase();
+  const frames = [{ label: name || "structure", xyz: geomToXyz(geom, name), energy: null }];
+  const title = _visTitle("structure");
+  if (_currentResultName) await openMolViewer(title, frames, "calc", _currentResultName);
+  else await openMolViewer(title, frames, "folder", _folderOf(_currentResultPath));
+}
+
+/** The result's own stem, for viewer titles: the plot options' base when we
+ *  have it, else the calc name or the opened file's own name. */
+function _visBase() {
+  if (_visPlot && _visPlot.base) return _visPlot.base;
+  if (_currentResultName) return _currentResultName;
+  return _folderOf(_currentResultPath, true);
+}
+
+/** "<result> — <what>", or just <what> when there is no result name.
+ *  @param {string} what */
+function _visTitle(what) {
+  const b = _visBase();
+  return b ? b + " — " + what : what;
+}
+
+/** The folder a path sits in — or, with `leaf`, the file's own stem.
+ *  @param {string} path @param {boolean} [leaf] */
+function _folderOf(path, leaf) {
+  const parts = String(path || "").replace(/\\/g, "/").split("/");
+  const name = parts.pop() || "";
+  return leaf ? name.replace(/\.[^.]*$/, "") : parts.join("/");
+}
+
+/** A parsed geometry as .xyz text. One definition, shared by the Output table's
+ *  Copy button and the viewer frame above.
+ *  @param {GeomAtomPayload[]} geom @param {string} [comment] */
+function geomToXyz(geom, comment) {
+  return geom.length + "\n" + (comment || "") + "\n" +
+    geom.map(a => a.el + "  " + a.x.toFixed(6) + "  " + a.y.toFixed(6) + "  " + a.z.toFixed(6)).join("\n");
+}
+
 /** @param {[string, string, string][]} rows @param {ParsePayload} [d] */
 function renderSummary(rows, d) {
   const body = document.getElementById("result-body");
@@ -214,12 +496,11 @@ function renderConformers(confs) {
       <td>${c.energy_eh.toFixed(8)}</td>
       <td>${c.n_atoms}</td></tr>`;
   }
-  // Export / 3D view are only meaningful for a queued CREST calc (they need its
-  // workspace folder server-side); an externally opened .out has no
-  // _currentResultName.
+  // Export needs the queued calc's workspace folder server-side, so it is only
+  // offered for one; an externally opened .out has no _currentResultName.
+  // Viewing the ensemble is under Visual, which reaches it by either address.
   const actions = _currentResultName
     ? `<div class="btn-group">
-         <button class="btn btn-sm" onclick="viewConformers3D()">View in 3D</button>
          <button class="btn btn-sm btn-ghost" onclick="exportConformers()">Export as .xyz</button>
        </div>` : "";
   body.innerHTML += `
@@ -234,7 +515,7 @@ function renderConformers(confs) {
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <div class="hint" style="margin-top:6px">Follow-up calculations are built on the Build tab: reference this search from a geometry source — the referencing calculation runs on the lowest-energy conformer. <b>View in 3D</b> flips through every conformer with the ← / → keys; <b>Export as .xyz</b> writes each one (c1 = the best) to a <code>conformers/</code> subfolder of the run.</div>`;
+    <div class="hint" style="margin-top:6px">Follow-up calculations are built on the Build tab: reference this search from a geometry source — the referencing calculation runs on the lowest-energy conformer. <b>Visual</b> flips through every conformer with the ← / → keys; <b>Export as .xyz</b> writes each one (c1 = the best) to a <code>conformers/</code> subfolder of the run.</div>`;
 }
 
 /** Split the shown CREST search's ensemble into per-conformer .xyz files
@@ -257,7 +538,7 @@ function renderGeometry(geom) {
   geom.forEach((a, i) => {
     rows += `<tr><td>${i+1}</td><td>${escapeHtml(a.el)}</td><td>${a.x.toFixed(6)}</td><td>${a.y.toFixed(6)}</td><td>${a.z.toFixed(6)}</td></tr>`;
   });
-  _lastGeomXyz = `${geom.length}\n\n` + geom.map(a => `${a.el}  ${a.x.toFixed(6)}  ${a.y.toFixed(6)}  ${a.z.toFixed(6)}`).join("\n");
+  _lastGeomXyz = geomToXyz(geom);
   body.innerHTML += `
     <div class="divider"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
@@ -275,35 +556,6 @@ async function copyGeometryXyz() {
   if (!_lastGeomXyz) return;
   try { await navigator.clipboard.writeText(_lastGeomXyz); toast("Geometry copied as .xyz."); }
   catch (e) { failNotify("Copy failed — clipboard unavailable."); }
-}
-
-/** The ESP map's own section, directly under the geometry it is drawn on.
- *
- *  It is deliberately not a row in the orbital viewer's list: an ESP map is one
- *  figure rather than a set to click through, it answers a different question
- *  (where a molecule is attacked, not what a level looks like), and it is the
- *  one plot whose cost is minutes rather than a second. The card says that cost
- *  before the click rather than after it (D2, D43). */
-function renderEspMap() {
-  const body = document.getElementById("result-body");
-  // Plotting reads the .gbw beside the output, so a queued calc and a result
-  // opened from disk are both plottable — either address is enough.
-  if (!(_currentResultName || _currentResultPath)) return;
-  body.innerHTML += `
-    <div class="divider"></div>
-    <div class="card-title">Electrostatic potential map</div>
-    <div class="card-desc">The electron-density surface coloured by the electrostatic
-      potential — <span style="color:var(--esp-neg)">red</span> where it is negative
-      (electron-rich, where an electrophile approaches),
-      <span style="color:var(--esp-pos)">blue</span> where it is positive.</div>
-    <div class="btn-group">
-      <button class="btn btn-sm" onclick="viewEspMap()"
-              title="Plot the density surface and the potential over it">View ESP map in 3D</button>
-    </div>
-    <div class="hint">Computed from this job's wavefunction — nothing is re-run. The
-      potential is a Coulomb sum at every grid point, so unlike an orbital it takes
-      <b>minutes</b> on a large molecule; it plots at a coarser grid for that reason,
-      and the result is cached.</div>`;
 }
 
 /** The orbital list currently on the Results tab, handed to the 3D viewer so it
@@ -327,13 +579,6 @@ function renderOrbitals(orbs) {
     const spinCell = unrestricted ? `<td>${spinName[o.spin] || ""}</td>` : "";
     rows += `<tr><td>${o.idx}</td>${spinCell}<td>${o.occ.toFixed(3)}</td><td style="${color}">${o.ev.toFixed(4)}${tag}</td></tr>`;
   });
-  // Plotting reads the .gbw sitting beside the output, so it works for a queued
-  // calc AND for a result opened from disk — either address is enough.
-  const actions = (_currentResultName || _currentResultPath)
-    ? `<div class="btn-group">
-         <button class="btn btn-sm" onclick="viewOrbitals3D(_lastOrbitals)"
-                 title="Render orbitals and electron density in 3D">View in 3D</button>
-       </div>` : "";
   body.innerHTML += `
     <div class="divider"></div>
     <div class="card-title">Orbital energies (${orbs.length} levels)</div>
@@ -343,7 +588,7 @@ function renderOrbitals(orbs) {
         <tbody>${rows}</tbody>
       </table>
     </div>
-    ${actions}`;
+    <div class="hint" style="margin-top:6px">Drawing any of these is under <b>Visual</b>.</div>`;
 }
 
 /** @param {[string, number][]} mulliken */
@@ -451,11 +696,19 @@ function renderInputEcho(keywords, block) {
   body.innerHTML += html;
 }
 
+/** The Results tab's one file button. The backend picks the file and says how
+ *  it should be read — a parsed output goes to Output, a .xyz to the viewer —
+ *  because what the user chose is a RESULT, not a route (this replaced a second
+ *  "Browse .xyz…" button that asked them to decide first). */
 async function openOutFile() {
-  const raw = await bridge.parse_out_file();
+  /** @type {PickedResultPayload} */
+  let r; try { r = JSON.parse(await bridge.pick_result_file()); } catch { return; }
+  if (r.cancelled) return;   // user closed the picker — not an error
+  if (!r.ok || !r.path) { failNotify(r.error || "Could not open that file."); return; }
+  if (r.route === "structure") return openStructureFile(r.path);
+  const raw = await bridge.parse_out_path(r.path);
   /** @type {ParsePayload} */
   let data; try { data = JSON.parse(raw); } catch { return; }
-  if (data.cancelled) return; // user closed the picker — not an error
   // The backend's own reason, on both channels (D65 / B23): "Could not parse
   // file." on the log alone went unseen unless the Log tab happened to be open,
   // and it threw away the `{"error": "..."}` the bridge returns — which is the
@@ -467,14 +720,35 @@ async function openOutFile() {
   _currentResultName = "";   // an external file, not a queued calc → no conformer->ORCA action
   // …but keep its PATH: the .gbw sits beside it, so orbitals and density are
   // still plottable for a file from anywhere on disk
-  _currentResultPath = data.path || "";
+  _currentResultPath = data.path || r.path;
   _currentResult = data;
   noteExternalResult(_currentResultPath);
   renderResult(data);
+  setResultsMode("output");
   switchTab("results");
   // switchTab re-scans the workspace; point the picker at this file if it is one
   if (_currentResultPath) _selectResultOption("file:" + _currentResultPath);
 }
+
+/** Open a picked .xyz: it becomes the shown result, in Visual mode. There is
+ *  nothing for the parser to read in a structure file, so Output says so rather
+ *  than going on showing the PREVIOUS result's numbers under this file's name.
+ *  Its folder is what Visual lists, which is how a folder of structures is
+ *  reached now that the folder picker is gone. @param {string} path */
+async function openStructureFile(path) {
+  _currentResultName = "";
+  _currentResultPath = path;
+  _currentResult = null;
+  noteExternalResult(path);
+  document.getElementById("result-body").innerHTML =
+    `<div class="hint">A structure file — there is no calculation output to read here.
+     Its structures, and anything else in its folder, are under <b>Visual</b>.</div>`;
+  setResultsMode("visual");
+  switchTab("results");
+  _selectResultOption("file:" + path);
+  await openStructureSet(path, "");
+}
+
 /** @param {TransitionPayload[]} transitions */
 function renderSpectrum(transitions) {
   const body = document.getElementById("result-body");

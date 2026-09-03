@@ -216,6 +216,16 @@ may show a real time remaining; unknown-total work gets buckets; no honest
 model → no ETA at all. Infinite animations (pulse, shimmer) mean exactly
 one thing: *in progress right now*.
 
+**A wait is reported where it was started, and never takes the screen away
+to do it.** A control that begins work becomes the progress indicator — the
+Visual row's *Plot* button becomes `Plotting… 1:23` in place — so the rest of
+the surface stays reachable for however long it runs. Covering the window with
+a modal that has nothing on it yet is the failure case this rules out: the ESP
+map is minutes, and the modal used to open onto an empty stage for all of them.
+A view opens when it has something to show. The exception is a wait started
+*from inside* an already-open view (stepping to another orbital): there the
+view is the context, and the progress belongs on it.
+
 ---
 
 ## 5. Components
@@ -270,7 +280,8 @@ auto-fill never clobbers a deliberately typed value; re-clicking the active
 mode keeps form state; a failed save never overwrites the on-screen settings;
 combo focus doesn't pre-filter by the current value. The one sanctioned
 navigation: jumping to the *result of the user's own action* (add-to-queue →
-Queue tab; dropped `.out` → Results).
+Queue tab; dropped `.out` → Results; an opened `.xyz` → Results › Visual, which
+is the only mode that has anything to say about it).
 
 ### D61 — Destructive actions confirm, and offer the alternative
 
@@ -295,7 +306,11 @@ never back), form fields driven per calc-kind by
 (solvent model → solvent; InitHess=read → filename), Results gated per kind
 with **Show all** as the override. Hiding is filtering, never data removal —
 gating stays on the front-end so revealing everything is a re-render, not a
-re-fetch (PRINCIPLES P45). The chosen disclosure level is remembered.
+re-fetch (PRINCIPLES P45). The chosen disclosure level is remembered. The
+Results tab splits the same way, but by *question* rather than by depth —
+**Output** (what the parser read) and **Visual** (what can be drawn from it) —
+over one shared result: the picker and the file button sit above the toggle, so
+changing mode never changes what is being looked at.
 
 ### D63 — Escape hatches, labeled
 
@@ -608,6 +623,11 @@ Segmented toggle: `12px/600; padding 6px 12px; radius
 --radius-sm; border 1px --border; color --muted-foreground`; active:
 `background --accent; color --foreground`. Background is `--card` at page
 level, `--background` when nested inside a panel.
+
+Placed **on a card** rather than at page level (the Results tab's
+Output/Visual), the same toggle takes `.on-card`, which swaps the inactive
+chip's background to `--background`: `--card` on `--card` is a chip with only a
+border. A modifier, never an ancestor rule (D50).
 
 Sub-level segmented toggle (a secondary choice nested in the same row as its
 parent toggle — the Build tab's DFT Beginner/Expert): one step smaller,

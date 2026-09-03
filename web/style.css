@@ -559,6 +559,12 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
   border-radius: var(--radius-sm); cursor: pointer;
 }
 .log-mode-toggle button.active { background: var(--accent); color: var(--foreground); }
+/* The same toggle sitting ON a card rather than at page level: an inactive
+   chip is --card against --background, so on a card it has to be the page
+   tint instead or it would be the card's own colour with only a border.
+   A modifier, not an ancestor rule (D50). */
+.log-mode-toggle.on-card button { background: var(--background); }
+.log-mode-toggle.on-card button.active { background: var(--accent); }
 /* Raw-log job filter: one button per job, in the mode-toggle row. A step
    smaller than the Raw/Graph buttons so the mode choice stays the primary
    level (same relationship as the Build tab's .bsub). */
@@ -1134,3 +1140,28 @@ html[data-theme-variant="liquidglass"]:is([data-glass="vivid"],[data-glass="maxi
 }
 /* the screening verdict list: chips stack at the 4px in-row step */
 .struct-findings { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+
+/* ---- Results › Visual: what this result can be drawn as ----
+   A row per openable thing (a structure set, the orbital browser, the ESP map).
+   The row IS the action: everything here opens the same viewer, so a list of
+   rows with one button each reads as the menu it is, rather than as a set of
+   cards each restating its own title. */
+.vis-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; margin-bottom: 6px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--card);
+}
+.vis-row-main { flex: 1 1 auto; min-width: 0; }
+.vis-row-label { font-weight: 600; font-size: 13px; }
+.vis-row-sub {
+  color: var(--muted-foreground); font-size: 11.5px; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* the on-disk dot, same vocabulary as the viewer's pick list: a filled dot is
+   a cube already generated, so the row opens with no orca_plot run */
+.vis-dot { flex: 0 0 auto; width: 14px; text-align: center; color: var(--muted-foreground); }
+.vis-dot.ready { color: var(--ok); }
+/* Plotting happens HERE, not behind a modal that opened onto an empty stage:
+   the button says it is working and the rest of the tab stays usable. */
+.btn.vis-busy { color: var(--muted-foreground); font-family: var(--font-mono); }

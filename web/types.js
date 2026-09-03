@@ -423,11 +423,10 @@
  */
 
 /**
- * Parsed .out payload (parse_out_file / parse_out_path). On failure only
- * {error} is present; parse_out_file returns {cancelled: true} on a
- * cancelled file dialog, so every field is optional.
+ * Parsed .out payload (parse_out_path / parse_calc_output). On failure only
+ * {error} is present, so every field is optional.
  * @typedef {Object} ParsePayload
- * @property {boolean} [cancelled]   true only for a cancelled Open-file dialog
+ * @property {boolean} [cancelled]   legacy cancel branch (no producer today)
  * @property {string} [path]         set only on the path-addressed parses, so a
  *                                   result opened from disk stays plottable
  * @property {[string, string, string][]} [summary]   label/value/category rows
@@ -527,17 +526,49 @@
  */
 
 /**
- * get_conformer_frames(name) / browse_xyz_folder() result. Mirror of the
- * Python FramesResult. title/frames are present on the ok branch;
- * "folder" (the picked path — the export/favorites source) only from
- * browse_xyz_folder, which also has the {ok:false, cancelled:true}
- * picker-closed branch (not an error).
+ * get_structure_frames(path) result. Mirror of the Python FramesResult.
+ * title/frames are present on the ok branch; "folder" is the favorites/export
+ * destination — the folder itself, or a file's parent.
  * @typedef {Object} FramesResult
  * @property {boolean} ok
  * @property {string} [title]
  * @property {MolFrame[]} [frames]
  * @property {string} [folder]
+ * @property {string} [error]
+ */
+
+/**
+ * One openable .xyz set found beside a result (list_structure_sets). Mirror of
+ * the Python StructureSetPayload. "kind" is "folder" (a subfolder of .xyz
+ * files, e.g. the conformers/ export) or "file" (one possibly multi-frame
+ * .xyz); "count" is files for a folder and frames for a file, 0 when unknown.
+ * @typedef {Object} StructureSetPayload
+ * @property {string} key
+ * @property {string} label
+ * @property {string} kind
+ * @property {string} path
+ * @property {number} count
+ */
+
+/**
+ * list_structure_sets(source) result — what Results › Visual can open for a
+ * result without a file dialog. Mirror of the Python StructureSetsResult.
+ * @typedef {Object} StructureSetsResult
+ * @property {boolean} ok
+ * @property {StructureSetPayload[]} [sets]
+ * @property {string} [error]
+ */
+
+/**
+ * pick_result_file() result — the Results tab's one Open file… button. Mirror
+ * of the Python PickedResultPayload. "route" is "parse" (an .out/.mlip.json,
+ * read by the parser) or "structure" (a .xyz, opened in the 3D viewer);
+ * "cancelled" marks a closed picker, which is a choice rather than a failure.
+ * @typedef {Object} PickedResultPayload
+ * @property {boolean} ok
  * @property {boolean} [cancelled]
+ * @property {string} [path]
+ * @property {string} [route]
  * @property {string} [error]
  */
 

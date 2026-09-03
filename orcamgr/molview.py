@@ -94,8 +94,17 @@ def frames_from_file(path, label_prefix: str = "") -> list[dict]:
 def frames_from_folder(folder) -> list[dict]:
     """Frames for every ``*.xyz`` under ``folder``, in natural filename order.
     Each source file may itself be multi-frame; frame labels carry the file stem
-    so the viewer's list stays legible. Unreadable files are skipped."""
+    so the viewer's list stays legible. Unreadable files are skipped.
+
+    A folder holding no ``.xyz`` of its own but a ``conformers/`` subfolder is
+    read as that subfolder: pointing this at a finished CREST run means the
+    per-conformer export, and making the caller know that is the file-dialog
+    thinking this replaced."""
     folder = Path(folder)
+    if not any(folder.glob("*.xyz")):
+        nested = folder / "conformers"
+        if nested.is_dir() and any(nested.glob("*.xyz")):
+            folder = nested
     out: list[dict] = []
     for f in sorted(folder.glob("*.xyz"), key=lambda p: _natural_key(p.name)):
         try:
@@ -103,3 +112,122 @@ def frames_from_folder(folder) -> list[dict]:
         except OSError:
             continue
     return out
+
+
+# --- discovery: what a result folder holds that the 3D viewer can open -------
+#
+# The viewer used to be reached through a folder picker ("Browse .xyz…"), which
+# asked the user to know where ORCAdesk had put things. Everything worth opening
+# already sits in the result's own run folder — the CREST ensemble, the
+# per-conformer `conformers/` export, an optimization trajectory — so the tab
+# lists them instead of asking. The pick is a set, not a file dialog.
+
+# A .xyz big enough that counting its frames is not worth a read on tab entry.
+# Frame counts are a convenience in the row label, never a correctness matter.
+_COUNT_LIMIT_BYTES = 8_000_000
+
+# Folder names that are ORCAdesk's own exports, so their rows can say what they
+# are rather than repeat the directory name.
+_FOLDER_LABELS = {
+    "conformers": "Conformers (exported)",
+    "favorites": "Starred structures",
+}
+
+# Above this many .xyz in one folder, the unnamed ones collapse into a single
+# "browse the whole folder" set. A run folder holds a handful and each is worth
+# its own row; a conformers/ export holds hundreds, and listing those one per
+# row would be a list nobody reads built from hundreds of file reads.
+_MANY_XYZ = 12
+
+
+def count_xyz_frames(path) -> int:
+    """How many well-formed frames a ``.xyz`` holds. 0 when it is unreadable or
+    too large to be worth reading (the count is a label, not a correctness
+    matter — a set with an unknown count still opens)."""
+    path = Path(path)
+    try:
+        if path.stat().st_size > _COUNT_LIMIT_BYTES:
+            return 0
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return 0
+    return sum(1 for _ in iter_xyz_frames(text))
+
+
+def _file_label(name: str, base: str) -> str:
+    """What a ``.xyz`` in a run folder actually is, said in the row rather than
+    left to the file name. The three ORCA/CREST ones a user opens are worth
+    naming; anything else keeps its own name, which is the honest answer."""
+    low = name.lower()
+    if low == "crest_conformers.xyz":
+        return "Conformer ensemble"
+    if low == "crest_best.xyz":
+        return "Best conformer"
+    if base and low == f"{base.lower()}_trj.xyz":
+        return "Optimization trajectory"
+    return name
+
+
+def discover_structure_sets(folder, base: str = "") -> list[dict]:
+    """Every ``.xyz`` set the viewer can open in ``folder``, as
+    ``{key, label, kind, path, count}`` dicts.
+
+    Two kinds. A ``"folder"`` set is a **direct** subfolder holding ``.xyz``
+    files — ORCAdesk's own ``conformers/`` export is the one that matters, and
+    it sorts first because it is what someone opening a finished conformer
+    search is looking for. A ``"file"`` set is one ``.xyz`` in the folder
+    itself, which may be multi-frame (a CREST ensemble, an optimization
+    trajectory). ``count`` is files for a folder and frames for a file.
+
+    Only one level down: a run folder's subfolders are ORCAdesk's own exports,
+    and walking deeper would turn a tab switch into a disk crawl. For the same
+    reason a folder holding more than ``_MANY_XYZ`` unnamed ``.xyz`` offers one
+    whole-folder set instead of a row (and a file read) each — the files whose
+    name says what they are keep their own rows either way.
+    """
+    folder = Path(folder)
+    sets: list[dict] = []
+    try:
+        entries = sorted(folder.iterdir(), key=lambda p: _natural_key(p.name))
+    except OSError:
+        return sets
+
+    dirs, files = [], []
+    for p in entries:
+        try:
+            if p.is_dir():
+                dirs.append(p)
+            elif p.suffix.lower() == ".xyz":
+                files.append(p)
+        except OSError:
+            continue
+
+    for d in dirs:
+        try:
+            n = sum(1 for _ in d.glob("*.xyz"))
+        except OSError:
+            n = 0
+        if not n:
+            continue
+        sets.append({"key": "folder:" + str(d), "kind": "folder", "path": str(d),
+                     "label": _FOLDER_LABELS.get(d.name.lower(), d.name), "count": n})
+    # conformers/ first: on a finished CREST search it is the set being looked
+    # for, and on anything else it does not exist.
+    sets.sort(key=lambda s: 0 if s["label"].startswith("Conformers") else 1)
+
+    # A file whose name says what it is always gets its own row; the rest are
+    # collapsed once there are enough of them to make the list useless.
+    named = [f for f in files if _file_label(f.name, base) != f.name]
+    rest = [f for f in files if f not in named]
+    for f in named:
+        sets.append({"key": "file:" + str(f), "kind": "file", "path": str(f),
+                     "label": _file_label(f.name, base), "count": count_xyz_frames(f)})
+    if len(rest) > _MANY_XYZ:
+        sets.append({"key": "folder:" + str(folder), "kind": "folder",
+                     "path": str(folder), "label": f"All structures in {folder.name}",
+                     "count": len(files)})
+    else:
+        for f in rest:
+            sets.append({"key": "file:" + str(f), "kind": "file", "path": str(f),
+                         "label": f.name, "count": count_xyz_frames(f)})
+    return sets
