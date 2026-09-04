@@ -20,4 +20,17 @@ Layers, bottom up:
 
 * :mod:`~orcamgr.nbo.wavefunction` - read a converged wavefunction and recover
   the overlap, density and Fock matrices it implies.
+* :mod:`~orcamgr.nbo.nao` - build the natural atomic orbitals from those, and
+  the NPA charges they give.
+* :mod:`~orcamgr.nbo.population` - read chemistry off them: Wiberg bond orders,
+  natural valences, natural electron configurations.
+* :mod:`~orcamgr.nbo.source` - the way in: convert a finished run's ``.gbw``
+  with ``orca_2mkl``, so nothing above ever has to know where a wavefunction
+  comes from.
+* :mod:`~orcamgr.nbo.analysis` - the way out: one result object for the whole
+  analysis, cached beside the run and serializable for the bridge.
+
+The dependency direction is strictly upward, and nothing here imports Qt or
+touches the queue. A caller normally wants only
+:func:`~orcamgr.nbo.analysis.analysis_for`.
 """

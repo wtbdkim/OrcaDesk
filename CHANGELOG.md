@@ -170,9 +170,12 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
     electrons actually sit — `O [core] 2s( 1.75) 2p( 5.12)` — which is how you
     see a formally d⁷ cobalt(II) holding 7.7 d electrons because its ammine
     ligands are donating.
-  - **Analysis is retroactive.** The input is the `.gbw` every run already
-    writes, so this applies to calculations you finished months ago, with
-    nothing to re-run. Checked on real output up to 1644 basis functions.
+  - **Analysis is retroactive, and costs nothing the second time.** The input
+    is the `.gbw` every run already writes, so this applies to calculations you
+    finished months ago, with nothing to re-run. The answer is kept beside the
+    run — aspirin takes 2.7 s the first time and 4 ms after that — and is
+    discarded rather than reused if you re-run the calculation into the same
+    folder. Checked on real output up to 1644 basis functions.
   - Installing from source picks up a fourth package, and the packaged Windows
     build grows by roughly 15 MB. Nothing needs an integral library, so no
     compiled chemistry stack comes with it.

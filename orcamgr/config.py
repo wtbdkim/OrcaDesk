@@ -64,6 +64,22 @@ def _candidate_orca_paths() -> list[Path]:
     return unique
 
 
+def orca_tool(orca_path, name: str):
+    """One of ORCA's helper executables (``orca_plot``, ``orca_2mkl``, ...) beside
+    the configured ``orca``, or None when it is not there.
+
+    They ship in ORCA's own directory and are never on PATH separately, so the
+    user configures one location and every tool follows from it (P4). Lives here
+    rather than beside its first caller because there is now more than one:
+    ``core/plot.py`` wants orca_plot, ``nbo/source.py`` wants orca_2mkl.
+    """
+    p = Path(orca_path or "")
+    if not p.name:
+        return None
+    exe = p.with_name(f"{name}.exe" if p.suffix.lower() == ".exe" else name)
+    return exe if exe.exists() else None
+
+
 def autodetect_orca() -> str:
     cands = _candidate_orca_paths()
     return str(cands[0]) if cands else ""

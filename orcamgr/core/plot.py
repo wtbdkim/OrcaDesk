@@ -224,14 +224,9 @@ def _failure_sentence(out: str) -> str:
 
 
 def orca_plot_exe(orca_path: str | Path) -> Optional[Path]:
-    """``orca_plot`` next to the configured ``orca`` executable, or None. It ships
-    in the same directory as ORCA itself and is never on PATH separately, so the
-    user never configures a second path (P4: one ORCA location, one source)."""
-    p = Path(orca_path or "")
-    if not p.name:
-        return None
-    exe = p.with_name("orca_plot.exe" if p.suffix.lower() == ".exe" else "orca_plot")
-    return exe if exe.exists() else None
+    """``orca_plot`` next to the configured ``orca`` executable, or None."""
+    from ..config import orca_tool
+    return orca_tool(orca_path, "orca_plot")
 
 
 def _run_bounded(argv: list[str], stdin_text: str, cwd: Path,

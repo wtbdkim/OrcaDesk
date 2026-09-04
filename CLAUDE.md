@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 885 tests over the framework-free layers
+python -m pytest                       # 907 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -1348,6 +1348,31 @@ the same NPA charge (0.036 e) where Mulliken lurches (0.339 e). Conservation,
 occupancies ≤ 2, and >99% of the density in the minimal basis hold across the
 fixtures and across 12 real corpus wavefunctions up to 1644 basis functions
 (~10 s at that size; 0.08 s at 117).
+
+`source.py` is the way **in** and `analysis.py` the way **out**, so nothing in
+between has to know where a wavefunction comes from or who is asking.
+`wavefunction_for(orca_path, run_dir, base)` converts the run's `.gbw` with
+`orca_2mkl` (found by `config.orca_tool`, lifted out of `core/plot.py` now that
+two callers want a sibling executable) and caches the Molden file **beside the
+run** — where a user hunting for something to open in Avogadro also finds it
+(P5). Reuse is by mtime against the `.gbw`, because a re-run rewrites it and a
+stale Molden would describe the previous run.
+
+`analysis_for(orca_path, run_dir, base)` is the single call a bridge slot needs:
+it returns an `NboAnalysis` (charges, per-atom populations with configurations,
+bonds, the minimal-basis NAO list, diagnostics, `warnings`) and caches it as
+`<base>.nbo.json`. Measured on aspirin: 2.7 s cold, 0.004 s cached. Two things
+invalidate the cache and both matter — the `.gbw` mtime (a re-run must not be
+served the old wavefunction's numbers) and `CACHE_FORMAT` (an algorithm change
+must not mix two implementations' numbers across one queue). Reads never raise:
+a corrupt cache is a reason to recompute, not to fail (P6). The NAO coefficient
+matrix is deliberately **not** cached — `nbf²` floats, and nothing on screen
+needs it.
+
+`warnings` is the honest half: below 99% of the density in the minimal basis the
+molecule is not atoms-plus-corrections and the analysis says so rather than
+degrading quietly (P2). The floor sits below where this implementation normally
+lands so it flags a real problem, not every result.
 
 ### Paths: dev vs PyInstaller-frozen
 

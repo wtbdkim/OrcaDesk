@@ -58,6 +58,16 @@ is not specified to the last detail in the literature, so small differences from
 the NBO program are structural rather than bugs, and nothing here should be
 presented as NBO-compatible. What *is* checked is the property the method exists
 for: that the answer barely moves when the basis set changes.
+
+One consequence is visible in :attr:`NaturalAtomicOrbitals.minimal_fraction`,
+which lands at 99.3-99.7% where NBO reports above 99.9%. That gap is *not* a
+convergence problem: iterating the whole orthogonalization -- two and three
+passes, with the weights refreshed from the current occupancies each time --
+moves the minimal fraction and every charge by less than 1e-5, because after one
+pass the metric is already the identity and a weighted orthogonalization of an
+orthonormal set is the identity. Recorded so the next person does not spend the
+afternoon rediscovering it: closing the gap needs a different weighting rule,
+not more of this one.
 """
 
 from __future__ import annotations
