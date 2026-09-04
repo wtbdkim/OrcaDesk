@@ -223,6 +223,8 @@
  * @property {"conservative"|"eager"} eta_mode
  * @property {"all5"|"maxgrad"} geo_graph_mode
  * @property {"beginner"|"expert"|"mlip"|"crest"} build_mode
+ * @property {"in_app"|"system"} viewer_target  where a Visual row opens:
+ *   ORCAdesk's own 3D viewer, or the program the OS associates with the file
  * @property {string} crest_distro     preferred WSL distro for CREST ("" = auto-detect)
  * @property {boolean} orca_valid
  * @property {string} save_error  why the settings on screen are not on disk ("" = they are)
@@ -675,6 +677,7 @@
  * @typedef {Object} PlotOptionsResult
  * @property {boolean} ok
  * @property {string} [base]         filename stem the cubes are named from
+ * @property {string} [folder]       the run folder these files live in
  * @property {boolean} [has_gbw]
  * @property {boolean} [open_shell]
  * @property {string[]} [kinds]
@@ -701,6 +704,16 @@
  * @property {number} [grid]
  * @property {boolean} [cached]
  * @property {number} [seconds]
+ * @property {string} [path]         the finished cube file ("" until done)
+ */
+
+/**
+ * save_structure_xyz(source, xyz) result. Mirror of the Python SavedFileResult:
+ * the path comes back because the next move is to hand it to another program.
+ * @typedef {Object} SavedFileResult
+ * @property {boolean} ok
+ * @property {string} [path]
+ * @property {string} [error]
  */
 
 /**

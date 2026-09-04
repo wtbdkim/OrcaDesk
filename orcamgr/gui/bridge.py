@@ -54,7 +54,7 @@ from ..state.schemas import (
     FepResult, GeomAtomPayload, GetCalcResult, GraphLinesResult, LoadResult,
     LogTailResult,
     MlipStatusPayload, MlipInstallPayload, MlipInstallOptionsPayload,
-    MutationResult, NmrPayload, OkResult, OrbitalPayload,
+    MutationResult, NmrPayload, OkResult, OrbitalPayload, SavedFileResult,
     ParsePayload, QrResult, ServerStatusPayload, SettingsPayload,
     StartServerResult, TextResult, TransitionPayload,
     CrestStatusPayload, ConformerPayload,
@@ -229,7 +229,7 @@ class Bridge(QObject):
         self._cube_lock = threading.Lock()
         self._cube: dict = {"state": "idle", "label": "", "error": "", "kind": "",
                             "index": 0, "operator": 0, "grid": 0,
-                            "cached": False, "seconds": 0.0}
+                            "cached": False, "seconds": 0.0, "path": ""}
         self._cube_path = ""              # finished cube, for get_cube_data()
         # Live CREST status (WSL distro probe). Like MLIP the probe is slow (it
         # spawns wsl.exe + runs `crest --version`), so it runs in a background
@@ -271,6 +271,7 @@ class Bridge(QObject):
             eta_mode=self.settings.eta_mode,
             geo_graph_mode=self.settings.geo_graph_mode,
             build_mode=self.settings.build_mode,
+            viewer_target=self.settings.viewer_target,
             crest_distro=self.settings.crest_distro,
             orca_valid=self.settings.orca_is_valid(),
             save_error=save_error,
@@ -327,6 +328,9 @@ class Bridge(QObject):
             # build-tab mode: only accept known values
             if "build_mode" in data and data["build_mode"] in ("beginner", "expert", "mlip", "crest"):
                 self.settings.build_mode = data["build_mode"]
+            # where a Visual row opens: ORCAdesk's viewer or the OS association
+            if "viewer_target" in data and data["viewer_target"] in ("in_app", "system"):
+                self.settings.viewer_target = data["viewer_target"]
             # theme variant: shadcn (flat default) or liquidglass
             if "theme_variant" in data and data["theme_variant"] in ("shadcn", "liquidglass"):
                 self.settings.theme_variant = data["theme_variant"]
@@ -1555,7 +1559,8 @@ class Bridge(QObject):
         except OSError as e:
             return json.dumps(PlotOptionsResult(ok=False, error=str(e)))
         return json.dumps(PlotOptionsResult(
-            ok=True, base=base, has_gbw=has_gbw, open_shell=open_shell,
+            ok=True, base=base, folder=str(run_dir), has_gbw=has_gbw,
+            open_shell=open_shell,
             kinds=["mo", "eldens", "esp"] + (["spindens"] if open_shell else []),
             grids=list(GRID_CHOICES), default_grid=DEFAULT_GRID, cached=cached,
             esp_grid=default_grid_for("esp"),
@@ -1597,7 +1602,7 @@ class Bridge(QObject):
             self._cube = {"state": "running", "label": label, "error": "",
                           "kind": req.kind, "index": req.index,
                           "operator": req.operator, "grid": req.grid,
-                          "cached": False, "seconds": 0.0}
+                          "cached": False, "seconds": 0.0, "path": ""}
             self._cube_path = ""
 
         orca_path = self.settings.orca_path
@@ -1614,6 +1619,7 @@ class Bridge(QObject):
             with self._cube_lock:
                 self._cube_path = res.get("path", "") if res.get("ok") else ""
                 self._cube.update({
+                    "path": self._cube_path,
                     "state": "done" if res.get("ok") else "error",
                     "error": "" if res.get("ok") else str(res.get("error") or ""),
                     "cached": bool(res.get("cached")),
@@ -1647,6 +1653,61 @@ class Bridge(QObject):
             ok=True, text=d["text"], title=d["title"], npoints=d["npoints"],
             dims=d["dims"], bytes=d["bytes"], isovalue=d["isovalue"],
             signed=d["signed"]))
+
+    # --- hand a generated file to the user's own programs (P5) ---
+    @pyqtSlot(str, result=str)
+    def open_path_external(self, path: str) -> str:
+        """Open one generated file with whatever the OS associates with its type.
+
+        The Visual tab's alternative destination: ORCAdesk still runs orca_plot
+        and writes the file, then hands it over instead of drawing it. Refuses
+        anything that is not a data format — see :mod:`orcamgr.openwith`, where
+        that allowlist is the trust boundary."""
+        from ..openwith import open_with_default
+        res = open_with_default(path)
+        if not res.get("ok"):
+            self.store.append_log(
+                f"Could not open {Path(path).name}: {res.get('error', '')}", "err")
+        return json.dumps(OkResult(ok=bool(res.get("ok")),
+                                   error=str(res.get("error") or "")))
+
+    @pyqtSlot(str, result=str)
+    def show_path_in_folder(self, path: str) -> str:
+        """Reveal a file (or folder) in the file manager, selected.
+
+        Answers "where did that actually get written?" without making the user
+        reconstruct a workspace path by hand."""
+        from ..openwith import show_in_folder
+        res = show_in_folder(path)
+        if not res.get("ok"):
+            self.store.append_log(
+                f"Could not show {Path(path).name}: {res.get('error', '')}", "err")
+        return json.dumps(OkResult(ok=bool(res.get("ok")),
+                                   error=str(res.get("error") or "")))
+
+    @pyqtSlot(str, str, result=str)
+    def save_structure_xyz(self, source: str, xyz: str) -> str:
+        """Write a parsed geometry into the run folder as ``<base>_structure.xyz``.
+
+        The Structure row is the one Visual row backed by no file at all — the
+        geometry lives in the parse payload. Sending it to another program means
+        it has to become one, and ``.xyz`` is the format every viewer reads. The
+        text comes from the front-end's own ``geomToXyz`` so there is one
+        definition of it (P4), not a second formatter here."""
+        run_dir, base, _open_shell, err = self._plot_source(source)
+        if err:
+            return json.dumps(SavedFileResult(ok=False, error=err))
+        if not (xyz or "").strip():
+            return json.dumps(SavedFileResult(
+                ok=False, error="This result has no geometry to write."))
+        out = run_dir / f"{base}_structure.xyz"
+        try:
+            out.write_text(xyz if xyz.endswith("\n") else xyz + "\n",
+                           encoding="utf-8")
+        except OSError as e:
+            return json.dumps(SavedFileResult(
+                ok=False, error=f"Could not write {out.name}: {e}"))
+        return json.dumps(SavedFileResult(ok=True, path=str(out)))
 
     # --- run / cancel ---
     @pyqtSlot(result=str)

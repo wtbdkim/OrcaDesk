@@ -272,7 +272,10 @@ async function renderVisual() {
   renderVisualRows();
 }
 
-/** @typedef {{key:string, label:string, sub:string, call:string, ready:boolean, dot:boolean}} VisRow */
+/** @typedef {{key:string, label:string, sub:string, call:string, ready:boolean,
+ *             dot:boolean, path?:string}} VisRow
+ *  `path` is the file this row already IS on disk, when there is one — what the
+ *  external route hands over without generating anything. */
 
 /** The rows Visual offers for the current result, in the order they are useful:
  *  the structure first (it is what the calculation produced), then the .xyz
@@ -292,7 +295,7 @@ function _visualRows() {
     rows.push({ key: st.key, label: st.label,
                 sub: what + " — " + st.path,
                 call: "openStructureSet(" + _jsArg(st.path) + ", " + _jsArg(st.label) + ")",
-                ready: true, dot: false });
+                ready: true, dot: false, path: st.path });
   }
   if (_visPlot && _visPlot.has_gbw) {
     const orbs = _visOrbitals().length;
@@ -337,12 +340,17 @@ function renderVisualRows() {
       to compute orbitals from.</div>`;
     return;
   }
+  const external = viewerTarget() === "system";
   body.innerHTML = rows.map(r => {
     const busy = _visBusy === r.key;
     // A row that must run orca_plot says "Plot", not "View": the button names
-    // what the click costs, and then changes to the state it is in.
+    // what the click costs, and then changes to the state it is in. Sending the
+    // file elsewhere renames the destination, never the cost — a cube still has
+    // to be computed before any program can be handed it.
+    const done = external ? (r.key === "esp" ? "Show" : "Open") : "View";
     const face = busy ? "Plotting… " + _visElapsed()
-                      : (r.dot && !r.ready ? "Plot" : "View");
+                      : (r.dot && !r.ready ? "Plot" : done);
+    const action = external ? `visOpenExternal(visRow(${_jsArg(r.key)}))` : r.call;
     const dot = r.dot
       ? `<span class="vis-dot ${r.ready ? "ready" : ""}" title="${r.ready ?
            "Already on disk — opens instantly" : "Not plotted yet"}">${r.ready ? "●" : "○"}</span>`
@@ -354,10 +362,24 @@ function renderVisualRows() {
         <div class="vis-row-sub" title="${escapeHtml(r.sub)}">${escapeHtml(r.sub)}</div>
       </div>
       <button class="btn btn-sm ${busy ? "vis-busy" : ""}" ${_visBusy ? "disabled" : ""}
-              onclick="visOpen(${_jsArg(r.key)}, () => ${r.call})">${escapeHtml(face)}</button>
+              onclick="visOpen(${_jsArg(r.key)}, () => ${action})">${escapeHtml(face)}</button>
     </div>`;
-  }).join("") + `<div class="hint" style="margin-top:8px">Everything here opens the same
-    viewer: ← / → steps, <b>F</b> stars a structure, Esc closes, drag rotates.</div>`;
+  }).join("") + (external
+    ? `<div class="hint" style="margin-top:8px">These open in whichever program this PC
+       uses for the file — ORCAdesk still computes everything first. An ESP map is two
+       cubes, so that one is shown in its folder rather than opened.
+       <a href="#" onclick="switchTab('settings');return false">Change this</a> to use ORCAdesk's
+       own viewer.</div>`
+    : `<div class="hint" style="margin-top:8px">Everything here opens the same
+       viewer: ← / → steps, <b>F</b> stars a structure, Esc closes, drag rotates.</div>`);
+}
+
+/** One Visual row by key, rebuilt from the current result — how the rendered
+ *  button reaches its row without an object riding through an HTML attribute
+ *  (a calc name may hold a quote; the Log tab's job strip avoids the same trap
+ *  with data-job). @param {string} key @returns {VisRow|null} */
+function visRow(key) {
+  return _visualRows().find(r => r.key === key) || null;
 }
 
 /** A string as a JS single-quoted literal, safe inside an HTML attribute. A
@@ -395,6 +417,88 @@ async function visOpen(key, fn) {
     // a plot that just ran is on disk now, so its dot flips — re-read the
     // options rather than guessing which file appeared
     renderVisual();
+  }
+}
+
+/** Where a Visual row's button takes the user: ORCAdesk's own viewer, or the
+ *  program this PC associates with the file (Settings → Opening structures and
+ *  maps). Read live rather than cached, so changing it takes effect on the next
+ *  click without re-rendering the tab. @returns {"in_app"|"system"} */
+function viewerTarget() {
+  return (typeof settings === "object" && settings
+          && settings.viewer_target === "system") ? "system" : "in_app";
+}
+
+/** Hand one path to the user's own programs. `reveal` shows it in the file
+ *  manager instead of opening it — which is what a set of files (an ESP map's
+ *  two cubes, a folder of conformers) needs.
+ *  @param {string} path @param {boolean} [reveal] */
+async function openExternally(path, reveal) {
+  if (!path) return;
+  /** @type {OkResult} */ let r;
+  const call = reveal ? bridge.show_path_in_folder(path) : bridge.open_path_external(path);
+  try { r = /** @type {OkResult} */ (JSON.parse(await call)); }
+  catch (e) { failNotify("Could not reach the desktop to open that."); return; }
+  // The refusal sentence is the useful part -- "no program is registered for
+  // .cube files" tells the user exactly what to do, which a generic toast does not.
+  if (!r.ok) failNotify(r.error || "Could not open that file.");
+}
+
+/** The run folder of the result on screen — where ORCA actually wrote it.
+ *  `_visPlot` has it once the Visual tab has rendered; otherwise ask, so the
+ *  button works from the Output tab too. The front-end never assembles a
+ *  workspace path itself (P4). @returns {Promise<string>} */
+async function resultFolder() {
+  if (_visPlot && _visPlot.folder) return _visPlot.folder;
+  const source = _mvPlotSource();
+  if (!source) return "";
+  try {
+    const o = /** @type {PlotOptionsResult} */ (JSON.parse(await bridge.get_plot_options(source)));
+    if (o.ok && o.folder) return o.folder;
+  } catch (e) { /* fall through to the path we may already hold */ }
+  return _currentResultPath ? _folderOf(_currentResultPath) : "";
+}
+
+/** Results header: reveal this result's folder in the file manager. Answers
+ *  "where did that actually get written?", which a workspace full of run
+ *  folders otherwise makes a hunt. */
+async function showResultFolder() {
+  const folder = await resultFolder();
+  if (!folder) { failNotify("No result selected."); return; }
+  await openExternally(folder, true);
+}
+
+/** The external counterpart of a Visual row's in-app action: produce the file
+ *  the row stands for — generating it if it is not on disk yet — and hand it
+ *  over. Returns nothing; failures have already been reported.
+ *  @param {VisRow} row */
+async function visOpenExternal(row) {
+  if (!row) return;                       // the result changed under the click
+  if (row.path) { await openExternally(row.path); return; }
+  if (row.key === "geom") {
+    // The one row backed by no file: the geometry lives in the parse payload,
+    // so it has to become an .xyz before any other program can read it.
+    const geom = (_currentResult && _currentResult.geometry) || [];
+    const source = _mvPlotSource();
+    if (!geom.length || !source) { failNotify("This result has no geometry."); return; }
+    /** @type {SavedFileResult} */ let r;
+    try {
+      r = /** @type {SavedFileResult} */ (JSON.parse(
+        await bridge.save_structure_xyz(source, geomToXyz(geom, _visBase()))));
+    } catch (e) { failNotify("Could not write the structure file."); return; }
+    if (!r.ok || !r.path) { failNotify(r.error || "Could not write the structure file."); return; }
+    await openExternally(r.path);
+    renderVisual();            // the new .xyz is a discoverable set now
+    return;
+  }
+  if (row.key === "mo") {
+    await openExternally(await orbitalCubeForExternal(_visOrbitals()));
+    return;
+  }
+  if (row.key === "esp") {
+    // Revealed, not opened: an ESP map is two cubes -- see espCubesForExternal.
+    await openExternally(await espCubesForExternal(), true);
+    return;
   }
 }
 

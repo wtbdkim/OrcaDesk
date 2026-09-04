@@ -72,6 +72,25 @@ molecules is what a molecular editor is for — Avogadro2 and its peers do it
 properly, and a second-rate editor next to a good one helps nobody. Load the
 `.xyz` your editor wrote and ORCAdesk will tell you what is in it.
 
+- **Open structures and maps in your own program, or find them on disk.** The
+  Visual tab has always drawn things in ORCAdesk. Now Settings → *Opening
+  structures and maps* lets you send them to whatever this PC already opens the
+  file with — Avogadro, VMD, ChimeraX, Jmol — and the Results header gains
+  **Show in folder**, which reveals the folder ORCA actually wrote the run to.
+  - **Nothing to set up.** It follows the file associations you already have;
+    there is no viewer path to configure. ORCAdesk does not name a file and
+    leave you to find it — it opens it.
+  - **Choosing your own program never means getting less.** ORCAdesk runs
+    orca_plot, computes the same cube at the same grid, opens on the same
+    orbital (the HOMO). Only the last step differs. The button says *Plot* when
+    there is still work to do and *Open* when there is not, exactly as before.
+  - **An ESP map is shown, not opened** — it is two cubes, a density surface
+    coloured by a potential, and no single-file open reconstructs that. Both are
+    revealed in their folder, potential selected, so your viewer can combine
+    them its own way.
+  - The built-in viewer stays the default, and stays the path that needs no
+    second program at all.
+
 ### Changed
 - **A backend you have never set up no longer takes up room.** MLIP and CREST
   appear on the Build tab's backend toggle — and in the top bar — only once you

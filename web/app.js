@@ -614,6 +614,10 @@ async function loadSettings() {
   const gmode = settings.geo_graph_mode || "all5";
   const grad = document.querySelector(`input[name="geo-mode"][value="${gmode}"]`);
   if (grad) grad.checked = true;
+  // where a Visual row opens: ORCAdesk's viewer or the OS association
+  const vtarget = settings.viewer_target || "in_app";
+  const vrad = document.querySelector(`input[name="viewer-target"][value="${vtarget}"]`);
+  if (vrad) vrad.checked = true;
   updateOrcaStatus(settings.orca_valid);
   // MLIP environments are managed in their own channel (a background probe per
   // env); render from get_mlip_status() and poll while any is still checking.
@@ -1130,6 +1134,7 @@ async function onCrestDistroChange() {
 async function saveSettings() {
   const etaEl = document.querySelector('input[name="eta-mode"]:checked');
   const geoEl = document.querySelector('input[name="geo-mode"]:checked');
+  const viewEl = document.querySelector('input[name="viewer-target"]:checked');
   const payload = {
     orca_path: document.getElementById("set-orca").value.trim(),
     workspace_root: document.getElementById("set-ws").value.trim(),
@@ -1142,6 +1147,7 @@ async function saveSettings() {
     max_total_ram_mb: parseInt(document.getElementById("set-ram").value, 10) || 0,
     eta_mode: etaEl ? etaEl.value : "conservative",
     geo_graph_mode: geoEl ? geoEl.value : "all5",
+    viewer_target: viewEl ? viewEl.value : "in_app",
   };
   const res = /** @type {SaveSettingsResult} */ (JSON.parse(await bridge.save_settings(JSON.stringify(payload))));
   // bad input comes back as {error} — don't clobber the settings mirror with it

@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 797 tests over the framework-free layers
+python -m pytest                       # 834 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -1186,6 +1186,50 @@ WSL is deliberately NOT in this: `crest/wsl.py` sets `WSL_UTF8=1`, so its output
 really is UTF-8. Picked/dropped `.inp` and `.xyz` files are read `utf-8-sig`,
 because Notepad/VS Code/PowerShell write a BOM freely and ORCA refuses an input
 that starts with one.
+
+### Handing a file to the user's own programs
+
+`orcamgr/openwith.py` is a Qt-free two-verb module: `open_with_default(path)`
+(the OS file association) and `show_in_folder(path)` (reveal it, selected).
+Bridge slots `open_path_external` / `show_path_in_folder` are thin wrappers;
+both return `OkResult` and log the refusal, because a missing association is a
+normal thing for a user to have (P6).
+
+P5 governs the shape: an external program is **launched, never merely named** —
+telling the user which file to open is the command line by another route. So
+the setting is `Settings.viewer_target` (`"in_app"` default | `"system"`), which
+changes **where a Visual row's click ends**, never what ORCAdesk does first:
+orca_plot still runs, the same cube at the same grid, opening on the same
+orbital. Choosing an external viewer must never mean getting less.
+
+**`OPENABLE_SUFFIXES` is a trust boundary, not tidiness.** These paths arrive
+from the front-end, and `os.startfile` on a path is double-clicking it — handed
+an `.exe` it would *run* it. Opening is therefore default-deny against a list of
+data formats, so no list of dangerous extensions has to be kept correct.
+Revealing has no such hazard (the file manager selects, it does not execute) and
+accepts any existing path, falling back to the parent when the file is gone.
+
+Front-end (`web/results_render.js`): `viewerTarget()` reads the setting live,
+`visOpenExternal(row)` is the external counterpart of a row's in-app action, and
+`visRow(key)` re-derives a row from its key — the row cannot ride through an
+HTML attribute, since a calc name may hold a quote (the same trap `data-job`
+avoids in the Log tab). Rows carry `path` when they already *are* a file on
+disk; the rest produce one:
+- **Structure** — the one row backed by no file (the geometry lives in the parse
+  payload), so `bridge.save_structure_xyz` writes `<base>_structure.xyz` from the
+  front-end's own `geomToXyz` (one definition, P4).
+- **Orbitals** — `orbitalCubeForExternal` runs the same generation and returns the
+  cube *path* via `_mvCubePath`. `_mvFetchCube` was split into `_mvRunCube`
+  (generate + poll, returns the job) and the data read, so the external route
+  never pulls a 60³ cube's megabytes across the bridge for nothing.
+- **ESP map** — `espCubesForExternal` generates both cubes and the caller
+  *reveals* the potential one. An ESP map **is** two cubes (a density surface
+  coloured by a potential); opening one and calling it the map would be a quiet
+  lie, so the pair is shown instead.
+
+`PlotOptionsResult.folder` and `CubeJobPayload.path` exist for this: the
+front-end holds a calc *name*, not a path, and must never assemble a workspace
+path itself (P4).
 
 ### NBO analysis (ORCAdesk's own, in process)
 

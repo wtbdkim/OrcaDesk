@@ -508,6 +508,48 @@ async function viewEspMap() {
   _mvVolDraw(_mvVolPicks[0], got);
 }
 
+/** Generate the orbital cube ORCAdesk would have drawn, and give back its path
+ *  so it can be handed to the user's own program instead (P5; Settings →
+ *  *Opening structures and maps*). The work and the default pick are identical
+ *  to `viewOrbitals3D` — orca_plot still runs, the HOMO is still what opens —
+ *  and only the last step differs, so choosing an external viewer never means
+ *  getting less.
+ *  @param {OrbitalPayload[]} orbs @returns {Promise<string>} path, "" on failure */
+async function orbitalCubeForExternal(orbs) {
+  const opts = await _mvVolSetup("3D orbitals");
+  if (!opts) return "";
+  const picks = _mvBuildPicks(orbs || [], opts.kinds || ["mo"]);
+  if (!picks.length) { failNotify("Nothing to plot for this calculation."); return ""; }
+  const homo = picks.findIndex(p => p.sub.indexOf("HOMO ") === 0);
+  const pick = picks[homo >= 0 ? homo : 0];
+  return await _mvCubePath(pick, _mvGridFor(pick.kind), ++_mvVolSeq, pick.label);
+}
+
+/** Generate the ESP map's two cubes and give back the potential one.
+ *
+ *  The caller *reveals* this rather than opening it, which is deliberate: an ESP
+ *  map **is** two cubes — a density surface coloured by a potential — and no
+ *  single-file open reconstructs that. Opening one of them and calling it the
+ *  map would be a quiet lie. Showing the pair in their folder, potential
+ *  selected, hands over what the map actually is and lets the viewer combine
+ *  them the way that viewer does it.
+ *  @returns {Promise<string>} the potential cube's path, "" on failure */
+async function espCubesForExternal() {
+  const opts = await _mvVolSetup("an ESP map");
+  if (!opts) return "";
+  if ((opts.kinds || []).indexOf("esp") < 0) {
+    failNotify("This wavefunction has no SCF density to compute a potential from.");
+    return "";
+  }
+  const grid = _mvGridFor("esp");
+  const seq = ++_mvVolSeq;
+  const [densPart, espPart] = _mvEspParts();
+  const dens = await _mvCubePath(densPart, grid, seq, "ESP map — density surface");
+  if (!dens) return "";
+  const esp = await _mvCubePath(espPart, grid, seq, "ESP map — potential");
+  return esp || "";
+}
+
 /** Show or put away the left-hand pick list. @param {boolean} on */
 function _mvListVisible(on) {
   const list = document.getElementById("mv-list");
@@ -643,7 +685,7 @@ function _fillGridSelect() {
  *  @param {MvPick} part what to plot @param {number} grid
  *  @param {number} seq the caller's _mvVolSeq stamp
  *  @param {string} waitLabel what the caption calls this while it runs */
-async function _mvFetchCube(part, grid, seq, waitLabel) {
+async function _mvRunCube(part, grid, seq, waitLabel) {
   const payload = JSON.stringify({
     source: _mvVolSource, kind: part.kind, index: part.index,
     operator: part.operator, grid: grid });
@@ -669,6 +711,26 @@ async function _mvFetchCube(part, grid, seq, waitLabel) {
   if (!job || job.state !== "done" || !mine(job)) {
     _mvVolFail(seq, (job && job.error) || "orca_plot failed."); return null;
   }
+  return job;
+}
+
+/** The cube file one pick needs, generated if it is not on disk — the path
+ *  only, never the contents. This is the external-viewer path (P5): handing
+ *  the file to Avogadro needs its name, and a 60³ cube's text is megabytes
+ *  that would cross the bridge for nothing.
+ *  @param {MvPick} part @param {number} grid @param {number} seq
+ *  @param {string} waitLabel @returns {Promise<string>} "" when it failed */
+async function _mvCubePath(part, grid, seq, waitLabel) {
+  const job = await _mvRunCube(part, grid, seq, waitLabel);
+  return (job && job.path) || "";
+}
+
+/** As `_mvRunCube`, then read the finished cube back for 3Dmol.
+ *  @param {MvPick} part @param {number} grid @param {number} seq
+ *  @param {string} waitLabel */
+async function _mvFetchCube(part, grid, seq, waitLabel) {
+  const job = await _mvRunCube(part, grid, seq, waitLabel);
+  if (!job) return null;
   let data;
   try { data = /** @type {CubeDataResult} */ (JSON.parse(await bridge.get_cube_data())); }
   catch (e) { _mvVolFail(seq, "Could not read the cube file."); return null; }

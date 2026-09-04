@@ -135,6 +135,13 @@ class Settings:
     # complete .inp and only pick the calc kind), "mlip" (MACE relaxation), or
     # "crest" (conformer search via WSL)
     build_mode: str = "beginner"
+    # Where a Visual row's click goes: "in_app" (ORCAdesk's own 3D viewer) or
+    # "system" (hand the file to whatever program the OS associates with it —
+    # Avogadro, VMD, ChimeraX, whatever the user already installed). ORCAdesk
+    # does the same work either way; only the last step differs, so choosing
+    # "system" never means generating less (P5). In-app stays the default: it
+    # is the path that needs no second program at all.
+    viewer_target: str = "in_app"
 
     @classmethod
     def load(cls) -> "Settings":

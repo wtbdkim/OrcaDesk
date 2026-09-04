@@ -140,6 +140,7 @@ class SettingsPayload(TypedDict):
     eta_mode: str             # "conservative" | "eager"
     geo_graph_mode: str       # "all5" | "maxgrad"
     build_mode: str           # "beginner" | "expert" | "mlip" | "crest"
+    viewer_target: str        # "in_app" | "system" — where a Visual row opens
     crest_distro: str         # preferred WSL distro for CREST ("" = auto-detect)
     orca_valid: bool
     # Why the settings on screen are not the settings on disk. "" = they are.
@@ -457,6 +458,14 @@ class WallpaperResult(_Ok, total=False):
     error: str
 
 
+class SavedFileResult(_Ok, total=False):
+    """save_structure_xyz — one file written, and where it landed. The path
+    comes back because the caller's next move is to hand it to another program
+    (open_path_external), and the front-end holds a calc name, not a path."""
+    error: str
+    path: str
+
+
 class ExportResult(_Ok, total=False):
     """export_conformers / export_frames — how many .xyz files were written
     and into which folder."""
@@ -604,6 +613,10 @@ class PlotOptionsResult(_Ok, total=False):
     file's stem for one opened from disk."""
     error: str
     base: str
+    # The run folder these files live in. The front-end holds a calc NAME,
+    # not a path, so without this it cannot offer "show me where this was
+    # written" — and must never assemble a workspace path itself (P4).
+    folder: str
     has_gbw: bool
     open_shell: bool
     kinds: "list[str]"
@@ -634,6 +647,10 @@ class CubeJobPayload(TypedDict, total=False):
     grid: int
     cached: bool
     seconds: float
+    # The cube this job produced ("" until it is done). Sent so the Visual
+    # tab can hand the file to another program instead of loading its text
+    # (P5) — which for a 60 grid is megabytes the external path never needs.
+    path: str
 
 
 class CubeDataResult(_Ok, total=False):

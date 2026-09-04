@@ -454,9 +454,17 @@
         <div class="log-mode-toggle on-card">
           <button id="rmode-output" class="active" onclick="setResultsMode('output')">Output</button>
           <button id="rmode-visual" onclick="setResultsMode('visual')">Visual</button>
-          <button id="btn-showall" class="btn btn-sm btn-ghost" style="margin-left:auto"
-                  onclick="toggleShowAll()"
-                  title="Every parsed value, ignoring per-calc-type filtering">Show all</button>
+          <!-- One right-aligned group, because "Show all" is Output-only and is
+               hidden in Visual: the auto margin has to live on something that
+               stays, or the remaining button jumps to the left of the row. -->
+          <div style="margin-left:auto; display:flex; gap:8px">
+            <button id="btn-showall" class="btn btn-sm btn-ghost"
+                    onclick="toggleShowAll()"
+                    title="Every parsed value, ignoring per-calc-type filtering">Show all</button>
+            <button id="btn-showfolder" class="btn btn-sm btn-ghost"
+                    onclick="showResultFolder()"
+                    title="Open the folder ORCA wrote this calculation's files to">Show in folder</button>
+          </div>
         </div>
         <div id="result-body"><div class="hint">No result selected.</div></div>
         <div id="visual-body" hidden><div class="hint">No result selected.</div></div>
@@ -615,6 +623,22 @@
         <label class="radio-row">
           <input type="radio" name="geo-mode" value="maxgrad">
           <span><strong>MAX gradient only</strong> — just the MAX gradient on an absolute axis with its tolerance as the goal line.</span>
+        </label>
+      </div>
+      <div class="card">
+        <div class="card-title">Opening structures and maps</div>
+        <div class="card-desc">Where the Visual tab's <b>View</b> button takes you.
+          ORCAdesk generates the same files either way — only the last step differs.</div>
+        <label class="radio-row">
+          <input type="radio" name="viewer-target" value="in_app" checked>
+          <span><strong>In ORCAdesk</strong> — the built-in 3D viewer. No second
+            program, and ← / → steps through orbitals or conformers.</span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="viewer-target" value="system">
+          <span><strong>My own program</strong> — hand the file to whatever opens
+            it on this PC (Avogadro, VMD, ChimeraX, Jmol). Nothing to set up here:
+            it follows the file associations you already have.</span>
         </label>
       </div>
       <button class="btn btn-primary" onclick="saveSettings()">Save settings</button>

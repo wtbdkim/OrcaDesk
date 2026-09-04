@@ -169,6 +169,13 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
     with the **← / →** keys, **star** the ones worth keeping (the **F** key —
     starred structures persist, can be stepped through on their own, and
     exported to a `favorites/` folder).
+  - **Or open them in your own program.** Under **Settings → Opening structures
+    and maps** you can send each row to whatever this PC already opens the file
+    with (Avogadro, VMD, ChimeraX, Jmol) instead of the built-in viewer —
+    nothing to configure, it follows your existing file associations. ORCAdesk
+    does the same work either way (orca_plot still runs, same grid, same
+    orbital); only the last step differs. **Show in folder** in the Results
+    header reveals the folder ORCA wrote the run to.
   - Surfaces are generated from the finished job's wavefunction — nothing is
     re-run — and the isovalue slider re-draws instantly. The ESP map is the one
     plot that costs minutes rather than seconds (the potential is a Coulomb sum
@@ -233,6 +240,7 @@ orcamgr/
   mlip/                       MLIP (MACE) env detection + relaxation runner/parser
   crest/                      CREST conformer search via WSL (env/installer/runner/parser)
   nbo/                        natural-orbital analysis computed in-process (no NBO licence)
+  openwith.py                 hand a generated file to the user's own viewer / file manager
   server/                     optional phone-sync HTTP layer (FastAPI; not in the build)
   gui/
     window.py                 QMainWindow + WebEngine

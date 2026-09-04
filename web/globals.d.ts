@@ -88,6 +88,13 @@ interface OrcaBridge {
   generate_cube(payloadJson: string): Promise<string>;       // CubeJob JSON; {source,kind,index,operator,grid}
   get_cube_status(): Promise<string>;                        // CubeJob JSON
   get_cube_data(): Promise<string>;                          // CubeDataResult JSON
+  // Hand a generated file to the user's own programs instead of drawing it
+  // in-app (P5). Refuses anything that is not a data format; failure is data.
+  open_path_external(path: string): Promise<string>;          // OkResult JSON
+  show_path_in_folder(path: string): Promise<string>;         // OkResult JSON
+  // Write a parsed geometry into the run folder as <base>_structure.xyz, so it
+  // can be handed to a program that reads files rather than payloads.
+  save_structure_xyz(source: string, xyz: string): Promise<string>;  // SavedFileResult JSON
   // run / results
   get_free_energy_profile(): Promise<string>;
   check_overwrite_conflicts(): Promise<string>;
