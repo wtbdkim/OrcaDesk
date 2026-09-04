@@ -24,7 +24,7 @@ where they overlap, the principles documents are the norm.
 
 ```bash
 # Develop (desktop app)
-pip install -r requirements.txt        # PyQt6 + PyQt6-WebEngine + psutil
+pip install -r requirements.txt        # PyQt6 + PyQt6-WebEngine + psutil + numpy
 python main.py
 
 # Optional phone-sync server, standalone (for API testing on localhost)
@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 767 tests over the framework-free layers
+python -m pytest                       # 797 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -576,8 +576,8 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 ### Structure screening and editing (Build tab)
 
 `orcamgr/core/structure.py` is the one place geometry is reasoned about. It is
-pure, numpy-free and Qt-free (`requirements.txt` stays at three packages), so it
-unit-tests directly (`tests/test_structure.py`); the front-end reaches it only
+pure and Qt-free (it needs no numpy, though `orcamgr/nbo/` has since made numpy
+a core dependency — see P5), so it unit-tests directly (`tests/test_structure.py`); the front-end reaches it only
 through five thin Bridge slots — `check_structure`, `compare_structures`,
 `measure_structure`, `structure_fragment`, `edit_structure` — and holds **no**
 geometry logic of its own. That is deliberate (P4): the Build tab's NEB badge
@@ -1186,6 +1186,64 @@ WSL is deliberately NOT in this: `crest/wsl.py` sets `WSL_UTF8=1`, so its output
 really is UTF-8. Picked/dropped `.inp` and `.xyz` files are read `utf-8-sig`,
 because Notepad/VS Code/PowerShell write a BOM freely and ORCA refuses an input
 that starts with one.
+
+### NBO analysis (ORCAdesk's own, in process)
+
+`orcamgr/nbo/` is a dedicated package, kept **out of** `core/` like `mlip/` and
+`crest/` — but for the opposite reason. Those two are backends that *run*
+calculations; this one runs nothing. It post-processes a wavefunction a finished
+run already produced, the way `core/plot.py` post-processes a `.gbw` into a
+cube, so it touches neither the queue engine nor the store and adds no calc
+kind. Qt-free, numpy and nothing else.
+
+The motivation is licensing: ORCA's `! NBO` is an *interface* that writes a
+FILE.47 and shells out to the user's separately licensed `gennbo`. The methods
+are published (Reed/Weinstock/Weinhold *JCP* **83**, 735 (1985);
+Reed/Curtiss/Weinhold *Chem. Rev.* **88**, 899 (1988)) and are reimplemented
+here from those papers. **Numbers are ORCAdesk's own and are never to be
+presented as NBO-program-compatible** — the occupancy-weighted orthogonalization
+at the heart of NPA is not specified to the last detail in the literature, so
+small differences from NBO 7 are structural, not bugs. See P5 (amended for this
+package) and appendix A25.
+
+`wavefunction.py` is the bottom layer and the whole reason the package is
+feasible without a chemistry stack. A Molden file (`orca_2mkl <base> -molden`)
+stores only `C`, `e` and `n`, but the SCF relations `C^T S C = I` and
+`F C = S C e` invert in closed form when `C` is square, which is what
+`orca_2mkl` writes:
+
+```
+Cinv = inv(C);  S = Cinv^T Cinv;  F = Cinv^T diag(e) Cinv;  P = C diag(n) C^T
+```
+
+One inversion yields both S and F and **no integrals are ever evaluated** — so
+no libcint, and therefore no PySCF, in the frozen build. Because the input is
+the `.gbw` every finished run already leaves behind, analysis is **retroactive**:
+any past calculation can be analysed without re-running it. FILE.47 carries S/P/F
+explicitly and is a fine input too, but it exists only for jobs run with
+`! NBO`, so Molden is the primary path.
+
+Invariants worth keeping:
+- **`C` must be square.** ORCA drops near-linearly-dependent basis functions in
+  very diffuse basis sets; `overlap()` then raises `WavefunctionError` rather
+  than returning a plausible wrong S.
+- **ECP atoms read their charge from `[Pseudo]`, not `[Atoms]`.** Molden reports
+  iodine's true Z (53) while its density accounts for 25 electrons, so skipping
+  `[Pseudo]` would put every charge on such an atom out by the whole core.
+- **Mulliken/Löwdin live here as the ground truth, not as a feature.** NPA exists
+  because they misbehave in large basis sets — but ORCA prints both in every
+  `.out`, which makes them the one thing this layer can be checked against
+  *exactly*. `tests/test_nbo_wavefunction.py` reconstructs the matrices from a
+  Molden file and compares the charges they imply against ORCA's own, read back
+  through `core/parser.py`; agreement to ORCA's six-decimal print precision is
+  what pins the basis ordering, the occupations and the inversion all at once.
+  Fixtures (`tests/nbo/fixtures/`) are real ORCA 6.1.1 output covering restricted
+  (`h2o`), unrestricted (`h2o_cation` — which also pins ORCA writing
+  `Spin= Alpha` but `Spin=Beta`) and ECP (`hi`).
+- **`consistency()` is the self-check** every layer above should assert on:
+  orthonormality residual, the eigenvalue residual of the recovered F, the
+  electron count, and — when unrestricted — that the beta orbitals imply the
+  same S as the alpha ones, an independent derivation of the same matrix.
 
 ### Paths: dev vs PyInstaller-frozen
 

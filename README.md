@@ -232,6 +232,7 @@ orcamgr/
     store.py                  shared queue (single source of truth) + session autosave
   mlip/                       MLIP (MACE) env detection + relaxation runner/parser
   crest/                      CREST conformer search via WSL (env/installer/runner/parser)
+  nbo/                        natural-orbital analysis computed in-process (no NBO licence)
   server/                     optional phone-sync HTTP layer (FastAPI; not in the build)
   gui/
     window.py                 QMainWindow + WebEngine

@@ -131,6 +131,24 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
 - The NEB product loader, its status and its verdict moved out of *Method &
   options* into the new *NEB endpoints* card; **Images** and **Endpoint
   pre-optimization** stay with the method, since they are band parameters.
+- **numpy is now a runtime dependency, and ORCAdesk has begun computing
+  natural-orbital analysis itself.** Natural population analysis and the
+  donor–acceptor tables people actually want from an NBO run are reachable from
+  ORCA only through the separately licensed NBO program. The methods are
+  published, and everything they need — the overlap, density and Fock matrices —
+  follows from the wavefunction a finished run already left in its `.gbw`. So
+  ORCAdesk is growing its own implementation, starting here with the layer that
+  recovers those matrices. Two consequences worth knowing about now:
+  - Installing from source picks up a fourth package, and the packaged Windows
+    build grows by roughly 15 MB. Nothing needs an integral library, so no
+    compiled chemistry stack comes with it.
+  - **Analysis will be retroactive.** Because the input is the `.gbw` every run
+    already writes, this will apply to calculations you finished months ago, with
+    nothing to re-run.
+
+  Nothing is user-visible yet — this release lays the foundation. The numbers,
+  when they arrive, will be ORCAdesk's own and will not be claimed to match the
+  NBO program digit for digit.
 
 ### Fixed
 - **File dialogs open at your workspace.** The Results tab's *Open file…* and
