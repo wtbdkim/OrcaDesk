@@ -14,6 +14,13 @@ const _nboCache = {};
 let _nboBusySource = "";      // source being analysed ("" = idle)
 let _nboBusyAt = 0;
 /** @type {any} */ let _nboTimer = null;
+let _nboPlotBusy = "";        // "<lewis>:<row>" of the orbital being drawn
+let _nboPlotAt = 0;
+/** @type {any} */ let _nboPlotTimer = null;
+
+/** What each orbital kind is, for the table and the viewer's pick list. */
+const _NBO_KIND_NAMES = { CR: "core", LP: "lone pair", BD: "bond", "BD*": "antibond",
+                          "LP*": "empty valence" };
 
 /** Append the card for the current result. Called from renderResultSections. */
 function renderNboCard() {
@@ -115,7 +122,7 @@ function _nboBodyHtml(a) {
 
   html += _nboChargesHtml(a, open);
   html += _nboBondsHtml(a);
-  for (const l of lewis) html += _nboLewisHtml(l, a);
+  lewis.forEach((l, li) => { html += _nboLewisHtml(l, a, li); });
   for (const l of lewis) html += _nboInteractionsHtml(l);
   html += `<div class="hint" style="margin-top:8px">Computed by ORCAdesk from the published
     NPA/NBO methods (Reed, Weinstock & Weinhold 1985; Reed, Curtiss & Weinhold 1988).
@@ -168,32 +175,88 @@ function _nboBondsHtml(a) {
       same idea.</div>`;
 }
 
-/** @param {LewisSummaryPayload} l @param {NboResultPayload} a */
-function _nboLewisHtml(l, a) {
+/** @param {LewisSummaryPayload} l @param {NboResultPayload} a
+ *  @param {number} li index of `l` in a.lewis — rides the View button */
+function _nboLewisHtml(l, a, li) {
   const spin = l.spin ? ` (${l.spin})` : "";
-  const kinds = { CR: "core", LP: "lone pair", BD: "bond", "BD*": "antibond", "LP*": "empty valence" };
+  const kinds = _NBO_KIND_NAMES;
   const hyb = (o) => (o.hybrids || []).map(h =>
     `${(100 * h.share).toFixed(0)}% ${escapeHtml(h.element)}(${escapeHtml(h.label)})`).join("  ");
-  const rows = l.orbitals.map(o => `<tr>
+  // The button carries two NUMBERS and nothing else: an orbital label may hold
+  // a quote (an element symbol never does, but the rule is the rule), and
+  // the row is re-derived from the cached analysis at click time.
+  const rows = l.orbitals.map((o, oi) => `<tr>
       <td class="mono" style="text-align:left">${escapeHtml(o.label)}</td>
       <td>${kinds[o.kind] || escapeHtml(o.kind)}</td>
       <td>${_f(o.occupancy, 4)}</td>
       <td>${(o.energy * 27.211386).toFixed(2)}</td>
-      <td class="mono" style="text-align:left">${hyb(o)}</td></tr>`).join("");
+      <td class="mono" style="text-align:left">${hyb(o)}</td>
+      <td><button class="btn btn-sm btn-ghost nbo-3d" data-li="${li}" data-oi="${oi}"
+                  onclick="nboOrbital3D(${li}, ${oi})"
+                  title="Draw this orbital's isosurface">View</button></td></tr>`).join("");
   const rung = l.threshold.toFixed(2);
   return `
     <div class="card-title" style="margin-top:12px">Lewis structure${spin}</div>
     <div class="hint">Occupancy threshold ${rung}${l.threshold < (l.spin ? 0.95 : 1.90) - 1e-9
       ? " — lowered from the usual " + (l.spin ? "0.95" : "1.90") + " to reach a complete structure" : ""};
       ${_f(l.lewis_electrons, 3)} of ${_f(l.total_electrons, 1)} electrons in Lewis orbitals,
-      ${_f(l.rydberg_electrons, 3)} in ${l.rydberg_count} Rydberg orbitals (not listed).</div>
+      ${_f(l.rydberg_electrons, 3)} in ${l.rydberg_count} Rydberg orbitals (not listed).
+      <b>View</b> draws an orbital in 3D — in ORCAdesk's viewer, or in the program
+      chosen under Settings → Opening structures and maps.</div>
     <div style="max-height:360px;overflow:auto">
       <table class="data">
         <thead><tr><th style="text-align:left">Orbital</th><th>Kind</th><th>Occupancy</th>
-          <th>Energy (eV)</th><th style="text-align:left">Hybrids</th></tr></thead>
+          <th>Energy (eV)</th><th style="text-align:left">Hybrids</th><th>3D</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
+}
+
+/** Draw one natural bond orbital: row `oi` of Lewis structure `li` of the
+ *  analysis on screen. The whole structure's orbitals become the viewer's
+ *  pick list, so ←/→ step through them. Where it opens follows the same
+ *  setting as a Visual row (P5): in ORCAdesk, or the cube handed to the
+ *  user's own program. The wait is reported on the button that was clicked.
+ *  @param {number} li @param {number} oi */
+async function nboOrbital3D(li, oi) {
+  const source = _mvPlotSource();
+  const a = source ? _nboCache[source] : null;
+  const l = a && a.lewis ? a.lewis[li] : null;
+  if (!l || !l.orbitals || !l.orbitals[oi] || _nboPlotBusy) return;
+  const op = l.spin === "beta" ? 1 : 0;
+  const tag = l.spin ? " (" + l.spin + ")" : "";
+  /** @type {MvPick[]} */
+  const picks = l.orbitals.map(o => ({
+    kind: "nbo", index: o.index, operator: op, label: o.label + tag,
+    sub: (_NBO_KIND_NAMES[o.kind] || o.kind) + "  " + Number(o.occupancy).toFixed(3) + " e" }));
+  _nboPlotBusy = li + ":" + oi; _nboPlotAt = Date.now();
+  _nboPlotButtons();
+  _nboPlotTimer = setInterval(_nboPlotButtons, 1000);
+  try {
+    if (viewerTarget() === "system") {
+      const path = await nboCubeForExternal(picks[oi]);
+      if (path) await openExternally(path);
+    } else {
+      await viewNboOrbitals3D(picks, oi, "natural bond orbitals" + tag);
+    }
+  } catch (e) { failNotify("Could not draw that orbital."); }
+  finally {
+    clearInterval(_nboPlotTimer); _nboPlotTimer = null;
+    _nboPlotBusy = "";
+    _nboPlotButtons();
+  }
+}
+
+/** Reflect the plotting state on the card's View buttons in place — the
+ *  tables are not re-rendered, so their scroll positions survive. */
+function _nboPlotButtons() {
+  document.querySelectorAll("#nbo-card button.nbo-3d").forEach(node => {
+    const btn = /** @type {HTMLButtonElement} */ (/** @type {unknown} */ (node));
+    const mine = !!_nboPlotBusy && (btn.dataset.li + ":" + btn.dataset.oi) === _nboPlotBusy;
+    btn.disabled = !!_nboPlotBusy;
+    btn.classList.toggle("vis-busy", mine);
+    btn.textContent = mine ? "Plotting… " + _fmtElapsed(Date.now() - _nboPlotAt) : "View";
+  });
 }
 
 /** @param {LewisSummaryPayload} l */

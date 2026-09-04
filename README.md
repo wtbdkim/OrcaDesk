@@ -164,6 +164,9 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
     the finished run's wavefunction — no NBO licence — and shows NPA charges
     with electron configurations, Wiberg bond orders, the Lewis structure with
     its hybrids, and the second-order donor → acceptor table (kcal/mol).
+    Every orbital in the Lewis table has a *View* button that draws it in 3D
+    — ORCAdesk evaluates the orbital on the grid itself, since `orca_plot`
+    only draws canonical orbitals.
   - **Visual** is everything that can be *drawn* from the same result, and it
     finds it for you: the structure, any `.xyz` set sitting in the run folder
     (the CREST ensemble, the per-conformer `conformers/` export, an optimization
@@ -188,11 +191,13 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
     usable while it runs, and the viewer opens onto a finished figure.
   - The picker lists **every result in your workspace**, not only the queued
     ones — a calculation cleared from the queue, or one from an earlier session,
-    opens in a click — and one *Open file…* button reads a result from anywhere
-    on disk: an ORCA `.out`, an MLIP result, a CREST search, or a `.xyz`, which
-    goes straight to Visual. That button, and the Build tab's *Load .xyz* /
-    *Load .inp*, all open **at your workspace** rather than wherever the last
-    dialog happened to be.
+    opens in a click — and *Open file…* reads a result from anywhere on disk:
+    an ORCA `.out`, an MLIP result, a CREST search, or a `.xyz`, which goes
+    straight to Visual. *Open folder…* takes a run folder instead and finds
+    the result inside it — including a run ORCA wrote by hand, whose `.out`
+    is not named after the folder. Both pickers, and the Build tab's
+    *Load .xyz* / *Load .inp*, open **at your workspace** rather than wherever
+    the last dialog happened to be.
 - **Settings**: ORCA executable path, **MLIP environments** (create one for CPU
   or GPU in a click, or register your own MACE-capable Python interpreters;
   backends are auto-detected), workspace folder,

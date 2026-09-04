@@ -238,6 +238,12 @@ class Bridge(QObject):
         self._nbo_lock = threading.Lock()
         self._nbo: dict = {"state": "idle", "source": "", "error": "", "seconds": 0.0}
         self._nbo_result: dict = {}
+        # The NBO basis itself (nbf**2 floats per spin) for the result last
+        # analysed -- what a natural bond orbital is drawn from. One entry,
+        # keyed by folder/base and checked against the .gbw's mtime; a cube
+        # request for another result rebuilds it (seconds), never caches it
+        # to disk. Guarded by _nbo_lock, held only for the dict access.
+        self._nbo_sets: dict = {}
         # Live CREST status (WSL distro probe). Like MLIP the probe is slow (it
         # spawns wsl.exe + runs `crest --version`), so it runs in a background
         # thread and the UI polls get_crest_status(). Guarded by its own lock.
@@ -986,6 +992,27 @@ class Bridge(QObject):
         route = "structure" if path.lower().endswith(".xyz") else "parse"
         return json.dumps(PickedResultPayload(ok=True, path=path, route=route))
 
+    @pyqtSlot(result=str)
+    def pick_result_folder(self) -> str:
+        """Pick a run folder and open the result inside it.
+
+        The file picker's sibling, for the folder a user actually has in
+        mind: a run ORCA (or ORCAdesk, in another workspace) wrote into
+        ``{folder}/``. ORCAdesk finds the result -- ``{name}.mlip.json``,
+        ``{name}.out``, or the ``.out`` the folder holds when it was not made
+        here -- so the user does not have to know which file the parser
+        reads (:mod:`orcamgr.resultfolder`). Same payload as the file picker:
+        the caller reads the path through the parse route."""
+        from ..resultfolder import find_result
+        folder = QFileDialog.getExistingDirectory(
+            self.window, "Open a result folder", self._dialog_start_dir())
+        if not folder:
+            return json.dumps(PickedResultPayload(ok=False, cancelled=True))
+        found = find_result(folder)
+        if not found.get("ok"):
+            return json.dumps(PickedResultPayload(ok=False, error=str(found.get("error") or "")))
+        return json.dumps(PickedResultPayload(ok=True, path=str(found["path"]), route="parse"))
+
     @pyqtSlot(str, result=str)
     def parse_out_path(self, path: str) -> str:
         """Parse a specific .out path (used to auto-load finished queue results)."""
@@ -1015,6 +1042,7 @@ class Bridge(QObject):
         Newest first, and bounded: a workspace with thousands of folders must not
         turn a tab switch into a directory crawl.
         """
+        from ..resultfolder import result_artifact
         root = Path(self.settings.workspace_root or "")
         if not root.is_dir():
             return json.dumps(WorkspaceResultsResult(
@@ -1029,16 +1057,10 @@ class Bridge(QObject):
                 if not entry.is_dir():
                     continue
                 name = entry.name
-                mlip = entry / f"{name}.mlip.json"
-                out = entry / f"{name}.out"
-                if mlip.exists():
-                    artifact, kind = mlip, "mlip"
-                elif out.exists():
-                    artifact = out
-                    kind = ("crest" if (entry / "crest_conformers.xyz").exists()
-                            or (entry / "crest_best.xyz").exists() else "orca")
-                else:
+                found_artifact = result_artifact(entry)
+                if found_artifact is None:
                     continue        # a folder with no result is not a result
+                artifact, kind = found_artifact
                 try:
                     mtime = artifact.stat().st_mtime
                 except OSError:
@@ -1583,8 +1605,10 @@ class Bridge(QObject):
         Refuses while another cube is in flight: orca_plot writes a *fixed*
         filename beside the ``.gbw``, so two runs in one folder would race for the
         same path and the loser would be served the winner's data."""
-        from ..core.plot import CubeRequest, DEFAULT_GRID, KIND_LABELS
+        from ..core.plot import CubeRequest, DEFAULT_GRID, KIND_LABELS, NBO_KIND
         from ..core.plot import generate_cube as _generate
+        from ..nbo.cubes import generate_nbo_cube
+        from ..nbo.wavefunction import WavefunctionError
         try:
             d = json.loads(payload_json or "{}")
         except json.JSONDecodeError as e:
@@ -1596,8 +1620,8 @@ class Bridge(QObject):
                           index=int(d.get("index") or 0),
                           operator=int(d.get("operator") or 0),
                           grid=int(d.get("grid") or DEFAULT_GRID)).normalized()
-        label = (f"{KIND_LABELS['mo']} {req.index}{'β' if req.operator else 'α'}"
-                 if req.kind == "mo" else KIND_LABELS.get(req.kind, req.kind))
+        label = (f"{KIND_LABELS[req.kind]} {req.index}{'β' if req.operator else 'α'}"
+                 if req.kind in ("mo", NBO_KIND) else KIND_LABELS.get(req.kind, req.kind))
 
         with self._cube_lock:
             if self._cube.get("state") == "running":
@@ -1616,8 +1640,18 @@ class Bridge(QObject):
 
         def _worker() -> None:
             try:
-                res = _generate(orca_path, run_dir, base, req,
-                                on_log=lambda m: self.store.append_log(m, "info"))
+                if req.kind == NBO_KIND:
+                    # ORCAdesk's own vector, drawn in process: orca_plot has
+                    # no way to take it (orcamgr/nbo/cubes.py)
+                    orbitals = self._nbo_orbital_set(orca_path, run_dir, base)
+                    res = generate_nbo_cube(
+                        orbitals, base, req, dest_dir=run_dir / "cubes",
+                        on_log=lambda m: self.store.append_log(m, "info"))
+                else:
+                    res = _generate(orca_path, run_dir, base, req,
+                                    on_log=lambda m: self.store.append_log(m, "info"))
+            except WavefunctionError as e:
+                res = {"ok": False, "error": str(e)}
             except Exception as e:          # a crash must still release the UI
                 res = {"ok": False, "error": str(e)}
             if not res.get("ok"):
@@ -1626,6 +1660,7 @@ class Bridge(QObject):
             with self._cube_lock:
                 self._cube_path = res.get("path", "") if res.get("ok") else ""
                 self._cube.update({
+                    "label": str(res.get("label") or label),
                     "path": self._cube_path,
                     "state": "done" if res.get("ok") else "error",
                     "error": "" if res.get("ok") else str(res.get("error") or ""),
@@ -1689,7 +1724,9 @@ class Bridge(QObject):
 
         def _worker() -> None:
             try:
-                analysis = analysis_for(orca_path, run_dir, base)
+                analysis = analysis_for(
+                    orca_path, run_dir, base,
+                    keep=lambda s: self._remember_nbo_set(run_dir, base, s))
                 result = {"ok": True, **analysis.to_dict()}
                 error = ""
             except WavefunctionError as e:
@@ -1710,6 +1747,31 @@ class Bridge(QObject):
 
         threading.Thread(target=_worker, name="nbo-analysis", daemon=True).start()
         return self.get_nbo_status()
+
+    def _remember_nbo_set(self, run_dir: Path, base: str, orbital_set) -> None:
+        """Keep ONE orbital set: the one most recently built."""
+        with self._nbo_lock:
+            self._nbo_sets = {(str(run_dir), base): orbital_set}
+
+    def _nbo_orbital_set(self, orca_path: str, run_dir: Path, base: str):
+        """The NBO basis of a result: the remembered one when it is this
+        result's and still describes the .gbw on disk, else built now (and
+        remembered). Raises WavefunctionError like the analysis does. Runs
+        on the cube worker thread -- the build is seconds and must not hold
+        a lock the UI thread takes."""
+        from ..nbo.analysis import orbital_set_for
+        key = (str(run_dir), base)
+        try:
+            mtime = (run_dir / f"{base}.gbw").stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        with self._nbo_lock:
+            kept = self._nbo_sets.get(key)
+        if kept is not None and kept.source_mtime == mtime:
+            return kept
+        built = orbital_set_for(orca_path, run_dir, base)
+        self._remember_nbo_set(run_dir, base, built)
+        return built
 
     @pyqtSlot(result=str)
     def get_nbo_status(self) -> str:

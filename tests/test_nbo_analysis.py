@@ -220,3 +220,43 @@ def test_use_cache_false_ignores_a_stored_answer(tmp_path, no_conversion):
     cache_path(run, "water").write_text('{"format": 1, "base": "poisoned"}',
                                         encoding="utf-8")
     assert analysis_for("orca.exe", run, "water", use_cache=False).base == "water"
+
+
+# --- the orbital set the 3D viewer draws from ---------------------------------
+
+def test_orbital_rows_carry_their_basis_index():
+    """Every row names the position the cube request addresses it by, and the
+    row's label is that position's label -- the two cannot disagree."""
+    from orcamgr.nbo.analysis import NboOrbitalSet
+    wf = load_molden(FIXTURES / "h2o.molden.input")
+    orbitals = NboOrbitalSet.from_wavefunction(wf)
+    analysis = analyze(wf, base="h2o")
+    for row in analysis.lewis[0].orbitals:
+        assert orbitals.orbital(0, row.index).label(wf.elements) == row.label
+    indices = [row.index for row in analysis.lewis[0].orbitals]
+    assert indices == sorted(indices) and len(set(indices)) == len(indices)
+
+
+def test_the_index_survives_the_json_round_trip():
+    wf = load_molden(FIXTURES / "h2o.molden.input")
+    analysis = analyze(wf, base="h2o")
+    back = NboAnalysis.from_dict(json.loads(json.dumps(analysis.to_dict())))
+    assert [r.index for r in back.lewis[0].orbitals] == [r.index for r in analysis.lewis[0].orbitals]
+
+
+def test_analysis_for_hands_the_orbital_set_to_keep_only_when_it_builds_one(
+        tmp_path, no_conversion):
+    """A fresh analysis passes its NboOrbitalSet out (the bridge keeps it for
+    the viewer); a cache hit builds none and calls nothing."""
+    import shutil
+    from orcamgr.nbo.analysis import NboOrbitalSet
+    shutil.copy(FIXTURES / "h2o.molden.input", tmp_path / "h2o.molden.input")
+    (tmp_path / "h2o.gbw").write_bytes(b"gbw")
+    import os
+    os.utime(tmp_path / "h2o.molden.input", None)      # newer than the .gbw
+    kept = []
+    analysis_for("orca.exe", tmp_path, "h2o", keep=kept.append)
+    assert len(kept) == 1 and isinstance(kept[0], NboOrbitalSet)
+    assert kept[0].source_mtime == (tmp_path / "h2o.gbw").stat().st_mtime
+    analysis_for("orca.exe", tmp_path, "h2o", keep=kept.append)
+    assert len(kept) == 1

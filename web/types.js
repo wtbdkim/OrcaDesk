@@ -737,6 +737,7 @@
 /**
  * @typedef {Object} NboOrbitalPayload
  * @property {string} label
+ * @property {number} index        position in its spin's NBO basis (the cube address)
  * @property {string} kind
  * @property {number[]} atoms
  * @property {number} occupancy

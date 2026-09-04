@@ -34,6 +34,9 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Callable, Optional
+
+import numpy as np
 
 from .nao import NaturalAtomicOrbitals, natural_atomic_orbitals
 from .lewis import NboBasis, natural_bond_orbitals
@@ -44,7 +47,9 @@ from .wavefunction import Wavefunction, WavefunctionError
 
 #: Bumped when a change to the analysis would alter published numbers. A cache
 #: written by a different format is recomputed, never merged.
-CACHE_FORMAT = 2
+# 3: every orbital row carries its index into the NBO basis, which is what
+#    the 3D viewer addresses a cube by.
+CACHE_FORMAT = 3
 
 CACHE_SUFFIX = ".nbo.json"
 
@@ -71,8 +76,12 @@ class HybridRow:
 class OrbitalRow:
     """One natural bond orbital worth listing: every Lewis orbital, every
     antibond and leftover valence orbital. Rydberg orbitals are summarized
-    instead -- there are more of them than of everything else together."""
+    instead -- there are more of them than of everything else together.
+
+    ``index`` is the orbital's position in its spin's NBO basis -- the
+    address a cube request names it by (:mod:`orcamgr.nbo.cubes`)."""
     label: str                  # "BD (1) C1-O2"
+    index: int
     kind: str                   # CR | LP | BD | BD* | LP*
     atoms: list
     occupancy: float
@@ -116,7 +125,7 @@ def _summarize(basis: NboBasis, elements: list) -> LewisSummary:
         if o.kind == "RY":
             continue
         rows.append(OrbitalRow(
-            label=o.label(elements), kind=o.kind, atoms=list(o.atoms),
+            label=o.label(elements), index=o.index, kind=o.kind, atoms=list(o.atoms),
             occupancy=o.occupancy, energy=o.energy,
             hybrids=[HybridRow(atom=h.atom, element=elements[h.atom],
                                share=h.share, label=h.label) for h in o.hybrids]))
@@ -207,13 +216,53 @@ class NboAnalysis:
             format=int(data.get("format", 0)))
 
 
-def analyze(wf: Wavefunction, base: str = "",
-            source_mtime: float = 0.0) -> NboAnalysis:
-    """Run the whole analysis on an already-loaded wavefunction."""
-    nao: NaturalAtomicOrbitals = natural_atomic_orbitals(wf)
+@dataclass
+class NboOrbitalSet:
+    """The orbitals themselves -- what the tables are read off, and what the
+    3D viewer draws. Kept apart from :class:`NboAnalysis` because it holds the
+    ``nbf**2`` coefficient matrices that are never cached or sent anywhere:
+    the bridge keeps one in memory beside the analysis it came from."""
+    wavefunction: Wavefunction
+    nao: NaturalAtomicOrbitals
+    bases: list                       # NboBasis, one per spin
+    source_mtime: float = 0.0
+
+    @classmethod
+    def from_wavefunction(cls, wf: Wavefunction, source_mtime: float = 0.0) -> "NboOrbitalSet":
+        nao = natural_atomic_orbitals(wf)
+        return cls(wavefunction=wf, nao=nao, bases=natural_bond_orbitals(nao),
+                   source_mtime=source_mtime)
+
+    def basis(self, operator: int) -> NboBasis:
+        """The NBO basis of spin ``operator`` (0 = alpha or closed shell, 1 = beta)."""
+        if operator < 0 or operator >= len(self.bases):
+            raise WavefunctionError(
+                "this calculation is closed-shell: it has no beta orbital set."
+                if operator == 1 else f"there is no orbital set {operator}.")
+        return self.bases[operator]
+
+    def orbital(self, operator: int, index: int):
+        """One :class:`~orcamgr.nbo.lewis.NaturalBondOrbital`, by position."""
+        basis = self.basis(operator)
+        if index < 0 or index >= len(basis.orbitals):
+            raise WavefunctionError(
+                f"natural bond orbital {index} is out of range "
+                f"(this set has {len(basis.orbitals)}).")
+        return basis.orbitals[index]
+
+    def ao_coefficients(self, operator: int, index: int) -> np.ndarray:
+        """The orbital as a vector over the basis functions the Molden file
+        lists: NAO -> NBO, then AO -> NAO. What the grid evaluates."""
+        self.orbital(operator, index)          # range check
+        return self.nao.coefficients @ self.basis(operator).coefficients[:, index]
+
+
+def analyze_set(orbitals: NboOrbitalSet, base: str = "") -> NboAnalysis:
+    """The tables of an orbital set already built."""
+    wf, nao = orbitals.wavefunction, orbitals.nao
     diagnostics = nao.consistency()
     diagnostics["minimal_fraction"] = nao.minimal_fraction
-    lewis = [_summarize(b, wf.elements) for b in natural_bond_orbitals(nao)]
+    lewis = [_summarize(b, wf.elements) for b in orbitals.bases]
     diagnostics["lewis_fraction"] = min(l.lewis_fraction for l in lewis)
     return NboAnalysis(
         base=base or Path(wf.source).stem,
@@ -228,7 +277,13 @@ def analyze(wf: Wavefunction, base: str = "",
         lewis=lewis,
         diagnostics=diagnostics,
         warnings=_warnings(diagnostics, lewis),
-        source_mtime=source_mtime)
+        source_mtime=orbitals.source_mtime)
+
+
+def analyze(wf: Wavefunction, base: str = "",
+            source_mtime: float = 0.0) -> NboAnalysis:
+    """Run the whole analysis on an already-loaded wavefunction."""
+    return analyze_set(NboOrbitalSet.from_wavefunction(wf, source_mtime), base)
 
 
 #: Below this share of the density in the natural minimal basis, the molecule is
@@ -308,27 +363,46 @@ def write_cache(run_dir: str | Path, base: str, analysis: NboAnalysis) -> bool:
         return False
 
 
+def _source_mtime(run_dir: Path, base: str) -> float:
+    try:
+        return (run_dir / f"{base}.gbw").stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def orbital_set_for(orca_path: str | Path, run_dir: str | Path, base: str) -> NboOrbitalSet:
+    """The NBO basis of one finished calculation, built from its ``.gbw``
+    (converted if needed). Never cached on disk -- see :class:`NboOrbitalSet`."""
+    run_dir = Path(run_dir)
+    wf = wavefunction_for(orca_path, run_dir, base)
+    return NboOrbitalSet.from_wavefunction(wf, _source_mtime(run_dir, base))
+
+
 def analysis_for(orca_path: str | Path, run_dir: str | Path, base: str,
-                 use_cache: bool = True) -> NboAnalysis:
+                 use_cache: bool = True,
+                 keep: Optional[Callable[[NboOrbitalSet], None]] = None) -> NboAnalysis:
     """The natural-orbital analysis of one finished calculation.
 
     Converts the ``.gbw`` if needed, serves a current cache when there is one,
     and stores what it computes. Raises :class:`WavefunctionError` with an
     actionable message when the calculation cannot be analysed at all.
+
+    ``keep`` receives the :class:`NboOrbitalSet` whenever one is actually
+    built -- the bridge holds it for the 3D viewer, so the first cube after
+    a fresh analysis costs no second search. A cache hit builds none.
     """
     run_dir = Path(run_dir)
-    try:
-        source_mtime = (run_dir / f"{base}.gbw").stat().st_mtime
-    except OSError:
-        source_mtime = 0.0
+    source_mtime = _source_mtime(run_dir, base)
 
     if use_cache and source_mtime:
         cached = read_cache(run_dir, base, source_mtime)
         if cached is not None:
             return cached
 
-    wf = wavefunction_for(orca_path, run_dir, base)
-    analysis = analyze(wf, base=base, source_mtime=source_mtime)
+    orbitals = orbital_set_for(orca_path, run_dir, base)
+    if keep is not None:
+        keep(orbitals)
+    analysis = analyze_set(orbitals, base=base)
     if use_cache and source_mtime:
         write_cache(run_dir, base, analysis)
     return analysis

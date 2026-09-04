@@ -220,3 +220,37 @@ def test_a_refused_density_name_is_not_reported_as_a_menu_mismatch(tmp_path, mon
     assert r["ok"] is False
     assert "w.scfp" in r["error"]
     assert "plot menu differs" not in r["error"]
+
+
+# --- the natural-bond-orbital kind: named here, drawn elsewhere ---------------
+
+def test_nbo_is_a_cube_kind_but_not_a_plot_kind():
+    """orca_plot cannot draw an NBO (it is ORCAdesk's own vector), yet the
+    viewer addresses every cube through one request and one filename rule."""
+    from orcamgr.core.plot import CUBE_KINDS, KIND_LABELS, NBO_KIND
+    assert NBO_KIND == "nbo"
+    assert NBO_KIND in CUBE_KINDS and NBO_KIND not in PLOT_KINDS
+    assert set(PLOT_KINDS) < set(CUBE_KINDS)
+    assert KIND_LABELS[NBO_KIND] == "Natural bond orbital"
+
+
+def test_nbo_requests_survive_the_clamp():
+    req = CubeRequest(kind="nbo", index=7, operator=1, grid=40).normalized()
+    assert (req.kind, req.index, req.operator, req.grid) == ("nbo", 7, 1, 40)
+
+
+def test_nbo_cubes_are_named_like_mo_cubes():
+    """Same shape as the MO name so the viewer's list treats both alike; the
+    front-end's _mvCubeName mirrors this character for character."""
+    req = CubeRequest(kind="nbo", index=7, operator=0, grid=60)
+    assert plot_output_name("water", req) == "water.nbo7a.cube"
+    assert cube_filename("water", req) == "water.nbo7a.g60.cube"
+    assert cube_filename("wcat", CubeRequest(kind="nbo", index=3, operator=1, grid=80)) == "wcat.nbo3b.g80.cube"
+
+
+def test_orca_plot_refuses_an_nbo_request(tmp_path):
+    """The menu has no entry for it; a sequence would desync orca_plot."""
+    with pytest.raises(ValueError):
+        _menu_sequence(CubeRequest(kind="nbo", index=0))
+    res = generate_cube("C:/nowhere/orca.exe", tmp_path, "water", CubeRequest(kind="nbo"))
+    assert not res["ok"] and "ORCAdesk itself" in res["error"]

@@ -440,11 +440,15 @@
           </div>
           <div class="btn-group">
             <select id="result-select" style="width:auto" onchange="showSelectedResult()"></select>
-            <!-- one file button for both modes: the user is choosing a RESULT,
-                 not a route. An .out/.mlip.json is parsed into Output, a .xyz
-                 opens in the viewer (bridge.pick_result_file decides which). -->
+            <!-- two pickers, one route: the user is choosing a RESULT, not a
+                 way of reading it. An .out/.mlip.json is parsed into Output, a
+                 .xyz opens in the viewer (bridge.pick_result_file decides which);
+                 a folder resolves to the result file inside it
+                 (bridge.pick_result_folder) and takes the parse route. -->
             <button class="btn btn-sm" onclick="openOutFile()"
                     title="Open any result — an ORCA .out, an MLIP result, a CREST search, or a .xyz structure">Open file…</button>
+            <button class="btn btn-sm" onclick="openResultFolder()"
+                    title="Open a run folder — ORCAdesk finds the result file inside it">Open folder…</button>
           </div>
         </div>
         <!-- Output = what the parser read; Visual = what can be drawn from the
