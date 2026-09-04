@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 834 tests over the framework-free layers
+python -m pytest                       # 868 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -1288,6 +1288,39 @@ Invariants worth keeping:
   orthonormality residual, the eigenvalue residual of the recovered F, the
   electron count, and — when unrestricted — that the beta orbitals imply the
   same S as the alpha ones, an independent derivation of the same matrix.
+
+`nao.py` builds the **natural atomic orbitals** and the NPA charges on top:
+pre-NAOs (diagonalize each `(atom, l)` block, averaged over `m` so degenerate
+shells stay degenerate) → split into the natural minimal basis (the shells the
+free atom occupies) and the Rydberg set → **occupancy-weighted symmetric
+orthogonalization** of the minimal basis → Schmidt the Rydberg set against it,
+then OWSO it too → re-diagonalize each atomic block. `natural_atomic_orbitals(wf)`
+returns coefficients, occupancies, per-orbital labels (`"O 2p"`, `"I 5p"`,
+`"C Ryd(d)"`), the minimal-basis mask, NPA charges and NAO spin populations;
+`npa_charges(wf)` is the one-line form.
+
+Three things here are easy to get wrong and were:
+- **The population operator is `Q = S P S`, not `P`.** `Q c = S c n` *is* the
+  natural-orbital equation, so its eigenvalues are occupancies bounded by 2.
+  Diagonalizing `P` against `S` gave oxygen a 1s holding 3.02 electrons.
+- **The density transforms contravariantly**: `P' = T⁻¹ P T⁻ᵀ`, not by the
+  overlap's law `Tᵀ P T`. With the wrong one benzene's occupancies summed to
+  9515 instead of 42. Both bugs surface in `consistency()` as an electron count
+  that is not the electron count — which is why tests assert on it.
+- **An ECP atom's minimal basis must drop the replaced shells** (`_ECP_CORES`,
+  keyed by the electron count the potential replaces, each entry's shells
+  summing to its own key — a test pins that). Iodine keeps 4s/5s/4p/5p/4d;
+  counting from 1s would push real valence shells into the Rydberg set. An
+  unrecognized core is refused, never guessed.
+
+**Validation is by property, not by table.** There is no NBO program here to
+compare against and the weighted orthogonalization is under-specified in the
+literature, so "matches NBO" is not claimed. What is tested is what the method
+exists for: the same water molecule at def2-SVP and def2-TZVP must give nearly
+the same NPA charge (0.036 e) where Mulliken lurches (0.339 e). Conservation,
+occupancies ≤ 2, and >99% of the density in the minimal basis hold across the
+fixtures and across 12 real corpus wavefunctions up to 1644 basis functions
+(~10 s at that size; 0.08 s at 117).
 
 ### Paths: dev vs PyInstaller-frozen
 

@@ -156,18 +156,25 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
   ORCA only through the separately licensed NBO program. The methods are
   published, and everything they need — the overlap, density and Fock matrices —
   follows from the wavefunction a finished run already left in its `.gbw`. So
-  ORCAdesk is growing its own implementation, starting here with the layer that
-  recovers those matrices. Two consequences worth knowing about now:
+  ORCAdesk is growing its own implementation: the layer that recovers those
+  matrices, and on top of it **natural atomic orbitals and NPA charges**.
+  - **NPA is the charge you can quote.** Mulliken and Löwdin charges drift with
+    the basis set, sometimes absurdly: on one water molecule across five basis
+    sets, Löwdin's oxygen moves by 1.03 electrons and at def2-QZVP comes out
+    *positive*. NPA moves by 0.06 over the same span, and finds polarity the
+    others understate — sulfuric acid's sulfur at +2.47 where Mulliken says
+    +1.06, oxygen in water at −0.89 where Mulliken says −0.29.
+  - **Analysis is retroactive.** The input is the `.gbw` every run already
+    writes, so this applies to calculations you finished months ago, with
+    nothing to re-run. Checked on real output up to 1644 basis functions.
   - Installing from source picks up a fourth package, and the packaged Windows
     build grows by roughly 15 MB. Nothing needs an integral library, so no
     compiled chemistry stack comes with it.
-  - **Analysis will be retroactive.** Because the input is the `.gbw` every run
-    already writes, this will apply to calculations you finished months ago, with
-    nothing to re-run.
 
-  Nothing is user-visible yet — this release lays the foundation. The numbers,
-  when they arrive, will be ORCAdesk's own and will not be claimed to match the
-  NBO program digit for digit.
+  Not yet on screen — the Results tab shows none of it in this release. The
+  numbers are ORCAdesk's own and are not claimed to match the NBO program digit
+  for digit; the weighted orthogonalization at the heart of the method is not
+  specified to the last detail in the literature.
 
 ### Fixed
 - **File dialogs open at your workspace.** The Results tab's *Open file…* and
