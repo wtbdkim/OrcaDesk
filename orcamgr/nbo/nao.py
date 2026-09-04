@@ -186,10 +186,15 @@ class NaturalAtomicOrbitals:
     """The NAO basis of one wavefunction, and the populations it implies."""
 
     coefficients: np.ndarray        # (nbf, nbf) AO -> NAO, columns are orbitals
+    # The density in the NAO basis, C^T (S P S) C. Its diagonal is
+    # `occupations`; the off-diagonal is what bond orders are read from, so
+    # it is kept rather than recomputed (it is the expensive product here).
+    density: np.ndarray             # (nbf, nbf)
     occupations: np.ndarray         # (nbf,) electrons in each NAO
     atom: np.ndarray                # (nbf,) owning atom
     l: np.ndarray                   # (nbf,) angular momentum
     minimal: np.ndarray             # (nbf,) bool -- in the natural minimal basis
+    principal: np.ndarray           # (nbf,) int -- shell n, 0 for Rydberg
     labels: list[str]               # e.g. "O 2p", "H 1s", "C Ryd(d)"
     charges: np.ndarray             # (natoms,) NPA charges
     spin_populations: np.ndarray    # (natoms,) NAO spin densities (0 if closed)
@@ -313,10 +318,12 @@ def natural_atomic_orbitals(wf: Wavefunction) -> NaturalAtomicOrbitals:
     coefficients = coefficients @ restore
 
     # ---- populations --------------------------------------------------------
-    occupations = np.diag(
-        _symmetrize(coefficients.T @ population @ coefficients)).copy()
+    nao_density = _symmetrize(coefficients.T @ population @ coefficients)
+    occupations = np.diag(nao_density).copy()
     charges = wf.nuclear_charges.astype(float).copy()
     np.add.at(charges, wf.bf_atom, -occupations)
+
+    labels, principal = _name_orbitals(wf, groups, minimal)
 
     spin = np.zeros(wf.n_atoms)
     if not wf.restricted:
@@ -325,21 +332,29 @@ def natural_atomic_orbitals(wf: Wavefunction) -> NaturalAtomicOrbitals:
                   np.diag(_symmetrize(coefficients.T @ spin_q @ coefficients)))
 
     return NaturalAtomicOrbitals(
-        coefficients=coefficients, occupations=occupations,
+        coefficients=coefficients, density=nao_density, occupations=occupations,
         atom=wf.bf_atom.copy(), l=wf.bf_l.copy(), minimal=minimal,
-        labels=_labels(wf, groups, minimal),
+        principal=principal, labels=labels,
         charges=charges, spin_populations=spin, _wf=wf)
 
 
-def _labels(wf: Wavefunction, groups: dict, minimal: np.ndarray) -> list[str]:
-    """Chemist's names for the orbitals: ``"O 2p"``, ``"H 1s"``, ``"C Ryd(d)"``.
+def _name_orbitals(wf: Wavefunction, groups: dict,
+                   minimal: np.ndarray) -> tuple[list[str], np.ndarray]:
+    """Chemist's names and principal quantum numbers: ``"O 2p"``, ``"C Ryd(d)"``.
 
-    The principal quantum number is *counted*, not read from the basis: the
-    minimal-basis orbitals of symmetry ``l`` are the free atom's occupied shells
-    in order, so the k-th is ``n = l + 1 + k`` -- 1s, 2s, 3s or 2p, 3p. For an
-    ECP atom the replaced shells shift that start, which is what the offset is.
+    ``n`` is *counted*, not read from the basis: the minimal-basis orbitals of
+    symmetry ``l`` are the free atom's occupied shells in order, so the k-th is
+    ``n = l + 1 + k`` -- 1s, 2s, 3s, or 2p, 3p. For an ECP atom the replaced
+    shells shift that start, which is what the offset is. A Rydberg orbital gets
+    ``n = 0``: it is not one of the atom's shells at all, and inventing a number
+    for it would invite someone to sort by it.
+
+    Returned together because they are one rule. Anything downstream that needs
+    the shell (the core/valence split, an electron configuration) reads ``n``
+    rather than parsing it back out of the label (P4).
     """
-    out = [""] * wf.n_basis
+    labels = [""] * wf.n_basis
+    principal = np.zeros(wf.n_basis, dtype=int)
     for (atom, l), per_m in groups.items():
         element = wf.elements[atom]
         n_core = int(round(wf.atomic_numbers[atom] - wf.nuclear_charges[atom]))
@@ -347,9 +362,36 @@ def _labels(wf: Wavefunction, groups: dict, minimal: np.ndarray) -> list[str]:
         letter = _SHELL_LETTER.get(l, f"l{l}")
         for idx in per_m:
             for k, mu in enumerate(idx):
-                out[mu] = (f"{element} {l + 1 + k + offset}{letter}"
-                           if minimal[mu] else f"{element} Ryd({letter})")
-    return out
+                if minimal[mu]:
+                    principal[mu] = l + 1 + k + offset
+                    labels[mu] = f"{element} {principal[mu]}{letter}"
+                else:
+                    labels[mu] = f"{element} Ryd({letter})"
+    return labels, principal
+
+
+def core_shell_counts(atomic_number: int) -> dict[int, int]:
+    """``{l: shell count}`` of the atom's *core*: the shells of the noble gas
+    before it. The rest of the minimal basis is its valence.
+
+    Counted in absolute shells (1s is the 1st s, 4s the 4th), so this is
+    **not** ECP-adjusted: a replaced shell is core and is simply absent from
+    the basis, and subtracting it here as well would count it twice -- which it
+    was, leaving iodine with no core at all.
+
+    The preceding-noble-gas rule beats a hand-written table for the case that
+    matters most: it puts a transition metal's ``(n-1)d`` and ``ns`` both in the
+    valence, where chemistry wants them (cobalt: core [Ar], valence 3d + 4s).
+    Its one arguable result is iodine's filled 4d, which lands in the valence
+    because 4d is not in krypton, where some programs call it core. Only the
+    core/valence *subtotals* move; every shell is printed with its own occupancy
+    either way, and no charge or bond order depends on the split.
+    """
+    preceding = 0
+    for noble in (2, 10, 18, 36, 54, 86, 118):
+        if noble < atomic_number:
+            preceding = noble
+    return free_atom_shells(preceding) if preceding else {}
 
 
 def npa_charges(wf: Wavefunction) -> np.ndarray:

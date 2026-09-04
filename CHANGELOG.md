@@ -164,6 +164,12 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
     *positive*. NPA moves by 0.06 over the same span, and finds polarity the
     others understate — sulfuric acid's sulfur at +2.47 where Mulliken says
     +1.06, oxygen in water at −0.89 where Mulliken says −0.29.
+  - **Wiberg bond orders and natural electron configurations** come with it.
+    Dinitrogen reads 3.03, aspirin's two carbonyls 1.81 and 1.71, its aromatic
+    ring 1.44–1.47, its acid O–H 0.69. The configurations show where the
+    electrons actually sit — `O [core] 2s( 1.75) 2p( 5.12)` — which is how you
+    see a formally d⁷ cobalt(II) holding 7.7 d electrons because its ammine
+    ligands are donating.
   - **Analysis is retroactive.** The input is the `.gbw` every run already
     writes, so this applies to calculations you finished months ago, with
     nothing to re-run. Checked on real output up to 1644 basis functions.

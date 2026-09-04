@@ -239,7 +239,7 @@ orcamgr/
     store.py                  shared queue (single source of truth) + session autosave
   mlip/                       MLIP (MACE) env detection + relaxation runner/parser
   crest/                      CREST conformer search via WSL (env/installer/runner/parser)
-  nbo/                        natural atomic orbitals + NPA charges, in-process (no NBO licence)
+  nbo/                        natural atomic orbitals: NPA charges, Wiberg bond orders (no NBO licence)
   openwith.py                 hand a generated file to the user's own viewer / file manager
   server/                     optional phone-sync HTTP layer (FastAPI; not in the build)
   gui/

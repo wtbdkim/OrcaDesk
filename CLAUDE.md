@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 868 tests over the framework-free layers
+python -m pytest                       # 885 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -1312,6 +1312,33 @@ Three things here are easy to get wrong and were:
   summing to its own key — a test pins that). Iodine keeps 4s/5s/4p/5p/4d;
   counting from 1s would push real valence shells into the Rydberg set. An
   unrecognized core is refused, never guessed.
+
+`population.py` reads chemistry off that basis, and is short because the NAO
+layer did the work. **Wiberg bond orders** are the summed squares of the
+NAO-basis density between two atoms' orbitals — a formula that means nothing in
+a non-orthogonal basis, which is why ORCA's Mayer bond orders (overlap-corrected
+instead) are a different number for the same bond, and why a paper asking for
+"Wiberg index in the NAO basis" wants this one. `natural_valences` sums a row;
+`wiberg_bonds` filters by `BOND_THRESHOLD` (0.1 — deliberately inclusive, so
+1,3 neighbours do come through; `wiberg_bond_orders` returns the whole matrix
+and judges nothing). **`atom_populations`** gives the per-atom table: charge,
+the core/valence/Rydberg split, and the natural electron configuration
+(`[core] 2s( 1.75) 2p( 5.12)`).
+
+The core/valence split is `core_shell_counts` — the preceding noble gas, counted
+in **absolute** shells (1s is the 1st s, 4s the 4th) and therefore *not*
+ECP-adjusted: a replaced shell is core and is already absent from the basis, and
+subtracting it again left iodine with no core at all. The rule puts a transition
+metal's (n−1)d and ns both in the valence, where chemistry wants them; its one
+arguable result is iodine's filled 4d landing in the valence (4d is not in
+krypton) where some programs call it core. Only the subtotals move — every shell
+is printed with its own occupancy, and no charge or bond order depends on it.
+
+Bond orders are the one part of this package with unambiguous right answers, so
+they are tested against the answers: N₂ = 3.03, HI = 0.99, water O–H = 0.81,
+benzene C–C = 1.44, aspirin's two carbonyls 1.81/1.71. The strongest check is
+that natural valences reproduce the periodic table without being told it —
+aspirin's carbons come out 3.83–4.03, oxygens 2.01–2.19, hydrogens 0.75–0.95.
 
 **Validation is by property, not by table.** There is no NBO program here to
 compare against and the weighted orthogonalization is under-specified in the
