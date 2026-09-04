@@ -133,6 +133,17 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
   pre-optimization** stay with the method, since they are band parameters.
 
 ### Fixed
+- **File dialogs open at your workspace.** The Results tab's *Open file…* and
+  the Build tab's *Load .inp* used to start wherever Qt happened to be last —
+  the install directory on a fresh session — so reaching a result meant
+  navigating back to the workspace by hand every time, even though nearly
+  everything worth opening is a run folder under it. All three loaders now
+  share one rule (*Load .xyz* already followed it). A workspace that has gone
+  away — an unplugged drive, a folder moved between sessions — is deliberately
+  not passed on: Qt would take the missing path as the starting point and open
+  on an empty view, which is worse than no hint, so the dialog falls back to
+  its own default. The ORCA-executable and MLIP-interpreter pickers are
+  untouched: those live in an install tree, not the workspace.
 - **The front-end test runner could report a red test as green.** The summary
   block in `tests/web/scf_graph.test.js` — the line count *and* the
   `process.exitCode = 1` — had drifted into the middle of the file, with one

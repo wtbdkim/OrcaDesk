@@ -424,6 +424,29 @@ class Bridge(QObject):
         return json.dumps(AutodetectResult(ok=False, path=""))
 
     # --- file pickers ---
+    def _dialog_start_dir(self) -> str:
+        """Directory a file dialog should open at: the workspace, when it is set
+        and still there. Results, inputs and structures all live under
+        ``{workspace}/{name}/``, so a dialog that starts anywhere else makes the
+        user navigate back to the workspace by hand every single time.
+
+        A workspace that has gone away - an unplugged drive, a folder moved
+        between sessions - is deliberately NOT handed to Qt: it would take the
+        missing path as the starting point and open on an empty view, which is
+        worse than no hint at all. "" lets Qt fall back to its own last-used
+        directory. Never raises: a malformed path must not stop a dialog from
+        opening (P32).
+
+        Only for dialogs looking for the user's OWN calculation files. The ORCA
+        executable and an MLIP interpreter live in an install tree, not the
+        workspace, so their pickers keep Qt's default.
+        """
+        root = (self.settings.workspace_root or "").strip()
+        try:
+            return root if root and Path(root).is_dir() else ""
+        except OSError:
+            return ""
+
     @pyqtSlot(result=str)
     def pick_orca_executable(self) -> str:
         filt = "ORCA executable (orca.exe);;All files (*.*)"
@@ -862,7 +885,7 @@ class Bridge(QObject):
         """Pick a .xyz file; returns a LoadResult JSON. The dialog opens at the
         current workspace for convenience; loading does not change it."""
         path, _ = QFileDialog.getOpenFileName(
-            self.window, "Load .xyz file", self.settings.workspace_root or "",
+            self.window, "Load .xyz file", self._dialog_start_dir(),
             "XYZ file (*.xyz);;All files (*.*)"
         )
         return self._load_result(path)
@@ -870,9 +893,11 @@ class Bridge(QObject):
     @pyqtSlot(result=str)
     def load_inp_file(self) -> str:
         """Pick a complete ORCA .inp; returns a LoadResult JSON (its "name"
-        lets expert/raw mode auto-fill the calculation name)."""
+        lets expert/raw mode auto-fill the calculation name). Opens at the
+        workspace like the .xyz loader (_dialog_start_dir)."""
         path, _ = QFileDialog.getOpenFileName(
-            self.window, "Load ORCA .inp file", "", "ORCA input (*.inp);;All files (*.*)"
+            self.window, "Load ORCA .inp file", self._dialog_start_dir(),
+            "ORCA input (*.inp);;All files (*.*)"
         )
         return self._load_result(path)
 
@@ -934,9 +959,14 @@ class Bridge(QObject):
         Closing the picker is a deliberate choice, not a parse failure — a bare
         "{}" was indistinguishable from a bad parse and made the UI log a
         spurious error on every cancel (A2).
+
+        Opens at the workspace (_dialog_start_dir): nearly every result worth
+        opening by hand is a run folder under it, and this dialog used to start
+        wherever Qt happened to be last — the install directory, on a fresh
+        session.
         """
         path, _ = QFileDialog.getOpenFileName(
-            self.window, "Open a result file", "",
+            self.window, "Open a result file", self._dialog_start_dir(),
             "Results (*.out *.mlip.json *.xyz);;ORCA output (*.out);;"
             "MLIP result (*.mlip.json);;Structure (*.xyz);;All files (*.*)"
         )

@@ -179,7 +179,9 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
     ones — a calculation cleared from the queue, or one from an earlier session,
     opens in a click — and one *Open file…* button reads a result from anywhere
     on disk: an ORCA `.out`, an MLIP result, a CREST search, or a `.xyz`, which
-    goes straight to Visual.
+    goes straight to Visual. That button, and the Build tab's *Load .xyz* /
+    *Load .inp*, all open **at your workspace** rather than wherever the last
+    dialog happened to be.
 - **Settings**: ORCA executable path, **MLIP environments** (create one for CPU
   or GPU in a click, or register your own MACE-capable Python interpreters;
   backends are auto-detected), workspace folder,
