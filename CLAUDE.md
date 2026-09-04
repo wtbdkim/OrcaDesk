@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 907 tests over the framework-free layers
+python -m pytest                       # 937 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -1348,6 +1348,54 @@ the same NPA charge (0.036 e) where Mulliken lurches (0.339 e). Conservation,
 occupancies ≤ 2, and >99% of the density in the minimal basis hold across the
 fixtures and across 12 real corpus wavefunctions up to 1644 basis functions
 (~10 s at that size; 0.08 s at 117).
+
+`lewis.py` finds the **Lewis structure** in the NAO-basis density and completes
+it into a full orthonormal NBO basis; `perturbation.py` turns that into the
+second-order donor→acceptor table (`ΔE(2) = −q·F²/Δε`, kcal/mol) that is what
+people mean by "NBO analysis". The search is cores as they stand → lone pairs
+(one-atom blocks) → bonds (two-atom blocks), repeated, at a threshold; a bond's
+two halves are the atoms' **hybrids** (`sp2.48`) and their orthogonal
+combination is the **antibond**. Three decisions here were each forced by a
+failure and are load-bearing:
+- **Accepted orbitals are projected out (`Q P Q`), not subtracted.** The
+  papers' depletion leaked: a lone pair the threshold had just missed on its
+  own atom reappeared in the next diatomic block as a rotated copy with 16%
+  borrowed carbon and was accepted as a third "bond" — the orbitals overlapped
+  by 0.17, i.e. several descriptions of one density. Projection makes that
+  impossible and gives orthonormality to 1e-16 with no cleanup step.
+- **The threshold is a ladder (1.90 … 1.30) and the first *complete* rung
+  wins** (one orbital per electron pair, or per electron for one spin). A
+  delocalized system has no orbital above 1.90 in any diatomic block —
+  benzene's Kekulé π bonds hold 1.66, an amide's N lone pair 1.73 — so the
+  ladder descends; because projection makes over-assignment impossible, the
+  first complete structure is the best one. Formamide has three candidate
+  resonance forms and this picks the canonical amide at 1.70; "most Lewis
+  electrons" picked the zwitterion.
+- **Open shells get one Lewis structure per spin** (thresholds halved). The
+  total density with a two-electron threshold cannot see an unpaired electron
+  (H₂O⁺ came out four orbitals of five); the β structure is legitimately a
+  lone pair short, and its hole shows up as an empty `LP*` on the oxygen.
+
+The non-Lewis space is built **rank-exact**: its rank is `n_minimal − n_lewis`
+the moment the Lewis structure is, antibonds are symmetrically orthogonalized
+when independent and Gram-Schmidt-ed when not (renormalizing a rank-deficient
+symmetric step produced a basis 0.8 off orthonormal), and leftover `LP*`
+orbitals are the eigenvalue-1 directions of the remaining projector, read once
+(a per-atom loop counted one direction from two atoms: 773 orbitals for 772
+functions). The search runs inside the minimal basis — aspirin took 36 s over
+the full 451 functions and 0.2 s over its 73 minimal ones.
+
+Validation is against Lewis structures every chemist can draw, plus the one
+number the package exists for: water (2 LP, 2 BD at 72% O, `sp3`), N₂ (2 LP,
+3 BD at 50/50, one σ + two pure-p π), HI, a Kekulé benzene (π\* each 0.33 e),
+and formamide — LP(N) 1.73, a pure-p C=O π bond with **0.26 e in π\***, and
+**LP(N) → π\*(C=O) = 63.7 kcal/mol** where the literature puts amide resonance
+at 55–65; benzene π→π\* 32.3 × 6 by symmetry. **A strongly delocalized ring can
+legitimately come out incomplete** (a substituted aromatic H-bonded to an
+acid catalyst: 87 of 88, one ring π unassignable at any rung) — that is
+reported as a warning with the best structure, never papered over; the NBO
+program reports partial structures for such cases too. 1644 basis functions:
+~7 s for the whole search.
 
 `source.py` is the way **in** and `analysis.py` the way **out**, so nothing in
 between has to know where a wavefunction comes from or who is asking.

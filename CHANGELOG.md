@@ -164,6 +164,18 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
     *positive*. NPA moves by 0.06 over the same span, and finds polarity the
     others understate — sulfuric acid's sulfur at +2.47 where Mulliken says
     +1.06, oxygen in water at −0.89 where Mulliken says −0.29.
+  - **Natural bond orbitals and the second-order donor–acceptor table** — the
+    part of an NBO run people actually quote. ORCAdesk finds the Lewis
+    structure in the density (cores, lone pairs, bonds with their `sp2.48`
+    hybrids and polarities, antibonds), then puts a kcal/mol on every
+    delocalization the Lewis structure leaves out. Formamide's amide resonance,
+    LP(N) → π\*(C=O), comes out at **63.7 kcal/mol** (literature: 55–65);
+    benzene's π → π\* at 32.3, six times by symmetry; the nitrogen lone pair
+    holding 1.73 electrons with the missing 0.27 found sitting in π\*. A
+    delocalized system is handled by lowering the occupancy threshold until a
+    complete structure appears (a Kekulé benzene at 1.60), and one that never
+    completes — a substituted ring hydrogen-bonded to an acid — is reported as
+    such rather than papered over. Open shells get one Lewis structure per spin.
   - **Wiberg bond orders and natural electron configurations** come with it.
     Dinitrogen reads 3.03, aspirin's two carbonyls 1.81 and 1.71, its aromatic
     ring 1.44–1.47, its acid O–H 0.69. The configurations show where the
