@@ -50,6 +50,7 @@ interface OrcaBridge {
   // the Results tab's one file button: picks a result file and says how to read
   // it — {ok, path, route:"parse"|"structure"} | {ok:false, cancelled:true}
   pick_result_file(): Promise<string>;                        // PickedResultPayload JSON
+  pick_result_folder(): Promise<string>;                      // PickedResultPayload JSON (route "parse")
   parse_out_path(path: string): Promise<string>;
   parse_calc_output(name: string): Promise<string>;
   build_inp_preview(calcJson: string): Promise<string>;

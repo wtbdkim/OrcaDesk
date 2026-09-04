@@ -812,6 +812,22 @@ function renderInputEcho(keywords, block) {
 async function openOutFile() {
   /** @type {PickedResultPayload} */
   let r; try { r = JSON.parse(await bridge.pick_result_file()); } catch { return; }
+  await _openPicked(r);
+}
+
+/** Results header: open a run FOLDER. ORCAdesk finds the result file inside
+ *  it (bridge.pick_result_folder), so the user names the run, not the file
+ *  the parser happens to read — the picker refuses a folder with nothing to
+ *  read and says what would have worked. Same tail as the file picker. */
+async function openResultFolder() {
+  /** @type {PickedResultPayload} */
+  let r; try { r = JSON.parse(await bridge.pick_result_folder()); } catch { return; }
+  await _openPicked(r);
+}
+
+/** What both pickers do with what was picked: route it and show it.
+ *  @param {PickedResultPayload} r */
+async function _openPicked(r) {
   if (r.cancelled) return;   // user closed the picker — not an error
   if (!r.ok || !r.path) { failNotify(r.error || "Could not open that file."); return; }
   if (r.route === "structure") return openStructureFile(r.path);

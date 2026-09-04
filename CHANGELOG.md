@@ -6,6 +6,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [0.8.0-beta] — 2026-09-04
 
 ### Added
+- **Open a result by its folder.** The Results tab's picker row gains *Open
+  folder…* beside *Open file…*: point it at a run folder and ORCAdesk finds
+  the result inside it — its own `{name}.out` / `{name}.mlip.json`, or, for a
+  run ORCA wrote by hand, the `.out` the folder holds (the newest, if
+  several). A folder with nothing to read is refused with a sentence that
+  says what would have worked. Until now the only way in was to know which
+  file the parser reads and pick that.
 - **Electrostatic potential maps.** The Results tab gains an **Electrostatic
   potential map** section of its own, directly under *Final geometry*: the
   electron-density surface coloured by the molecule's electrostatic potential —
@@ -201,6 +208,21 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
     second-order table, strongest interaction first. An open-shell result
     gets one Lewis structure and one table per spin. A result with no
     wavefunction file, or from a run that did not converge, says so.
+  - **Every natural bond orbital can be drawn in 3D.** The Lewis table has a
+    *View* button per orbital; it opens the same viewer as the canonical
+    orbitals, with the whole Lewis structure as the list to step through,
+    and follows the *Opening structures and maps* setting like every other
+    3D row. `orca_plot` cannot draw these — it plots only what the `.gbw`
+    holds — so ORCAdesk evaluates the orbital on the grid itself, on the
+    same box orca_plot uses, and writes an ordinary cube beside the run
+    (`cubes/{name}.nbo7a.g60.cube`). The evaluator was checked against
+    orca_plot's own cubes on a water molecule turned off every symmetry axis
+    so that every f and g component contributes: it reproduces them to the
+    five digits orca_plot prints, which pinned two things ORCA's Molden files
+    do not document (the g normalization and the sign of the f(±3), g(±3),
+    g(±4) components). A cube from an older analysis is regenerated rather
+    than shown under a new label. About a second on a small molecule, three
+    on 1,600 basis functions.
 
   The numbers are ORCAdesk's own and are not claimed to match the NBO program
   digit for digit; the weighted orthogonalization at the heart of the method

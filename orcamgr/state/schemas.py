@@ -512,10 +512,12 @@ class StructureSetsResult(_Ok, total=False):
 
 
 class PickedResultPayload(_Ok, total=False):
-    """pick_result_file — the Results tab's one *Open file…* button. "route" is
-    "parse" (an .out / .mlip.json, read by the parser into the Output mode) or
-    "structure" (a .xyz, opened in the 3D viewer); "cancelled" marks a closed
-    picker, which is a choice rather than a failure."""
+    """pick_result_file / pick_result_folder — the Results tab's two pickers.
+    "route" is "parse" (an .out / .mlip.json, read by the parser into the
+    Output mode) or "structure" (a .xyz, opened in the 3D viewer); a folder
+    always resolves to the result file inside it, so it is always "parse".
+    "cancelled" marks a closed picker, which is a choice rather than a
+    failure."""
     cancelled: bool
     error: str
     path: str
@@ -691,6 +693,8 @@ class NboHybridPayload(TypedDict):
 
 class NboOrbitalPayload(TypedDict):
     label: str                # "BD (1) C1-O2"
+    index: int                # position in its spin's NBO basis -- what a
+                              # generate_cube {kind: "nbo"} request names
     kind: str                 # CR | LP | BD | BD* | LP*
     atoms: "list[int]"
     occupancy: float

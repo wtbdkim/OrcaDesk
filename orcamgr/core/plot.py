@@ -101,11 +101,20 @@ _BAD_MO = "Invalid MO requested for plot"
 
 PLOT_KINDS = ("mo", "eldens", "spindens", "esp")
 
+#: A natural bond orbital. NOT an orca_plot kind -- orca_plot draws only what
+#: the .gbw holds, and an NBO is ORCAdesk's own vector -- so it is written in
+#: process by orcamgr.nbo.cubes. It is named here all the same, because the
+#: viewer addresses every cube through one request shape and one filename
+#: rule, and a second copy of that rule would be a second source of truth.
+NBO_KIND = "nbo"
+CUBE_KINDS = PLOT_KINDS + (NBO_KIND,)
+
 #: Human labels for the kinds, for log lines and viewer titles.
 KIND_LABELS = {"mo": "Molecular orbital",
                "eldens": "Electron density",
                "spindens": "Spin density",
-               "esp": "Electrostatic potential"}
+               "esp": "Electrostatic potential",
+               NBO_KIND: "Natural bond orbital"}
 
 #: The SCF density orca_plot's ESP prompt is answered with. It is the density
 #: the menu itself lists as available for "(scf) electron density" (``scfp``),
@@ -115,8 +124,8 @@ _SCF_DENSITY_SUFFIX = ".scfp"
 
 @dataclass
 class CubeRequest:
-    """What to plot. ``index``/``operator`` apply to ``kind == "mo"`` only
-    (operator 0 = alpha or closed-shell, 1 = beta)."""
+    """What to plot. ``index``/``operator`` apply to ``kind == "mo"`` and
+    ``"nbo"`` only (operator 0 = alpha or closed-shell, 1 = beta)."""
     kind: str = "mo"
     index: int = 0
     operator: int = 0
@@ -125,7 +134,7 @@ class CubeRequest:
     def normalized(self) -> "CubeRequest":
         """Clamp to what the menu sequences actually accept. This is the trust
         boundary — the request arrives as JSON from the front-end (P34)."""
-        kind = self.kind if self.kind in PLOT_KINDS else "mo"
+        kind = self.kind if self.kind in CUBE_KINDS else "mo"
         grid = min(GRID_CHOICES,
                    key=lambda g: abs(g - int(self.grid or default_grid_for(kind))))
         return CubeRequest(kind=kind, index=max(0, int(self.index or 0)),
@@ -147,6 +156,10 @@ def plot_output_name(base: str, req: CubeRequest) -> str:
     than ``water.esp.cube``. Verified against ORCA 6.1.1."""
     if req.kind == "mo":
         return f"{base}.mo{req.index}{'b' if req.operator else 'a'}.cube"
+    if req.kind == NBO_KIND:
+        # ORCAdesk's own, shaped like the MO name so the viewer's list treats
+        # the two the same way; orca_plot never writes this file.
+        return f"{base}.nbo{req.index}{'b' if req.operator else 'a'}.cube"
     if req.kind == "esp":
         return f"{base}{_SCF_DENSITY_SUFFIX}.esp.cube"
     return f"{base}.{req.kind}.cube"
@@ -184,6 +197,9 @@ def _menu_sequence(req: CubeRequest, base: str = "") -> str:
                docstring describes. Observed while adding this kind.
     Finally ``11`` generates the plot and ``12`` exits.
     """
+    if req.kind == NBO_KIND:
+        raise ValueError("a natural bond orbital is not an orca_plot kind")
+
     head = f"5\n7\n4\n{req.grid}\n"
     if req.kind == "mo":
         body = f"1\n1\n3\n{req.operator}\n2\n{req.index}\n"
@@ -288,6 +304,9 @@ def generate_cube(orca_path: str | Path, run_dir: str | Path, base: str,
     channel back to the UI is a status dict.
     """
     req = req.normalized()
+    if req.kind == NBO_KIND:
+        return {"ok": False, "error": "Natural bond orbitals are drawn by "
+                                      "ORCAdesk itself, not by orca_plot."}
     run_dir = Path(run_dir)
     dest = Path(dest_dir) if dest_dir else (run_dir / "cubes")
     produced_name = plot_output_name(base, req)   # what orca_plot writes

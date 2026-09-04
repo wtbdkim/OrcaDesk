@@ -454,6 +454,7 @@ async function _mvVolSetup(what) {
   _mvVolGrid = opts.default_grid || 60;
   // per-kind grid + the ESP conventions, all decided by the backend (P4)
   _mvGridByKind.mo = _mvGridByKind.eldens = _mvGridByKind.spindens = _mvVolGrid;
+  _mvGridByKind.nbo = _mvVolGrid;
   _mvGridByKind.esp = opts.esp_grid || 40;
   _mvEspSurfaceIso = opts.esp_surface_iso || 0.002;
   _mvEspRange = opts.esp_range || 0.05;
@@ -506,6 +507,38 @@ async function viewEspMap() {
   if (!_mvOpenStage((opts.base || "") + " — ESP map")) return;
   _mvVolSelect(0);
   _mvVolDraw(_mvVolPicks[0], got);
+}
+
+/** Open the viewer on one natural bond orbital, with the rest of its spin's
+ *  NBO list to step through. The picks come from the Results tab's NBO card
+ *  (`nboOrbital3D`), which holds the analysis; the cubes are ORCAdesk's own,
+ *  written in process rather than by orca_plot, but they ride the same
+ *  generate/poll/fetch path as every other pick — only the backend differs.
+ *  @param {MvPick[]} picks @param {number} start which pick opens
+ *  @param {string} [title] */
+async function viewNboOrbitals3D(picks, start, title) {
+  const opts = await _mvVolSetup("3D natural bond orbitals");
+  if (!opts) return;
+  if (!picks || !picks.length) { failNotify("No natural bond orbitals to draw."); return; }
+  _mvVolPicks = picks;
+  const i = Math.max(0, Math.min(picks.length - 1, Number(start) || 0));
+  // plot first, open onto it: the card's button reports the wait meanwhile
+  const got = await _mvVolFetch(picks[i], _mvGridFor("nbo"), ++_mvVolSeq);
+  if (!got) return;
+  _mvListVisible(true);
+  renderMvList();
+  if (!_mvOpenStage((opts.base || "") + " — " + (title || "natural bond orbitals"))) return;
+  _mvVolSelect(i);
+  _mvVolDraw(picks[i], got);
+}
+
+/** The natural bond orbital's cube, generated if needed, as a path for the
+ *  user's own program (P5) — the NBO counterpart of orbitalCubeForExternal.
+ *  @param {MvPick} pick @returns {Promise<string>} "" on failure */
+async function nboCubeForExternal(pick) {
+  const opts = await _mvVolSetup("3D natural bond orbitals");
+  if (!opts) return "";
+  return await _mvCubePath(pick, _mvGridFor("nbo"), ++_mvVolSeq, pick.label);
 }
 
 /** Generate the orbital cube ORCAdesk would have drawn, and give back its path
@@ -607,8 +640,9 @@ function _mvCubeName(p, grid, base) {
   const b = base || _mvVolBase;
   // orca_plot names an ESP after the DENSITY it came from, not after the plot
   // type — water.scfp.esp.cube, not water.esp.cube (core/plot.plot_output_name).
-  const stem = p.kind === "mo"
-    ? b + ".mo" + p.index + (p.operator ? "b" : "a")
+  // a natural bond orbital is ORCAdesk's own cube, named like an MO's
+  const stem = (p.kind === "mo" || p.kind === "nbo")
+    ? b + "." + p.kind + p.index + (p.operator ? "b" : "a")
     : (p.kind === "esp" ? b + ".scfp.esp" : b + "." + p.kind);
   return stem + ".g" + g + ".cube";
 }
@@ -874,6 +908,9 @@ function _mvVolBusyOverlay(on, label, kind) {
         ? "Two grids: the electron density, then the potential over it. The "
           + "potential is a Coulomb sum at every grid point — minutes on a large "
           + "molecule, and longer at a finer grid."
+        : kind === "nbo"
+        ? "ORCAdesk is evaluating the orbital on the grid — a few seconds. The "
+          + "first orbital of a result also rebuilds its NBO basis once."
         : "ORCA is computing the grid. An orbital takes about a second; an "
           + "electron density can take half a minute on a large molecule.";
     }

@@ -120,3 +120,10 @@ def test_no_cap_means_no_limit(tmp_path):
 def test_load_rejects_a_non_cube_without_reading_it_all(tmp_path):
     d = load_cube(_write(tmp_path, "garbage\n" * 10), "mo")
     assert d["ok"] is False and "text" not in d
+
+
+def test_an_nbo_draws_like_an_mo():
+    """Signed (two lobes) and opened at the orbital convention, which the
+    viewer then lowers to the enclosed-fraction fit as for any orbital."""
+    assert "nbo" in SIGNED_KINDS
+    assert DEFAULT_ISOVALUES["nbo"] == DEFAULT_ISOVALUES["mo"]

@@ -39,7 +39,7 @@ python -m PyInstaller build.spec --noconfirm
 npx -p typescript tsc --noEmit -p jsconfig.json
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 937 tests over the framework-free layers
+python -m pytest                       # 1001 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -205,7 +205,9 @@ parse as a conformer search.
 **The result picker lists more than the queue.** Those same surviving folders
 are results the user still wants — `bridge.list_workspace_results()` scans
 `{workspace}/*/` for `{name}.mlip.json` else `{name}.out` (newest first, capped
-at `_WORKSPACE_SCAN_MAX`) and the Results `<select>` shows them in two
+at `_WORKSPACE_SCAN_MAX`; the folder convention itself is
+`orcamgr/resultfolder.py` `result_artifact`, shared with the folder picker
+below) and the Results `<select>` shows them in two
 `<optgroup>`s. The grouping is the parse-route split above, not decoration:
 an option's value is a **source string** (`calc:<name>` / `file:<path>`, the
 same addressing the cube slots take), and `queued` comes from the store, never
@@ -219,12 +221,21 @@ only `.out`/`.mlip.json` under the workspace root, so an option merely *inserted
 into the live `<select>` was lost on the next tab entry — and never survived at
 all for a `.xyz`, which the scan does not list.
 
-*Open file…* is **one** button for both modes because the user is choosing a
-result, not a route: `bridge.pick_result_file()` picks the file and returns
+*Open file…* and *Open folder…* are two pickers over **one** route for both
+modes, because the user is choosing a result, not a way of reading it:
+`bridge.pick_result_file()` picks the file and returns
 `{route: "parse"|"structure"}` by suffix, and the front-end reads it through
-`parse_out_path` or `get_structure_frames`. A `.xyz` becomes the shown result in
+`parse_out_path` or `get_structure_frames` (`_openPicked`, the tail both
+share). A `.xyz` becomes the shown result in
 Visual mode with nothing parsed (`_currentResult = null`), which is also the
 route `showWorkspaceResult` takes when such a path is re-picked.
+`bridge.pick_result_folder()` names a **run folder** instead and resolves it
+to the result file inside (`resultfolder.find_result`: the convention above
+first, then the folder's only — or newest — `.out`, since an ORCA run made by
+hand names its output freely), always the parse route; a folder holding
+nothing to read is refused with the sentence that says what would have
+worked. The picker does not take structure-only folders: Visual already
+lists every `.xyz` set beside a result.
 
 Both parse paths
 send the *whole* `ParseResult` (every section the parser found) plus two gating flags
@@ -1141,7 +1152,8 @@ Measured cost of what it covers: a density on a 144-atom / 3648-BF system is
 
 **Bridge slots**: `list_structure_sets(source)` / `get_structure_frames(path)`
 (the Visual mode's discovery and its one opener),
-`pick_result_file()` (the tab's one file button; routes by suffix),
+`pick_result_file()` / `pick_result_folder()` (the tab's two pickers: a file
+routes by suffix, a folder resolves to the result inside it),
 `get_plot_options(source)` (base, has_gbw, the kinds this
 wavefunction supports — spin density only when the run is open-shell — grids,
 and the cubes already on disk), `generate_cube(payload)` / `get_cube_status()` /
@@ -1436,6 +1448,47 @@ another's name. `web/nbo_render.js` caches by source string for the session
 own on-disk cache makes the first click on an already-analysed run ~4 ms.
 Wire shapes: `NboJobPayload` / `NboResultPayload` (+ the atom / orbital /
 interaction / Lewis rows) in `state/schemas.py`, mirrored in `web/types.js`.
+
+**An NBO can be drawn in 3D, and orca_plot cannot draw it.** orca_plot plots
+only what the `.gbw` holds; an NBO is ORCAdesk's own vector. So `nbo/grid.py`
+evaluates the basis itself — numpy only, chunked by x-slab so a 60³ grid
+never forms the `(points × nbf)` matrix (3.2 s at 1644 basis functions) —
+and writes the same orbital-variant cube orca_plot writes, on **orca_plot's
+own box** (bounding box ± 7 Bohr, `BOX_MARGIN_BOHR`) so the two kinds of
+cube coincide. Two conventions in it are *measured*, not assumed, by
+fitting orca_plot's MO cubes of a water molecule rotated off every symmetry
+axis back onto the evaluator (residual 1e-6 against five printed digits):
+ORCA's Molden coefficients carry `(2α/π)^¾ (4α)^(l/2)` and the Racah solid
+harmonic is divided by `√((2l−1)!!)` — except that the **g** coefficient is
+written `1/√3` smaller, so g divides by `√35`; and **f(±3), g(±3), g(±4) are
+sign-flipped** relative to the standard real harmonics (`_ORCA_SIGN`).
+`tests/test_nbo_grid.py` keeps two of those cubes as fixtures and reproduces
+them to 5e-6; h functions and Cartesian d/f are refused, never guessed.
+None of this touches the analysis, which never evaluates a function.
+
+`nbo/cubes.py` is the in-process twin of `core/plot.generate_cube`, and the
+request rides the **same** cube pipeline: `kind: "nbo"` is a `CUBE_KINDS`
+member named in `core/plot.py` (`{base}.nbo7a.g60.cube`, so `_mvCubeName`
+mirrors one rule) but not a `PLOT_KINDS` one — `_menu_sequence` raises and
+`generate_cube` refuses it, and `bridge.generate_cube` branches to
+`generate_nbo_cube` under the same `_cube_lock`, status and fetch-once
+data path. `index` is the orbital's position in its spin's `NboBasis`
+(`OrbitalRow.index`, cache format 3) and `operator` the spin, exactly as an
+MO is addressed. Because that index is a position the Lewis search
+assigned rather than a physical label, reuse is stricter than for an MO
+cube: the file must be newer than the `.gbw` **and** its first line must
+name the analysis format that wrote it (`GENERATOR_LINE`). The AO-basis
+vector comes from `NboOrbitalSet` (`analysis.py`: wavefunction + NAO + the
+per-spin bases, `ao_coefficients = C_NAO · C_NBO[:, k]`), which the bridge
+keeps in memory for the last analysed result (`_nbo_sets`, one entry,
+checked against the `.gbw` mtime; `analysis_for(keep=…)` hands it over when
+a fresh analysis builds one, so the first cube after an analysis costs no
+second search; a cube for another result rebuilds it in seconds). The card's
+Lewis table gets a *View* button per orbital (`nboOrbital3D` in
+`nbo_render.js` → `viewNboOrbitals3D` in `molviewer.js`, the spin's whole
+list as picks so ←/→ step through them); it follows `viewer_target` like a
+Visual row (`nboCubeForExternal` + `openExternally`), and reports the wait
+on the button that was clicked without re-rendering the tables.
 
 `warnings` is the honest half: below 99% of the density in the minimal basis the
 molecule is not atoms-plus-corrections and the analysis says so rather than
