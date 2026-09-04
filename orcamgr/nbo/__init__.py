@@ -24,6 +24,11 @@ Layers, bottom up:
   the NPA charges they give.
 * :mod:`~orcamgr.nbo.population` - read chemistry off them: Wiberg bond orders,
   natural valences, natural electron configurations.
+* :mod:`~orcamgr.nbo.lewis` - find the Lewis structure in that density (cores,
+  lone pairs, bonds with their hybrids) and complete it into a full orthonormal
+  NBO basis (antibonds, leftover valence, Rydberg).
+* :mod:`~orcamgr.nbo.perturbation` - the second-order donor/acceptor table: the
+  Fock matrix in the NBO basis, one formula, kcal/mol.
 * :mod:`~orcamgr.nbo.source` - the way in: convert a finished run's ``.gbw``
   with ``orca_2mkl``, so nothing above ever has to know where a wavefunction
   comes from.

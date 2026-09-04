@@ -36,13 +36,15 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .nao import NaturalAtomicOrbitals, natural_atomic_orbitals
+from .lewis import NboBasis, natural_bond_orbitals
+from .perturbation import second_order_interactions
 from .population import AtomPopulation, atom_populations, wiberg_bonds
 from .source import wavefunction_for
 from .wavefunction import Wavefunction, WavefunctionError
 
 #: Bumped when a change to the analysis would alter published numbers. A cache
 #: written by a different format is recomputed, never merged.
-CACHE_FORMAT = 1
+CACHE_FORMAT = 2
 
 CACHE_SUFFIX = ".nbo.json"
 
@@ -54,6 +56,100 @@ class NaoRow:
     element: str
     label: str                  # "O 2p"
     occupancy: float
+
+
+@dataclass
+class HybridRow:
+    """One atom's half of a bond orbital, as shown: ``72% O (sp3.21)``."""
+    atom: int
+    element: str
+    share: float
+    label: str
+
+
+@dataclass
+class OrbitalRow:
+    """One natural bond orbital worth listing: every Lewis orbital, every
+    antibond and leftover valence orbital. Rydberg orbitals are summarized
+    instead -- there are more of them than of everything else together."""
+    label: str                  # "BD (1) C1-O2"
+    kind: str                   # CR | LP | BD | BD* | LP*
+    atoms: list
+    occupancy: float
+    energy: float               # Hartree
+    hybrids: list = field(default_factory=list)   # HybridRow, BD/BD* only
+
+
+@dataclass
+class InteractionRow:
+    """One line of the second-order donor -> acceptor table."""
+    donor: str                  # "LP (1) N3"
+    acceptor: str               # "BD* (1) C1-O2"
+    energy_kcal: float
+    gap_hartree: float
+    fock_hartree: float
+
+
+@dataclass
+class LewisSummary:
+    """One spin's Lewis structure and what lies beyond it."""
+    spin: str                   # "" | "alpha" | "beta"
+    threshold: float            # the ladder rung that produced it
+    lewis_electrons: float
+    total_electrons: float
+    lewis_fraction: float
+    complete: bool              # one orbital per pair (or per electron)
+    rydberg_count: int
+    rydberg_electrons: float
+    orbitals: list = field(default_factory=list)       # OrbitalRow
+    interactions: list = field(default_factory=list)   # InteractionRow, strongest first
+
+
+#: Donor -> acceptor entries kept per spin. The full table on a large molecule
+#: runs to thousands; what is quoted is the top of it.
+MAX_INTERACTIONS = 100
+
+
+def _summarize(basis: NboBasis, elements: list) -> LewisSummary:
+    rows = []
+    for o in basis.orbitals:
+        if o.kind == "RY":
+            continue
+        rows.append(OrbitalRow(
+            label=o.label(elements), kind=o.kind, atoms=list(o.atoms),
+            occupancy=o.occupancy, energy=o.energy,
+            hybrids=[HybridRow(atom=h.atom, element=elements[h.atom],
+                               share=h.share, label=h.label) for h in o.hybrids]))
+    rydberg = [o for o in basis.orbitals if o.kind == "RY"]
+    n_lewis = sum(o.is_lewis for o in basis.orbitals)
+    expected = int(round(basis.total_electrons / (2.0 if basis.spin == "" else 1.0)))
+    inter = [InteractionRow(
+        donor=basis.orbitals[x.donor].label(elements),
+        acceptor=basis.orbitals[x.acceptor].label(elements),
+        energy_kcal=x.energy_kcal, gap_hartree=x.gap_hartree,
+        fock_hartree=x.fock_hartree)
+        for x in second_order_interactions(basis)[:MAX_INTERACTIONS]]
+    return LewisSummary(
+        spin=basis.spin, threshold=basis.threshold,
+        lewis_electrons=basis.lewis_electrons, total_electrons=basis.total_electrons,
+        lewis_fraction=basis.lewis_fraction, complete=(n_lewis >= expected),
+        rydberg_count=len(rydberg),
+        rydberg_electrons=float(sum(o.occupancy for o in rydberg)),
+        orbitals=rows, interactions=inter)
+
+
+def _lewis_from_dict(data: dict) -> LewisSummary:
+    return LewisSummary(
+        spin=str(data.get("spin", "")), threshold=float(data.get("threshold", 0.0)),
+        lewis_electrons=float(data.get("lewis_electrons", 0.0)),
+        total_electrons=float(data.get("total_electrons", 0.0)),
+        lewis_fraction=float(data.get("lewis_fraction", 0.0)),
+        complete=bool(data.get("complete", False)),
+        rydberg_count=int(data.get("rydberg_count", 0)),
+        rydberg_electrons=float(data.get("rydberg_electrons", 0.0)),
+        orbitals=[OrbitalRow(**{**row, "hybrids": [HybridRow(**h) for h in row.get("hybrids", [])]})
+                  for row in data.get("orbitals", [])],
+        interactions=[InteractionRow(**row) for row in data.get("interactions", [])])
 
 
 @dataclass
@@ -70,6 +166,9 @@ class NboAnalysis:
     atoms: list[AtomPopulation] = field(default_factory=list)
     bonds: list[tuple[int, int, float]] = field(default_factory=list)
     orbitals: list[NaoRow] = field(default_factory=list)
+    #: The Lewis structure(s): one for a closed shell, one per spin otherwise,
+    #: each with its orbitals and second-order interactions.
+    lewis: list = field(default_factory=list)          # LewisSummary
     diagnostics: dict = field(default_factory=dict)
     #: Sentences to show beside the numbers when they deserve less trust. Empty
     #: is the normal case; this reports rather than silently degrading (P2).
@@ -101,6 +200,7 @@ class NboAnalysis:
             atoms=[AtomPopulation(**row) for row in data.get("atoms", [])],
             bonds=[(int(i), int(j), float(o)) for i, j, o in data.get("bonds", [])],
             orbitals=[NaoRow(**row) for row in data.get("orbitals", [])],
+            lewis=[_lewis_from_dict(row) for row in data.get("lewis", [])],
             diagnostics=dict(data.get("diagnostics", {})),
             warnings=[str(w) for w in data.get("warnings", [])],
             source_mtime=float(data.get("source_mtime", 0.0)),
@@ -113,6 +213,8 @@ def analyze(wf: Wavefunction, base: str = "",
     nao: NaturalAtomicOrbitals = natural_atomic_orbitals(wf)
     diagnostics = nao.consistency()
     diagnostics["minimal_fraction"] = nao.minimal_fraction
+    lewis = [_summarize(b, wf.elements) for b in natural_bond_orbitals(nao)]
+    diagnostics["lewis_fraction"] = min(l.lewis_fraction for l in lewis)
     return NboAnalysis(
         base=base or Path(wf.source).stem,
         n_atoms=wf.n_atoms, n_basis=wf.n_basis,
@@ -123,8 +225,9 @@ def analyze(wf: Wavefunction, base: str = "",
         orbitals=[NaoRow(atom=int(nao.atom[i]), element=wf.elements[nao.atom[i]],
                          label=nao.labels[i], occupancy=float(nao.occupations[i]))
                   for i in range(wf.n_basis) if nao.minimal[i]],
+        lewis=lewis,
         diagnostics=diagnostics,
-        warnings=_warnings(diagnostics),
+        warnings=_warnings(diagnostics, lewis),
         source_mtime=source_mtime)
 
 
@@ -135,8 +238,23 @@ def analyze(wf: Wavefunction, base: str = "",
 MINIMAL_FRACTION_FLOOR = 0.99
 
 
-def _warnings(diagnostics: dict) -> list:
+def _warnings(diagnostics: dict, lewis: list = ()) -> list:
     out = []
+    for summary in lewis:
+        which = f" ({summary.spin})" if summary.spin else ""
+        usual = 1.90 if summary.spin == "" else 0.95
+        if not summary.complete:
+            out.append(
+                f"No single Lewis structure{which} accounts for every electron "
+                f"pair even at an occupancy threshold of {summary.threshold:.2f}: "
+                "this molecule is strongly delocalized, and the structure shown "
+                "is the best of several.")
+        elif summary.threshold < usual - 1e-9:
+            out.append(
+                f"The Lewis structure{which} was found at an occupancy threshold "
+                f"of {summary.threshold:.2f}, below the usual {usual:.2f}: some of "
+                "its orbitals are noticeably delocalized (an aromatic ring, an "
+                "amide, a conjugated system). The second-order table says where.")
     fraction = float(diagnostics.get("minimal_fraction", 1.0))
     if fraction < MINIMAL_FRACTION_FLOOR:
         out.append(
