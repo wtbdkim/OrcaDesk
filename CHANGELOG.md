@@ -192,10 +192,19 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
     build grows by roughly 15 MB. Nothing needs an integral library, so no
     compiled chemistry stack comes with it.
 
-  Not yet on screen — the Results tab shows none of it in this release. The
-  numbers are ORCAdesk's own and are not claimed to match the NBO program digit
-  for digit; the weighted orthogonalization at the heart of the method is not
-  specified to the last detail in the literature.
+  - **On the Results tab.** Output mode gains a *Natural bond orbital analysis*
+    card under the population sections. It opens as one button — the work is
+    seconds on most molecules, computed in the background with the rest of the
+    tab usable — and renders in place: NPA charges with each atom's natural
+    electron configuration and valence, the Wiberg bond orders, the Lewis
+    structure with every orbital's occupancy, energy and hybrids, and the
+    second-order table, strongest interaction first. An open-shell result
+    gets one Lewis structure and one table per spin. A result with no
+    wavefunction file, or from a run that did not converge, says so.
+
+  The numbers are ORCAdesk's own and are not claimed to match the NBO program
+  digit for digit; the weighted orthogonalization at the heart of the method
+  is not specified to the last detail in the literature, and the card says so.
 
 ### Fixed
 - **File dialogs open at your workspace.** The Results tab's *Open file…* and

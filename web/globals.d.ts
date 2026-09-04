@@ -95,6 +95,11 @@ interface OrcaBridge {
   // Write a parsed geometry into the run folder as <base>_structure.xyz, so it
   // can be handed to a program that reads files rather than payloads.
   save_structure_xyz(source: string, xyz: string): Promise<string>;  // SavedFileResult JSON
+  // Natural-orbital analysis (NPA / NBO / E(2)), computed in process from the
+  // run's .gbw on a background thread; poll get_nbo_status, fetch the result once.
+  run_nbo_analysis(source: string): Promise<string>;         // NboJobPayload JSON
+  get_nbo_status(): Promise<string>;                          // NboJobPayload JSON
+  get_nbo_result(): Promise<string>;                          // NboResultPayload JSON
   // run / results
   get_free_energy_profile(): Promise<string>;
   check_overwrite_conflicts(): Promise<string>;

@@ -717,6 +717,92 @@
  */
 
 /**
+ * run_nbo_analysis / get_nbo_status payload. Mirror of the Python
+ * NboJobPayload. state is "idle" | "running" | "done" | "error".
+ * @typedef {Object} NboJobPayload
+ * @property {string} state
+ * @property {string} [source]
+ * @property {string} [error]
+ * @property {number} [seconds]
+ */
+
+/**
+ * @typedef {Object} NboHybridPayload
+ * @property {number} atom
+ * @property {string} element
+ * @property {number} share
+ * @property {string} label
+ */
+
+/**
+ * @typedef {Object} NboOrbitalPayload
+ * @property {string} label
+ * @property {string} kind
+ * @property {number[]} atoms
+ * @property {number} occupancy
+ * @property {number} energy
+ * @property {NboHybridPayload[]} hybrids
+ */
+
+/**
+ * @typedef {Object} NboInteractionPayload
+ * @property {string} donor
+ * @property {string} acceptor
+ * @property {number} energy_kcal
+ * @property {number} gap_hartree
+ * @property {number} fock_hartree
+ */
+
+/**
+ * One spin's Lewis structure. Mirror of the Python NboLewisPayload.
+ * @typedef {Object} LewisSummaryPayload
+ * @property {string} spin
+ * @property {number} threshold
+ * @property {number} lewis_electrons
+ * @property {number} total_electrons
+ * @property {number} lewis_fraction
+ * @property {boolean} complete
+ * @property {number} rydberg_count
+ * @property {number} rydberg_electrons
+ * @property {NboOrbitalPayload[]} orbitals
+ * @property {NboInteractionPayload[]} interactions
+ */
+
+/**
+ * @typedef {Object} NboAtomPayload
+ * @property {number} index
+ * @property {string} element
+ * @property {number} charge
+ * @property {number} core
+ * @property {number} valence
+ * @property {number} rydberg
+ * @property {number} total
+ * @property {string} configuration
+ * @property {number} spin
+ * @property {number} valence_index
+ */
+
+/**
+ * get_nbo_result() payload. Mirror of the Python NboResultPayload
+ * (nbo.analysis.NboAnalysis.to_dict() plus the ok/error envelope).
+ * @typedef {Object} NboResultPayload
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {string} [base]
+ * @property {number} [n_atoms]
+ * @property {number} n_basis
+ * @property {number} n_electrons
+ * @property {number} [charge]
+ * @property {boolean} restricted
+ * @property {boolean} [has_ecp]
+ * @property {NboAtomPayload[]} atoms
+ * @property {number[][]} bonds
+ * @property {LewisSummaryPayload[]} lewis
+ * @property {Object<string, number>} diagnostics
+ * @property {string[]} [warnings]
+ */
+
+/**
  * get_cube_data() result. Mirror of the Python CubeDataResult. "text" is the
  * cube file verbatim, for 3Dmol's addVolumetricData(text, "cube"); "title" is
  * ORCA's own description of what it plotted; isovalue/signed seed the surface
