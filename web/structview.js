@@ -199,7 +199,7 @@ let _nebCheckSeq = 0;
 function applyNebCard() {
   const card = document.getElementById("card-neb");
   if (!card) return;
-  const kindEl = /** @type {HTMLSelectElement} */ (document.getElementById("calc-kind"));
+  const kindEl = document.getElementById("calc-kind");
   const isNeb = !!kindEl && kindEl.value === "neb_ts";
   const dft = (buildMode === "beginner" || buildMode === "expert");
   card.style.display = (isNeb && dft) ? "" : "none";

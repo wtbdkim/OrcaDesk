@@ -1624,7 +1624,7 @@ function setNebProductStatus() {
 function fnum(id, d) {
   const e = document.getElementById(id);
   if (!e) return d;
-  const x = parseFloat(/** @type {HTMLInputElement} */ (e).value);
+  const x = parseFloat(e.value);
   return Number.isFinite(x) ? x : d;
 }
 
@@ -1676,8 +1676,8 @@ function collectConfig(kind) {
  *  same answer, so it is derived once (P4).
  *  @returns {[number, number]} */
 function readChargeMult() {
-  let charge = parseInt(/** @type {HTMLInputElement} */ (document.getElementById("calc-charge")).value, 10) || 0;
-  let multiplicity = parseInt(/** @type {HTMLInputElement} */ (document.getElementById("calc-mult")).value, 10) || 1;
+  let charge = parseInt(document.getElementById("calc-charge").value, 10) || 0;
+  let multiplicity = parseInt(document.getElementById("calc-mult").value, 10) || 1;
   if (rawMode) {
     // Every coordinate keyword ORCA takes, not just the two cartesian ones:
     // "* int C M" / "* internal C M" / "* gzmt C M" carry the charge and
@@ -1698,9 +1698,11 @@ function readChargeMult() {
 /** Read the whole Build form into the calc payload for add_calc/update_calc.
  * @param {boolean} [forPreview] @returns {CalcInput} */
 function collectCalcFromForm(forPreview = false) {
-  const name = readCalcName("calc-name");   // P1: unique, folder-name safe
-
+  // read first so the name check knows this is an ORCA kind: the DFT card only
+  // ever builds ORCA kinds, and that is what enables the space/"&" refusal
   const kind = document.getElementById("calc-kind").value;
+  const name = readCalcName("calc-name", kind);   // P1: unique, folder-name safe
+
   // in raw+direct the coords live in the raw text, so xyz may be empty; and a
   // reference is required to actually queue the calc but NOT to open the raw
   // editor (you pick the reference before adding; the field stays enabled)
@@ -1837,7 +1839,13 @@ async function submitCalc(calc, opts) {
  *  name is the on-disk folder name, so it must be non-empty, free of characters
  *  Windows refuses, and unique in the queue (the calc being edited excluded —
  *  renaming it to itself is not a clash).
- *  @param {string} inputId @returns {string} */
+ *
+ *  `kind` selects the ORCA-only space/"&" refusal: ORCA splits its own argument
+ *  on whitespace, so a space in the name kills every run of an ORCA calc, while
+ *  the MLIP and CREST pipelines pass the name as an argv element / a
+ *  shell-quoted variable where a space is fine. Any non-mlip/crest value (the
+ *  DFT card's own calc kind) means "ORCA".
+ *  @param {string} inputId @param {string} kind @returns {string} */
 function readCalcName(inputId, kind) {
   const name = document.getElementById(inputId).value.trim();
   if (!name) throw new Error("Name is required.");
@@ -2324,7 +2332,7 @@ async function editCalc(i) {
  *  it with a blank.
  *  @param {string} id @param {string|undefined} value */
 function _ensureOption(id, value) {
-  const el = /** @type {HTMLSelectElement} */ (document.getElementById(id));
+  const el = document.getElementById(id);
   if (!el || !value) return;
   if ([...el.options].some((o) => o.value === value)) return;
   const o = document.createElement("option");

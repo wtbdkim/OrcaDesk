@@ -31,7 +31,7 @@ import orcamgr.state.store as store_mod
 from orcamgr.config import Settings
 from orcamgr.paths import APP_VERSION
 from orcamgr.server.app import create_app
-from orcamgr.state.store import QueueStore, calc_from_dict
+from orcamgr.state.store import QueueStore, calc_from_dict, find_dangling_reference
 
 
 @pytest.fixture
@@ -188,13 +188,17 @@ def test_all_mlip_queue_starts_without_orca_configured(store, tmp_path, monkeypa
 
     # never spawn the real run thread — just record that a start was requested
     started = []
-    monkeypatch.setattr(store, "start_run", lambda factory: started.append(factory))
+    monkeypatch.setattr(store, "start_run",
+                        lambda factory, precheck=None: started.append((factory, precheck)))
 
     client = _client(create_app(store, bind_host="127.0.0.1"))
     r = client.post("/api/run")
     assert r.status_code == 200
     assert r.json() == {"ok": True, "running": True}
     assert len(started) == 1
+    # the endpoint screens its own snapshot, but the re-screen INSIDE the lock is
+    # what closes the add-between-check-and-start window — it must be handed over
+    assert started[0][1] is find_dangling_reference
 
 
 def test_orca_queue_without_orca_path_is_rejected_400(store, tmp_path, monkeypatch):
@@ -202,7 +206,8 @@ def test_orca_queue_without_orca_path_is_rejected_400(store, tmp_path, monkeypat
     store.add(calc_from_dict(_calc_payload("orca_job", kind="sp")))
 
     started = []
-    monkeypatch.setattr(store, "start_run", lambda factory: started.append(factory))
+    monkeypatch.setattr(store, "start_run",
+                        lambda factory, precheck=None: started.append((factory, precheck)))
 
     client = _client(create_app(store, bind_host="127.0.0.1"))
     r = client.post("/api/run")
@@ -235,7 +240,8 @@ def test_run_with_dangling_reference_is_rejected_400(store, tmp_path, monkeypatc
     store.add(calc_from_dict(payload))
 
     started = []
-    monkeypatch.setattr(store, "start_run", lambda factory: started.append(factory))
+    monkeypatch.setattr(store, "start_run",
+                        lambda factory, precheck=None: started.append((factory, precheck)))
 
     client = _client(create_app(store, bind_host="127.0.0.1"))
     r = client.post("/api/run")

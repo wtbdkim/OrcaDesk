@@ -300,29 +300,36 @@ test("geo progress jumps to 1 on the OPTIMIZATION RUN DONE / CONVERGED marker", 
 // FreqTracker (numerical displacements)
 // ============================================================
 
+// Every line below is verbatim ORCA 6.1.1 NumFreq output (HF/STO-3G water,
+// corpus run demo-par-1) — including the leading tab and the "<< ... >>"
+// wrapper. The counter has no "K / N" form at all, and the header writes its
+// figure as a SUBTRACTION (3N*2 minus the six it does not run), so reading only
+// the first number gives 18 against a real 12.
 test("freq tracker advances the displacement counter monotonically", function () {
   const f = new SCFGraph.FreqTracker();
   assert.strictEqual(f.hasData(), false);
   f.push("                       * ORCA NUMERICAL FREQUENCIES *");
   assert.strictEqual(f.active, true);
   assert.strictEqual(f.mode, "numerical");
-  f.push("Number of displacements            ...        12");
-  assert.strictEqual(f.total, 12);
-  f.push("The calculation will be done for displacement    3 /   12");
+  f.push("Number of displacements        ... 18 - 6");
+  assert.strictEqual(f.total, 12, "the header's subtraction is the real total");
+  f.push("	<< Calculating gradient on displaced geometry   3 (of  12) >>");
   assert.strictEqual(f.cur, 3);
   assert.strictEqual(f.progress(), 3 / 12);
-  f.push("The calculation will be done for displacement    6 /   12");
+  f.push("	<< Calculating gradient on displaced geometry   6 (of  12) >>");
   assert.strictEqual(f.cur, 6);
-  // a re-seen earlier displacement (log replay) must never move the counter back
-  f.push("The calculation will be done for displacement    3 /   12");
+  // -nprocs > 1 finishes displacements OUT OF ORDER (the real run prints
+  // 2, 4, 1, 3), and a log replay re-sends old lines: the counter is a
+  // high-water mark, never a last-wins assignment
+  f.push("	<< Calculating gradient on displaced geometry   3 (of  12) >>");
   assert.strictEqual(f.cur, 6);
   assert.strictEqual(f.progress(), 6 / 12);
 });
 
 test("freq progress caps at 0.999 while the last displacement runs, then 1 after VIBRATIONAL FREQUENCIES", function () {
   const f = new SCFGraph.FreqTracker();
-  f.push("Number of displacements            ...        10");
-  f.push("The calculation will be done for displacement   10 /   10");
+  f.push("Number of displacements        ... 16 - 6");
+  f.push("	<< Calculating gradient on displaced geometry  10 (of  10) >>");
   assert.strictEqual(f.cur, 10);
   assert.strictEqual(f.total, 10);
   // cur/total == 1 but progress() must stay strictly below 1 (0.999 cap):
@@ -530,8 +537,8 @@ test("renderGeoProgress never contains '100%' before convergence, and shows it o
 
 test("renderFreqProgress floors the percentage so the 0.999 cap never displays as 100%", function () {
   const f = new SCFGraph.FreqTracker();
-  f.push("Number of displacements            ...        10");
-  f.push("The calculation will be done for displacement   10 /   10");
+  f.push("Number of displacements        ... 16 - 6");
+  f.push("	<< Calculating gradient on displaced geometry  10 (of  10) >>");
   const html = SCFGraph.renderFreqProgress(f);
   assert.strictEqual(typeof html, "string");
   assert.ok(html.includes("99%"), "floor(0.999 * 100) = 99");
@@ -796,11 +803,6 @@ test("the CREST meta line carries the echoed solvent and NCI mode", function () 
             "method · solvent · NCI · cores on the meta line");
 });
 
-// ---------- summary ----------
-console.log("");
-console.log(passed + " passed, " + failed + " failed");
-if (failed > 0) process.exitCode = 1;
-
 test("geo tracker: post-opt stage reads complete after ORCA TERMINATED NORMALLY (re-seeded DONE calc)", function () {
   const g = new SCFGraph.GeoTracker();
   feed(g, geoCycleBlock(1, fiveRows("0.0140882096")));
@@ -812,3 +814,8 @@ test("geo tracker: post-opt stage reads complete after ORCA TERMINATED NORMALLY 
   g.push("                             ****ORCA TERMINATED NORMALLY****");
   assert.strictEqual(g.postDone, true, "terminated -> the post-opt stage is complete");
 });
+
+// ---------- summary ----------
+console.log("");
+console.log(passed + " passed, " + failed + " failed");
+if (failed > 0) process.exitCode = 1;

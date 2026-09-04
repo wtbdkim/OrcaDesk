@@ -624,7 +624,7 @@ function renderMvVolList() {
 }
 
 function _fillGridSelect() {
-  const sel = /** @type {HTMLSelectElement} */ (document.getElementById("mv-grid"));
+  const sel = document.getElementById("mv-grid");
   if (!sel) return;
   sel.innerHTML = _mvVolGrids.map(g =>
     '<option value="' + g + '"' + (g === _mvVolGrid ? " selected" : "") + ">" + g + "³</option>").join("");
@@ -879,7 +879,7 @@ function _mvVolCaption(text) {
 
 /** Push _mvIso onto the slider and its readout (after a cube load picks it). */
 function _mvSyncIsoControls() {
-  const slider = /** @type {HTMLInputElement} */ (document.getElementById("mv-iso"));
+  const slider = document.getElementById("mv-iso");
   if (slider) slider.value = String(_sliderFromIso(_mvIso));
   const lbl = document.getElementById("mv-iso-val");
   if (lbl) lbl.textContent = _mvIso.toFixed(3);
@@ -917,7 +917,7 @@ function mvSetEspRange(v) {
 /** Push _mvEspRange onto the slider readout and the legend's end labels.
  *  @param {boolean} [fromSlider] skip writing back to the slider the user holds */
 function _mvSyncEspControls(fromSlider) {
-  const slider = /** @type {HTMLInputElement} */ (document.getElementById("mv-esp"));
+  const slider = document.getElementById("mv-esp");
   if (slider && !fromSlider) slider.value = String(_sliderFromEsp(_mvEspRange));
   const lbl = document.getElementById("mv-esp-val");
   if (lbl) lbl.textContent = _mvEspRange.toFixed(3);

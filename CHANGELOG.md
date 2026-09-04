@@ -113,6 +113,37 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
   pre-optimization** stay with the method, since they are band parameters.
 
 ### Fixed
+- **The front-end test runner could report a red test as green.** The summary
+  block in `tests/web/scf_graph.test.js` — the line count *and* the
+  `process.exitCode = 1` — had drifted into the middle of the file, with one
+  test appended after it. That test's result was left out of the count (40 PASS
+  lines, "39 passed") and, worse, it ran *after* the exit code was decided, so a
+  failure in it exited 0 and passed a pre-commit check. The summary now sits at
+  the end of the file, verified by deliberately breaking that last test and
+  confirming the runner exits 1.
+- **A stale test stub hid a live API change.** `store.start_run` gained a
+  `precheck` argument (the re-screen for a dangling reference, run inside the
+  lock so a calculation added between check and start cannot slip through), but
+  the phone-API tests still stubbed the old one-argument form, so
+  `/api/run` raised `TypeError` under test. The stubs now mirror the real
+  signature, and the all-MLIP test asserts the screen is actually handed over.
+- **The freq progress tests pinned a log format ORCA does not print.** They fed
+  `"The calculation will be done for displacement K / N"` — a string that
+  appears in none of the ~297 real ORCA 6.1.1 outputs in the validation corpus.
+  The tracker had already been corrected to the real
+  `"<< Calculating gradient on displaced geometry K (of N) >>"` (and to the
+  header's `18 - 6` subtraction form), leaving the tests red against correct
+  code. They now use verbatim lines from a real NumFreq run, including the
+  out-of-order arrival that makes the counter a high-water mark.
+- **The `web/` type check is clean again (0 errors, was 14).** Nine casts to
+  `HTMLSelectElement`/`HTMLInputElement` predated the `ORCAFormElement` lookup
+  shim and now conflicted with it, while every one of those sites only reads
+  `.value` / `.options` / `.innerHTML`, which the shim already provides — the
+  casts are gone. `readCalcName` was called without its `kind` argument from the
+  DFT card (harmless by accident: the fallback treats an absent kind as ORCA,
+  which the DFT card always is) and is now passed explicitly and documented. The
+  `WorkspaceResult` / `WorkspaceResultsResult` payloads reached `web/` without
+  their mirrors in `web/types.js` (P41); both are now there.
 - **The overwrite warning before a run actually appears.** Clicking *Run queue*
   with results already on disk is supposed to ask — Cancel / Keep existing /
   Overwrite. The check behind it was never reachable from the UI (the Bridge

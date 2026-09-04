@@ -37,7 +37,7 @@ async function refreshWorkspaceResults() {
 }
 
 function refreshResultSelect() {
-  const sel = /** @type {HTMLSelectElement} */ (document.getElementById("result-select"));
+  const sel = document.getElementById("result-select");
   const prev = sel.value;
   // Whether a result is IN THE QUEUE is the backend's answer (it holds the
   // store), not "have we parsed it yet" — grouping by calcResults would file a
@@ -83,7 +83,7 @@ function refreshResultSelect() {
 }
 
 async function showSelectedResult() {
-  const src = /** @type {HTMLSelectElement} */ (document.getElementById("result-select")).value;
+  const src = document.getElementById("result-select").value;
   if (!src || src === "—") return;
   if (src.startsWith("file:")) return showWorkspaceResult(src.slice(5));
   const name = src.startsWith("calc:") ? src.slice(5) : src;
@@ -125,7 +125,7 @@ function noteExternalResult(path) {
  *  result while the body shows another. Silent when it does not — a file opened
  *  from outside the workspace has no option to select. @param {string} value */
 function _selectResultOption(value) {
-  const sel = /** @type {HTMLSelectElement} */ (document.getElementById("result-select"));
+  const sel = document.getElementById("result-select");
   if (sel && [...sel.options].some(o => o.value === value)) sel.value = value;
 }
 
