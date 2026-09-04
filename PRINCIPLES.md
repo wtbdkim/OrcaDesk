@@ -93,7 +93,13 @@ Any fact the system needs twice is defined once and derived everywhere else:
 When the same judgment must be made from two code paths, extract it to one
 function *before* the second caller exists, not after they diverge.
 
-### P5 — Orchestrate; never bundle, never import
+### P5 — The user never needs a terminal: orchestrate, never bundle, never import
+
+ORCAdesk exists so that ORCA and the tools around it can be driven end to end
+**without a command line**. That purpose governs the rest of this principle:
+what gets shelled out, what gets computed in process, and what gets handed to
+another program are all answered by which of them leaves the user with a
+terminal open.
 
 ORCAdesk does not do the chemistry. External scientific toolchains — the ORCA
 executable, the MLIP stack (PyTorch/mace/ASE), the CREST binary — are invoked
@@ -113,10 +119,32 @@ Python interpreter — as is anything needing a compiler or an interactive
 session. ORCA is never provisioned: it is licensed, and its installer is
 interactive.
 
-Core `requirements.txt` stays minimal (PyQt6 + PyQt6-WebEngine + psutil);
-optional features carry
-their own requirements file and degrade gracefully when absent (P17). Even
-ORCA itself is required only when a non-MLIP calc will actually run.
+**When a job could go either way, the terminal decides.** Analysing a result is
+ORCAdesk's own work; only *producing* one is a toolchain's — the line falls
+around what generates a wavefunction (an SCF, a gradient, a dynamics step),
+never around arithmetic on one that already exists. `core/parser.py` reads
+energies out of a `.out`, `core/plot.py` turns a `.gbw` into a cube, and `nbo/`
+computes natural orbitals from the converged wavefunction ORCA already wrote.
+Doing that last one the "orchestrating" way would mean shelling out to NBO's
+`gennbo` (separately licensed) or to PySCF/JANPA (a Python environment or a JRE
+the user has to install first) — a command line and a purchase where there was
+none. In process it is a click. What stays forbidden is unchanged: ORCAdesk
+runs no SCF of its own.
+
+**Handing work to another GUI is CLI-independence, not a retreat from it.**
+Launching Avogadro on a file ORCAdesk generated is a click; naming the file and
+leaving the user to find and open it is homework. So an external program is
+*launched*, never merely mentioned — and never in place of the in-app path,
+which is what keeps the common case from needing a second program at all. The
+user chooses which one a click goes to; ORCAdesk does not choose for them.
+
+Core `requirements.txt` stays minimal (PyQt6 + PyQt6-WebEngine + psutil +
+numpy). numpy was admitted for `nbo/`, and only after confirming the
+reconstruction needs **no integral library** — which would have pulled a
+compiled chemistry stack into the build and made this a toolchain by the back
+door. Optional features carry their own requirements file and degrade
+gracefully when absent (P17). Even ORCA itself is required only when a non-MLIP
+calc will actually run.
 
 ### P6 — Failure is data, and stays inside its blast radius
 
@@ -790,3 +818,4 @@ tradeoff, kept), or **stale-doc** (the description, not the code, is wrong).
 | A22 | If a keep-existing fallback run (the skip path discarding an invalid kept result and running fresh) fails *before* ORCA launches (e.g. geometry resolution), `_failure_reason` may read the stale on-disk `.out` and mask the real pre-launch cause | P28, P2 | resolved (0.4.3-beta — `_failure_reason` consults the `.out` only after this attempt actually launched or adopted ORCA; a pre-launch failure keeps the engine's own error, with regression tests) |
 | A23 | `mlip_env_id == ""` is documented as *first **ready** env* (`StepConfig.mlip_env_id`, `web/types.js`, CLAUDE.md) but `_resolve_mlip_python` took `mlip_envs[0]` — the first **registered** env. Readiness is a live probe result held by the Bridge and was never plumbed to the engine, so with two envs whose first is broken, every MLIP calc routed to the broken one while the pill read "ready" off the other | P2, D2 | resolved (0.7.0-beta — the Bridge orders the list it hands the engine by last-known readiness (`order_envs_by_readiness`, Qt-free and unit-tested); the engine still takes `envs[0]`, so the contract now holds end to end) |
 | A24 | P5 read *"never installs them"*, but `crest/installer.py` has downloaded and installed the CREST binary since 0.5.0-beta — the principle was stale the day it shipped, and the MLIP env installer widened the gap | P5, P2 | resolved (0.7.0-beta — stale-doc: P5 rewritten as *never bundle, never import*, with provisioning a **private** copy allowed where fully scriptable and the un-scriptable step named as a prerequisite instead) |
+| A25 | P5 opened *"ORCAdesk does not do the chemistry"* and fixed the core dependencies at *PyQt6 + PyQt6-WebEngine + psutil*; `orcamgr/nbo/` (0.8.0-beta) computes natural-orbital analysis in ORCAdesk's own process and needs numpy to do it. Read literally the principle forbade the package outright — and it stated a mechanism (*shell out*) without the purpose that mechanism serves, so it could not settle the case either way | P5 | resolved (0.8.0-beta — P5 rewritten around its actual purpose, *the user never needs a terminal*: the boundary falls around **producing** a wavefunction, not arithmetic on one ORCA already wrote (which `parser.py`/`plot.py` have always done), and shelling `nbo/` out to `gennbo`/PySCF/JANPA would have *added* a command line and a licence. numpy admitted only after confirming the reconstruction needs no integral library, so no compiled chemistry stack enters the build) |
