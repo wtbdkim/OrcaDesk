@@ -670,6 +670,87 @@ class CubeDataResult(_Ok, total=False):
 
 # ---- phone-sync server (bridge slots + HTTP endpoints) ------------------------
 
+# ---- natural-orbital analysis (orcamgr/nbo) ---------------------------------
+
+class NboJobPayload(TypedDict, total=False):
+    """run_nbo_analysis / get_nbo_status -- progress of the running (or last)
+    analysis. "state" is idle | running | done | error; "source" names the
+    result it belongs to, so a poll can tell whose answer it is reading."""
+    state: str
+    source: str
+    error: str
+    seconds: float
+
+
+class NboHybridPayload(TypedDict):
+    atom: int
+    element: str
+    share: float              # fraction of the bond's density on this atom
+    label: str                # "sp2.48"
+
+
+class NboOrbitalPayload(TypedDict):
+    label: str                # "BD (1) C1-O2"
+    kind: str                 # CR | LP | BD | BD* | LP*
+    atoms: "list[int]"
+    occupancy: float
+    energy: float             # Hartree
+    hybrids: "list[NboHybridPayload]"
+
+
+class NboInteractionPayload(TypedDict):
+    donor: str
+    acceptor: str
+    energy_kcal: float
+    gap_hartree: float
+    fock_hartree: float
+
+
+class NboLewisPayload(TypedDict):
+    """One spin's Lewis structure (spin "" for a closed shell)."""
+    spin: str
+    threshold: float
+    lewis_electrons: float
+    total_electrons: float
+    lewis_fraction: float
+    complete: bool
+    rydberg_count: int
+    rydberg_electrons: float
+    orbitals: "list[NboOrbitalPayload]"
+    interactions: "list[NboInteractionPayload]"
+
+
+class NboAtomPayload(TypedDict):
+    index: int
+    element: str
+    charge: float             # NPA
+    core: float
+    valence: float
+    rydberg: float
+    total: float
+    configuration: str        # "[core] 2s( 1.75) 2p( 5.12)"
+    spin: float
+    valence_index: float      # natural valence (sum of Wiberg orders)
+
+
+class NboResultPayload(_Ok, total=False):
+    """get_nbo_result -- nbo.analysis.NboAnalysis.to_dict() plus the envelope.
+    The NAO coefficient matrix is deliberately absent (nbf**2 floats)."""
+    error: str
+    base: str
+    n_atoms: int
+    n_basis: int
+    n_electrons: float
+    charge: float
+    restricted: bool
+    has_ecp: bool
+    atoms: "list[NboAtomPayload]"
+    bonds: "list[list]"                       # [i, j, order]
+    lewis: "list[NboLewisPayload]"
+    diagnostics: dict
+    warnings: "list[str]"
+
+
 class ServerStatusPayload(TypedDict, total=False):
     """get_server_status — url/token/clients absent when unavailable."""
     available: bool

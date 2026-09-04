@@ -194,6 +194,11 @@ function renderResultSections(d) {
   if (elec && d.loewdin && d.loewdin.length) renderLoewdin(d.loewdin);
   if (elec && ((d.mayer_bonds && d.mayer_bonds.length) || (d.mayer_valences && d.mayer_valences.length)))
     renderMayer(d.mayer_bonds || [], d.mayer_valences || []);
+  // The natural-orbital analysis is the one Output section not read from the
+  // parse payload: it is computed from the .gbw on demand (nbo_render.js), so
+  // the card opens as a button. Gated like the other electronic-structure
+  // sections; a result with no wavefunction file says so when clicked.
+  if (elec && !d.is_conformer_search) renderNboCard();
   if (d.frequencies && d.frequencies.length) renderFreqSpectrum(d.frequencies, d.n_imaginary);
   if (d.transitions && d.transitions.length) renderSpectrum(d.transitions);
   if (d.tddft_states && d.tddft_states.length) renderTddftStates(d.tddft_states);

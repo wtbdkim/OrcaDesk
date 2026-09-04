@@ -17,6 +17,7 @@ import json
 import re
 import sys
 import threading
+import time
 from collections import deque
 from pathlib import Path
 
@@ -54,7 +55,8 @@ from ..state.schemas import (
     FepResult, GeomAtomPayload, GetCalcResult, GraphLinesResult, LoadResult,
     LogTailResult,
     MlipStatusPayload, MlipInstallPayload, MlipInstallOptionsPayload,
-    MutationResult, NmrPayload, OkResult, OrbitalPayload, SavedFileResult,
+    MutationResult, NboJobPayload, NboResultPayload, NmrPayload, OkResult,
+    OrbitalPayload, SavedFileResult,
     ParsePayload, QrResult, ServerStatusPayload, SettingsPayload,
     StartServerResult, TextResult, TransitionPayload,
     CrestStatusPayload, ConformerPayload,
@@ -231,6 +233,11 @@ class Bridge(QObject):
                             "index": 0, "operator": 0, "grid": 0,
                             "cached": False, "seconds": 0.0, "path": ""}
         self._cube_path = ""              # finished cube, for get_cube_data()
+        # natural-orbital analysis: same background-thread + poll shape as the
+        # cube generation above, one at a time, the result fetched once
+        self._nbo_lock = threading.Lock()
+        self._nbo: dict = {"state": "idle", "source": "", "error": "", "seconds": 0.0}
+        self._nbo_result: dict = {}
         # Live CREST status (WSL distro probe). Like MLIP the probe is slow (it
         # spawns wsl.exe + runs `crest --version`), so it runs in a background
         # thread and the UI polls get_crest_status(). Guarded by its own lock.
@@ -1653,6 +1660,70 @@ class Bridge(QObject):
             ok=True, text=d["text"], title=d["title"], npoints=d["npoints"],
             dims=d["dims"], bytes=d["bytes"], isovalue=d["isovalue"],
             signed=d["signed"]))
+
+    # --- natural-orbital analysis (orcamgr/nbo), computed in process ---
+    @pyqtSlot(str, result=str)
+    def run_nbo_analysis(self, source: str) -> str:
+        """Start the NPA/NBO analysis of one finished calculation on a background
+        thread; returns the status at once and the UI polls get_nbo_status(),
+        then fetches get_nbo_result() once when it is done. ``source`` addresses
+        a queued calc or a file on disk exactly as the plot slots do.
+
+        One at a time: the analysis converts the .gbw and writes a cache beside
+        the run, and two on one folder would race for the same files. A refused
+        start hands back the in-flight job's status, which names ITS source."""
+        from ..nbo.analysis import analysis_for
+        from ..nbo.wavefunction import WavefunctionError
+        run_dir, base, _open_shell, err = self._plot_source(str(source or ""))
+        if err:
+            return json.dumps(NboJobPayload(state="error", source=source, error=err,
+                                            seconds=0.0))
+        with self._nbo_lock:
+            if self._nbo.get("state") == "running":
+                return json.dumps(NboJobPayload(**self._nbo))
+            self._nbo = {"state": "running", "source": source, "error": "",
+                         "seconds": 0.0}
+            self._nbo_result = {}
+        orca_path = self.settings.orca_path
+        started = time.time()
+
+        def _worker() -> None:
+            try:
+                analysis = analysis_for(orca_path, run_dir, base)
+                result = {"ok": True, **analysis.to_dict()}
+                error = ""
+            except WavefunctionError as e:
+                result, error = {"ok": False, "error": str(e)}, str(e)
+            except Exception as e:          # a crash must still release the UI
+                result, error = {"ok": False, "error": str(e)}, str(e)
+            if error:
+                self.store.append_log(
+                    f"Natural-orbital analysis of {base} failed: {error}", "err")
+            else:
+                self.store.append_log(
+                    f"Natural-orbital analysis of {base}: {time.time() - started:.1f} s", "info")
+            with self._nbo_lock:
+                self._nbo_result = result
+                self._nbo.update({"state": "error" if error else "done",
+                                  "error": error,
+                                  "seconds": float(time.time() - started)})
+
+        threading.Thread(target=_worker, name="nbo-analysis", daemon=True).start()
+        return self.get_nbo_status()
+
+    @pyqtSlot(result=str)
+    def get_nbo_status(self) -> str:
+        """Progress of the running (or last) analysis. Tiny -- it is polled."""
+        with self._nbo_lock:
+            return json.dumps(NboJobPayload(**self._nbo))
+
+    @pyqtSlot(result=str)
+    def get_nbo_result(self) -> str:
+        """The finished analysis, fetched once. Empty until a run has finished."""
+        with self._nbo_lock:
+            if not self._nbo_result:
+                return json.dumps(NboResultPayload(ok=False, error="No analysis to show yet."))
+            return json.dumps(self._nbo_result)
 
     # --- hand a generated file to the user's own programs (P5) ---
     @pyqtSlot(str, result=str)

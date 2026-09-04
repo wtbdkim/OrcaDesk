@@ -160,6 +160,10 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
     are shown for the relevant calculation type; a **`Show all`** toggle reveals
     everything regardless of type. A **free-energy profile** view plots relative
     Gibbs free energy across finished frequency calculations in queue order.
+    A **Natural bond orbital analysis** card runs ORCAdesk's own NPA/NBO on
+    the finished run's wavefunction — no NBO licence — and shows NPA charges
+    with electron configurations, Wiberg bond orders, the Lewis structure with
+    its hybrids, and the second-order donor → acceptor table (kcal/mol).
   - **Visual** is everything that can be *drawn* from the same result, and it
     finds it for you: the structure, any `.xyz` set sitting in the run folder
     (the CREST ensemble, the per-conformer `conformers/` export, an optimization

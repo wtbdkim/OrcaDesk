@@ -109,7 +109,8 @@ live in their own files, loaded by `index.html` **before** `app.js` in this
 order: `scf_graph.js` → `progress_panels.js` → `combo.js` (combobox widget) →
 `appearance.js` (theme variant / wallpaper / Liquid-Glass pulse) →
 `log_graph.js` (log pane + progress trackers) → `results_render.js`
-(Results-tab section renderers) → `molviewer.js` (3D viewer + favorites) →
+(Results-tab section renderers) → `nbo_render.js` (the natural-orbital
+analysis card) → `molviewer.js` (3D viewer + favorites) →
 `structview.js` (Build-tab structure preview / screening / NEB endpoint
 comparison).
 Cross-file calls resolve at runtime, so only top-level statements may not touch
@@ -185,7 +186,13 @@ which calculation is on screen; `Show all` and the free-energy-profile card are
 Output's and are hidden in Visual. See the Visual-mode note below for what the
 mode discovers and why plotting happens on its rows.
 
-The Output mode is purely presentational over `ParsePayload`. A QUEUED
+The Output mode is purely presentational over `ParsePayload` — with one
+section that is presentational over a *second* payload: the natural-orbital
+analysis card (`web/nbo_render.js`) is computed from the run's `.gbw` on
+demand rather than read from the parse, so it opens as a *Run analysis*
+button and renders in place when the background job lands (see the NBO
+section below). It is gated like the other electronic-structure sections.
+A QUEUED
 calc's result is fetched by NAME through `bridge.parse_calc_output`, which
 dispatches on the calc's **kind** (`result_from_output`); external files
 (drag-drop / *Open file…*) go through `bridge._parse_path`, which has no kind and
@@ -1416,6 +1423,19 @@ must not mix two implementations' numbers across one queue). Reads never raise:
 a corrupt cache is a reason to recompute, not to fail (P6). The NAO coefficient
 matrix is deliberately **not** cached — `nbf²` floats, and nothing on screen
 needs it.
+
+**Bridge slots** `run_nbo_analysis(source)` / `get_nbo_status()` /
+`get_nbo_result()` follow the cube-generation shape exactly: a background
+thread, one job at a time (the analysis converts the `.gbw` and writes a
+cache beside the run, so two on one folder would race), the status polled,
+the result fetched once. A refused start hands back the in-flight job's
+status, which names *its* `source` — the front-end checks that before
+adopting a result, or it would render one calculation's tables under
+another's name. `web/nbo_render.js` caches by source string for the session
+(`_nboCache`), so re-rendering Output never re-runs anything; the backend's
+own on-disk cache makes the first click on an already-analysed run ~4 ms.
+Wire shapes: `NboJobPayload` / `NboResultPayload` (+ the atom / orbital /
+interaction / Lewis rows) in `state/schemas.py`, mirrored in `web/types.js`.
 
 `warnings` is the honest half: below 99% of the density in the minimal basis the
 molecule is not atoms-plus-corrections and the analysis says so rather than
