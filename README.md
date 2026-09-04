@@ -40,7 +40,9 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
 
 - **Build**: create one calculation at a time, picking the execution backend
   first — **DFT** (ORCA), **MLIP** (MACE pre-optimization, see below), or
-  **CREST** (conformer search, see below). DFT has two sub-modes: **Beginner**
+  **CREST** (conformer search, see below); MLIP and CREST show up only once you
+  have set them up, so a plain ORCA install sees DFT alone. DFT has two
+  sub-modes: **Beginner**
   (guided form) and **Expert** (edit the full `.inp`). Switching Beginner →
   Expert converts your current form into a generated `.inp` you can keep
   editing; the reverse conversion doesn't exist (raw text can't become a form
@@ -86,8 +88,11 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   needs a Python already on your machine to build on (auto-detected; install one
   from python.org if there is none). You can equally register an environment you
   built yourself — ORCAdesk only ever shells out to it, and never installs into
-  a Python you manage. The MLIP build card stays **locked until a MACE
-  environment is ready**. An `mlip_opt`/`mlip_sp` calculation joins the same queue,
+  a Python you manage. MLIP appears on the Build tab only once you have
+  registered an environment — until then the button and its status pill are not
+  shown, and `+ More backends…` on the build toggle takes you here to set one
+  up. Once registered, the card stays **locked until a MACE environment is
+  ready**, with the reason in place. An `mlip_opt`/`mlip_sp` calculation joins the same queue,
   and an optimized geometry can be referenced by a downstream ORCA calculation
   just like an opt→freq handoff.
 - **CREST conformer search**: explore low-energy conformers with the xTB
@@ -100,8 +105,10 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   calculations reference the search from their geometry source on the Build
   tab and run on the **lowest-energy conformer**; every conformer is also
   exported as its own `.xyz` under the run's `conformers/` subfolder for manual
-  follow-ups. The CREST build card stays **locked until a distro with CREST is
-  ready**.
+  follow-ups. Like MLIP, CREST appears on the Build tab only once it is set up
+  — CREST found in a distro, or a distro chosen here — and until then reached
+  through `+ More backends…`; after that the card stays **locked until a distro
+  with CREST is ready**.
 
   > **WSL memory note:** a CREST run is I/O-heavy, and by default WSL2 keeps
   > every byte it caches — its `Vmmem WSL` process can balloon to many GB

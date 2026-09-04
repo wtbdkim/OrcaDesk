@@ -73,6 +73,26 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
 `.xyz` your editor wrote and ORCAdesk will tell you what is in it.
 
 ### Changed
+- **A backend you have never set up no longer takes up room.** MLIP and CREST
+  appear on the Build tab's backend toggle — and in the top bar — only once you
+  have actually set them up: an MLIP environment registered, or CREST found in
+  (or a distro chosen for) WSL. If you run ORCA and nothing else, the Build tab
+  now opens on `DFT | Beginner Expert` and the top bar carries one status pill,
+  instead of two dead buttons and two "not set" pills for toolchains you may
+  never install.
+  - **Nothing becomes unreachable.** A `+ More backends…` chip sits on the
+    toggle whenever a backend is hidden and goes straight to Settings, where the
+    MLIP and CREST sections are always present — that is where a backend is set
+    up, and the CREST installer already lived there.
+  - **A broken setup still shows itself.** Visibility follows what *you* did, not
+    what the probe found: a registered MLIP environment that fails to import, or
+    a chosen distro without CREST, stays visible and locked with its reason, the
+    way it always has. Hiding is for "never adopted", locking for "adopted but
+    not ready" (DESIGN.md D41 scope clause, amended here).
+  - A backend also stays visible while the queue still holds one of its
+    calculations, so an `mlip_*` or `crest_*` row can never become uneditable
+    because its backend went quiet — including one that arrived from a phone or
+    a restored session.
 - **The Results tab reads one result two ways: `Output` and `Visual`.** Output is
   what the parser extracted — the summary and every table, chart and section it
   builds. Visual is everything that can be *drawn* from the same result. The

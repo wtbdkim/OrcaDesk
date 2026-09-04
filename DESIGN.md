@@ -197,6 +197,24 @@ regardless, because a disabled UI is not a trust boundary (PRINCIPLES P44).
 Discoverability is preserved; failure is prevented; the "why" is answered on
 the spot.
 
+**Scope: this governs a feature the user has *adopted*, not one they have
+never set up** (amended 0.8.0-beta). "Locked with the reason" answers *why
+can't I use this yet* — a real question for someone who registered an MLIP
+environment that fails to import, or picked a WSL distro without CREST. It
+answers nothing for someone who runs ORCA and has never wanted either
+toolchain: for them a permanently greyed card, a dead mode button and a
+"MLIP not set" pill are not guidance, they are chrome for a feature that
+will never be used, and they are most of what makes the app feel larger than
+the job. So an **unadopted optional backend is hidden** (D62) — its mode
+button and its top-bar pill both — behind one signposted way in: a
+"+ More backends…" chip on the build toggle that goes to Settings, whose
+MLIP and CREST sections are always present. Adoption is judged from what the
+user did (an environment is registered; a distro has CREST or was chosen),
+never from the probe's verdict, so a *broken* setup still shows and still
+locks with its reason. A backend also stays visible while the queue holds
+one of its calculations — a row must never become uneditable because its
+backend went quiet.
+
 ### D42 — Indicators reflect actual workability
 
 Status pills have four states (ready / checking… / error / not set) mapped
@@ -299,7 +317,9 @@ destructive choice. Confirm only when something would be lost.
 ### D62 — Progressive disclosure
 
 Complexity is revealed in layers: three mutually-exclusive build backends
-(DFT / MLIP / CREST) with a Beginner/Expert sub-toggle revealed only inside
+(DFT / MLIP / CREST) — of which MLIP and CREST appear at all only once the
+user has set them up (D41 scope clause), so a plain ORCA install shows one —
+with a Beginner/Expert sub-toggle revealed only inside
 DFT (the sub-choice is one-way for content: the form converts to a raw `.inp`,
 never back), form fields driven per calc-kind by
 `KIND_DEFS` flags, conditional fields appearing only after their premise
@@ -997,10 +1017,14 @@ don't hand-roll a single-channel failure.
 
 ### 13.3 Hidden vs locked vs disabled
 
-- **Hide** only what is *irrelevant* (fields for another calc kind,
-  solvent when gas-phase) — progressive disclosure (D62).
-- **Lock** (11.17, with the reason) what is *relevant but not ready*
-  (MLIP card without a ready env) — never hide it (D41). Locking also
+- **Hide** what is *irrelevant* (fields for another calc kind, solvent when
+  gas-phase) — progressive disclosure (D62) — and what the user has *never
+  adopted* (an optional backend with no environment registered / no CREST
+  installed: its mode button and status pill both go, reachable through the
+  build toggle's "+ More backends…" chip and Settings, which always lists
+  them). See D41's scope clause.
+- **Lock** (11.17, with the reason) what is *adopted but not ready*
+  (a registered MLIP env whose probe fails) — never hide it (D41). Locking also
   covers *terminal* states: a FAILED calculation locks at the moment of
   failure (PRINCIPLES P24) — its row keeps only read-only diagnosis (state
   badge + failure message + output access) and the × remove control
@@ -1093,7 +1117,9 @@ Before committing any UI change, confirm:
 4. Component: reused a §11 recipe (or amended the recipe here first);
    class is ancestor-free (D50).
 5. State: colors follow §12; new state added to the matrix if novel.
-6. Readiness: not-ready features locked with a reason (13.3), never hidden.
+6. Readiness: an *adopted* feature that isn't ready is locked with a
+   reason (13.3), never hidden; an optional backend the user never set up
+   is hidden with a signposted way in (D41 scope clause).
 7. Destructive paths: 13.1 confirm recipe; dismiss is safe.
 8. Feedback: every outcome lands in the log; failures use both channels
    (13.2).

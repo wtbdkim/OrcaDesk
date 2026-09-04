@@ -676,7 +676,23 @@ sub-toggle** (`#bsub-*`) shown only while DFT is active. Internally and in
 `Settings.build_mode` the mode is still one of the four historical values
 `beginner`/`expert`/`mlip`/`crest` (beginner/expert are the DFT sub-modes), so
 persisted settings are untouched; `setBuildMode` in `app.js` maps them onto the
-toggle and `setDftSub` handles the sub-switch. **The Beginner↔Expert linkage is
+toggle and `setDftSub` handles the sub-switch. **The MLIP and CREST buttons —
+and their top-bar pills — are hidden until the user has actually set that
+backend up** (`applyBackendVisibility` in `app.js`, called from `renderMlip` /
+`renderCrest` / `refreshQueue` / `setBuildMode`; both start `display:none` in
+`index.html`). Adoption is read from what the user did, never from the probe's
+verdict: MLIP from `MlipStatusPayload.envs.length` (known from settings at the
+first poll, so the button never pops in after torch imports) and CREST from
+`state === "ready"` or an explicit `Settings.crest_distro` — CREST's aggregate
+`"error"` means "WSL present, no distro has CREST", i.e. the ordinary
+never-installed case, so it hides. A **registered-but-broken** setup stays
+visible and locked with its reason (the `applyBackendCardLock` path is
+unchanged), and a backend stays visible while the queue holds one of its calcs
+(`_queueHasBackend`) or while it is the active mode — otherwise an `mlip_*` /
+`crest_*` row would become uneditable. A `#bmode-more` chip ("+ More
+backends…") shows whenever one is hidden and switches to Settings, whose MLIP
+and CREST sections are unconditional. This amends DESIGN.md D41 (see its scope
+clause) — hide for "never adopted", lock for "adopted but not ready". **The Beginner↔Expert linkage is
 one-way by design**: Beginner → Expert converts the current form to a generated
 `.inp` via `build_inp_preview` and puts it in the raw editor (this replaced the
 "Edit raw .inp" button / `enterRawMode`); raw text can never be converted back,
@@ -1143,8 +1159,10 @@ there is nothing to install into (no WSL, no distro, or a probe in flight) —
 creating a distro needs a Linux account and is the one step ORCAdesk cannot
 script (D41). The Build tab gains the
 `crest` mode (`Settings.build_mode`; the CREST button on the backend toggle — see
-"Build-tab modes"), a locked `#card-crest` (until a
-distro has CREST), and a **Settings → CREST** distro picker + Install button. Wire
+"Build-tab modes" — the button is hidden until CREST is set up), a locked
+`#card-crest` (until a
+distro has CREST), and a **Settings → CREST** distro picker + Install button
+(that section is unconditional — it is the way in when the button is hidden). Wire
 shapes: `CrestStatusPayload` / `CrestDistroPayload` / `ConformerPayload` in
 `state/schemas.py`, mirrored in `web/types.js`.
 

@@ -489,6 +489,7 @@ async function refreshQueue() {
     queue = (snap.calculations || []).map(mirrorCalc);
     _resources = snap.resources || null;
     renderQueue();
+    applyBackendVisibility();   // an mlip*/crest* calc may have arrived or left
     // Keep the reference dropdowns live: they're only rebuilt when the geometry
     // source is toggled, so a calc added while "From another calculation" was
     // already selected would otherwise be missing from a stale list. Both
@@ -654,6 +655,50 @@ function applyBackendCardLock(prefix, locked) {
       .forEach(el => { /** @type {any} */ (el).disabled = locked; });
 }
 
+// ---------- Backend visibility on the Build tab (progressive disclosure) ----------
+// A backend the user has never set up is HIDDEN — its mode button and its
+// top-bar pill both go away — rather than merely locked. Two dead buttons and
+// two "not set" pills are what makes a plain ORCA install feel like it carries
+// more machinery than was asked for, and a greyed card teaches nothing that
+// Settings doesn't teach better. Settings keeps BOTH backend sections
+// unconditionally and the toggle carries a "More backends…" link to them, so
+// hiding never strands a feature (P17: an unavailable optional feature is
+// disabled, not made unreachable).
+//
+// Set-up is judged from what the USER did, never from the probe's verdict:
+//   MLIP  — a registered environment exists. That is known from settings at the
+//           first poll rather than after torch imports, so the button never pops
+//           in seconds late. A registered-but-broken env stays VISIBLE and
+//           locked: that is a problem to show, not noise to hide.
+//   CREST — some distro actually has CREST, or the user picked one. Here the
+//           aggregate state "error" means "WSL is present, no distro has CREST",
+//           which is the ordinary never-installed case, so it hides like "unset".
+// A backend also stays visible while the queue still holds one of its calcs
+// (those must remain editable) or while it is the active build mode.
+let _mlipEnvCount = 0;     // registered MLIP envs, from every MlipStatusPayload
+let _crestPicked = false;  // some distro has CREST, or the user chose one
+
+/** Does the queue still hold a calc of this backend? Such a calc has to stay
+ *  editable, so its card must not be hidden out from under it.
+ *  @param {string} prefix "mlip" or "crest" */
+function _queueHasBackend(prefix) {
+  return queue.some(c => (c.kind || "").startsWith(prefix));
+}
+
+/** Show or hide each optional backend's Build-tab button and top-bar pill.
+ *  Called from the two status renderers, from refreshQueue (a calc of that kind
+ *  arrived or left) and from setBuildMode. Idempotent — it only writes
+ *  style.display, so calling it on every poll costs nothing. */
+function applyBackendVisibility() {
+  const showMlip = _mlipEnvCount > 0 || buildMode === "mlip" || _queueHasBackend("mlip");
+  const showCrest = _crestPicked || buildMode === "crest" || _queueHasBackend("crest");
+  _showIds(["bmode-mlip", "mlip-status"], showMlip);
+  _showIds(["bmode-crest", "crest-status"], showCrest);
+  // the link is the only way back to a hidden backend, so it shows exactly when
+  // one is hidden
+  _showIds(["bmode-more"], !showMlip || !showCrest);
+}
+
 let _mlipPollTimer = 0;
 let _mlipReady = false;   // any registered MACE env is ready — gates the MLIP build card
 /** Grey out and lock the MLIP build card when no MACE environment is ready. */
@@ -674,9 +719,13 @@ function renderMlip(st) {
   const state = (st && st.state) || "unset";
   const envs = (st && st.envs) || [];
   _mlipReady = (state === "ready");
+  // Registered — not ready: a broken env still means the user set MLIP up, so
+  // the Build tab keeps showing it (locked, with its reason).
+  _mlipEnvCount = envs.length;
   // GPU is offered when some ready env's torch actually sees a CUDA device
   _mlipCuda = envs.some(e => e.state === "ready" && e.cuda === true);
   applyMlipLock();
+  applyBackendVisibility();
   refreshMlipDeviceOptions();
   const pill = document.getElementById("mlip-status");
   pill.classList.toggle("ok", state === "ready");
@@ -957,7 +1006,12 @@ function renderCrest(st) {
   const state = (st && st.state) || "unset";
   const distros = (st && st.distros) || [];
   _crestReady = (state === "ready");
+  // "error" here is WSL present with no distro carrying CREST — the ordinary
+  // never-installed case, so it does NOT count as set up. An explicit distro
+  // choice does, and it survives an install that has not finished yet.
+  _crestPicked = _crestReady || !!(settings && settings.crest_distro);
   applyCrestLock();
+  applyBackendVisibility();
   const pill = document.getElementById("crest-status");
   if (pill) {
     pill.classList.toggle("ok", state === "ready");
@@ -2580,6 +2634,7 @@ function setBuildMode(mode, persist = true, keepEdit = false) {
       renderConfigForm(kindSel, collectPreserve(kindSel));
     }
   }
+  applyBackendVisibility();   // the mode just entered is never one of the hidden ones
   if (persist && bridge && bridge.save_settings) bridge.save_settings(JSON.stringify({ build_mode: mode }));
 }
 

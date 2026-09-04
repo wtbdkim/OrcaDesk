@@ -67,10 +67,13 @@
       <div id="orca-status" class="status-pill">
         <span class="dot"></span><span id="orca-status-text">ORCA not set</span>
       </div>
-      <div id="mlip-status" class="status-pill" title="MLIP environments">
+      <!-- MLIP / CREST pills and mode buttons start hidden and are revealed by
+           applyBackendVisibility() once the user has actually set that backend
+           up; a plain ORCA install never sees them. -->
+      <div id="mlip-status" class="status-pill" style="display:none" title="MLIP environments">
         <span class="dot"></span><span id="mlip-status-text">MLIP not set</span>
       </div>
-      <div id="crest-status" class="status-pill" title="CREST (runs in WSL)">
+      <div id="crest-status" class="status-pill" style="display:none" title="CREST (runs in WSL)">
         <span class="dot"></span><span id="crest-status-text">CREST not set</span>
       </div>
     </div>
@@ -98,13 +101,15 @@
            never converts back (Expert -> Beginner confirms the discard). -->
       <div class="log-mode-toggle" style="margin-bottom:12px">
         <button id="bmode-dft" class="active" onclick="setBuildMode(_dftSub)">DFT</button>
-        <button id="bmode-mlip" onclick="setBuildMode('mlip')">MLIP</button>
-        <button id="bmode-crest" onclick="setBuildMode('crest')">CREST</button>
+        <button id="bmode-mlip" style="display:none" onclick="setBuildMode('mlip')">MLIP</button>
+        <button id="bmode-crest" style="display:none" onclick="setBuildMode('crest')">CREST</button>
         <span id="bsub-dft" class="bsub">
           <span class="bmode-sep"></span>
           <button id="bsub-beginner" class="active" onclick="setDftSub('beginner')">Beginner</button>
           <button id="bsub-expert" onclick="setDftSub('expert')">Expert</button>
         </span>
+        <button id="bmode-more" class="bmode-more" style="display:none" onclick="switchTab('settings')"
+                title="Set up an MLIP environment or CREST in WSL to add it here">+ More backends…</button>
         <span class="hint" id="bmode-hint" style="margin:0 0 0 10px;align-self:center"></span>
       </div>
       <div class="card" id="card-calc">

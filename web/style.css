@@ -552,6 +552,18 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
    are one step smaller so the backend choice reads as the primary level */
 .bsub { display: inline-flex; align-items: center; gap: 6px; }
 .bmode-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+/* "+ More backends…": the way back to a backend hidden from the toggle (an MLIP
+   env or CREST in WSL the user hasn't set up). Deliberately NOT another mode
+   chip — it selects no mode, it leaves for Settings — so it drops the card fill
+   for a dashed outline and reads as the quiet "add one" affordance it is. */
+.log-mode-toggle button.bmode-more {
+  margin-left: 4px; font-weight: 500;
+  border: 1px dashed var(--border); background: transparent;
+  color: var(--muted-foreground);
+}
+.log-mode-toggle button.bmode-more:hover {
+  color: var(--foreground); border-color: var(--muted-foreground);
+}
 .log-mode-toggle .bsub button { font-size: 11.5px; padding: 5px 10px; }
 .log-mode-toggle button {
   font-family: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px;
