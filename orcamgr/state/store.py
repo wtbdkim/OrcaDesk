@@ -381,15 +381,25 @@ def _auto_export_crest(calc) -> None:
 
 
 def _crest_calc_alive(calc) -> bool:
-    """WSL-aware liveness for a RUNNING crest_* calc. psutil (process_matches)
-    can't see inside WSL, so ask the CrestRunner (kill -0 + start-time guard) in
-    the distro persisted on config.crest_env_id. Lazy import keeps state/ free of
-    the crest package at import time."""
+    """Transport-aware liveness for a RUNNING crest_* calc. Under WSL the pid is
+    a Linux one that psutil (process_matches) cannot see, so the check goes
+    through the CrestRunner (kill -0 + start-time guard) on the target persisted
+    at launch in config.crest_env_id. Locally that pid IS a native one, but the
+    same check is used rather than psutil: one code path, and the start-time
+    comparison against /proc field 22 is the same guard either way. Lazy import
+    keeps state/ free of the crest package at import time."""
     if not getattr(calc, "pid", None):
         return False
     distro = (getattr(calc.config, "crest_env_id", "") or "").strip() if calc.config else ""
     if not distro:
-        return False
+        # A session written before the target was persisted (or by an older
+        # build) has nothing here. On a local transport there is only ever one
+        # place the job can be, so the answer is knowable; under WSL it is not,
+        # and an unknown distro still means "judge it from its files".
+        from ..crest.shell import LOCAL_TARGET, is_local
+        if not is_local():
+            return False
+        distro = LOCAL_TARGET
     try:
         from ..crest.runner import CrestRunner
         runner = CrestRunner(distro)
@@ -995,7 +1005,8 @@ class QueueStore:
 def queue_needs_orca(calcs: "list[Calculation]") -> bool:
     """True if running these calculations would launch ORCA at least once —
     i.e. some calc is not DONE and its kind is neither an mlip_* nor a crest_*
-    kind (both run outside ORCA: mlip in the user's MACE env, crest via WSL).
+    kind (both run outside ORCA: mlip in the user's MACE env, crest in a POSIX
+    shell -- WSL on Windows, this machine on Linux).
 
     Single shared decision (P4) for both run entry points (the desktop bridge
     and the phone server): an all-MLIP or all-CREST queue must be runnable with
@@ -1056,7 +1067,8 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
     overwriting existing results on disk).
     mlip_envs: registered MLIP environments [{id, name, python}], so the engine
     can run mlip_* calcs in the user's MACE interpreter. None/empty disables MLIP.
-    crest_distro: preferred WSL distro for crest_* calcs ("" = auto-detect the
+    crest_distro: preferred target for crest_* calcs -- a WSL distro, or
+        "local" on a native transport ("" = auto-detect the
     first distro that has CREST).
     budget: a core/resources.ResourceBudget capping how many calculations run at
     once and how many cores / how much memory they may occupy together. None =

@@ -784,6 +784,45 @@ produces carries its calculation's name (`LogLine.calc`) — the raw ORCA
 tail has no name of its own, and without the tag neither the log nor the
 convergence graphs could be separated per job.
 
+### P58 — The platform is detected; only the choice within it is a setting
+
+ORCAdesk asks the user for things only it cannot know. Which operating system it
+is running on is not one of them, so there is no Windows/Linux switch anywhere in
+Settings — `sys.platform` is authoritative, no machine is both, and a control
+whose only possible states are "right" and "wrong" hands the user a way to break
+the app and calls it configurability.
+
+The distinction that matters is between the **transport** and the **target**.
+CREST is the worked example (`orcamgr/crest/shell.py`): CREST has no native
+Windows build, so on Windows it is reached through WSL and on Linux it runs
+directly. That is the transport — detected. *Which* WSL distro, or which of the
+one place a local machine offers, is the target — a setting
+(`Settings.crest_distro`), because ORCAdesk genuinely cannot know which of
+several the user means. When a transport offers exactly one target, the picker
+is hidden rather than shown with a single entry (D2: a control with one value is
+a label pretending to be a choice).
+
+Two obligations follow:
+
+* **A platform difference is confined to one module, not sprinkled through the
+  callers.** `shell.py` names the three things that actually differ — how a
+  command runs, how a path is spelled inside that shell, whether a scratch
+  directory pays for itself — and `env.py` / `installer.py` / `runner.py` are
+  written once against it. Two parallel implementations drift, and the one that
+  drifts is always the platform the developer is not sitting at; that is why
+  `tests/test_crest_transport.py` renders **both** generated scripts from either
+  machine.
+* **What is missing is named as it is on THIS machine.** "Install WSL" is
+  useless advice on a box that has no WSL to install, and a card titled
+  "CREST (WSL)" on Linux describes a machine the user is not at. Every such
+  sentence is chosen from the live transport, not written once for the
+  developer's own platform (P2).
+
+A platform ORCAdesk cannot serve is refused where the user clicks, not where it
+would eventually break: the CREST installer declines on macOS with where to get
+a real build, rather than downloading a Linux binary that would fail at its
+first launch.
+
 ---
 
 ## Appendix A — Known deviations

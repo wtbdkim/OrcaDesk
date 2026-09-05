@@ -12,7 +12,7 @@ Python core.
 > the Log graph shows **live progress for optimizations and frequency runs**
 > (numerical *and* analytical/CP-SCF). Beyond ORCA, you can **pre-optimize a
 > structure with a MACE model (MLIP)** in your own Python environment, and run a
-> **CREST conformer search through WSL** — both hand their geometries off to ORCA
+> **CREST conformer search** — both hand their geometries off to ORCA
 > jobs through the normal reference mechanism. Results open in an **in-app 3D
 > structure viewer** where conformers can be flipped through and starred. The
 > queue can **run several calculations at once**, admitted against a core and
@@ -96,10 +96,13 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   and an optimized geometry can be referenced by a downstream ORCA calculation
   just like an opt→freq handoff.
 - **CREST conformer search**: explore low-energy conformers with the xTB
-  tight-binding methods. CREST has no native Windows build, so ORCAdesk runs its
-  Linux binary through **WSL** — pick a distribution under **Settings → CREST**
-  and ORCAdesk can install the (statically-linked) binary into it for you; the
-  one manual prerequisite is having a WSL distro. A `crest_conf` job joins the
+  tight-binding methods. CREST has no native Windows build, so on Windows
+  ORCAdesk runs its Linux binary through **WSL** — pick a distribution under
+  **Settings → CREST** and ORCAdesk can install the (statically-linked) binary
+  into it for you; the one manual prerequisite is having a WSL distro. On Linux
+  the same binary runs directly, with nothing in between: ORCAdesk finds a
+  `crest` already on your PATH, or installs one into `~/.local` for you, and
+  **Settings → CREST** has no distribution to pick. A `crest_conf` job joins the
   same queue (it runs detached and survives the app closing, like an ORCA run);
   its finished ensemble is listed (read-only) in the **Results** tab. Follow-up
   calculations reference the search from their geometry source on the Build

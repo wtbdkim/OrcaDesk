@@ -187,7 +187,7 @@ async function dropXyzIntoBackendCard(path) {
   // a locked card's Add would refuse anyway — surface the reason at drop time
   if (isMlip ? !_mlipReady : !_crestReady) {
     failNotify(isMlip ? "Ready MACE environment required (see Settings)."
-      : "CREST in a WSL distribution required (see Settings → CREST).");
+      : "CREST required (see Settings → CREST).");
     return;
   }
   try {
@@ -996,11 +996,21 @@ async function cancelMlipInstall() {
   pollMlipInstall();
 }
 
-// ---------- CREST (WSL) status ----------
+// ---------- CREST status ----------
+// A "target" is where CREST runs: a WSL distro on Windows (no native Windows
+// binary exists), or this machine itself on Linux. The payload's `transport`
+// says which, and it is DETECTED, never a setting — no machine is both, so a
+// Windows/Linux switch here could only ever be set wrong. What the user does
+// choose is which target, and on a local transport there is exactly one, so
+// the picker has nothing to offer and is hidden rather than shown empty (D2:
+// a control with one value is a label pretending to be a choice).
 let _crestPollTimer = 0;
-let _crestReady = false;   // some WSL distro has CREST — gates the CREST build card
+let _crestReady = false;   // some target has CREST — gates the CREST build card
 let _crestInstallWatch = false;  // an install click is awaiting its outcome (toast once)
-/** Grey out and lock the CREST build card when no distro has CREST. */
+/** The last CrestStatusPayload rendered — the transport is needed off the poll
+ *  path too (the install click's own copy). @type {CrestStatusPayload|null} */
+let _crestStatus = null;
+/** Grey out and lock the CREST build card when no target has CREST. */
 function applyCrestLock() {
   applyBackendCardLock("crest", !_crestReady);
 }
@@ -1009,6 +1019,7 @@ function applyCrestLock() {
 function renderCrest(st) {
   const state = (st && st.state) || "unset";
   const distros = (st && st.distros) || [];
+  _crestStatus = st || null;
   _crestReady = (state === "ready");
   // "error" here is WSL present with no distro carrying CREST — the ordinary
   // never-installed case, so it does NOT count as set up. An explicit distro
@@ -1025,19 +1036,52 @@ function renderCrest(st) {
       : state === "checking" ? "CREST checking…"
       : state === "error" ? "CREST error"
       : "CREST not set";
-    pill.title = !st || !st.wsl ? "WSL not available — install WSL to run CREST"
+    pill.title = !st || !st.wsl ? crestNoTransportText(st)
       : distros.length
-        ? distros.map(d => d.distro + ": " + (d.ready ? (d.version || "ready") : (d.error || "not installed"))).join("\n")
-        : "No usable WSL distribution found";
+        ? distros.map(d => crestTargetLabel(st, d.distro) + ": "
+            + (d.ready ? (d.version || "ready") : (d.error || "not installed"))).join("\n")
+        : crestNoTargetText(st);
   }
   renderCrestSettings(st);
 }
-/** Fill the Settings distro dropdown + status detail. @param {CrestStatusPayload} [st] */
+/** True when CREST runs on this machine rather than through WSL.
+ *  @param {CrestStatusPayload} [st] */
+function crestIsLocal(st) { return !!st && st.transport === "local"; }
+/** How to name one target in prose. The local pseudo-target is called "local"
+ *  on the wire (it is what round-trips through settings), which is not a name
+ *  to show a person. @param {CrestStatusPayload} [st] @param {string} name */
+function crestTargetLabel(st, name) {
+  return crestIsLocal(st) && name === "local" ? "this machine" : name;
+}
+/** Why nothing can run at all. @param {CrestStatusPayload} [st] */
+function crestNoTransportText(st) {
+  return crestIsLocal(st) ? "No POSIX shell found — CREST needs `bash` on PATH."
+                          : "WSL is not available on this machine.";
+}
+/** Why there is nowhere to install into. @param {CrestStatusPayload} [st] */
+function crestNoTargetText(st) {
+  return crestIsLocal(st) ? "No POSIX shell found — CREST needs `bash` on PATH."
+    : "No usable WSL distribution found. Install one, e.g. `wsl --install -d Ubuntu`.";
+}
+/** Fill the Settings target picker + status detail. @param {CrestStatusPayload} [st] */
 function renderCrestSettings(st) {
   const sel = document.getElementById("set-crest-distro");
   const detail = document.getElementById("crest-detail");
   const distros = (st && st.distros) || [];
-  if (sel) {
+  const local = crestIsLocal(st);
+  // The card names the transport it actually has: "CREST (WSL)" on a Linux box
+  // would be describing a machine the user is not sitting at.
+  const title = document.getElementById("crest-card-title");
+  if (title) title.textContent = local ? "CREST" : "CREST (WSL)";
+  const desc = document.getElementById("crest-card-desc");
+  if (desc) {
+    desc.textContent = local
+      ? "CREST runs natively here. ORCAdesk can install the static binary into your home directory, or use one already on PATH."
+      : "WSL-hosted Linux CREST binary (no native Windows build); ORCAdesk can install it into a distro you already have.";
+  }
+  const distroField = document.getElementById("crest-distro-field");
+  if (distroField) distroField.hidden = local;   // one target = nothing to pick
+  if (sel && !local) {
     const prev = settings && settings.crest_distro || sel.value || "";
     sel.innerHTML = `<option value="">auto-detect</option>`;
     for (const d of distros) {
@@ -1059,17 +1103,17 @@ function renderCrestSettings(st) {
     // impossible with no distro to install INTO. Creating a distro needs a
     // Linux account, so it is the one step ORCAdesk cannot script; leaving the
     // button live there bought a click that could only fail into the Log tab.
-    const target = sel ? sel.value : "";
+    const target = (sel && !local) ? sel.value : "";
     const alreadyReady = target
       ? distros.some(d => d.distro === target && d.ready)
       : distros.some(d => d.ready);
-    const noWsl = !st || !st.wsl;
+    const noTransport = !st || !st.wsl;
     const busy = !!st && st.state === "checking";
-    btn.disabled = alreadyReady || noWsl || busy || !distros.length;
+    btn.disabled = alreadyReady || noTransport || busy || !distros.length;
     btn.title = alreadyReady ? "CREST is already installed here"
-      : noWsl ? "WSL is not available on this machine"
-      : busy ? "Checking WSL…"
-      : !distros.length ? "No WSL distribution to install into — install one first, e.g. `wsl --install -d Ubuntu`"
+      : noTransport ? crestNoTransportText(st)
+      : busy ? (local ? "Looking for CREST…" : "Checking WSL…")
+      : !distros.length ? crestNoTargetText(st)
       : "";
   }
   if (detail) {
@@ -1080,14 +1124,21 @@ function renderCrestSettings(st) {
     // state "checking" with an empty distro list, and the card told a machine
     // that has Ubuntu to go and install Ubuntu — while the pill beside it
     // correctly read "CREST checking…". Say what is actually happening.
-    else if (st && st.state === "checking") detail.textContent = "Checking WSL for CREST…";
-    else if (st && !st.wsl) detail.textContent = "WSL is not available on this machine.";
-    else if (!distros.length) detail.textContent = "No usable WSL distribution found. Install one, e.g. `wsl --install -d Ubuntu`.";
+    else if (st && st.state === "checking") detail.textContent =
+      local ? "Looking for CREST…" : "Checking WSL for CREST…";
+    else if (st && !st.wsl) detail.textContent = crestNoTransportText(st);
+    else if (!distros.length) detail.textContent = crestNoTargetText(st);
     else {
-      const ready = distros.filter(d => d.ready).map(d => d.distro);
+      const ready = distros.filter(d => d.ready).map(d => crestTargetLabel(st, d.distro));
+      // Locally the useful fact is not WHICH target (there is one) but which
+      // binary it resolved to — a distro package, a conda env and our own
+      // ~/.local install are all plausible, and only the path tells them apart.
+      const first = distros.find(d => d.ready);
       detail.textContent = ready.length
-        ? "CREST found in: " + ready.join(", ")
-        : "CREST not installed in any distribution yet — pick one and click Install CREST.";
+        ? (local ? "CREST found: " + ((first && first.crest_bin) || "ready")
+                 : "CREST found in: " + ready.join(", "))
+        : local ? "CREST is not installed yet — click Install CREST."
+                : "CREST not installed in any distribution yet — pick one and click Install CREST.";
     }
   }
 }
@@ -1116,8 +1167,10 @@ async function checkCrest() {
 }
 async function installCrest() {
   const sel = document.getElementById("set-crest-distro");
-  const distro = sel ? sel.value : "";
-  toast("Installing CREST into WSL — this downloads ~8 MB…");
+  const local = crestIsLocal(_crestStatus);
+  const distro = (sel && !local) ? sel.value : "";
+  toast((local ? "Installing CREST — " : "Installing CREST into WSL — ")
+        + "this downloads ~8 MB…");
   _crestInstallWatch = true;
   const st = /** @type {CrestStatusPayload} */ (JSON.parse(await bridge.install_crest(distro || "")));
   renderCrest(st);

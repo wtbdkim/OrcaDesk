@@ -6,6 +6,46 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [0.9.0-beta] — 2026-09-05
 
 ### Added
+- **ORCAdesk runs on Linux, CREST included.** Everything but CREST was already
+  portable — settings and workspaces follow the XDG base directories, ORCA is
+  launched with `setsid` rather than a Windows process group, files open with
+  `xdg-open`. CREST was the exception: it has no native Windows build, so
+  ORCAdesk had only ever learned to reach it *through WSL*, and on a machine
+  that IS Linux there is no `wsl.exe` to call — a natively installed `crest`
+  could not be used at all.
+  - The transport is now one decision in one place (`orcamgr/crest/shell.py`):
+    a WSL distro on Windows, this machine on Linux. The probe, the installer,
+    the detached launch, the process-group kill and the reattach-after-restart
+    are one implementation for both.
+  - **It is detected, never configured.** There is no Windows/Linux switch,
+    because no machine is both and the platform already knows the answer — a
+    setting like that could only ever be set wrong. What you do pick is *which*
+    target, and on Linux there is exactly one, so **Settings → CREST** drops the
+    distribution picker and says what it found instead.
+  - Locally the run happens in the calculation's own folder rather than an ext4
+    scratch directory: the scratch exists because CREST's many-small-file I/O is
+    5–300× slower over WSL's 9P mount, and there is no such mount here. Nothing
+    is copied, and what CREST leaves behind (`--keepdir`, a crashed run's
+    trajectories) stays where you can look at it. The `rm -rf` that cleans the
+    scratch up is not generated at all in this shape — there, it would be
+    pointing at your results.
+  - `crest` already on your PATH (a distribution package, conda-forge) is found
+    by the same login-shell probe, so a machine that has it needs no install.
+    ORCAdesk can still fetch the static binary into `~/.local`. macOS is refused
+    up front with where to get a real build, rather than downloading a Linux
+    binary that would fail at its first launch.
+- **ORCA is found on Linux the way it is on Windows.** Auto-detection scanned
+  two fixed paths (`/usr/local/orca`, `/opt/orca`); an ORCA for Linux is a
+  tarball you extract where you like, keeping its version in the directory name,
+  so it now scans `/opt`, `/usr/local` and your home directory for a directory
+  that mentions ORCA — the same rule the Windows branch has always used. A
+  configured path is also checked for the execute bit, because a tarball
+  extracted without its modes is a file that exists and cannot run, and that
+  failure would otherwise arrive as a locked FAILED calculation.
+
+  Running from source is what works today (`pip install -r requirements.txt &&
+  python main.py`); there is no packaged Linux build, and the packaging scripts
+  (`build.bat`, `build.spec`, `installer.iss`) remain Windows-only.
 - **Natural bond orbital analysis, computed by ORCAdesk itself — no NBO
   licence needed.** Natural population analysis and the
   donor–acceptor tables people actually want from an NBO run are reachable from

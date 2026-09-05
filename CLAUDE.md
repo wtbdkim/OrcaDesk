@@ -8,7 +8,11 @@ ORCAdesk is a desktop GUI (PyQt6 + QWebEngine) for building, queuing, running, a
 parsing [ORCA](https://www.faccts.de/orca/) computational-chemistry jobs. The app
 shells out to the user's installed `orca` executable; it does not do the chemistry
 itself. Status is beta; the current version is `APP_VERSION` in `orcamgr/paths.py`
-(also the top entry of `CHANGELOG.md`). Windows is the primary tested target.
+(also the top entry of `CHANGELOG.md`). Windows is the primary tested target
+and the only packaged one (`build.bat` / `build.spec` / `installer.iss`);
+**Linux runs from source** — every platform difference is a `sys.platform`
+branch, never a setting (P58), and the one backend that had no Linux path at
+all, CREST, now runs natively instead of through WSL. macOS is untested.
 
 Two normative companion documents govern how this codebase is written:
 **`PRINCIPLES.md`** (development principles, cited as `P1`, `P10`, …) and
@@ -56,8 +60,10 @@ framework-free layers: `state/` (store, schemas, session persistence), `core/`
 (queue-engine semantics with a fake runner, per-kind validation, input generator,
 parser on synthetic fixtures), `mlip/` (with a stdlib-only stub worker — no MACE
 env needed), `crest/` (ensemble parser against a real ethanol corpus in
-`tests/crest/fixtures/`, CLI-flag building, and the QueueEngine path via a fake
-runner — no WSL/CREST needed), `config`, `procutil` (real child processes),
+`tests/crest/fixtures/`, CLI-flag building, the QueueEngine path via a fake
+runner — no WSL/CREST needed — and `test_crest_transport.py`, which renders the
+WSL *and* local `run_crest.sh` from either platform so neither shape is only
+ever seen by the user it breaks for), `config`, `procutil` (real child processes),
 `cube` + `core/plot` (cube-header parsing and the `orca_plot` menu sequences /
 trust-boundary clamp / pre-flight refusals, all without ORCA), and
 the phone HTTP API via `fastapi.testclient` (auto-skips without fastapi).
@@ -911,30 +917,56 @@ or CI (see the Commands section).
 
 `orcamgr/crest/` is a dedicated package, kept **out of** the ORCA pipeline in
 `core/` like `mlip/`. CREST is a conformer-sampling tool with **no native
-Windows build**, so ORCAdesk runs its statically-linked Linux binary through
-**WSL** — it never installs a chemistry toolchain, it shells out (here, into a
-distro). v1 scope is conformer search only (`crest_conf`).
+Windows build**, so on Windows ORCAdesk runs its statically-linked Linux binary
+through **WSL** — it never installs a chemistry toolchain, it shells out (there,
+into a distro). v1 scope is conformer search only (`crest_conf`).
 
-The package: `wsl.py` (low-level `wsl.exe` helpers — distro enumeration with
-infrastructure distros like `docker-desktop` filtered out, `WSL_UTF8=1`, always
-`-d <distro>` explicitly), `env.py` (probe each distro for the `crest` binary,
-backing the "CREST ready" top-bar indicator; `aggregate_status` mirrors the MLIP
-four-state pill), `installer.py` (download the static release tarball into a
-distro + symlink — fully scriptable, so ORCAdesk auto-installs CREST; the one
-manual prerequisite is a WSL distro existing), plus the run pipeline
-(`runner.py`, `parser.py`).
+**Where it shells out to is one decision in `shell.py`, and it is detected, not
+configured.** A *target* is a WSL distro on Windows and the single pseudo-target
+`"local"` (`shell.LOCAL_TARGET`) elsewhere, where the same binary runs directly.
+There is deliberately no Windows/Linux setting: no machine is both, `sys.platform`
+already knows, and such a toggle could only ever be set wrong — what the user
+picks is *which* target (`Settings.crest_distro` / `StepConfig.crest_env_id`,
+unchanged), and locally there is exactly one, so the Settings picker is hidden
+rather than shown with a single entry. `shell.py` is the whole of the difference:
+`run_bash(target, ...)` (via `wsl.exe -d` or plain `bash -c`), `shell_path_expr`
+(a bash *expression* — `"$(wslpath -u '...')"` vs the path itself — so the
+generated script and the launch command cannot disagree), and `uses_scratch`.
+`env.py`/`installer.py`/`runner.py` are written against it, once.
+
+The package: `shell.py` (the transport, above), `wsl.py` (low-level `wsl.exe`
+helpers — distro enumeration with infrastructure distros like `docker-desktop`
+filtered out, `WSL_UTF8=1`, always `-d <distro>` explicitly — now the Windows
+half of `shell.py`), `env.py` (probe each target for the `crest` binary, backing
+the "CREST ready" top-bar indicator; `aggregate_status` mirrors the MLIP
+four-state pill and carries `transport` so the UI can word "no WSL distribution"
+and "no bash" as the different problems they are), `installer.py` (download the
+static release tarball onto a target + symlink — fully scriptable, so ORCAdesk
+auto-installs CREST; on Windows the one manual prerequisite is a WSL distro
+existing, and on macOS it refuses up front rather than fetching a Linux binary),
+plus the run pipeline (`runner.py`, `parser.py`).
 
 **Running CREST jobs** mirrors the *ORCA* runner (not the MLIP one) because a
 CREST run is long and must survive ORCAdesk closing. `QueueEngine._run_crest_calc`
-resolves the distro (`config.crest_env_id`, else `settings.crest_distro`, else
-the first distro with CREST — persisted back onto `config.crest_env_id` so a
+resolves the target (`config.crest_env_id`, else `settings.crest_distro`, else
+the first target with CREST — persisted back onto `config.crest_env_id` so a
 reattach knows where the job runs) and writes a self-contained `run_crest.sh`
-into the Windows workspace folder. `CrestRunner.launch` starts it **detached**
-(`setsid`) in WSL: the script records its own Linux pid + start-time, runs CREST
-in an **ext4 scratch dir** (`~/.orcadesk/scratch/<name>`, never `/mnt` — 9P is
-5–300× slower and CREST is I/O-heavy), redirects CREST's stdout to the Windows
-`<name>.out` for live tailing, then copies the ensemble results back and writes a
-`<name>.crest.rc` marker. The launcher **waits (inside WSL) until the `.pid`
+into the workspace folder. `CrestRunner.launch` starts it **detached**
+(`setsid`): the script records its own pid + start-time, redirects CREST's stdout
+to `<name>.out` for live tailing, and writes a `<name>.crest.rc` marker last —
+after the ensemble is in place, because that marker is what `monitor` stops on
+and what a finished-while-closed run is judged from.
+
+**The generated script has two shapes, and the difference is the scratch dir.**
+Under WSL it runs CREST in an **ext4 scratch dir** (`~/.orcadesk/scratch/<name>`,
+never `/mnt` — 9P is 5–300× slower and CREST is I/O-heavy) and copies the
+ensemble back to the Windows folder. Locally there is no such mount, so the run
+happens in the calc folder itself: nothing to copy, and `--keepdir` output stays
+where the user can see it. The `rm -rf "$SCRATCH"` cleanup is **not generated at
+all** in the local shape — there, `SCRATCH` would be the user's calc folder,
+results and all — and `CrestRunner._kill`'s scratch cleanup is guarded on
+`shell.uses_scratch()` for the same reason. `tests/test_crest_transport.py`
+renders both shapes from either platform and pins that absence. The launcher **waits (inside WSL) until the `.pid`
 appears** before returning — without that, `wsl.exe` closes the pty before
 `setsid` finishes detaching and the child is killed (a real bug found by
 end-to-end testing). Because it's a true detach, `monitor` tails the `.out` +
@@ -1166,7 +1198,8 @@ before adopting a result, or it draws the previous orbital under this one's
 label. Wire shapes: `PlotOptionsResult` / `CubeJobPayload` / `CubeDataResult`.
 
 **Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
-`set_crest_distro`) follow
+`set_crest_distro` — "distro" is the wire name for a target on both platforms)
+follow
 the MLIP pattern: a background probe publishes to `Bridge._crest_status` (guarded
 by `_crest_lock`) and the UI polls `get_crest_status`. `install_crest` runs off
 the click too, so its outcome rides back on `CrestStatusPayload.install_error`
