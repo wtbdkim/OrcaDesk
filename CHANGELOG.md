@@ -48,20 +48,29 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   (`build.bat`, `build.spec`, `installer.iss`) remain Windows-only.
 
 ### Fixed
-- **A failed MLIP environment kept its name for good.** Creating one runs
-  `python -m venv`, and on Debian and Ubuntu that fails on a stock machine:
-  `ensurepip` is not in their standard library but in a separate
-  `python3.N-venv` package. The error says so plainly — but venv links
-  `bin/python` *before* it installs pip, so the abandoned directory has a
-  working interpreter and nothing else: no pip, no site-packages, not even an
-  `activate`. ORCAdesk read "the interpreter is there" as "this env is
-  finished", which made the leftover neither reusable nor removable, and
-  **`MACE` — the name the card fills in by default — was refused from then on**,
-  even after the missing package was installed. A finished environment is now
-  one that has pip as well, so an install that died at that step is recognised
-  as the wreckage it is and cleared away on the next attempt. A complete
-  environment is still never deleted to make room for a new one of its name.
-  Windows never saw this: ensurepip ships with the interpreter there.
+- **A failed MLIP environment kept its name for good.** Every way a create can
+  die left a directory ORCAdesk then read as a finished environment: not its to
+  delete, so the name was refused from then on — including `MACE`, the one the
+  card fills in. Two of those are easy to reach on Linux. `python -m venv` fails
+  outright on Debian and Ubuntu until `python3.N-venv` is installed, because
+  ensurepip lives in that package rather than the standard library — and venv
+  links `bin/python` *before* it fails, so the wreckage has a working
+  interpreter and nothing else. Get past that and the backend step is next: a
+  Python newer than a backend's wheels sends pip into a source build that fails,
+  2.5 GB of torch later. An environment now counts as finished when it is
+  **registered** — Settings records it only after the install returns ok, so a
+  directory under `mlip_envs/` that Settings does not know about never
+  completed. An unregistered env that nonetheless holds an MLIP backend is still
+  left alone, so a settings file that degraded to defaults (P32) cannot make a
+  working 6 GB environment deletable by the next same-named create.
+- **Only one Python was ever offered to build an MLIP environment with.**
+  Detection asked `which python3`, which names the distribution's default and
+  nothing else, so a second interpreter installed alongside it — by pyenv, uv,
+  conda or a PPA — could not be chosen. Windows never had the gap: the `py`
+  launcher enumerates every install. It is not a corner case, because the newest
+  Python is regularly ahead of the wheels a backend needs: Ubuntu 26.04 ships
+  only 3.14, MACE's matscipy has no 3.14 wheel yet, and the picker offered
+  nothing else to try. Each version is now asked for by name as well.
 - **On a GNOME desktop, ORCA auto-detection found the screen reader.** GNOME's
   accessibility tool is also called `orca` and is on PATH by default on every
   Ubuntu install, so `shutil.which("orca")` — the first place detection looks —
