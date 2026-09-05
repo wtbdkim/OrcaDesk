@@ -310,17 +310,50 @@ def install_plan(base_python: str, env_dir, backend: str = "mace",
     ]
 
 
+def _venv_has_pip(env_dir: Path) -> bool:
+    """Whether the venv at ``env_dir`` actually has pip.
+
+    Not ``python -m pip --version``: this decides what may be deleted, and
+    launching an interpreter to ask a question about a directory is both slower
+    and one more thing that can hang. ``ensurepip`` writes the console scripts
+    beside the interpreter and the package into site-packages; either is proof
+    enough, and requiring only one of them survives a env whose scripts were
+    pruned.
+    """
+    d = Path(env_dir)
+    bindir = d / ("Scripts" if sys.platform.startswith("win") else "bin")
+    try:
+        if any(bindir.glob("pip*")):
+            return True
+        return any(d.glob("lib/python*/site-packages/pip")) or \
+            any(d.glob("Lib/site-packages/pip"))
+    except OSError:
+        return False
+
+
 def _is_half_built(env_dir: Path) -> bool:
     """Whether ``env_dir`` is a partial environment ORCAdesk itself left behind.
 
-    A finished env has a working interpreter; anything else under mlip_envs/ is
-    either an aborted attempt of ours or an empty directory. Deliberately narrow
-    — it decides what may be deleted — so a directory that is not recognisable
-    as a venv-in-progress is left alone and refused by name instead.
+    A finished env has a working interpreter **and pip**; anything else under
+    mlip_envs/ is either an aborted attempt of ours or an empty directory.
+    Deliberately narrow — it decides what may be deleted — so a directory that
+    is not recognisable as a venv-in-progress is left alone and refused by name
+    instead.
+
+    The interpreter alone was the test, and on Debian/Ubuntu that is not enough:
+    ``ensurepip`` is not in the standard library there but in a separate
+    ``python3.N-venv`` package, and ``python -m venv`` links ``bin/python``
+    BEFORE it fails on the missing module. What it leaves behind therefore looks
+    finished — the interpreter runs — while having no pip, no site-packages and
+    not even an ``activate``. Unrecognised, it could be neither reused nor
+    removed, so the name (including the "MACE" the card fills in by default) was
+    refused for good, even after the user installed the package the error asked
+    for. Windows never saw it: ensurepip ships with the interpreter there, so
+    the step this guards does not fail.
     """
     try:
-        if venv_python(env_dir).exists():
-            return False       # a usable interpreter: not ours to remove
+        if venv_python(env_dir).exists() and _venv_has_pip(env_dir):
+            return False       # a usable environment: not ours to remove
         names = {p.name.lower() for p in env_dir.iterdir()}
     except OSError:
         return False
