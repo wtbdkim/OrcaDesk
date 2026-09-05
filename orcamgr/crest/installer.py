@@ -1,5 +1,5 @@
 """
-Auto-install CREST into a WSL distro, with no user shell interaction.
+Auto-install CREST onto a target, with no user shell interaction.
 
 CREST publishes a **statically linked** Linux binary, so installation is just:
 download the release tarball, extract it, and symlink the binary — no compiler,
@@ -8,13 +8,23 @@ This is the whole reason ORCAdesk can install CREST for the user: a static tar i
 fully scriptable, unlike the WSL distro provisioning itself (which needs the user
 to create a Linux account once).
 
+The script is plain POSIX and knows nothing about WSL, so it installs into a WSL
+distro on Windows and onto the machine itself on Linux with no change at all —
+the transport (``shell.py``) is the only difference, and it is one import. What
+does NOT carry over is macOS: the published asset is an Ubuntu build, so
+installing it there would produce a binary that cannot run, and
+:func:`install_crest` refuses up front and says where to get a real one (P2 —
+reported, never a mystery failure at the first launch).
+
 Verified end to end on WSL Ubuntu: the binary lands at
 ``~/.local/opt/crest/crest/crest`` and is symlinked to ``~/.local/bin/crest``.
 """
 
 from __future__ import annotations
 
-from .wsl import run_bash
+import sys
+
+from .shell import is_missing, missing_message, run_bash
 from .env import resolve_crest_bin
 
 # GitHub's /latest/download/ redirects to the current stable release's asset.
@@ -59,12 +69,19 @@ echo "ORCAdesk-OK: $CRESTBIN"
 
 
 def install_crest(distro: str, timeout: float = 300.0) -> dict:
-    """Download + install the static CREST binary into ``distro``. Returns
-    {ok, crest_bin, version, error}. Blocking (run it off the UI thread)."""
-    rc, out, err = run_bash(distro, _INSTALL_SCRIPT, timeout=timeout)
-    if err == "wsl-not-found":
+    """Download + install the static CREST binary onto ``distro`` (a WSL distro,
+    or ``shell.LOCAL_TARGET``). Returns {ok, crest_bin, version, error}.
+    Blocking (run it off the UI thread)."""
+    if sys.platform == "darwin":
         return {"ok": False, "crest_bin": "", "version": "",
-                "error": "wsl.exe not found — WSL is required."}
+                "error": ("the published CREST build is a Linux binary and will "
+                          "not run on macOS. Install CREST yourself (conda-forge: "
+                          "`conda install -c conda-forge crest`); ORCAdesk will "
+                          "find it on PATH.")}
+    rc, out, err = run_bash(distro, _INSTALL_SCRIPT, timeout=timeout)
+    if is_missing(err):
+        return {"ok": False, "crest_bin": "", "version": "",
+                "error": missing_message()}
     if rc != 0 or "ORCAdesk-OK:" not in out:
         msg = ""
         for line in out.splitlines():

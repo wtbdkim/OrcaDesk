@@ -33,7 +33,9 @@ from ..mlip.env import (
 from ..crest.env import (
     probe_all as crest_probe_all, aggregate_status as crest_aggregate_status,
 )
-from ..crest.wsl import list_distros as crest_list_distros
+from ..crest.shell import (
+    list_targets as crest_list_targets, transport_kind as crest_transport,
+)
 from ..paths import (APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL,
                      config_file, user_data_root)
 from ..textio import repair_ansi_line
@@ -244,11 +246,13 @@ class Bridge(QObject):
         # request for another result rebuilds it (seconds), never caches it
         # to disk. Guarded by _nbo_lock, held only for the dict access.
         self._nbo_sets: dict = {}
-        # Live CREST status (WSL distro probe). Like MLIP the probe is slow (it
-        # spawns wsl.exe + runs `crest --version`), so it runs in a background
-        # thread and the UI polls get_crest_status(). Guarded by its own lock.
+        # Live CREST status (a probe of every target: WSL distros on Windows,
+        # this machine on Linux). Like MLIP the probe is slow (it runs
+        # `crest --version`), so it runs in a background thread and the UI polls
+        # get_crest_status(). Guarded by its own lock.
         self._crest_lock = threading.Lock()
-        self._crest_status: dict = {"state": "checking", "distros": [], "wsl": True}
+        self._crest_status: dict = {"state": "checking", "distros": [], "wsl": True,
+                                    "transport": crest_transport()}
         self._crest_installing = False
         # CREST probe generation (same stale-overwrite guard as MLIP's).
         self._crest_probe_seq = 0
@@ -734,13 +738,15 @@ class Bridge(QObject):
 
     # --- CREST environment (WSL-backed, kept separate from ORCA) ---
     def _start_crest_probe(self) -> None:
-        """Probe every usable WSL distro for CREST in a background thread (spawning
-        wsl.exe + running `crest --version` must not block the Qt UI thread).
-        Publishes the aggregate on self._crest_status for get_crest_status()."""
+        """Probe every CREST target in a background thread (running
+        `crest --version`, possibly through wsl.exe, must not block the Qt UI
+        thread). Publishes the aggregate on self._crest_status for
+        get_crest_status()."""
         with self._crest_lock:
             prev = self._crest_status.get("distros", [])
             self._crest_status = {"state": "checking", "distros": prev,
-                                  "wsl": self._crest_status.get("wsl", True)}
+                                  "wsl": self._crest_status.get("wsl", True),
+                                  "transport": crest_transport()}
             self._crest_probe_seq += 1
             seq = self._crest_probe_seq
 
@@ -765,6 +771,7 @@ class Bridge(QObject):
         status.setdefault("state", "checking")
         status.setdefault("distros", [])
         status.setdefault("wsl", True)
+        status.setdefault("transport", crest_transport())
         # A plain re-probe publishes no install_error, so a Re-check clears a
         # stale one on its own -- the error describes the last install ATTEMPT.
         status.setdefault("install_error", "")
@@ -772,7 +779,7 @@ class Bridge(QObject):
 
     @pyqtSlot(result=str)
     def check_crest(self) -> str:
-        """Re-probe WSL distros for CREST. Returns the current status immediately;
+        """Re-probe every CREST target. Returns the current status immediately;
         the UI polls get_crest_status() for the refreshed result."""
         self._start_crest_probe()
         return self.get_crest_status()
@@ -794,11 +801,13 @@ class Bridge(QObject):
                 self._crest_installing = True
                 self._crest_status = {"state": "checking",
                                       "distros": self._crest_status.get("distros", []),
-                                      "wsl": self._crest_status.get("wsl", True)}
+                                      "wsl": self._crest_status.get("wsl", True),
+                                      "transport": crest_transport()}
         if busy is not None:
             busy.setdefault("state", "checking")
             busy.setdefault("distros", [])
             busy.setdefault("wsl", True)
+            busy.setdefault("transport", crest_transport())
             busy.setdefault("install_error", "")
             return json.dumps(CrestStatusPayload(**busy))
 
@@ -806,8 +815,8 @@ class Bridge(QObject):
             from ..crest.installer import install_crest as do_install
             target = (distro or "").strip()
             if not target:
-                distros = crest_list_distros()
-                target = distros[0] if distros else ""
+                targets = crest_list_targets()
+                target = targets[0] if targets else ""
             # Carried onto the status payload: the install runs here, off the
             # click, so the Settings card is the only place the user can learn
             # the outcome without opening the Log tab.
@@ -835,10 +844,13 @@ class Bridge(QObject):
                         f"CREST install failed in '{target}': "
                         f"{res.get('error') or 'unknown error'}", "err")
             else:
-                install_error = ("no usable WSL distribution found. Install one "
-                                 "first, e.g. `wsl --install -d Ubuntu`.")
+                # Why there is nowhere to install names the thing that is
+                # actually missing on THIS platform -- "install WSL" is useless
+                # advice on a machine that has none to install.
+                from ..crest.env import no_target_message
+                install_error = no_target_message()
                 self.store.append_log(
-                    "CREST install failed: no usable WSL distro found.", "err")
+                    f"CREST install failed: {install_error}", "err")
             status = crest_aggregate_status(crest_probe_all())
             with self._crest_lock:
                 self._crest_installing = False
@@ -850,7 +862,8 @@ class Bridge(QObject):
 
     @pyqtSlot(str, result=str)
     def set_crest_distro(self, distro: str) -> str:
-        """Persist the preferred WSL distro for CREST and re-probe."""
+        """Persist the preferred CREST target (a WSL distro, or "local") and
+        re-probe."""
         self.settings.crest_distro = (distro or "").strip()
         self.settings.save()
         self._start_crest_probe()

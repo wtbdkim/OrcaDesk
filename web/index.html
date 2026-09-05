@@ -565,11 +565,11 @@
         </div>
       </div>
       <div class="card">
-        <div class="card-title">CREST (WSL)</div>
-        <div class="card-desc">WSL-hosted Linux CREST binary (no native Windows build); ORCAdesk can install it into a distro you already have.</div>
+        <div class="card-title" id="crest-card-title">CREST</div>
+        <div class="card-desc" id="crest-card-desc">ORCAdesk can install the CREST binary for you.</div>
         <div id="crest-detail" class="hint" style="margin:0 0 8px"></div>
         <div class="field-row" style="margin-top:4px">
-          <div class="field"><label>WSL distribution</label>
+          <div class="field" id="crest-distro-field"><label>WSL distribution</label>
             <select id="set-crest-distro" onchange="onCrestDistroChange()"><option value="">auto-detect</option></select>
           </div>
           <button class="btn btn-ghost" onclick="checkCrest()">Re-check</button>

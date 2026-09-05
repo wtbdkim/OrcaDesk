@@ -218,8 +218,11 @@ class MlipInstallPayload(TypedDict):
 
 
 class CrestDistroPayload(TypedDict):
-    """One WSL distro probed for CREST (backs the "CREST ready" indicator)."""
-    distro: str               # distro name (pass to `wsl -d <distro>`)
+    """One TARGET probed for CREST (backs the "CREST ready" indicator). A target
+    is a WSL distro on Windows and the single pseudo-target "local" elsewhere --
+    the field keeps the name `distro` because it is what the desktop and the
+    phone already read."""
+    distro: str               # distro name (`wsl -d <distro>`), or "local"
     ready: bool               # crest binary found + runnable
     crest_bin: str            # resolved binary path inside the distro, or ""
     version: str              # `crest --version` line, or ""
@@ -234,7 +237,9 @@ class CrestStatusPayload(TypedDict):
     are absent."""
     state: str                # "unset" | "checking" | "ready" | "error"
     distros: "list[CrestDistroPayload]"
-    wsl: bool                 # whether wsl.exe is available at all
+    transport: str            # "wsl" | "local" -- which shell CREST runs in
+    wsl: bool                 # whether the transport is usable at all
+                              # (wsl.exe on Windows, bash locally)
     install_error: str        # why the last install attempt failed, or ""
 
 

@@ -50,14 +50,36 @@ def _candidate_orca_paths() -> list[Path]:
             except (PermissionError, OSError):
                 pass
     else:
-        for p in (Path("/usr/local/orca") / exe, Path("/opt/orca") / exe):
-            if p.exists():
-                candidates.append(p)
+        # 3) common POSIX install roots. ORCA for Linux ships as a tarball the
+        #    user extracts wherever they like, and the directory keeps its
+        #    version in the name (orca_6_1_1_linux_x86-64_shared_openmpi418),
+        #    so this scans for a child whose name mentions orca exactly the way
+        #    the Windows branch above does -- a single fixed /opt/orca path
+        #    found almost nobody's actual install.
+        roots = [Path("/opt"), Path("/usr/local"), Path.home(),
+                 Path.home() / "opt", Path("/usr/local/share")]
+        for root in roots:
+            if not root.is_dir():
+                continue
+            direct = root / "orca" / exe
+            if direct.exists():
+                candidates.append(direct)
+            try:
+                for child in root.iterdir():
+                    if child.is_dir() and "orca" in child.name.lower():
+                        p = child / exe
+                        if p.exists():
+                            candidates.append(p)
+            except (PermissionError, OSError):
+                pass
 
-    # de-duplicate, keep order
+    # de-duplicate, keep order. The key is case-folded only where the
+    # filesystem is: on ext4 /opt/Orca and /opt/orca are two different installs,
+    # and collapsing them would silently drop one.
     seen, unique = set(), []
+    fold = sys.platform.startswith("win") or sys.platform == "darwin"
     for c in candidates:
-        key = str(c).lower()
+        key = str(c).lower() if fold else str(c)
         if key not in seen:
             seen.add(key)
             unique.append(c)
@@ -287,7 +309,11 @@ class Settings:
             return False
         if os.name == "nt":
             return p.suffix.lower() in (".exe", ".bat", ".cmd", ".com")
-        return True
+        # The POSIX analogue of "is this actually runnable": a tarball extracted
+        # without preserving modes, or a path pointed at orca's README, is a
+        # file that exists and cannot execute -- and the launch would fail with
+        # PermissionError into a FAILED calc, which is locked (P24).
+        return os.access(p, os.X_OK)
 
     def mlip_env(self, env_id: str) -> dict | None:
         """The registered MLIP environment with this id, or None."""

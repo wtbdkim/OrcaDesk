@@ -312,7 +312,8 @@
  * @typedef {Object} CrestStatusPayload
  * @property {"unset"|"checking"|"ready"|"error"} state
  * @property {CrestDistroPayload[]} distros
- * @property {boolean} wsl
+ * @property {boolean} wsl  the transport is usable (wsl.exe on Windows, bash locally)
+ * @property {"wsl"|"local"} transport  which shell CREST runs in
  * @property {string} install_error  why the last install attempt failed, or ""
  */
 

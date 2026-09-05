@@ -88,7 +88,7 @@ class Calculation:
     # opt | ts_opt | freq | ts_freq | opt_freq | ts_opt_freq | irc | tddft |
     # sp | general | nmr | neb_ts | mlip_opt | crest_conf
     # (mlip_* runs outside ORCA in the user's MACE env; crest_* runs outside ORCA
-    #  in WSL — see orcamgr/mlip/ and orcamgr/crest/)
+    #  in a POSIX shell — WSL on Windows — see orcamgr/mlip/ and orcamgr/crest/)
     kind: str
     config: StepConfig
     charge: int = 0
@@ -1057,11 +1057,12 @@ class QueueEngine:
 
     # -- single CREST conformer search (runs in WSL, OUTSIDE the ORCA pipeline) --
     def _run_crest_calc(self, calc: Calculation, index: int) -> None:
-        """Run a crest_* calc: a CREST conformer search in WSL. Like ORCA it is
-        launched DETACHED (survives app close) and reattached across a restart;
-        the resolved WSL distro is stashed on config.crest_env_id so a reattach
-        knows where the job runs. Mirrors _run_calc's fresh-launch/reattach shape
-        but uses CrestRunner + parse_crest_result."""
+        """Run a crest_* calc: a CREST conformer search. Like ORCA it is launched
+        DETACHED (survives app close) and reattached across a restart; the
+        resolved TARGET -- a WSL distro on Windows, this machine on Linux, see
+        crest/shell.py -- is stashed on config.crest_env_id so a reattach knows
+        where the job runs. Mirrors _run_calc's fresh-launch/reattach shape but
+        uses CrestRunner + parse_crest_result."""
         from ..crest.runner import CrestRunner, write_crest_run_files, build_crest_argv
         from ..crest.env import resolve_run_target
 
@@ -1125,8 +1126,12 @@ class QueueEngine:
         script_path = write_crest_run_files(calc_dir, calc.name, xyz, crest_bin, argv)
 
         method = getattr(calc.config, "crest_method", "") or "gfn2"
+        # Name where it runs, because the answer differs per machine and the log
+        # is where a user diagnoses "which CREST did this actually use".
+        from ..crest.shell import is_local as _crest_is_local
+        where = "locally" if _crest_is_local() else f"in WSL:{distro}"
         self.cb.log(f"[{calc.name}] (crest_conf) running CREST [{method}] "
-                    f"in WSL:{distro} ...", "info", calc.name)
+                    f"{where} ...", "info", calc.name)
         runner = self._use_runner(CrestRunner(distro))
         try:
             pid, create_time = runner.launch(script_path, calc.name, out_path)
