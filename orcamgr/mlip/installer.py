@@ -28,7 +28,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 from ..textio import decode_process_output
 from .env import MLIP_BACKENDS
@@ -197,6 +197,21 @@ def find_base_pythons() -> list[dict]:
                   if ln.strip()]
     except (OSError, subprocess.SubprocessError):
         pass
+    # `python3` is one name for one interpreter -- the distribution's default --
+    # so on POSIX that single question was the whole answer, and every other
+    # interpreter on the machine stayed invisible. Windows never had the gap:
+    # the py launcher above enumerates every registered install. It matters
+    # because the newest Python is not always a usable base: Ubuntu 26.04 ships
+    # only 3.14, and MACE's matscipy has no 3.14 wheel yet, so pip falls back to
+    # a source build that fails -- with a picker offering nothing else, after a
+    # 2.5 GB torch download. A 3.12 installed alongside (pyenv, uv, conda, a
+    # PPA) is a perfectly good base, so ask for each version by name too.
+    if not sys.platform.startswith("win"):
+        major = MIN_PY[0]
+        for minor in range(MAX_PY[1], MIN_PY[1] - 1, -1):
+            found = shutil.which(f"python{major}.{minor}")
+            if found:
+                cands.append(found)
 
     out: list[dict] = []
     seen = set()
@@ -310,49 +325,87 @@ def install_plan(base_python: str, env_dir, backend: str = "mace",
     ]
 
 
-def _venv_has_pip(env_dir: Path) -> bool:
-    """Whether the venv at ``env_dir`` actually has pip.
+def _installed_backends(env_dir: Path) -> set:
+    """Which MLIP backend packages are present in the env's site-packages.
 
-    Not ``python -m pip --version``: this decides what may be deleted, and
-    launching an interpreter to ask a question about a directory is both slower
-    and one more thing that can hang. ``ensurepip`` writes the console scripts
-    beside the interpreter and the package into site-packages; either is proof
-    enough, and requiring only one of them survives a env whose scripts were
-    pruned.
+    A directory listing, not ``python -c "import mace"``: this decides what may
+    be deleted, and starting an interpreter to ask a question about a directory
+    is slower and one more thing that can hang. Readiness — does it actually
+    import? — is a different question, asked by mlip/env.py against a registered
+    env.
     """
     d = Path(env_dir)
-    bindir = d / ("Scripts" if sys.platform.startswith("win") else "bin")
-    try:
-        if any(bindir.glob("pip*")):
-            return True
-        return any(d.glob("lib/python*/site-packages/pip")) or \
-            any(d.glob("Lib/site-packages/pip"))
-    except OSError:
-        return False
+    roots = list(d.glob("lib/python*/site-packages")) + [d / "Lib" / "site-packages"]
+    found = set()
+    for spec in MLIP_BACKENDS.values():
+        pkg = spec["package"]
+        for sp in roots:
+            try:
+                if (sp / pkg).exists() or any(sp.glob(f"{pkg}-*.dist-info")):
+                    found.add(pkg)
+                    break
+            except OSError:
+                continue
+    return found
 
 
-def _is_half_built(env_dir: Path) -> bool:
-    """Whether ``env_dir`` is a partial environment ORCAdesk itself left behind.
+def _is_registered(env_dir: Path, in_use) -> bool:
+    """Whether an interpreter Settings has registered lives inside ``env_dir``.
 
-    A finished env has a working interpreter **and pip**; anything else under
-    mlip_envs/ is either an aborted attempt of ours or an empty directory.
-    Deliberately narrow — it decides what may be deleted — so a directory that
-    is not recognisable as a venv-in-progress is left alone and refused by name
-    instead.
-
-    The interpreter alone was the test, and on Debian/Ubuntu that is not enough:
-    ``ensurepip`` is not in the standard library there but in a separate
-    ``python3.N-venv`` package, and ``python -m venv`` links ``bin/python``
-    BEFORE it fails on the missing module. What it leaves behind therefore looks
-    finished — the interpreter runs — while having no pip, no site-packages and
-    not even an ``activate``. Unrecognised, it could be neither reused nor
-    removed, so the name (including the "MACE" the card fills in by default) was
-    refused for good, even after the user installed the package the error asked
-    for. Windows never saw it: ensurepip ships with the interpreter there, so
-    the step this guards does not fail.
+    The interpreter's own path is never resolved: inside a venv ``bin/python``
+    is a symlink to the BASE interpreter, so following it walks straight out of
+    the environment (to /usr/bin, or wherever pyenv/uv keeps it) and every
+    registered env then looks unregistered. Its containing directory is a real
+    one, so that is what gets resolved and compared.
     """
     try:
-        if venv_python(env_dir).exists() and _venv_has_pip(env_dir):
+        root = env_dir.resolve()
+    except OSError:
+        return False
+    for python in in_use or ():
+        if not python:
+            continue
+        try:
+            holder = Path(python).parent.resolve()
+        except OSError:
+            continue
+        if root == holder or root in holder.parents:
+            return True
+    return False
+
+
+def _is_half_built(env_dir: Path, *, registered: bool = False) -> bool:
+    """Whether ``env_dir`` is a partial environment ORCAdesk itself left behind.
+
+    An environment is finished when it is **registered**: bridge.py adds it to
+    ``settings.mlip_envs`` only after the install returns ok, so a directory
+    under mlip_envs/ that Settings does not know about is, by construction, an
+    attempt that never completed. That is the whole signal, and it is the one
+    the caller has.
+
+    Read from the directory alone it is not, so there is a second, independent
+    check: an env holding an MLIP backend is treated as finished even when it is
+    unregistered. Settings degrades to defaults when its JSON is corrupt (P32),
+    and losing the registry that way must not turn a working 6 GB environment
+    into something the next same-named create silently deletes.
+
+    Deliberately narrow beyond that — it decides what may be deleted — so a
+    directory that is not recognisable as a venv is left alone and refused by
+    name instead.
+
+    Earlier rules were both too weak, and each failed the step after the one it
+    was written for. "Has an interpreter" missed a create that died at
+    ``ensurepip`` — Debian and Ubuntu keep it in a separate python3.N-venv
+    package, and ``python -m venv`` links bin/python before it fails, so the
+    wreckage had a working interpreter. "Has an interpreter and pip" then missed
+    a create that died installing the backend itself — which is where a Python
+    newer than the backend's wheels lands you, after a 2.5 GB torch download.
+    Both left the name refused for good, including the "MACE" the card fills in.
+    """
+    if registered:
+        return False
+    try:
+        if _installed_backends(env_dir):
             return False       # a usable environment: not ours to remove
         names = {p.name.lower() for p in env_dir.iterdir()}
     except OSError:
@@ -419,9 +472,16 @@ class MlipEnvInstaller:
     def run(self, base_python: str, env_dir, backend: str = "mace",
             device: str = "cpu", capability: Optional[float] = None,
             on_line: Optional[Callable[[str], None]] = None,
-            on_step: Optional[Callable[[int, int, str], None]] = None) -> dict:
+            on_step: Optional[Callable[[int, int, str], None]] = None,
+            in_use: Optional[Sequence[str]] = None) -> dict:
         """Create the env and install the toolchain. Returns
-        {ok, python, error, cancelled}. Blocking -- run it off the UI thread."""
+        {ok, python, error, cancelled}. Blocking -- run it off the UI thread.
+
+        ``in_use`` is every interpreter Settings has registered. It is what
+        separates an environment somebody depends on from this module's own
+        leftovers, and it is passed in rather than read here so the installer
+        stays free of Settings -- see _is_half_built.
+        """
         say = on_line or (lambda _s: None)
         env_dir = Path(env_dir)
         if not base_python or not Path(base_python).exists():
@@ -438,7 +498,7 @@ class MlipEnvInstaller:
                               f"publishes wheels for ({lo}-{hi}). "
                               "Pick another interpreter.")}
         if env_dir.exists() and any(env_dir.iterdir()):
-            if _is_half_built(env_dir):
+            if _is_half_built(env_dir, registered=_is_registered(env_dir, in_use)):
                 # Our own leftovers from a cancel or a failed step (a network
                 # error mid-torch), not a working environment: nothing has been
                 # registered in Settings and nothing else can be using it. Left

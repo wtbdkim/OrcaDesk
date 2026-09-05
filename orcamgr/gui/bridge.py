@@ -694,8 +694,13 @@ class Bridge(QObject):
 
         def _worker() -> None:
             try:
+                # Every registered interpreter, so a directory somebody
+                # depends on is never mistaken for a leftover of ours.
+                with self._mlip_lock:
+                    in_use = [e.get("python", "") for e in self.settings.mlip_envs]
                 res = installer.run(base, env_dir, backend=backend, device=device,
-                                    on_line=_on_line, on_step=_on_step)
+                                    on_line=_on_line, on_step=_on_step,
+                                    in_use=in_use)
             except Exception as e:      # a crash must still release the UI
                 res = {"ok": False, "python": "", "error": str(e), "cancelled": False}
             if res.get("ok"):

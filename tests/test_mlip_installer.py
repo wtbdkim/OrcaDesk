@@ -14,12 +14,15 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from orcamgr.mlip.installer import (
     BACKEND_REQUIREMENTS, CUDA_INDEX_BY_CAPABILITY, DEEPEST_PACKAGE_PATH,
     DEFAULT_CUDA_INDEX, MAX_PATH, MAX_PY, MIN_PY, TORCH_INDEX,
-    MlipEnvInstaller, _is_half_built, _venv_has_pip, cuda_index_for,
-    install_plan, is_supported_python, path_budget_error, python_version,
-    torch_index, venv_python,
+    MAX_PY as _MAX_PY, MlipEnvInstaller, _installed_backends, _is_half_built,
+    _is_registered, MIN_PY, cuda_index_for, find_base_pythons, install_plan,
+    is_supported_python, path_budget_error, python_version, torch_index,
+    venv_python,
 )
 import orcamgr.mlip.installer as installer_mod
 
@@ -274,8 +277,17 @@ def test_a_cancel_before_the_first_step_stops_the_run(tmp_path, monkeypatch):
 # useless. Debian and Ubuntu reach that state on a stock machine: ensurepip is
 # not in their standard library but in a separate python3.N-venv package.
 
-def _fake_venv(root, *, with_pip: bool):
-    """A venv-shaped directory, with or without the pip ensurepip would add."""
+def _site_packages(root):
+    return (root / "Lib" / "site-packages" if sys.platform.startswith("win")
+            else root / "lib" / "python3.99" / "site-packages")
+
+
+def _fake_venv(root, *, backend: str = ""):
+    """A venv-shaped directory, optionally with an MLIP backend installed.
+
+    ``backend`` is the import name (``mace``); "" is what every failed create
+    leaves behind, whichever step it died at.
+    """
     root = Path(root)
     bindir = root / ("Scripts" if sys.platform.startswith("win") else "bin")
     bindir.mkdir(parents=True)
@@ -283,31 +295,58 @@ def _fake_venv(root, *, with_pip: bool):
     (root / "lib").mkdir()
     (root / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
     venv_python(root).write_text("", encoding="utf-8")
-    if with_pip:
-        (bindir / ("pip.exe" if sys.platform.startswith("win") else "pip")).write_text(
-            "", encoding="utf-8")
+    if backend:
+        (_site_packages(root) / backend).mkdir(parents=True)
     return root
 
 
-def test_a_venv_whose_pip_never_arrived_counts_as_half_built(tmp_path):
-    env = _fake_venv(tmp_path / "MACE", with_pip=False)
-    assert _venv_has_pip(env) is False
+def test_a_create_that_died_before_pip_counts_as_half_built(tmp_path):
+    """Debian and Ubuntu keep ensurepip in a separate package, and venv links
+    bin/python before it fails on the missing module -- so the wreckage has a
+    working interpreter."""
+    env = _fake_venv(tmp_path / "MACE")
     assert _is_half_built(env) is True
 
 
-def test_a_complete_venv_is_never_ours_to_delete(tmp_path):
-    env = _fake_venv(tmp_path / "MACE", with_pip=True)
-    assert _venv_has_pip(env) is True
-    assert _is_half_built(env) is False
+def test_a_create_that_died_installing_the_backend_counts_as_half_built(tmp_path):
+    """The step after: pip and torch are in, the backend never arrived. This is
+    where a Python newer than the backend's wheels lands you -- 2.5 GB in."""
+    env = _fake_venv(tmp_path / "MACE")
+    (_site_packages(env) / "torch").mkdir(parents=True)
+    (env / ("Scripts" if sys.platform.startswith("win") else "bin") / "pip").write_text(
+        "", encoding="utf-8")
+    assert _installed_backends(env) == set()
+    assert _is_half_built(env) is True
 
 
-def test_pip_is_found_in_site_packages_when_the_scripts_were_pruned(tmp_path):
-    env = _fake_venv(tmp_path / "MACE", with_pip=False)
-    sp = (env / "Lib" / "site-packages" if sys.platform.startswith("win")
-          else env / "lib" / "python3.99" / "site-packages")
-    (sp / "pip").mkdir(parents=True)
-    assert _venv_has_pip(env) is True
-    assert _is_half_built(env) is False
+def test_an_environment_holding_a_backend_is_never_ours_to_delete(tmp_path):
+    """The guard for a lost registry: Settings degrades to defaults on corrupt
+    JSON (P32), and that must not make a working env deletable."""
+    env = _fake_venv(tmp_path / "MACE", backend="mace")
+    assert _installed_backends(env) == {"mace"}
+    assert _is_half_built(env, registered=False) is False
+
+
+def test_a_registered_environment_is_never_ours_to_delete(tmp_path):
+    env = _fake_venv(tmp_path / "MACE")          # no backend on disk at all
+    assert _is_half_built(env, registered=True) is False
+
+
+def test_registration_is_matched_without_resolving_the_interpreter(tmp_path):
+    """Inside a venv bin/python is a symlink to the BASE interpreter, so
+    following it walks out of the environment; every registered env then looked
+    unregistered."""
+    env = _fake_venv(tmp_path / "MACE")
+    py = venv_python(env)
+    if not sys.platform.startswith("win"):
+        base = tmp_path / "elsewhere" / "python3.12"
+        base.parent.mkdir()
+        base.write_text("", encoding="utf-8")
+        py.unlink()
+        py.symlink_to(base)
+    assert _is_registered(env, [str(py)]) is True
+    assert _is_registered(env, ["/usr/bin/python3"]) is False
+    assert _is_registered(env, []) is False
 
 
 def test_a_pipless_leftover_stops_refusing_its_own_name(tmp_path, monkeypatch):
@@ -315,7 +354,7 @@ def test_a_pipless_leftover_stops_refusing_its_own_name(tmp_path, monkeypatch):
     interpreter existed it was read as a finished env — so "MACE", the name the
     card fills in, was refused for good, even once the missing package was
     installed."""
-    env = _fake_venv(tmp_path / "MACE", with_pip=False)
+    env = _fake_venv(tmp_path / "MACE")
     # Stop the run right after the leftover is dealt with: what happens next is
     # a 2.5 GB download this test has no business starting.
     monkeypatch.setattr(installer_mod, "path_budget_error", lambda _d: "stopped here")
@@ -327,8 +366,42 @@ def test_a_pipless_leftover_stops_refusing_its_own_name(tmp_path, monkeypatch):
 def test_a_working_env_is_still_refused_by_name(tmp_path, monkeypatch):
     """The other side of the same decision: a complete environment is never
     deleted to make room for a new one of the same name."""
-    env = _fake_venv(tmp_path / "MACE", with_pip=True)
+    env = _fake_venv(tmp_path / "MACE", backend="mace")
     monkeypatch.setattr(installer_mod, "path_budget_error", lambda _d: "stopped here")
     res = MlipEnvInstaller().run(sys.executable, env)
     assert res["ok"] is False and "already exists" in res["error"]
     assert venv_python(env).exists(), "a usable env must survive the refusal"
+
+
+# ---------------------------------------------------------------------------
+# finding a base interpreter
+# ---------------------------------------------------------------------------
+# `which python3` names one interpreter, the distribution's default. Windows
+# never depended on that -- the py launcher enumerates every install -- but on
+# POSIX it was the only question asked, so a second Python installed alongside
+# was invisible. That is not an edge case: the newest Python is regularly ahead
+# of the wheels a backend needs.
+
+@pytest.mark.skipif(sys.platform.startswith("win"),
+                    reason="the py launcher already enumerates installs there")
+def test_versioned_interpreters_are_asked_for_by_name(monkeypatch):
+    """A stub file cannot report a version, so it would be dropped by the probe
+    that follows. What matters is that the names are asked for at all: before
+    this, `python3` was the only one, and a 3.12 sitting beside the default
+    could not be chosen however it had been installed."""
+    asked = []
+
+    def spy(name):
+        asked.append(name)
+        return sys.executable if name == "python3" else None
+
+    monkeypatch.setattr(installer_mod.shutil, "which", spy)
+    find_base_pythons()
+    wanted = {f"3.{m}" for m in range(MIN_PY[1], _MAX_PY[1] + 1)}
+    seen = {n.removeprefix("python") for n in asked if n.startswith("python3.")}
+    assert wanted <= seen, f"not probed: {sorted(wanted - seen)}"
+
+
+def test_the_running_interpreter_is_always_a_candidate():
+    found = {e["python"] for e in find_base_pythons()}
+    assert str(Path(sys.executable).resolve()) in found
