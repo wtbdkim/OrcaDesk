@@ -21,6 +21,38 @@ from .paths import config_file, default_workspace_root
 
 
 # ---- ORCA discovery -----------------------------------------------------
+# Proof that a candidate really is ORCA and not a same-named stranger. GNOME
+# ships an accessibility screen reader whose executable is ALSO called `orca`
+# and is on PATH by default on every Ubuntu desktop, so shutil.which("orca")
+# finds it first -- a real, executable file that orca_is_valid() accepts and
+# autodetect_orca() persisted as orca_path, leaving Settings reporting a
+# healthy ORCA while every calculation failed. Windows never saw this: there
+# the name is `orca.exe`.
+#
+# The two sentinels are the helper tools the app ALREADY requires through
+# orca_tool (core/plot.py wants orca_plot, nbo/source.py wants orca_2mkl), so
+# demanding them asks nothing of an install that it did not already owe.
+_ORCA_SENTINELS = ("orca_2mkl", "orca_plot")
+
+
+def _looks_like_orca(p: Path) -> bool:
+    """True when ORCA's own helper tools sit beside ``p``.
+
+    Symlinks are resolved first: a link in ~/.local/bin or /usr/local/bin
+    pointing into a real install is a normal way to put ORCA on PATH, and the
+    tools are beside the TARGET, never beside the link (P4).
+
+    Discovery only. A path the user picked by hand is still judged by
+    orca_is_valid alone, so an unusual or trimmed install stays selectable
+    instead of becoming unconfigurable.
+    """
+    try:
+        real = p.resolve()
+    except OSError:                 # broken link, permission, cycle
+        real = p
+    return any(orca_tool(real, name) for name in _ORCA_SENTINELS)
+
+
 def _candidate_orca_paths() -> list[Path]:
     """Likely ORCA executable locations, OS-dependent."""
     exe = "orca.exe" if sys.platform.startswith("win") else "orca"
@@ -80,8 +112,13 @@ def _candidate_orca_paths() -> list[Path]:
     fold = sys.platform.startswith("win") or sys.platform == "darwin"
     for c in candidates:
         key = str(c).lower() if fold else str(c)
-        if key not in seen:
-            seen.add(key)
+        if key in seen:
+            continue
+        seen.add(key)
+        # Every candidate here is a GUESS, and a wrong guess is silent: it gets
+        # saved as orca_path and only surfaces as failing calculations. So each
+        # one has to prove it is ORCA (see _looks_like_orca).
+        if _looks_like_orca(c):
             unique.append(c)
     return unique
 
