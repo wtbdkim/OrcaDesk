@@ -3,7 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [0.9.0-beta] — 2026-09-05
+## [0.9.1-beta] — 2026-09-05
 
 ### Added
 - **ORCAdesk runs on Linux, CREST included.** Everything but CREST was already
@@ -46,6 +46,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   Running from source is what works today (`pip install -r requirements.txt &&
   python main.py`); there is no packaged Linux build, and the packaging scripts
   (`build.bat`, `build.spec`, `installer.iss`) remain Windows-only.
+
+## [0.9.0-beta] — 2026-09-05
+
+### Added
 - **Natural bond orbital analysis, computed by ORCAdesk itself — no NBO
   licence needed.** Natural population analysis and the
   donor–acceptor tables people actually want from an NBO run are reachable from
