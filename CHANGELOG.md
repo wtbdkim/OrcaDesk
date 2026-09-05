@@ -3,6 +3,79 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-beta] — 2026-09-05
+
+### Added
+- **Natural bond orbital analysis, computed by ORCAdesk itself — no NBO
+  licence needed.** Natural population analysis and the
+  donor–acceptor tables people actually want from an NBO run are reachable from
+  ORCA only through the separately licensed NBO program. The methods are
+  published, and everything they need — the overlap, density and Fock matrices —
+  follows from the wavefunction a finished run already left in its `.gbw`. So
+  ORCAdesk carries its own implementation: the layer that recovers those
+  matrices, and on top of it **natural atomic orbitals and NPA charges**.
+  - **NPA is the charge you can quote.** Mulliken and Löwdin charges drift with
+    the basis set, sometimes absurdly: on one water molecule across five basis
+    sets, Löwdin's oxygen moves by 1.03 electrons and at def2-QZVP comes out
+    *positive*. NPA moves by 0.06 over the same span, and finds polarity the
+    others understate — sulfuric acid's sulfur at +2.47 where Mulliken says
+    +1.06, oxygen in water at −0.89 where Mulliken says −0.29.
+  - **Natural bond orbitals and the second-order donor–acceptor table** — the
+    part of an NBO run people actually quote. ORCAdesk finds the Lewis
+    structure in the density (cores, lone pairs, bonds with their `sp2.48`
+    hybrids and polarities, antibonds), then puts a kcal/mol on every
+    delocalization the Lewis structure leaves out. Formamide's amide resonance,
+    LP(N) → π\*(C=O), comes out at **63.7 kcal/mol** (literature: 55–65);
+    benzene's π → π\* at 32.3, six times by symmetry; the nitrogen lone pair
+    holding 1.73 electrons with the missing 0.27 found sitting in π\*. A
+    delocalized system is handled by lowering the occupancy threshold until a
+    complete structure appears (a Kekulé benzene at 1.60), and one that never
+    completes — a substituted ring hydrogen-bonded to an acid — is reported as
+    such rather than papered over. Open shells get one Lewis structure per spin.
+  - **Wiberg bond orders and natural electron configurations** come with it.
+    Dinitrogen reads 3.03, aspirin's two carbonyls 1.81 and 1.71, its aromatic
+    ring 1.44–1.47, its acid O–H 0.69. The configurations show where the
+    electrons actually sit — `O [core] 2s( 1.75) 2p( 5.12)` — which is how you
+    see a formally d⁷ cobalt(II) holding 7.7 d electrons because its ammine
+    ligands are donating.
+  - **Analysis is retroactive, and costs nothing the second time.** The input
+    is the `.gbw` every run already writes, so this applies to calculations you
+    finished months ago, with nothing to re-run. The answer is kept beside the
+    run — aspirin takes 2.7 s the first time and 4 ms after that — and is
+    discarded rather than reused if you re-run the calculation into the same
+    folder. Checked on real output up to 1644 basis functions.
+  - Installing from source picks up a fourth package, and the packaged Windows
+    build grows by roughly 15 MB. Nothing needs an integral library, so no
+    compiled chemistry stack comes with it.
+  - **On the Results tab.** Output mode gains a *Natural bond orbital analysis*
+    card under the population sections. It opens as one button — the work is
+    seconds on most molecules, computed in the background with the rest of the
+    tab usable — and renders in place: NPA charges with each atom's natural
+    electron configuration and valence, the Wiberg bond orders, the Lewis
+    structure with every orbital's occupancy, energy and hybrids, and the
+    second-order table, strongest interaction first. An open-shell result
+    gets one Lewis structure and one table per spin. A result with no
+    wavefunction file, or from a run that did not converge, says so.
+  - **Every natural bond orbital can be drawn in 3D.** The Lewis table has a
+    *View* button per orbital; it opens the same viewer as the canonical
+    orbitals, with the whole Lewis structure as the list to step through,
+    and follows the *Opening structures and maps* setting like every other
+    3D row. `orca_plot` cannot draw these — it plots only what the `.gbw`
+    holds — so ORCAdesk evaluates the orbital on the grid itself, on the
+    same box orca_plot uses, and writes an ordinary cube beside the run
+    (`cubes/{name}.nbo7a.g60.cube`). The evaluator was checked against
+    orca_plot's own cubes on a water molecule turned off every symmetry axis
+    so that every f and g component contributes: it reproduces them to the
+    five digits orca_plot prints, which pinned two things ORCA's Molden files
+    do not document (the g normalization and the sign of the f(±3), g(±3),
+    g(±4) components). A cube from an older analysis is regenerated rather
+    than shown under a new label. About a second on a small molecule, three
+    on 1,600 basis functions.
+
+  The numbers are ORCAdesk's own and are not claimed to match the NBO program
+  digit for digit; the weighted orthogonalization at the heart of the method
+  is not specified to the last detail in the literature, and the card says so.
+
 ## [0.8.0-beta] — 2026-09-04
 
 ### Added
@@ -157,76 +230,6 @@ properly, and a second-rate editor next to a good one helps nobody. Load the
 - The NEB product loader, its status and its verdict moved out of *Method &
   options* into the new *NEB endpoints* card; **Images** and **Endpoint
   pre-optimization** stay with the method, since they are band parameters.
-- **numpy is now a runtime dependency, and ORCAdesk has begun computing
-  natural-orbital analysis itself.** Natural population analysis and the
-  donor–acceptor tables people actually want from an NBO run are reachable from
-  ORCA only through the separately licensed NBO program. The methods are
-  published, and everything they need — the overlap, density and Fock matrices —
-  follows from the wavefunction a finished run already left in its `.gbw`. So
-  ORCAdesk is growing its own implementation: the layer that recovers those
-  matrices, and on top of it **natural atomic orbitals and NPA charges**.
-  - **NPA is the charge you can quote.** Mulliken and Löwdin charges drift with
-    the basis set, sometimes absurdly: on one water molecule across five basis
-    sets, Löwdin's oxygen moves by 1.03 electrons and at def2-QZVP comes out
-    *positive*. NPA moves by 0.06 over the same span, and finds polarity the
-    others understate — sulfuric acid's sulfur at +2.47 where Mulliken says
-    +1.06, oxygen in water at −0.89 where Mulliken says −0.29.
-  - **Natural bond orbitals and the second-order donor–acceptor table** — the
-    part of an NBO run people actually quote. ORCAdesk finds the Lewis
-    structure in the density (cores, lone pairs, bonds with their `sp2.48`
-    hybrids and polarities, antibonds), then puts a kcal/mol on every
-    delocalization the Lewis structure leaves out. Formamide's amide resonance,
-    LP(N) → π\*(C=O), comes out at **63.7 kcal/mol** (literature: 55–65);
-    benzene's π → π\* at 32.3, six times by symmetry; the nitrogen lone pair
-    holding 1.73 electrons with the missing 0.27 found sitting in π\*. A
-    delocalized system is handled by lowering the occupancy threshold until a
-    complete structure appears (a Kekulé benzene at 1.60), and one that never
-    completes — a substituted ring hydrogen-bonded to an acid — is reported as
-    such rather than papered over. Open shells get one Lewis structure per spin.
-  - **Wiberg bond orders and natural electron configurations** come with it.
-    Dinitrogen reads 3.03, aspirin's two carbonyls 1.81 and 1.71, its aromatic
-    ring 1.44–1.47, its acid O–H 0.69. The configurations show where the
-    electrons actually sit — `O [core] 2s( 1.75) 2p( 5.12)` — which is how you
-    see a formally d⁷ cobalt(II) holding 7.7 d electrons because its ammine
-    ligands are donating.
-  - **Analysis is retroactive, and costs nothing the second time.** The input
-    is the `.gbw` every run already writes, so this applies to calculations you
-    finished months ago, with nothing to re-run. The answer is kept beside the
-    run — aspirin takes 2.7 s the first time and 4 ms after that — and is
-    discarded rather than reused if you re-run the calculation into the same
-    folder. Checked on real output up to 1644 basis functions.
-  - Installing from source picks up a fourth package, and the packaged Windows
-    build grows by roughly 15 MB. Nothing needs an integral library, so no
-    compiled chemistry stack comes with it.
-
-  - **On the Results tab.** Output mode gains a *Natural bond orbital analysis*
-    card under the population sections. It opens as one button — the work is
-    seconds on most molecules, computed in the background with the rest of the
-    tab usable — and renders in place: NPA charges with each atom's natural
-    electron configuration and valence, the Wiberg bond orders, the Lewis
-    structure with every orbital's occupancy, energy and hybrids, and the
-    second-order table, strongest interaction first. An open-shell result
-    gets one Lewis structure and one table per spin. A result with no
-    wavefunction file, or from a run that did not converge, says so.
-  - **Every natural bond orbital can be drawn in 3D.** The Lewis table has a
-    *View* button per orbital; it opens the same viewer as the canonical
-    orbitals, with the whole Lewis structure as the list to step through,
-    and follows the *Opening structures and maps* setting like every other
-    3D row. `orca_plot` cannot draw these — it plots only what the `.gbw`
-    holds — so ORCAdesk evaluates the orbital on the grid itself, on the
-    same box orca_plot uses, and writes an ordinary cube beside the run
-    (`cubes/{name}.nbo7a.g60.cube`). The evaluator was checked against
-    orca_plot's own cubes on a water molecule turned off every symmetry axis
-    so that every f and g component contributes: it reproduces them to the
-    five digits orca_plot prints, which pinned two things ORCA's Molden files
-    do not document (the g normalization and the sign of the f(±3), g(±3),
-    g(±4) components). A cube from an older analysis is regenerated rather
-    than shown under a new label. About a second on a small molecule, three
-    on 1,600 basis functions.
-
-  The numbers are ORCAdesk's own and are not claimed to match the NBO program
-  digit for digit; the weighted orthogonalization at the heart of the method
-  is not specified to the last detail in the literature, and the card says so.
 
 ### Fixed
 - **File dialogs open at your workspace.** The Results tab's *Open file…* and
