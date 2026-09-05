@@ -234,6 +234,10 @@ def test_orca_is_valid_requires_existing_file(tmp_path):
         orca_path=str(tmp_path / "nope" / "orca.exe")).orca_is_valid() is False
     exe = tmp_path / "orca.exe"
     exe.write_bytes(b"fake orca binary")
+    # The POSIX branch of orca_is_valid asks os.access(X_OK), so a file written
+    # without the bit is not "something that could BE the executable" there --
+    # this test asserted the Windows answer on every platform.
+    exe.chmod(0o755)
     assert Settings(orca_path=str(exe)).orca_is_valid() is True
 
 
@@ -343,3 +347,70 @@ def test_int_fields_survive_a_corrupted_settings_file(settings_file):
     # and the budget it feeds can actually be resolved
     from orcamgr.core.resources import ResourceBudget
     assert ResourceBudget.from_settings(s).resolved().cores > 0
+
+
+# ---- ORCA discovery must not pick a same-named stranger --------------------
+
+def _fake_orca(dir_path, *, with_tools: bool):
+    """An executable named `orca`, optionally with ORCA's helper tools beside
+    it — the only thing that separates an install from a namesake."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    exe = dir_path / "orca"
+    exe.write_bytes(b"#!/bin/sh\n")
+    exe.chmod(0o755)
+    if with_tools:
+        for tool in ("orca_2mkl", "orca_plot"):
+            t = dir_path / tool
+            t.write_bytes(b"#!/bin/sh\n")
+            t.chmod(0o755)
+    return exe
+
+
+def test_lone_executable_named_orca_is_not_an_install(tmp_path):
+    # GNOME's accessibility screen reader is also called `orca` and is on PATH
+    # by default on every Ubuntu desktop. It is a genuine executable file, so
+    # is_file() + X_OK — everything orca_is_valid can see — says yes to it.
+    stranger = _fake_orca(tmp_path / "usr_bin", with_tools=False)
+    assert config_mod._looks_like_orca(stranger) is False
+
+
+def test_install_with_its_helper_tools_is_recognized(tmp_path):
+    real = _fake_orca(tmp_path / "orca_6_1_1", with_tools=True)
+    assert config_mod._looks_like_orca(real) is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privilege on Windows")
+def test_recognition_follows_a_symlink_into_the_install(tmp_path):
+    # Linking the driver into ~/.local/bin is a normal way to put ORCA on PATH;
+    # the helper tools are beside the TARGET, never beside the link (P4).
+    real = _fake_orca(tmp_path / "orca_6_1_1", with_tools=True)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    link = bindir / "orca"
+    link.symlink_to(real)
+    assert config_mod._looks_like_orca(link) is True
+
+
+def test_autodetect_skips_a_stranger_found_on_path(tmp_path, monkeypatch):
+    """The regression: which("orca") hit the screen reader, autodetect returned
+    it, and it was persisted as orca_path — Settings then showed a healthy ORCA
+    while every calculation failed."""
+    stranger = _fake_orca(tmp_path / "usr_bin", with_tools=False)
+    monkeypatch.setattr(config_mod.shutil, "which", lambda _exe: str(stranger))
+    found = [str(c) for c in config_mod._candidate_orca_paths()]
+    assert str(stranger) not in found
+
+
+def test_autodetect_returns_a_real_install_found_on_path(tmp_path, monkeypatch):
+    real = _fake_orca(tmp_path / "orca_6_1_1", with_tools=True)
+    monkeypatch.setattr(config_mod.shutil, "which", lambda _exe: str(real))
+    assert config_mod.autodetect_orca() == str(real)
+
+
+def test_a_hand_picked_path_is_still_the_users_call(tmp_path):
+    """Discovery is strict because a wrong guess is silent. An explicit choice
+    is not second-guessed, so a trimmed or unusual install stays selectable
+    rather than becoming unconfigurable."""
+    lone = _fake_orca(tmp_path / "custom", with_tools=False)
+    assert config_mod._looks_like_orca(lone) is False
+    assert Settings(orca_path=str(lone)).orca_is_valid() is True

@@ -47,6 +47,28 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   python main.py`); there is no packaged Linux build, and the packaging scripts
   (`build.bat`, `build.spec`, `installer.iss`) remain Windows-only.
 
+### Fixed
+- **On a GNOME desktop, ORCA auto-detection found the screen reader.** GNOME's
+  accessibility tool is also called `orca` and is on PATH by default on every
+  Ubuntu install, so `shutil.which("orca")` — the first place detection looks —
+  returned `/usr/bin/orca` before any real install was considered. It is a
+  genuine executable file, so it passed the execute-bit check, was saved as
+  `orca_path`, and **Settings reported a healthy ORCA while every calculation
+  failed**. Windows never saw this: there the name is `orca.exe`. Detection now
+  asks a candidate to prove itself by having ORCA's own helper tools beside it
+  (`orca_2mkl`, `orca_plot` — the two the app already reaches for through
+  `orca_tool`, so this demands nothing an install did not already owe), and
+  resolves symlinks first, because linking the driver into `~/.local/bin` is a
+  normal way to put ORCA on PATH and the tools sit beside the target, not
+  beside the link. Only detection is strict: a path you pick by hand is still
+  judged on its own, so a trimmed or unusual install stays selectable instead
+  of becoming unconfigurable.
+- **A settings test asserted the Windows answer on every platform.** The check
+  that a plain file counts as a possible ORCA executable wrote the file without
+  its execute bit, which is exactly what the POSIX branch of `orca_is_valid`
+  refuses — so the suite could not go green on the platform this release adds
+  support for.
+
 ## [0.9.0-beta] — 2026-09-05
 
 ### Added
