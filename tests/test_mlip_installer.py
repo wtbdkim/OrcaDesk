@@ -12,12 +12,14 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from pathlib import Path
 
 from orcamgr.mlip.installer import (
     BACKEND_REQUIREMENTS, CUDA_INDEX_BY_CAPABILITY, DEEPEST_PACKAGE_PATH,
     DEFAULT_CUDA_INDEX, MAX_PATH, MAX_PY, MIN_PY, TORCH_INDEX,
-    MlipEnvInstaller, cuda_index_for, install_plan, is_supported_python,
-    path_budget_error, python_version, torch_index, venv_python,
+    MlipEnvInstaller, _is_half_built, _venv_has_pip, cuda_index_for,
+    install_plan, is_supported_python, path_budget_error, python_version,
+    torch_index, venv_python,
 )
 import orcamgr.mlip.installer as installer_mod
 
@@ -262,3 +264,71 @@ def test_a_cancel_before_the_first_step_stops_the_run(tmp_path, monkeypatch):
     inst.cancel()
     res = inst.run(sys.executable, tmp_path / "env")
     assert res["cancelled"] is True and res["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# leftovers from a failed create
+# ---------------------------------------------------------------------------
+# `python -m venv` links the interpreter BEFORE it installs pip, so a failure in
+# between leaves a directory whose interpreter runs and whose environment is
+# useless. Debian and Ubuntu reach that state on a stock machine: ensurepip is
+# not in their standard library but in a separate python3.N-venv package.
+
+def _fake_venv(root, *, with_pip: bool):
+    """A venv-shaped directory, with or without the pip ensurepip would add."""
+    root = Path(root)
+    bindir = root / ("Scripts" if sys.platform.startswith("win") else "bin")
+    bindir.mkdir(parents=True)
+    (root / "include").mkdir()
+    (root / "lib").mkdir()
+    (root / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    venv_python(root).write_text("", encoding="utf-8")
+    if with_pip:
+        (bindir / ("pip.exe" if sys.platform.startswith("win") else "pip")).write_text(
+            "", encoding="utf-8")
+    return root
+
+
+def test_a_venv_whose_pip_never_arrived_counts_as_half_built(tmp_path):
+    env = _fake_venv(tmp_path / "MACE", with_pip=False)
+    assert _venv_has_pip(env) is False
+    assert _is_half_built(env) is True
+
+
+def test_a_complete_venv_is_never_ours_to_delete(tmp_path):
+    env = _fake_venv(tmp_path / "MACE", with_pip=True)
+    assert _venv_has_pip(env) is True
+    assert _is_half_built(env) is False
+
+
+def test_pip_is_found_in_site_packages_when_the_scripts_were_pruned(tmp_path):
+    env = _fake_venv(tmp_path / "MACE", with_pip=False)
+    sp = (env / "Lib" / "site-packages" if sys.platform.startswith("win")
+          else env / "lib" / "python3.99" / "site-packages")
+    (sp / "pip").mkdir(parents=True)
+    assert _venv_has_pip(env) is True
+    assert _is_half_built(env) is False
+
+
+def test_a_pipless_leftover_stops_refusing_its_own_name(tmp_path, monkeypatch):
+    """The regression: the create failed, the directory stayed, and because its
+    interpreter existed it was read as a finished env — so "MACE", the name the
+    card fills in, was refused for good, even once the missing package was
+    installed."""
+    env = _fake_venv(tmp_path / "MACE", with_pip=False)
+    # Stop the run right after the leftover is dealt with: what happens next is
+    # a 2.5 GB download this test has no business starting.
+    monkeypatch.setattr(installer_mod, "path_budget_error", lambda _d: "stopped here")
+    res = MlipEnvInstaller().run(sys.executable, env)
+    assert res["error"] == "stopped here", "the name must not be refused"
+    assert not env.exists(), "the unusable leftover should have been removed"
+
+
+def test_a_working_env_is_still_refused_by_name(tmp_path, monkeypatch):
+    """The other side of the same decision: a complete environment is never
+    deleted to make room for a new one of the same name."""
+    env = _fake_venv(tmp_path / "MACE", with_pip=True)
+    monkeypatch.setattr(installer_mod, "path_budget_error", lambda _d: "stopped here")
+    res = MlipEnvInstaller().run(sys.executable, env)
+    assert res["ok"] is False and "already exists" in res["error"]
+    assert venv_python(env).exists(), "a usable env must survive the refusal"

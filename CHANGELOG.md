@@ -48,6 +48,20 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   (`build.bat`, `build.spec`, `installer.iss`) remain Windows-only.
 
 ### Fixed
+- **A failed MLIP environment kept its name for good.** Creating one runs
+  `python -m venv`, and on Debian and Ubuntu that fails on a stock machine:
+  `ensurepip` is not in their standard library but in a separate
+  `python3.N-venv` package. The error says so plainly — but venv links
+  `bin/python` *before* it installs pip, so the abandoned directory has a
+  working interpreter and nothing else: no pip, no site-packages, not even an
+  `activate`. ORCAdesk read "the interpreter is there" as "this env is
+  finished", which made the leftover neither reusable nor removable, and
+  **`MACE` — the name the card fills in by default — was refused from then on**,
+  even after the missing package was installed. A finished environment is now
+  one that has pip as well, so an install that died at that step is recognised
+  as the wreckage it is and cleared away on the next attempt. A complete
+  environment is still never deleted to make room for a new one of its name.
+  Windows never saw this: ensurepip ships with the interpreter there.
 - **On a GNOME desktop, ORCA auto-detection found the screen reader.** GNOME's
   accessibility tool is also called `orca` and is on PATH by default on every
   Ubuntu install, so `shutil.which("orca")` — the first place detection looks —
