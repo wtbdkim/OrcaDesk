@@ -63,6 +63,20 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   beside the link. Only detection is strict: a path you pick by hand is still
   judged on its own, so a trimmed or unusual install stays selectable instead
   of becoming unconfigurable.
+- **Every dropdown opened as a white slab on a dark theme.** QtWebEngine does
+  not paint a `<select>`'s list with the page's CSS — it hands the options to a
+  native Qt widget drawn from the Qt palette, which is the system's, not the
+  app's. On Linux that is a white popup over a dark window, covering whatever
+  sits under it (most visible on **Settings → MLIP**'s *Base Python*, but every
+  picker in the app had it), and no stylesheet reaches inside a native popup.
+  So the app no longer opens one: the `<select>` stays in the DOM and stays the
+  value, the option list and the event target, while a styled trigger and list
+  are drawn beside it. Nothing that reads or writes a picker changed —
+  `sel.value`, `sel.options`, the refills, and the inline `onchange` handlers
+  all still mean what they did — and the list is now a page element, so it
+  follows the theme, scrolls, and cannot be clipped by the panel it sits in.
+  Keyboard use matches the control it replaces: Enter/Space to open, arrows,
+  Home/End, Escape, and type-ahead.
 - **A settings test asserted the Windows answer on every platform.** The check
   that a plain file counts as a possible ORCA executable wrote the file without
   its execute bit, which is exactly what the POSIX branch of `orca_is_valid`

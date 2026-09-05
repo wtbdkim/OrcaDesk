@@ -722,6 +722,80 @@ table.data td:first-child, table.data th:first-child { text-align: left; }
 .combo-list::-webkit-scrollbar { width: 8px; }
 .combo-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 
+/* ---- styled <select> replacement (web/selectmenu.js) ----
+   QtWebEngine paints a <select>'s dropdown as a NATIVE Qt widget, from the Qt
+   palette rather than this stylesheet -- a white slab over a dark theme, with
+   no CSS that reaches inside it. So the native control is hidden and these draw
+   the trigger and list instead. The trigger deliberately repeats the `select`
+   rule above: it stands in the same place in the layout and must look
+   identical, and inheriting was not an option once the element became a
+   <button>. */
+.selectmenu { position: relative; display: block; }
+.selectmenu > select {
+  /* Hidden, never removed: it is still the value, the option list and the
+     event target for every caller (see selectmenu.js). `display:none` would
+     drop it from form/label association, so it is collapsed instead. */
+  position: absolute; width: 1px; height: 1px;
+  opacity: 0; pointer-events: none; margin: 0; padding: 0; border: 0;
+}
+.selectmenu-trigger {
+  width: 100%;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--input);
+  border-radius: var(--radius-sm);
+  color: var(--foreground);
+  font-family: inherit; font-size: 13px;
+  padding: 8px 10px;
+  cursor: pointer; text-align: left;
+  transition: border-color .12s, box-shadow .12s;
+}
+.selectmenu-trigger:focus-visible, .selectmenu.selectmenu-open .selectmenu-trigger {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px var(--ring-glow);
+}
+.selectmenu-trigger:disabled { opacity: .5; cursor: not-allowed; }
+.selectmenu-label {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.selectmenu-trigger.is-placeholder .selectmenu-label { color: var(--muted-foreground); }
+.selectmenu-caret { flex: 0 0 auto; font-size: 10px; color: var(--muted-foreground); }
+
+/* The list is a child of <body> with fixed positioning -- several of these sit
+   in panels that clip their overflow, and a popup parented inside one gets cut
+   off by it. Placement is computed in selectmenu.js. */
+.selectmenu-list {
+  position: fixed; z-index: 200;
+  overflow-y: auto;
+  background: var(--popover); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0,0,0,.4);
+}
+.selectmenu-group {
+  position: sticky; top: 0; z-index: 1;
+  padding: 6px 10px 4px; font-size: 10px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--muted-foreground);
+  background: var(--popover); border-bottom: 1px solid var(--border);
+}
+.selectmenu-item {
+  padding: 7px 10px; font-size: 13px; cursor: pointer; color: var(--foreground);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.selectmenu-item.is-active, .selectmenu-item:hover { background: var(--accent); }
+.selectmenu-item.is-selected { font-weight: 600; }
+.selectmenu-item.is-disabled { opacity: .5; cursor: not-allowed; }
+.selectmenu-none {
+  padding: 8px 10px; font-size: 12px; color: var(--muted-foreground); font-style: italic;
+}
+.selectmenu-list::-webkit-scrollbar { width: 8px; }
+.selectmenu-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+/* Selects that carry their own sizing keep it: the trigger inherits the inline
+   style attribute in JS, and the rules that targeted `select` need a partner. */
+.mv-ctl .selectmenu { display: inline-block; }
+.mv-ctl .selectmenu-trigger { padding: 2px 6px; }
+
 /* generic modal */
 /* A confirmation is always the topmost surface: it can be raised from ON a
    viewer panel (z-index 110) — discarding structure edits — and a confirm the
