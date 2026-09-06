@@ -115,6 +115,27 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   that was never in the product. The fixture now builds whichever shape the
   platform running the test can actually execute — the mirror of the
   POSIX-side fix above.
+- **A comma in a calculation's name killed every 3c run.** ORCA collects its
+  gCP helper's output through a `cmd.exe` redirection it does not quote —
+  `otool_gcp "<name>.gcp.in.tmp" ... > <name>.gcp.out` — and cmd ends a
+  redirection target at a space, a tab, a `,`, a `;` or an `=`. So under a name
+  like `(S,S)mol` the correction was written to a file called `(S`, ORCA never
+  found the output it had just asked for, and the run died with *Calculation of
+  the gCP correction failed!* — after the SCF was already paid for, and into a
+  FAILED calculation, which is locked. Only the composite methods that carry
+  gCP reach it (r2SCAN-3c, B97-3c, HF-3c, PBEh-3c, an explicit `! GCP(...)`),
+  which is why a naming style that had run for months could break the first
+  time one was chosen. Those three characters join the space and `&` already
+  refused for ORCA-backed calculations; `(`, `)` and `'` still run and stay
+  allowed. Stereochemistry is the obvious casualty, so the message names the
+  characters rather than asking you to guess which one it meant.
+- **Tightening that rule no longer deletes your history.** A name is checked
+  again when the queue is restored at launch, and an entry that fails is
+  dropped — so the calculations that hit the bug above would have vanished from
+  the queue on the next start, taking the record of what failed with them. The
+  ORCA rule says *a new run of this would fail*, not *this path is dangerous*,
+  so it is no longer applied to a name that is already on disk. Everything that
+  protects the filesystem still is.
 
 ## [0.9.0-beta] — 2026-09-05
 

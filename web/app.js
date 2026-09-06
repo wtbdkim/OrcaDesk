@@ -1966,13 +1966,17 @@ function readCalcName(inputId, kind) {
     throw new Error(`Name contains characters not allowed in folder names: \\ / : * ? " < > |`);
   // The name is also the .inp file name ORCA is invoked with, and ORCA splits
   // its own argument on whitespace: a space or an "&" makes every run of this
-  // calculation die in Startup, and a failed calc is locked (P24). ORCA-backed
-  // kinds only — the MLIP and CREST pipelines pass the name as an argv element
-  // / a shell-quoted variable, where a space is fine. Refused at the store too
-  // (with the same kind scope); this is the early, Add-time feedback.
+  // calculation die in Startup, and a failed calc is locked (P24). "," ";" and
+  // "=" are here for a second reason — ORCA pipes its gCP helper's output
+  // through an UNQUOTED cmd.exe redirection, which ends at those delimiters, so
+  // a comma in the name sends the gCP result to a stray file and every 3c
+  // composite run dies with "Calculation of the gCP correction failed!".
+  // ORCA-backed kinds only — the MLIP and CREST pipelines pass the name as an
+  // argv element / a shell-quoted variable, where a space is fine. Refused at
+  // the store too (same kind scope); this is the early, Add-time feedback.
   const _orcaKind = !/^(mlip|crest)/.test(kind || "");
-  if (_orcaKind && /[\s&]/.test(name))
-    throw new Error(`Name must not contain spaces or "&" — ORCA cannot open an input file whose name has either.`);
+  if (_orcaKind && /[\s&,;=]/.test(name))
+    throw new Error(`Name must not contain a space or one of & , ; = — ORCA cannot open an input file whose name has one, and its gCP helper writes its result to the wrong file.`);
   if (queue.some((c) => c.name === name && c.name !== editName))
     throw new Error(`A calculation named "${name}" is already in the queue. Names must be unique (used as folder names).`);
   return name;

@@ -58,12 +58,24 @@ _BAD_NAME_CHARS = re.compile(r'[\\/:*?"<>|]')
 # whitespace before handing it to orca_startup, so a space or an '&' in the file
 # name makes every run of that calculation die in Startup ("Cannot open input
 # file <first word>" / "no input files") — a FAILED calc, and FAILED is locked
-# (P24), so the name can never be run again. Measured on 6.1.1: '&' and space
-# fail; '(', ')', "'", ',', '=' and ';' all run normally, so this stays a
-# two-character rule rather than a general "safe characters" list. The FOLDER
-# may contain spaces — OrcaRunner.launch passes the bare file name from inside
-# the folder, which is what makes a workspace under "C:\Users\John Smith" work.
-_ORCA_HOSTILE_CHARS = re.compile(r"[\s&]")
+# (P24), so the name can never be run again. The FOLDER may contain spaces —
+# OrcaRunner.launch passes the bare file name from inside the folder, which is
+# what makes a workspace under "C:\Users\John Smith" work.
+#
+# ',', ';' and '=' were measured as harmless on 6.1.1 and used to be allowed
+# here, but that measurement only covered the argument ORCA parses ITSELF. ORCA
+# also shells out to helper binaries and collects their output through a
+# redirection it does NOT quote:
+#     otool_gcp "<name>.gcp.in.tmp" -level R2SCAN3C > <name>.gcp.out
+# cmd.exe ends a redirection target at its token delimiters — space, tab, ',',
+# ';', '=' — so under a name like "(S,S)mol" gCP's result lands in a file called
+# "(S", ORCA never finds "<name>.gcp.out", and the run dies with "Error
+# (ORCA_SCF/GCP/Energy): Calculation of the gCP correction failed!" after the
+# SCF is already paid for. Only the gCP-carrying composite methods hit it
+# (r2SCAN-3c, B97-3c, HF-3c, PBEh-3c, and an explicit ! GCP(...)), which is why
+# a plain functional/basis run hid this for so long. '(', ')' and "'" survive
+# that parse and stay legal.
+_ORCA_HOSTILE_CHARS = re.compile(r"[\s&,;=]")
 # Control characters and lone surrogates are not typeable in the desktop's
 # single-line input but arrive freely through calc_from_dict (the phone/HTTP
 # path, a hand-edited session.json). A control character reaches mkdir and dies
@@ -80,13 +92,21 @@ _RESERVED_NAMES = {"con", "prn", "aux", "nul",
                    *(f"lpt{i}" for i in range(1, 10))}
 
 
-def _validate_calc_name(name: str, kind: str = "") -> None:
+def _validate_calc_name(name: str, kind: str = "", restoring: bool = False) -> None:
     """Reject names that could escape the workspace or break on Windows.
     Allows Unicode (e.g. Korean) — only path-dangerous patterns are blocked.
 
     ``kind`` selects the ORCA-only rule below. It defaults to "" (apply it),
     because a caller that does not know the kind is building an ORCA calc or
     checking a name in the abstract, and the stricter answer is the safe one.
+
+    ``restoring`` marks the session-restore path, where the name is a fact on
+    disk rather than a proposal. The ORCA rule is a "this run will fail" rule,
+    not a "this path is dangerous" rule, so applying it retroactively would
+    silently EVICT calcs that predate a tightening (the ',' / ';' / '=' one
+    below) from the queue at the next launch — deleting the user's record of a
+    finished or failed run to enforce something only a NEW run has to obey.
+    Every path-safety rule still applies; only the ORCA rule is grandfathered.
     """
     if _BAD_NAME_CHARS.search(name):
         raise ValueError('Name contains characters not allowed in a folder name: \\ / : * ? " < > |')
@@ -95,9 +115,11 @@ def _validate_calc_name(name: str, kind: str = "") -> None:
     # space is genuinely fine for them — and refusing it for every kind would
     # DROP an existing MLIP/CREST calculation from the queue at the next launch
     # (load_session skips entries that fail validation).
-    if not (kind or "").startswith(("mlip", "crest")) and _ORCA_HOSTILE_CHARS.search(name):
-        raise ValueError("Name must not contain spaces or '&' — ORCA cannot open "
-                         "an input file whose name has either.")
+    if (not restoring and not (kind or "").startswith(("mlip", "crest"))
+            and _ORCA_HOSTILE_CHARS.search(name)):
+        raise ValueError("Name must not contain a space or one of & , ; = — ORCA "
+                         "cannot open an input file whose name has one, and its "
+                         "gCP helper writes its result to the wrong file.")
     if _UNUSABLE_NAME_CHARS.search(name):
         raise ValueError("Name contains a character that cannot be used in a "
                          "folder name.")
@@ -227,10 +249,13 @@ def _meta_line(c: Calculation) -> str:
     return f"{c.kind} · {src} · q{c.charge} m{c.multiplicity}"
 
 
-def calc_from_dict(d: dict) -> Calculation:
+def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
     """
     Build a Calculation from a client payload dict (used by both the HTTP
     server and the Qt bridge). PyQt-independent so it lives here.
+
+    ``restoring`` is passed straight to _validate_calc_name — see its docstring
+    for why the session-restore path is held to a weaker name rule.
     """
     cfg = StepConfig.from_dict(d.get("config", {}))
     src = d.get("geometry_source", "direct")
@@ -248,7 +273,7 @@ def calc_from_dict(d: dict) -> Calculation:
         raise ValueError(
             f"Unknown calculation type '{kind}'. Supported types: "
             + ", ".join(sorted(KNOWN_KINDS)) + ".")
-    _validate_calc_name(name, kind)
+    _validate_calc_name(name, kind, restoring=restoring)
     # charge/multiplicity are f-string-interpolated into the .inp's
     # "* xyz {charge} {multiplicity}" line. int() already blocks string
     # injection, but not absurd magnitudes — clamp to physically generous
@@ -314,7 +339,7 @@ def calc_to_session_dict(c: Calculation) -> CalcFull:
 def calc_from_session_dict(d: dict) -> Calculation:
     """Rebuild a Calculation from the session file, restoring runtime state
     (state/message/output_path/pid) on top of calc_from_dict."""
-    c = calc_from_dict(d)            # config + geometry + name validation
+    c = calc_from_dict(d, restoring=True)   # config + geometry + name validation
     st = d.get("state", "pending")
     try:
         c.state = CalcState(st)
