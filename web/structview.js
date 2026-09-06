@@ -62,9 +62,19 @@ function _stViewer(id) {
       $3Dmol.createViewer(node, { backgroundColor: _stCss("--card") }), node);
   }
   const v = _stViewers[id];
+  // resize() BEFORE setBackgroundColor(), not after. 3Dmol's
+  // setBackgroundColor ends in show() -> renderer.render(), and while this
+  // panel was hidden 3Dmol's own resize listener already ran updateSize() and
+  // shrank the canvas to 0x0. glGuardViewer only looks at the CONTAINER, which
+  // is visible and sized again by the time we get here, so the colour's redraw
+  // sailed past the guard and drew into a zero-size framebuffer: one
+  // GL_INVALID_FRAMEBUFFER_OPERATION for the glClear and one for the
+  // glDrawElements, every time a panel came back on screen. resize() syncs the
+  // canvas to the container first, so its own show() and the colour's both
+  // land on real pixels.
+  v.resize();
   // the card colour follows the theme toggle, and the viewer outlives it
   v.setBackgroundColor(_stCss("--card") || "#18181b");
-  v.resize();
   return v;
 }
 

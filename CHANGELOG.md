@@ -136,6 +136,17 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   ORCA rule says *a new run of this would fail*, not *this path is dangerous*,
   so it is no longer applied to a name that is already on disk. Everything that
   protects the filesystem still is.
+- **A structure preview coming back on screen drew into nothing.** Every
+  return to the Build tab logged a pair of
+  `GL_INVALID_FRAMEBUFFER_OPERATION: Framebuffer is incomplete: Attachment has
+  zero size` errors per panel. 3Dmol runs its own window-resize listener, which
+  shrinks a hidden panel's canvas to 0×0; the guard that stops a viewer drawing
+  while hidden looks at the *container*, which is visible and sized again by the
+  time the panel is restored, so the redraw that repaints the card colour for
+  the current theme sailed past it and drew into a zero-size framebuffer. The
+  canvas is now synced to its container before the colour is set rather than
+  after, so both redraws land on real pixels. Wasted GPU work and a console the
+  real warnings drown in — and, on some drivers, a step toward a lost context.
 
 ## [0.9.0-beta] — 2026-09-05
 
