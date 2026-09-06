@@ -351,16 +351,27 @@ def test_int_fields_survive_a_corrupted_settings_file(settings_file):
 
 # ---- ORCA discovery must not pick a same-named stranger --------------------
 
+# What makes a file runnable is the one thing about ORCA discovery that is
+# not the same on both platforms: POSIX asks the execute bit, Windows asks
+# the suffix (orca_is_valid), and orca_tool derives a sibling's name from it
+# (`orca.exe` -> `orca_2mkl.exe`). A fixture hardcoded to the POSIX shape is
+# not a lighter version of the real thing, it is a file Windows can never
+# run, so test_a_hand_picked_path_is_still_the_users_call asserted a valid
+# ORCA against a path the product correctly refuses and the suite was red on
+# the primary target for a reason that was never in the product.
+_ORCA_EXE_SUFFIX = ".exe" if os.name == "nt" else ""
+
+
 def _fake_orca(dir_path, *, with_tools: bool):
     """An executable named `orca`, optionally with ORCA's helper tools beside
     it — the only thing that separates an install from a namesake."""
     dir_path.mkdir(parents=True, exist_ok=True)
-    exe = dir_path / "orca"
+    exe = dir_path / f"orca{_ORCA_EXE_SUFFIX}"
     exe.write_bytes(b"#!/bin/sh\n")
     exe.chmod(0o755)
     if with_tools:
         for tool in ("orca_2mkl", "orca_plot"):
-            t = dir_path / tool
+            t = dir_path / f"{tool}{_ORCA_EXE_SUFFIX}"
             t.write_bytes(b"#!/bin/sh\n")
             t.chmod(0o755)
     return exe

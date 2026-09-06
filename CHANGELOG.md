@@ -105,6 +105,16 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   its execute bit, which is exactly what the POSIX branch of `orca_is_valid`
   refuses — so the suite could not go green on the platform this release adds
   support for.
+- **The ORCA discovery tests built a file Windows cannot run.** The fixture
+  for "an executable named `orca`" wrote it with no suffix, which is the
+  POSIX shape and only that: on Windows `orca_is_valid` asks for one of
+  `.exe`/`.bat`/`.cmd`/`.com`, and `orca_tool` derives a helper's name from it
+  (`orca.exe` beside `orca_2mkl.exe`). So the check that a hand-picked path is
+  still the user's call asserted a healthy ORCA against a path the product is
+  right to refuse, and the suite was red on the primary target for a reason
+  that was never in the product. The fixture now builds whichever shape the
+  platform running the test can actually execute — the mirror of the
+  POSIX-side fix above.
 
 ## [0.9.0-beta] — 2026-09-05
 
