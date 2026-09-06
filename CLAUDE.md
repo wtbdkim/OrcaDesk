@@ -450,14 +450,29 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   invariant holds on every entry path: `add`/`replace` **and session
   restore** (`load_session` dedups, first occurrence wins). The name is also
   the `.inp` file name ORCA is *invoked* with, so for an ORCA-backed kind it
-  refuses a **space or `&`** on top of the Windows path-dangerous set
+  refuses a **space, `&`, `,`, `;` or `=`** on top of the Windows
+  path-dangerous set
   (`_ORCA_HOSTILE_CHARS`; `mlip*`/`crest*` are exempt — those pipelines pass the
   name as an argv element or a shell-quoted variable, and refusing it for every
   kind would drop such a calculation from a restored session):
   ORCA 6 splits its own argument on whitespace, and the run then dies in
   Startup — a FAILED calc, which is locked (P24), so the name could never be
-  run again. Measured on 6.1.1; `(`, `)`, `'`, `,`, `=`, `;` all run normally,
-  which is why this is a two-character rule and not a safe-character list.
+  run again. `,`/`;`/`=` are refused for a **second** reason, found after they
+  had been measured harmless to that first parse: ORCA collects its gCP
+  helper's output through a cmd.exe redirection it does **not** quote
+  (`otool_gcp "{name}.gcp.in.tmp" ... > {name}.gcp.out`), and cmd ends a
+  redirection target at exactly those delimiters — so under `(S,S)mol` the
+  result lands in a file called `(S` and every gCP-carrying composite method
+  (r2SCAN-3c, B97-3c, HF-3c, PBEh-3c, an explicit `! GCP(...)`) dies with
+  `Calculation of the gCP correction failed!` once the SCF is already paid
+  for. `(`, `)` and `'` survive both parses and stay legal, which is why this
+  is still a five-character rule and not a safe-character list.
+  **The rule is not applied retroactively**: `_validate_calc_name(...,
+  restoring=True)` (the `calc_from_session_dict` path) skips it, because it
+  says "a new run of this would fail", not "this path is dangerous" — and
+  `load_session` DROPS an entry that fails validation, so tightening it would
+  silently evict the user's record of an already finished or failed run. Every
+  path-safety rule still applies on restore; only this one bends.
 - **The queue autosaves to `%APPDATA%\ORCAdesk\session.json`** on every mutation
   (`QueueStore._bump_and_save`) and is restored on startup (`load_session`). A
   `RUNNING` calc persists its detached ORCA's `(pid, create_time)` **and its

@@ -122,21 +122,43 @@ def test_empty_name_rejected():
 # splits its own argument on whitespace before handing it to orca_startup: a
 # space or an "&" gives "Cannot open input file <first word>" / "no input
 # files" and an error termination in Startup — every run of that calculation,
-# serial and parallel alike, and a failed calc is locked (P24). Measured on
-# 6.1.1, where "(", ")", "\'", ",", "=" and ";" all run normally, which is why
-# this is a two-character rule and not a safe-character list. The FOLDER may
+# serial and parallel alike, and a failed calc is locked (P24). The FOLDER may
 # hold spaces: OrcaRunner.launch names the input relative to it.
+#
+# ",", ";" and "=" are refused for a different reason. ORCA collects its gCP
+# helper's output through a cmd.exe redirection it does not quote
+# ("otool_gcp <name>.gcp.in.tmp ... > <name>.gcp.out"), and cmd ends a
+# redirection target at those delimiters: under "(S,S)mol" the result lands in
+# a file called "(S", ORCA never finds <name>.gcp.out, and every gCP-carrying
+# composite method (r2SCAN-3c, B97-3c, HF-3c, PBEh-3c, ! GCP(...)) dies with
+# "Calculation of the gCP correction failed!" once the SCF is already paid for.
+# "(", ")" and "\'" survive that parse and stay legal.
 
-@pytest.mark.parametrize("name", ["water opt", "a&b", "two  spaces", "tab\tname"])
+@pytest.mark.parametrize("name", ["water opt", "a&b", "two  spaces", "tab\tname",
+                                  "a,b", "a=b", "a;b", "(S,S)mol"])
 def test_name_orca_cannot_open_rejected(name):
     with pytest.raises(ValueError):
         make_calc(name)
 
 
-@pytest.mark.parametrize("name", ["water_opt", "water-opt", "a(b)", "a,b",
-                                  "a=b", "a;b", "a\'b"])
+@pytest.mark.parametrize("name", ["water_opt", "water-opt", "a(b)", "a\'b"])
 def test_name_orca_can_open_accepted(name):
     assert make_calc(name).name == name
+
+
+@pytest.mark.parametrize("name", ["(S,S)mol", "a;b", "a=b"])
+def test_a_name_already_on_disk_survives_a_tightened_orca_rule(name):
+    """Session restore must not evict calcs whose names predate a tightening of
+    the ORCA rule. The rule says "a new run of this would fail", not "this path
+    is dangerous" — enforcing it retroactively would delete the user's record of
+    an already finished or failed run (load_session drops entries that fail
+    validation). Path-safety rules still apply on restore; only this one bends.
+    """
+    c = calc_from_session_dict({"name": name, "kind": "sp", "xyz": "H 0 0 0",
+                                "config": {"kind": "sp"}, "state": "failed"})
+    assert c.name == name
+    with pytest.raises(ValueError):          # ...but a NEW one is still refused
+        make_calc(name)
 
 
 @pytest.mark.parametrize("kind", ["mlip_opt", "mlip_sp", "crest_conf"])
