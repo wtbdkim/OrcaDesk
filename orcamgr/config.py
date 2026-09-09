@@ -219,7 +219,7 @@ class Settings:
     viewer_target: str = "in_app"
     # Which bundled front-end the desktop window loads: "classic"
     # (web/index.html, the shipping tabbed UI) or "notebook"
-    # (web/index_next.html, the in-development single-window layout —
+    # (web/next/index.html, the in-development single-window layout —
     # DESIGN.md §17). Classic stays the default and stays untouched — the new
     # shell is opt-in from the bottom of Settings until it is finished, so an
     # upgrade never moves anyone onto a preview UI. window.py falls back to

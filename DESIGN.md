@@ -1233,56 +1233,64 @@ keep:
 ## 17. Notebook front-end (preview)
 
 A second **front-end**, not a second theme: `Settings.ui_variant` is `classic`
-(the tabbed UI, the default) or `notebook`, and the desktop window loads
-`web/index.html` or `web/index_next.html` accordingly. Where §16 is a token
-swap inside one document, this is a different *shell around the same document*.
+(the tabbed UI in `web/`, the default) or `notebook` (`web/next/`), and
+`MainWindow._index_file()` loads one or the other. Where §16 is a token swap
+inside one document, this is a different application of the same backend.
 
-**17.1 It is the same markup.** `web/index_next.html` is GENERATED from
-`web/index.html` by `tools/build_next_ui.py` — same ids, same classes, same
-inline handlers — so `app.js` and every renderer drive both without a branch.
-The generator inserts only what the new shell needs: a second stylesheet link,
-`data-view`/`data-stream` on `.app`, the top navigation, the right-column
-switch, and one adapter script. `tests/test_next_ui.py` fails if the committed
-copy has drifted, so a control added to the classic Build tab cannot silently
-go missing from the preview. **Do not hand-edit `index_next.html`.**
+**17.1 It shares no markup with the classic UI.** `web/next/` has its own
+`index.html`, its own `app.css` and its own logic against the same `Bridge`.
+The only files it borrows are `../scf_graph.js` and `../progress_panels.js` —
+convergence trackers and chart/step renderers that own no ids and no elements,
+so sharing them is reuse rather than coupling. It deliberately does **not**
+load `web/style.css`: two stylesheets over two markup vocabularies is two
+cascades fighting. What it does share is the **token set** (§8), redeclared in
+`app.css` for both themes, so the two front-ends are recognisably one product.
 
-**17.2 Three views, not five tabs.** Jobs / Results / Settings. The queue is a
-permanent 600px rail in Jobs and Results — the run being watched never leaves
-the screen — and the right column of Jobs carries either the build form or the
-live output. `web/next.js` wraps `switchTab()` rather than replacing it, so
-everything the classic function does on entry to a tab (loading the free-energy
-profile, rescanning the workspace, re-measuring the SCF graph and the geometry
-stage now that their boxes are non-zero) still happens, and the ~15 `switchTab`
-calls scattered through `app.js` and `results_render.js` keep working.
+One tsc project checks both, and classic scripts share a global scope, so the
+preview keeps everything on a single `NB` namespace — a second top-level
+`bridge`/`queue`/`settings` would be a duplicate declaration of `app.js`'s.
 
-**17.3 A rule that sets `display` must name the whole state.** Panel visibility
-is driven by `.app[data-view]` / `[data-stream]`, not by `.panel.active`, and
-those selectors land in the same specificity band (0,4,0). Two collisions
-followed from that and are the reason this paragraph exists: a `[data-view]`
-rule sitting after a `[data-stream]` rule won on order and drew the build form
-and the log on top of each other; and a rule asking only for `[data-stream]`
-out-ranked the master `display: none` and left the log pane drawn under
-Results and Settings — `data-stream` keeps its value while you are elsewhere.
-Same-specificity rules that both set `display` must not be able to match the
-same element, and a rule that reveals an element names every attribute that
-makes it visible.
+**17.2 The window is the queue plus one thing.** Three views (Jobs / Results /
+Settings) and a 600px rail that stays on screen in two of them:
 
-**17.4 Surface: Apple geometry over the same tokens.** `web/next.css` layers
-over `style.css` and never replaces it. It redefines `--radius*` (12/9/18, plus
-`--radius-pill`), the sans/mono stacks (shipped faces only — the app runs from
-`file://`, so a webfont link would silently fall back), and adds `--nb-shadow-*`
-for a lower-contrast, wider-spread lift. **No color token is redefined**, so
-both themes and the light/dark toggle work unchanged. Controls are capsules;
-Raw/Graph, Output/Visual and build-mode chips take the capsule and the raised
-selected state so the window has one segmented idiom.
+- **Rail** — the queue, grouped by what a row is doing (running / queued /
+  done), because that is the question being asked of the list. A row carries
+  its own progress bar, and it is drawn **only when a real one can be computed**
+  (an optimization's gradient progress, an SCF's convergence); a run with
+  nothing to report gets no bar rather than a decorative one.
+- **Builder** — opens where the calculation lives: at the end of the rail for a
+  new one, inside the row for an existing one. It is not a place you go to and
+  come back from.
+- **Stream** — one **cell** per calculation: its chart, its output tail and its
+  facts, together. The classic UI asks you to pick a job and then pick a view
+  of it (Raw or Graph, one at a time, one job at a time); here you read down
+  the run.
+- **Report** — the parsed result as a document: the summary, a two-column grid
+  of what the parser found, the **input this run read beside the output it
+  produced** (1/3 : 2/3), and the free-energy profile last.
 
-**17.5 It is a preview, and it says so.** Classic stays the default; upgrading
-moves nobody. The switch lives at the bottom of Settings in *both* front-ends,
-so the way out of the preview is inside the preview. Saving swaps the window
-immediately — the queue and the running calculation are Python-side, so it is a
-repaint, not a restart — and `MainWindow._index_file()` falls back to classic
-when the selected file is absent, so a `settings.json` carried to a build
-without the preview cannot leave a blank window.
+**17.3 A rule that sets `display` names the whole state.** Regions are hidden by
+default and revealed by the view — never the other way round — so no two rules
+that both set `display` can match the same element. This is written down
+because the first attempt at this layout got it wrong twice: a rule that won on
+source order drew the build form and the log on top of each other, and a rule
+that named only half the state left a pane drawn under two other views.
+
+**17.4 Charts are drawn at the box's real pixel width.** Every SVG here takes
+`{width, height}` in device pixels and emits a matching `viewBox`, so a stroke
+is the width it says it is. A fixed viewBox scaled to fit is the bug that made
+an earlier revision's charts 2.6× too thick. The outermost x-axis ticks anchor
+to their own edge rather than their centre, or an exponential label hangs past
+the plot.
+
+**17.5 It is a preview, and it says what it is missing.** Classic stays the
+default; upgrading moves nobody. The switch is at the bottom of Settings in
+**both** front-ends — the way out of a preview has to be inside it — and saving
+it reloads the page in place, because the queue and any running calculation are
+Python-side. `_index_file()` falls back to classic when the selected file is
+absent, so a `settings.json` carried to a build without the preview cannot
+leave a blank window in front of a running backend. What the preview does not
+have yet is named on its Interface card, not silently absent (B30).
 
 ---
 
@@ -1322,4 +1330,4 @@ Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
 | B27 | The MLIP/CREST card lock disabled only a hand-written list of field ids, so CREST's whole *Advanced settings* block (preset, NCI, solvent model, the MD/MTD numbers, the five toggles) and both cards' geometry-source radios stayed enabled under the grey — pretend-disabled chrome around live controls | D41 | resolved (0.6.1-beta — the lock disables every control the card's own DOM contains, so the list cannot drift from the markup again; the CUDA `<option>`'s separate disabled state is deliberately left to `refreshMlipDeviceOptions`) |
 | B28 | Settings → CREST's *Install CREST* button was pretend-enabled: it disabled only once CREST was already installed, never when there was **no WSL distro to install into** (the one prerequisite ORCAdesk cannot script). The click's only feedback was a Log-tab line, so a failed install read as a dead button — and the installer's actionable diagnostics never reached the card | D41, D2, §13.2 | resolved (0.7.0-beta — the button disables with the reason in its tooltip when WSL or a distro is absent, or while a probe is in flight; the install outcome is published on `CrestStatusPayload.install_error` and surfaced as the card's detail line + a toast) |
 | B29 | Two color literals had come back after B3/B5 removed the pattern: `renderInputEcho`'s `<pre>` used a raw `rgba(127,127,127,0.08)` (a theme-independent grey that is neither a token nor an alpha-ladder value), and the 3D viewer fell back to the literal `#18181b` — the DARK `--card` — when its token read came back empty, painting the stage near-black on a light theme | D10, D13, §15.1 | resolved (unreleased — the echo uses `--input-bg`; the viewer passes no background at all when the token is unreadable, rather than the wrong theme's value) |
-| B30 | The notebook front-end (§17) restates `.btn` geometry under `.log-mode-toggle` because `style.css`'s `.log-mode-toggle button` (0,1,1) out-ranks `.btn`/`.btn-sm` (0,1,0) — the Clear / Show all / Show in folder buttons were taking the chip radius, padding and weight instead of the capsule. The classic UI has the same collision and the same visible mismatch, untouched here | D50, §11 | accepted (0.10.0 — the preview's override is a targeted (0,2,0) restatement, not a rewrite of the shared rule; fix it at the source in `style.css` when the classic toggle rows are next touched, which repairs both) |
+| B30 | The notebook front-end (§17) does not yet cover the MLIP and CREST builders and backend setup, the 3D structure viewer and the Visual tab, the natural-orbital analysis, or the Liquid-Glass appearance variants (§16) — a user who needs those has to switch back to classic | D2, §17.5 | accepted (0.10.0 — it is a preview, off by default, and its Interface card names the gap and switches you rather than letting you find it by a control that is not there; close it as the sections land) |

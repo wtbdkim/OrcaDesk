@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ORCAdesk</title>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!--
+  ORCAdesk — notebook front-end (preview).
+
+  A SECOND front-end, written against the same Bridge as the classic UI in
+  web/ — not a re-arrangement of it. It shares no markup and no ids with
+  web/index.html; the only files it borrows are ../scf_graph.js and
+  ../progress_panels.js, which are pure trackers and renderers with no DOM of
+  their own.
+
+  Selected by Settings.ui_variant ("notebook"); the classic UI stays the
+  default. See DESIGN.md §17.
+-->
+<div class="app" data-view="jobs">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo"><img src="../orcadesk_logo.png" alt=""></span>
+      <span class="nm">ORCAdesk</span>
+      <span class="ver" id="ver"></span>
+    </div>
+
+    <button class="wspick" id="ws-pick" type="button" title="Change the workspace folder">
+      <span class="path" id="ws-path">—</span>
+      <span class="chev" aria-hidden="true">▾</span>
+    </button>
+
+    <nav class="nav" aria-label="View">
+      <div class="seg" role="group">
+        <button type="button" data-go="jobs" aria-pressed="true">Jobs</button>
+        <button type="button" data-go="results" aria-pressed="false">Results</button>
+      </div>
+    </nav>
+
+    <div class="pills" id="pills"></div>
+    <button class="iconbtn" id="theme-toggle" type="button"
+            aria-label="Toggle light and dark theme">☽</button>
+    <button class="btn" id="btn-settings" type="button" data-go="settings">Settings</button>
+  </header>
+
+  <div class="work">
+
+    <!-- the queue, always on screen: what is running never leaves the window -->
+    <aside class="rail">
+      <div class="railhead">
+        <span class="t">Queue</span>
+        <span class="sp"></span>
+        <span class="n" id="q-count">—</span>
+      </div>
+      <div class="railscroll" id="rail"></div>
+      <div class="railfoot">
+        <button class="btn btn-primary" id="btn-new" type="button">New calculation</button>
+        <span class="sp"></span>
+        <button class="btn" id="btn-run" type="button">Run queue</button>
+        <button class="btn btn-ghost" id="btn-stop" type="button" disabled>Stop after current</button>
+        <button class="btn btn-danger" id="btn-cancel" type="button" disabled>Cancel</button>
+        <button class="btn btn-ghost" id="btn-clear" type="button">Clear all</button>
+      </div>
+    </aside>
+
+    <!-- one cell per calculation: its chart, its output, its facts -->
+    <main class="stream" id="stream" aria-label="Calculations"></main>
+
+    <!-- the parsed result, as a report -->
+    <section class="report" id="report" aria-label="Results"></section>
+
+    <!-- settings -->
+    <section class="setwrap" id="settings" aria-label="Settings"></section>
+  </div>
+</div>
+
+<div class="scrim" id="scrim" hidden></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true" hidden>
+  <div class="modalhead" id="modal-title">…</div>
+  <div class="modalbody" id="modal-body"></div>
+  <div class="modalfoot" id="modal-foot"></div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<!-- Borrowed as-is: pure convergence trackers and chart/step renderers, no DOM
+     of their own. progress_panels.js assigns onto the SCFGraph namespace that
+     scf_graph.js publishes, so it must load immediately after it. -->
+<script src="../scf_graph.js"></script>
+<script src="../progress_panels.js"></script>
+
+<script src="boot.js"></script>
+<script src="rail.js"></script>
+<script src="build.js"></script>
+<script src="stream.js"></script>
+<script src="results.js"></script>
+<script src="settings.js"></script>
+</body>
+</html>

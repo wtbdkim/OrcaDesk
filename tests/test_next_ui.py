@@ -1,14 +1,14 @@
-"""The notebook front-end (Settings -> Interface) and its ui_variant plumbing.
+"""The notebook front-end (web/next/) and its ui_variant plumbing.
 
-web/index_next.html is generated from web/index.html so the preview cannot
-silently miss a field added to the classic UI. These tests pin the three ways
-that arrangement can rot:
+web/next/ is a SECOND front-end, not a skin of the classic one: its own markup,
+its own stylesheet, its own logic against the same Bridge. These tests pin the
+seams that can rot without anything failing loudly at import time:
 
-  * the generated file drifting from its source (someone hand-edits one of them)
-  * an id the shared JS reaches for going missing from the preview, which is a
-    blank pane at runtime and nothing at all at import time
-  * the setting itself losing a leg — the dataclass field, the payload the UI
-    reads, or the window's choice of which file to load
+  * the two front-ends leaking into each other (the classic UI must stay exactly
+    as it was, and the preview must not depend on classic files that move)
+  * a script the shell references going missing, which is a blank pane at runtime
+  * the setting losing a leg — the dataclass field, the payload the UI reads, or
+    the window's choice of which file to load
 """
 from __future__ import annotations
 
@@ -20,62 +20,87 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
+NEXT = WEB / "next"
 sys.path.insert(0, str(ROOT))
 
 from orcamgr.config import Settings  # noqa: E402
 
 
-def _read(name: str) -> str:
-    return (WEB / name).read_text(encoding="utf-8")
+def _read(p: Path) -> str:
+    return p.read_text(encoding="utf-8")
 
 
-def _ids(html: str) -> set[str]:
-    return set(re.findall(r'\bid="([^"]+)"', html))
+# ---------------------------------------------------------------- the shell
+
+def test_preview_ships_every_file_its_shell_loads():
+    """Every <script>/<link> in web/next/index.html resolves to a real file."""
+    html = _read(NEXT / "index.html")
+    refs = re.findall(r'(?:src|href)="([^"]+)"', html)
+    missing = []
+    for r in refs:
+        if r.startswith(("qrc:", "http:", "https:", "data:")):
+            continue
+        if not (NEXT / r).resolve().exists():
+            missing.append(r)
+    assert not missing, f"web/next/index.html references missing files: {missing}"
 
 
-# ---------------------------------------------------------------- generation
+def test_preview_borrows_only_the_dom_free_scripts():
+    """The only classic files it may reach for are the trackers and renderers.
 
-def test_generated_preview_is_up_to_date():
-    """web/index_next.html matches what tools/build_next_ui.py produces now."""
-    sys.path.insert(0, str(ROOT / "tools"))
-    import build_next_ui                      # noqa: PLC0415
-
-    assert build_next_ui.build() == _read("index_next.html"), (
-        "web/index_next.html is stale — run: python tools/build_next_ui.py"
-    )
-
-
-def test_preview_carries_every_classic_id():
-    """Every id in the classic UI survives into the preview.
-
-    The whole reason the notebook layout can reuse app.js and the renderers is
-    that it is the same document; a dropped id is a pane that renders nothing.
+    scf_graph.js and progress_panels.js parse output and return HTML strings —
+    they own no ids and no elements, so sharing them is reuse, not coupling.
+    Anything else from web/ (app.js, style.css, results_render.js) would make
+    the preview a skin of the classic UI again, which it deliberately is not.
     """
-    missing = _ids(_read("index.html")) - _ids(_read("index_next.html"))
-    assert not missing, f"ids lost in the notebook preview: {sorted(missing)}"
+    html = _read(NEXT / "index.html")
+    borrowed = sorted(set(re.findall(r'(?:src|href)="\.\./([^"]+)"', html)))
+    allowed = {"scf_graph.js", "progress_panels.js", "orcadesk_logo.png"}
+    assert set(borrowed) <= allowed, f"unexpected classic dependencies: {sorted(set(borrowed) - allowed)}"
 
 
-def test_preview_ids_are_unique():
-    html = _read("index_next.html")
-    found = re.findall(r'\bid="([^"]+)"', html)
-    dupes = sorted({i for i in found if found.count(i) > 1})
-    assert not dupes, f"duplicate ids in index_next.html: {dupes}"
+def test_classic_ui_is_untouched_by_the_preview():
+    """No file under web/next/ is referenced by the shipping front-end."""
+    html = _read(WEB / "index.html")
+    assert "next/" not in html
 
 
-def test_preview_loads_both_stylesheets_and_the_adapter_after_app():
-    """next.css layers over style.css, and next.js wraps an app.js that exists."""
-    html = _read("index_next.html")
-    assert 'href="style.css"' in html and 'href="next.css"' in html
-    assert html.index('href="style.css"') < html.index('href="next.css"')
-    assert html.index('src="app.js"') < html.index('src="next.js"')
-    # the shell must start on a real view, or every .panel stays hidden
-    assert 'class="app" data-view="jobs" data-stream="build"' in html
+def test_preview_declares_no_globals_that_collide_with_app_js():
+    """One tsc project checks both front-ends, so they share a global scope.
+
+    The preview keeps everything on NB for that reason; a second top-level
+    `let bridge` / `queue` / `settings` would be a duplicate declaration of the
+    classic UI's and fail the type check for both.
+    """
+    for f in sorted(NEXT.glob("*.js")):
+        src = _read(f)
+        tops = re.findall(r"^(?:let|const|var|function|class)\s+([A-Za-z_$][\w$]*)",
+                          src, re.MULTILINE)
+        assert set(tops) <= {"NB"}, f"{f.name} declares globals {sorted(set(tops) - {'NB'})}"
 
 
-def test_classic_ui_does_not_load_the_preview_layer():
-    """The shipping UI is untouched by the preview's stylesheet and adapter."""
-    html = _read("index.html")
-    assert "next.css" not in html and "next.js" not in html
+def test_preview_scripts_are_strict_and_type_checked():
+    for f in sorted(NEXT.glob("*.js")):
+        head = _read(f)[:200]
+        assert "@ts-check" in head, f"{f.name} is not type-checked"
+        assert '"use strict"' in head, f"{f.name} is not strict-mode"
+
+
+def test_preview_calls_only_slots_the_bridge_actually_has():
+    """Every NB.call("slot") / NB.bridge.slot() names a real @pyqtSlot.
+
+    A typo here is a silent dead button: the channel resolves the property to
+    undefined and the promise never settles.
+    """
+    bridge = _read(ROOT / "orcamgr" / "gui" / "bridge.py")
+    slots = set(re.findall(r"def (\w+)\(self", bridge))
+    used = set()
+    for f in sorted(NEXT.glob("*.js")):
+        src = _read(f)
+        used |= set(re.findall(r'NB\.call\(\s*"(\w+)"', src))
+        used |= set(re.findall(r"NB\.bridge\.(\w+)\(", src))
+    unknown = sorted(used - slots)
+    assert not unknown, f"the preview calls bridge slots that do not exist: {unknown}"
 
 
 # ---------------------------------------------------------------- the setting
@@ -111,29 +136,36 @@ def test_unknown_ui_variant_degrades_to_classic(tmp_path, monkeypatch):
     assert Settings.load().ui_variant != "notebook"
 
 
-def test_settings_card_offers_both_front_ends():
-    """The way back out of the preview is in the preview, at the bottom."""
-    for name in ("index.html", "index_next.html"):
-        html = _read(name)
-        assert 'name="ui-variant" value="classic"' in html, name
-        assert 'name="ui-variant" value="notebook"' in html, name
-        # it is the last card of Settings, per the request that it live there
-        assert html.index('name="ui-variant"') > html.index('id="about-body"'), name
+def test_the_way_out_of_the_preview_is_inside_the_preview():
+    """Both front-ends carry the switch, at the bottom of their settings."""
+    classic = _read(WEB / "index.html")
+    assert 'name="ui-variant" value="classic"' in classic
+    assert 'name="ui-variant" value="notebook"' in classic
+    assert classic.index('name="ui-variant"') > classic.index('id="about-body"')
+
+    preview = _read(NEXT / "settings.js")
+    assert 'name="ui" value="classic"' in preview
+    assert 'name="ui" value="notebook"' in preview
+    assert preview.index('<div class="ct">Interface</div>') > preview.index('<div class="ct">About</div>')
 
 
 def test_bridge_reports_and_accepts_ui_variant():
-    """The payload the front-end reads carries the field, and save() takes it."""
-    src = (ROOT / "orcamgr" / "gui" / "bridge.py").read_text(encoding="utf-8")
+    src = _read(ROOT / "orcamgr" / "gui" / "bridge.py")
     assert "ui_variant=self.settings.ui_variant" in src
     assert '"ui_variant" in data' in src
-    assert 'def reload_ui' in src
-    schemas = (ROOT / "orcamgr" / "state" / "schemas.py").read_text(encoding="utf-8")
-    assert "ui_variant: str" in schemas
+    assert "def reload_ui" in src
+    assert "ui_variant: str" in _read(ROOT / "orcamgr" / "state" / "schemas.py")
 
 
 def test_window_picks_the_front_end_from_the_setting():
-    src = (ROOT / "orcamgr" / "gui" / "window.py").read_text(encoding="utf-8")
+    src = _read(ROOT / "orcamgr" / "gui" / "window.py")
     assert 'ui_variant == "notebook"' in src
-    assert '"index_next.html"' in src
+    assert '"next" / "index.html"' in src
     # and never loads a hard-coded index.html behind the setting's back
     assert 'web_dir() / "index.html"\n        self.view.load' not in src
+
+
+def test_frozen_build_ships_the_preview():
+    """PyInstaller copies web/ wholesale, so web/next/ rides along."""
+    spec = _read(ROOT / "build.spec")
+    assert '("web", "web")' in spec

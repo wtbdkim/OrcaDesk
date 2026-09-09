@@ -42,9 +42,6 @@ python -m PyInstaller build.spec --noconfirm
 # Type-check the web/ front-end (plain JS + JSDoc, no build step; needs Node)
 npx -p typescript tsc --noEmit -p jsconfig.json
 
-# Regenerate the notebook front-end after editing web/index.html
-python tools/build_next_ui.py          # --check exits 1 if it is out of date
-
 # Run the automated test suite (pip install -r requirements-dev.txt once)
 python -m pytest                       # 1001 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
@@ -114,17 +111,27 @@ front-end chosen by `MainWindow._index_file()` and registers a single `Bridge`
 object on a `QWebChannel`.
 
 **Two front-ends ship.** `Settings.ui_variant` picks `web/index.html` (classic,
-the tabbed UI, the default) or `web/index_next.html` (the notebook layout — one
-window, the queue as a permanent rail; a preview, see DESIGN.md §17). They are
-the **same document**: `index_next.html` is generated from `index.html` by
-`python tools/build_next_ui.py`, carrying the same ids, classes and handlers, so
-everything below applies to both and `app.js` needs no branch. **Never hand-edit
-`web/index_next.html`** — edit `index.html` (or the generator) and re-run it;
-`tests/test_next_ui.py` fails the suite when the copy is stale. The notebook's
-own layer is `web/next.css` (shell + Apple-ish geometry over the same tokens,
-no color token redefined) and `web/next.js` (wraps `switchTab` to map the five
-classic tab names onto three views). Switching the setting reloads the page in
-place — the queue and any running calculation are Python-side.
+the tabbed UI, the default) or `web/next/index.html` (the notebook layout — one
+window, the queue as a permanent rail; a **preview**, off by default, see
+DESIGN.md §17). They are **separate applications over the same Bridge**, not two
+skins: `web/next/` has its own markup, its own `app.css` and its own logic, and
+shares no ids, no classes and no stylesheet with `web/`. Everything below this
+paragraph describes the CLASSIC front-end unless it says otherwise.
+
+`web/next/` borrows exactly two classic files — `../scf_graph.js` and
+`../progress_panels.js`, the trackers and chart/step renderers, which own no DOM
+— and is otherwise `boot.js` (channel, polled state, per-calc trackers, routing,
+toast/modal) → `rail.js` (queue rail + run controls) → `build.js` (the builder,
+inline in the rail) → `stream.js` (one cell per calculation) → `results.js` (the
+report) → `settings.js`, in that load order, all hanging off one global `NB`.
+One tsc project checks both front-ends and classic scripts share a global scope,
+so **a top-level declaration in `web/next/` other than `NB` collides with
+`app.js`** — `tests/test_next_ui.py` fails the build if one appears, and also
+checks that every bridge slot the preview calls actually exists.
+
+Not in the preview yet: the MLIP/CREST builders and their setup, the 3D viewer
+and the Visual tab, the natural-orbital analysis, the Liquid-Glass variants
+(DESIGN.md B30). Its Interface card says so and switches back to classic.
 
 The JS is plain scripts sharing one global scope (no modules/bundler). `app.js`
 holds the app shell (tabs, build cards, queue, polling); self-contained sections

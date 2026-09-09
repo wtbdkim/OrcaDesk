@@ -7,24 +7,31 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **A second front-end, opt-in from Settings → Interface.** ORCAdesk can now
-  open in a **notebook layout**: one window instead of five tabs, with the queue
-  as a permanent 600px rail beside whatever you are doing. Build a calculation
-  and watch the running one at the same time; open a result without losing sight
-  of the queue. Top-level navigation is Jobs / Results / Settings, and the right
-  column of the Jobs view switches between the build form and the live output.
-  - It is a **preview** and it is **off by default**. Upgrading changes nothing;
-    the classic tabbed UI stays exactly as it was, and the switch back sits at
-    the bottom of Settings in both front-ends. Saving the setting swaps the
-    window immediately — a running calculation keeps running, because the queue
-    lives in Python and only the page is replaced.
-  - The surface is Apple-ish over the same design tokens: wider radii, capsule
-    controls, recessed segmented tracks, softer elevation. Both themes and the
-    light/dark toggle work in it unchanged.
-  - Under the skin it is the *same document* as the classic UI — the same ids,
-    classes and handlers — so `app.js` and every renderer drive both. It is
-    generated from `web/index.html` by `tools/build_next_ui.py` and the test
-    suite fails if the copy has drifted, so a field added to the classic Build
-    tab cannot silently go missing from the preview.
+  open in a **notebook layout**: one window instead of five tabs, with the
+  queue as a permanent 600px rail beside whatever you are doing.
+  - The rail groups the queue by what a row is *doing* — running, queued, done
+    — and a row opens **into the builder in place**: the form is no longer a
+    tab you go to and come back from.
+  - Beside it, one **cell per calculation**: its convergence chart, its output
+    tail and its facts together. The classic UI asks you to pick a job and then
+    pick a view of it (Raw or Graph, one at a time, one job at a time); here
+    you read down the run.
+  - Results is a **report**: the summary, a grid of what the parser found, the
+    input that run read beside the output it produced, and the free-energy
+    profile last.
+  - It is a **preview** and it is **off by default**. Upgrading changes
+    nothing; the classic tabbed UI is untouched, and the switch back sits at
+    the bottom of Settings in both front-ends. Saving it swaps the window
+    immediately — a running calculation keeps running, because the queue lives
+    in Python and only the page is replaced.
+  - It is a separate application over the same Bridge, not a re-skin: its own
+    markup, its own stylesheet, its own logic in `web/next/`, sharing no ids or
+    classes with `web/`. The two files it does borrow — the convergence
+    trackers and the chart renderers — own no DOM.
+  - Not in it yet, and named on its own Interface card rather than silently
+    missing: the MLIP and CREST builders and their setup, the 3D viewer and the
+    Visual tab, the natural-orbital analysis, and the Liquid-Glass appearance
+    variants.
 
 ## [0.9.1-beta] — 2026-09-05
 
