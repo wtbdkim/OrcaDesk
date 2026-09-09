@@ -225,6 +225,8 @@
  * @property {"beginner"|"expert"|"mlip"|"crest"} build_mode
  * @property {"in_app"|"system"} viewer_target  where a Visual row opens:
  *   ORCAdesk's own 3D viewer, or the program the OS associates with the file
+ * @property {"classic"|"notebook"} ui_variant  which front-end the desktop
+ *   window loads: the shipping UI, or the in-development notebook shell
  * @property {string} crest_distro     preferred WSL distro for CREST ("" = auto-detect)
  * @property {boolean} orca_valid
  * @property {string} save_error  why the settings on screen are not on disk ("" = they are)

@@ -6,8 +6,19 @@
 <title>ORCAdesk</title>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="next.css">
 </head>
 <body>
+<!--
+  GENERATED FILE — do not edit.
+
+  Built from web/index.html by tools/build_next_ui.py. Edit index.html (or the
+  script), then re-run it; tests/test_next_ui.py fails if this file is stale.
+
+  This is the notebook front-end: the classic markup re-arranged by next.css
+  into three views (Jobs / Results / Settings) with the queue as a permanent
+  rail, and next.js translating between the classic tab names and those views.
+-->
 
 <!-- Liquid-Glass wallpaper canvas + refraction filters. Inert under the shadcn
      variant (the canvas is display:none via CSS, the filters are only referenced
@@ -51,7 +62,7 @@
   </filter>
 </defs></svg>
 
-<div class="app">
+<div class="app" data-view="jobs" data-stream="build">
 
   <!-- top bar -->
   <header class="topbar">
@@ -62,6 +73,16 @@
         <div class="sub">computational chemistry job runner</div>
       </div>
     </div>
+    <nav class="nbnav" aria-label="View">
+      <div class="seg" role="group">
+        <button type="button" data-view="jobs" aria-pressed="true"
+                onclick="nbGo('jobs')">Jobs</button>
+        <button type="button" data-view="results" aria-pressed="false"
+                onclick="nbGo('results')">Results</button>
+        <button type="button" data-view="settings" aria-pressed="false"
+                onclick="nbGo('settings')">Settings</button>
+      </div>
+    </nav>
     <div class="status-group">
       <button id="theme-toggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle light/dark theme">☽</button>
       <div id="orca-status" class="status-pill">
@@ -89,6 +110,16 @@
   </nav>
 
   <div class="tab-content">
+
+    <!-- right-column switch (Jobs view): the form, or the run in progress -->
+    <div class="nbstream-head">
+      <div class="seg nbstreamseg" role="group" aria-label="Right pane">
+        <button type="button" data-stream="build" aria-pressed="true"
+                onclick="switchTab('build')">Build</button>
+        <button type="button" data-stream="log" aria-pressed="false"
+                onclick="switchTab('log')">Live output</button>
+      </div>
+    </div>
 
     <!-- ============ BUILD ============ -->
     <section class="panel active" data-panel="build">
@@ -775,5 +806,6 @@
 <script src="molviewer.js"></script>
 <script src="structview.js"></script>
 <script src="app.js"></script>
+<script src="next.js"></script>
 </body>
 </html>

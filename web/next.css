@@ -1,0 +1,224 @@
+/* ============================================================
+   ORCAdesk — Notebook front-end (preview)
+
+   Layered ON TOP of style.css and loaded only by index_next.html, which
+   carries the same markup, the same ids and the same class vocabulary as the
+   classic index.html. That is the whole point of the arrangement: app.js and
+   every renderer keep working untouched, this file only re-arranges the shell
+   and restyles the shared components. Nothing here can reach the classic UI —
+   it never links this stylesheet.
+
+   Two things change:
+     1. Layout — five tabs become three views (Jobs / Results / Settings), with
+        the queue as a permanent 600px rail beside whatever you are doing, so
+        the run being watched never leaves the screen.
+     2. Surface — Apple-ish geometry over the same shadcn tokens: wider radii,
+        capsule controls, recessed segmented tracks, softer elevation.
+   ============================================================ */
+
+/* ---------------------------------------------------------------- geometry
+   The tokens themselves, so every component that already reads them follows
+   without a per-component rule. Colors are style.css's and stay untouched —
+   both themes keep working because nothing below hard-codes a color that
+   isn't derived from a token. */
+:root {
+  --radius: 12px;
+  --radius-sm: 9px;
+  --radius-lg: 18px;
+  --radius-pill: 999px;
+  /* Shipped faces only — the app runs offline from file://, so a webfont link
+     would silently fall back. Segoe UI Variable is Windows 11's own text face. */
+  --font-sans: -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui,
+               ui-sans-serif, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", "JetBrains Mono", ui-monospace,
+               Consolas, monospace;
+  /* low contrast, wide spread — how a surface lifts on macOS */
+  --nb-shadow-sm: 0 1px 1px rgba(0,0,0,.24), 0 1px 3px rgba(0,0,0,.30);
+  --nb-shadow-md: 0 12px 32px rgba(0,0,0,.42), 0 2px 8px rgba(0,0,0,.28);
+  --nb-rail: 600px;   /* the queue rail; wide enough for a row's full readout */
+}
+html[data-theme="light"] {
+  --nb-shadow-sm: 0 1px 1px rgba(24,24,27,.05), 0 1px 3px rgba(24,24,27,.07);
+  --nb-shadow-md: 0 12px 32px rgba(24,24,27,.12), 0 2px 8px rgba(24,24,27,.07);
+}
+
+/* ---------------------------------------------------------------- shell */
+.app { overflow: hidden; }
+
+/* The classic tab strip stays in the DOM — switchTab() writes .tab.active and
+   the notebook nav is a second view of that same state — but it is not the
+   navigation here, so it is not on screen. */
+.tabs { display: none; }
+
+.topbar { gap: 16px; padding: 10px 16px; }
+.brand .sub { display: none; }          /* the tagline is launch copy, not chrome */
+
+/* the notebook's own navigation, centred between brand and status pills */
+.nbnav { display: flex; justify-content: center; flex: 1; min-width: 0; }
+
+/* macOS segmented control: a recessed track carrying a raised capsule thumb */
+.seg {
+  display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto;
+  background: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill); padding: 2px;
+}
+.seg button {
+  appearance: none; background: none; border: none; cursor: pointer;
+  font-family: inherit; color: var(--muted-foreground);
+  font-size: 13px; font-weight: 500; letter-spacing: -.01em;
+  padding: 6px 18px; min-height: 28px; border-radius: var(--radius-pill);
+  white-space: nowrap;
+  transition: background .18s cubic-bezier(.32,.72,0,1), color .18s, box-shadow .18s;
+}
+.seg button:hover { color: var(--foreground); }
+.seg button[aria-pressed="true"] {
+  background: var(--card); color: var(--foreground); box-shadow: var(--nb-shadow-sm);
+}
+
+/* ---------------------------------------------------------------- views
+   .panel visibility is driven by the app's view, not by switchTab's .active:
+   in the Jobs view three classic panels are on screen at once, which .active
+   cannot express. Both rules below are (0,3,1) so the later one wins — the
+   hide comes first deliberately. .panel.active (0,2,0) loses to both. */
+.app[data-view] .tab-content > .panel { display: none; }
+
+.app[data-view="jobs"] .tab-content > [data-panel="queue"],
+.app[data-view="jobs"] .tab-content > [data-panel="build"],
+.app[data-view="jobs"] .tab-content > [data-panel="log"],
+.app[data-view="results"] .tab-content > [data-panel="queue"],
+.app[data-view="results"] .tab-content > [data-panel="results"],
+.app[data-view="settings"] .tab-content > [data-panel="settings"] {
+  display: block;
+}
+/* Build and Live share the right column, so only the selected one is mounted */
+.app[data-stream="build"] .tab-content > [data-panel="log"],
+.app[data-stream="log"] .tab-content > [data-panel="build"] { display: none; }
+
+/* --- Jobs / Results: rail + working column --- */
+.app[data-view="jobs"] .tab-content,
+.app[data-view="results"] .tab-content {
+  display: grid;
+  grid-template-columns: var(--nb-rail) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px 16px; padding: 14px 16px; overflow: hidden;
+}
+.app[data-view="jobs"] .tab-content > [data-panel="queue"],
+.app[data-view="results"] .tab-content > [data-panel="queue"] {
+  grid-column: 1; grid-row: 1 / 3;
+  display: flex; flex-direction: column; min-height: 0; gap: 12px;
+}
+/* the list scrolls; the run controls stay pinned under it */
+.app[data-view] .tab-content > [data-panel="queue"] > .card {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 0;
+}
+.app[data-view] .tab-content > [data-panel="queue"] > .btn-group {
+  flex: 0 0 auto; margin: 0; flex-wrap: wrap;
+}
+
+.nbstream-head { grid-column: 2; grid-row: 1; display: flex; align-items: center; gap: 10px; }
+.app[data-view="results"] .nbstream-head { display: none; }
+
+.app[data-view="jobs"] .tab-content > [data-panel="build"],
+.app[data-view="jobs"] .tab-content > [data-panel="log"],
+.app[data-view="results"] .tab-content > [data-panel="results"] {
+  grid-column: 2; grid-row: 2; min-height: 0; overflow-y: auto;
+  /* the scrollbar sits at the pane edge, so the content keeps its own gutter */
+  padding-right: 2px;
+}
+.app[data-view="results"] .tab-content > [data-panel="results"] { grid-row: 1 / 3; }
+
+/* The Live pane is a column: the log takes the slack, the graph keeps its size.
+   Scoped to data-stream, not data-view: as a [data-view="jobs"] rule it was
+   (0,4,0) and sat AFTER the [data-stream="build"] hide above, which is also
+   (0,4,0) — so its `display: flex` won on order and the Build form and the log
+   rendered on top of each other. Same-specificity rules that both set `display`
+   must not be able to match the same element.
+
+   Both attributes are on the selector, not just data-stream: data-stream keeps
+   its value while the user is over in Results or Settings, so a rule that only
+   asked for it out-specified the master `display: none` and left the log pane
+   drawn under those views. A rule that sets `display` has to name every part
+   of the state that makes the element visible. */
+.app[data-view="jobs"][data-stream="log"] .tab-content > [data-panel="log"] {
+  display: flex; flex-direction: column; gap: 10px; overflow: hidden;
+}
+.app[data-stream="log"] .log-wrap { flex: 1 1 auto; min-height: 160px; display: flex; }
+.app[data-stream="log"] .log-box { flex: 1 1 auto; height: auto; min-height: 0; }
+.app[data-stream="log"] .scf-panel { flex: 0 0 auto; }
+
+/* --- Settings: one readable column --- */
+.app[data-view="settings"] .tab-content { padding: 20px 16px 48px; overflow-y: auto; }
+.app[data-view="settings"] .tab-content > [data-panel="settings"] {
+  max-width: 880px; margin: 0 auto;
+}
+
+/* ---------------------------------------------------------------- rail */
+/* A queue row is the thing being watched, so it gets the room to say what it
+   is doing — roughly a quarter taller than the classic row (§11.9's box,
+   opened up), a wider radius, and its own lift off the card. */
+.queue-item {
+  /* 20px vertical against the classic 12px: the row is a quarter taller, the
+     ratio the layout was drawn to. */
+  padding: 20px 16px; margin-bottom: 10px;
+  border-radius: var(--radius); background: var(--card);
+  box-shadow: var(--nb-shadow-sm);
+  transition: border-color .16s, box-shadow .16s;
+}
+.queue-item:hover { border-color: var(--secondary-hover); }
+.queue-item .qname { font-size: 13.5px; }
+.qstate { border-radius: var(--radius-pill); }
+
+/* ---------------------------------------------------------------- surfaces */
+.card { border-radius: var(--radius); box-shadow: var(--nb-shadow-sm); }
+/* a card inside the scrolling rail must not double up on elevation */
+[data-panel="queue"] > .card { box-shadow: none; }
+
+/* ---------------------------------------------------------------- controls */
+.btn {
+  border-radius: var(--radius-pill);
+  padding: 6px 16px; min-height: 30px;
+  letter-spacing: -.01em;
+  box-shadow: var(--nb-shadow-sm);
+  transition: background .16s cubic-bezier(.32,.72,0,1),
+              border-color .16s, color .16s, transform .12s cubic-bezier(.32,.72,0,1);
+}
+.btn:active { transform: scale(.97); }
+.btn-sm { padding: 5px 13px; min-height: 26px; }
+.btn-ghost, .btn-danger { box-shadow: none; }
+.btn:disabled { box-shadow: none; }
+@media (prefers-reduced-motion: reduce) { .btn:active { transform: none; } }
+
+.theme-toggle { border-radius: var(--radius-pill); }
+.status-pill { border-radius: var(--radius-pill); }
+.rm { border-radius: var(--radius-pill); min-width: 30px; }
+
+.field input, .field select, .field textarea {
+  border-radius: var(--radius-sm);
+}
+
+/* The Raw/Graph, Output/Visual and build-mode chips get the capsule shape and
+   the raised-thumb selected state, so they read as the same control as .seg.
+   Deliberately NOT rewritten into a .seg track: that row also carries the
+   Beginner/Expert sub-toggle, the per-job log filter with its own separator,
+   the dashed "+ More backends…" affordance and a right-pushed Clear button —
+   a single enclosing track would swallow all four. */
+.log-mode-toggle button:not(.btn) { border-radius: var(--radius-pill); padding: 6px 14px; }
+.log-mode-toggle button.active:not(.btn) { box-shadow: var(--nb-shadow-sm); }
+.log-mode-toggle .bsub button:not(.btn),
+.log-mode-toggle .log-jobs button:not(.btn) { padding: 5px 12px; }
+/* The trailing utility buttons in those rows (Clear, Show all, Show in folder)
+   ARE .btn, but style.css's `.log-mode-toggle button` is a descendant selector
+   (0,1,1) and out-ranks `.btn`/`.btn-sm` (0,1,0) — so they were taking the chip
+   radius and padding instead of the capsule everything else in the window uses.
+   Restate the small-button shape at (0,2,0) to win it back. */
+.log-mode-toggle .btn {
+  border-radius: var(--radius-pill);
+  padding: 5px 13px; font-size: 12px; font-weight: 500; box-shadow: none;
+}
+/* focus ring stays a ring, not a ring plus a lift */
+.seg button:focus-visible {
+  outline: none; box-shadow: 0 0 0 3px var(--ring-glow);
+}
+
+.toast { border-radius: var(--radius-pill); box-shadow: var(--nb-shadow-md); }
