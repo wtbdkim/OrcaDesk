@@ -141,6 +141,7 @@ class SettingsPayload(TypedDict):
     geo_graph_mode: str       # "all5" | "maxgrad"
     build_mode: str           # "beginner" | "expert" | "mlip" | "crest"
     viewer_target: str        # "in_app" | "system" — where a Visual row opens
+    ui_variant: str           # "classic" | "notebook" — which front-end loads
     crest_distro: str         # preferred WSL distro for CREST ("" = auto-detect)
     orca_valid: bool
     # Why the settings on screen are not the settings on disk. "" = they are.

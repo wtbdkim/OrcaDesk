@@ -3,6 +3,29 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] — 2026-09-10
+
+### Added
+- **A second front-end, opt-in from Settings → Interface.** ORCAdesk can now
+  open in a **notebook layout**: one window instead of five tabs, with the queue
+  as a permanent 600px rail beside whatever you are doing. Build a calculation
+  and watch the running one at the same time; open a result without losing sight
+  of the queue. Top-level navigation is Jobs / Results / Settings, and the right
+  column of the Jobs view switches between the build form and the live output.
+  - It is a **preview** and it is **off by default**. Upgrading changes nothing;
+    the classic tabbed UI stays exactly as it was, and the switch back sits at
+    the bottom of Settings in both front-ends. Saving the setting swaps the
+    window immediately — a running calculation keeps running, because the queue
+    lives in Python and only the page is replaced.
+  - The surface is Apple-ish over the same design tokens: wider radii, capsule
+    controls, recessed segmented tracks, softer elevation. Both themes and the
+    light/dark toggle work in it unchanged.
+  - Under the skin it is the *same document* as the classic UI — the same ids,
+    classes and handlers — so `app.js` and every renderer drive both. It is
+    generated from `web/index.html` by `tools/build_next_ui.py` and the test
+    suite fails if the copy has drifted, so a field added to the classic Build
+    tab cannot silently go missing from the preview.
+
 ## [0.9.1-beta] — 2026-09-05
 
 ### Added

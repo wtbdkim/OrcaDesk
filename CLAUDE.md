@@ -42,6 +42,9 @@ python -m PyInstaller build.spec --noconfirm
 # Type-check the web/ front-end (plain JS + JSDoc, no build step; needs Node)
 npx -p typescript tsc --noEmit -p jsconfig.json
 
+# Regenerate the notebook front-end after editing web/index.html
+python tools/build_next_ui.py          # --check exits 1 if it is out of date
+
 # Run the automated test suite (pip install -r requirements-dev.txt once)
 python -m pytest                       # 1001 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
@@ -106,8 +109,22 @@ cut, on the release machine.
 ### UI is HTML/JS, backend is Python, glued by a QWebChannel
 
 The entire UI lives in `web/` (HTML/CSS/JS, shadcn-style dark theme). `main.py` opens
-`MainWindow` (`orcamgr/gui/window.py`), which hosts a `QWebEngineView` loading
-`web/index.html` and registers a single `Bridge` object on a `QWebChannel`.
+`MainWindow` (`orcamgr/gui/window.py`), which hosts a `QWebEngineView` loading the
+front-end chosen by `MainWindow._index_file()` and registers a single `Bridge`
+object on a `QWebChannel`.
+
+**Two front-ends ship.** `Settings.ui_variant` picks `web/index.html` (classic,
+the tabbed UI, the default) or `web/index_next.html` (the notebook layout — one
+window, the queue as a permanent rail; a preview, see DESIGN.md §17). They are
+the **same document**: `index_next.html` is generated from `index.html` by
+`python tools/build_next_ui.py`, carrying the same ids, classes and handlers, so
+everything below applies to both and `app.js` needs no branch. **Never hand-edit
+`web/index_next.html`** — edit `index.html` (or the generator) and re-run it;
+`tests/test_next_ui.py` fails the suite when the copy is stale. The notebook's
+own layer is `web/next.css` (shell + Apple-ish geometry over the same tokens,
+no color token redefined) and `web/next.js` (wraps `switchTab` to map the five
+classic tab names onto three views). Switching the setting reloads the page in
+place — the queue and any running calculation are Python-side.
 
 The JS is plain scripts sharing one global scope (no modules/bundler). `app.js`
 holds the app shell (tabs, build cards, queue, polling); self-contained sections

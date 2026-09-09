@@ -14,6 +14,7 @@ import atexit
 import json
 import sys
 import time
+from pathlib import Path
 
 from PyQt6.QtCore import QUrl, QEvent, QTimer
 from PyQt6.QtGui import QIcon
@@ -133,8 +134,7 @@ class MainWindow(QMainWindow):
         self.channel.registerObject("bridge", self.bridge)
         self.view.page().setWebChannel(self.channel)
 
-        index = web_dir() / "index.html"
-        self.view.load(QUrl.fromLocalFile(str(index)))
+        self.view.load(QUrl.fromLocalFile(str(self._index_file())))
 
         # Drag-and-drop a .inp/.xyz onto Build, a .out onto Results. QtWebEngine's
         # real drop target is an internal child widget, so accepting drops on the
@@ -185,11 +185,43 @@ class MainWindow(QMainWindow):
         # persist (writes config_file so this dialog won't show again)
         settings.save()
 
+    def _index_file(self) -> Path:
+        """The front-end entry point to load.
+
+        Two front-ends ship side by side while the notebook layout is in
+        development: web/index.html (classic, the default) and
+        web/index_next.html (the new single-window shell), chosen by
+        Settings.ui_variant from the bottom of Settings. They sit in the same
+        folder so every relative path in the markup — style.css, the logo,
+        vendor/3Dmol-min.js — resolves identically for both.
+
+        Falling back to classic when the chosen one is absent matters more than
+        it looks: a settings.json carried over from a build that had the
+        preview would otherwise point a release without it at a missing file,
+        and the window would come up blank with the backend running happily
+        behind it.
+        """
+        if Settings.load().ui_variant == "notebook":
+            nxt = web_dir() / "index_next.html"
+            if nxt.exists():
+                return nxt
+        return web_dir() / "index.html"
+
+    def reload_web_ui(self) -> None:
+        """Re-load the front-end, picking up a just-changed ui_variant.
+
+        Only the view is replaced. The queue, the running calculation and every
+        watcher live in Python (store / Bridge), so switching front-ends mid-run
+        is a repaint, not a restart — the new page rebuilds its screen from the
+        same bridge calls a cold start uses.
+        """
+        self.view.load(QUrl.fromLocalFile(str(self._index_file())))
+
     def _check_ui_loaded(self, ok: bool) -> None:
         """Say so when the bundled UI could not be shown (see the connect)."""
         if ok:
             return
-        index = web_dir() / "index.html"
+        index = self._index_file()
         detail = ("it is missing" if not index.exists()
                   else "it could not be read")
         msg = (f"The application UI could not be loaded from {index} — "
