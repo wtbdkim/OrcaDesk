@@ -15,6 +15,7 @@ interface OrcaBridge {
   get_about(): Promise<string>;
   get_settings(): Promise<string>;
   save_settings(payloadJson: string): Promise<string>;
+  reload_ui(): Promise<void>;
   set_wallpaper_image(dataUri: string): Promise<string>;   // WallpaperResult JSON: {ok, stored}; stored=false when ""/invalid/oversize (cleared)
   get_wallpaper_image(): Promise<string>;                   // bare data-URI string ("" = none)
   autodetect_orca(): Promise<string>;          // AutodetectResult JSON (mutates settings on success)
@@ -165,6 +166,13 @@ interface Window {
   onInpDropped?: (path: string) => void;
   onXyzDropped?: (path: string) => void;
   onOutDropped?: (path: string) => void;
+  /* app.js declares switchTab as a top-level function, so window.switchTab is
+     the same binding. web/next.js (loaded only by the notebook front-end)
+     re-points it to a wrapper that also paints the view state, which is why it
+     has to be declared here rather than left to the function declaration. */
+  switchTab: (name: string) => void;
+  /* the notebook front-end's top-level navigation (web/next.js) */
+  nbGo?: (view: string) => void;
 }
 
 /* ---------- pragmatic DOM loosening ----------

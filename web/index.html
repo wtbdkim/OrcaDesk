@@ -652,6 +652,24 @@
         <div class="card-title">About</div>
         <div id="about-body" class="kv" style="margin-top:8px"></div>
       </div>
+
+      <div class="card">
+        <div class="card-title">Interface</div>
+        <div class="card-desc">Which window layout ORCAdesk opens with. Saving
+          switches immediately — a running calculation keeps running.</div>
+        <label class="radio-row">
+          <input type="radio" name="ui-variant" value="classic" checked>
+          <span><strong>Classic</strong> — the tabbed window (Build, Queue, Log,
+            Results, Settings). This is the finished UI.</span>
+        </label>
+        <label class="radio-row">
+          <input type="radio" name="ui-variant" value="notebook">
+          <span><strong>Notebook (preview)</strong> — one window: the queue
+            beside the calculation you are building, and results as a scrolling
+            report. Still in development, so expect rough edges; come back here
+            to switch back.</span>
+        </label>
+      </div>
     </section>
 
   </div>

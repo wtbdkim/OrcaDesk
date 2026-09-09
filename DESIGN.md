@@ -1230,6 +1230,62 @@ keep:
 
 ---
 
+## 17. Notebook front-end (preview)
+
+A second **front-end**, not a second theme: `Settings.ui_variant` is `classic`
+(the tabbed UI, the default) or `notebook`, and the desktop window loads
+`web/index.html` or `web/index_next.html` accordingly. Where §16 is a token
+swap inside one document, this is a different *shell around the same document*.
+
+**17.1 It is the same markup.** `web/index_next.html` is GENERATED from
+`web/index.html` by `tools/build_next_ui.py` — same ids, same classes, same
+inline handlers — so `app.js` and every renderer drive both without a branch.
+The generator inserts only what the new shell needs: a second stylesheet link,
+`data-view`/`data-stream` on `.app`, the top navigation, the right-column
+switch, and one adapter script. `tests/test_next_ui.py` fails if the committed
+copy has drifted, so a control added to the classic Build tab cannot silently
+go missing from the preview. **Do not hand-edit `index_next.html`.**
+
+**17.2 Three views, not five tabs.** Jobs / Results / Settings. The queue is a
+permanent 600px rail in Jobs and Results — the run being watched never leaves
+the screen — and the right column of Jobs carries either the build form or the
+live output. `web/next.js` wraps `switchTab()` rather than replacing it, so
+everything the classic function does on entry to a tab (loading the free-energy
+profile, rescanning the workspace, re-measuring the SCF graph and the geometry
+stage now that their boxes are non-zero) still happens, and the ~15 `switchTab`
+calls scattered through `app.js` and `results_render.js` keep working.
+
+**17.3 A rule that sets `display` must name the whole state.** Panel visibility
+is driven by `.app[data-view]` / `[data-stream]`, not by `.panel.active`, and
+those selectors land in the same specificity band (0,4,0). Two collisions
+followed from that and are the reason this paragraph exists: a `[data-view]`
+rule sitting after a `[data-stream]` rule won on order and drew the build form
+and the log on top of each other; and a rule asking only for `[data-stream]`
+out-ranked the master `display: none` and left the log pane drawn under
+Results and Settings — `data-stream` keeps its value while you are elsewhere.
+Same-specificity rules that both set `display` must not be able to match the
+same element, and a rule that reveals an element names every attribute that
+makes it visible.
+
+**17.4 Surface: Apple geometry over the same tokens.** `web/next.css` layers
+over `style.css` and never replaces it. It redefines `--radius*` (12/9/18, plus
+`--radius-pill`), the sans/mono stacks (shipped faces only — the app runs from
+`file://`, so a webfont link would silently fall back), and adds `--nb-shadow-*`
+for a lower-contrast, wider-spread lift. **No color token is redefined**, so
+both themes and the light/dark toggle work unchanged. Controls are capsules;
+Raw/Graph, Output/Visual and build-mode chips take the capsule and the raised
+selected state so the window has one segmented idiom.
+
+**17.5 It is a preview, and it says so.** Classic stays the default; upgrading
+moves nobody. The switch lives at the bottom of Settings in *both* front-ends,
+so the way out of the preview is inside the preview. Saving swaps the window
+immediately — the queue and the running calculation are Python-side, so it is a
+repaint, not a restart — and `MainWindow._index_file()` falls back to classic
+when the selected file is absent, so a `settings.json` carried to a build
+without the preview cannot leave a blank window.
+
+---
+
 ## Appendix B — Known deviations
 
 Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
@@ -1266,3 +1322,4 @@ Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
 | B27 | The MLIP/CREST card lock disabled only a hand-written list of field ids, so CREST's whole *Advanced settings* block (preset, NCI, solvent model, the MD/MTD numbers, the five toggles) and both cards' geometry-source radios stayed enabled under the grey — pretend-disabled chrome around live controls | D41 | resolved (0.6.1-beta — the lock disables every control the card's own DOM contains, so the list cannot drift from the markup again; the CUDA `<option>`'s separate disabled state is deliberately left to `refreshMlipDeviceOptions`) |
 | B28 | Settings → CREST's *Install CREST* button was pretend-enabled: it disabled only once CREST was already installed, never when there was **no WSL distro to install into** (the one prerequisite ORCAdesk cannot script). The click's only feedback was a Log-tab line, so a failed install read as a dead button — and the installer's actionable diagnostics never reached the card | D41, D2, §13.2 | resolved (0.7.0-beta — the button disables with the reason in its tooltip when WSL or a distro is absent, or while a probe is in flight; the install outcome is published on `CrestStatusPayload.install_error` and surfaced as the card's detail line + a toast) |
 | B29 | Two color literals had come back after B3/B5 removed the pattern: `renderInputEcho`'s `<pre>` used a raw `rgba(127,127,127,0.08)` (a theme-independent grey that is neither a token nor an alpha-ladder value), and the 3D viewer fell back to the literal `#18181b` — the DARK `--card` — when its token read came back empty, painting the stage near-black on a light theme | D10, D13, §15.1 | resolved (unreleased — the echo uses `--input-bg`; the viewer passes no background at all when the token is unreadable, rather than the wrong theme's value) |
+| B30 | The notebook front-end (§17) restates `.btn` geometry under `.log-mode-toggle` because `style.css`'s `.log-mode-toggle button` (0,1,1) out-ranks `.btn`/`.btn-sm` (0,1,0) — the Clear / Show all / Show in folder buttons were taking the chip radius, padding and weight instead of the capsule. The classic UI has the same collision and the same visible mismatch, untouched here | D50, §11 | accepted (0.10.0 — the preview's override is a targeted (0,2,0) restatement, not a rewrite of the shared rule; fix it at the source in `style.css` when the classic toggle rows are next touched, which repairs both) |
