@@ -217,6 +217,14 @@ class Settings:
     # "system" never means generating less (P5). In-app stays the default: it
     # is the path that needs no second program at all.
     viewer_target: str = "in_app"
+    # Which bundled front-end the desktop window loads: "classic"
+    # (web/index.html, the shipping tabbed UI) or "notebook"
+    # (web/index_next.html, the in-development single-window layout —
+    # DESIGN.md §17). Classic stays the default and stays untouched — the new
+    # shell is opt-in from the bottom of Settings until it is finished, so an
+    # upgrade never moves anyone onto a preview UI. window.py falls back to
+    # classic when the selected front-end is missing.
+    ui_variant: str = "classic"
 
     @classmethod
     def load(cls) -> "Settings":

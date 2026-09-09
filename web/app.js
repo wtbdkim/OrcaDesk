@@ -618,6 +618,10 @@ async function loadSettings() {
   const vtarget = settings.viewer_target || "in_app";
   const vrad = document.querySelector(`input[name="viewer-target"][value="${vtarget}"]`);
   if (vrad) vrad.checked = true;
+  // which front-end loads (classic / notebook preview)
+  const uiv = settings.ui_variant || "classic";
+  const urad = document.querySelector(`input[name="ui-variant"][value="${uiv}"]`);
+  if (urad) urad.checked = true;
   updateOrcaStatus(settings.orca_valid);
   // MLIP environments are managed in their own channel (a background probe per
   // env); render from get_mlip_status() and poll while any is still checking.
@@ -1188,6 +1192,10 @@ async function saveSettings() {
   const etaEl = document.querySelector('input[name="eta-mode"]:checked');
   const geoEl = document.querySelector('input[name="geo-mode"]:checked');
   const viewEl = document.querySelector('input[name="viewer-target"]:checked');
+  const uiEl = document.querySelector('input[name="ui-variant"]:checked');
+  // captured before `settings` is replaced below: swapping the front-end costs
+  // a page load, so it happens only when the choice actually changed
+  const prevUi = (settings && settings.ui_variant) || "classic";
   const payload = {
     orca_path: document.getElementById("set-orca").value.trim(),
     workspace_root: document.getElementById("set-ws").value.trim(),
@@ -1201,6 +1209,7 @@ async function saveSettings() {
     eta_mode: etaEl ? etaEl.value : "conservative",
     geo_graph_mode: geoEl ? geoEl.value : "all5",
     viewer_target: viewEl ? viewEl.value : "in_app",
+    ui_variant: uiEl ? uiEl.value : "classic",
   };
   const res = /** @type {SaveSettingsResult} */ (JSON.parse(await bridge.save_settings(JSON.stringify(payload))));
   // bad input comes back as {error} — don't clobber the settings mirror with it
@@ -1222,6 +1231,10 @@ async function saveSettings() {
     return;
   }
   s.textContent = "Saved."; setTimeout(() => s.textContent = "", 2000);
+  // Last, and only on a clean save: this replaces the page, so anything after
+  // it would not run. The settings are already on disk, so the incoming
+  // front-end reads the choice that brought it up.
+  if (settings.ui_variant !== prevUi && bridge.reload_ui) bridge.reload_ui();
 }
 async function pickOrca() { const p = await bridge.pick_orca_executable(); if (p) document.getElementById("set-orca").value = p; }
 async function pickWorkspace() { const p = await bridge.pick_workspace(); if (p) document.getElementById("set-ws").value = p; }

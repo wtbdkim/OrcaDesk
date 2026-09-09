@@ -289,6 +289,7 @@ class Bridge(QObject):
             geo_graph_mode=self.settings.geo_graph_mode,
             build_mode=self.settings.build_mode,
             viewer_target=self.settings.viewer_target,
+            ui_variant=self.settings.ui_variant,
             crest_distro=self.settings.crest_distro,
             orca_valid=self.settings.orca_is_valid(),
             save_error=save_error,
@@ -348,6 +349,12 @@ class Bridge(QObject):
             # where a Visual row opens: ORCAdesk's viewer or the OS association
             if "viewer_target" in data and data["viewer_target"] in ("in_app", "system"):
                 self.settings.viewer_target = data["viewer_target"]
+            # which front-end the window loads. Only the value changes here;
+            # the window is reloaded separately (reload_ui), so a save that the
+            # user cancels out of never leaves the setting and the screen
+            # disagreeing.
+            if "ui_variant" in data and data["ui_variant"] in ("classic", "notebook"):
+                self.settings.ui_variant = data["ui_variant"]
             # theme variant: shadcn (flat default) or liquidglass
             if "theme_variant" in data and data["theme_variant"] in ("shadcn", "liquidglass"):
                 self.settings.theme_variant = data["theme_variant"]
@@ -373,6 +380,21 @@ class Bridge(QObject):
             # 1e999 decodes to inf, where int() raises OverflowError — neither
             # is a decode error or a ValueError. Errors are data here (P6).
             return json.dumps(ErrorPayload(error=str(e)))
+
+    @pyqtSlot()
+    def reload_ui(self) -> None:
+        """Re-load the front-end after ui_variant changed (classic <-> notebook).
+
+        The queue and any running calculation are Python-side, so this is a
+        repaint rather than a restart; the incoming page rebuilds its screen
+        from the same bridge calls a cold start uses. Guarded because the slot
+        is reachable from a page that may outlive its window during teardown,
+        and a slot may not raise (P6 / the note in save_settings).
+        """
+        try:
+            self.window.reload_web_ui()
+        except (AttributeError, RuntimeError):
+            pass
 
     # --- Liquid-Glass custom wallpaper ---
     # The custom wallpaper image is kept OUT of settings.json (which is rewritten
