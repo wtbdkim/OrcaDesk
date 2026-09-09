@@ -190,10 +190,12 @@ class MainWindow(QMainWindow):
 
         Two front-ends ship side by side while the notebook layout is in
         development: web/index.html (classic, the default) and
-        web/index_next.html (the new single-window shell), chosen by
-        Settings.ui_variant from the bottom of Settings. They sit in the same
-        folder so every relative path in the markup — style.css, the logo,
-        vendor/3Dmol-min.js — resolves identically for both.
+        web/next/index.html (the new single-window shell), chosen by
+        Settings.ui_variant from the bottom of Settings. They are separate
+        front-ends, not two skins of one: web/next/ has its own markup, its own
+        stylesheet and its own logic against the same Bridge, and borrows only
+        the two tracker/renderer scripts (../scf_graph.js, ../progress_panels.js)
+        that have no DOM of their own.
 
         Falling back to classic when the chosen one is absent matters more than
         it looks: a settings.json carried over from a build that had the
@@ -202,7 +204,7 @@ class MainWindow(QMainWindow):
         behind it.
         """
         if Settings.load().ui_variant == "notebook":
-            nxt = web_dir() / "index_next.html"
+            nxt = web_dir() / "next" / "index.html"
             if nxt.exists():
                 return nxt
         return web_dir() / "index.html"
