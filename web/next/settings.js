@@ -51,12 +51,12 @@
 
         <div class="scard">
           <div class="scard-title">ORCA</div>
-          <div class="scard-desc">The executable ORCAdesk launches. It is not bundled —
-            this points at your install.</div>
-          <div class="frow">
+          <p class="scard-desc">The executable ORCAdesk launches. It is not bundled —
+            this points at your install.</p>
+          <div class="field-row">
             ${row("Path to orca", "orca_path")}
           </div>
-          <div class="frow" style="margin-top:10px">
+          <div class="field-row" style="margin-top:10px">
             <button class="btn btn-sm" type="button" data-a="pick-orca">Browse…</button>
             <button class="btn btn-sm btn-ghost" type="button" data-a="detect">Auto-detect</button>
             <span class="sp" style="flex:1"></span>
@@ -66,18 +66,18 @@
 
         <div class="scard">
           <div class="scard-title">Workspace</div>
-          <div class="scard-desc">Every calculation gets its own folder here.</div>
-          <div class="frow">${row("Folder", "workspace_root")}</div>
-          <div class="frow" style="margin-top:10px">
+          <p class="scard-desc">Every calculation gets its own folder here.</p>
+          <div class="field-row">${row("Folder", "workspace_root")}</div>
+          <div class="field-row" style="margin-top:10px">
             <button class="btn btn-sm" type="button" data-a="pick-ws">Browse…</button>
           </div>
         </div>
 
         <div class="scard">
           <div class="scard-title">Defaults for a new calculation</div>
-          <div class="scard-desc">What the builder starts from. Each calculation can still
-            say otherwise.</div>
-          <div class="frow">
+          <p class="scard-desc">What the builder starts from. Each calculation can still
+            say otherwise.</p>
+          <div class="field-row">
             ${row("nprocs", "default_nprocs", "number")}
             ${row("maxcore (MB / core)", "default_maxcore_mb", "number")}
           </div>
@@ -85,13 +85,13 @@
 
         <div class="scard">
           <div class="scard-title">How much of this machine the queue may use</div>
-          <div class="scard-desc">ORCA's maxcore is per core, so a 6-core job at 2400 MB
-            reserves 14.4 GB — these caps are what keep two of them off the swap file.</div>
-          <div class="frow">
+          <p class="scard-desc">ORCA's maxcore is per core, so a 6-core job at 2400 MB
+            reserves 14.4 GB — these caps are what keep two of them off the swap file.</p>
+          <div class="field-row">
             ${row("Calculations at once", "max_concurrent_jobs", "number",
                   "0 = as many as the budgets below allow")}
           </div>
-          <div class="frow" style="margin-top:10px">
+          <div class="field-row" style="margin-top:10px">
             ${row("Total cores", "max_total_cores", "number", `0 = auto (${s.auto_cores || "?"} here)`)}
             ${row("Total memory (MB)", "max_total_ram_mb", "number", `0 = auto (${s.auto_ram_mb || "?"} MB here)`)}
           </div>
@@ -99,28 +99,31 @@
 
         <div class="scard">
           <div class="scard-title">Optimization graph</div>
-          <div class="scard-desc">What the convergence chart plots during a geometry
-            optimization.</div>
-          <label class="radio"><input type="radio" name="geo" value="all5"
-            ${s.geo_graph_mode !== "maxgrad" ? "checked" : ""}>
-            <span><b>All 5 criteria</b> — every convergence criterion as value ÷ its
-              tolerance, sharing one goal line at 1 (below the line = met).</span></label>
-          <label class="radio"><input type="radio" name="geo" value="maxgrad"
-            ${s.geo_graph_mode === "maxgrad" ? "checked" : ""}>
-            <span><b>MAX gradient only</b> — the MAX gradient on an absolute axis, its
-              tolerance as the goal line.</span></label>
+          <p class="scard-desc"><b>All 5 criteria</b> plots every convergence criterion as
+            value ÷ its tolerance, sharing one goal line at 1 — below the line is met.
+            <b>MAX gradient</b> plots that one criterion on an absolute axis instead, with its
+            tolerance as the goal line.</p>
+          <div class="field-row" style="margin-bottom:0">
+            <div class="field mid"><label for="s-geo">Plot</label>
+              <select id="s-geo" data-s2="geo">
+                <option value="all5"${s.geo_graph_mode !== "maxgrad" ? " selected" : ""}>All 5 criteria</option>
+                <option value="maxgrad"${s.geo_graph_mode === "maxgrad" ? " selected" : ""}>MAX gradient only</option>
+              </select></div>
+          </div>
         </div>
 
         <div class="scard">
           <div class="scard-title">Time remaining</div>
-          <div class="scard-desc">Optimization cycle counts are genuinely hard to predict;
-            this is how eagerly to guess.</div>
-          <label class="radio"><input type="radio" name="eta" value="conservative"
-            ${s.eta_mode !== "eager" ? "checked" : ""}>
-            <span><b>Conservative</b> — an estimate only once the run supports one.</span></label>
-          <label class="radio"><input type="radio" name="eta" value="eager"
-            ${s.eta_mode === "eager" ? "checked" : ""}>
-            <span><b>Eager</b> — an estimate sooner and more often, less accurate.</span></label>
+          <p class="scard-desc">Optimization cycle counts are genuinely hard to predict.
+            <b>Conservative</b> waits until the run supports an estimate; <b>eager</b> gives one
+            sooner and more often, and is wrong more often for it.</p>
+          <div class="field-row" style="margin-bottom:0">
+            <div class="field mid"><label for="s-eta">Estimate</label>
+              <select id="s-eta" data-s2="eta">
+                <option value="conservative"${s.eta_mode !== "eager" ? " selected" : ""}>Conservative</option>
+                <option value="eager"${s.eta_mode === "eager" ? " selected" : ""}>Eager</option>
+              </select></div>
+          </div>
         </div>
 
         <div class="scard">
@@ -132,17 +135,18 @@
 
         <div class="scard">
           <div class="scard-title">Interface</div>
-          <div class="scard-desc">Which window layout ORCAdesk opens with. Switching applies
-            immediately — a running calculation keeps running.</div>
-          <label class="radio"><input type="radio" name="ui" value="classic"
-            ${s.ui_variant !== "notebook" ? "checked" : ""}>
-            <span><b>Classic</b> — the tabbed window (Build, Queue, Log, Results, Settings).
-              This is the finished UI, and the only one with the MLIP and CREST setup, the
-              3D viewer, the natural-orbital analysis and the appearance variants.</span></label>
-          <label class="radio"><input type="radio" name="ui" value="notebook"
-            ${s.ui_variant === "notebook" ? "checked" : ""}>
-            <span><b>Notebook (preview)</b> — this one: the queue beside the calculation you
-              are building, results as a report. Still in development.</span></label>
+          <p class="scard-desc">Which window layout ORCAdesk opens with. Switching applies
+            immediately — a running calculation keeps running. <b>Classic</b> is the finished
+            tabbed window, and the only one with the MLIP and CREST setup, the 3D viewer, the
+            natural-orbital analysis and the appearance variants. <b>Notebook</b> is this one,
+            still in development.</p>
+          <div class="field-row" style="margin-bottom:0">
+            <div class="field mid"><label for="s-ui">Layout</label>
+              <select id="s-ui" data-s2="ui">
+                <option value="classic"${s.ui_variant !== "notebook" ? " selected" : ""}>Classic</option>
+                <option value="notebook"${s.ui_variant === "notebook" ? " selected" : ""}>Notebook (preview)</option>
+              </select></div>
+          </div>
         </div>
       </div>`;
 
@@ -188,9 +192,9 @@
       max_concurrent_jobs: num("max_concurrent_jobs", 0),
       max_total_cores: num("max_total_cores", 0),
       max_total_ram_mb: num("max_total_ram_mb", 0),
-      geo_graph_mode: q('input[name="geo"]:checked').value,
-      eta_mode: q('input[name="eta"]:checked').value,
-      ui_variant: q('input[name="ui"]:checked').value,
+      geo_graph_mode: q('[data-s2="geo"]').value,
+      eta_mode: q('[data-s2="eta"]').value,
+      ui_variant: q('[data-s2="ui"]').value,
     };
     const res = await NB.call("save_settings", JSON.stringify(payload));
     _saving = false;

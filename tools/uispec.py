@@ -80,6 +80,38 @@ SEL = [
 ]
 LANDMARKS = {SEL[i]: (SEL[i + 1], SEL[i + 1]) for i in range(0, len(SEL), 2)}
 
+# The report, measured with a result open. Its own pass, because these elements
+# do not exist until the Results view is up — and because leaving them out of
+# the first list is exactly how a report of unstyled markup passed a 0-difference
+# check once already.
+RSEL = [
+    "res_tool", ".restool",
+    "res_title", ".restitle",
+    "res_content", ".rescontent",
+    "res_inner", ".resinner",
+    "secchips", ".secchips",
+    "secchip_btn", '.secchips button[aria-current="true"]',
+    "secblock", ".secblock",
+    "secblock_wide", ".secblock.wide",
+    "secblock_third", ".secblock.third",
+    "secblock_two", ".secblock.twothirds",
+    "sech", ".resinner .sech",
+    "sech_h2", ".resinner .sech h2",
+    "sech_meta", ".resinner .sech .meta",
+    "secdesc", ".resinner .secdesc",
+    "plate", '.resinner .plate:not([style])',
+    "tablewrap", ".resinner .tw",
+    "table_th", ".resinner .tw th",
+    # a plain data cell on both sides: td.lab is a different thing (sans, wraps,
+    # 13px) and which column carries it depends on the table, not the design
+    "table_td", ".resinner .tw td:not(.lab)",
+    "table_td_lab", ".resinner .tw td.lab",
+    "rep_factline", ".resinner .factline",
+    "rawin", ".rawin",
+    "rawout", ".rawout",
+]
+REPORT = {RSEL[i]: (RSEL[i + 1], RSEL[i + 1]) for i in range(0, len(RSEL), 2)}
+
 PROPS = ["display", "gridTemplateColumns", "gridTemplateRows", "gap",
          "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
          "marginTop", "marginBottom",
@@ -114,10 +146,20 @@ JS = """
 """
 
 
-def measure(page, side, on_done):
-    js = JS % (json.dumps({k: v[0 if side == "mock" else 1] for k, v in LANDMARKS.items()}),
+def measure(page, side, on_done, table=None):
+    m = table if table is not None else LANDMARKS
+    js = JS % (json.dumps({k: v[0 if side == "mock" else 1] for k, v in m.items()}),
                json.dumps(PROPS))
     page.runJavaScript(js, on_done)
+
+
+def merge(a, b):
+    """Fold the report pass into the jobs pass. __tokens/__window come from the
+    first, which is the one measured with the window in its normal state."""
+    for k, v in b.items():
+        if not k.startswith("__"):
+            a[k] = v
+    return a
 
 
 # --------------------------------------------------------------------------
@@ -136,10 +178,21 @@ def run_mock():
     # the mockup opens light; both sides are measured in the same theme
     FORCE_DARK = "document.documentElement.setAttribute('data-theme','dark')"
 
-    def done(res):
-        OUT.write_text(json.dumps(res, indent=1), encoding="utf-8")
-        print("wrote", OUT, "landmarks:", len([k for k in res if not k.startswith("__")]))
-        missing = [k for k in res if not k.startswith("__") and res[k] is None]
+    state = {}
+
+    def jobs_done(res):
+        state["jobs"] = res
+        # the reference's Results view is a data-view on the shell
+        view.page().runJavaScript(
+            'document.querySelector(".app").setAttribute("data-view","results")',
+            lambda _r: QTimer.singleShot(900,
+                lambda: measure(view.page(), "mock", report_done, REPORT)))
+
+    def report_done(res):
+        out = merge(state["jobs"], res)
+        OUT.write_text(json.dumps(out, indent=1), encoding="utf-8")
+        print("wrote", OUT, "landmarks:", len([k for k in out if not k.startswith("__")]))
+        missing = [k for k in out if not k.startswith("__") and out[k] is None]
         if missing:
             print("  NOT FOUND in mockup:", missing)
         app.quit()
@@ -147,7 +200,7 @@ def run_mock():
     view.loadFinished.connect(
         lambda ok: QTimer.singleShot(1200, lambda: view.page().runJavaScript(
             FORCE_DARK, lambda _r: QTimer.singleShot(900,
-                lambda: measure(view.page(), "mock", done)))))
+                lambda: measure(view.page(), "mock", jobs_done)))))
     QTimer.singleShot(60000, app.quit)
     app.exec()
 
@@ -207,7 +260,9 @@ def run_real():
         }
         // four that will finish (against the throwaway orca.exe they fail at
         // once, which is still a Done group), then three left queued
-        for (var i = 0; i < 4; i++) await NB.call("add_calc", calc(i === 0 ? "h2o" : "h2o-" + i, false));
+        // NOT named after the fixture folder: running the queue would write into
+        // ws/h2o/ and clobber the .out the report pass reads
+        for (var i = 0; i < 4; i++) await NB.call("add_calc", calc("run-" + i, false));
         await NB.poll();
         await NB.call("run_queue", "[]");
         // wait for the run to actually stop before queueing more, or the engine
@@ -228,9 +283,23 @@ def run_real():
       })()
     """
 
+    state = {}
+    json_out = json.dumps(str(ws / "h2o" / "h2o.out"))
+
     def seeded(n):
-        print("  seeded:", n)
-        QTimer.singleShot(900, lambda: measure(page, "real", done))
+        QTimer.singleShot(900, lambda: measure(page, "real", jobs_done))
+
+    def jobs_done(res):
+        state["jobs"] = res
+        # h2o has a real .out in the throwaway workspace, so the report has
+        # something to render
+        page.runJavaScript(
+            'NB.results.openPath(' + json_out + ')',
+            lambda _r: QTimer.singleShot(2200,
+                lambda: measure(page, "real", report_done, REPORT)))
+
+    def report_done(res):
+        done(merge(state["jobs"], res))
 
     def done(res):
         res["__console"] = console
