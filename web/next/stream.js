@@ -245,15 +245,15 @@
    *  what the next calculation will be. @returns {HTMLElement} */
   function newStub() {
     const el = NB.el("article", "cell stub");
+    // The whole head is the control. A row that says "New calculation" and then
+    // puts a button beside it asks twice for one thing — and the text is the
+    // bigger, more obvious target of the two.
     el.innerHTML = `
-      <div class="cellhead">
+      <button class="cellhead stubhead" type="button">
         <span class="idx">[+]</span>
         <span class="nmwrap"><span class="nm">New calculation</span></span>
-        <span class="acts"><button class="btn btn-sm" type="button">Build one</button></span>
-      </div>`;
-    const go = () => NB.build.open("");
-    el.querySelector("button").addEventListener("click", go);
-    el.addEventListener("click", e => { if (e.target === el) go(); });
+      </button>`;
+    el.querySelector(".stubhead").addEventListener("click", () => NB.build.open(""));
     return el;
   }
 

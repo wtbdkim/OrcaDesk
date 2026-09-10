@@ -959,3 +959,28 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
   .celgrid.has-thumb .thumb{min-height:200px;}
   .resinner{grid-template-columns:minmax(0,1fr);}
 }
+
+/* ---------------------------- builder corrections ----------------------------
+   Deviations from design/notebook-reference.html, asked for after using it.
+   Kept together and named so the reference diff (tools/uidiff.py) has one place
+   to account for rather than edits scattered through the sheet. */
+
+/* The stub cell IS the control: the whole head is the target, so the button
+   that used to sit beside the text is gone. It is a <button>, so it needs the
+   element defaults stripped before .cellhead's flex layout applies. */
+.stubhead{
+  width:100%; background:none; border:none; padding:9px 18px;
+  font:inherit; color:inherit; text-align:left; cursor:pointer;
+  border-radius:var(--radius);
+}
+.stubhead:hover{background:var(--secondary);}
+.stubhead .nm{font-size:14px; font-weight:600;}
+
+/* the mode toggle was flush against the edit bar above it */
+.cell.editing .stubbody{padding-top:16px;}
+
+/* Close is a x, and it is the one thing in the bar you can press */
+/* the design's .iconbtn size, kept: a second icon-button size in one window is
+   a difference the reader has to account for and nothing gains by it */
+.editbar .ebclose{font-size:17px; color:var(--foreground); border-color:var(--border);}
+.editbar .ebclose:hover{background:var(--err-tint-hover); color:var(--err); border-color:var(--err-outline);}
