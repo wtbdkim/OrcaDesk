@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -17,6 +17,10 @@
   ../progress_panels.js, which are pure trackers and renderers with no DOM of
   their own.
 
+  Markup and stylesheet are the approved design, carried over as-is: the class
+  vocabulary here IS the design's, so app.css applies to it verbatim and the
+  two can be diffed element for element (scratchpad uispec.py / uidiff.py).
+
   Selected by Settings.ui_variant ("notebook"); the classic UI stays the
   default. See DESIGN.md §17.
 -->
@@ -24,67 +28,63 @@
 
   <header class="topbar">
     <div class="brand">
-      <span class="logo"><img src="../orcadesk_logo.png" alt=""></span>
-      <span class="nm">ORCAdesk</span>
-      <span class="ver" id="ver"></span>
+      <h1>ORCAdesk</h1>
+      <span class="ver-badge" id="ver"></span>
     </div>
 
-    <button class="wspick" id="ws-pick" type="button" title="Change the workspace folder">
+    <button class="studypick" id="ws-pick" type="button" title="Change the workspace folder">
       <span class="path" id="ws-path">—</span>
-      <span class="chev" aria-hidden="true">▾</span>
+      <span aria-hidden="true" style="color:var(--muted-foreground)">▾</span>
     </button>
 
-    <nav class="nav" aria-label="View">
-      <div class="seg" role="group">
-        <button type="button" data-go="jobs" aria-pressed="true">Jobs</button>
-        <button type="button" data-go="results" aria-pressed="false">Results</button>
-      </div>
-    </nav>
+    <span class="sp"></span>
+    <!-- display:contents so each pill is a flex item of the top bar itself:
+         a wrapper would blockify them into one box and change their metrics -->
+    <span id="pills" style="display:contents"></span>
 
-    <div class="pills" id="pills"></div>
-    <button class="iconbtn" id="theme-toggle" type="button"
-            aria-label="Toggle light and dark theme">☽</button>
-    <button class="btn" id="btn-settings" type="button" data-go="settings">Settings</button>
+    <div class="tools">
+      <div class="seg viewseg" role="group" aria-label="View">
+        <button type="button" data-view="jobs" aria-pressed="true">Jobs</button>
+        <button type="button" data-view="results" aria-pressed="false">Results</button>
+      </div>
+      <button class="iconbtn" id="theme-toggle" type="button"
+              aria-label="Toggle light and dark theme">☽</button>
+      <button class="btn" id="open-settings" type="button">Settings</button>
+    </div>
   </header>
 
-  <div class="work">
-
-    <!-- the queue, always on screen: what is running never leaves the window -->
-    <aside class="rail">
-      <div class="railhead">
-        <span class="t">Queue</span>
-        <span class="sp"></span>
-        <span class="n" id="q-count">—</span>
-      </div>
-      <div class="railscroll" id="rail"></div>
-      <div class="railfoot">
-        <button class="btn btn-primary" id="btn-new" type="button">New calculation</button>
-        <span class="sp"></span>
-        <button class="btn" id="btn-run" type="button">Run queue</button>
+  <!-- the queue, always on screen: what is running never leaves the window -->
+  <aside class="rail">
+    <div class="railscroll" id="rail"></div>
+    <div class="railfoot">
+      <div class="runrow">
+        <button class="btn btn-primary" id="btn-run" type="button">Run queue</button>
         <button class="btn btn-ghost" id="btn-stop" type="button" disabled>Stop after current</button>
         <button class="btn btn-danger" id="btn-cancel" type="button" disabled>Cancel</button>
         <button class="btn btn-ghost" id="btn-clear" type="button">Clear all</button>
       </div>
-    </aside>
+    </div>
+  </aside>
 
-    <!-- one cell per calculation: its chart, its output, its facts -->
-    <main class="stream" id="stream" aria-label="Calculations"></main>
+  <!-- one cell per calculation: its structure, its chart, its output -->
+  <main class="stream" id="stream" aria-label="Calculations">
+    <div class="streaminner" id="streaminner"></div>
+  </main>
 
-    <!-- the parsed result, as a report -->
-    <section class="report" id="report" aria-label="Results"></section>
-
-    <!-- settings -->
-    <section class="setwrap" id="settings" aria-label="Settings"></section>
-  </div>
+  <!-- the parsed result, as a report -->
+  <div class="reswin" id="reswin" aria-label="Results"></div>
 </div>
 
 <div class="scrim" id="scrim" hidden></div>
+<aside class="sheet" id="settings" role="dialog" aria-modal="true" aria-label="Settings" hidden></aside>
+
+<div class="modalscrim" id="modal-scrim" hidden></div>
 <div class="modal" id="modal" role="dialog" aria-modal="true" hidden>
-  <div class="modalhead" id="modal-title">…</div>
-  <div class="modalbody" id="modal-body"></div>
-  <div class="modalfoot" id="modal-foot"></div>
+  <h2 id="modal-title">…</h2>
+  <div id="modal-body"></div>
+  <div class="modal-actions" id="modal-foot"></div>
 </div>
-<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="toastwrap" id="toastwrap" aria-live="polite"></div>
 
 <!-- Borrowed as-is: pure convergence trackers and chart/step renderers, no DOM
      of their own. progress_panels.js assigns onto the SCFGraph namespace that
@@ -92,6 +92,7 @@
 <script src="../scf_graph.js"></script>
 <script src="../progress_panels.js"></script>
 
+<script src="mol.js"></script>
 <script src="boot.js"></script>
 <script src="rail.js"></script>
 <script src="build.js"></script>

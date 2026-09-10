@@ -89,26 +89,56 @@
       <input type="${type || "text"}" class="${type === "number" ? "mono" : ""}" value="${NB.esc(String(value))}"></div>`;
   }
 
-  /** Build the editor element for `calc` (null = a new calculation).
-   *  @param {any} calc a CalcSummary, or null
-   *  @param {() => void} close called after the form is done with itself */
-  function editorFor(calc, close) {
-    const el = NB.el("div", "editor");
-    el.innerHTML = `<div class="hint">Loading options…</div>`;
-    mount(el, calc, close);
+  /** Which calculation the builder is open on: null = closed, "" = a new one,
+   *  otherwise the name being edited. The stream reads it. @type {string|null} */
+  let _target = null;
+
+  /** Open the builder on a calculation, or on a new one with "". Closing is
+   *  open(null). @param {string|null} target */
+  function open(target) {
+    _target = _target === target ? null : target;
+    NB.stream.render();
+    if (_target !== null) {
+      const cell = document.querySelector(".cell.editing, .cell.stub.editing");
+      if (cell) cell.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }
+  function target() { return _target; }
+
+  /** The builder as a CELL — the design edits a calculation where it is read.
+   *  @param {any} calc a CalcSummary, or null for a new calculation
+   *  @returns {HTMLElement} */
+  function cellFor(calc) {
+    const el = NB.el("article", "cell editing" + (calc ? "" : " stub"));
+    el.dataset.name = calc ? calc.name : "";
+    el.innerHTML = `
+      <div class="editbar">
+        <b>${calc ? "Editing " + NB.esc(calc.name) : "New calculation"}</b>
+        <span>${calc ? "changes apply to the queued calculation"
+                     : "it joins the queue when you add it"}</span>
+        <span class="sp"></span>
+        <button class="btn btn-xs btn-ghost" type="button" data-act="cancel">Close</button>
+      </div>
+      <div class="stubbody"><p class="hint" style="margin:0">Loading options…</p></div>`;
+    el.querySelector('[data-act="cancel"]').addEventListener("click", () => open(null));
+    mount(el, calc, () => open(null));
     return el;
   }
 
   /** @param {HTMLElement} el @param {any} summary @param {() => void} close */
   async function mount(el, summary, close) {
     await loadChoices();
+    const body = /** @type {HTMLElement} */ (el.querySelector(".stubbody"));
     // Editing needs the FULL calculation (the summary in the queue carries no
     // config), and it has to come from the store rather than be reconstructed.
     let calc = null;
     if (summary) {
       const g = await NB.call("get_calc", summary.name);
       if (g && g.ok && g.calc) calc = g.calc;
-      if (!calc) { el.innerHTML = `<div class="hint">Could not read "${NB.esc(summary.name)}".</div>`; return; }
+      if (!calc) {
+        body.innerHTML = `<p class="hint" style="margin:0">Could not read "${NB.esc(summary.name)}".</p>`;
+        return;
+      }
     }
     const st = {
       editing: summary ? summary.name : "",
@@ -118,7 +148,7 @@
       rawText: calc ? (calc.raw_text || "") : "",
     };
     if (!KINDS[st.kind]) st.kind = "general";
-    render(el, st, calc, close);
+    render(body, st, calc, close);
   }
 
   /** @param {HTMLElement} el @param {any} st @param {any} calc @param {() => void} close */
@@ -136,10 +166,8 @@
                      : [];
 
     el.innerHTML = `
-      <div class="ehead">
-        <span class="t">${st.editing ? "Edit " + NB.esc(st.editing) : "New calculation"}</span>
-        <span class="sp"></span>
-        <div class="seg sm" role="group" aria-label="Input mode">
+      <div class="backendrow">
+        <div class="seg" role="group" aria-label="Input mode">
           <button type="button" data-mode="form" aria-pressed="${!st.raw}">Guided</button>
           <button type="button" data-mode="raw" aria-pressed="${st.raw}">.inp text</button>
         </div>
@@ -246,13 +274,13 @@
           <button class="btn btn-sm" type="button" data-act="loadinp">Load .inp…</button>
           <span class="hint">The text below is what ORCA runs, verbatim.</span>
         </div>
-        <div class="field"><textarea class="raw" data-f="rawtext" spellcheck="false"
+        <div class="field"><textarea class="raw-editor" data-f="rawtext" spellcheck="false"
           placeholder="! B3LYP def2-SVP Opt&#10;* xyz 0 1&#10;…&#10;*">${NB.esc(st.rawText)}</textarea></div>
       </div>
 
-      <div class="efoot">
+      <div class="snips" style="margin:16px 0 0">
         <button class="btn btn-sm btn-ghost" type="button" data-act="preview">Preview .inp</button>
-        <span class="sp"></span>
+        <span class="sp" style="flex:1"></span>
         <button class="btn btn-sm btn-ghost" type="button" data-act="cancel">Cancel</button>
         <button class="btn btn-sm btn-primary" type="button" data-act="save">${
           st.editing ? "Save changes" : "Add to queue"}</button>
@@ -268,7 +296,7 @@
     /** @param {string} sel */
     const all = (sel) => [...el.querySelectorAll(sel)];
 
-    all(".ehead .seg button").forEach(b => b.addEventListener("click", () => {
+    all(".backendrow .seg button").forEach(b => b.addEventListener("click", () => {
       const wantRaw = b.getAttribute("data-mode") === "raw";
       if (wantRaw === st.raw) return;
       // The two modes are not two views of one thing: the guided form GENERATES
@@ -321,14 +349,11 @@
 
     act("preview", async () => {
       const payload = readForm(el, st, calc);
-      if (payload.is_raw) {
-        NB.modal("Input preview", `<pre>${NB.esc(payload.raw_text)}</pre>`);
-        return;
-      }
+      if (payload.is_raw) { NB.modalCode("Input preview", payload.raw_text); return; }
       const pv = await NB.call("build_inp_preview", JSON.stringify(payload));
-      NB.modal("Input preview", pv && pv.ok
-        ? `<pre>${NB.esc(pv.text)}</pre>`
-        : `<p class="hint">${NB.esc((pv && pv.error) || "Could not build a preview.")}</p>`);
+      if (pv && pv.ok) NB.modalCode("Input preview", pv.text);
+      else NB.modalRaw("Input preview",
+        `<p>${NB.esc((pv && pv.error) || "Could not build a preview.")}</p>`);
     });
 
     act("cancel", () => close());
@@ -344,7 +369,8 @@
         : await NB.call("add_calc", JSON.stringify(payload));
       if (r && r.error) { NB.fail(r.error); return; }
       if (r && r.ok === false) { NB.fail(r.error || "The queue refused that calculation."); return; }
-      NB.toast(st.editing ? `"${payload.name}" saved.` : `"${payload.name}" added to the queue.`);
+      NB.toast(st.editing ? `"${payload.name}" saved.`
+                          : `"${payload.name}" added to the queue.`, "ok");
       close();
       await NB.poll();
     });
@@ -458,14 +484,13 @@
     const r = await NB.call("has_existing_output", name);
     if (!r || !r.ok || !r.exists) return true;
     return await new Promise(res => {
-      NB.modal("Existing output",
-        `<p style="font-size:13px;line-height:1.6">The workspace already holds output for
-         <b>${NB.esc(name)}</b>. The queue is running, so this calculation starts at once and
-         overwrites it.</p>`,
+      NB.modalRaw("Existing output",
+        `<p>The workspace already holds output for <b>${NB.esc(name)}</b>. The queue is
+         running, so this calculation starts at once and overwrites it.</p>`,
         [{ label: "Cancel", cls: "btn-ghost", act: () => res(false) },
          { label: "Overwrite", cls: "btn-danger", act: () => res(true) }]);
     });
   }
 
-  NB.build = { editorFor: editorFor, KINDS: KINDS };
+  NB.build = { open: open, target: target, cellFor: cellFor, KINDS: KINDS };
 })();

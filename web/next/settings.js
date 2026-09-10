@@ -3,13 +3,14 @@
 /* ============================================================
    ORCAdesk notebook front-end — settings.
 
-   The settings this front-end can act on, and — at the bottom, where the
-   request put it — the switch back to the classic UI. The way out of a preview
-   has to be inside the preview.
+   A right-hand slide-over, not a third view: Settings is somewhere you go and
+   come straight back from, and taking the whole window for it would throw away
+   the queue you were watching.
 
-   Backend setup that this preview does not own yet (MLIP environments, CREST
-   in WSL, the Liquid-Glass appearance variants) is not silently missing: the
-   last card says so and switches you to the classic UI, which has it.
+   The last card is the switch back to the classic UI. The way out of a preview
+   has to be inside the preview — and it also names what this front-end does
+   not have yet, rather than letting it be discovered as a control that is not
+   there.
    ============================================================ */
 
 (function () {
@@ -20,108 +21,136 @@
   function row(label, key, kind, hint) {
     const v = (NB.settings && NB.settings[key]) != null ? NB.settings[key] : "";
     return `<div class="field"><label>${NB.esc(label)}</label>
-      <input type="${kind || "text"}" data-s="${key}" class="${kind === "number" ? "mono" : "mono"}"
-             value="${NB.esc(String(v))}">
+      <input type="${kind || "text"}" data-s="${key}" class="mono" value="${NB.esc(String(v))}">
       ${hint ? `<span class="hint">${hint}</span>` : ""}</div>`;
+  }
+
+  function open() {
+    render();
+    NB.$("scrim").hidden = false;
+    NB.$("settings").hidden = false;
+  }
+  function close() {
+    NB.$("settings").hidden = true;
+    NB.$("scrim").hidden = true;
   }
 
   function render() {
     const host = NB.$("settings");
     const s = NB.settings || {};
     if (!host) return;
-    host.innerHTML = `<div class="setcol">
+    host.innerHTML = `
+      <div class="sheethead">
+        <h2>Settings</h2>
+        <span class="sp"></span>
+        <span class="hint" style="margin:0" data-a="saved"></span>
+        <button class="btn btn-sm btn-primary" type="button" data-a="save">Save</button>
+        <button class="iconbtn" type="button" data-a="close" aria-label="Close settings">×</button>
+      </div>
+      <div class="sheetbody">
 
-      <div class="card">
-        <div class="ct">ORCA</div>
-        <div class="cd">The executable ORCAdesk launches. It is not bundled — this points at your install.</div>
-        <div class="frow">
-          ${row("Path to orca", "orca_path")}
-          <button class="btn btn-sm" type="button" data-a="pick-orca">Browse…</button>
-          <button class="btn btn-sm btn-ghost" type="button" data-a="detect">Auto-detect</button>
+        <div class="scard">
+          <div class="scard-title">ORCA</div>
+          <div class="scard-desc">The executable ORCAdesk launches. It is not bundled —
+            this points at your install.</div>
+          <div class="frow">
+            ${row("Path to orca", "orca_path")}
+          </div>
+          <div class="frow" style="margin-top:10px">
+            <button class="btn btn-sm" type="button" data-a="pick-orca">Browse…</button>
+            <button class="btn btn-sm btn-ghost" type="button" data-a="detect">Auto-detect</button>
+            <span class="sp" style="flex:1"></span>
+            <span class="hint" style="margin:0" data-a="orca-state"></span>
+          </div>
         </div>
-        <div class="hint" style="margin-top:8px" data-a="orca-state"></div>
-      </div>
 
-      <div class="card">
-        <div class="ct">Workspace</div>
-        <div class="cd">Every calculation gets its own folder here.</div>
-        <div class="frow">
-          ${row("Folder", "workspace_root")}
-          <button class="btn btn-sm" type="button" data-a="pick-ws">Browse…</button>
+        <div class="scard">
+          <div class="scard-title">Workspace</div>
+          <div class="scard-desc">Every calculation gets its own folder here.</div>
+          <div class="frow">${row("Folder", "workspace_root")}</div>
+          <div class="frow" style="margin-top:10px">
+            <button class="btn btn-sm" type="button" data-a="pick-ws">Browse…</button>
+          </div>
         </div>
-      </div>
 
-      <div class="card">
-        <div class="ct">Defaults for a new calculation</div>
-        <div class="cd">What the builder starts from. Each calculation can still say otherwise.</div>
-        <div class="frow">
-          ${row("nprocs", "default_nprocs", "number")}
-          ${row("maxcore (MB / core)", "default_maxcore_mb", "number")}
+        <div class="scard">
+          <div class="scard-title">Defaults for a new calculation</div>
+          <div class="scard-desc">What the builder starts from. Each calculation can still
+            say otherwise.</div>
+          <div class="frow">
+            ${row("nprocs", "default_nprocs", "number")}
+            ${row("maxcore (MB / core)", "default_maxcore_mb", "number")}
+          </div>
         </div>
-      </div>
 
-      <div class="card">
-        <div class="ct">How much of this machine the queue may use</div>
-        <div class="cd">ORCA's maxcore is per core, so a 6-core job at 2400 MB reserves 14.4 GB —
-          these caps are what keep two of them off the swap file.</div>
-        <div class="frow">
-          ${row("Calculations at once", "max_concurrent_jobs", "number", "0 = as many as the budgets below allow")}
-          ${row("Total cores", "max_total_cores", "number", `0 = auto (${s.auto_cores || "?"} here)`)}
-          ${row("Total memory (MB)", "max_total_ram_mb", "number", `0 = auto (${s.auto_ram_mb || "?"} MB here)`)}
+        <div class="scard">
+          <div class="scard-title">How much of this machine the queue may use</div>
+          <div class="scard-desc">ORCA's maxcore is per core, so a 6-core job at 2400 MB
+            reserves 14.4 GB — these caps are what keep two of them off the swap file.</div>
+          <div class="frow">
+            ${row("Calculations at once", "max_concurrent_jobs", "number",
+                  "0 = as many as the budgets below allow")}
+          </div>
+          <div class="frow" style="margin-top:10px">
+            ${row("Total cores", "max_total_cores", "number", `0 = auto (${s.auto_cores || "?"} here)`)}
+            ${row("Total memory (MB)", "max_total_ram_mb", "number", `0 = auto (${s.auto_ram_mb || "?"} MB here)`)}
+          </div>
         </div>
-      </div>
 
-      <div class="card">
-        <div class="ct">Optimization graph</div>
-        <div class="cd">What the convergence chart plots during a geometry optimization.</div>
-        <label class="radio"><input type="radio" name="geo" value="all5" ${s.geo_graph_mode !== "maxgrad" ? "checked" : ""}>
-          <span><b>All 5 criteria</b> — every convergence criterion as value ÷ its tolerance,
-            sharing one goal line at 1 (below the line = met).</span></label>
-        <label class="radio"><input type="radio" name="geo" value="maxgrad" ${s.geo_graph_mode === "maxgrad" ? "checked" : ""}>
-          <span><b>MAX gradient only</b> — the MAX gradient on an absolute axis, its tolerance as the goal line.</span></label>
-      </div>
-
-      <div class="card">
-        <div class="ct">Time remaining</div>
-        <div class="cd">Optimization cycle counts are genuinely hard to predict; this is how eagerly to guess.</div>
-        <label class="radio"><input type="radio" name="eta" value="conservative" ${s.eta_mode !== "eager" ? "checked" : ""}>
-          <span><b>Conservative</b> — an estimate only once the run supports one.</span></label>
-        <label class="radio"><input type="radio" name="eta" value="eager" ${s.eta_mode === "eager" ? "checked" : ""}>
-          <span><b>Eager</b> — an estimate sooner and more often, less accurate.</span></label>
-      </div>
-
-      <div class="card">
-        <div class="ct">About</div>
-        <div class="kv" style="margin-top:8px">
-          <div class="k">Version</div><div class="v">${NB.esc((NB.about && NB.about.version) || "")}</div>
-          <div class="k">Front-end</div><div class="v">notebook (preview)</div>
+        <div class="scard">
+          <div class="scard-title">Optimization graph</div>
+          <div class="scard-desc">What the convergence chart plots during a geometry
+            optimization.</div>
+          <label class="radio"><input type="radio" name="geo" value="all5"
+            ${s.geo_graph_mode !== "maxgrad" ? "checked" : ""}>
+            <span><b>All 5 criteria</b> — every convergence criterion as value ÷ its
+              tolerance, sharing one goal line at 1 (below the line = met).</span></label>
+          <label class="radio"><input type="radio" name="geo" value="maxgrad"
+            ${s.geo_graph_mode === "maxgrad" ? "checked" : ""}>
+            <span><b>MAX gradient only</b> — the MAX gradient on an absolute axis, its
+              tolerance as the goal line.</span></label>
         </div>
-      </div>
 
-      <div class="card">
-        <div class="ct">Interface</div>
-        <div class="cd">Which window layout ORCAdesk opens with. Switching applies immediately —
-          a running calculation keeps running.</div>
-        <label class="radio"><input type="radio" name="ui" value="classic" ${s.ui_variant !== "notebook" ? "checked" : ""}>
-          <span><b>Classic</b> — the tabbed window (Build, Queue, Log, Results, Settings).
-            This is the finished UI, and the only one with the MLIP and CREST setup,
-            the 3D viewer, the natural-orbital analysis and the appearance variants.</span></label>
-        <label class="radio"><input type="radio" name="ui" value="notebook" ${s.ui_variant === "notebook" ? "checked" : ""}>
-          <span><b>Notebook (preview)</b> — this one: the queue beside the calculation you are
-            building, results as a report. Still in development.</span></label>
-      </div>
+        <div class="scard">
+          <div class="scard-title">Time remaining</div>
+          <div class="scard-desc">Optimization cycle counts are genuinely hard to predict;
+            this is how eagerly to guess.</div>
+          <label class="radio"><input type="radio" name="eta" value="conservative"
+            ${s.eta_mode !== "eager" ? "checked" : ""}>
+            <span><b>Conservative</b> — an estimate only once the run supports one.</span></label>
+          <label class="radio"><input type="radio" name="eta" value="eager"
+            ${s.eta_mode === "eager" ? "checked" : ""}>
+            <span><b>Eager</b> — an estimate sooner and more often, less accurate.</span></label>
+        </div>
 
-      <div class="frow" style="justify-content:flex-end">
-        <span class="hint" data-a="saved"></span>
-        <button class="btn btn-primary" type="button" data-a="save">Save settings</button>
-      </div>
-    </div>`;
+        <div class="scard">
+          <div class="scard-title">About</div>
+          <div class="kvline"><span>Version</span>
+            <span class="v">${NB.esc((NB.about && NB.about.version) || "")}</span></div>
+          <div class="kvline"><span>Front-end</span><span class="v">notebook (preview)</span></div>
+        </div>
+
+        <div class="scard">
+          <div class="scard-title">Interface</div>
+          <div class="scard-desc">Which window layout ORCAdesk opens with. Switching applies
+            immediately — a running calculation keeps running.</div>
+          <label class="radio"><input type="radio" name="ui" value="classic"
+            ${s.ui_variant !== "notebook" ? "checked" : ""}>
+            <span><b>Classic</b> — the tabbed window (Build, Queue, Log, Results, Settings).
+              This is the finished UI, and the only one with the MLIP and CREST setup, the
+              3D viewer, the natural-orbital analysis and the appearance variants.</span></label>
+          <label class="radio"><input type="radio" name="ui" value="notebook"
+            ${s.ui_variant === "notebook" ? "checked" : ""}>
+            <span><b>Notebook (preview)</b> — this one: the queue beside the calculation you
+              are building, results as a report. Still in development.</span></label>
+        </div>
+      </div>`;
 
     const q = (sel) => /** @type {any} */ (host.querySelector(sel));
     q('[data-a="orca-state"]').textContent = s.orca_valid
-      ? "ORCA is set and looks like an executable."
-      : "Not set — the queue will refuse to start an ORCA calculation.";
+      ? "ORCA is set." : "Not set — an ORCA calculation will refuse to start.";
 
+    q('[data-a="close"]').addEventListener("click", close);
     q('[data-a="pick-orca"]').addEventListener("click", async () => {
       const p = await NB.bridge.pick_orca_executable();
       if (p) q('[data-s="orca_path"]').value = p;
@@ -130,7 +159,7 @@
       const r = await NB.call("autodetect_orca");
       if (r && r.ok && r.path) {
         q('[data-s="orca_path"]').value = r.path;
-        NB.toast("Found ORCA at " + r.path);
+        NB.toast("Found ORCA at " + r.path, "ok");
       } else {
         NB.toast("No ORCA install found in the usual places — browse to it.");
       }
@@ -167,12 +196,14 @@
     _saving = false;
     if (!res || res.error) { NB.fail("Could not save settings: " + ((res && res.error) || "unknown")); return; }
     NB.settings = res;
-    NB.$("ws-path").textContent = res.workspace_root;
+    NB.$("ws-path").title = res.workspace_root;
+    NB.$("ws-path").textContent = NB.shortPath(res.workspace_root);
     NB.renderPills();
     if (SCFGraph.setEtaMode) SCFGraph.setEtaMode(res.eta_mode);
     if (SCFGraph.setGeoMode) SCFGraph.setGeoMode(res.geo_graph_mode);
     if (res.save_error) { NB.fail(res.save_error); return; }
-    q('[data-a="saved"]').textContent = "Saved.";
+    const saved = q('[data-a="saved"]');
+    saved.textContent = "Saved.";
     setTimeout(() => { const e = q('[data-a="saved"]'); if (e) e.textContent = ""; }, 2000);
     // Last, and only on a clean save: this replaces the page, so nothing after
     // it would run. The setting is already on disk, so the incoming front-end
@@ -188,5 +219,5 @@
     }
   }
 
-  NB.settingsView = { init: init, render: render };
+  NB.settingsView = { init: init, open: open, close: close, render: render };
 })();

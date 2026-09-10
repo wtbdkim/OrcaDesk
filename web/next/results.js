@@ -100,10 +100,17 @@
     return String(Math.round(v * 100) / 100);
   }
 
-  /** @param {string} title @param {string} html @param {boolean} [wide] */
-  function sec(title, html, wide) {
-    return `<section class="sec${wide ? " wide" : ""}">
-      <div class="st">${NB.esc(title)}</div>${html}</section>`;
+  /** Section names, in the order the report reads. The outline above the
+   *  report is built from the ones a result actually has. @type {string[]} */
+  let _present = [];
+
+  /** @param {string} title @param {string} html @param {string} [span]
+   *  "" (half) | "wide" | "third" | "twothirds" */
+  function sec(title, html, span) {
+    _present.push(title);
+    const id = "sec-" + title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    return `<section class="secblock ${span || ""}" data-sec="${id}" id="${id}">
+      <div class="sech"><h2>${NB.esc(title)}</h2></div>${html}</section>`;
   }
   /** @param {string[]} head @param {string[][]} rows @param {boolean} [scroll] */
   function table(head, rows, scroll) {
@@ -120,6 +127,7 @@
     const geom = _showAll || d.is_optimization;
     const elec = _showAll || d.show_elec;
 
+    _present = [];
     if (d.summary && d.summary.length) {
       const rows = d.summary.filter(r => _showAll || (r[2] || "") !== "elec" || elec);
       out.push(sec("Summary", `<div class="kv">${rows.map(r => {
@@ -142,7 +150,7 @@
         + chart(pts, px, Math.round(px * 0.30), { xlab: "wavenumber (cm⁻¹)", ylab: "modes", stick: true })
         + table(["#", "cm⁻¹"], d.frequencies.map((f, i) =>
             [String(i + 1), `<span style="color:${f < 0 ? "var(--err)" : "inherit"}">${f.toFixed(2)}</span>`])),
-        true));
+        "wide"));
     }
 
     if (d.transitions && d.transitions.length) {
@@ -151,7 +159,7 @@
         chart(pts, px, Math.round(px * 0.30), { xlab: "wavelength (nm)", ylab: "f (osc.)", stick: true })
         + table(["State", "eV", "nm", "f"], d.transitions.map(t =>
             [String(t.state), t.ev.toFixed(3), t.nm.toFixed(1), t.fosc.toFixed(4)])),
-        true));
+        "wide"));
     }
 
     if (d.tddft_states && d.tddft_states.length) {
@@ -160,7 +168,7 @@
           String(s.state), s.ev.toFixed(3),
           (s.contributions || []).slice(0, 4)
             .map(c => `${NB.esc(c[0])}→${NB.esc(c[1])} ${(c[2] * 100).toFixed(0)}%`).join(", "),
-        ])), true));
+        ])), "wide"));
     }
 
     if (d.neb_path && d.neb_path.length) {
@@ -171,13 +179,13 @@
         chart(pts, px, Math.round(px * 0.30), { xlab: "image", ylab: "ΔE (kcal/mol)" })
         + table(["Image", "ΔE (kcal/mol)", ""], d.neb_path.map(p =>
             [NB.esc(p.label), p.de_kcal.toFixed(2), p.is_ts ? '<span class="badge running">TS</span>' : ""])),
-        true));
+        "wide"));
     }
 
     if (d.is_conformer_search && d.conformers && d.conformers.length) {
       out.push(sec("Conformers", table(["Rank", "ΔE (kcal/mol)", "Energy (Eh)", "Atoms"],
         d.conformers.map(c => [String(c.index), c.rel_kcal.toFixed(3),
-                               c.energy_eh.toFixed(6), String(c.n_atoms)])), true));
+                               c.energy_eh.toFixed(6), String(c.n_atoms)])), "wide"));
     }
 
     if (elec && d.orbitals && d.orbitals.length) {
@@ -239,23 +247,14 @@
 
   /** @param {string} name @param {any} d the payload, for its input echo */
   async function rawPair(name, d) {
-    const host = NB.$("rawpair");
-    if (!host) return;
-    if (!name) { host.innerHTML = ""; return; }
-    host.innerHTML = `
-      <div class="pane">
-        <div class="panehead"><span class="t">Input</span><span class="sp"></span>
-          <span class="meta">${NB.esc(name)}.inp</span></div>
-        <div class="logbox" data-r="in"><span class="hint">reading…</span></div>
-      </div>
-      <div class="pane">
-        <div class="panehead"><span class="t">Output</span><span class="sp"></span>
-          <span class="meta" data-r="ometa"></span></div>
-        <div class="logbox" data-r="out"><span class="hint">reading…</span></div>
-      </div>`;
+    const host = NB.$("reswin");
     const inEl = host.querySelector('[data-r="in"]');
     const outEl = host.querySelector('[data-r="out"]');
     const oMeta = host.querySelector('[data-r="ometa"]');
+    const iMeta = host.querySelector('[data-r="imeta"]');
+    if (!inEl || !outEl) return;
+    if (!name) { inEl.textContent = "—"; outEl.textContent = "—"; return; }
+    if (iMeta) iMeta.textContent = name + ".inp";
 
     // the .inp ORCA actually read, off disk — not a preview regenerated from the
     // form, which can differ from what ran
@@ -347,36 +346,66 @@
       opts.push({ v: "file:" + w.path, l: w.name + "  (on disk)" });
     });
     const cur = _curName ? "calc:" + _curName : (_curPath ? "file:" + _curPath : "");
-    return `<div class="rephead">
-      <span class="t">${_curName || (_curPath ? _curPath.split(/[\\/]/).pop() : "Results")}</span>
-      <span class="sp"></span>
-      <select data-r="pick" style="max-width:280px">
-        <option value="">Choose a result…</option>
-        ${opts.map(o => `<option value="${NB.esc(o.v)}"${o.v === cur ? " selected" : ""}>${NB.esc(o.l)}</option>`).join("")}
-      </select>
-      <button class="btn btn-sm" type="button" data-r="openfile">Open file…</button>
-      <button class="btn btn-sm" type="button" data-r="openfolder">Open folder…</button>
-      <button class="btn btn-sm btn-ghost${_showAll ? " on" : ""}" type="button" data-r="showall"
-        title="Every parsed value, ignoring per-kind filtering">Show all</button>
-      <button class="btn btn-sm btn-ghost" type="button" data-r="infolder">Show in folder</button>
-      <button class="btn btn-sm btn-ghost${_rawOpen ? " on" : ""}" type="button" data-r="rawtoggle">Input &amp; output</button>
+    const title = _curName || (_curPath ? _curPath.split(/[\\/]/).pop() : "Results");
+    const calc = _curName ? NB.queue.find(c => c.name === _curName) : null;
+    return `<div>
+      <div class="restool">
+        <span class="restitle">${NB.esc(title)}</span>
+        ${calc ? `<span class="badge ${calc.state}">${calc.state}</span>` : ""}
+        <label class="lb" for="res-pick">Result</label>
+        <select id="res-pick" data-r="pick">
+          <option value="">Choose a result…</option>
+          ${opts.map(o => `<option value="${NB.esc(o.v)}"${o.v === cur ? " selected" : ""}>${NB.esc(o.l)}</option>`).join("")}
+        </select>
+        <span class="sp"></span>
+        <button class="btn btn-sm btn-ghost" type="button" data-r="showall"
+          aria-pressed="${_showAll}" title="Every parsed value, ignoring per-kind filtering">Show all</button>
+        <button class="btn btn-sm btn-ghost" type="button" data-r="rawtoggle"
+          aria-pressed="${_rawOpen}">Input &amp; output</button>
+        <button class="btn btn-sm btn-ghost" type="button" data-r="openfile">Open file…</button>
+        <button class="btn btn-sm btn-ghost" type="button" data-r="openfolder">Open folder…</button>
+        <button class="btn btn-sm btn-ghost" type="button" data-r="infolder">Show in folder</button>
+      </div>
+      ${(!_curName && _curPath) ? `<div class="resprov">
+        <span>Opened file — not a calculation in this workspace.</span>
+        <span class="p">${NB.esc(_curPath)}</span></div>` : ""}
     </div>`;
   }
 
   function paint() {
-    const host = NB.$("report");
+    const host = NB.$("reswin");
     if (!host) return;
     const px = Math.max(host.clientWidth - 40, 360);
+    const body = _cur
+      ? sections(_cur, px)
+        + (_rawOpen ? `<section class="secblock third" data-sec="sec-input" id="sec-input">
+             <div class="sech"><h2>Input</h2><span class="sp"></span>
+               <span class="meta" data-r="imeta"></span></div>
+             <div class="logbox" data-r="in"></div></section>
+           <section class="secblock twothirds" data-sec="sec-output" id="sec-output">
+             <div class="sech"><h2>Output</h2><span class="sp"></span>
+               <span class="meta" data-r="ometa"></span></div>
+             <div class="logbox" data-r="out"></div></section>` : "")
+        + `<div class="secblock wide" id="fep"></div>`
+      : `<section class="secblock wide"><p class="hint">No result open. Pick a finished
+           calculation above, or open any ORCA output from disk — a result stays readable
+           after it leaves the queue, because the run folder is still there.</p></section>
+         <div class="secblock wide" id="fep"></div>`;
     host.innerHTML = head()
-      + (_cur
-        ? `<div class="secgrid">${sections(_cur, px)}</div>
-           <div class="rawpair" id="rawpair"${_rawOpen ? "" : " hidden"}></div>
-           <div class="secgrid" id="fep" style="margin-top:14px"></div>`
-        : `<div class="empty"><div class="t">No result open</div>
-             <div class="s">Pick a finished calculation above, or open any ORCA output from disk.
-               A result stays readable after it leaves the queue — the run folder is still there.</div>
-           </div>
-           <div class="secgrid" id="fep" style="margin-top:14px"></div>`);
+      + `<div class="resmain"><div class="rescontent">
+           <nav class="secchips" aria-label="Result sections">${
+             _present.map(t => `<button type="button" data-jump="sec-${
+               t.toLowerCase().replace(/[^a-z0-9]+/g, "-")}">${NB.esc(t)}</button>`).join("")}</nav>
+           <div class="resinner">${body}</div>
+         </div></div>`;
+    // the outline is built while the sections render, so it is written after
+    host.querySelector(".secchips").innerHTML = _present.map(t =>
+      `<button type="button" data-jump="sec-${t.toLowerCase().replace(/[^a-z0-9]+/g, "-")}">${NB.esc(t)}</button>`
+    ).join("");
+    host.querySelectorAll("[data-jump]").forEach(b => b.addEventListener("click", () => {
+      const t = document.getElementById(/** @type {HTMLElement} */ (b).dataset.jump);
+      if (t) t.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
 
     const q = (s) => /** @type {any} */ (host.querySelector(s));
     q('[data-r="pick"]').addEventListener("change", e => {
@@ -393,6 +422,7 @@
 
     if (_cur && _rawOpen) rawPair(_curName || nameFromPath(_curPath), _cur);
     profile(px);
+    if (NB.rail) NB.rail.render();
   }
 
   // ---------------------------------------------------------------- opening
@@ -456,8 +486,9 @@
         }
       }
     }
-    NB.modal(name + ".inp", text ? `<pre>${NB.esc(text)}</pre>`
-      : `<p class="hint">No input file yet, and nothing to generate one from.</p>`);
+    if (text) NB.modalCode(name + ".inp", text);
+    else NB.modalRaw(name + ".inp",
+      "<p>No input file yet, and nothing to generate one from.</p>");
   }
 
   /** On entry: rescan the workspace, because results outlive the queue and a
@@ -469,5 +500,6 @@
   }
 
   NB.results = { enter: enter, open: open, openPath: openPath, show: show,
-                 showInp: showInp, paint: paint };
+                 showInp: showInp, paint: paint,
+                 currentName: () => _curName };
 })();

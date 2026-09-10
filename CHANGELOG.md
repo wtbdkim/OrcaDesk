@@ -28,6 +28,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     markup, its own stylesheet, its own logic in `web/next/`, sharing no ids or
     classes with `web/`. The two files it does borrow — the convergence
     trackers and the chart renderers — own no DOM.
+  - It is the approved design rather than an interpretation of it: the design
+    is in the repo (`design/notebook-reference.html`), its stylesheet IS
+    `web/next/app.css`, and `tools/uispec.py` + `tools/uidiff.py` render both
+    and print the number of differences — 46 landmarks × 23 computed
+    properties, currently 0.
   - Not in it yet, and named on its own Interface card rather than silently
     missing: the MLIP and CREST builders and their setup, the 3D viewer and the
     Visual tab, the natural-orbital analysis, and the Liquid-Glass appearance
