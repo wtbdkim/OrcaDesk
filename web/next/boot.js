@@ -338,6 +338,14 @@ var NB = {};
     NB.$("modal-scrim").addEventListener("click", () => NB.closeModal());
     NB.$("scrim").addEventListener("click", () => NB.settingsView.close());
     document.addEventListener("keydown", e => {
+      // Reload the front-end. Nothing is lost by it — the queue, the running
+      // calculation and every watcher are Python-side — and it turns editing
+      // web/next/app.css into save-and-press-a-key instead of restart the app.
+      if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r")) {
+        e.preventDefault();
+        location.reload();
+        return;
+      }
       if (e.key !== "Escape") return;
       if (!NB.$("modal").hidden) NB.closeModal();
       else if (!NB.$("settings").hidden) NB.settingsView.close();

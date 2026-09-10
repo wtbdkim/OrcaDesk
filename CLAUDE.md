@@ -128,7 +128,9 @@ of `design/notebook-reference.html`'s stylesheet, so the markup uses the design'
 class vocabulary and the two can be diffed element for element —
 `python tools/uispec.py mock|real <out.json>` then `python tools/uidiff.py`,
 whose exit code is the number of differences (currently 0 over 46 landmarks).
-**Re-run it after touching web/next/.**
+**Re-run it after touching web/next/.** `web/next/README.md` is the guide to
+editing that UI by hand — the F5 reload, `ORCADESK_REMOTE_DEBUG=9222` for live
+DevTools, and where each region is drawn.
 
 `web/next/` borrows exactly two classic files — `../scf_graph.js` and
 `../progress_panels.js`, the trackers and chart/step renderers, which own no DOM

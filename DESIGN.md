@@ -1258,6 +1258,12 @@ Element boxes and grid ROW sizes are excluded for that reason (they are
 content), and column splits are compared as ratios, so a scrollbar on one side
 does not read as a different layout.
 
+Deliberate departures from the reference live in one named block at the bottom
+of `app.css`, not scattered through it, so the diff has one place to account
+for. `web/next/README.md` is the hand-editing guide: save, press F5 in the app
+(the reload costs nothing — the queue is Python-side), and
+`ORCADESK_REMOTE_DEBUG=9222` opens Chromium's inspector on the live page.
+
 **17.1 It shares no markup with the classic UI.** `web/next/` has its own
 `index.html`, its own `app.css` and its own logic against the same `Bridge`.
 The only files it borrows are `../scf_graph.js` and `../progress_panels.js` —

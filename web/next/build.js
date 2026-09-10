@@ -117,7 +117,8 @@
         <span>${calc ? "changes apply to the queued calculation"
                      : "it joins the queue when you add it"}</span>
         <span class="sp"></span>
-        <button class="btn btn-xs btn-ghost" type="button" data-act="cancel">Close</button>
+        <button class="iconbtn ebclose" type="button" data-act="cancel"
+                aria-label="Close the builder" title="Close">×</button>
       </div>
       <div class="stubbody"><p class="hint" style="margin:0">Loading options…</p></div>`;
     el.querySelector('[data-act="cancel"]').addEventListener("click", () => open(null));
