@@ -1237,37 +1237,66 @@ A second **front-end**, not a second theme: `Settings.ui_variant` is `classic`
 `MainWindow._index_file()` loads one or the other. Where §16 is a token swap
 inside one document, this is a different application of the same backend.
 
+**17.0 The design is a file, and the difference is a number.**
+`design/notebook-reference.html` is the approved design, kept in the repo, and
+`web/next/app.css` IS its stylesheet — copied, not re-interpreted, so the markup
+here uses the design's own class vocabulary. "Looks about right" is not a check
+anyone can repeat, so the two are rendered and measured through one landmark
+list:
+
+```bash
+python tools/uispec.py mock spec_mock.json     # the reference, as a plain page
+python tools/uispec.py real spec_real.json     # web/next/, in the real window
+python tools/uidiff.py spec_mock.json spec_real.json    # exit code = differences
+```
+
+46 landmarks × 23 computed properties, currently **0 differences**. The real
+side is seeded so both pages hold the same SHAPE of data — finished rows and
+queued ones, a raw calculation, a cell with both a chart and an output pane —
+because a diff against a different sample measures the sample, not the layout.
+Element boxes and grid ROW sizes are excluded for that reason (they are
+content), and column splits are compared as ratios, so a scrollbar on one side
+does not read as a different layout.
+
 **17.1 It shares no markup with the classic UI.** `web/next/` has its own
 `index.html`, its own `app.css` and its own logic against the same `Bridge`.
 The only files it borrows are `../scf_graph.js` and `../progress_panels.js` —
 convergence trackers and chart/step renderers that own no ids and no elements,
-so sharing them is reuse rather than coupling. It deliberately does **not**
-load `web/style.css`: two stylesheets over two markup vocabularies is two
-cascades fighting. What it does share is the **token set** (§8), redeclared in
-`app.css` for both themes, so the two front-ends are recognisably one product.
+so sharing them is reuse rather than coupling — plus its own `mol.js`, a 2D
+ball-and-stick renderer for the cell thumbnails (a still per cell, several on
+screen at once: a GL context each would cost more than the picture is worth).
+It deliberately does **not** load `web/style.css`: two stylesheets over two
+markup vocabularies is two cascades fighting.
 
 One tsc project checks both, and classic scripts share a global scope, so the
 preview keeps everything on a single `NB` namespace — a second top-level
 `bridge`/`queue`/`settings` would be a duplicate declaration of `app.js`'s.
 
-**17.2 The window is the queue plus one thing.** Three views (Jobs / Results /
-Settings) and a 600px rail that stays on screen in two of them:
+**17.2 The window is the queue plus one thing.** Two places (Jobs and Results)
+and a 600px rail that stays on screen in both:
 
 - **Rail** — the queue, grouped by what a row is doing (running / queued /
   done), because that is the question being asked of the list. A row carries
   its own progress bar, and it is drawn **only when a real one can be computed**
   (an optimization's gradient progress, an SCF's convergence); a run with
   nothing to report gets no bar rather than a decorative one.
-- **Builder** — opens where the calculation lives: at the end of the rail for a
-  new one, inside the row for an existing one. It is not a place you go to and
-  come back from.
+- **Builder** — the cell IS the form. A new calculation is the dashed stub at
+  the end of the stream; editing a queued one turns that calculation's cell into
+  the editor, with an `.editbar` naming what is being changed. It is not a place
+  you go to and come back from.
 - **Stream** — one **cell** per calculation: its chart, its output tail and its
   facts, together. The classic UI asks you to pick a job and then pick a view
   of it (Raw or Graph, one at a time, one job at a time); here you read down
   the run.
-- **Report** — the parsed result as a document: the summary, a two-column grid
-  of what the parser found, the **input this run read beside the output it
-  produced** (1/3 : 2/3), and the free-energy profile last.
+- **Stream, first column** — the structure the calculation is working on:
+  220px for a convergence curve, 236px when the run is a stage chain instead.
+- **Report** — the parsed result as a document, on the design's 12-column grid:
+  the summary wide, what the parser found beside it, the **input this run read
+  next to the output it produced** (`third` : `twothirds`), and the free-energy
+  profile last. A sticky outline lists only the sections the result has.
+- **Settings** — a right-hand slide-over, not a third view: somewhere you go and
+  come straight back from, and taking the window for it would throw away the
+  queue being watched.
 
 **17.3 A rule that sets `display` names the whole state.** Regions are hidden by
 default and revealed by the view — never the other way round — so no two rules

@@ -42,6 +42,11 @@ python -m PyInstaller build.spec --noconfirm
 # Type-check the web/ front-end (plain JS + JSDoc, no build step; needs Node)
 npx -p typescript tsc --noEmit -p jsconfig.json
 
+# Check the notebook front-end against the approved design (DESIGN.md 17.0)
+python tools/uispec.py mock spec_mock.json
+python tools/uispec.py real spec_real.json
+python tools/uidiff.py spec_mock.json spec_real.json   # exit code = differences
+
 # Run the automated test suite (pip install -r requirements-dev.txt once)
 python -m pytest                       # 1001 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
@@ -118,12 +123,21 @@ skins: `web/next/` has its own markup, its own `app.css` and its own logic, and
 shares no ids, no classes and no stylesheet with `web/`. Everything below this
 paragraph describes the CLASSIC front-end unless it says otherwise.
 
+Its markup and stylesheet ARE the approved design: `web/next/app.css` is a copy
+of `design/notebook-reference.html`'s stylesheet, so the markup uses the design's
+class vocabulary and the two can be diffed element for element —
+`python tools/uispec.py mock|real <out.json>` then `python tools/uidiff.py`,
+whose exit code is the number of differences (currently 0 over 46 landmarks).
+**Re-run it after touching web/next/.**
+
 `web/next/` borrows exactly two classic files — `../scf_graph.js` and
 `../progress_panels.js`, the trackers and chart/step renderers, which own no DOM
-— and is otherwise `boot.js` (channel, polled state, per-calc trackers, routing,
-toast/modal) → `rail.js` (queue rail + run controls) → `build.js` (the builder,
-inline in the rail) → `stream.js` (one cell per calculation) → `results.js` (the
-report) → `settings.js`, in that load order, all hanging off one global `NB`.
+— and is otherwise `mol.js` (2D ball-and-stick thumbnails) → `boot.js` (channel,
+polled state, per-calc trackers, routing, toast/modal) → `rail.js` (queue rail +
+run controls) → `build.js` (the builder — a cell becomes the form) →
+`stream.js` (one cell per calculation) → `results.js` (the report) →
+`settings.js` (a slide-over), in that load order, all hanging off one global
+`NB` (and `MOL`).
 One tsc project checks both front-ends and classic scripts share a global scope,
 so **a top-level declaration in `web/next/` other than `NB` collides with
 `app.js`** — `tests/test_next_ui.py` fails the build if one appears, and also

@@ -76,7 +76,7 @@ def test_preview_declares_no_globals_that_collide_with_app_js():
         src = _read(f)
         tops = re.findall(r"^(?:let|const|var|function|class)\s+([A-Za-z_$][\w$]*)",
                           src, re.MULTILINE)
-        assert set(tops) <= {"NB"}, f"{f.name} declares globals {sorted(set(tops) - {'NB'})}"
+        assert set(tops) <= {"NB", "MOL"},             f"{f.name} declares globals {sorted(set(tops) - {'NB', 'MOL'})}"
 
 
 def test_preview_scripts_are_strict_and_type_checked():
@@ -146,7 +146,7 @@ def test_the_way_out_of_the_preview_is_inside_the_preview():
     preview = _read(NEXT / "settings.js")
     assert 'name="ui" value="classic"' in preview
     assert 'name="ui" value="notebook"' in preview
-    assert preview.index('<div class="ct">Interface</div>') > preview.index('<div class="ct">About</div>')
+    assert preview.index('<div class="scard-title">Interface</div>')         > preview.index('<div class="scard-title">About</div>')
 
 
 def test_bridge_reports_and_accepts_ui_variant():

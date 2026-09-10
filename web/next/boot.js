@@ -51,6 +51,18 @@ var NB = {};
     if (html != null) e.innerHTML = html;
     return e;
   };
+  /** The tail of a path — the last two segments, which is what identifies a
+   *  workspace to the person who chose it. The whole thing is a line of chrome
+   *  wide on a real machine, and the button says what it is, not where the OS
+   *  keeps it. @param {string} p */
+  NB.shortPath = function (p) {
+    const parts = String(p || "").split(/[\\/]/).filter(Boolean);
+    if (!parts.length) return "(no workspace set)";
+    if (parts.length <= 2) return parts.join("\\");
+    return "…\\" + parts.slice(-2).join("\\");
+  };
+  const shortPath = NB.shortPath;
+
   /** Seconds as a short clock. @param {number} sec */
   NB.dur = function (sec) {
     if (!isFinite(sec) || sec <= 0) return "";
@@ -58,25 +70,24 @@ var NB = {};
     return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
   };
 
-  let _toastTimer = 0;
-  /** @param {string} msg */
-  NB.toast = function (msg) {
-    const t = NB.$("toast");
-    if (!t) return;
+  /** @param {string} msg @param {string} [kind] "" | "ok" | "err" */
+  NB.toast = function (msg, kind) {
+    const wrap = NB.$("toastwrap");
+    if (!wrap) return;
+    const t = NB.el("div", "toast" + (kind ? " " + kind : ""));
     t.textContent = msg;
-    t.classList.add("show");
-    clearTimeout(_toastTimer);
-    _toastTimer = setTimeout(() => t.classList.remove("show"), 2600);
+    wrap.appendChild(t);
+    setTimeout(() => t.remove(), 3200);
   };
   /** An error the user has to see: the toast, and nothing swallowed silently.
    *  @param {string} msg */
-  NB.fail = function (msg) { NB.toast(msg); };
+  NB.fail = function (msg) { NB.toast(msg, "err"); };
 
   /** Open the shared modal.
    *  @param {string} title
    *  @param {string} bodyHtml
    *  @param {{label: string, cls?: string, act?: () => void}[]} [buttons] */
-  NB.modal = function (title, bodyHtml, buttons) {
+  NB.modalRaw = function (title, bodyHtml, buttons, wide) {
     NB.$("modal-title").textContent = title;
     NB.$("modal-body").innerHTML = bodyHtml;
     const foot = NB.$("modal-foot");
@@ -88,16 +99,22 @@ var NB = {};
       btn.onclick = () => { NB.closeModal(); if (b.act) b.act(); };
       foot.appendChild(btn);
     });
-    NB.$("scrim").hidden = false;
+    NB.$("modal").classList.toggle("wide", !!wide);
+    NB.$("modal-scrim").hidden = false;
     NB.$("modal").hidden = false;
+  };
+  /** A wall of text ORCA wrote — an .inp, a generated preview — in its own
+   *  code block. @param {string} title @param {string} text */
+  NB.modalCode = function (title, text) {
+    NB.modalRaw(title, `<div class="modal-code">${NB.esc(text)}</div>`, null, true);
   };
   NB.closeModal = function () {
     NB.$("modal").hidden = true;
-    NB.$("scrim").hidden = true;
+    NB.$("modal-scrim").hidden = true;
   };
   /** @param {string} title @param {string} text @param {string} okLabel @param {() => void} act */
   NB.confirm = function (title, text, okLabel, act) {
-    NB.modal(title, `<p style="font-size:13px;line-height:1.6">${NB.esc(text)}</p>`, [
+    NB.modalRaw(title, `<p>${NB.esc(text)}</p>`, [
       { label: "Cancel", cls: "btn-ghost" },
       { label: okLabel, cls: "btn-danger", act: act },
     ]);
@@ -250,18 +267,18 @@ var NB = {};
 
   // ---------------------------------------------------------------- routing
 
-  /** @param {string} view "jobs" | "results" | "settings" */
+  /** The window has two places, Jobs and Results. Settings is not a third of
+   *  the same kind — it is somewhere you go and come straight back from — so it
+   *  is a slide-over, not a view. @param {string} view "jobs" | "results" */
   NB.go = function (view) {
     NB.view = view;
     document.querySelector(".app").setAttribute("data-view", view);
-    document.querySelectorAll(".nav .seg button[data-go]").forEach(b => {
+    document.querySelectorAll(".viewseg button[data-view]").forEach(b => {
       const btn = /** @type {HTMLElement} */ (b);
-      btn.setAttribute("aria-pressed", String(btn.dataset.go === view));
+      btn.setAttribute("aria-pressed", String(btn.dataset.view === view));
     });
-    NB.$("btn-settings").classList.toggle("on", view === "settings");
     if (view === "jobs" && NB.stream) NB.stream.render();
     if (view === "results" && NB.results) NB.results.enter();
-    if (view === "settings" && NB.settingsView) NB.settingsView.render();
   };
 
   // ---------------------------------------------------------------- theme
@@ -287,10 +304,10 @@ var NB = {};
     const runN = NB.queue.filter(c => c.state === "running").length;
     const pendN = NB.queue.filter(c => c.state === "pending" || c.state === "blocked").length;
     if (runN || pendN) {
-      bits.push(`<span class="pill"><span class="d ${runN ? "warn" : ""}"></span>${
+      bits.push(`<span class="status-pill"><span class="dot ${runN ? "warn" : ""}"></span>${
         runN ? runN + " running" : ""}${runN && pendN ? " · " : ""}${pendN ? pendN + " queued" : ""}</span>`);
     }
-    bits.push(`<span class="pill"><span class="d ${NB.settings.orca_valid ? "ok" : ""}"></span>${
+    bits.push(`<span class="status-pill"><span class="dot ${NB.settings.orca_valid ? "ok" : ""}"></span>${
       NB.settings.orca_valid ? "ORCA ready" : "ORCA not set"}</span>`);
     host.innerHTML = bits.join("");
   }
@@ -305,21 +322,25 @@ var NB = {};
     const s = await NB.call("get_settings");
     NB.settings = s;
     NB.applyTheme(s && s.theme);
-    NB.$("ws-path").textContent = (s && s.workspace_root) || "(no workspace set)";
+    NB.$("ws-path").textContent = shortPath((s && s.workspace_root) || "");
 
     const about = await NB.call("get_about");
     NB.about = about;
     if (about && about.version) NB.$("ver").textContent = about.version;
 
     // chrome
-    document.querySelectorAll("[data-go]").forEach(b => {
+    document.querySelectorAll(".viewseg button[data-view]").forEach(b => {
       const btn = /** @type {HTMLElement} */ (b);
-      btn.addEventListener("click", () => NB.go(btn.dataset.go));
+      btn.addEventListener("click", () => NB.go(btn.dataset.view));
     });
     NB.$("theme-toggle").addEventListener("click", () => NB.toggleTheme());
-    NB.$("scrim").addEventListener("click", () => NB.closeModal());
+    NB.$("open-settings").addEventListener("click", () => NB.settingsView.open());
+    NB.$("modal-scrim").addEventListener("click", () => NB.closeModal());
+    NB.$("scrim").addEventListener("click", () => NB.settingsView.close());
     document.addEventListener("keydown", e => {
-      if (e.key === "Escape" && !NB.$("modal").hidden) NB.closeModal();
+      if (e.key !== "Escape") return;
+      if (!NB.$("modal").hidden) NB.closeModal();
+      else if (!NB.$("settings").hidden) NB.settingsView.close();
     });
     NB.$("ws-pick").addEventListener("click", async () => {
       const p = await NB.bridge.pick_workspace();
@@ -327,8 +348,9 @@ var NB = {};
       const res = await NB.call("save_settings", JSON.stringify({ workspace_root: p }));
       if (res && res.error) { NB.fail(res.error); return; }
       NB.settings = res;
-      NB.$("ws-path").textContent = res.workspace_root;
-      NB.toast("Workspace changed.");
+      NB.$("ws-path").title = res.workspace_root;
+      NB.$("ws-path").textContent = shortPath(res.workspace_root);
+      NB.toast("Workspace changed.", "ok");
     });
 
     if (NB.rail) NB.rail.init();
