@@ -28,7 +28,13 @@ SKIP = {"fontFamily", "box", "gridTemplateRows"}
 # calculation produced a table to put under it, i.e. on the sample, not the
 # design. (.plate:last-child{margin-bottom:0} is the rule doing it, and it is
 # the same rule on both sides.)
-PER_LANDMARK_SKIP = {"plate": {"marginBottom"}}
+PER_LANDMARK_SKIP = {
+    "plate": {"marginBottom"},
+    # repeat(auto-fit, minmax(120px, 1fr)) resolves to however many boxes fit
+    # the children it has — the mockup lists six things to draw, a real result
+    # lists what is actually in its folder. Same rule, different content.
+    "viztypes": {"gridTemplateColumns"},
+}
 # Sizes within this many px read as the same to the eye and are not worth
 # chasing; anything above it is a real difference in proportion.
 TOL = 1.0

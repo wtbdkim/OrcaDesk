@@ -1250,12 +1250,14 @@ python tools/uispec.py real spec_real.json     # web/next/, in the real window
 python tools/uidiff.py spec_mock.json spec_real.json    # exit code = differences
 ```
 
-68 landmarks × 23 computed properties, currently **0 differences** — in two
+79 landmarks × 23 computed properties, currently **0 differences** — in two
 passes, because the first list was chrome only (top bar, rail, cell, pane) and a
 0 over it said nothing about the inside of a result section, which was markup
-`app.css` had never heard of. The second pass opens a real result and measures
-what a section is built from: `.secblock` at each span, `.sech h2`, `.secdesc`,
-`.plate`, `.tw` and its `th`/`td`, `.factline`, `.rawin`/`.rawout`.
+`app.css` had never heard of. The second pass opens a real result, turns *Show
+all* on so the tables exist, and measures what a section is built from:
+`.secblock` at every span, `.sech h2`, `.secdesc`, `.plate`, `.tw` with its
+`th`/`td`, `.factline`, `.rawin`/`.rawout`, and the two picture sections —
+`.viewstage`, `.vizpanel`, `.vizlist`, `.vizstage`, `.viztypes`, `.viztype`.
 
 The real side is seeded so both pages hold the same SHAPE of data — finished
 rows and queued ones, a raw calculation, a cell with both a chart and an output
@@ -1317,6 +1319,14 @@ and a 600px rail that stays on screen in both:
   produced is a plate of `.kvline` pairs; provenance and the SCF energy
   decomposition sit behind *Show all*. A value this front-end has not heard of
   lands in the VISIBLE plate — a new parser row must not be able to hide itself.
+- **Structure** — the geometry the run ended on, and where the per-atom and
+  per-bond numbers live: click an atom for its charges and Mayer valence, click
+  a bond for its length and bond order, right-drag between two atoms to measure,
+  and the axis button walks x, y, z. A charge belongs to an atom you can point
+  at, not to row 27 of a list — which is why the report has no charge tables of
+  its own (they stay under *Show all*, for reading without a mouse).
+- **Visual** — everything in the result's FOLDER that can be drawn: a
+  trajectory, a CREST ensemble, an exported set. Discovered, never asked for.
 - **Report** — the parsed result as a document, on the design's 12-column grid:
   the summary wide, what the parser found beside it, the **input this run read
   next to the output it produced** (`third` : `twothirds`), and the free-energy

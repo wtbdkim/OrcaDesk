@@ -109,6 +109,17 @@ RSEL = [
     "rep_factline", ".resinner .factline",
     "rawin", ".rawin",
     "rawout", ".rawout",
+    "secblock_viewer", ".secblock.viewer",
+    "secblock_vizhalf", ".secblock.vizhalf",
+    "viewstage", ".viewstage",
+    "viewlegend", ".viewstage .viewlegend",
+    "stage_act", ".viewstage .act",
+    "vizpanel", ".vizpanel",
+    "vizlist", ".vizlist",
+    "vizstage", ".vizstage",
+    "viztypes", ".viztypes",
+    "viztype", ".viztype",
+    "vizcap", ".vizcap",
 ]
 REPORT = {RSEL[i]: (RSEL[i + 1], RSEL[i + 1]) for i in range(0, len(RSEL), 2)}
 
@@ -217,6 +228,14 @@ def run_real():
     import shutil
     (ws / "h2o").mkdir(parents=True, exist_ok=True)
     shutil.copy(ROOT / "tests" / "nbo" / "fixtures" / "h2o.out", ws / "h2o" / "h2o.out")
+    # something for the Visual panel to find, so both sides have one to measure
+    NL = chr(10)
+    (ws / "h2o" / "h2o_trj.xyz").write_text(
+        "3" + NL + "frame 1  E = -76.4000" + NL
+        + "O 0.0 0.0 0.117" + NL + "H 0.0 0.757 -0.469" + NL + "H 0.0 -0.757 -0.469" + NL
+        + "3" + NL + "frame 2  E = -76.4210" + NL
+        + "O 0.0 0.0 0.120" + NL + "H 0.0 0.760 -0.470" + NL + "H 0.0 -0.760 -0.470" + NL,
+        encoding="utf-8")
 
     os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox")
     sys.path.insert(0, str(ROOT))
@@ -294,8 +313,9 @@ def run_real():
         # h2o has a real .out in the throwaway workspace, so the report has
         # something to render
         page.runJavaScript(
-            'NB.results.openPath(' + json_out + ')',
-            lambda _r: QTimer.singleShot(2200,
+            'NB.results.openPath(' + json_out + ').then(function(){'
+            '  document.querySelector(\"[data-r=\\"showall\\"]\").click(); })',
+            lambda _r: QTimer.singleShot(2600,
                 lambda: measure(page, "real", report_done, REPORT)))
 
     def report_done(res):
