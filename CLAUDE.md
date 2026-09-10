@@ -704,7 +704,28 @@ while its card is `display:none` sizes to zero.
 from the desktop by `ServerController` (`controller.py`) running uvicorn in a daemon
 thread on the shared store. It serves the mobile PWA from `web_mobile/` at `/` and the
 queue API under `/api/`. fastapi/uvicorn are **optional** — `ServerController.is_available()`
-gates the whole feature, and the desktop app works fine without them. Per `CHANGELOG.md`
+gates the whole feature, and the desktop app works fine without them.
+
+**The PIN exemption reads the socket peer, and only when that peer proves
+something (P35).** `create_app(bind_host=..., proxied=...)` computes
+`loopback_bind = bind_host in _LOCAL_HOSTS and not proxied`, because a bind
+stops being evidence about the client in *two* ways: a LAN bind (a same-host
+proxy would make every request look like 127.0.0.1) and a declared reverse
+proxy or tunnel in front of a loopback bind — nginx/cloudflared forward from
+127.0.0.1, so without the flag every relayed request takes the exemption and
+the PIN is off for whoever can reach the proxy. Either way the answer is to
+drop the exemption, **never** to move the decision onto `X-Forwarded-For`:
+that header's authority depends on how the proxy merges a client-supplied one
+(nginx's `$proxy_add_x_forwarded_for` *appends*) and on which element the ASGI
+layer reads. `ServerController(..., proxied=, trusted_proxies=)` is the one
+flag both halves come from — it sets `create_app`'s `proxied` **and**
+uvicorn's `proxy_headers`, which is default-ON and REPLACES
+`request.client.host` with a header element. Off unless a proxy was declared
+(the exemption reads that address); on when one was (the exemption is already
+gone, so the header informs and decides nothing). `forwarded_allow_ips` is
+passed explicitly so it never comes from the `FORWARDED_ALLOW_IPS` environment
+variable. `run.py` exposes the pair as `ORCADESK_PROXIED` /
+`ORCADESK_TRUSTED_PROXIES`. Per `CHANGELOG.md`
 phone-sync is in development and **not part of the packaged build** — enforced by
 `build.spec`'s `excludes` (fastapi/uvicorn/starlette/pydantic/anyio/qrcode/PIL),
 which must be dropped deliberately when phone-sync ships.

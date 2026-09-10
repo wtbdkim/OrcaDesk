@@ -482,7 +482,15 @@ resolved in 0.4.3-beta).
 
 The loopback auth-bypass applies only when the server is actually bound to
 loopback — on a LAN bind, a same-host proxy makes every request look like
-127.0.0.1, so every `/api` call needs the PIN. Token comparison is
+127.0.0.1, so every `/api` call needs the PIN. **A declared proxy revokes it on
+a loopback bind too** (`create_app(..., proxied=True)`): nginx and cloudflared
+forward *from* 127.0.0.1, so there the bind stops being evidence about the
+client and the exemption would be off for everyone who can reach the proxy.
+The answer is to drop the exemption, never to move the decision onto
+`X-Forwarded-For` — a header whose authority depends on how the proxy merges a
+client-supplied one and on which element the ASGI layer reads. With no proxy
+declared, uvicorn's proxy-header handling is disabled so the address checked is
+the real socket peer. Token comparison is
 `hmac.compare_digest`; `/api/ping` reports validity without revealing the
 token; the PIN is generated once per app launch (at `QueueStore`
 construction) and lives for the whole app session, across server
