@@ -88,7 +88,7 @@
           <div class="pane chart">
             <div class="panehead"><span class="t"></span><span class="sp"></span>
               <span class="meta"></span></div>
-            <div class="chartbox"></div>
+            <div class="chart"></div>
           </div>
           <div class="pane out">
             <div class="panehead"><span class="t">Output</span><span class="sp"></span>
@@ -122,7 +122,7 @@
     q(".cellres").hidden = !(c.state === "done" || c.state === "failed");
 
     // --- middle column: the chart, measured then drawn
-    const box = q(".chartbox");
+    const box = q(".chart");
     const px = box.clientWidth || Math.round((el.clientWidth || 1024) * 0.42);
     const ch = chartFor(c, px);
     const grid = q(".celgrid");

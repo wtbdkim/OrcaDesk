@@ -23,6 +23,12 @@ B = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
 # fixes — the rules — is everything else, and gridTemplateColumns is compared as
 # a RATIO so a scrollbar on one side does not read as a different column split.
 SKIP = {"fontFamily", "box", "gridTemplateRows"}
+# Per-landmark exceptions, each with a reason. A plate's bottom margin is 16px
+# unless it is the last thing in its section — which depends on whether that
+# calculation produced a table to put under it, i.e. on the sample, not the
+# design. (.plate:last-child{margin-bottom:0} is the rule doing it, and it is
+# the same rule on both sides.)
+PER_LANDMARK_SKIP = {"plate": {"marginBottom"}}
 # Sizes within this many px read as the same to the eye and are not worth
 # chasing; anything above it is a real difference in proportion.
 TOL = 1.0
@@ -76,7 +82,7 @@ for role in [k for k in A if not k.startswith("__")]:
         print(f"\n{role}: !! MISSING in web/next/"); n += 1; continue
     diffs = []
     for p in a:
-        if p in SKIP:
+        if p in SKIP or p in PER_LANDMARK_SKIP.get(role, ()):
             continue
         if p == "gridTemplateColumns":
             if not cols_same(a[p], b[p]):

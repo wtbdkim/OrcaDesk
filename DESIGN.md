@@ -1250,10 +1250,17 @@ python tools/uispec.py real spec_real.json     # web/next/, in the real window
 python tools/uidiff.py spec_mock.json spec_real.json    # exit code = differences
 ```
 
-46 landmarks × 23 computed properties, currently **0 differences**. The real
-side is seeded so both pages hold the same SHAPE of data — finished rows and
-queued ones, a raw calculation, a cell with both a chart and an output pane —
-because a diff against a different sample measures the sample, not the layout.
+68 landmarks × 23 computed properties, currently **0 differences** — in two
+passes, because the first list was chrome only (top bar, rail, cell, pane) and a
+0 over it said nothing about the inside of a result section, which was markup
+`app.css` had never heard of. The second pass opens a real result and measures
+what a section is built from: `.secblock` at each span, `.sech h2`, `.secdesc`,
+`.plate`, `.tw` and its `th`/`td`, `.factline`, `.rawin`/`.rawout`.
+
+The real side is seeded so both pages hold the same SHAPE of data — finished
+rows and queued ones, a raw calculation, a cell with both a chart and an output
+pane — because a diff against a different sample measures the sample, not the
+layout.
 Element boxes and grid ROW sizes are excluded for that reason (they are
 content), and column splits are compared as ratios, so a scrollbar on one side
 does not read as a different layout.
@@ -1263,6 +1270,14 @@ of `app.css`, not scattered through it, so the diff has one place to account
 for. `web/next/README.md` is the hand-editing guide: save, press F5 in the app
 (the reload costs nothing — the queue is Python-side), and
 `ORCADESK_REMOTE_DEBUG=9222` opens Chromium's inspector on the live page.
+
+**17.0b The stylesheet is a contract.** A class `app.css` has no rule for
+renders as *nothing* — no grid, no card, no type scale. Section contents are
+therefore built from the design's own components (`.plate`, `.secdesc`,
+`.sech`, `.tw`/`table`, `.kvline`, `.factline`, `.field-row`, `.checkbox`,
+`.grouplabel`, `.divider`), never from invented names;
+`tests/test_next_ui.py` fails on any class the sheet does not style, apart from
+four behaviour hooks the design uses the same way.
 
 **17.1 It shares no markup with the classic UI.** `web/next/` has its own
 `index.html`, its own `app.css` and its own logic against the same `Bridge`.
@@ -1296,6 +1311,12 @@ and a 600px rail that stays on screen in both:
   the run.
 - **Stream, first column** — the structure the calculation is working on:
   220px for a convergence curve, 236px when the run is a stage chain instead.
+- **Report, curated** — ORCA's parse carries ~40 scalars and printing them in
+  source order is a data dump, not a result. The questions asked first (did it
+  finish, did it converge, how long) are a `.factline`; what the calculation
+  produced is a plate of `.kvline` pairs; provenance and the SCF energy
+  decomposition sit behind *Show all*. A value this front-end has not heard of
+  lands in the VISIBLE plate — a new parser row must not be able to hide itself.
 - **Report** — the parsed result as a document, on the design's 12-column grid:
   the summary wide, what the parser found beside it, the **input this run read
   next to the output it produced** (`third` : `twothirds`), and the free-energy

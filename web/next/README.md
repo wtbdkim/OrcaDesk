@@ -63,7 +63,10 @@ python tools/uispec.py real spec_real.json
 python tools/uidiff.py spec_mock.json spec_real.json    # exit code = differences
 ```
 
-It should print `DIFFERENCES: 0`. If your change is a **deliberate** departure
+It should print `DIFFERENCES: 0` over 68 landmarks — 46 of the window and 22
+inside a result section, measured with a result open. **If you add a region,
+add a landmark for it**: the first version of this list was chrome only, and it
+read 0 while every section of the report was unstyled. If your change is a **deliberate** departure
 from the reference, put it in the `builder corrections` block at the bottom of
 `app.css` (or start a similar named block) so the departures stay in one place
 instead of scattering through the sheet — and add its landmark to
@@ -71,6 +74,12 @@ instead of scattering through the sheet — and add its landmark to
 
 ## Rules worth knowing before you edit
 
+- **Only use class names `app.css` has a rule for.** It is the design's sheet;
+  a name it does not know renders as nothing, which is how the result summary
+  once became a stacked list of bare divs. The vocabulary is `.plate`,
+  `.secdesc`, `.sech`, `.tw`/`table`, `.kvline`, `.factline`, `.field-row`,
+  `.checkbox`, `.grouplabel`, `.divider`, `.btn`, `.badge`, `.seg`.
+  `tests/test_next_ui.py` fails the build if you invent one.
 - **A rule that sets `display` must name the whole state it depends on.** The
   region rules sit in one specificity band, so two that can match the same
   element are decided by source order — which has already cost this UI two bugs

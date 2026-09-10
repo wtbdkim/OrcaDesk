@@ -103,6 +103,53 @@ def test_preview_calls_only_slots_the_bridge_actually_has():
     assert not unknown, f"the preview calls bridge slots that do not exist: {unknown}"
 
 
+def test_the_design_check_measures_inside_a_section_too():
+    """The landmark list must reach past the chrome.
+
+    The first version of it was top bar, rail, cell, pane — so the diff read 0
+    while every section of the report was markup app.css had never heard of.
+    A landmark list that only covers what is easy to measure is worse than none,
+    because the green number stops the looking.
+    """
+    spec = _read(ROOT / "tools" / "uispec.py")
+    assert "RSEL = [" in spec, "the report landmark list is gone"
+    for needed in (".resinner .plate", ".resinner .tw", ".resinner .secdesc",
+                   ".resinner .sech h2", ".secblock", ".rawin", ".rawout"):
+        assert needed in spec, f"the design check no longer measures {needed}"
+
+
+def test_every_class_the_preview_emits_has_a_rule():
+    """A class app.css has no rule for renders as nothing.
+
+    That is what turned the result summary into a stacked list of bare divs:
+    the stylesheet was copied from the design but the section contents were
+    written with invented names. The exceptions are behaviour hooks the design
+    itself uses the same way.
+    """
+    css = re.sub(r"/\*.*?\*/", "", _read(NEXT / "app.css"), flags=re.S)
+    styled = set(re.findall(r"\.([A-Za-z][\w-]*)", css))
+    hooks = {"cellinp", "cellres", "qinp", "out"}   # selected by JS, never styled
+    emitted = {}
+    for f in sorted(list(NEXT.glob("*.js")) + [NEXT / "index.html"]):
+        src = re.sub(r"/\*.*?\*/", "", _read(f), flags=re.S)
+        found = (re.findall(r'class="([^"$`]*)"', src)
+                 + re.findall(r'NB\.el\(\s*"[a-z]+",\s*"([^"]+)"', src))
+        for group in found:
+            for c in group.split():
+                if c and not c.startswith("$"):
+                    emitted.setdefault(c, set()).add(f.name)
+    unstyled = sorted(c for c in emitted if c not in styled and c not in hooks)
+    assert not unstyled, (
+        "classes with no rule in app.css: "
+        + ", ".join(f"{c} ({', '.join(sorted(emitted[c]))})" for c in unstyled))
+
+
+def test_the_reference_is_a_standards_mode_document():
+    """Without a doctype it renders in quirks mode, where a table does not
+    inherit line-height — which the design check reads as a real difference."""
+    assert _read(ROOT / "design" / "notebook-reference.html").lstrip()[:15].lower()         .startswith("<!doctype html>")
+
+
 # ---------------------------------------------------------------- the setting
 
 def test_ui_variant_defaults_to_classic():
@@ -144,8 +191,9 @@ def test_the_way_out_of_the_preview_is_inside_the_preview():
     assert classic.index('name="ui-variant"') > classic.index('id="about-body"')
 
     preview = _read(NEXT / "settings.js")
-    assert 'name="ui" value="classic"' in preview
-    assert 'name="ui" value="notebook"' in preview
+    assert 'value="classic"' in preview
+    assert 'value="notebook"' in preview
+    assert 'data-s2="ui"' in preview
     assert preview.index('<div class="scard-title">Interface</div>')         > preview.index('<div class="scard-title">About</div>')
 
 

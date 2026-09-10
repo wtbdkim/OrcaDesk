@@ -172,114 +172,134 @@
           <button type="button" data-mode="form" aria-pressed="${!st.raw}">Guided</button>
           <button type="button" data-mode="raw" aria-pressed="${st.raw}">.inp text</button>
         </div>
+        <span class="hint" style="margin:0">${st.raw
+          ? "The text below is what ORCA runs, verbatim."
+          : "The form builds the .inp for you; Preview shows exactly what it will run."}</span>
       </div>
 
-      <div class="frow">
+      <div class="field-row">
         ${text("Name", calc ? calc.name : "", "")}
         <div class="field mid"><label>Type</label><select data-f="kind">${
-          KIND_ORDER.map(k => `<option value="${k}"${k === st.kind ? " selected" : ""}>${KINDS[k].label}</option>`).join("")
+          KIND_ORDER.map(k => `<option value="${k}"${
+            k === st.kind ? " selected" : ""}>${KINDS[k].label}</option>`).join("")
         }</select></div>
         ${text("Charge", calc ? calc.charge : 0, "narrow", "number")}
         ${text("Mult.", calc ? calc.multiplicity : 1, "narrow", "number")}
       </div>
 
-      <div class="esec">
-        <div class="st">Geometry</div>
-        <div class="frow" style="gap:18px">
-          <label class="check"><input type="radio" name="gsrc" value="direct" ${src !== "reference" ? "checked" : ""}> Coordinates</label>
-          <label class="check"><input type="radio" name="gsrc" value="reference" ${src === "reference" ? "checked" : ""}> From another calculation</label>
+      <div class="divider"></div>
+      <div class="grouplabel">Geometry source</div>
+      <div class="field-row" style="gap:20px">
+        <label class="checkbox"><input type="radio" name="gsrc" value="direct"
+          ${src !== "reference" ? "checked" : ""}> Coordinates</label>
+        <label class="checkbox"><input type="radio" name="gsrc" value="reference"
+          ${src === "reference" ? "checked" : ""}> From another calculation</label>
+      </div>
+      <div data-g="direct"${src === "reference" ? " hidden" : ""}>
+        <div class="btn-group" style="align-items:center;margin-bottom:10px">
+          <button class="btn btn-sm" type="button" data-act="loadxyz">Load .xyz…</button>
+          <span class="hint" style="margin:0" data-x="status">${
+            st.xyz ? st.xyz.trim().split("\n").length + " atoms" : ""}</span>
         </div>
-        <div data-g="direct" ${src === "reference" ? 'hidden' : ""}>
-          <div class="frow" style="margin-bottom:7px">
-            <button class="btn btn-sm" type="button" data-act="loadxyz">Load .xyz…</button>
-            <span class="hint" data-x="status">${st.xyz ? st.xyz.trim().split("\n").length + " atoms" : ""}</span>
-          </div>
-          <div class="field"><textarea rows="7" data-f="xyz" spellcheck="false"
-            placeholder="C   0.000   0.000   0.000">${NB.esc(st.xyz)}</textarea></div>
-        </div>
-        <div data-g="reference" ${src === "reference" ? "" : 'hidden'}>
-          ${refs.length
-            ? select("Take the optimized geometry from", refs, calc ? calc.ref_name : refs[0])
-            : `<div class="hint">No other calculation to take a geometry from yet.</div>`}
-        </div>
+        <div class="field"><textarea rows="7" data-f="xyz" spellcheck="false"
+          placeholder="C   0.000   0.000   0.000">${NB.esc(st.xyz)}</textarea></div>
+      </div>
+      <div data-g="reference"${src === "reference" ? "" : " hidden"}>
+        ${refs.length
+          ? `<div class="field-row" style="margin-bottom:0">${
+              select("Take the optimized geometry from", refs, calc ? calc.ref_name : refs[0])}</div>`
+          : `<p class="hint" style="margin:0">No other calculation to take a geometry from yet.</p>`}
       </div>
 
-      <div data-form ${st.raw ? "hidden" : ""}>
-        <div class="esec">
-          <div class="st">Method</div>
-          <div class="frow">
-            ${combo("Functional", items(CHOICES.functionals), cfg.functional || "wB97X-D4")}
-            ${combo("Basis set", items(CHOICES.basis_sets), cfg.basis_set || "def2-TZVP")}
-          </div>
-          <div class="frow">
-            ${select("RI", items(CHOICES.ri_approximations), cfg.ri_approximation || "RIJCOSX", "mid")}
-            ${select("SCF convergence", items(CHOICES.scf_convergences), cfg.scf_convergence || K.scf, "mid")}
-            ${calcTypes.length
-              ? select("Calculation type", calcTypes, cfg.calculation_type || K.calc)
-              : text("Calculation type", cfg.calculation_type != null ? cfg.calculation_type : K.calc)}
-          </div>
-          <div class="frow">
-            ${text("Extra keywords", cfg.options != null ? cfg.options : (K.options || ""))}
-          </div>
+      <div data-form${st.raw ? " hidden" : ""}>
+        <div class="divider"></div>
+        <div class="grouplabel">Method &amp; options</div>
+        <div class="field-row">
+          ${combo("Functional", items(CHOICES.functionals), cfg.functional || "wB97X-D4")}
+          ${combo("Basis set", items(CHOICES.basis_sets), cfg.basis_set || "def2-TZVP")}
+        </div>
+        <div class="field-row">
+          ${select("RI", items(CHOICES.ri_approximations), cfg.ri_approximation || "RIJCOSX", "mid")}
+          ${select("SCF convergence", items(CHOICES.scf_convergences), cfg.scf_convergence || K.scf, "mid")}
+          ${calcTypes.length
+            ? select("Calculation type", calcTypes, cfg.calculation_type || K.calc)
+            : text("Calculation type", cfg.calculation_type != null ? cfg.calculation_type : K.calc)}
+        </div>
+        <div class="field-row">
+          ${text("Extra keywords", cfg.options != null ? cfg.options : (K.options || ""))}
         </div>
 
-        <div class="esec">
-          <div class="st">Solvation</div>
-          <div class="frow">
-            ${select("Model", ["", "CPCM", "SMD"], (cfg.solvation && cfg.solvation.model) || "", "mid")}
-            ${combo("Solvent", items(CHOICES.solvents), (cfg.solvation && cfg.solvation.solvent) || "")}
-          </div>
+        <div class="divider"></div>
+        <div class="grouplabel">Solvation</div>
+        <div class="field-row">
+          ${select("Model", ["", "CPCM", "SMD"], (cfg.solvation && cfg.solvation.model) || "", "mid")}
+          ${combo("Solvent", items(CHOICES.solvents), (cfg.solvation && cfg.solvation.solvent) || "")}
         </div>
 
-        <div class="esec">
-          <div class="st">Resources</div>
-          <div class="frow">
-            ${text("nprocs", cfg.nprocs || d.default_nprocs || 6, "narrow", "number")}
-            ${text("maxcore (MB / core)", cfg.maxcore_mb || d.default_maxcore_mb || 2400, "mid", "number")}
-            ${K.maxiter ? text("Max iterations", cfg.max_iter || 0, "mid", "number") : ""}
-          </div>
+        <div class="divider"></div>
+        <div class="grouplabel">Resources</div>
+        <div class="field-row">
+          ${text("nprocs", cfg.nprocs || d.default_nprocs || 6, "narrow", "number")}
+          ${text("maxcore (MB / core)", cfg.maxcore_mb || d.default_maxcore_mb || 2400, "mid", "number")}
+          ${K.maxiter ? text("Max iterations", cfg.max_iter || 0, "mid", "number") : ""}
         </div>
 
-        ${K.freq ? `<div class="esec"><div class="st">Thermochemistry</div><div class="frow">
+        ${K.freq ? `<div class="divider"></div>
+        <div class="grouplabel">Thermochemistry</div>
+        <div class="field-row">
           ${text("Temperature (K)", cfg.freq_temp_k || 298.15, "mid", "number")}
           ${text("Pressure (atm)", cfg.freq_pressure_atm || 1.0, "mid", "number")}
-        </div></div>` : ""}
-
-        ${K.tddft ? `<div class="esec"><div class="st">TD-DFT</div><div class="frow">
-          ${text("Roots", cfg.tddft_nroots || 10, "narrow", "number")}
-          ${text("MaxDim", cfg.tddft_maxdim || 0, "narrow", "number")}
-          <label class="check"><input type="checkbox" data-f="tda" ${cfg.tddft_tda !== false ? "checked" : ""}> TDA</label>
-          <label class="check"><input type="checkbox" data-f="triplets" ${cfg.tddft_triplets ? "checked" : ""}> Triplets</label>
-        </div></div>` : ""}
-
-        ${K.nmr ? `<div class="esec"><div class="st">NMR</div>
-          <label class="check"><input type="checkbox" data-f="jcoupling" ${cfg.nmr_jcoupling ? "checked" : ""}> Spin-spin coupling (J)</label>
         </div>` : ""}
 
-        ${K.irc ? `<div class="esec"><div class="st">IRC</div><div class="frow">
+        ${K.tddft ? `<div class="divider"></div>
+        <div class="grouplabel">TD-DFT</div>
+        <div class="field-row" style="align-items:center">
+          ${text("Roots", cfg.tddft_nroots || 10, "narrow", "number")}
+          ${text("MaxDim", cfg.tddft_maxdim || 0, "narrow", "number")}
+          <label class="checkbox"><input type="checkbox" data-f="tda"
+            ${cfg.tddft_tda !== false ? "checked" : ""}> TDA</label>
+          <label class="checkbox"><input type="checkbox" data-f="triplets"
+            ${cfg.tddft_triplets ? "checked" : ""}> Triplets</label>
+        </div>` : ""}
+
+        ${K.nmr ? `<div class="divider"></div>
+        <div class="grouplabel">NMR</div>
+        <div class="field-row">
+          <label class="checkbox"><input type="checkbox" data-f="jcoupling"
+            ${cfg.nmr_jcoupling ? "checked" : ""}> Spin-spin coupling (J)</label>
+        </div>` : ""}
+
+        ${K.irc ? `<div class="divider"></div>
+        <div class="grouplabel">IRC</div>
+        <div class="field-row">
           ${text("Max points", cfg.irc_maxiter || 40, "narrow", "number")}
           ${select("Direction", ["both", "forward", "backward"], cfg.irc_direction || "both", "mid")}
-          ${select("Initial Hessian", ["calc_anfreq", "calc_numfreq", "read"], cfg.irc_init_hess || "calc_anfreq", "mid")}
+          ${select("Initial Hessian", ["calc_anfreq", "calc_numfreq", "read"],
+                   cfg.irc_init_hess || "calc_anfreq", "mid")}
           ${text(".hess file", cfg.irc_hess_file || "")}
-        </div></div>` : ""}
+        </div>` : ""}
 
-        ${K.neb ? `<div class="esec"><div class="st">NEB</div><div class="frow">
+        ${K.neb ? `<div class="divider"></div>
+        <div class="grouplabel">NEB endpoints</div>
+        <div class="field-row" style="align-items:center">
           ${text("Product .xyz", cfg.neb_product_xyz || "")}
           ${text("Images", cfg.neb_nimages || 8, "narrow", "number")}
-          <label class="check"><input type="checkbox" data-f="preopt" ${cfg.neb_preopt_ends ? "checked" : ""}> Pre-optimize ends</label>
-        </div></div>` : ""}
+          <label class="checkbox"><input type="checkbox" data-f="preopt"
+            ${cfg.neb_preopt_ends ? "checked" : ""}> Pre-optimize ends</label>
+        </div>` : ""}
       </div>
 
-      <div data-raw ${st.raw ? "" : "hidden"}>
-        <div class="frow" style="margin-bottom:7px">
+      <div data-raw${st.raw ? "" : " hidden"}>
+        <div class="divider"></div>
+        <div class="btn-group" style="align-items:center;margin-bottom:10px">
           <button class="btn btn-sm" type="button" data-act="loadinp">Load .inp…</button>
-          <span class="hint">The text below is what ORCA runs, verbatim.</span>
         </div>
         <div class="field"><textarea class="raw-editor" data-f="rawtext" spellcheck="false"
           placeholder="! B3LYP def2-SVP Opt&#10;* xyz 0 1&#10;…&#10;*">${NB.esc(st.rawText)}</textarea></div>
       </div>
 
-      <div class="snips" style="margin:16px 0 0">
+      <div class="divider"></div>
+      <div class="btn-group" style="align-items:center">
         <button class="btn btn-sm btn-ghost" type="button" data-act="preview">Preview .inp</button>
         <span class="sp" style="flex:1"></span>
         <button class="btn btn-sm btn-ghost" type="button" data-act="cancel">Cancel</button>
@@ -389,7 +409,7 @@
    *  @param {HTMLElement} el @param {any} st @param {any} calc */
   function readForm(el, st, calc) {
     const q = (sel) => /** @type {any} */ (el.querySelector(sel));
-    const fields = [...el.querySelectorAll(".frow .field")];
+    const fields = [...el.querySelectorAll(".field-row .field")];
     /** @param {string} label */
     const byLabel = (label) => {
       const f = fields.find(x => {
