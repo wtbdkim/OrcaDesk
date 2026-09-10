@@ -1169,7 +1169,10 @@ the `:` that a calc name never can. Measured on ORCA 6.1.1
 (52 atoms / 987 basis functions): one MO at 60³ = **0.17 s / 3.1 MB**, an SCF
 density over the same grid = **9.9 s**; a grid is 0.9 / 3.1 / 7.3 MB at
 40 / 60 / 80. `orcamgr/cube.py` reads only the cube **header** and hands the
-file through verbatim — 3Dmol parses cube text itself, and ORCA writes the
+file through verbatim (`load_cube` returns the `CubeDataResult` itself, so
+`get_cube_data` serializes what it is handed rather than re-spelling the eight
+fields — P4; `read_cube_header` stays a plain dict, being internal to the NBO
+cube writer and the tests) — 3Dmol parses cube text itself, and ORCA writes the
 *orbital* variant (negative atom count + an extra MO-index line), which 3Dmol's
 own parser already handles.
 
