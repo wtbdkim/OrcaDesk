@@ -5,8 +5,9 @@ the desktop see one queue).
 
 LAN only: it binds 0.0.0.0 so other devices on the same Wi-Fi can reach it,
 and access is gated by the per-launch PIN (P35 — the loopback exemption applies
-only when the bind really is loopback). A QR code for the URL is available from
-the desktop; an outbound tunnel is not built.
+only when the bind really is loopback and nothing is forwarding to it). A QR
+code for the URL is available from the desktop; an outbound tunnel is not built,
+but `proxied=True` is the switch a future one (or an nginx in front) flips.
 
 uvicorn is driven via its programmatic Server API so we can stop it cleanly.
 Requires fastapi + uvicorn (see requirements-server.txt). If they're missing,
@@ -40,10 +41,20 @@ def _local_ip() -> str:
 
 class ServerController:
     def __init__(self, store: QueueStore, port: int = DEFAULT_PORT,
-                 host: str = "0.0.0.0"):
+                 host: str = "0.0.0.0", *, proxied: bool = False,
+                 trusted_proxies: str = "127.0.0.1"):
         self.store = store
         self.port = port
         self.host = host
+        # proxied: a reverse proxy / tunnel (nginx, cloudflared) forwards to us.
+        # It decides TWO things that must agree, which is why it is one flag:
+        # the PIN bypass is off (create_app), and uvicorn is allowed to read
+        # X-Forwarded-For so request.client.host is the real client rather than
+        # the proxy. trusted_proxies is the peer address that header is honoured
+        # from -- passed explicitly so the value never comes from uvicorn's
+        # FORWARDED_ALLOW_IPS environment variable, which ORCAdesk does not own.
+        self.proxied = proxied
+        self.trusted_proxies = trusted_proxies
         self._server = None          # uvicorn.Server
         self._thread: Optional[threading.Thread] = None
         self._ip = "127.0.0.1"
@@ -77,13 +88,24 @@ class ServerController:
 
         self._ip = _local_ip()
         # pass the bind host so the app only honours the loopback auth-bypass when
-        # actually bound to loopback (a LAN bind requires the PIN for all /api/)
-        app = create_app(self.store, bind_host=self.host)   # SHARE the GUI's store
+        # actually bound to loopback (a LAN bind requires the PIN for all /api/),
+        # and the proxy flag so a forwarded deployment does not honour it either
+        app = create_app(self.store, bind_host=self.host,   # SHARE the GUI's store
+                         proxied=self.proxied)
         # log_config=None avoids uvicorn trying to load its default logging
         # dictConfig, which fails inside a PyInstaller bundle with
         # "Unable to configure formatter 'default'".
+        #
+        # proxy_headers is uvicorn's default-ON, and it REPLACES
+        # request.client.host with an X-Forwarded-For element. Off unless a proxy
+        # was declared: the real socket peer is the only address the kernel
+        # vouches for, and it is what the P35 bypass reads. On when one was --
+        # there the bypass is already off, so the header informs and decides
+        # nothing.
         config = uvicorn.Config(app, host=self.host, port=self.port,
-                                log_config=None, log_level="warning")
+                                log_config=None, log_level="warning",
+                                proxy_headers=self.proxied,
+                                forwarded_allow_ips=self.trusted_proxies)
         self._server = uvicorn.Server(config)
         # uvicorn normally installs signal handlers; disable since we're not in
         # the main thread.

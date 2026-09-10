@@ -7,8 +7,9 @@ Contract references (PRINCIPLES.md):
         all-MLIP queue must start without an ORCA path configured.
   P33 — the HTTP path goes through the SAME calc_from_dict choke point as the
         desktop, so path-dangerous names are rejected server-side.
-  P35 — the loopback auth bypass is honoured only on a loopback bind; on a
-        LAN bind every /api/ request needs the PIN, even from 127.0.0.1.
+  P35 — the loopback auth bypass is honoured only on a loopback bind with
+        nothing forwarding to it; on a LAN bind, and behind a reverse proxy
+        or tunnel, every /api/ request needs the PIN even from 127.0.0.1.
 
 fastapi/uvicorn are optional dependencies (P17), so the whole module skips
 when the test client stack is unavailable. Everything is isolated: the store's
@@ -114,6 +115,37 @@ def test_lan_bind_requires_pin_even_from_localhost_peer(store):
                       headers={"x-orcadesk-token": "not-the-pin"}).status_code == 401
     ok = client.get("/api/queue", headers={"x-orcadesk-token": store.token})
     assert ok.status_code == 200
+
+
+def test_proxied_loopback_bind_requires_pin_from_loopback_peer(store):
+    # a reverse proxy / tunnel forwards from 127.0.0.1, so on a loopback bind
+    # EVERY forwarded request would wear a loopback peer address. The bind is
+    # then no longer proof of a loopback client, and the bypass must be off for
+    # all /api/ or the PIN would be off for whoever can reach the proxy (P35).
+    client = _client(create_app(store, bind_host="127.0.0.1", proxied=True),
+                     host="127.0.0.1")
+    assert client.get("/api/queue").status_code == 401
+    ok = client.get("/api/queue", headers={"x-orcadesk-token": store.token})
+    assert ok.status_code == 200
+
+
+def test_proxied_bypass_cannot_be_restored_by_a_forwarded_header(store):
+    # with the bypass off, X-Forwarded-For carries no authority: a client that
+    # claims to be loopback gets 401 like any other. This is what makes the
+    # decision independent of how the proxy merges the header and of which
+    # element the ASGI layer would read.
+    client = _client(create_app(store, bind_host="127.0.0.1", proxied=True),
+                     host="127.0.0.1")
+    spoofed = client.get("/api/queue",
+                         headers={"x-forwarded-for": "127.0.0.1"})
+    assert spoofed.status_code == 401
+
+
+def test_unproxied_loopback_bind_keeps_the_bypass(store):
+    # the default is unchanged: a genuine loopback bind with nothing in front
+    # still exempts a loopback peer (the desktop app's own requests).
+    client = _client(create_app(store, bind_host="127.0.0.1"), host="127.0.0.1")
+    assert client.get("/api/queue").status_code == 200
 
 
 def test_ping_validates_pin_without_revealing_it(store):

@@ -9,8 +9,9 @@ the shared store, with the same budget and the same env/distro resolution the
 desktop uses.
 
 Auth is a per-launch PIN (see P35): every /api call needs it except from
-loopback, and only when the server is genuinely bound to loopback. Not yet
-built: the outbound tunnel and websockets (the phone polls).
+loopback, and only when the server is genuinely bound to loopback AND no
+reverse proxy sits in front (create_app's `proxied`). Not yet built: the
+outbound tunnel and websockets (the phone polls).
 
 Run it inside the desktop app via ServerController, or standalone for API
 testing with orcamgr/server/run.py — but not both at once (run.py builds its
@@ -52,7 +53,8 @@ _LOCAL_HOSTS = {"127.0.0.1", "::1"}
 _OPEN_PATHS = {"/", "/manifest.webmanifest", "/orcadesk_logo.png", "/api/ping"}
 
 
-def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") -> FastAPI:
+def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1",
+               *, proxied: bool = False) -> FastAPI:
     """
     Build the FastAPI app around a QueueStore. If no store is passed, a fresh
     one is created (standalone server mode). When embedded in the PyQt app, the
@@ -62,12 +64,28 @@ def create_app(store: QueueStore | None = None, bind_host: str = "127.0.0.1") ->
     honoured when the bind is loopback-only; on a LAN bind (0.0.0.0 / a routable
     IP) the socket peer cannot be trusted (a same-host proxy/tunnel would make
     every request look like 127.0.0.1), so the PIN is required for ALL /api/.
+
+    proxied says a reverse proxy or tunnel (nginx, cloudflared) sits in front.
+    It is the SECOND way that bind can stop being proof of a loopback client,
+    and the more dangerous one: such a proxy normally forwards to 127.0.0.1,
+    so with a loopback bind every request on the internet would arrive wearing
+    a loopback peer address and take the bypass. So proxied turns the bypass
+    off outright — the PIN is required for ALL /api/, exactly as on a LAN bind.
+
+    Deliberately NOT solved by trusting X-Forwarded-For: that would move the
+    auth decision onto a header, and whether a spoofed one wins then depends on
+    how the proxy merges it (nginx's $proxy_add_x_forwarded_for APPENDS to the
+    client's) and on which element the ASGI middleware reads. With the bypass
+    off, the header carries no authority at all and cannot be got wrong. The
+    transport still enables uvicorn's proxy-header handling in this mode (see
+    ServerController), so request.client.host is the real client for anything
+    that wants to *report* it — never for deciding access.
     """
     store = store or QueueStore()
     app = FastAPI(title="ORCAdesk", version=APP_VERSION)
     # stash the store on the app so routes (and tests) can reach it
     app.state.store = store
-    loopback_bind = bind_host in _LOCAL_HOSTS
+    loopback_bind = bind_host in _LOCAL_HOSTS and not proxied
 
     @app.middleware("http")
     async def require_token(request: Request, call_next):

@@ -38,6 +38,21 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     Visual tab, the natural-orbital analysis, and the Liquid-Glass appearance
     variants.
 
+### Security
+- **The phone-sync PIN can no longer be switched off by putting a reverse proxy
+  in front of it.** The loopback exemption assumed a loopback bind meant a
+  loopback *client*; an nginx or a tunnel forwards from 127.0.0.1, so every
+  request it relayed would have worn a loopback address and skipped the PIN —
+  for whoever could reach the proxy. `create_app(..., proxied=True)` (and
+  `ServerController(..., proxied=True)`, `ORCADESK_PROXIED=1` for the standalone
+  server) turns the exemption off outright and lets uvicorn read
+  `X-Forwarded-For`, so the client address is reported honestly while deciding
+  nothing. Where no proxy is declared, uvicorn's default-on proxy-header
+  handling is now **off**: the address the PIN check reads is the real socket
+  peer, never a header, and never the `FORWARDED_ALLOW_IPS` environment
+  variable ORCAdesk does not own. No shipped configuration changes behaviour —
+  the desktop still binds the LAN and asks for the PIN.
+
 ## [0.9.1-beta] — 2026-09-05
 
 ### Added
