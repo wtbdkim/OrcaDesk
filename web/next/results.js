@@ -222,18 +222,21 @@
 
   // ---------------------------------------------------------------- sections
 
-  /** @param {any} d @param {number} px width of a full-width section */
-  function sections(d, px) {
+  /** @param {any} d @param {number} px width of a full-width section
+   *  @param {string} name */
+  function sections(d, px, name) {
     const out = [summary(d)];
     const cw = px - 36;                       // inside a .plate (18px each side)
-    const geom = _showAll || d.is_optimization;
-    const elec = _showAll || d.show_elec;
+    const half = Math.round(px / 2) - 36;     // ...of a half-width section
+
+    // the input beside the output, first: every other section is read out of it
+    out.push(rawSections(name));
 
     if (d.frequencies && d.frequencies.length) {
       const imag = d.n_imaginary || d.frequencies.filter(f => f < 0).length;
       const pts = d.frequencies.map(f => ({
         x: f, y: 1, cls: f < 0 ? "var(--err)" : "var(--crit-de)" }));
-      out.push(sec("sec-freq", "Vibrational frequencies",
+      out.push(sec("sec-freq", "Vibrational modes",
         d.frequencies.length + " modes · " + imag + " imaginary",
         imag ? "One imaginary mode is what makes a structure a transition state; more "
              + "than one means it is not a stationary point of either kind."
@@ -246,35 +249,69 @@
         "wide"));
     }
 
+    // the structure, and everything else in its folder that can be drawn
+    const struct = NB.viewer.structureSection(d);
+    if (struct) { _present.push({ id: "sec-structure", title: "Structure" }); out.push(struct); }
+    _present.push({ id: "sec-visual", title: "Visual" });
+    out.push(NB.viewer.visualSection());
+
     if (d.transitions && d.transitions.length) {
       const bright = d.transitions.reduce((a, b) => (b.fosc > a.fosc ? b : a));
-      out.push(sec("sec-uv", "UV/Vis absorption", d.transitions.length + " transitions",
+      const byState = {};
+      (d.tddft_states || []).forEach(st => { byState[st.state] = st; });
+      out.push(sec("sec-tddft", "Excited states", d.transitions.length + " transitions",
         `The brightest is at ${bright.nm.toFixed(1)} nm (f = ${bright.fosc.toFixed(4)}). `
         + "Oscillator strength is what a measured spectrum would actually show.",
         plate(chart(d.transitions.map(t => ({ x: t.nm, y: t.fosc })),
                     cw, Math.round(cw * 0.26),
                     { xlab: "wavelength (nm)", ylab: "f (osc.)", stick: true }))
-        + tw(["State", "eV", "nm", "f"], d.transitions.map(t =>
-            [String(t.state), t.ev.toFixed(3), t.nm.toFixed(1), t.fosc.toFixed(4)])),
+        + tw(["State", "eV", "nm", "f", "Character"], d.transitions.map(t => {
+            const st = byState[t.state];
+            const chr = st && st.contributions
+              ? st.contributions.slice(0, 3)
+                  .map(c => `${NB.esc(c[0])}→${NB.esc(c[1])} ${(c[2] * 100).toFixed(0)}%`).join(", ")
+              : "";
+            return [String(t.state), t.ev.toFixed(3), t.nm.toFixed(1), t.fosc.toFixed(4), chr];
+          }), [false, true, true, true, false]),
         "wide"));
+    } else if (d.tddft_states && d.tddft_states.length) {
+      out.push(sec("sec-tddft", "Excited states", d.tddft_states.length + " states",
+        "Which orbital pairs each state is made of, largest contribution first.",
+        tw(["State", "eV", "Main contributions"], d.tddft_states.map(st => [
+          String(st.state), st.ev.toFixed(3),
+          (st.contributions || []).slice(0, 4)
+            .map(c => `${NB.esc(c[0])}→${NB.esc(c[1])} ${(c[2] * 100).toFixed(0)}%`).join(", "),
+        ]), [false, true, false]), "wide"));
     }
 
-    if (d.tddft_states && d.tddft_states.length) {
-      out.push(sec("sec-states", "Excited states", d.tddft_states.length + " states",
-        "Which orbital pairs each state is made of, largest contribution first.",
-        tw(["State", "eV", "Main contributions"], d.tddft_states.map(s => [
-          String(s.state), s.ev.toFixed(3),
-          (s.contributions || []).slice(0, 4)
-            .map(c => `${NB.esc(c[0])}→${NB.esc(c[1])} ${(c[2] * 100).toFixed(0)}%`).join(", "),
-        ]), [false, true, false])));
+    if (d.is_conformer_search && d.conformers && d.conformers.length) {
+      out.push(sec("sec-conf", "Conformer ensemble", d.conformers.length + " conformers",
+        "Ranked by energy; the first is the one a later calculation referencing this "
+        + "search receives.",
+        plate(chart(d.conformers.map(c => ({ x: c.index, y: c.rel_kcal })),
+                    half, Math.round(half * 0.5),
+                    { xlab: "rank", ylab: "ΔE (kcal/mol)" }))
+        + tw(["#", "ΔE (kcal/mol)", "Energy (Eh)", "Atoms"], d.conformers.map(c =>
+            [String(c.index), c.rel_kcal.toFixed(3), c.energy_eh.toFixed(6), String(c.n_atoms)]))));
+    }
+
+    if (d.nmr && d.nmr.length) {
+      out.push(sec("sec-nmr", "NMR shieldings", d.nmr.length + " nuclei",
+        "Absolute isotropic shielding. A chemical shift is this subtracted from a "
+        + "reference computed at the same level.",
+        plate(chart(d.nmr.map(n => ({ x: n.idx, y: n.iso })), half, Math.round(half * 0.5),
+                    { xlab: "nucleus", ylab: "σ iso (ppm)", stick: true }))
+        + tw(["Nucleus", "σ iso (ppm)", "Anisotropy (ppm)"], d.nmr.map(n =>
+            [`${n.idx} ${NB.esc(n.el)}`, n.iso.toFixed(3), n.aniso.toFixed(3)]))));
     }
 
     if (d.neb_path && d.neb_path.length) {
       const irc = d.neb_path_kind === "irc";
       const ts = d.neb_path.filter(p => p.is_ts)[0];
-      out.push(sec("sec-path", irc ? "IRC profile" : "NEB path",
-        d.neb_path.length + " images",
-        irc ? "The path downhill from the transition state, in both directions."
+      out.push(sec("sec-path", "Reaction path",
+        (irc ? "IRC" : "NEB-TS") + " · " + d.neb_path.length + " images",
+        irc ? "The intrinsic reaction coordinate, run downhill from the transition state "
+            + "in both directions."
             : "Energy along the band. The marked image is the transition state."
               + (ts ? ` Its barrier is ${ts.de_kcal.toFixed(2)} kcal/mol.` : ""),
         plate(chart(d.neb_path.map((p, i) => ({
@@ -289,66 +326,61 @@
         "wide"));
     }
 
-    if (d.is_conformer_search && d.conformers && d.conformers.length) {
-      out.push(sec("sec-conf", "Conformers", d.conformers.length + " found",
-        "Ranked by energy; the first is the one a reference to this search hands on.",
-        tw(["Rank", "ΔE (kcal/mol)", "Energy (Eh)", "Atoms"], d.conformers.map(c =>
-          [String(c.index), c.rel_kcal.toFixed(3), c.energy_eh.toFixed(6), String(c.n_atoms)]))));
-    }
+    _present.push({ id: "sec-nbo", title: "Natural orbitals" });
+    out.push(NB.viewer.nboSection());
 
-    if (elec && d.orbitals && d.orbitals.length) {
-      const near = frontierWindow(d.orbitals);
-      out.push(sec("sec-orb", "Orbital energies",
-        _showAll ? d.orbitals.length + " orbitals"
-                 : near.length + " of " + d.orbitals.length + " · around the frontier",
+    // Per-atom and per-bond numbers belong to the Structure viewer — click an
+    // atom or a bond and they are right there. As TABLES they are for reading
+    // without a mouse, so they live under Show all with everything else.
+    if (_showAll) out.push(tables(d));
+    return out.join("");
+  }
+
+  /** The per-atom and per-bond tables, under Show all. @param {any} d */
+  function tables(d) {
+    const out = [];
+    if (d.orbitals && d.orbitals.length) {
+      out.push(sec("sec-orb", "Orbital energies", d.orbitals.length + " orbitals",
         "The gap between the highest occupied and the lowest empty level is the one "
-        + "number most of this table exists to give."
-        + (_showAll ? "" : " <b>Show all</b> opens the full manifold."),
-        tw(["Orbital", "Occupation", "eV", ""], near.map(o => [
+        + "number most of this table exists to give.",
+        tw(["Orbital", "Occupation", "eV", ""], d.orbitals.map(o => [
           "#" + o.idx + (o.spin ? " " + NB.esc(o.spin) : ""),
           o.occ.toFixed(3), o.ev.toFixed(3),
           o.frontier ? `<span class="badge">${o.frontier.toUpperCase()}</span>` : ""]),
           [false, true, true, false])));
     }
-    if (elec && d.mulliken && d.mulliken.length) {
+    if (d.mulliken && d.mulliken.length) {
       out.push(sec("sec-mull", "Mulliken charges", d.mulliken.length + " atoms",
-        "Partial charges from the basis-function partition — basis-set dependent, so "
-        + "read the pattern rather than the digits.",
+        "Also on any atom you click in <b>Structure</b>. Basis-set dependent, so read "
+        + "the pattern rather than the digits.",
         tw(["Atom", "Charge (e)"], d.mulliken.map((m, i) =>
           [`${i + 1} ${NB.esc(m[0])}`, m[1].toFixed(6)]))));
     }
-    if (elec && d.loewdin && d.loewdin.length) {
+    if (d.loewdin && d.loewdin.length) {
       out.push(sec("sec-loew", "Löwdin charges", d.loewdin.length + " atoms",
-        "The same partition after symmetric orthogonalization; usually the steadier "
-        + "of the two across basis sets.",
+        "The same partition after symmetric orthogonalization; usually the steadier of "
+        + "the two across basis sets.",
         tw(["Atom", "Charge (e)"], d.loewdin.map((m, i) =>
           [`${i + 1} ${NB.esc(m[0])}`, m[1].toFixed(6)]))));
     }
-    if (elec && d.mayer_bonds && d.mayer_bonds.length) {
+    if (d.mayer_bonds && d.mayer_bonds.length) {
       out.push(sec("sec-mbo", "Mayer bond orders", d.mayer_bonds.length + " bonds",
-        "Roughly how many electron pairs each bond holds — near 1, 2 and 3 for "
-        + "single, double and triple bonds.",
+        "Also on any bond you click in <b>Structure</b>. Near 1, 2 and 3 for single, "
+        + "double and triple bonds.",
         tw(["Bond", "Order"], d.mayer_bonds.map(b =>
           [`${NB.esc(b[0])} – ${NB.esc(b[1])}`, b[2].toFixed(4)]))));
     }
-    if (elec && d.mayer_valences && d.mayer_valences.length) {
+    if (d.mayer_valences && d.mayer_valences.length) {
       out.push(sec("sec-mval", "Mayer valences", d.mayer_valences.length + " atoms",
-        "Total bonding capacity used per atom; a value well below the usual one "
-        + "points at a bond the geometry has stretched.",
+        "Total bonding capacity used per atom; a value well below the usual one points "
+        + "at a bond the geometry has stretched.",
         tw(["Atom", "Valence"], d.mayer_valences.map(v =>
           [`${v[0]} ${NB.esc(v[1])}`, v[2].toFixed(4)]))));
     }
-    if (d.nmr && d.nmr.length) {
-      out.push(sec("sec-nmr", "NMR shielding", d.nmr.length + " nuclei",
-        "Absolute isotropic shielding. A chemical shift is this subtracted from a "
-        + "reference computed at the same level.",
-        tw(["Nucleus", "Isotropic (ppm)", "Anisotropy (ppm)"], d.nmr.map(n =>
-          [`${n.idx} ${NB.esc(n.el)}`, n.iso.toFixed(3), n.aniso.toFixed(3)]))));
-    }
-    if (geom && d.geometry && d.geometry.length) {
+    if (d.geometry && d.geometry.length) {
       out.push(sec("sec-geom", "Final geometry", d.geometry.length + " atoms",
-        "The coordinates the run ended on — what a later calculation referencing "
-        + "this one starts from.",
+        "The coordinates the run ended on — what a later calculation referencing this "
+        + "one starts from.",
         tw(["Atom", "x (Å)", "y (Å)", "z (Å)"], d.geometry.map((a, i) =>
           [`${i + 1} ${NB.esc(a.el)}`, a.x.toFixed(6), a.y.toFixed(6), a.z.toFixed(6)]))));
     }
@@ -546,7 +578,7 @@
 
     _present = [];
     const body = _cur
-      ? sections(_cur, px) + rawSections(name) + `<section class="secblock wide" id="fep"></section>`
+      ? sections(_cur, px, name) + `<section class="secblock wide" id="fep"></section>`
       : `<section class="secblock wide">${plate(
           `<p class="hint" style="margin:0">No result open. Pick a finished calculation
            above, or open any ORCA output from disk — a result stays readable after it
@@ -584,7 +616,16 @@
     }));
     spy(host);
 
-    if (_cur) fillRaw(name, _cur);
+    if (_cur) {
+      fillRaw(name, _cur);
+      // how the BACKEND addresses this result. A queued calculation is parsed
+      // by kind, a file on disk by its folder — the prefix keeps the two routes
+      // apart, and an MLIP or CREST run read the wrong way is a bogus result.
+      const source = _curName ? "calc:" + _curName : "file:" + _curPath;
+      NB.viewer.mountStructure(_cur, source);
+      NB.viewer.mountVisual(source);
+      NB.viewer.mountNbo(source);
+    }
     profile(px);
     if (NB.rail) NB.rail.render();
   }

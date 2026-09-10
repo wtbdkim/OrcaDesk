@@ -128,7 +128,9 @@ def test_every_class_the_preview_emits_has_a_rule():
     """
     css = re.sub(r"/\*.*?\*/", "", _read(NEXT / "app.css"), flags=re.S)
     styled = set(re.findall(r"\.([A-Za-z][\w-]*)", css))
-    hooks = {"cellinp", "cellres", "qinp", "out"}   # selected by JS, never styled
+    # selected by JS or by an ancestor rule, never styled by their own name —
+    # the design uses .molcv the same way (.viewstage canvas / .vizstage canvas)
+    hooks = {"cellinp", "cellres", "qinp", "out", "molcv"}
     emitted = {}
     for f in sorted(list(NEXT.glob("*.js")) + [NEXT / "index.html"]):
         src = re.sub(r"/\*.*?\*/", "", _read(f), flags=re.S)
