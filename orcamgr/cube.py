@@ -14,13 +14,17 @@ MO indices in the file (``1   96``). 3Dmol handles that case (it takes
 ``Math.abs`` of the count and skips the extra line), and so must any code here
 that wants to know where the values start.
 
-Pure / file-only and Qt-free so it stays unit-testable; the Bridge slot reads
-the file and serializes the returned dict.
+Pure / file-only and Qt-free so it stays unit-testable. ``load_cube`` returns
+the wire payload itself (``CubeDataResult``), so the Bridge slot serializes what
+it is handed instead of re-spelling the same eight fields on the way out (P4) --
+the schema import is a stdlib-only TypedDict declaration and pulls in nothing.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+from .state.schemas import CubeDataResult
 
 # Conventional isosurface levels per plot kind, in atomic units: an MO is
 # normally drawn at 0.05, a total electron density lower (0.02 sits between the
@@ -112,9 +116,10 @@ def read_cube_header(path) -> dict:
             "origin": [a[1], a[2], a[3]]}
 
 
-def load_cube(path, kind: str = "mo", max_bytes: int = 0) -> dict:
+def load_cube(path, kind: str = "mo", max_bytes: int = 0) -> CubeDataResult:
     """Read a cube file for the viewer: ``{ok, text, title, npoints, dims, bytes,
-    isovalue, signed}`` or ``{ok: False, error}``.
+    isovalue, signed}`` or ``{ok: False, error}`` -- a ``CubeDataResult``, which
+    get_cube_data() serializes as-is.
 
     ``text`` is the file verbatim — 3Dmol's ``addVolumetricData(text, "cube")``
     consumes it directly. ``max_bytes`` (0 = no limit) refuses an oversized file
@@ -125,21 +130,26 @@ def load_cube(path, kind: str = "mo", max_bytes: int = 0) -> dict:
     try:
         size = p.stat().st_size
     except OSError as e:
-        return {"ok": False, "error": str(e)}
+        return CubeDataResult(ok=False, error=str(e))
     if max_bytes and size > max_bytes:
-        return {"ok": False,
-                "error": f"That cube is {size / 1e6:.0f} MB — too large to display. "
-                         f"Regenerate it at a coarser grid."}
+        return CubeDataResult(
+            ok=False,
+            error=f"That cube is {size / 1e6:.0f} MB — too large to display. "
+                  f"Regenerate it at a coarser grid.")
     header = read_cube_header(p)
     if not header.get("ok"):
-        return header
+        # read_cube_header stays a plain dict (it is internal -- tests and the
+        # NBO cube writer read its grid fields), so its refusal is re-wrapped
+        # rather than passed through as the wire type.
+        return CubeDataResult(ok=False, error=str(header.get("error") or ""))
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
-        return {"ok": False, "error": str(e)}
-    return {"ok": True, "text": text, "title": header["title"],
-            "npoints": header["npoints"],
-            "dims": [header["nx"], header["ny"], header["nz"]],
-            "bytes": size,
-            "isovalue": DEFAULT_ISOVALUES.get(kind, 0.05),
-            "signed": kind in SIGNED_KINDS}
+        return CubeDataResult(ok=False, error=str(e))
+    return CubeDataResult(
+        ok=True, text=text, title=header["title"],
+        npoints=header["npoints"],
+        dims=[header["nx"], header["ny"], header["nz"]],
+        bytes=size,
+        isovalue=DEFAULT_ISOVALUES.get(kind, 0.05),
+        signed=kind in SIGNED_KINDS)

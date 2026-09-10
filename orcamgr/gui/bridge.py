@@ -1728,13 +1728,10 @@ class Bridge(QObject):
             kind = str(self._cube.get("kind") or "mo")
         if not path:
             return json.dumps(CubeDataResult(ok=False, error="No cube to show yet."))
-        d = load_cube(path, kind, max_bytes=MAX_CUBE_BYTES)
-        if not d.get("ok"):
-            return json.dumps(CubeDataResult(ok=False, error=str(d.get("error") or "")))
-        return json.dumps(CubeDataResult(
-            ok=True, text=d["text"], title=d["title"], npoints=d["npoints"],
-            dims=d["dims"], bytes=d["bytes"], isovalue=d["isovalue"],
-            signed=d["signed"]))
+        # load_cube already returns the CubeDataResult, ok/error included, so the
+        # payload has ONE construction site (P4). It used to be re-spelled field
+        # by field here, which is a second place to forget a key.
+        return json.dumps(load_cube(path, kind, max_bytes=MAX_CUBE_BYTES))
 
     # --- natural-orbital analysis (orcamgr/nbo), computed in process ---
     @pyqtSlot(str, result=str)
