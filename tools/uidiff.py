@@ -29,6 +29,11 @@ SKIP = {"fontFamily", "box", "gridTemplateRows"}
 # design. (.plate:last-child{margin-bottom:0} is the rule doing it, and it is
 # the same rule on both sides.)
 PER_LANDMARK_SKIP = {
+    # The mockup's first MLIP environment is ready (green). A seeded one
+    # cannot be: readiness means an interpreter that actually imports a
+    # backend, and nothing here installs one. The row itself is compared;
+    # only the three colours its STATE picks are not.
+    "envrow_badge": {"backgroundColor", "borderColor", "color"},
     "plate": {"marginBottom"},
     # repeat(auto-fit, minmax(120px, 1fr)) resolves to however many boxes fit
     # the children it has — the mockup lists six things to draw, a real result

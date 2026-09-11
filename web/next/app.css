@@ -960,6 +960,35 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
   .resinner{grid-template-columns:minmax(0,1fr);}
 }
 
+/* A finding can also be good news. The reference has .finding.err and
+   .finding.warn because its mock never passes a check; the NEB endpoint
+   comparison has a third answer — "these two agree" — and saying that in grey
+   next to two coloured states reads as "not checked yet". The tint follows the
+   pair above it. */
+:root{ --ok-tint-bg:rgba(74,222,128,.08); }
+:root:not([data-theme="light"]){ --ok-tint-bg:rgba(74,222,128,.08); }
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){ --ok-tint-bg:rgba(21,128,61,.08); }
+}
+:root[data-theme="light"]{ --ok-tint-bg:rgba(21,128,61,.08); }
+.finding.ok{background:var(--ok-tint-bg); color:var(--ok);}
+
+/* ---------------------------- viewer additions ----------------------------
+   The reference's .mvstage draws with the mock's own painter, so it holds a
+   .molcv and nothing else. The real window needs a box for a 3Dmol GLViewer
+   beside it: both fill the stage, and only one is ever visible. */
+.mvgl{position:absolute; inset:0;}
+.mvgl canvas{border-radius:0;}
+
+/* Isosurface colours. The reference states the ESP ramp as literal hexes on
+   .mvramp and never names the orbital lobes (its stage is a mock). These are
+   those same three plus the lobe pair, as tokens, so the ramp swatch and the
+   surface it explains are drawn from ONE definition and cannot disagree. */
+:root{
+  --orb-pos:#4f86f7; --orb-neg:#f2555a; --orb-dens:#5eead4;
+  --esp-neg:#f2555a; --esp-mid:#f5f5f5; --esp-pos:#4f86f7;
+}
+
 /* ---------------------------- builder corrections ----------------------------
    Deviations from design/notebook-reference.html, asked for after using it.
    Kept together and named so the reference diff (tools/uidiff.py) has one place

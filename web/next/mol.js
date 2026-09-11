@@ -397,13 +397,11 @@ var MOL = {};
       ro = new ResizeObserver(() => paint());
       ro.observe(canvas);
     }
-    // Turning and releasing happen on the WINDOW, because a drag that leaves
-    // the canvas still has to keep turning it. That means the listeners outlive
-    // the canvas unless they are taken back: a re-rendered report would
-    // otherwise leave a stage bound to a detached canvas answering the same
-    // events, and the stale one clearing the pick the live one just made.
-    
-
+    // Everything above is bound to the CANVAS, not the window: setPointerCapture
+    // is what keeps a drag that leaves the canvas attached to it, which is the
+    // only reason those listeners were ever on the window. A stage whose canvas
+    // is detached now answers nothing, so a re-rendered report cannot leave a
+    // stale one clearing the pick the live one just made.
     return {
       /** @param {any[]} a */
       setAtoms(a) { atoms = a || []; mark = []; measure = null; paint(); },

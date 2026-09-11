@@ -3,6 +3,56 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.10.1] — 2026-09-11
+
+### Added
+- **The notebook preview's last ten design elements.** Everything the approved
+  design draws is now in the front-end; the element-by-element check that used
+  to carry a list of exceptions carries an empty one.
+  - **A pop-out 3D viewer.** A trajectory, a CREST ensemble or a folder of
+    exported conformers opens in its own window: walk it with ‹ › or the arrow
+    keys, star the frames worth keeping (**F**), show only those, export them
+    as `.xyz`, or copy the frame on screen. Its second half draws **orbitals,
+    the electron density, the spin density and an ESP map** as isosurfaces,
+    with the isovalue editable without re-plotting.
+    - Two renderers on one stage: structures use the same painter as every
+      other stage here, so drag, click and right-drag-to-measure behave
+      identically; the volume half uses the vendored 3Dmol, fetched on the
+      first surface rather than at boot. A machine with no WebGL can still
+      walk a trajectory, and says so if a surface is asked for.
+    - Reachable from a cell's thumbnail, the report's Structure section, and
+      the Visual panel — which used to hand the folder to the operating system
+      and now opens the set that is actually on screen.
+  - **MLIP environments in Settings.** One row per registered environment with
+    what it carries (which backends import, CPU or which GPU, which Python),
+    build a new one, register an existing interpreter, remove, re-check.
+    Building reports its steps and can be cancelled.
+  - **The appearance style and glass intensity**, saved from the notebook so
+    the choice does not depend on which front-end you are in. The notebook
+    itself draws flat; the classic window renders the styles.
+  - **The builder says what is wrong with a structure before it costs hours**:
+    atoms on top of each other, a multiplicity the electron count cannot
+    produce, coordinates that are really in Bohr — with the formula, electron
+    count and fragment count beside them.
+  - **NEB endpoints as two slots.** The reactant is the geometry above, the
+    product loads into its own slot, and *Compare endpoints* answers whether
+    both carry the same atoms in the same order — a reordered atom makes the
+    band meaningless, and it used to be found by ORCA.
+  - **Per-element basis / ECP overrides** (`%basis newgto` / `newecp`) as rows
+    you add and remove.
+  - **Insertable blocks for a hand-written `.inp`** — `{{GEOMETRY}}` and the
+    common `%`-blocks, at the cursor.
+
+### Changed
+- The design check runs in **three passes** and 116 landmarks rather than 79:
+  the window at rest, a result section, and the overlays — the viewer, the
+  settings sheet and the builder's conditional blocks, both sides opened to the
+  same state first. The second pass exists because a chrome-only list read
+  `DIFFERENCES: 0` over a report of unstyled markup; the third exists because a
+  list that stops at the window at rest cannot see a single overlay.
+- The Interface card names what the preview is still missing, which is now only
+  the MLIP and CREST *calculation kinds* and the Liquid-Glass rendering.
+
 ## [0.10.0] — 2026-09-10
 
 ### Added
@@ -31,7 +81,7 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   - It is the approved design rather than an interpretation of it: the design
     is in the repo (`design/notebook-reference.html`), its stylesheet IS
     `web/next/app.css`, and `tools/uispec.py` + `tools/uidiff.py` render both
-    and print the number of differences — 46 landmarks × 23 computed
+    and print the number of differences — 79 landmarks × 23 computed
     properties, currently 0.
   - Not in it yet, and named on its own Interface card rather than silently
     missing: the MLIP and CREST builders and their setup, the 3D viewer and the

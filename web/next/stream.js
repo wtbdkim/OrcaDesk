@@ -83,6 +83,7 @@
           <div class="firstcol">
             <div class="thumb">
               <canvas aria-label="Structure, ball and stick"></canvas>
+              <button class="act" type="button" data-open="viewer">Open in viewer</button>
               <span class="cap"></span>
             </div>
           </div>
@@ -149,6 +150,10 @@
       q(".thumb .cap").textContent =
         (c.state === "done" ? "final · " : "input · ") + geom.length + " atoms";
       MOL.draw(q(".thumb canvas"), geom);
+      // the trajectory, not this one frame: the thumbnail is the door to every
+      // structure the run has written, which is what the big window is for
+      q('.thumb [data-open="viewer"]').onclick = () => NB.mv.open({
+        source: "calc:" + c.name, title: c.name + " — structures" });
     }
 
     // --- right column: the output

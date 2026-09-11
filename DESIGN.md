@@ -1350,6 +1350,15 @@ and a 600px rail that stays on screen in both:
   come straight back from, and taking the window for it would throw away the
   queue being watched.
 
+**17.0a A landmark list has to reach past what was easy to measure.** The
+check runs in three passes — the window at rest, a result section with *Show
+all* on, and the overlays (the pop-out viewer, the settings sheet, the builder's
+conditional blocks), both sides opened to the same state first. Each pass exists
+because the one before it read `DIFFERENCES: 0` while something real was
+unstyled: the first list was chrome only and missed a report of markup `app.css`
+had never heard of; the second stopped at the window at rest and could not see a
+single overlay. A green number that stops the looking is worse than no number.
+
 **17.3 A rule that sets `display` names the whole state.** Regions are hidden by
 default and revealed by the view — never the other way round — so no two rules
 that both set `display` can match the same element. This is written down
@@ -1363,6 +1372,15 @@ is the width it says it is. A fixed viewBox scaled to fit is the bug that made
 an earlier revision's charts 2.6× too thick. The outermost x-axis ticks anchor
 to their own edge rather than their centre, or an exponential label hangs past
 the plot.
+
+**17.4a One stage, two renderers — and the second is loaded only if asked
+for.** The pop-out viewer paints structures with `mol.js`, the same painter as
+every other stage here, so drag, click and right-drag-to-measure behave the same
+in the big window as in the small one. An isosurface is a volume, not a set of
+atoms, so that half uses the vendored 3Dmol the classic UI already ships — and
+it is fetched on the first surface, never at boot. A machine with no WebGL
+context can still walk a trajectory, and the one thing it cannot do says so
+instead of failing silently.
 
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
@@ -1411,5 +1429,5 @@ Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
 | B27 | The MLIP/CREST card lock disabled only a hand-written list of field ids, so CREST's whole *Advanced settings* block (preset, NCI, solvent model, the MD/MTD numbers, the five toggles) and both cards' geometry-source radios stayed enabled under the grey — pretend-disabled chrome around live controls | D41 | resolved (0.6.1-beta — the lock disables every control the card's own DOM contains, so the list cannot drift from the markup again; the CUDA `<option>`'s separate disabled state is deliberately left to `refreshMlipDeviceOptions`) |
 | B28 | Settings → CREST's *Install CREST* button was pretend-enabled: it disabled only once CREST was already installed, never when there was **no WSL distro to install into** (the one prerequisite ORCAdesk cannot script). The click's only feedback was a Log-tab line, so a failed install read as a dead button — and the installer's actionable diagnostics never reached the card | D41, D2, §13.2 | resolved (0.7.0-beta — the button disables with the reason in its tooltip when WSL or a distro is absent, or while a probe is in flight; the install outcome is published on `CrestStatusPayload.install_error` and surfaced as the card's detail line + a toast) |
 | B29 | Two color literals had come back after B3/B5 removed the pattern: `renderInputEcho`'s `<pre>` used a raw `rgba(127,127,127,0.08)` (a theme-independent grey that is neither a token nor an alpha-ladder value), and the 3D viewer fell back to the literal `#18181b` — the DARK `--card` — when its token read came back empty, painting the stage near-black on a light theme | D10, D13, §15.1 | resolved (unreleased — the echo uses `--input-bg`; the viewer passes no background at all when the token is unreadable, rather than the wrong theme's value) |
-| B31 | The notebook front-end still lacks three of the reference's blocks: the MLIP environment rows and the glass-intensity slider in Settings (`.envrow`, `.slider`), the builder's NEB-endpoint / per-element-basis / structure-findings blocks (`.nebrow`, `.nebslot`, `.basis-row`, `.snips`, `.finding`), and the pop-out 3D viewer window with its frame walker and ESP ramp (`.mvwin` …) | §17 | accepted (0.10.0 — listed in `tests/test_next_ui.py::test_the_preview_uses_the_references_own_component_vocabulary`, which fails if anything ELSE is dropped and fails again once one of these lands and is not removed from the list) |
-| B30 | The notebook front-end (§17) does not yet cover the MLIP and CREST builders and backend setup, the 3D structure viewer and the Visual tab, the natural-orbital analysis, or the Liquid-Glass appearance variants (§16) — a user who needs those has to switch back to classic | D2, §17.5 | accepted (0.10.0 — it is a preview, off by default, and its Interface card names the gap and switches you rather than letting you find it by a control that is not there; close it as the sections land) |
+| B31 | The notebook front-end still lacks three of the reference's blocks: the MLIP environment rows and the glass-intensity slider in Settings (`.envrow`, `.slider`), the builder's NEB-endpoint / per-element-basis / structure-findings blocks (`.nebrow`, `.nebslot`, `.basis-row`, `.snips`, `.finding`), and the pop-out 3D viewer window with its frame walker and ESP ramp (`.mvwin` …) | §17 | resolved (0.10.1 — all ten landed; the `OUTSTANDING` set in `tests/test_next_ui.py::test_the_preview_uses_the_references_own_component_vocabulary` is now empty and is kept that way, so dropping an element is a decision somebody took rather than something that quietly happened) |
+| B30 | The notebook front-end (§17) does not yet cover the MLIP and CREST **calculation kinds** in the builder, and it draws flat — the Liquid-Glass appearance variants (§16) are set from its Settings but rendered only by the classic window | D2, §17.5 | accepted (0.10.1 — narrowed: the MLIP environment setup, the 3D viewer, the Visual panel and the natural-orbital analysis have landed. It stays a preview, off by default, and its Interface card names what is left rather than letting it be found as a control that is not there) |

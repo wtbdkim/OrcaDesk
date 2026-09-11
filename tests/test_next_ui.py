@@ -117,6 +117,13 @@ def test_the_design_check_measures_inside_a_section_too():
     for needed in (".resinner .plate", ".resinner .tw", ".resinner .secdesc",
                    ".resinner .sech h2", ".secblock", ".rawin", ".rawout"):
         assert needed in spec, f"the design check no longer measures {needed}"
+    # ...and past the window at rest. The same hole had opened at the far end:
+    # the viewer, the settings cards and the builder's conditional blocks do not
+    # exist until something is opened, so two passes could not see any of them.
+    assert "OSEL = [" in spec, "the overlay landmark list is gone"
+    for needed in (".mvwin", ".mvstage", "#mv-volume", ".mvramp", ".envrow",
+                   "input.slider", ".nebslot", ".basis-row", ".snips"):
+        assert needed in spec, f"the design check no longer measures {needed}"
 
 
 def test_every_class_the_preview_emits_has_a_rule():
@@ -164,14 +171,12 @@ def test_the_preview_uses_the_references_own_component_vocabulary():
     src = chr(10).join(_read(f) for f in sorted(NEXT.glob("*.js")) + [NEXT / "index.html"])
     missing = {c for c in used if not re.search("\\b" + re.escape(c) + "\\b", src)}
 
-    # Known and listed (DESIGN.md B30): the MLIP/CREST setup, the builder's
-    # NEB / per-element-basis / findings blocks, and the pop-out 3D viewer
-    # window with its frame walker and ESP ramp.
-    OUTSTANDING = {
-        "envrow", "slider",                                   # MLIP env setup
-        "nebrow", "nebslot", "basis-row", "snips", "finding",  # builder blocks
-        "mvwin", "mvhead", "mvstage", "mvlegend", "mvbar", "mvcount", "mvramp",
-    }
+    # Empty, and kept rather than deleted with its last entry: the two
+    # assertions below are what make DROPPING an element a decision somebody
+    # took instead of something that quietly happened, and an empty set is the
+    # strongest form of that record. Adding a name here is allowed; doing it
+    # without saying why in DESIGN.md is not.
+    OUTSTANDING = set()
     unexpected = sorted(missing - OUTSTANDING)
     assert not unexpected, (
         "design elements dropped without a decision: " + ", ".join(unexpected))

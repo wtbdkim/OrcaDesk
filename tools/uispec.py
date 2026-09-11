@@ -123,6 +123,69 @@ RSEL = [
 ]
 REPORT = {RSEL[i]: (RSEL[i + 1], RSEL[i + 1]) for i in range(0, len(RSEL), 2)}
 
+# The overlays: the pop-out viewer, the settings sheet, and the builder's
+# conditional blocks. A third pass for the same reason the report needed a
+# second one — none of this exists until something is opened, so a check that
+# only ever measures the window at rest cannot see any of it, and would read 0
+# while every one of them was unstyled.
+OSEL = [
+    "mvwin", ".mvwin",
+    "mvhead", ".mvhead",
+    "mvhead_t", ".mvhead .t",
+    "mvhead_seg", ".mvhead .seg",
+    "mvstage", ".mvstage",
+    "mvlegend", ".mvlegend",
+    "mvbar", "#mv-frames",
+    "mvbar_btn", "#mv-frames .btn",
+    "mvcount", ".mvcount",
+    "mvkbd", "#mv-frames kbd",
+    "mvbar_vol", "#mv-volume",
+    "mvbar_lb", "#mv-volume .lb",
+    "mvbar_select", "#mv-volume select",
+    "mvbar_number", '#mv-volume input[type="number"]',
+    "mvramp", ".mvramp",
+
+    "sheet", ".sheet",
+    "sheethead", ".sheethead",
+    "sheetbody", ".sheetbody",
+    "scard", ".scard",
+    "scard_title", ".scard-title",
+    "scard_desc", ".scard-desc",
+    "kvline", ".kvline",
+    "envrow", ".envrow",
+    "envrow_n", ".envrow .n",
+    "envrow_d", ".envrow .d",
+    "envrow_badge", ".envrow .badge",
+    "slider", "input.slider",
+
+    "nebrow", ".nebrow",
+    "nebslot", ".nebslot",
+    "nebslot_lb", ".nebslot .lb",
+    "nebslot_fn", ".nebslot .fn",
+    "basisrow", ".basis-row",
+    "basisrow_field", ".basis-row .field",
+    "basisrow_rm", ".basis-row .rm",
+    "snips", ".snips",
+    "snips_btn", ".snips .btn",
+    "finding", ".finding.warn",
+]
+OVERLAY = {OSEL[i]: (OSEL[i + 1], OSEL[i + 1]) for i in range(0, len(OSEL), 2)}
+# The one landmark whose two sides are addressed differently: both pages hold
+# several .finding boxes and querySelector takes the first, which is a
+# different one on each side. Name the NEB verdict on both, so the same box
+# is compared with the same box.
+OVERLAY["finding"] = ("#neb-verdict", '[data-a="neb-verdict"] .finding')
+
+# Everything the mockup keeps behind a `hidden` attribute that this pass has to
+# see. Both sides are opened to the same state before anything is measured.
+MOCK_OPEN = """
+(function () {
+  ["mv-scrim","mvwin","mv-volume","neb-card","pane-raw","scrim","settings"]
+    .forEach(function (id) { var e = document.getElementById(id); if (e) e.hidden = false; });
+  return true;
+})()
+"""
+
 PROPS = ["display", "gridTemplateColumns", "gridTemplateRows", "gap",
          "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
          "marginTop", "marginBottom",
@@ -200,7 +263,15 @@ def run_mock():
                 lambda: measure(view.page(), "mock", report_done, REPORT)))
 
     def report_done(res):
-        out = merge(state["jobs"], res)
+        state["report"] = res
+        # back to the jobs view: the builder and the sheet belong to it
+        view.page().runJavaScript(
+            'document.querySelector(".app").setAttribute("data-view","jobs");' + MOCK_OPEN,
+            lambda _r: QTimer.singleShot(900,
+                lambda: measure(view.page(), "mock", overlay_done, OVERLAY)))
+
+    def overlay_done(res):
+        out = merge(merge(state["jobs"], state["report"]), res)
         OUT.write_text(json.dumps(out, indent=1), encoding="utf-8")
         print("wrote", OUT, "landmarks:", len([k for k in out if not k.startswith("__")]))
         missing = [k for k in out if not k.startswith("__") and out[k] is None]
@@ -224,7 +295,14 @@ def run_real():
     fake = tmp / "orca.exe"; fake.write_bytes(b"")
     (tmp / "ORCAdesk" / "settings.json").write_text(json.dumps({
         "workspace_root": str(ws), "ui_variant": "notebook",
-        "orca_path": str(fake)}), encoding="utf-8")
+        "orca_path": str(fake),
+        # something for the settings sheet to draw an .envrow from. The
+        # interpreter does not exist, so the probe comes back "unusable" - a
+        # state the row has to draw anyway, and the only one reachable with
+        # nothing installed.
+        "mlip_envs": [{"id": "e1", "name": "mace-gpu",
+                       "python": str(tmp / "nope" / "python.exe")}],
+        }), encoding="utf-8")
     import shutil
     (ws / "h2o").mkdir(parents=True, exist_ok=True)
     shutil.copy(ROOT / "tests" / "nbo" / "fixtures" / "h2o.out", ws / "h2o" / "h2o.out")
@@ -319,7 +397,38 @@ def run_real():
                 lambda: measure(page, "real", report_done, REPORT)))
 
     def report_done(res):
-        done(merge(state["jobs"], res))
+        state["report"] = res
+        # Back to the jobs view and open everything the third pass measures.
+        # Three steps rather than one: the builder mounts asynchronously (it
+        # loads the option lists and, when editing, the calculation itself), and
+        # changing the kind rebuilds the form from scratch.
+        page.runJavaScript(
+            'NB.go("jobs"); NB.settingsView.open(); NB.build.open("");',
+            lambda _r: QTimer.singleShot(2000, overlay_kind))
+
+    def overlay_kind():
+        page.runJavaScript(
+            '(function(){var c=document.querySelector(".cell.editing");'
+            'var k=c.querySelector(\'[data-f="kind"]\');'
+            'k.value="neb_ts"; k.dispatchEvent(new Event("change")); return true;})()',
+            lambda _r: QTimer.singleShot(2000, overlay_open))
+
+    def overlay_open():
+        page.runJavaScript(
+            '(function(){'
+            'var c=document.querySelector(".cell.editing");'
+            'c.querySelector(\'[data-act="addbasis"]\').click();'
+            # the raw pane holds .snips, and the mockup measures it open too
+            'c.querySelector("[data-raw]").hidden=false;'
+            '["mv-scrim","mvwin","mv-volume","mv-ramp","mv-ramphint"]'
+            '.forEach(function(id){'
+            '  var e=document.getElementById(id); if(e) e.hidden=false;});'
+            'return true;})()',
+            lambda _r: QTimer.singleShot(1200,
+                lambda: measure(page, "real", overlay_done, OVERLAY)))
+
+    def overlay_done(res):
+        done(merge(merge(state["jobs"], state["report"]), res))
 
     def done(res):
         res["__console"] = console
