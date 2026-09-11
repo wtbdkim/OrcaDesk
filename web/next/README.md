@@ -91,6 +91,19 @@ instead of scattering through the sheet — and add its landmark to
   element are decided by source order — which has already cost this UI two bugs
   (DESIGN.md §17.3). Regions are hidden by default and revealed by the view,
   never the other way round.
+- **Anything that costs an orca_plot run asks before it spends one.** The
+  Visual strip lists the wavefunction's surfaces beside the `.xyz` sets, as
+  KINDS — one **Orbitals** tile, not one per orbital; the list on the left holds
+  the instances. A row marked *ready* opens straight away, one that is not puts
+  up the question first. Get the picks and their ready marks from
+  `NB.mv.surfaces` —
+  it owns the cube-naming rule, and a second copy of that rule is how a "ready"
+  mark and the file the fetch looks for come to disagree. DESIGN.md §17.4c.
+- **A stick chart's numbers live on the band, not in a table under it.** Pass
+  `{hover: true}` and a `lab` per point to `chart()`; `bindCharts` then owns the
+  cursor, the `.chtip` plate and the arrow keys. The whole plot is the hit
+  target (a band is 1.6px) and the keyboard path is not optional — it is what
+  keeps the values from being hover-only. DESIGN.md §17.4b.
 - **Charts are drawn at their box's real pixel width** and emit a matching
   `viewBox`. Do not scale an SVG to fit: that scales its stroke widths and its
   type with it.

@@ -52,6 +52,42 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   list that stops at the window at rest cannot see a single overlay.
 - The Interface card names what the preview is still missing, which is now only
   the MLIP and CREST *calculation kinds* and the Liquid-Glass rendering.
+- **The Visual strip lists the surfaces too, and asks before computing one.**
+  It used to show only the `.xyz` sets in the run folder; the orbitals, the
+  electron density, the spin density and the ESP map were reachable only from
+  inside the pop-out viewer, and the viewer was never handed the orbital list,
+  so it could draw a density but never an orbital. They now sit in the same
+  strip as the structures — as **kinds**: one *Orbitals* tile reading
+  “HOMO−4 … LUMO+4”, with the ten orbitals themselves in the list beside it,
+  each with its energy. A cube already on disk opens at once. One that is not
+  costs an orca_plot run over the wavefunction, so the click asks first —
+  naming the grid and what the wait actually is (an orbital is about a second,
+  an ESP map a few minutes, because it is two cubes on one grid).
+  A single-point run with no `.xyz` beside it is no longer an empty Visual
+  section: the strip carries its surfaces and the stage says what it is missing.
+- **The vibrational spectrum reads out on the band instead of under it.** The
+  list of every mode that used to sit below the chart is gone — for a real
+  molecule that is a hundred-odd rows of one number each, the chart transcribed,
+  and it pushed every section after it off the screen. Point at a band for its
+  mode number and exact wavenumber (imaginary modes say so); the arrow keys step
+  through them, so the numbers are reachable without a pointer. The whole plot is
+  the hit target and the nearest band wins — a band is 1.6px wide, which no
+  hit-target rule can save.
+
+### Security
+- **The phone-sync PIN can no longer be switched off by putting a reverse proxy
+  in front of it.** The loopback exemption assumed a loopback bind meant a
+  loopback *client*; an nginx or a tunnel forwards from 127.0.0.1, so every
+  request it relayed would have worn a loopback address and skipped the PIN —
+  for whoever could reach the proxy. `create_app(..., proxied=True)` (and
+  `ServerController(..., proxied=True)`, `ORCADESK_PROXIED=1` for the standalone
+  server) turns the exemption off outright and lets uvicorn read
+  `X-Forwarded-For`, so the client address is reported honestly while deciding
+  nothing. Where no proxy is declared, uvicorn's default-on proxy-header
+  handling is now **off**: the address the PIN check reads is the real socket
+  peer, never a header, and never the `FORWARDED_ALLOW_IPS` environment
+  variable ORCAdesk does not own. No shipped configuration changes behaviour —
+  the desktop still binds the LAN and asks for the PIN.
 
 ## [0.10.0] — 2026-09-10
 
@@ -87,21 +123,6 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     missing: the MLIP and CREST builders and their setup, the 3D viewer and the
     Visual tab, the natural-orbital analysis, and the Liquid-Glass appearance
     variants.
-
-### Security
-- **The phone-sync PIN can no longer be switched off by putting a reverse proxy
-  in front of it.** The loopback exemption assumed a loopback bind meant a
-  loopback *client*; an nginx or a tunnel forwards from 127.0.0.1, so every
-  request it relayed would have worn a loopback address and skipped the PIN —
-  for whoever could reach the proxy. `create_app(..., proxied=True)` (and
-  `ServerController(..., proxied=True)`, `ORCADESK_PROXIED=1` for the standalone
-  server) turns the exemption off outright and lets uvicorn read
-  `X-Forwarded-For`, so the client address is reported honestly while deciding
-  nothing. Where no proxy is declared, uvicorn's default-on proxy-header
-  handling is now **off**: the address the PIN check reads is the real socket
-  peer, never a header, and never the `FORWARDED_ALLOW_IPS` environment
-  variable ORCAdesk does not own. No shipped configuration changes behaviour —
-  the desktop still binds the LAN and asks for the PIN.
 
 ## [0.9.1-beta] — 2026-09-05
 

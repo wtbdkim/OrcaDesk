@@ -1382,6 +1382,39 @@ it is fetched on the first surface, never at boot. A machine with no WebGL
 context can still walk a trajectory, and the one thing it cannot do says so
 instead of failing silently.
 
+**17.4b A band is 1.6px wide, so the plot is the hit target.** The reference's
+spectrum is a picture of one; a real one is 150 bands whose exact wavenumber is
+the reason to look at it. The table that used to carry those numbers is gone —
+it was the chart transcribed, and a hundred-odd rows of one number each pushed
+every section after it off the screen — so the number lives on the band, in a
+`.chtip` plate over the plot. No hit-target rule can save a 1.6px mark
+(§11.16), and widening the mark would be a lie about the data, so the target is
+the whole plot area and the **nearest band wins**. It is not hover-only: the
+svg is focusable and ←/→/Home/End step the same cursor, Escape puts it away,
+and the plate is a `role="status"` so what the cursor lands on is announced.
+The cursor line is a CSS rule rather than a presentation attribute, because
+`var()` does not resolve in one (§11.16).
+
+**17.4c What can be drawn is one strip, and the expensive half asks.** The
+`.xyz` sets are found by listing the folder and the surfaces by asking the
+wavefunction, but the reader is choosing *what to look at*, not a way of
+finding it, so both land in one `.viztypes` row. The difference that matters is
+not where they came from: it is that a structure set is already on disk and a
+surface may have to be computed. So every surface tile carries **ready** or
+**not plotted**, a ready one opens with no question, and one that is not asks
+— naming the grid and the real wait (D2: "this may take a while" is not a
+cost). The numbers come from `core/plot.py`'s own measurements, carried on the
+pick, so the question cannot quote a figure the backend has stopped believing.
+**A tile is a KIND; the list beside it is the instances.** The strip is one
+line of the panel, so what goes in it has to be a closed set of categories —
+Structure, Trajectory, Orbitals, ESP map, Conformers — and everything countable
+goes in the `.vizlist`: ten frontier orbitals, forty-two conformers, a hundred
+trajectory frames. Putting instances in the strip is a mistake that looks fine
+at four orbitals and cannot survive ten, which is the tell that they were never
+tiles. Selecting a surface kind fills the list rather than drawing: this stage
+paints atoms, an isosurface needs the pop-out viewer's renderer, so a **row**
+opens that window and the structure on the stage is left where it was.
+
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
 **both** front-ends — the way out of a preview has to be inside it — and saving

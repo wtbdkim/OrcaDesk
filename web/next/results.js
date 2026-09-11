@@ -93,10 +93,11 @@
 
   // ---------------------------------------------------------------- drawing
 
-  /** A line or stick chart in SVG at a real pixel size.
-   *  @param {{x: number, y: number, cls?: string}[]} pts
+  /** A line or stick chart in SVG at a real pixel size. With `hover` the sticks
+   *  become readable: each carries its `lab` and bindCharts wires the cursor.
+   *  @param {{x: number, y: number, cls?: string, lab?: string}[]} pts
    *  @param {number} w @param {number} h
-   *  @param {{xlab: string, ylab: string, stick?: boolean}} o */
+   *  @param {{xlab: string, ylab: string, stick?: boolean, hover?: boolean}} o */
   function chart(pts, w, h, o) {
     if (!pts.length) return `<p class="hint" style="margin:0">Nothing to plot.</p>`;
     const L = 64, R = 16, T = 12, B = 40;
@@ -121,7 +122,9 @@
     let body;
     if (o.stick) {
       body = pts.map(p =>
-        `<line x1="${px(p.x).toFixed(1)}" y1="${py(0).toFixed(1)}"
+        `<line class="stk" data-px="${px(p.x).toFixed(1)}"${
+           o.hover ? ` data-lab="${NB.esc(p.lab || fmt(p.x))}"` : ""}
+               x1="${px(p.x).toFixed(1)}" y1="${py(0).toFixed(1)}"
                x2="${px(p.x).toFixed(1)}" y2="${py(p.y).toFixed(1)}"
                stroke="${p.cls || "var(--crit-de)"}" stroke-width="1.6"/>`).join("");
     } else {
@@ -138,17 +141,24 @@
       `<text x="${px(v).toFixed(1)}" y="${T + ih + 16}" text-anchor="${anchor[i]}"
          font-size="10" fill="var(--muted-foreground)">${fmt(v)}</text>`).join("");
 
-    return `<div class="chart"><svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img"
-      aria-label="${NB.esc(o.ylab)} against ${NB.esc(o.xlab)}">
+    // The readout furniture, only when asked for: a cursor line the width of the
+    // plot (a band is 1.6px, so highlighting the band alone is not enough to see
+    // where the pointer is) and the value plate bindCharts fills in.
+    const hov = o.hover
+      ? `<line class="chi" x1="${L}" y1="${T}" x2="${L}" y2="${T + ih}"/>` : "";
+    return `<div class="chart"><svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img"${
+      o.hover ? ' data-hover="1" tabindex="0"' : ""}
+      aria-label="${NB.esc(o.ylab)} against ${NB.esc(o.xlab)}${
+        o.hover ? ". Hover a band for its value, or use the arrow keys" : ""}">
       ${grid}
       <line x1="${L}" y1="${T}" x2="${L}" y2="${T + ih}" stroke="var(--border)" stroke-width="1"/>
       <line x1="${L}" y1="${T + ih}" x2="${L + iw}" y2="${T + ih}" stroke="var(--border)" stroke-width="1"/>
-      ${body}${ticks}
+      ${hov}${body}${ticks}
       <text x="${L + iw / 2}" y="${h - 6}" text-anchor="middle" font-size="10.5"
         fill="var(--muted-foreground)">${NB.esc(o.xlab)}</text>
       <text x="17" y="${T + ih / 2}" text-anchor="middle" font-size="10.5"
         fill="var(--muted-foreground)" transform="rotate(-90 17 ${T + ih / 2})">${NB.esc(o.ylab)}</text>
-    </svg></div>`;
+    </svg>${o.hover ? `<div class="chtip" role="status" hidden></div>` : ""}</div>`;
   }
   /** @param {number} v */
   function fmt(v) {
@@ -234,18 +244,21 @@
 
     if (d.frequencies && d.frequencies.length) {
       const imag = d.n_imaginary || d.frequencies.filter(f => f < 0).length;
-      const pts = d.frequencies.map(f => ({
-        x: f, y: 1, cls: f < 0 ? "var(--err)" : "var(--crit-de)" }));
+      // No table under the spectrum: a hundred-odd rows of one number each is
+      // the chart transcribed, and it buried everything below it. The number is
+      // on the band instead, where the reader is already looking.
+      const pts = d.frequencies.map((f, i) => ({
+        x: f, y: 1, cls: f < 0 ? "var(--err)" : "var(--crit-de)",
+        lab: `Mode ${i + 1} · ${f.toFixed(2)} cm⁻¹${f < 0 ? " · imaginary" : ""}` }));
       out.push(sec("sec-freq", "Vibrational modes",
         d.frequencies.length + " modes · " + imag + " imaginary",
-        imag ? "One imaginary mode is what makes a structure a transition state; more "
-             + "than one means it is not a stationary point of either kind."
-             : "No imaginary modes — this geometry is a minimum on the surface.",
+        (imag ? "One imaginary mode is what makes a structure a transition state; more "
+              + "than one means it is not a stationary point of either kind."
+              : "No imaginary modes — this geometry is a minimum on the surface.")
+        + " Point at a band for its wavenumber; the arrow keys step through them.",
         plate(chart(pts, cw, Math.round(cw * 0.26),
-                    { xlab: "wavenumber (cm⁻¹)", ylab: "modes", stick: true }))
-        + tw(["Mode", "cm⁻¹"], d.frequencies.map((f, i) => [
-            String(i + 1),
-            `<span${f < 0 ? ' class="err"' : ""}>${f.toFixed(2)}</span>`])),
+                    { xlab: "wavenumber (cm⁻¹)", ylab: "modes",
+                      stick: true, hover: true })),
         "wide"));
     }
 
@@ -615,6 +628,7 @@
       if (t) t.scrollIntoView({ behavior: "smooth", block: "start" });
     }));
     spy(host);
+    bindCharts(host);
 
     if (_cur) {
       fillRaw(name, _cur);
@@ -623,11 +637,83 @@
       // apart, and an MLIP or CREST run read the wrong way is a bogus result.
       const source = _curName ? "calc:" + _curName : "file:" + _curPath;
       NB.viewer.mountStructure(_cur, source);
-      NB.viewer.mountVisual(source);
+      NB.viewer.mountVisual(source, _cur);
       NB.viewer.mountNbo(source);
     }
     profile(px);
     if (NB.rail) NB.rail.render();
+  }
+
+  /** Give every stick chart that asked for it a value readout.
+   *
+   *  The hit target is the WHOLE plot and the nearest band wins: a band is
+   *  1.6px wide and there can be 150 of them overlapping, so a per-band hit
+   *  area would be unhittable (the guideline's 24px minimum is unreachable for
+   *  a spectrum — the answer is to widen the target, not the mark). The same
+   *  cursor moves on ←/→, so the numbers are reachable without a pointer:
+   *  removing the table must not make them hover-only.
+   *  @param {HTMLElement} host */
+  function bindCharts(host) {
+    host.querySelectorAll(".chart svg[data-hover]").forEach((n) => {
+      const svg = /** @type {any} */ (n);
+      const sticks = /** @type {any[]} */ ([...svg.querySelectorAll(".stk")]);
+      const box = svg.parentElement, tip = box && box.querySelector(".chtip");
+      const cur = svg.querySelector(".chi");
+      if (!sticks.length || !tip || !cur) return;
+      const xs = sticks.map(s => parseFloat(s.getAttribute("data-px")));
+      let at = -1;
+
+      /** @param {number} i */
+      const show = (i) => {
+        if (i < 0 || i >= sticks.length) return;
+        at = i;
+        cur.setAttribute("x1", String(xs[i]));
+        cur.setAttribute("x2", String(xs[i]));
+        cur.style.opacity = "1";
+        sticks.forEach((s, k) => s.classList.toggle("on", k === i));
+        tip.textContent = sticks[i].getAttribute("data-lab");
+        tip.hidden = false;
+        // Placed from the band's own client rect, not from user units: the svg
+        // scales to the pane (max-width:100%), so the two are not the same px.
+        const r = sticks[i].getBoundingClientRect();
+        const b = box.getBoundingClientRect();
+        const w = tip.offsetWidth;
+        tip.style.left = Math.max(0, Math.min(b.width - w,
+                                              r.left - b.left + r.width / 2 - w / 2)) + "px";
+        tip.style.top = Math.max(0, r.top - b.top - tip.offsetHeight - 6) + "px";
+      };
+      const hide = () => {
+        at = -1;
+        tip.hidden = true;
+        cur.style.opacity = "0";
+        sticks.forEach(s => s.classList.remove("on"));
+      };
+      /** @param {number} clientX */
+      const nearest = (clientX) => {
+        const b = svg.getBoundingClientRect();
+        const ux = (clientX - b.left) * (svg.viewBox.baseVal.width / b.width);
+        let best = 0;
+        for (let i = 1; i < xs.length; i++) {
+          if (Math.abs(xs[i] - ux) < Math.abs(xs[best] - ux)) best = i;
+        }
+        return best;
+      };
+
+      svg.addEventListener("pointermove", (/** @type {any} */ e) => show(nearest(e.clientX)));
+      svg.addEventListener("pointerleave", hide);
+      svg.addEventListener("blur", hide);
+      svg.addEventListener("keydown", (/** @type {any} */ e) => {
+        let i = at;
+        if (e.key === "ArrowRight") i = at < 0 ? 0 : Math.min(sticks.length - 1, at + 1);
+        else if (e.key === "ArrowLeft") i = at < 0 ? sticks.length - 1 : Math.max(0, at - 1);
+        else if (e.key === "Home") i = 0;
+        else if (e.key === "End") i = sticks.length - 1;
+        else if (e.key === "Escape") { hide(); return; }
+        else return;
+        e.preventDefault();
+        show(i);
+      });
+    });
   }
 
   /** Mark the chip for the section being read. An outline that does not say

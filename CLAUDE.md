@@ -123,6 +123,31 @@ skins: `web/next/` has its own markup, its own `app.css` and its own logic, and
 shares no ids, no classes and no stylesheet with `web/`. Everything below this
 paragraph describes the CLASSIC front-end unless it says otherwise.
 
+One behaviour of the notebook report is worth knowing because it is a
+*deliberate absence*: the vibrational section has **no table under the
+spectrum**. A real frequency job is a hundred-odd modes, and a row per mode is
+the chart transcribed — it buried every section after it. The number is on the
+band instead (`chart(..., {hover: true})` labels each stick, `bindCharts` in
+`web/next/results.js` drives the cursor). The hit target is the whole plot with
+the nearest band winning, because a band is 1.6px; ←/→/Home/End step the same
+cursor and the plate is a `role="status"`, so the numbers are never hover-only.
+DESIGN.md §17.4b.
+
+Its **Visual strip is both halves of "what can be drawn"**: the `.xyz` sets from
+`list_structure_sets` and the wavefunction's surfaces from `NB.mv.surfaces`
+(`web/next/mvwin.js` — `get_plot_options` + `picksFor` + the cube-name rule, in
+one place so a tile's *ready* mark and the fetch that follows it cannot disagree
+about which file they mean). A tile is a KIND (Structure, Trajectory,
+**Orbitals**, ESP map, Conformers) and the `.vizlist` beside it holds that
+kind's instances — the ten frontier orbitals are rows, not ten tiles. A row
+opens the pop-out viewer through `NB.mv.open({pick})`; a cube already on disk
+opens at once, one that is not asks first, because the click would otherwise
+spend an orca_plot run (minutes, for an ESP map) as a side effect. The per-kind cost the question quotes is `COST` in
+`mvwin.js`, beside the kinds themselves. The orbital list is passed down from the
+parse payload (`mountVisual(source, d)`) — `get_plot_options` deliberately does
+not send a second copy (P4), and without it the pop-out could only ever draw a
+density. DESIGN.md §17.4c.
+
 Its markup and stylesheet ARE the approved design: `web/next/app.css` is a copy
 of `design/notebook-reference.html`'s stylesheet, so the markup uses the design's
 class vocabulary and the two can be diffed element for element —

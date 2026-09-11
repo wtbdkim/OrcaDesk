@@ -168,7 +168,9 @@
       <div class="sech"><h2>Visual</h2><span class="sp"></span>
         <span class="meta" data-v="vmeta"></span></div>
       <p class="secdesc">Everything in this result's folder that can be drawn. Pick what to
-        look at along the bottom; step through it on the left.</p>
+        look at along the bottom; step through it on the left. A surface that has not
+        been plotted yet asks first — orca_plot has to run, and an ESP map takes
+        minutes.</p>
       <div class="vizpanel">
         <div class="vizlist" data-v="vlist" role="listbox" aria-label="Frames"></div>
         <div class="vizstage" data-v="vstage">
@@ -185,8 +187,10 @@
     </section>`;
   }
 
-  /** @param {string} source */
-  async function mountVisual(source) {
+  /** @param {string} source @param {any} [d] the parse payload, for its orbital
+   *  list: the wavefunction's own picks need it and get_plot_options
+   *  deliberately does not send a second copy (P4). */
+  async function mountVisual(source, d) {
     const sec = NB.$("sec-visual");
     if (!sec) return;
     const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
@@ -197,42 +201,137 @@
       axisBtn.textContent = "View down " + nextAxisLabel(_viz.nextAxis());
     });
 
-    const r = await NB.call("list_structure_sets", source);
+    // The two halves of "what can be drawn" are found in different ways — the
+    // .xyz sets by listing the folder, the surfaces by asking the wavefunction —
+    // so they are fetched together and land in one strip. A result can have
+    // either, both or neither.
+    const [r, surf] = await Promise.all([
+      NB.call("list_structure_sets", source),
+      NB.mv.surfaces(source, (d && d.orbitals) || []),
+    ]);
     const sets = (r && r.ok && r.sets) ? r.sets : [];
-    if (!sets.length) {
+    const picks = (surf && surf.ok && surf.picks) ? surf.picks : [];
+    if (!sets.length && !picks.length) {
       q("vtypes").innerHTML =
         `<p class="hint" style="margin:0;grid-column:1/-1">Nothing in this result's folder
           can be drawn yet. A trajectory, a CREST ensemble or exported conformers appear
-          here as the run writes them.</p>`;
+          here as the run writes them, and orbitals once there is a .gbw beside it.</p>`;
       q("vlist").innerHTML = `<div class="vizempty">No frames.</div>`;
       return;
     }
-    q("vtypes").innerHTML = sets.map(s =>
-      `<button class="viztype" type="button" aria-pressed="false" data-set="${NB.esc(s.key)}">
-         <span class="n">${NB.esc(s.label)}</span>
-         <span class="d">${s.count} ${s.count === 1 ? "frame" : "frames"}</span>
+    // A tile is a KIND of thing to look at; the list on the left is what
+    // enumerates the things inside it. Ten frontier orbitals or forty
+    // conformers are list rows, not forty tiles — the strip is one line of the
+    // panel, and putting instances in it is what made four orbitals fill it.
+    const tiles = sets.map(s => ({
+      n: s.label, d: `${s.count} ${s.count === 1 ? "frame" : "frames"}`, set: s }));
+    const mos = picks.filter(p => p.kind === "mo");
+    if (mos.length) {
+      tiles.push({ n: "Orbitals",
+                   d: `${mos[0].short} \u2026 ${mos[mos.length - 1].short}`,
+                   picks: mos, cap: "molecular orbital" });
+    }
+    picks.filter(p => p.kind !== "mo").forEach(p => tiles.push({
+      n: p.short || p.label, d: p.ready ? "ready" : p.cost,
+      picks: [p], cap: p.label.toLowerCase() }));
+
+    q("vtypes").innerHTML = tiles.map((t, i) =>
+      `<button class="viztype" type="button" aria-pressed="${i === 0}" data-tile="${i}">
+         <span class="n">${NB.esc(t.n)}</span>
+         <span class="d">${NB.esc(t.d)}</span>
        </button>`).join("");
-    sec.querySelectorAll("[data-set]").forEach(b => b.addEventListener("click", () => {
-      const key = /** @type {HTMLElement} */ (b).dataset.set;
-      const set = sets.filter(s => s.key === key)[0];
-      if (set) loadSet(sec, set);
+    sec.querySelectorAll("[data-tile]").forEach(b => b.addEventListener("click", () => {
+      const t = tiles[Number(/** @type {HTMLElement} */ (b).dataset.tile)];
+      if (!t) return;
+      sec.querySelectorAll("[data-tile]").forEach(o => o.setAttribute(
+        "aria-pressed", String(o === b)));
+      if (t.set) loadSet(sec, t.set); else loadPicks(sec, source, d, t);
     }));
     // the viewer opens on the set that is on screen, not on the first one:
-    // "Open in viewer" means this, not something else in the same folder
+    // "Open in viewer" means this, not something else in the same folder. The
+    // orbitals ride along so the pop-out's own Surface picker can offer them
+    // too — without the list it can only ever draw a density, never an orbital.
     q("vopen").addEventListener("click", () => {
       const set = sets.filter(s => s.key === _setKey)[0] || sets[0];
-      NB.mv.open({ source: source, path: set.path,
-                   title: title(source) + " \u2014 " + set.label });
+      NB.mv.open({ source: source, path: set && set.path,
+                   orbitals: (d && d.orbitals) || [],
+                   title: title(source) + (set ? " — " + set.label : "") });
     });
+    // A single-point run has a wavefunction to plot and no .xyz beside it. The
+    // strip is not empty, so it opens on the first surface rather than the
+    // section claiming there is nothing here — and the stage draws the geometry
+    // the parse already holds, because a surface belongs to a structure and an
+    // empty box beside an orbital list says the panel has lost its place.
+    if (!sets.length) {
+      const g = (d && d.geometry) || [];
+      if (g.length) {
+        const atoms = g.map(a => ({ el: a.el, x: a.x, y: a.y, z: a.z }));
+        _viz.setAtoms(atoms);
+        q("vstage").insertAdjacentHTML("beforeend", legend(atoms));
+      }
+      loadPicks(sec, source, d, tiles[0]);
+      return;
+    }
     loadSet(sec, sets[0]);
+  }
+
+  /** The surfaces of one kind, as the list on the left. This stage paints
+   *  atoms, not volumes — an isosurface needs the pop-out viewer's renderer —
+   *  so a row here opens that window rather than changing what is drawn below.
+   *  The structure on the stage is left alone: it is what the surface belongs
+   *  to, and blanking it would say the panel had lost its place.
+   *  @param {HTMLElement} sec @param {string} source @param {any} d @param {any} t */
+  function loadPicks(sec, source, d, t) {
+    const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
+    _setKey = "";
+    const ready = t.picks.filter(p => p.ready).length;
+    q("vmeta").textContent = t.picks.length === 1
+      ? (t.picks[0].ready ? "plotted" : "not plotted yet")
+      : `${t.picks.length} orbitals \u00b7 ${ready} already plotted`;
+    q("vlist").innerHTML = t.picks.map((p, i) =>
+      `<button class="vizitem" type="button" role="option" aria-selected="false"
+         data-pick="${i}" title="${NB.esc(p.ready
+           ? "Already plotted — opens at once" : "Not plotted yet — " + p.cost)}">
+         <span>${NB.esc(p.short || p.label)}</span>
+         <span class="v">${NB.esc(p.ev != null ? p.ev.toFixed(2) + " eV"
+                                  : (p.ready ? "ready" : p.cost))}</span>
+       </button>`).join("");
+    sec.querySelectorAll("[data-pick]").forEach(b => b.addEventListener("click", () => {
+      sec.querySelectorAll("[data-pick]").forEach(o => o.setAttribute(
+        "aria-selected", String(o === b)));
+      openSurface(source, d, t.picks[Number(/** @type {HTMLElement} */ (b).dataset.pick)]);
+    }));
+    q("vcap").textContent = t.picks.length === 1
+      ? `${t.cap} \u2014 opens in the 3D viewer`
+      : `${t.cap} \u2014 pick one on the left; it opens in the 3D viewer`;
+  }
+
+  /** Open one surface in the pop-out viewer, asking first when it has to be
+   *  computed. A cube already on disk opens at once — there is nothing to
+   *  decide. One that is not costs an orca_plot run, which for an ESP map is
+   *  minutes of a machine the user may be running calculations on, so it is
+   *  their call and not a side effect of a click (P26). The question names the
+   *  cost rather than warning in the abstract.
+   *  @param {string} source @param {any} d @param {any} p */
+  function openSurface(source, d, p) {
+    if (!p) return;
+    const go = () => NB.mv.open({
+      source: source, orbitals: (d && d.orbitals) || [], pick: p,
+      title: title(source) + " — " + p.label });
+    if (p.ready) { go(); return; }
+    NB.modalRaw(`Plot ${p.label}?`,
+      `<p>This has not been plotted yet, so ORCA's orca_plot has to run
+        over the wavefunction at a ${p.grid}&times;${p.grid}&times;${p.grid} grid —
+        ${NB.esc(p.cost)}${NB.esc(p.why || "")}. The cube is kept beside the run, so
+        opening it again is instant.</p>`,
+      [{ label: "Not now", cls: "btn-ghost" },
+       { label: "Plot it", cls: "btn-primary", act: go }]);
   }
 
   /** @param {HTMLElement} sec @param {any} set */
   async function loadSet(sec, set) {
     const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
     _setKey = set.key;
-    sec.querySelectorAll("[data-set]").forEach(b => b.setAttribute("aria-pressed",
-      String(/** @type {HTMLElement} */ (b).dataset.set === set.key)));
     q("vlist").innerHTML = `<div class="vizempty">reading…</div>`;
     const r = await NB.call("get_structure_frames", set.path);
     _frames = (r && r.ok && r.frames) ? r.frames : [];

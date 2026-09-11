@@ -1013,3 +1013,26 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
    a difference the reader has to account for and nothing gains by it */
 .editbar .ebclose{font-size:17px; color:var(--foreground); border-color:var(--border);}
 .editbar .ebclose:hover{background:var(--err-tint-hover); color:var(--err); border-color:var(--err-outline);}
+
+/* ---------------------------- chart value readout ----------------------------
+   The reference's spectrum is a picture of one; a real one is 150 bands whose
+   exact wavenumber is the reason to look. The table that used to carry those
+   numbers is gone — it was the chart transcribed, and it buried every section
+   below it — so the number lives on the band. A band is 1.6px wide, which no
+   hit-target rule can save, so the target is the whole plot and the nearest
+   band wins; ←/→ step the same cursor, so nothing here is hover-only. */
+.chart{position:relative;}
+.chart svg[data-hover]{cursor:crosshair; touch-action:none;}
+.chart svg[data-hover]:focus-visible{outline:2px solid var(--ring); outline-offset:2px;}
+/* the bands are drawn through: the plot takes the pointer, not 150 lines */
+.chart .stk{pointer-events:none;}
+.chart .stk.on{stroke-width:2.6;}
+.chart .chi{stroke:var(--muted-foreground); stroke-width:1; opacity:0; pointer-events:none;}
+.chtip{
+  position:absolute; z-index:2; pointer-events:none;
+  padding:4px 8px; border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--popover); color:var(--foreground);
+  font:12px/1.35 var(--font-mono); font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+  box-shadow:0 1px 2px rgba(0,0,0,.28), 0 6px 16px rgba(0,0,0,.22);
+}
