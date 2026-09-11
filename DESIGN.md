@@ -1273,6 +1273,17 @@ for. `web/next/README.md` is the hand-editing guide: save, press F5 in the app
 (the reload costs nothing — the queue is Python-side), and
 `ORCADESK_REMOTE_DEBUG=9222` opens Chromium's inspector on the live page.
 
+**17.0a Borrowing a renderer means borrowing its stylesheet.**
+../scf_graph.js and ../progress_panels.js are used as PARSERS only. Their own
+`render*` helpers emit the classic front-end's vocabulary (`.scf-line`,
+`.vstep-*`, `.stepc-*`), for which `app.css` has **no rule at all** — a chart
+drawn through them had no stroke colour and a stage chain no dots. The trackers
+hand over their numbers and `web/next/charts.js` draws them in the design's
+vocabulary instead: `.chart` + `.serieskey` for a converging trace,
+`.stages`/`.stagerow` for a run that is a sequence of named stages,
+`.progrow`/`.prog`/`.eta` for how far along it is. Every SVG carries its colours
+inline, so it needs no stylesheet at all.
+
 **17.0b The stylesheet is a contract.** A class `app.css` has no rule for
 renders as *nothing* — no grid, no card, no type scale. Section contents are
 therefore built from the design's own components (`.plate`, `.secdesc`,
@@ -1322,7 +1333,11 @@ and a 600px rail that stays on screen in both:
 - **Structure** — the geometry the run ended on, and where the per-atom and
   per-bond numbers live: click an atom for its charges and Mayer valence, click
   a bond for its length and bond order, right-drag between two atoms to measure,
-  and the axis button walks x, y, z. A charge belongs to an atom you can point
+  and the axis button walks x, y, z. The measurement is drawn WHILE the button
+  is down — a dashed line from the anchored atom to the cursor, a ring on the
+  anchor, a second ring once the cursor is over an atom that would end it, and
+  the distance only when there is one to state. A drag whose only feedback
+  arrives on release is a drag you cannot tell you are making. A charge belongs to an atom you can point
   at, not to row 27 of a list — which is why the report has no charge tables of
   its own (they stay under *Show all*, for reading without a mouse).
 - **Visual** — everything in the result's FOLDER that can be drawn: a
@@ -1396,4 +1411,5 @@ Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
 | B27 | The MLIP/CREST card lock disabled only a hand-written list of field ids, so CREST's whole *Advanced settings* block (preset, NCI, solvent model, the MD/MTD numbers, the five toggles) and both cards' geometry-source radios stayed enabled under the grey — pretend-disabled chrome around live controls | D41 | resolved (0.6.1-beta — the lock disables every control the card's own DOM contains, so the list cannot drift from the markup again; the CUDA `<option>`'s separate disabled state is deliberately left to `refreshMlipDeviceOptions`) |
 | B28 | Settings → CREST's *Install CREST* button was pretend-enabled: it disabled only once CREST was already installed, never when there was **no WSL distro to install into** (the one prerequisite ORCAdesk cannot script). The click's only feedback was a Log-tab line, so a failed install read as a dead button — and the installer's actionable diagnostics never reached the card | D41, D2, §13.2 | resolved (0.7.0-beta — the button disables with the reason in its tooltip when WSL or a distro is absent, or while a probe is in flight; the install outcome is published on `CrestStatusPayload.install_error` and surfaced as the card's detail line + a toast) |
 | B29 | Two color literals had come back after B3/B5 removed the pattern: `renderInputEcho`'s `<pre>` used a raw `rgba(127,127,127,0.08)` (a theme-independent grey that is neither a token nor an alpha-ladder value), and the 3D viewer fell back to the literal `#18181b` — the DARK `--card` — when its token read came back empty, painting the stage near-black on a light theme | D10, D13, §15.1 | resolved (unreleased — the echo uses `--input-bg`; the viewer passes no background at all when the token is unreadable, rather than the wrong theme's value) |
+| B31 | The notebook front-end still lacks three of the reference's blocks: the MLIP environment rows and the glass-intensity slider in Settings (`.envrow`, `.slider`), the builder's NEB-endpoint / per-element-basis / structure-findings blocks (`.nebrow`, `.nebslot`, `.basis-row`, `.snips`, `.finding`), and the pop-out 3D viewer window with its frame walker and ESP ramp (`.mvwin` …) | §17 | accepted (0.10.0 — listed in `tests/test_next_ui.py::test_the_preview_uses_the_references_own_component_vocabulary`, which fails if anything ELSE is dropped and fails again once one of these lands and is not removed from the list) |
 | B30 | The notebook front-end (§17) does not yet cover the MLIP and CREST builders and backend setup, the 3D structure viewer and the Visual tab, the natural-orbital analysis, or the Liquid-Glass appearance variants (§16) — a user who needs those has to switch back to classic | D2, §17.5 | accepted (0.10.0 — it is a preview, off by default, and its Interface card names the gap and switches you rather than letting you find it by a control that is not there; close it as the sections land) |

@@ -31,33 +31,34 @@
   /** @type {Set<string>} */
   const _geomBusy = new Set();
 
-  /** What this calculation has to show in the middle column, or null. Same
-   *  choice the classic graph panel makes — the phase chain is the live edge of
-   *  a run, the convergence curve is the story of one that has been going a
-   *  while — but per cell. @param {any} c @param {number} px the box width */
+  /** What this calculation has to show in the middle column, or null.
+   *
+   *  A run that is a sequence of named stages (frequencies, TD-DFT, a conformer
+   *  search) shows the stages; one that converges shows its trace. Both are
+   *  drawn by charts.js in the design's vocabulary — the trackers' own render*
+   *  helpers emit the classic front-end's classes, which app.css does not style.
+   *  @param {any} c @param {number} px the box width */
   function chartFor(c, px) {
     if (!NB.hasGraph(c.name)) return null;
     const b = NB.trackers(c.name);
-    if (b.crest.hasData()) return { t: "Conformers", stages: true, h: SCFGraph.renderCrestProgress(b.crest, {}) };
-    if (b.freq.hasData()) return { t: "Frequencies", stages: true, h: SCFGraph.renderFreqProgress(b.freq, {}) };
-    if (b.tddft.hasData()) return { t: "TD-DFT", stages: true, h: SCFGraph.renderTddftProgress(b.tddft, {}) };
-    // The SVG is drawn at the box's REAL pixel size. A fixed viewBox scaled to
-    // fit would scale its stroke widths and type with it — the reason the chart
-    // has to be measured before it is drawn, not after.
-    const w = Math.max(px, 320);
-    const opts = { width: Math.round(w), height: Math.round(w * 0.52) };
-    if (b.geo.hasData()) {
-      return { t: "Geometry convergence",
-               h: `<div style="margin-bottom:10px">${SCFGraph.renderGeoProgress(b.geo)}</div>`
-                  + SCFGraph.renderGeoGraph(b.geo, opts) };
-    }
-    if (b.scf.hasData()) {
-      const conv = c.scf_convergence || "TightSCF";
-      return { t: "SCF convergence",
-               h: `<div style="margin-bottom:10px">${SCFGraph.renderSCFProgress(b.scf, conv)}</div>`
-                  + SCFGraph.renderSCFGraph(b.scf, conv, opts) };
-    }
-    return null;
+    const st = CHARTS.stages(b);
+    if (st) return { t: st.title, stages: true, h: st.html };
+    const cv = CHARTS.convergence(b, c, px);
+    if (!cv) return null;
+    return { t: cv.title, meta: cv.meta,
+             h: cv.html + (c.state === "running"
+                  ? CHARTS.progress(cv.progress, cv.eta) : "") };
+  }
+
+  /** What a line of ORCA output is, for colour. The design gives the log four
+   *  tones rather than one wall of grey: what ORCA said, what went right, what
+   *  is worth a look, and what failed.
+   *  @param {string} l */
+  function logClass(l) {
+    if (/\berror\b|aborting|ABNORMAL|not converged/i.test(l)) return "l-err";
+    if (/\bwarning\b|caution/i.test(l)) return "l-warn";
+    if (/HURRAY|CONVERGED|TERMINATED NORMALLY/i.test(l)) return "l-ok";
+    return "l-orca";
   }
 
   /** @param {any} c @returns {HTMLElement} */
@@ -88,7 +89,7 @@
           <div class="pane chart">
             <div class="panehead"><span class="t"></span><span class="sp"></span>
               <span class="meta"></span></div>
-            <div class="chart"></div>
+            <div class="chartbox"></div>
           </div>
           <div class="pane out">
             <div class="panehead"><span class="t">Output</span><span class="sp"></span>
@@ -122,13 +123,14 @@
     q(".cellres").hidden = !(c.state === "done" || c.state === "failed");
 
     // --- middle column: the chart, measured then drawn
-    const box = q(".chart");
+    const box = q(".chartbox");
     const px = box.clientWidth || Math.round((el.clientWidth || 1024) * 0.42);
     const ch = chartFor(c, px);
     const grid = q(".celgrid");
     if (ch) {
       q(".pane.chart").hidden = false;
       q(".pane.chart .panehead .t").textContent = ch.t;
+      q(".pane.chart .panehead .meta").textContent = ch.meta || "";
       box.innerHTML = ch.h;
     } else {
       q(".pane.chart").hidden = true;
@@ -156,7 +158,7 @@
     if (tail && tail.lines.length) {
       meta.textContent = tail.file + (tail.truncated ? " · last " + tail.lines.length + " lines" : "");
       const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-      log.innerHTML = tail.lines.map(l => `<div class="l-orca">${NB.esc(l)}</div>`).join("");
+      log.innerHTML = tail.lines.map(l => `<div class="${logClass(l)}">${NB.esc(l)}</div>`).join("");
       if (stick || c.state === "running") log.scrollTop = log.scrollHeight;
     } else {
       meta.textContent = "";

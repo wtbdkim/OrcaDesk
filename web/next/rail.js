@@ -81,7 +81,8 @@
             <span class="qtag">${backendOf(c)}</span>
           </span>
           <span class="qm">${NB.esc(c.meta || (c.kind + " · charge " + c.charge + " · mult " + c.multiplicity))}</span>
-          ${c.message && !quiet ? `<span class="qmsg ${msgCls}">${NB.esc(c.message)}</span>` : ""}
+          ${c.message && !quiet && c.state !== "failed"
+            ? `<span class="qmsg ${msgCls}">${NB.esc(c.message)}</span>` : ""}
         </span>
       </button>
       <span class="qacts">
@@ -96,6 +97,9 @@
         <span class="qinpslot">${isOrca
           ? `<button class="btn btn-xs btn-ghost qinp" type="button" title="Input (.inp)">.inp</button>` : ""}</span>
       </span>
+      ${c.state === "failed" && c.message
+        ? `<div class="qerror" style="grid-column:1/-1;margin:0 6px 8px 44px">${
+            NB.esc(c.message)}</div>` : ""}
       ${frac != null ? `<span class="qbar"><span style="width:${Math.round(frac * 100)}%"></span></span>` : ""}`;
 
     el.querySelector(".qexp").addEventListener("click", () => toggleDetail(el, c));
@@ -166,6 +170,10 @@
 
   // ---------------------------------------------------------------- drag
 
+  /** groups the user has folded away, by label. A long Done list is the one
+   *  that gets in the way, and it is the one worth folding. @type {string[]} */
+  const _folded = [];
+
   let _dragFrom = -1;
   /** @param {HTMLElement} el */
   function attachDrag(el) {
@@ -231,16 +239,49 @@
         .filter(x => g.states.indexOf(x.c.state) >= 0);
       if (!rows.length) return;
       const box = NB.el("div", "qgroup");
-      box.appendChild(NB.el("div", "qgh",
-        `${g.label}<span class="sp"></span><span class="c">${rows.length}</span>`));
-      const list = NB.el("div", "qlist");
-      rows.forEach(x => list.appendChild(row(x.c, x.i)));
-      box.appendChild(list);
+      const open = _folded.indexOf(g.label) < 0;
+      const head = NB.el("div", "qgh");
+      head.innerHTML = `<button class="qgtoggle" type="button" aria-expanded="${open}">
+          <span class="chev" aria-hidden="true">▸</span>${g.label}</button>
+        <span class="sp"></span><span class="c">${rows.length}</span>`;
+      head.querySelector(".qgtoggle").addEventListener("click", () => {
+        const k = _folded.indexOf(g.label);
+        if (k < 0) _folded.push(g.label); else _folded.splice(k, 1);
+        render();
+      });
+      box.appendChild(head);
+      if (open) {
+        const list = NB.el("div", "qlist");
+        rows.forEach(x => list.appendChild(row(x.c, x.i)));
+        box.appendChild(list);
+      }
       host.appendChild(box);
     });
 
+    if (NB.running && NB.resources) host.appendChild(occupancy(NB.resources));
     host.scrollTop = scroll;
     paintFoot();
+  }
+
+  /** What the run is holding of this machine. Only while something is
+   *  running: an idle queue occupies nothing, and a row of zeroes is noise.
+   *  @param {any} r RunResources @returns {HTMLElement} */
+  function occupancy(r) {
+    const box = NB.el("div", "railres");
+    /** @param {string} label @param {number} used @param {number} budget @param {string} unit */
+    const meter = (label, used, budget, unit) => {
+      const pct = budget > 0 ? Math.min(100, Math.round((used / budget) * 100)) : 0;
+      return `<div class="meter">
+        <div class="res-line"><span>${NB.esc(label)}</span>
+          <span>${used}${unit} / ${budget > 0 ? budget + unit : "auto"}</span></div>
+        <div class="res-bar"><span style="width:${pct}%"></span></div>
+      </div>`;
+    };
+    box.innerHTML = meter("Cores", r.cores_used, r.cores_budget, "")
+      + meter("Memory", Math.round(r.ram_used_mb / 1024), Math.round(r.ram_budget_mb / 1024), " GB")
+      + `<div class="meter wide"><div class="res-line"><span>Running</span>
+           <span>${r.jobs} of ${r.max_jobs || "as many as fit"}</span></div></div>`;
+    return box;
   }
 
   function paintFoot() {
