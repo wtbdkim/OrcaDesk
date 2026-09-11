@@ -45,6 +45,8 @@ launching. Any port above 1024 works. It is off unless you set it.)
 | `results.js` | the report — sections, charts, input/output, free-energy profile |
 | `settings.js` | the settings slide-over |
 | `viewer.js` | Structure (picking, measuring), Visual, natural orbitals |
+| `mvwin.js` | the pop-out viewer: frame walker, favourites, orbitals & maps |
+| `charts.js` | a cell's convergence trace, stage chain and progress row |
 | `mol.js` | ball-and-stick: the cell thumbnails and the interactive stages |
 
 Colours, radii, fonts and the rail width are **tokens** at the top of `app.css`
@@ -64,10 +66,13 @@ python tools/uispec.py real spec_real.json
 python tools/uidiff.py spec_mock.json spec_real.json    # exit code = differences
 ```
 
-It should print `DIFFERENCES: 0` over 79 landmarks — 46 of the window and 33
-inside a result section, measured with a result open and *Show all* on. **If you add a region,
-add a landmark for it**: the first version of this list was chrome only, and it
-read 0 while every section of the report was unstyled. If your change is a **deliberate** departure
+It should print `DIFFERENCES: 0` over 116 landmarks, measured in three passes —
+46 of the window at rest, 33 inside a result section (with a result open and
+*Show all* on), and 37 of the overlays (the pop-out viewer, the settings sheet,
+the builder's NEB / per-element-basis / snippet blocks, all opened first).
+**If you add a region, add a landmark for it**: the first version of this list
+was chrome only and read 0 while every section of the report was unstyled; the
+second stopped at the window at rest and could not see a single overlay. If your change is a **deliberate** departure
 from the reference, put it in the `builder corrections` block at the bottom of
 `app.css` (or start a similar named block) so the departures stay in one place
 instead of scattering through the sheet — and add its landmark to

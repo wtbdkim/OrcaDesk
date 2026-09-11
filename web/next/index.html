@@ -85,6 +85,51 @@
   <div id="modal-body"></div>
   <div class="modal-actions" id="modal-foot"></div>
 </div>
+<div class="modalscrim" id="mv-scrim" hidden></div>
+<div class="mvwin" id="mvwin" role="dialog" aria-modal="true" aria-labelledby="mv-title" hidden>
+  <div class="mvhead">
+    <span class="t" id="mv-title">Structure viewer</span>
+    <span class="sp"></span>
+    <div class="seg" role="group" aria-label="Viewer mode">
+      <button type="button" aria-pressed="true" data-mvmode="frames">Structures</button>
+      <span class="sep" aria-hidden="true"></span>
+      <button type="button" aria-pressed="false" data-mvmode="volume">Orbitals &amp; maps</button>
+    </div>
+    <button class="iconbtn" type="button" id="mv-close" aria-label="Close the viewer">×</button>
+  </div>
+  <div class="mvstage">
+    <!-- two renderers, one stage: mol.js paints the frames (so drag, pick and
+         measure are the same here as in every other stage), 3Dmol draws the
+         isosurfaces into .mvgl and is loaded only when one is asked for -->
+    <canvas class="molcv" id="mv-canvas" data-interactive="1"
+      aria-label="Structure viewer. Drag to turn; click an atom or bond for its numbers,
+        right-drag between two atoms to measure."></canvas>
+    <div class="mvgl" id="mv-gl" hidden></div>
+    <div class="mvlegend" id="mv-legend"></div>
+    <span class="vizcap" id="mv-cap"></span>
+  </div>
+  <div class="mvbar" id="mv-frames">
+    <button class="btn btn-sm btn-ghost" type="button" id="mv-prev" aria-label="Previous frame">‹</button>
+    <span class="mvcount" id="mv-count">—</span>
+    <button class="btn btn-sm btn-ghost" type="button" id="mv-next" aria-label="Next frame">›</button>
+    <span class="sp"></span>
+    <button class="btn btn-sm" type="button" id="mv-fav" aria-pressed="false">☆ Favourite <kbd>F</kbd></button>
+    <button class="btn btn-sm btn-ghost" type="button" id="mv-favonly" aria-pressed="false">Favourites only</button>
+    <button class="btn btn-sm btn-ghost" type="button" id="mv-export">Export favourites…</button>
+    <button class="btn btn-sm btn-ghost" type="button" id="mv-copyxyz">Copy .xyz</button>
+  </div>
+  <div class="mvbar" id="mv-volume" hidden>
+    <label class="lb" for="mv-vol">Surface</label>
+    <select id="mv-vol"><option>…</option></select>
+    <label class="lb" for="mv-iso">Isovalue</label>
+    <input id="mv-iso" class="mono" type="number" value="0.0500" step="0.005" min="0.0001" style="width:96px">
+    <span class="sp"></span>
+    <span class="mvramp" id="mv-ramp" aria-hidden="true" hidden></span>
+    <span class="hint" id="mv-ramphint" style="margin:0" hidden>− &nbsp; 0 &nbsp; +</span>
+    <button class="btn btn-sm" type="button" id="mv-plot">Plot</button>
+  </div>
+</div>
+
 <div class="toastwrap" id="toastwrap" aria-live="polite"></div>
 
 <!-- Borrowed as-is: pure convergence trackers and chart/step renderers, no DOM
@@ -100,6 +145,7 @@
 <script src="build.js"></script>
 <script src="stream.js"></script>
 <script src="viewer.js"></script>
+<script src="mvwin.js"></script>
 <script src="results.js"></script>
 <script src="settings.js"></script>
 </body>

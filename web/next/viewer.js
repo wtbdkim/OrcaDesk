@@ -143,7 +143,9 @@
       const ax = _stage.nextAxis();
       axisBtn.textContent = "View down " + nextAxisLabel(ax);
     });
-    sec.querySelector('[data-v="open"]').addEventListener("click", () => openExternally(source));
+    sec.querySelector('[data-v="open"]').addEventListener("click", () => NB.mv.open({
+      source: source, title: title(source) + " \u2014 structure",
+      orbitals: d.orbitals || [] }));
   }
   /** The button names the axis the NEXT press will show, so it says what it does.
    *  @param {string} shown */
@@ -151,12 +153,12 @@
     return shown === "x" ? "y" : shown === "y" ? "z" : "x";
   }
 
-  /** @param {string} source */
-  async function openExternally(source) {
-    const r = await NB.call("list_structure_sets", source);
-    const set = (r && r.ok && r.sets && r.sets.length) ? r.sets[0] : null;
-    if (!set) { NB.toast("Nothing in this result's folder to open."); return; }
-    await NB.call("open_path_external", set.path);
+  /** What to call this result in a window title. The source is how the backend
+   *  addresses it, which is not a name anyone reads. @param {string} source */
+  function title(source) {
+    if (source.indexOf("calc:") === 0) return source.slice(5);
+    const p = source.indexOf("file:") === 0 ? source.slice(5) : source;
+    return p.split(/[\\/]/).pop() || "Structure";
   }
 
   // ---------------------------------------------------------------- visual
@@ -215,9 +217,12 @@
       const set = sets.filter(s => s.key === key)[0];
       if (set) loadSet(sec, set);
     }));
-    q("vopen").addEventListener("click", async () => {
+    // the viewer opens on the set that is on screen, not on the first one:
+    // "Open in viewer" means this, not something else in the same folder
+    q("vopen").addEventListener("click", () => {
       const set = sets.filter(s => s.key === _setKey)[0] || sets[0];
-      await NB.call("open_path_external", set.path);
+      NB.mv.open({ source: source, path: set.path,
+                   title: title(source) + " \u2014 " + set.label });
     });
     loadSet(sec, sets[0]);
   }

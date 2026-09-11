@@ -89,6 +89,24 @@
       <input type="${type || "text"}" class="${type === "number" ? "mono" : ""}" value="${NB.esc(String(value))}"></div>`;
   }
 
+  /* The blocks a hand-written .inp is actually built from. {{GEOMETRY}} is the
+     generator's own placeholder (input_generator.GEOMETRY_PLACEHOLDER): raw
+     input carrying it gets the loaded coordinates substituted, raw input
+     without it must carry its own * xyz block. The rest are the %-blocks ORCA
+     takes, at their commonest setting, as something to edit rather than recall.
+     @type {[string, string][]} */
+  const SNIPPETS = [
+    ["{{GEOMETRY}}", "{{GEOMETRY}}"],
+    ["%scf", "%scf\n  MaxIter 250\nend"],
+    ["%basis", "%basis\n  newgto Fe \"def2-TZVPP\" end\nend"],
+    ["%geom", "%geom\n  MaxIter 200\nend"],
+    ["%plots", "%plots\n  dim1 60\n  dim2 60\n  dim3 60\nend"],
+    ["%eprnmr", "%eprnmr\n  Nuclei = all H { shift }\n  Nuclei = all C { shift }\nend"],
+    ["%tddft", "%tddft\n  NRoots 10\n  TDA true\nend"],
+    ["%cpcm", "%cpcm\n  smd true\n  SMDsolvent \"water\"\nend"],
+    ["%irc", "%irc\n  MaxIter 40\n  InitHess calc_anfreq\nend"],
+  ];
+
   /** Which calculation the builder is open on: null = closed, "" = a new one,
    *  otherwise the name being edited. The stream reads it. @type {string|null} */
   let _target = null;
@@ -104,6 +122,23 @@
     }
   }
   function target() { return _target; }
+
+  /** One per-element override. Its labels are deliberately not the method
+   *  block's ("Basis set"): readForm finds fields by label text, and two fields
+   *  called the same thing in one form is how the wrong value gets saved.
+   *  @param {any} a a BasisAssignment @returns {string} */
+  function basisRow(a) {
+    const v = (k) => NB.esc(String((a && a[k]) || ""));
+    return `<div class="basis-row">
+      <div class="field narrow"><label>Element</label>
+        <input class="mono" data-b="element" value="${v("element")}" placeholder="Fe"></div>
+      <div class="field"><label>Basis</label>
+        <input class="mono" data-b="basis" value="${v("basis")}" placeholder="def2-TZVPP"></div>
+      <div class="field"><label>ECP</label>
+        <input class="mono" data-b="ecp" value="${v("ecp")}" placeholder="def2-ECP"></div>
+      <button class="rm" type="button" aria-label="Remove this override">×</button>
+    </div>`;
+  }
 
   /** The builder as a CELL — the design edits a calculation where it is read.
    *  @param {any} calc a CalcSummary, or null for a new calculation
@@ -203,6 +238,10 @@
         </div>
         <div class="field"><textarea rows="7" data-f="xyz" spellcheck="false"
           placeholder="C   0.000   0.000   0.000">${NB.esc(st.xyz)}</textarea></div>
+        <!-- what is wrong with this structure, said BEFORE it costs hours of
+             compute rather than after: a multiplicity the electron count cannot
+             produce, two atoms on top of each other, coordinates in Bohr -->
+        <div data-a="check"></div>
       </div>
       <div data-g="reference"${src === "reference" ? "" : " hidden"}>
         ${refs.length
@@ -281,18 +320,65 @@
 
         ${K.neb ? `<div class="divider"></div>
         <div class="grouplabel">NEB endpoints</div>
-        <div class="field-row" style="align-items:center">
-          ${text("Product .xyz", cfg.neb_product_xyz || "")}
+        <p class="hint" style="margin:0 0 12px">The reactant is the geometry above; the
+          product goes here. <b>Identical atoms in identical order in both</b> — build the
+          product by copying the reactant and moving atoms, which never reorders anything.</p>
+        <div class="nebrow">
+          <div class="nebslot">
+            <div class="lb">Reactant</div>
+            <div class="fn" data-a="neb-react">—</div>
+            <div class="hint" style="margin:6px 0 0">from the geometry source above</div>
+          </div>
+          <div class="nebslot">
+            <div class="lb">Product</div>
+            <div class="fn" data-a="neb-prod">no product loaded</div>
+            <div class="btn-group" style="margin-top:10px">
+              <button class="btn btn-sm" type="button" data-act="loadneb">Load product .xyz…</button>
+            </div>
+          </div>
+        </div>
+        <!-- the coordinates themselves, not a path: the generator writes the
+             product block into the .inp, so what is stored is the block -->
+        <textarea data-f="nebxyz" hidden>${NB.esc(cfg.neb_product_xyz || "")}</textarea>
+        <div class="field-row" style="margin-top:14px;align-items:center">
           ${text("Images", cfg.neb_nimages || 8, "narrow", "number")}
           <label class="checkbox"><input type="checkbox" data-f="preopt"
             ${cfg.neb_preopt_ends ? "checked" : ""}> Pre-optimize ends</label>
-        </div>` : ""}
+        </div>
+        <div class="btn-group" style="margin-top:12px;align-items:center">
+          <button class="btn btn-sm btn-ghost" type="button" data-act="nebcompare">Compare endpoints</button>
+          <span class="hint" style="margin:0">Checks that both endpoints carry the same
+            atoms in the same order — a reordered atom makes the band meaningless.</span>
+        </div>
+        <div data-a="neb-verdict"></div>` : ""}
+
+        <div class="divider"></div>
+        <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:12px">
+          <div>
+            <div class="grouplabel" style="margin:0">Per-element basis / ECP</div>
+            <div class="hint" style="margin:2px 0 0">Overrides for single elements
+              (%basis newgto / newecp) — a heavy atom at a larger basis than the rest.
+              Empty for none.</div>
+          </div>
+          <button class="btn btn-sm" type="button" data-act="addbasis">+ Element</button>
+        </div>
+        <div data-a="basis">${
+          ((cfg.basis_assignments && cfg.basis_assignments.length)
+            ? cfg.basis_assignments : []).map(basisRow).join("")}</div>
       </div>
 
       <div data-raw${st.raw ? "" : " hidden"}>
         <div class="divider"></div>
         <div class="btn-group" style="align-items:center;margin-bottom:10px">
           <button class="btn btn-sm" type="button" data-act="loadinp">Load .inp…</button>
+        </div>
+        <!-- the %-blocks, at the cursor: typing them out from memory is where
+             a hand-written .inp usually goes wrong -->
+        <div class="snips">
+          <span class="hint" style="margin:0">Insert at the cursor:</span>
+          ${SNIPPETS.map((sn, i) =>
+            `<button class="btn btn-sm btn-ghost" type="button" data-snip="${i}">${
+              NB.esc(sn[0])}</button>`).join("")}
         </div>
         <div class="field"><textarea class="raw-editor" data-f="rawtext" spellcheck="false"
           placeholder="! B3LYP def2-SVP Opt&#10;* xyz 0 1&#10;…&#10;*">${NB.esc(st.rawText)}</textarea></div>
@@ -360,7 +446,129 @@
       const body = stripXyzHeader(r.text || "");
       q('[data-f="xyz"]').value = body;
       q('[data-x="status"]').textContent = body ? body.trim().split("\n").length + " atoms" : "";
+      recheck();
     });
+    // --- the structure, checked ---------------------------------------------
+    /** Ask the backend what is wrong with the coordinates on screen. It cannot
+     *  fail — an unreadable block is itself one of the findings — so there is
+     *  no error branch, only a verdict. */
+    async function recheck() {
+      const box = q('[data-a="check"]');
+      if (!box) return;
+      const xyz = q('[data-f="xyz"]') ? q('[data-f="xyz"]').value.trim() : "";
+      const react = q('[data-a="neb-react"]');
+      if (react) react.textContent = xyz
+        ? xyz.split("\n").filter(l => l.trim()).length + " atoms" : "no geometry yet";
+      if (!xyz) { box.innerHTML = ""; return; }
+      const charge = Math.round(Number(byLabelIn(el, "Charge") || 0));
+      const mult = Math.round(Number(byLabelIn(el, "Mult.") || 1));
+      const r = await NB.call("check_structure", xyz, charge, mult);
+      if (!r || r.error) { box.innerHTML = ""; return; }
+      const issues = (r.issues || []).map(i =>
+        `<div class="finding ${i.level === "error" ? "err" : "warn"}">
+           <span>${NB.esc(i.message)}</span></div>`).join("");
+      const cm = r.electrons == null ? ""
+        : `<span>charge ${charge} / mult ${mult} <b class="${
+             (r.electrons - charge) % 2 === (mult - 1) % 2 ? "ok" : "err"}">${
+             (r.electrons - charge) % 2 === (mult - 1) % 2 ? "consistent" : "impossible"}</b></span>`;
+      box.innerHTML = issues + `<div class="factline" style="margin-top:10px">
+        <span>formula <b>${NB.esc(r.formula || "—")}</b></span>
+        ${r.electrons != null ? `<span>electrons <b>${r.electrons}</b></span>` : ""}
+        <span>fragments <b>${r.n_fragments}</b></span>${cm}</div>`;
+    }
+    const xyzEl0 = q('[data-f="xyz"]');
+    if (xyzEl0) xyzEl0.addEventListener("change", recheck);
+    all(".field-row .field input").forEach(i => {
+      const lab = i.closest(".field").querySelector("label");
+      if (lab && (lab.textContent.trim() === "Charge" || lab.textContent.trim() === "Mult.")) {
+        i.addEventListener("change", recheck);
+      }
+    });
+    recheck();
+
+    // --- NEB endpoints --------------------------------------------------------
+    /** @param {string} cls @param {string} msg */
+    const verdict = (cls, msg) => {
+      const v = q('[data-a="neb-verdict"]');
+      if (v) v.innerHTML = `<div class="finding ${cls}" style="margin-top:12px">
+        <span>${NB.esc(msg)}</span></div>`;
+    };
+    const nebEl = q('[data-f="nebxyz"]');
+    if (nebEl) {
+      const prod = q('[data-a="neb-prod"]');
+      const sayProd = () => {
+        const n = nebEl.value.trim()
+          ? nebEl.value.trim().split("\n").filter(l => l.trim()).length : 0;
+        prod.textContent = n ? n + " atoms loaded" : "no product loaded";
+      };
+      sayProd();
+      verdict("warn", "Load a product, then compare — both endpoints must carry the "
+                    + "same atoms in the same order.");
+      act("loadneb", async () => {
+        const r = await NB.call("load_xyz_file");
+        if (!r || r.cancelled) return;
+        if (!r.ok) { NB.fail("Could not read that .xyz."); return; }
+        nebEl.value = stripXyzHeader(r.text || "");
+        sayProd();
+        compare();
+      });
+      act("nebcompare", compare);
+      async function compare() {
+        const a = q('[data-f="xyz"]') ? q('[data-f="xyz"]').value.trim() : "";
+        const b = nebEl.value.trim();
+        if (!a || !b) { verdict("warn", "Both endpoints need coordinates before they can be compared."); return; }
+        const r = await NB.call("compare_structures", a, b);
+        if (!r || r.error) { verdict("err", (r && r.error) || "Could not compare the endpoints."); return; }
+        if (r.ok) {
+          verdict("warn", `Same ${r.n_reactant} atoms in the same order — ${
+            r.formula_reactant} on both sides. The band is well posed.`);
+          const v = q('[data-a="neb-verdict"] .finding');
+          if (v) { v.classList.remove("warn"); v.classList.add("ok"); }
+          return;
+        }
+        verdict("err", r.n_reactant !== r.n_product
+          ? `${r.n_reactant} atoms in the reactant, ${r.n_product} in the product — `
+            + "NEB needs the same atoms on both sides."
+          : `First divergence at atom ${(r.mismatch_index || 0) + 1}: `
+            + `${r.mismatches[0].reactant} in the reactant, ${r.mismatches[0].product} `
+            + `in the product (${r.n_mismatches} in all). Rebuild the product by moving `
+            + "the reactant's atoms rather than re-typing them.");
+      }
+    }
+
+    // --- per-element basis ----------------------------------------------------
+    const basisBox = q('[data-a="basis"]');
+    /** the × on each row, rebound after every add */
+    function wireBasis() {
+      basisBox.querySelectorAll(".basis-row .rm").forEach(b =>
+        b.addEventListener("click", () => b.closest(".basis-row").remove()));
+    }
+    if (basisBox) {
+      wireBasis();
+      act("addbasis", () => {
+        basisBox.insertAdjacentHTML("beforeend", basisRow({}));
+        wireBasis();
+        const last = basisBox.querySelector(".basis-row:last-child input");
+        if (last) /** @type {any} */ (last).focus();
+      });
+    }
+
+    // --- raw-input snippets ---------------------------------------------------
+    all("[data-snip]").forEach(b => b.addEventListener("click", () => {
+      const ta = q('[data-f="rawtext"]');
+      if (!ta) return;
+      const sn = SNIPPETS[Number(b.getAttribute("data-snip"))];
+      if (!sn) return;
+      // at the cursor, not at the end: a block belongs where the user is typing
+      const at = ta.selectionStart, to = ta.selectionEnd;
+      const before = ta.value.slice(0, at);
+      const lead = (!before || before.endsWith("\n")) ? "" : "\n";
+      const text = lead + sn[1] + "\n";
+      ta.value = before + text + ta.value.slice(to);
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = at + text.length;
+    }));
+
     act("loadinp", async () => {
       const r = await NB.call("load_inp_file");
       if (!r || r.cancelled) return;
@@ -395,6 +603,19 @@
       close();
       await NB.poll();
     });
+  }
+
+  /** The control under a labelled field, by the label's text. Shared by the
+   *  form reader and the live structure check, which need the same two numbers.
+   *  @param {HTMLElement} root @param {string} label @returns {string|null} */
+  function byLabelIn(root, label) {
+    const f = [...root.querySelectorAll(".field-row .field")].find(x => {
+      const l = x.querySelector("label");
+      return l && l.textContent.trim() === label;
+    });
+    if (!f) return null;
+    const c = /** @type {any} */ (f.querySelector("input, select, textarea"));
+    return c ? c.value : null;
   }
 
   /** An .xyz file starts with a count and a comment line; the generator wants
@@ -444,7 +665,13 @@
       nprocs: Math.round(num("nprocs", d.default_nprocs || 6)),
       max_iter: K.maxiter ? Math.round(num("Max iterations", 0)) : 0,
       solvation: { model: val("Model", ""), solvent: val("Solvent", "") },
-      basis_assignments: (calc && calc.config && calc.config.basis_assignments) || [],
+      // read off the rows on screen, not carried over from the stored calc:
+      // a row the user deleted has to actually go
+      basis_assignments: [...el.querySelectorAll(".basis-row")].map(r => ({
+        element: /** @type {any} */ (r.querySelector('[data-b="element"]')).value.trim(),
+        basis: /** @type {any} */ (r.querySelector('[data-b="basis"]')).value.trim(),
+        ecp: /** @type {any} */ (r.querySelector('[data-b="ecp"]')).value.trim(),
+      })).filter(a => a.element),
     };
     if (K.freq) {
       config.freq_temp_k = num("Temperature (K)", 298.15);
@@ -464,7 +691,8 @@
       config.irc_hess_file = val(".hess file", "");
     }
     if (K.neb) {
-      config.neb_product_xyz = val("Product .xyz", "");
+      const nb = q('[data-f="nebxyz"]');
+      config.neb_product_xyz = nb ? nb.value.trim() : "";
       config.neb_nimages = Math.round(num("Images", 8));
       config.neb_preopt_ends = chk("preopt");
     }

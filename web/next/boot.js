@@ -363,6 +363,7 @@ var NB = {};
 
     if (NB.rail) NB.rail.init();
     if (NB.settingsView) NB.settingsView.init();
+    if (NB.mv) NB.mv.init();
 
     await poll();
     NB.go("jobs");
