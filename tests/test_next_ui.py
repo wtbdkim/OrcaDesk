@@ -76,7 +76,8 @@ def test_preview_declares_no_globals_that_collide_with_app_js():
         src = _read(f)
         tops = re.findall(r"^(?:let|const|var|function|class)\s+([A-Za-z_$][\w$]*)",
                           src, re.MULTILINE)
-        assert set(tops) <= {"NB", "MOL"},             f"{f.name} declares globals {sorted(set(tops) - {'NB', 'MOL'})}"
+        allowed = {"NB", "MOL", "CHARTS"}
+        assert set(tops) <= allowed,             f"{f.name} declares globals {sorted(set(tops) - allowed)}"
 
 
 def test_preview_scripts_are_strict_and_type_checked():
@@ -130,7 +131,7 @@ def test_every_class_the_preview_emits_has_a_rule():
     styled = set(re.findall(r"\.([A-Za-z][\w-]*)", css))
     # selected by JS or by an ancestor rule, never styled by their own name —
     # the design uses .molcv the same way (.viewstage canvas / .vizstage canvas)
-    hooks = {"cellinp", "cellres", "qinp", "out", "molcv"}
+    hooks = {"cellinp", "cellres", "qinp", "out", "molcv", "chartbox"}
     emitted = {}
     for f in sorted(list(NEXT.glob("*.js")) + [NEXT / "index.html"]):
         src = re.sub(r"/\*.*?\*/", "", _read(f), flags=re.S)
@@ -144,6 +145,39 @@ def test_every_class_the_preview_emits_has_a_rule():
     assert not unstyled, (
         "classes with no rule in app.css: "
         + ", ".join(f"{c} ({', '.join(sorted(emitted[c]))})" for c in unstyled))
+
+
+def test_the_preview_uses_the_references_own_component_vocabulary():
+    """Element-by-element against design/notebook-reference.html.
+
+    A class the reference's MARKUP uses and this front-end never emits is a
+    piece of the design that is simply not here — the gap that has to be an
+    explicit, listed decision rather than something nobody noticed. What is
+    still outstanding is named below; the assertion is that the list has not
+    grown.
+    """
+    ref = _read(ROOT / "design" / "notebook-reference.html")
+    body = re.sub(r"<script.*?</script>", "", ref[ref.index("MAIN WINDOW"):], flags=re.S)
+    used = set()
+    for m in re.finditer(r'class="([^"]*)"', body):
+        used |= set(m.group(1).split())
+    src = chr(10).join(_read(f) for f in sorted(NEXT.glob("*.js")) + [NEXT / "index.html"])
+    missing = {c for c in used if not re.search("\\b" + re.escape(c) + "\\b", src)}
+
+    # Known and listed (DESIGN.md B30): the MLIP/CREST setup, the builder's
+    # NEB / per-element-basis / findings blocks, and the pop-out 3D viewer
+    # window with its frame walker and ESP ramp.
+    OUTSTANDING = {
+        "envrow", "slider",                                   # MLIP env setup
+        "nebrow", "nebslot", "basis-row", "snips", "finding",  # builder blocks
+        "mvwin", "mvhead", "mvstage", "mvlegend", "mvbar", "mvcount", "mvramp",
+    }
+    unexpected = sorted(missing - OUTSTANDING)
+    assert not unexpected, (
+        "design elements dropped without a decision: " + ", ".join(unexpected))
+    # and nothing on the list has quietly become present without being removed
+    gone = sorted(OUTSTANDING - missing)
+    assert not gone, "these are implemented now — take them off OUTSTANDING: " + ", ".join(gone)
 
 
 def test_the_reference_is_a_standards_mode_document():

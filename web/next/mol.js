@@ -177,22 +177,44 @@ var MOL = {};
       }
     });
 
-    // a right-drag measurement, drawn over everything
+    // The measurement, drawn over everything - INCLUDING while the button is
+    // still down. `to` is the atom under the cursor (null while over nothing),
+    // `cur` is the cursor itself, so the drag is visible from the first pixel
+    // and the distance appears only once there is one to state.
     const m = view.measure;
-    if (m && m.length === 2) {
-      const A = pts[m[0]], B = pts[m[1]];
-      g.setLineDash([4, 4]); g.strokeStyle = "#ffd166"; g.lineWidth = 1.4;
-      g.beginPath(); g.moveTo(sx(A), sy(A)); g.lineTo(sx(B), sy(B)); g.stroke();
-      g.setLineDash([]);
-      const d = MOL.distance(atoms[m[0]], atoms[m[1]]);
-      const tx = (sx(A) + sx(B)) / 2, ty = (sy(A) + sy(B)) / 2;
-      const label = d.toFixed(3) + " Å";
-      g.font = "11px ui-monospace, monospace";
-      const w = g.measureText(label).width + 10;
-      g.fillStyle = "rgba(0,0,0,.72)";
-      g.beginPath(); g.roundRect(tx - w / 2, ty - 9, w, 18, 9); g.fill();
-      g.fillStyle = "#ffd166"; g.textAlign = "center"; g.textBaseline = "middle";
-      g.fillText(label, tx, ty);
+    if (m && m.from != null && pts[m.from]) {
+      const A = pts[m.from];
+      const ax = sx(A), ay = sy(A);
+      let tx, ty, label = null;
+      if (m.to != null && pts[m.to]) {
+        tx = sx(pts[m.to]); ty = sy(pts[m.to]);
+        label = MOL.distance(atoms[m.from], atoms[m.to]).toFixed(3) + " Å";
+      } else if (m.cur) { tx = m.cur.x; ty = m.cur.y; }
+      if (tx !== undefined) {
+        const cssv = getComputedStyle(document.documentElement);
+        const mc = (cssv.getPropertyValue("--crit-de") || "").trim() || "#4cc9f0";
+        const ground = (cssv.getPropertyValue("--stage") || "").trim() || "#0e0e10";
+        g.save();
+        g.setLineDash([5, 4]); g.strokeStyle = mc; g.lineWidth = 1.6;
+        g.beginPath(); g.moveTo(ax, ay); g.lineTo(tx, ty); g.stroke();
+        g.restore();
+        g.strokeStyle = mc; g.lineWidth = 2;
+        g.beginPath(); g.arc(ax, ay, rad(A.el) + 4, 0, Math.PI * 2); g.stroke();
+        if (m.to != null && pts[m.to]) {
+          g.beginPath(); g.arc(tx, ty, rad(pts[m.to].el) + 4, 0, Math.PI * 2); g.stroke();
+        }
+        if (label) {
+          const mono = (cssv.getPropertyValue("--font-mono") || "").trim() || "monospace";
+          g.font = "11px " + mono;
+          const lx = (ax + tx) / 2, ly = (ay + ty) / 2 - 7;
+          const tw = g.measureText(label).width;
+          g.fillStyle = ground;
+          g.fillRect(lx - tw / 2 - 4, ly - 11, tw + 8, 15);
+          g.fillStyle = mc; g.textAlign = "center"; g.textBaseline = "middle";
+          g.fillText(label, lx, ly - 3);
+          g.textAlign = "left"; g.textBaseline = "alphabetic";
+        }
+      }
     }
 
     return { pts: pts, sx: sx, sy: sy, rad: rad, bonds: bs, W: W, H: H };
@@ -232,105 +254,143 @@ var MOL = {};
     let proj = null;
     /** @type {number[]} the picked atom(s) */
     let mark = [];
-    /** @type {number[]|null} */
+    /** The measurement in flight or pinned: {from, to, cur, pinned}.
+     *  @type {any} */
     let measure = null;
     let axis = -1;
-    let drag = null, rdrag = null;
+    let drag = null;
 
     function paint() {
       proj = render(canvas, atoms, {
         yaw: view.yaw, pitch: view.pitch, mark: mark, measure: measure });
     }
 
-    /** @param {MouseEvent} e @returns {{kind: string, i: number, j?: number}|null} */
-    function hit(e) {
-      if (!proj) return null;
+    /** @param {PointerEvent} e @returns {{x: number, y: number}} */
+    function local(e) {
       const r = canvas.getBoundingClientRect();
-      const X = e.clientX - r.left, Y = e.clientY - r.top;
-      // atoms first: a bond behind an atom is not what was aimed at
-      let best = null, bestD = Infinity;
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    }
+
+    /** The atom under a point, nearest to the viewer where they overlap.
+     *  @param {number} X @param {number} Y @returns {number|null} */
+    function atomAt(X, Y) {
+      if (!proj) return null;
+      let best = null, bz = -Infinity;
       proj.pts.forEach((p, i) => {
         const d = Math.hypot(proj.sx(p) - X, proj.sy(p) - Y);
-        if (d <= proj.rad(p.el) + 2 && (best === null || p.z > proj.pts[best].z)) {
-          best = i;
-        }
+        if (d <= proj.rad(p.el) + 3 && p.z > bz) { best = i; bz = p.z; }
       });
-      if (best !== null) return { kind: "atom", i: best };
+      return best;
+    }
+
+    /** An atom, else the bond nearest the point.
+     *  @param {number} X @param {number} Y */
+    function hitAt(X, Y) {
+      if (!proj) return null;
+      const a = atomAt(X, Y);
+      if (a !== null) return { kind: "atom", i: a };
+      let best = null, bestD = Infinity;
       proj.bonds.forEach(b => {
         const A = proj.pts[b[0]], B = proj.pts[b[1]];
         const ax = proj.sx(A), ay = proj.sy(A), bx = proj.sx(B), by = proj.sy(B);
         const L2 = (bx - ax) ** 2 + (by - ay) ** 2;
         if (!L2) return;
-        let t = ((X - ax) * (bx - ax) + (Y - ay) * (by - ay)) / L2;
-        t = Math.max(0, Math.min(1, t));
+        const t = Math.max(0, Math.min(1, ((X - ax) * (bx - ax) + (Y - ay) * (by - ay)) / L2));
         const d = Math.hypot(ax + t * (bx - ax) - X, ay + t * (by - ay) - Y);
         if (d < 6 && d < bestD) { bestD = d; best = b; }
       });
-      if (best && Array.isArray(best)) return { kind: "bond", i: best[0], j: best[1] };
-      return null;
+      return best ? { kind: "bond", i: best[0], j: best[1] } : null;
     }
 
-    canvas.addEventListener("mousedown", e => {
+    canvas.style.cursor = "grab";
+    canvas.addEventListener("contextmenu", e => e.preventDefault());
+
+    canvas.addEventListener("pointerdown", e => {
       // preventScroll: focusing a tabbable element scrolls it into view, and
-      // the stage is usually well down a long report — so clicking an atom
-      // yanked the page, and the click then landed on a box that had moved
+      // the stage is usually well down a long report — so a click on an atom
+      // yanked the page, and then landed on a box that had moved
       canvas.focus({ preventScroll: true });
-      if (e.button === 2) {
-        const h = hit(e);
-        if (h && h.kind === "atom") { rdrag = h.i; measure = null; paint(); }
-        e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
+      const p = local(e);
+      if (e.button === 2) {                       // right: start measuring
+        const from = atomAt(p.x, p.y);
+        measure = from == null ? null : { from: from, to: null, cur: p };
+        paint();
         return;
       }
-      drag = { x: e.clientX, y: e.clientY, yaw: view.yaw, pitch: view.pitch, moved: false };
+      drag = { x: e.clientX, y: e.clientY, yaw: view.yaw, pitch: view.pitch, moved: 0 };
+      canvas.style.cursor = "grabbing";
     });
-    const gone = new AbortController();
-    const on = gone.signal;
-    window.addEventListener("mousemove", e => {
+
+    canvas.addEventListener("pointermove", e => {
+      // While the right button is down the line follows the cursor: that IS
+      // the feedback that a measurement is being taken.
+      if (measure && measure.pinned !== true && (e.buttons & 2)) {
+        const p = local(e);
+        measure.cur = p;
+        const over = atomAt(p.x, p.y);
+        measure.to = (over != null && over !== measure.from) ? over : null;
+        paint();
+        return;
+      }
       if (!drag) return;
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+      drag.moved = Math.max(drag.moved, Math.hypot(dx, dy));
       view.yaw = drag.yaw + dx * 0.01;
-      view.pitch = Math.max(-1.5, Math.min(1.5, drag.pitch + dy * 0.01));
+      view.pitch = Math.max(-1.5, Math.min(1.5, drag.pitch - dy * 0.01));
       axis = -1;
       paint();
-    }, { signal: on });
-    window.addEventListener("mouseup", e => {
-      if (rdrag != null) {
-        const h = hit(e);
-        if (h && h.kind === "atom" && h.i !== rdrag) {
-          measure = [rdrag, h.i];
-          if (opts.onPick) {
-            opts.onPick({ kind: "distance", i: measure[0], j: measure[1],
-                          value: MOL.distance(atoms[measure[0]], atoms[measure[1]]) });
+    });
+
+    canvas.addEventListener("pointerup", e => {
+      if (e.button === 2 || (measure && !drag)) {
+        if (measure) {
+          if (measure.to == null) measure = null;   // released on nothing
+          else {
+            measure.pinned = true;                 // keep it on screen
+            if (opts.onPick) {
+              opts.onPick({ kind: "distance", i: measure.from, j: measure.to,
+                            value: MOL.distance(atoms[measure.from], atoms[measure.to]) });
+            }
           }
+          paint();
         }
-        rdrag = null; paint(); return;
+        return;
       }
       if (!drag) return;
       const moved = drag.moved;
       drag = null;
-      if (moved) return;
-      const h = hit(e);
-      if (!h) { mark = []; measure = null; paint(); if (opts.onPick) opts.onPick(null); return; }
-      // clicking the same atom again lets it go
+      canvas.style.cursor = "grab";
+      if (moved > 4) return;                       // a turn, not a click
+      const p = local(e);
+      const h = hitAt(p.x, p.y);
+      if (!h) { mark = []; paint(); if (opts.onPick) opts.onPick(null); return; }
+      // clicking what is already selected lets it go
       const next = h.kind === "atom" ? [h.i] : [h.i, h.j];
       const same = next.length === mark.length && next.every((v, k) => v === mark[k]);
       mark = same ? [] : next;
-      measure = null;
       paint();
       if (opts.onPick) opts.onPick(same ? null : Object.assign({ atoms: atoms }, h));
-    }, { signal: on });
-    canvas.addEventListener("contextmenu", e => e.preventDefault());
+    });
+    canvas.addEventListener("pointercancel", () => {
+      drag = null; canvas.style.cursor = "grab";
+    });
+
+    if (!canvas.hasAttribute("tabindex")) canvas.setAttribute("tabindex", "0");
     canvas.addEventListener("keydown", e => {
-      const step = 0.12;
+      const step = 0.16;
       if (e.key === "ArrowLeft") view.yaw -= step;
       else if (e.key === "ArrowRight") view.yaw += step;
       else if (e.key === "ArrowUp") view.pitch = Math.max(-1.5, view.pitch - step);
       else if (e.key === "ArrowDown") view.pitch = Math.min(1.5, view.pitch + step);
-      else return;
+      else if (e.key === "Escape") {
+        measure = null; mark = [];
+        e.preventDefault(); paint();
+        if (opts.onPick) opts.onPick(null);
+        return;
+      } else return;
       e.preventDefault(); axis = -1; paint();
     });
-    if (!canvas.hasAttribute("tabindex")) canvas.setAttribute("tabindex", "0");
 
     let ro = null;
     if (typeof ResizeObserver === "function") {
@@ -356,6 +416,12 @@ var MOL = {};
       },
       clearPick() { mark = []; measure = null; paint(); },
       repaint: paint,
+      /** What the measurement is doing, for anything that needs to know — and
+       *  for the headless check that the drag is visible while it happens. */
+      measureState() {
+        return measure ? { from: measure.from, to: measure.to,
+                           cur: measure.cur, pinned: !!measure.pinned } : null;
+      },
       /** the last projection — screen positions and radii, which is what a
        *  caller needs to reason about what is where */
       projection() {
@@ -364,7 +430,7 @@ var MOL = {};
                  screen: proj.pts.map(p => [Math.round(proj.sx(p)), Math.round(proj.sy(p)),
                                             Math.round(proj.rad(p.el))]) };
       },
-      destroy() { if (ro) ro.disconnect(); gone.abort(); },
+      destroy() { if (ro) ro.disconnect(); },
     };
   };
 })();
