@@ -86,10 +86,26 @@ class MainWindow(QMainWindow):
     # files that can be dropped onto the window -> routed by extension
     DROP_EXTS = (".inp", ".xyz", ".out")
 
+    # The size each front-end opens at. These are not preferences: the notebook
+    # layout is DRAWN at one width. design/notebook-reference.html and
+    # tools/uispec.py both measure at 1680x1000, and app.css collapses the
+    # queue rail away entirely below 1320 (@media max-width:1320px), so opening
+    # the preview at the classic 1100 put it in a layout the design never shows
+    # -- no rail, cells at full width -- which reads as a different UI rather
+    # than as a narrow one. Classic has no such breakpoint and keeps its size.
+    _SIZE_BY_VARIANT = {"notebook": (1680, 1000)}
+    _SIZE_DEFAULT = (1100, 820)
+    # ...but never larger than the screen it opens on. On a display too narrow
+    # for the design (a 1366-wide laptop) the clamp does drop below 1320 and the
+    # rail collapses -- that is the responsive layout doing its job, and the
+    # floor only keeps the clamp from producing something absurd.
+    _MIN_SIZE = (1100, 720)
+    _SCREEN_MARGIN = 80
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"ORCAdesk {APP_VERSION}")
-        self.resize(1100, 820)
+        self.resize(*self._initial_size())
 
         icon_path = resource_path("resources", "orcadesk.ico")
         if icon_path.exists():
@@ -185,6 +201,25 @@ class MainWindow(QMainWindow):
         # persist (writes config_file so this dialog won't show again)
         settings.save()
 
+    @staticmethod
+    def _ui_variant() -> str:
+        """Which front-end the user has selected. One reader, two callers: the
+        file to load and the size to open at, which must not disagree."""
+        return Settings.load().ui_variant
+
+    def _initial_size(self) -> tuple[int, int]:
+        """The window size for the selected front-end, clamped to the screen.
+
+        See _SIZE_BY_VARIANT for why this is per-variant rather than one number.
+        """
+        w, h = self._SIZE_BY_VARIANT.get(self._ui_variant(), self._SIZE_DEFAULT)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            w = min(w, max(self._MIN_SIZE[0], avail.width() - self._SCREEN_MARGIN))
+            h = min(h, max(self._MIN_SIZE[1], avail.height() - self._SCREEN_MARGIN))
+        return w, h
+
     def _index_file(self) -> Path:
         """The front-end entry point to load.
 
@@ -203,7 +238,7 @@ class MainWindow(QMainWindow):
         and the window would come up blank with the backend running happily
         behind it.
         """
-        if Settings.load().ui_variant == "notebook":
+        if self._ui_variant() == "notebook":
             nxt = web_dir() / "next" / "index.html"
             if nxt.exists():
                 return nxt
@@ -216,7 +251,16 @@ class MainWindow(QMainWindow):
         watcher live in Python (store / Bridge), so switching front-ends mid-run
         is a repaint, not a restart — the new page rebuilds its screen from the
         same bridge calls a cold start uses.
+
+        The window grows if the front-end being switched TO needs more room
+        than the current size gives it -- switching to the notebook layout in a
+        classic-sized window would otherwise land on the collapsed layout, with
+        no queue rail, which reads as a broken switch rather than a narrow one.
+        It never shrinks: a window the user has sized up is their decision.
         """
+        want_w, want_h = self._initial_size()
+        if self.width() < want_w or self.height() < want_h:
+            self.resize(max(self.width(), want_w), max(self.height(), want_h))
         self.view.load(QUrl.fromLocalFile(str(self._index_file())))
 
     def _check_ui_loaded(self, ok: bool) -> None:

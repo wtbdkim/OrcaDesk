@@ -58,7 +58,7 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   inside the pop-out viewer, and the viewer was never handed the orbital list,
   so it could draw a density but never an orbital. They now sit in the same
   strip as the structures — as **kinds**: one *Orbitals* tile reading
-  “HOMO−4 … LUMO+4”, with the ten orbitals themselves in the list beside it,
+  its orbital count, with the orbitals themselves in the list beside it,
   each with its energy. A cube already on disk opens at once. One that is not
   costs an orca_plot run over the wavefunction, so the click asks first —
   naming the grid and what the wait actually is (an orbital is about a second,
@@ -73,6 +73,161 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   through them, so the numbers are reachable without a pointer. The whole plot is
   the hit target and the nearest band wins — a band is 1.6px wide, which no
   hit-target rule can save.
+
+### Fixed
+- **The axis marker in the corner is the control for the axis views.** It used
+  to be a button that cycled *View down x -> y -> z*, which asks you to know
+  which way you are already facing and to press up to three times to get where
+  you meant. The marker was already there, stating the orientation; pressing
+  the arm you want is now the whole gesture, and it is one press. The button is
+  gone, and the marker is on the report's Structure stage as well as the Visual
+  one. Without a pointer, x, y and z do the same thing while the stage has
+  focus.
+- **Every molecular orbital can be plotted, not ten of them.** The Orbitals
+  tile offered a window of HOMO-4 to LUMO+4, which is a guess about which
+  orbital the question is about — a ligand-field argument wants the metal d set
+  wherever it fell, a charge-transfer one wants the donor lone pair, neither is
+  necessarily in that window. The list now holds the whole manifold (both
+  manifolds for an open-shell run, alpha and beta kept apart and named), and
+  the tile counts them instead of naming its ends. Nothing extra is computed:
+  orca_plot still runs only for the orbital actually clicked.
+- **Turning a structure no longer resizes it.** The view was fitted to how wide
+  the molecule happened to look from the current angle, recomputed every frame —
+  so dragging an elongated one made it pump in and out (measured on triflic
+  anhydride: a carbon went 21.1px end-on to 33.8px broadside over one turn,
+  a 1.6× swing). The fit is to the molecule's bounding sphere, which a rotation
+  cannot change, and the margin is the outermost atom's actual ball rather than
+  a constant generous enough for any element. Checked over 312 orientations:
+  one scale, distances preserved to 1e-15, nothing clipped at any angle.
+- **Atoms are drawn at their own size.** Every structure here — the cell
+  thumbnails, the report's Structure stage, the pop-out viewer — sizes a ball
+  by the element's covalent radius, so hydrogen comes out at 41% of a carbon
+  and oxygen slightly under one. Two things stopped that from being visible:
+  the radius table covered 24 elements and sent everything else to a single
+  fallback *larger than iodine*, and a flat 2.5px minimum clamped every small
+  atom to the same size whenever the molecule was large against its box —
+  which is every cell thumbnail of a real molecule. The table is now the
+  published covalent radii (Cordero 2008) from H to Pu, and the only floor left
+  is that a ball is never thinner than the stick it sits on.
+- **A finished run's thumbnail shows the structure it finished on.** The
+  geometry was cached under the calculation's name the first time it was drawn,
+  so a calculation watched from queued to done kept the coordinates it was
+  handed while the caption under it changed to *final* — the optimized
+  structure appeared only after a reload.
+- **A failed calculation says why where you are reading it.** The reason used
+  to be a red box under the queue row and nowhere else — four failures filled
+  the rail and pushed the queue itself off the screen, while the cell that
+  *was* the calculation carried the same sentence squeezed into its fact line.
+  The rail row now carries a one-line ⚠ summary like every other state, and the
+  reason itself sits at the top of the cell body, where the design puts it.
+- **The fact line under a cell was outside the card's padding**, so “opt ·
+  charge 0 · mult 1” sat flush against the border with the message repeated
+  after it. It is inside the body now, and states facts only.
+- **The section outline no longer has a strip of the report showing above it.**
+  A sticky bar sticks to the scrollport's *padding* edge, so the report's own
+  20px of top padding was a band the outline could never cover and a table
+  header stayed legible, half cut off, over the chips. The padding moved onto
+  the bar.
+- **The input echo printed its first line twice.** For a result whose `.inp` is
+  gone, the pane is rebuilt from what the parser read out of the `.out` — and
+  the keyword summary was being prepended to a block that already contained it.
+- **Atoms are numbered from one everywhere.** ORCA indexes its Mayer and NMR
+  tables from zero, and those numbers were passed through beside geometry,
+  Mulliken and Löwdin tables numbered from one — so one water molecule wore two
+  numberings on one screen, and *Mayer bond orders*, which says “also on any
+  bond you click in Structure”, listed `0-O – 1-H` for the bond the viewer
+  labels `O1 – H2`. Every table now reads `1 O – 2 H`.
+- **The notebook preview is drawn in the typefaces it was designed in.** The
+  approved design asks for **Inter** and **JetBrains Mono**; it pulls them from
+  Google Fonts, which an offline desktop app cannot do, and no copy shipped —
+  so every word in the preview was drawn in whatever Windows substituted (Segoe
+  UI Variable, and Consolas for anything monospaced). Both faces are now
+  carried with the app (~172 KB, latin + latin-ext, SIL OFL). The difference is
+  largest exactly where it was noticed: the queue rail's 10–11px muted labels —
+  a row's method line, its status message, the state badge, the group headings —
+  are set in a face with a smaller x-height than the one they were spaced for,
+  so they read fainter and left more air inside boxes whose padding never
+  changed. The element-by-element check against the design could not see it: a
+  computed `font-family` is the list that was *declared*, identical on both
+  sides, so a substitution is invisible to it. It now measures the face that
+  actually renders, and says which side fell through to nothing.
+- **The notebook opens at the width its layout is drawn for.** The window came
+  up at 1100px for both front-ends, and the notebook's stylesheet folds the
+  queue rail away entirely below 1320 — so the preview's default state was a
+  layout the design never shows: no rail, cells at full width. It now opens at
+  1680×1000, clamped to the screen it lands on, and grows if it is switched to
+  from the classic window. A display genuinely too narrow still gets the
+  collapsed layout, which is what that layout is for.
+- **The queue rail's finished group, and a place for files opened from
+  elsewhere.** Three things the design draws were missing from it. *Finished*
+  was labelled “Done” and could only be emptied by clearing the whole queue —
+  it now carries its own **Clear**, which takes the finished rows out of the
+  list and touches no file on disk. A finished row shows what it found
+  (`0 imaginary · G −1268.19844 Eh · 1h 38m`) instead of dropping its message
+  as noise, so it is two lines of answer rather than two lines of name. And a
+  result opened from outside the workspace now stays in the rail under **Opened
+  files**, with the folder it came from, rather than being reachable only while
+  it happens to be on screen — the group's header is also the rail's *Open
+  file…*.
+- **A queue row can be reordered from the keyboard again, and copied.** The
+  rail's rows expand into the design's own controls now, in its wording:
+  **↑ earlier / ↓ later**, *results*, *duplicate*, *folder*, *remove*. The
+  reorder pair is the point — dragging was the only way to move a calculation,
+  which is no way at all without a mouse; the buttons walk the row's own group
+  and go quiet at its ends. *duplicate* puts the setup back as a new queued row
+  under a free name, whatever the original became, which is what you want after
+  a run that failed for a reason you have since fixed. Two controls the design
+  draws are deliberately not here and the code says why: *requeue* on a failed
+  row would contradict a rule this app does keep (a failed calculation is locked
+  at the moment it failed — build a new one), and *stop* on a single row would
+  have to stop every job in flight.
+- **An 11-pixel divider that should not have been there.** `.seg .sep` is the
+  rule that separates two *groups* inside one segmented control — the design
+  uses it once, in the builder's `DFT | MLIP | CREST · Beginner | Expert`. Two
+  had been put between the two buttons of a two-button control (the Jobs/Results
+  switch and the viewer's mode switch), where there are no groups to divide and
+  where a 1px rule plus 8px of margin plus one more gap made both controls 11px
+  wider than the design draws them. The element-by-element check could not see
+  it: it compares the *properties* of 121 named elements, and an extra child
+  changes none of them. It now also audits every class combination on both pages
+  for the box-model and type metrics the shared stylesheet fixes, which is how
+  this was found, and reports a height difference beside it without counting it.
+- **The Structure stage and the Visual panel beside it end level again.** On a
+  display scaled above 100% the Structure stage grew a little every time
+  anything resized — a molecule viewer sizes its own bitmap from its own box
+  each frame, and in flow that bitmap becomes the box's own input, so at 125%
+  each pass multiplied the height by 1.25 while the Visual panel next to it
+  stayed put. The drawing surfaces are now out of flow, and the observer that
+  triggers a redraw watches the stage rather than the canvas it is about to
+  resize. Both halves, because either one alone leaves the loop a step from
+  closing. Every stage is affected — cell thumbnails, the report, the pop-out
+  viewer — and none of it was visible at exactly 100%.
+- **The Results toolbar is the design's again: Output | Visual, and no second
+  picker.** The queue rail chooses the result — in either view — and anything
+  not in it comes in through *Open file… / Open folder…*, which is also what
+  gives it a row under **Opened files** with the folder it came from. The
+  toolbar's `Result` dropdown listed the queue *and* a scan of the workspace:
+  the same job done twice, the copy that could not say where an entry came from,
+  and a disk walk on every entry to the tab. *Output / Visual* takes its place
+  and does not switch a mode — Visual is one of the report's sections, so the
+  pair jumps to it the way the outline chips do, and *Show all* (which is
+  Output's) goes away while Visual is being read.
+- **“New from this” on a finished calculation.** Starts a new one already
+  pointed at this run's optimized geometry — taken by reference, so the engine
+  resolves it when the new calculation actually runs and it is the structure as
+  it finally was. The same handoff opt → freq has always used; it just had no
+  button.
+- **An orbital or an ESP map is drawn where you picked it.** Clicking one in
+  the Visual panel used to open the pop-out viewer on top of the report you were
+  reading — the answer arriving somewhere other than where the question was
+  asked. It now appears in the panel's own stage, and the window is what you
+  open when you want it big with the isovalue beside it (and *Open in viewer*
+  now follows whatever the stage is showing, surface or structure). Underneath,
+  the isosurface renderer became one shared thing instead of the viewer's
+  private one: there is still exactly one WebGL context in the app, and the box
+  holding it moves to whichever stage is drawing — a browser keeps only a
+  handful of contexts alive and drops the oldest without asking, and the panel's
+  stage is rebuilt on every report render.
 
 ### Security
 - **The phone-sync PIN can no longer be switched off by putting a reverse proxy

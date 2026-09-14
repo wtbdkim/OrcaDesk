@@ -55,7 +55,11 @@ def test_preview_borrows_only_the_dom_free_scripts():
     """
     html = _read(NEXT / "index.html")
     borrowed = sorted(set(re.findall(r'(?:src|href)="\.\./([^"]+)"', html)))
-    allowed = {"scf_graph.js", "progress_panels.js", "orcadesk_logo.png"}
+    # fonts/ is not classic UI: it is a sibling asset directory holding the two
+    # typefaces the design is drawn in, and an @font-face sheet owns no DOM and
+    # no ids. Everything else above the preview's own folder is still refused.
+    allowed = {"scf_graph.js", "progress_panels.js", "orcadesk_logo.png",
+               "fonts/fonts.css"}
     assert set(borrowed) <= allowed, f"unexpected classic dependencies: {sorted(set(borrowed) - allowed)}"
 
 
@@ -171,12 +175,19 @@ def test_the_preview_uses_the_references_own_component_vocabulary():
     src = chr(10).join(_read(f) for f in sorted(NEXT.glob("*.js")) + [NEXT / "index.html"])
     missing = {c for c in used if not re.search("\\b" + re.escape(c) + "\\b", src)}
 
-    # Empty, and kept rather than deleted with its last entry: the two
-    # assertions below are what make DROPPING an element a decision somebody
-    # took instead of something that quietly happened, and an empty set is the
-    # strongest form of that record. Adding a name here is allowed; doing it
-    # without saying why in DESIGN.md is not.
-    OUTSTANDING = set()
+    # The two assertions below are what make DROPPING an element a decision
+    # somebody took instead of something that quietly happened. Adding a name
+    # here is allowed; doing it without saying why in DESIGN.md is not.
+    OUTSTANDING = {
+        # .seg .sep is a divider BETWEEN TWO GROUPS inside one segmented
+        # control, and the reference uses it in exactly one place: the builder's
+        # backend picker, DFT | MLIP | CREST . Beginner | Expert. The preview
+        # has no MLIP or CREST builder (DESIGN.md B30), so it has no such
+        # control and nothing to divide. It briefly carried one between the two
+        # buttons of a two-button control, which is not what the divider is for
+        # and cost 11px of width on a control whose size the design fixes.
+        "sep",
+    }
     unexpected = sorted(missing - OUTSTANDING)
     assert not unexpected, (
         "design elements dropped without a decision: " + ", ".join(unexpected))
@@ -248,7 +259,11 @@ def test_bridge_reports_and_accepts_ui_variant():
 
 def test_window_picks_the_front_end_from_the_setting():
     src = _read(ROOT / "orcamgr" / "gui" / "window.py")
-    assert 'ui_variant == "notebook"' in src
+    # one reader for the setting, because the file to load and the size to open
+    # at are both chosen by it and must not disagree
+    assert "def _ui_variant" in src
+    assert "Settings.load().ui_variant" in src
+    assert 'self._ui_variant() == "notebook"' in src
     assert '"next" / "index.html"' in src
     # and never loads a hard-coded index.html behind the setting's back
     assert 'web_dir() / "index.html"\n        self.view.load' not in src
@@ -258,3 +273,53 @@ def test_frozen_build_ships_the_preview():
     """PyInstaller copies web/ wholesale, so web/next/ rides along."""
     spec = _read(ROOT / "build.spec")
     assert '("web", "web")' in spec
+
+
+def test_preview_ships_the_typefaces_the_design_is_drawn_in():
+    """The design's two faces are carried, not linked, and actually resolve.
+
+    design/notebook-reference.html pulls Inter and JetBrains Mono from Google
+    Fonts. The preview shipped no copy, so its stack fell through to system-ui
+    and ui-monospace -- Segoe UI Variable and Consolas on Windows -- and every
+    10-11px muted label in the queue rail was drawn in a face with a smaller
+    x-height than the one it was spaced for. Nothing caught it: a computed
+    fontFamily is the DECLARED stack, identical on both sides, so uidiff read
+    zero differences (it now probes the resolved face too, under __fonts).
+
+    This is the static half of that check: the link exists, the files behind it
+    exist, and the stack in app.css still names what they provide.
+    """
+    html = _read(NEXT / "index.html")
+    assert '"../fonts/fonts.css"' in html, "the preview does not link the bundled fonts"
+
+    sheet = ROOT / "web" / "fonts" / "fonts.css"
+    css = _read(sheet)
+    families = set(re.findall(r"font-family:\s*'([^']+)'", css))
+    assert {"Inter", "JetBrains Mono"} <= families, f"fonts.css declares {families}"
+
+    missing = [u for u in re.findall(r"url\('([^']+)'\)", css)
+               if not (sheet.parent / u).exists()]
+    assert not missing, f"fonts.css points at files that are not there: {missing}"
+
+    app_css = _read(NEXT / "app.css")
+    sans = re.search(r"--font-sans:([^;]+);", app_css, re.S).group(1)
+    mono = re.search(r"--font-mono:([^;]+);", app_css, re.S).group(1)
+    assert "Inter" in sans, "--font-sans no longer names the face that is bundled"
+    assert "JetBrains Mono" in mono, "--font-mono no longer names the face that is bundled"
+
+
+def test_window_opens_the_notebook_above_its_own_breakpoint():
+    """app.css hides the queue rail below 1320px, so the preview must not open
+    under it: at the classic 1100 the app came up in a layout the design never
+    shows -- no rail at all -- which reads as a different UI, not a narrow one.
+    """
+    app_css = _read(NEXT / "app.css")
+    collapse = re.search(r"@media \(max-width:(\d+)px\)\{.*?\.rail\{display:none;\}",
+                         app_css, re.S)
+    assert collapse, "the rail's collapse breakpoint moved or changed shape"
+    limit = int(collapse.group(1))
+
+    src = _read(ROOT / "orcamgr" / "gui" / "window.py")
+    sizes = re.search(r"_SIZE_BY_VARIANT = \{([^}]*)\}", src).group(1)
+    width = int(re.search(r'"notebook":\s*\((\d+)', sizes).group(1))
+    assert width > limit, f"the notebook opens at {width}px, under the {limit}px collapse"

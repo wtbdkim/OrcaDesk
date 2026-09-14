@@ -35,8 +35,6 @@
 
   /** the mol.js stage, created once the window first opens @type {any} */
   let _stage = null;
-  /** the 3Dmol GLViewer, created on the first volume plot @type {any} */
-  let _gl = null;
   /** @type {any[]} frames of the open set */
   let _frames = [];
   let _idx = 0;
@@ -54,10 +52,6 @@
   let _opts = null;
   /** the in-flight (or settled) get_plot_options for _source; see volumeReady */
   let _volReady = null;
-  /** bumped on every plot request; a reply for an older one is dropped */
-  let _seq = 0;
-  let _volData = null, _espData = null, _volSigned = true, _volTitle = "";
-  let _iso = 0.05, _espRange = 0.05;
   /** the parse's orbital list for the open result, which is what lets the
    *  Surface picker say HOMO and mean the orbital the PARSER called the HOMO
    *  @type {any[]} */
@@ -95,13 +89,15 @@
     // Release the GPU's buffers before the container is hidden: a render into a
     // display:none box draws into a 0x0 framebuffer, which leaves the old scene
     // on the card instead of clearing it.
-    if (_gl) { try { _gl.clear(); _gl.render(); } catch (e) { /* context lost */ } }
+    _vol.release();
     q("mvwin").hidden = true;
     q("mv-scrim").hidden = true;
     document.removeEventListener("keydown", onKey);
     _frames = [];
-    _volData = null; _espData = null;
-    _seq++;
+    // the Visual panel takes the box back if it was showing a surface -- the
+    // window borrowed the one renderer there is, and a panel left with an empty
+    // stage would read as the pick having been lost
+    if (NB.viewer && NB.viewer.reclaimSurface) NB.viewer.reclaimSurface();
     if (_return && _return.focus) _return.focus();
   }
 
@@ -112,8 +108,11 @@
     q("mv-frames").hidden = vol;
     q("mv-volume").hidden = !vol;
     q("mv-canvas").hidden = vol;
-    q("mv-gl").hidden = !vol;
     q("mv-legend").hidden = vol;
+    // the box is shared with the Visual panel and may be parented there, so
+    // this takes it back rather than assuming it is already here
+    if (vol) _vol.adopt(q("mv-stage"));
+    else q("mv-gl").hidden = true;
     document.querySelectorAll("[data-mvmode]").forEach(b =>
       b.setAttribute("aria-pressed", String(/** @type {any} */ (b).dataset.mvmode === m)));
     if (!vol && _stage) _stage.repaint();
@@ -240,28 +239,44 @@
     const kinds = opts.kinds || [];
     const out = [];
     if (kinds.indexOf("mo") >= 0 && orbitals && orbitals.length) {
-      // one manifold at a time: an unrestricted run prints two, both indexed
-      // from 0, and mixing them would plot the wrong orbital under the right name
-      const spin = orbitals.filter(o => !o.spin || o.spin === "a");
-      const homo = spin.filter(o => o.frontier === "homo")[0];
-      const lumo = spin.filter(o => o.frontier === "lumo")[0];
-      const at = (o, d) => o ? spin.filter(x => x.idx === o.idx + d)[0] : null;
-      // `label` names it in the picker, where there is a line to spare; `short`
-      // names it on a Visual tile, which is one grid cell wide and wraps an
-      // orbital energy onto three lines if given one.
-      const push = (o, label) => {
-        if (!o) return;
-        out.push({ kind: "mo", index: o.idx, operator: 0, short: label, ev: o.ev,
-                   label: `${label} (${o.idx}, ${o.ev.toFixed(2)} eV)` });
-      };
-      // A frontier WINDOW, not the two edges: which orbital matters is a
-      // question about the chemistry, and the one people reach for after the
-      // HOMO is usually HOMO−2, not the density. The design's own tile says
-      // "HOMO−4 … LUMO+4", and a list is what makes ten of them cost nothing.
-      for (let k = 4; k >= 1; k--) push(at(homo, -k), "HOMO−" + k);
-      push(homo, "HOMO");
-      push(lumo, "LUMO");
-      for (let k = 1; k <= 4; k++) push(at(lumo, k), "LUMO+" + k);
+      // EVERY orbital the parse read, not a window around the frontier. A
+      // window is a guess about which orbital the question is about, and it is
+      // wrong often enough to matter: a ligand-field argument wants the metal d
+      // set wherever it fell, a charge-transfer one wants the donor lone pair,
+      // and a core hole is nowhere near the HOMO. The rows cost nothing —
+      // they are list entries, and orca_plot only runs for the one clicked.
+      //
+      // Manifolds are still kept apart: an unrestricted run prints two, both
+      // indexed from 0, so the spin rides along as `operator` (0 alpha, 1 beta)
+      // rather than one of them being dropped. That is also the cube's name.
+      const spins = [];
+      orbitals.forEach(o => {
+        const sp = o.spin || "";
+        if (spins.indexOf(sp) < 0) spins.push(sp);
+      });
+      spins.forEach(sp => {
+        const man = orbitals.filter(o => (o.spin || "") === sp);
+        const op = sp === "b" ? 1 : 0;
+        const tag = spins.length > 1 ? (sp === "b" ? "β " : "α ") : "";
+        // the frontier comes from the parse, never recounted here (P4) — and
+        // for an open-shell run it is the pair across BOTH manifolds, so the
+        // other one legitimately has neither and its orbitals go by index
+        const homo = man.filter(o => o.frontier === "homo")[0];
+        const lumo = man.filter(o => o.frontier === "lumo")[0];
+        man.forEach(o => {
+          let name = "#" + o.idx;
+          if (homo && o.idx <= homo.idx) {
+            name = o.idx === homo.idx ? "HOMO" : "HOMO−" + (homo.idx - o.idx);
+          } else if (lumo && o.idx >= lumo.idx) {
+            name = o.idx === lumo.idx ? "LUMO" : "LUMO+" + (o.idx - lumo.idx);
+          }
+          // `short` names it in the one-cell-wide list; `label` in the picker,
+          // where there is a line to spare for the index and the energy
+          out.push({ kind: "mo", index: o.idx, operator: op, ev: o.ev,
+                     short: tag + name,
+                     label: `${tag}${name} (${o.idx}, ${o.ev.toFixed(2)} eV)` });
+        });
+      });
     }
     if (kinds.indexOf("eldens") >= 0)
       out.push({ kind: "eldens", index: 0, operator: 0,
@@ -289,9 +304,13 @@
                error: (o && o.error)
                  || "No .gbw beside this result — there is no wavefunction to plot from." };
     }
-    return { ok: true, picks: picksFor(orbitals || [], o).map(p => Object.assign({},
-      p, { ready: cached(o, p), grid: gridFor(o, p.kind),
-           cost: COST[p.kind] || "a moment", why: COST_WHY[p.kind] || "" })) };
+    // opts rides back with the picks: the panel draws the surface itself now,
+    // and plotting one needs the same options this call already fetched. A
+    // second get_plot_options would be a second answer to one question (P4).
+    return { ok: true, opts: o,
+      picks: picksFor(orbitals || [], o).map(p => Object.assign({},
+        p, { ready: cached(o, p), grid: gridFor(o, p.kind),
+             cost: COST[p.kind] || "a moment", why: COST_WHY[p.kind] || "" })) };
   }
 
   /** Fill the Surface picker once the options are known. Returns the promise so
@@ -311,7 +330,6 @@
         q("mv-plot").disabled = true;
         return;
       }
-      _espRange = _opts.esp_range || 0.05;
       _picks = picksFor(_orbitals, _opts);
       if (!_picks.length) {
         sel.innerHTML = `<option value="">nothing to plot</option>`;
@@ -355,150 +373,236 @@
     return names.every(n => (opts.cached || []).indexOf(n) >= 0);
   }
 
-  /** Run orca_plot for one request and read the cube back.
-   *  @param {any} part @param {number} grid @param {number} seq @param {string} wait */
-  async function fetchCube(part, grid, seq, wait) {
-    const payload = JSON.stringify({ source: _source, kind: part.kind,
-      index: part.index, operator: part.operator, grid: grid });
-    const mine = (j) => !!j && j.kind === part.kind && j.index === part.index
-      && j.operator === part.operator && j.grid === grid;
-    let job = null;
-    for (;;) {
-      job = await NB.call("generate_cube", payload);
-      if (seq !== _seq) return null;
-      if (mine(job)) break;
-      // the backend serializes orca_plot — one folder, one fixed output name
-      q("mv-cap").textContent = wait + " — waiting for the previous plot…";
-      await new Promise(r => setTimeout(r, 250));
-      if (seq !== _seq) return null;
-    }
-    while (job && job.state === "running") {
-      q("mv-cap").textContent = `${wait} — ${job.seconds ? job.seconds.toFixed(0) + "s" : "working"}…`;
-      await new Promise(r => setTimeout(r, 250));
-      if (seq !== _seq) return null;
-      job = await NB.call("get_cube_status");
-    }
-    if (!job || job.state !== "done" || !mine(job)) {
-      NB.fail((job && job.error) || "orca_plot could not produce that surface.");
-      return null;
-    }
-    const data = await NB.call("get_cube_data");
-    if (seq !== _seq) return null;
-    if (!data || !data.ok) {
-      NB.fail((data && data.error) || "Could not read the cube file.");
-      return null;
-    }
-    const n = cubeName(_opts, part, grid);
-    if ((_opts.cached || []).indexOf(n) < 0) _opts.cached.push(n);
-    return data;
-  }
+  /** One isosurface renderer, and one WebGL context, for the whole app.
 
-  async function plot() {
-    const sel = q("mv-vol");
-    const p = _picks[Number(sel.value)];
-    if (!p) return;
-    const $3Dmol = await load3Dmol();
-    if (!$3Dmol) {
-      NB.fail("The 3D renderer could not be loaded, so a surface cannot be drawn.");
-      return;
+      Two stages ask it to draw: the Visual panel's, which shows what you picked
+      where you picked it, and the pop-out window's, which is the same picture
+      with the isovalue beside it. They share the renderer rather than each
+      having one, for two reasons. A browser keeps only a handful of WebGL
+      contexts alive and drops the oldest without asking, and the Visual panel's
+      stage is destroyed and rebuilt on every report render — a viewer per stage
+      would be a new context every repaint. And "which cube, at which grid, under
+      which name, and is it already on disk" is exactly the rule that goes wrong
+      the second time it is written (P4): an ESP cube is named after the DENSITY
+      it came from, and a second copy of that fact is how a "ready" mark and the
+      file a fetch looks for come to disagree.
+
+      So the BOX moves. adopt(stage) re-parents #mv-gl, which Chromium does
+      without losing the context, and whichever stage holds it is the one
+      drawing.
+   */
+  function volumeView() {
+    /** @type {any} */ let gl = null;
+    /** @type {any} */ let volData = null;
+    /** @type {any} */ let espData = null;
+    let signed = true, title = "", iso = 0.05, espRange = 0.05;
+    /** bumped on every request; a reply for an older one is dropped */
+    let seq = 0;
+    /** where progress and the finished caption go — the holder sets it */
+    let report = (/** @type {string} */ _t) => {};
+
+    /** Move the GL box into a stage and take ownership of it. The box itself is
+     *  #mv-gl, which lives in index.html and is never re-created; only its
+     *  parent changes. @param {HTMLElement} stage */
+    function adopt(stage) {
+      const box = q("mv-gl");
+      if (box.parentElement !== stage) stage.appendChild(box);
+      box.hidden = false;
+      if (gl) gl.resize();
+      return box;
     }
-    if (!_gl) {
-      const bg = token("--stage", "");
-      try {
-        _gl = $3Dmol.createViewer(q("mv-gl"), bg ? { backgroundColor: bg } : {});
-      } catch (e) { _gl = null; }
-      if (!_gl) {
-        // a remote desktop, a VM, a blocklisted GPU: the frames half still works
-        NB.fail("3D rendering is unavailable on this display — the graphics "
-                + "driver would not provide a WebGL context.");
-        return;
+
+    /** Run orca_plot for one request and read the cube back.
+     *  @param {string} source @param {any} part @param {number} grid
+     *  @param {number} mySeq @param {string} wait @param {any} opts */
+    async function fetchCube(source, part, grid, mySeq, wait, opts) {
+      const payload = JSON.stringify({ source: source, kind: part.kind,
+        index: part.index, operator: part.operator, grid: grid });
+      const mine = (j) => !!j && j.kind === part.kind && j.index === part.index
+        && j.operator === part.operator && j.grid === grid;
+      let job = null;
+      for (;;) {
+        job = await NB.call("generate_cube", payload);
+        if (mySeq !== seq) return null;
+        if (mine(job)) break;
+        // the backend serializes orca_plot — one folder, one fixed output name
+        report(wait + " — waiting for the previous plot…");
+        await new Promise(r => setTimeout(r, 250));
+        if (mySeq !== seq) return null;
       }
+      while (job && job.state === "running") {
+        report(`${wait} — ${job.seconds ? job.seconds.toFixed(0) + "s" : "working"}…`);
+        await new Promise(r => setTimeout(r, 250));
+        if (mySeq !== seq) return null;
+        job = await NB.call("get_cube_status");
+      }
+      if (!job || job.state !== "done" || !mine(job)) {
+        NB.fail((job && job.error) || "orca_plot could not produce that surface.");
+        return null;
+      }
+      const data = await NB.call("get_cube_data");
+      if (mySeq !== seq) return null;
+      if (!data || !data.ok) {
+        NB.fail((data && data.error) || "Could not read the cube file.");
+        return null;
+      }
+      const n = cubeName(opts, part, grid);
+      if ((opts.cached || []).indexOf(n) < 0) opts.cached.push(n);
+      return data;
     }
-    _gl.resize();
-    const seq = ++_seq;
-    q("mv-plot").disabled = true;
-    const grid = gridFor(_opts, p.kind);
-    try {
+
+    /** Draw one surface into the stage that currently holds the box.
+     *  @param {string} source @param {any} p one pick @param {any} opts
+     *  @param {(text: string) => void} [say] where to report progress
+     *  @returns {Promise<boolean>} true when something was drawn */
+    async function plot(source, p, opts, say) {
+      if (!p || !opts) return false;
+      if (say) report = say;
+      const $3Dmol = await load3Dmol();
+      if (!$3Dmol) {
+        NB.fail("The 3D renderer could not be loaded, so a surface cannot be drawn.");
+        return false;
+      }
+      if (!gl) {
+        const bg = token("--stage", "");
+        try {
+          gl = $3Dmol.createViewer(q("mv-gl"), bg ? { backgroundColor: bg } : {});
+        } catch (e) { gl = null; }
+        if (!gl) {
+          // a remote desktop, a VM, a blocklisted GPU: the frames half still works
+          NB.fail("3D rendering is unavailable on this display — the graphics "
+                  + "driver would not provide a WebGL context.");
+          return false;
+        }
+      }
+      gl.resize();
+      espRange = opts.esp_range || espRange;
+      const mySeq = ++seq;
+      const grid = gridFor(opts, p.kind);
       if (p.kind === "esp") {
         // Two fields on ONE grid: the density gives the surface, the potential
         // colours it per vertex. Different grids would be two different boxes.
-        const dens = await fetchCube({ kind: "eldens", index: 0, operator: 0 },
-                                     grid, seq, "ESP map — density surface");
-        if (!dens) return;
-        const esp = await fetchCube(p, grid, seq, "ESP map — potential");
-        if (!esp) return;
-        _volSigned = false;
-        _volTitle = "ESP map";
-        _gl.clear();
-        _gl.addModel(dens.text, "cube");
-        _gl.setStyle({}, { stick: { radius: 0.1 }, sphere: { scale: 0.18 } });
-        _volData = new $3Dmol.VolumeData(dens.text, "cube");
-        _espData = new $3Dmol.VolumeData(esp.text, "cube");
+        const dens = await fetchCube(source, { kind: "eldens", index: 0, operator: 0 },
+                                     grid, mySeq, "ESP map — density surface", opts);
+        if (!dens) return false;
+        const esp = await fetchCube(source, p, grid, mySeq, "ESP map — potential", opts);
+        if (!esp) return false;
+        signed = false;
+        title = "ESP map";
+        gl.clear();
+        gl.addModel(dens.text, "cube");
+        gl.setStyle({}, { stick: { radius: 0.1 }, sphere: { scale: 0.18 } });
+        volData = new $3Dmol.VolumeData(dens.text, "cube");
+        espData = new $3Dmol.VolumeData(esp.text, "cube");
         // the ESP convention (~0.002 e/bohr³, the van-der-Waals-like contour),
         // not a fitted level: a total density's 0.002 surface is the same
         // physical surface in every molecule
-        _iso = _opts.esp_surface_iso || 0.002;
+        iso = opts.esp_surface_iso || 0.002;
       } else {
-        const data = await fetchCube(p, grid, seq, p.label);
-        if (!data) return;
-        _espData = null;
-        _volSigned = data.signed !== false;
-        _volTitle = data.title || p.label;
-        _gl.clear();
-        _gl.addModel(data.text, "cube");
-        _gl.setStyle({}, { stick: { radius: 0.1 }, sphere: { scale: 0.18 } });
-        _volData = new $3Dmol.VolumeData(data.text, "cube");
-        _iso = data.isovalue || 0.05;
+        const data = await fetchCube(source, p, grid, mySeq, p.label, opts);
+        if (!data) return false;
+        espData = null;
+        signed = data.signed !== false;
+        title = data.title || p.label;
+        gl.clear();
+        gl.addModel(data.text, "cube");
+        gl.setStyle({}, { stick: { radius: 0.1 }, sphere: { scale: 0.18 } });
+        volData = new $3Dmol.VolumeData(data.text, "cube");
+        iso = data.isovalue || 0.05;
       }
-      q("mv-iso").value = _iso.toFixed(4);
-      showRamp();
       draw(true);
+      return true;
+    }
+
+    /** Re-mesh what is already in memory. No backend call — which is the whole
+     *  reason a coarse grid is enough to steer the isovalue by hand.
+     *  @param {boolean} zoom */
+    function draw(zoom) {
+      const $3Dmol = window["$3Dmol"] || window["3Dmol"];
+      if (!gl || !volData || !$3Dmol) return;
+      gl.removeAllShapes();
+      // smoothness = Laplacian smoothing of the marching-cubes output: the knob
+      // that makes a 40³ sampling look like a surface. Raising the GRID instead
+      // costs cube-of-the-number bytes for detail an isosurface cannot show.
+      const common = { opacity: 0.88, smoothness: 8 };
+      if (espData) {
+        gl.addIsosurface(volData, Object.assign({
+          isoval: iso,
+          voldata: espData,
+          volscheme: new $3Dmol.Gradient.CustomLinear(-espRange, espRange,
+            [token("--esp-neg", "#f2555a"), token("--esp-mid", "#f5f5f5"),
+             token("--esp-pos", "#4f86f7")]),
+        }, common));
+        report(`ESP map · density surface ${iso.toFixed(4)} e/bohr³`
+          + ` · scale ±${espRange.toFixed(3)} a.u. · red −, blue +`);
+      } else if (signed) {
+        gl.addIsosurface(volData, Object.assign({ isoval: iso, color: token("--orb-pos", "#4f86f7") }, common));
+        gl.addIsosurface(volData, Object.assign({ isoval: -iso, color: token("--orb-neg", "#f2555a") }, common));
+        report(`${title} · isovalue ${iso.toFixed(4)} a.u. · blue +, red −`);
+      } else {
+        gl.addIsosurface(volData, Object.assign({ isoval: iso, color: token("--orb-dens", "#5eead4") }, common));
+        report(`${title} · isovalue ${iso.toFixed(4)} a.u.`);
+      }
+      if (zoom) gl.zoomTo();
+      gl.render();
+    }
+
+    /** Put the box back where it lives, before something re-renders the stage
+     *  it was borrowed into. The Visual panel's stage is destroyed and rebuilt
+     *  on every report render, and this box holds the app's only WebGL context
+     *  -- going out with that innerHTML would take the renderer with it. */
+    function park() {
+      const box = q("mv-gl"), home = q("mv-stage");
+      if (box && home && box.parentElement !== home) home.appendChild(box);
+      if (box) box.hidden = true;
+    }
+
+    return {
+      adopt: adopt,
+      park: park,
+      plot: plot,
+      redraw: draw,
+      /** Release the GPU's buffers before the box is hidden: a render into a
+       *  display:none box draws into a 0x0 framebuffer, which leaves the old
+       *  scene on the card instead of clearing it. */
+      release() {
+        if (gl) { try { gl.clear(); gl.render(); } catch (e) { /* context lost */ } }
+        volData = null; espData = null;
+        seq++;
+      },
+      /** @param {number} v */
+      setIso(v) { iso = v; draw(false); },
+      iso: () => iso,
+      hasData: () => !!volData,
+    };
+  }
+
+  /** The one renderer. Built once, never rebuilt. */
+  const _vol = volumeView();
+
+  /** The pop-out's Plot button: the picker here chooses, the shared renderer
+   *  draws, and the caption below the stage is where it reports. */
+  async function plot() {
+    const p = _picks[Number(q("mv-vol").value)];
+    if (!p) return;
+    _vol.adopt(q("mv-stage"));
+    q("mv-plot").disabled = true;
+    try {
+      const ok = await _vol.plot(_source, p, _opts, t => { q("mv-cap").textContent = t; });
+      if (ok) q("mv-iso").value = _vol.iso().toFixed(4);
+      showRamp();
     } finally {
-      if (seq === _seq) q("mv-plot").disabled = false;
+      q("mv-plot").disabled = false;
     }
   }
 
   /** The ramp is the ESP legend; it means nothing beside a signed orbital, and
    *  a legend that is always on screen is a legend nobody reads. */
   function showRamp() {
-    const sel = q("mv-vol");
-    const p = _picks[Number(sel.value)];
+    const p = _picks[Number(q("mv-vol").value)];
     const esp = !!(p && p.kind === "esp");
     q("mv-ramp").hidden = !esp;
     q("mv-ramphint").hidden = !esp;
-  }
-
-  /** Re-mesh what is already in memory. No backend call — which is the whole
-   *  reason a coarse grid is enough to steer the isovalue by hand.
-   *  @param {boolean} zoom */
-  function draw(zoom) {
-    const $3Dmol = window["$3Dmol"] || window["3Dmol"];
-    if (!_gl || !_volData || !$3Dmol) return;
-    _gl.removeAllShapes();
-    // smoothness = Laplacian smoothing of the marching-cubes output: the knob
-    // that makes a 40³ sampling look like a surface. Raising the GRID instead
-    // costs cube-of-the-number bytes for detail an isosurface cannot show.
-    const common = { opacity: 0.88, smoothness: 8 };
-    if (_espData) {
-      _gl.addIsosurface(_volData, Object.assign({
-        isoval: _iso,
-        voldata: _espData,
-        volscheme: new $3Dmol.Gradient.CustomLinear(-_espRange, _espRange,
-          [token("--esp-neg", "#f2555a"), token("--esp-mid", "#f5f5f5"),
-           token("--esp-pos", "#4f86f7")]),
-      }, common));
-      q("mv-cap").textContent = `ESP map · density surface ${_iso.toFixed(4)} e/bohr³`
-        + ` · scale ±${_espRange.toFixed(3)} a.u. · red −, blue +`;
-    } else if (_volSigned) {
-      _gl.addIsosurface(_volData, Object.assign({ isoval: _iso, color: token("--orb-pos", "#4f86f7") }, common));
-      _gl.addIsosurface(_volData, Object.assign({ isoval: -_iso, color: token("--orb-neg", "#f2555a") }, common));
-      q("mv-cap").textContent = `${_volTitle} · isovalue ${_iso.toFixed(4)} a.u. · blue +, red −`;
-    } else {
-      _gl.addIsosurface(_volData, Object.assign({ isoval: _iso, color: token("--orb-dens", "#5eead4") }, common));
-      q("mv-cap").textContent = `${_volTitle} · isovalue ${_iso.toFixed(4)} a.u.`;
-    }
-    if (zoom) _gl.zoomTo();
-    _gl.render();
   }
 
   // ---------------------------------------------------------------- opening
@@ -634,12 +738,18 @@
     q("mv-plot").addEventListener("click", plot);
     q("mv-iso").addEventListener("change", () => {
       const v = parseFloat(q("mv-iso").value);
-      if (!isFinite(v) || v <= 0) { q("mv-iso").value = _iso.toFixed(4); return; }
-      _iso = v;
-      draw(false);
+      if (!isFinite(v) || v <= 0) { q("mv-iso").value = _vol.iso().toFixed(4); return; }
+      _vol.setIso(v);
     });
   }
 
   NB.mv = { init: init, open: open, close: close, isOpen: isOpen,
-            surfaces: surfaces };
+            surfaces: surfaces,
+            /** The shared isosurface renderer, for the Visual panel: it adopts
+             *  the box into its own stage and draws there. One renderer, one
+             *  WebGL context; see volumeView. */
+            vol: _vol,
+            /** Everything the panel needs to turn a pick into a plot, asked
+             *  once per result. @param {string} source */
+            plotOptions(source) { return NB.call("get_plot_options", source); } };
 })();

@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ORCAdesk</title>
+<!-- The design pulls Inter and JetBrains Mono from Google Fonts; this is the
+     offline copy of that link, and it has to come first -- see web/fonts/fonts.css. -->
+<link rel="stylesheet" href="../fonts/fonts.css">
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <link rel="stylesheet" href="app.css">
 </head>
@@ -45,7 +48,6 @@
     <div class="tools">
       <div class="seg viewseg" role="group" aria-label="View">
         <button type="button" data-view="jobs" aria-pressed="true">Jobs</button>
-        <span class="sep" aria-hidden="true"></span>
         <button type="button" data-view="results" aria-pressed="false">Results</button>
       </div>
       <button class="iconbtn" id="theme-toggle" type="button"
@@ -92,15 +94,17 @@
     <span class="sp"></span>
     <div class="seg" role="group" aria-label="Viewer mode">
       <button type="button" aria-pressed="true" data-mvmode="frames">Structures</button>
-      <span class="sep" aria-hidden="true"></span>
       <button type="button" aria-pressed="false" data-mvmode="volume">Orbitals &amp; maps</button>
     </div>
     <button class="iconbtn" type="button" id="mv-close" aria-label="Close the viewer">×</button>
   </div>
-  <div class="mvstage">
-    <!-- two renderers, one stage: mol.js paints the frames (so drag, pick and
+  <div class="mvstage" id="mv-stage">
+    <!-- Two renderers, one stage: mol.js paints the frames (so drag, pick and
          measure are the same here as in every other stage), 3Dmol draws the
-         isosurfaces into .mvgl and is loaded only when one is asked for -->
+         isosurfaces into .mvgl and is loaded only when one is asked for.
+         .mvgl is the app's ONE WebGL box: the Visual panel draws surfaces in
+         place and borrows it by re-parenting, so it lives here but does not
+         belong to this window. See volumeView in mvwin.js. -->
     <canvas class="molcv" id="mv-canvas" data-interactive="1"
       aria-label="Structure viewer. Drag to turn; click an atom or bond for its numbers,
         right-drag between two atoms to measure."></canvas>

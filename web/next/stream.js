@@ -26,7 +26,16 @@
   const _tails = new Map();
   /** @type {Set<string>} */
   const _busy = new Set();
-  /** geometry per calc, for the thumbnail @type {Map<string, any[]>} */
+  /** Geometry per calc, for the thumbnail. `final` records WHICH geometry it
+   *  is — the run's own output, or the coordinates it was handed. Without that
+   *  flag the cache was keyed by name alone, so a calculation watched from
+   *  PENDING to DONE kept the input structure it was first drawn with while
+   *  the caption underneath flipped to "final": the optimized geometry, the
+   *  one thing the run exists to produce, appeared only after a reload.
+   *  `at` is the state it was read at, which is what stops the re-read from
+   *  becoming a loop: a DONE run whose output holds no geometry is asked once,
+   *  not once per poll.
+   *  @type {Map<string, {final: boolean, at: string, atoms: any[]}>} */
   const _geom = new Map();
   /** @type {Set<string>} */
   const _geomBusy = new Set();
@@ -75,10 +84,16 @@
         </span>
         <span class="acts">
           <span class="badge"></span>
+          <button class="btn btn-sm" type="button" data-act="newfrom"
+                  title="Start a new calculation from this one's optimized geometry"
+                  >New from this</button>
           <button class="btn btn-sm cellres" type="button">Results</button>
         </span>
       </div>
       <div class="cellbody">
+        <!-- why it failed, where the run is being read: the rail row carries a
+             one-line .qmsg, the reason itself belongs here (reference §cell) -->
+        <div class="qerror" style="margin-bottom:18px" hidden></div>
         <div class="celgrid">
           <div class="firstcol">
             <div class="thumb">
@@ -98,10 +113,19 @@
             <div class="logbox" role="log"></div>
           </div>
         </div>
-      </div>
-      <div class="factline"></div>`;
+        <div class="factline"></div>
+      </div>`;
     el.querySelector(".cellinp").addEventListener("click", () => NB.results.showInp(c.name));
     el.querySelector(".cellres").addEventListener("click", () => NB.results.open(c.name));
+    // the geometry is taken by REFERENCE, not copied: the engine resolves it to
+    // this calculation's optimized structure when the new one actually runs, so
+    // it is the geometry as it finally was and not as it was when the button
+    // was pressed. The same handoff opt -> freq uses.
+    el.querySelector('[data-act="newfrom"]').addEventListener("click", () => NB.build.open("", {
+      name: "", kind: "opt", is_raw: false, raw_text: "", xyz: "",
+      geometry_source: "reference", ref_name: c.name,
+      charge: c.charge, multiplicity: c.multiplicity, config: {},
+    }));
     return el;
   }
 
@@ -122,6 +146,9 @@
     // so the button would open a preview of something that never ran.
     q(".cellinp").hidden = NB.rail.backendOf(c) !== "DFT";
     q(".cellres").hidden = !(c.state === "done" || c.state === "failed");
+    // only a finished run HAS a geometry to start from; a failed one may not
+    // have got far enough to write one
+    q('[data-act="newfrom"]').hidden = c.state !== "done";
 
     // --- middle column: the chart, measured then drawn
     const box = q(".chartbox");
@@ -139,7 +166,8 @@
     }
 
     // --- first column: the structure, or the stage chain's own width
-    const geom = _geom.get(c.name);
+    const got = _geom.get(c.name);
+    const geom = got ? got.atoms : null;
     const thumb = q(".thumb");
     const hasThumb = !!(geom && geom.length);
     thumb.hidden = !hasThumb;
@@ -147,8 +175,10 @@
     grid.className = "celgrid"
       + (hasThumb ? (ch && ch.stages ? " has-stages" : " has-thumb") : "");
     if (hasThumb) {
+      // the caption states which of the two this is, so it can never claim a
+      // final structure over input coordinates
       q(".thumb .cap").textContent =
-        (c.state === "done" ? "final · " : "input · ") + geom.length + " atoms";
+        (got.final ? "final · " : "input · ") + geom.length + " atoms";
       MOL.draw(q(".thumb canvas"), geom);
       // the trajectory, not this one frame: the thumbnail is the door to every
       // structure the run has written, which is what the big window is for
@@ -189,12 +219,17 @@
       }
     }
     const quiet = c.state === "done" && /^Completed\b/.test(c.message || "");
-    if (c.message && !quiet) {
-      bits.push(c.state === "failed"
-        ? `<span class="err">${NB.esc(c.message)}</span>`
-        : `<span>${NB.esc(c.message)}</span>`);
+    // a failure is not a fact among facts: the reason goes in the .qerror box
+    // at the top of the body, so no cell states the same sentence twice
+    if (c.message && !quiet && c.state !== "failed") {
+      bits.push(`<span>${NB.esc(c.message)}</span>`);
     }
     q(".factline").innerHTML = bits.join("");
+
+    const err = q(".qerror");
+    const failed = c.state === "failed" && !!c.message;
+    err.hidden = !failed;
+    err.innerHTML = failed ? `<span>${NB.esc(c.message)}</span>` : "";
   }
 
   /** Read the output the screen is missing. A finished calculation's tail never
@@ -220,22 +255,29 @@
    *  one, else the input the calculation was given. @param {any[]} calcs */
   function fetchGeometry(calcs) {
     calcs.forEach(c => {
-      if (_geom.has(c.name) || _geomBusy.has(c.name)) return;
+      // re-fetch once the run has an output of its own: a cached INPUT
+      // geometry is not the answer to a calculation that has since finished
+      const have = _geom.get(c.name);
+      if (_geomBusy.has(c.name)) return;
+      if (have && (have.final || have.at === c.state)) return;
       if (String(c.kind).startsWith("crest")) return;   // an ensemble, not one structure
       _geomBusy.add(c.name);
       (async () => {
-        let atoms = null;
+        let atoms = null, final = false;
         if (c.state === "done") {
           const d = await NB.call("parse_calc_output", c.name);
-          if (d && d.geometry && d.geometry.length) atoms = d.geometry;
+          if (d && d.geometry && d.geometry.length) { atoms = d.geometry; final = true; }
         }
         if (!atoms) {
           const g = await NB.call("get_calc", c.name);
           if (g && g.ok && g.calc && g.calc.xyz) atoms = MOL.parseXyz(g.calc.xyz);
         }
         _geomBusy.delete(c.name);
-        if (!atoms || !atoms.length) { _geom.set(c.name, []); return; }
-        _geom.set(c.name, atoms);
+        if (!atoms || !atoms.length) {
+          _geom.set(c.name, { final: false, at: c.state, atoms: [] });
+          return;
+        }
+        _geom.set(c.name, { final: final, at: c.state, atoms: atoms });
         repaintOne(c.name);
       })();
     });

@@ -2360,7 +2360,8 @@ end
           <div class="sech"><h2>Structure</h2><span class="sp"></span>
             <span class="meta">47 atoms · cycle 34</span></div>
           <p class="secdesc">Drag to turn it. Click an atom or a bond for its numbers, right-drag between two atoms
-            to measure, and the axis button walks x, y, z.</p>
+            to measure, and press an arm of the axis marker in the corner to look
+            straight down x, y or z.</p>
           <div class="viewstage">
             <canvas class="molcv" data-view="1.05" data-mark="1" data-interactive="1"
                     aria-label="Current geometry, ball and stick. Drag to turn, right-drag between two atoms to measure, click an atom or bond for its numbers; arrow keys turn it too."></canvas>
@@ -2372,7 +2373,6 @@ end
             </div>
             <div class="stageacts">
               <button class="act" type="button">Open in viewer</button>
-              <button class="act" type="button" data-axis>View down z</button>
             </div>
           </div>
         </section>
@@ -2389,8 +2389,7 @@ end
                       aria-label="Structure viewer. Drag to turn, right-drag between two atoms to measure, click an atom or bond for its numbers."></canvas>
               <div class="stageacts">
                 <button class="act" type="button">Open in viewer</button>
-                <button class="act" type="button" data-axis>View down z</button>
-              </div>
+                </div>
               <div class="viewlegend">
                 <span><i style="background:#909090"></i>C</span>
                 <span><i style="background:#dcdcdc;outline:1px solid var(--border)"></i>H</span>
@@ -3402,7 +3401,11 @@ function drawAllCharts(root) {
    ========================================================================== */
 var MOL = (function () {
   var CPK = { C: "#909090", H: "#dcdcdc", N: "#3050f8", O: "#ff0d0d" };
-  var RAD = { C: 0.76, H: 0.46, N: 0.71, O: 0.66 };
+  /* covalent radii, Cordero 2008 — the same numbers web/next/mol.js draws
+     from. H was 0.46 here, which is not hydrogen's radius: it made every H
+     61% of a carbon instead of 41%, and a ball-and-stick whose balls do not
+     state the element is a stick figure. */
+  var RAD = { C: 0.76, H: 0.31, N: 0.71, O: 0.66 };
 
   var atoms = [];
   function A(e, x, y, z) { atoms.push({ el: e, x: x, y: y, z: z }); }
@@ -3489,14 +3492,40 @@ var MOL = (function () {
     return { P: P, sc: sc, w: w, h: h };
   }
 
-  function gizmo(ctx, cv, L) {
-    var s = st(cv);
-    var ox = 40, oy = L.h - 40, arm = 24;
-    var cols = ["var(--crit-maxs)", "var(--crit-rmsg)", "var(--crit-de)"];
-    var css = getComputedStyle(document.body);
+  /* Where each arm's tip and label land. One function, so the arm that is drawn
+     and the arm that is CLICKED cannot disagree: the marker is the control for
+     the axis views now, in place of a button that cycled x -> y -> z. */
+  var GIZ = { ox: 40, arm: 24, lab: 8, hit: 14 };
+  function gizmoArms(cv, h) {
+    var s = st(cv), oy = h - GIZ.ox;
     var axes = [{ x: 1, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }, { x: 0, y: 0, z: 1 }];
     var names = ["x", "y", "z"];
-    var proj = axes.map(function (v) { return rot(v, s.ax, s.ay); });
+    return axes.map(function (v, i) {
+      var q = rot(v, s.ax, s.ay);
+      return { i: i, name: names[i], z: q.z, ox: GIZ.ox, oy: oy,
+               x: GIZ.ox + q.x * GIZ.arm, y: oy - q.y * GIZ.arm,
+               lx: GIZ.ox + q.x * (GIZ.arm + GIZ.lab),
+               ly: oy - q.y * (GIZ.arm + GIZ.lab) };
+    });
+  }
+  /* the tip and its label are the target, not the line: two arms nearly edge-on
+     cross near the origin and a click there cannot mean one of them */
+  function armAt(cv, h, x, y) {
+    var best = null, bd = GIZ.hit;
+    gizmoArms(cv, h).forEach(function (a) {
+      var d = Math.hypot(a.lx - x, a.ly - y);
+      if (d < bd || (d === bd && best && a.z > best.z)) { bd = d; best = a; }
+    });
+    return best;
+  }
+
+  function gizmo(ctx, cv, L) {
+    var s = st(cv);
+    var ox = GIZ.ox, oy = L.h - GIZ.ox, arm = GIZ.arm;
+    var cols = ["var(--crit-maxs)", "var(--crit-rmsg)", "var(--crit-de)"];
+    var css = getComputedStyle(document.body);
+    var names = ["x", "y", "z"];
+    var proj = gizmoArms(cv, L.h);
     /* far arms first, so a near axis is not buried under a far one */
     var order = proj.map(function (v, i) { return i; })
       .sort(function (m, n) { return proj[m].z - proj[n].z; });
@@ -3508,11 +3537,11 @@ var MOL = (function () {
       ctx.strokeStyle = col; ctx.fillStyle = col;
       ctx.globalAlpha = v.z < 0 ? 0.45 : 1;
       ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(ox, oy);
-      ctx.lineTo(ox + v.x * arm, oy - v.y * arm); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(v.ox, v.oy);
+      ctx.lineTo(v.x, v.y); ctx.stroke();
       ctx.font = "10px " + (css.getPropertyValue("--font-mono").trim() || "monospace");
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText(names[i], ox + v.x * (arm + 8), oy - v.y * (arm + 8));
+      ctx.fillText(names[i], v.lx, v.ly);
     });
     ctx.restore();
   }
@@ -3721,6 +3750,8 @@ var MOL = (function () {
         render(cv);
         return;
       }
+      if (armAt(cv, cv.getBoundingClientRect().height,
+                e.clientX - b.left, e.clientY - b.top)) return;   /* the marker */
       s.drag = { x: e.clientX, y: e.clientY, ax: s.ax, ay: s.ay, moved: 0 };
       cv.style.cursor = "grabbing";
     });
@@ -3743,6 +3774,9 @@ var MOL = (function () {
       render(cv);
     });
     function end(e) {
+      var eb = cv.getBoundingClientRect();
+      var arm = armAt(cv, eb.height, e.clientX - eb.left, e.clientY - eb.top);
+      if (arm && e.button !== 2) { s.drag = null; showAxis(cv, arm.name); return; }
       if (e.button === 2 || (s.meas && !s.drag)) {
         if (s.meas) {
           if (s.meas.to == null) s.meas = null;    /* released on nothing */
@@ -3776,19 +3810,23 @@ var MOL = (function () {
       else if (e.key === "ArrowRight") s.ay += step;
       else if (e.key === "ArrowUp") s.ax = Math.max(-1.5, s.ax - step);
       else if (e.key === "ArrowDown") s.ax = Math.min(1.5, s.ax + step);
+      else if (e.key === "x" || e.key === "y" || e.key === "z") {
+        showAxis(cv, e.key); e.preventDefault(); return;
+      }
       else if (e.key === "Escape") { s.meas = null; s.sel = null; e.preventDefault(); render(cv); return; }
       else return;
       e.preventDefault(); s.view = -1; render(cv);
     });
   }
 
-  function nextAxis(cv) {
+  function showAxis(cv, name) {
     var s = st(cv);
-    s.view = (s.view + 1) % VIEWS.length;
-    var v = VIEWS[s.view];
-    s.ax = v.ax; s.ay = v.ay;
-    render(cv);
-    return v.name;
+    for (var i = 0; i < VIEWS.length; i++) {
+      if (VIEWS[i].name !== name) continue;
+      s.view = i; s.ax = VIEWS[i].ax; s.ay = VIEWS[i].ay;
+      render(cv);
+      return;
+    }
   }
 
   return {
@@ -3797,7 +3835,7 @@ var MOL = (function () {
         attach(cv); render(cv);
       });
     },
-    nextAxis: nextAxis
+    showAxis: showAxis
   };
 })();
 /* ==========================================================================
@@ -4846,16 +4884,8 @@ document.querySelectorAll("[data-mvmode]").forEach(function (b) {
   });
 });
 
-/* the axis button walks x -> y -> z and says which one it just took */
-document.querySelectorAll("[data-axis]").forEach(function (b) {
-  b.addEventListener("click", function () {
-    var cv = b.closest(".viewstage, .vizstage, .mvstage").querySelector(".molcv");
-    b.textContent = "View down " + MOL.nextAxis(cv);
-  });
-});
-
 /* everything that used to say "opens the viewer" now opens it */
-document.querySelectorAll(".thumb .act, .viewstage .act:not([data-axis]), .vizstage .act:not([data-axis])").forEach(function (b) {
+document.querySelectorAll(".thumb .act, .viewstage .act, .vizstage .act").forEach(function (b) {
   b.addEventListener("click", function () {
     var cell = b.closest(".cell");
     openViewer((cell ? cell.querySelector(".nm").textContent : "Structure") + " — " + b.textContent.trim().toLowerCase());

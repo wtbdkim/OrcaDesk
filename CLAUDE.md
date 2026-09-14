@@ -48,7 +48,7 @@ python tools/uispec.py real spec_real.json
 python tools/uidiff.py spec_mock.json spec_real.json   # exit code = differences
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 1001 tests over the framework-free layers
+python -m pytest                       # 1015 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 40 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -139,7 +139,7 @@ Its **Visual strip is both halves of "what can be drawn"**: the `.xyz` sets from
 one place so a tile's *ready* mark and the fetch that follows it cannot disagree
 about which file they mean). A tile is a KIND (Structure, Trajectory,
 **Orbitals**, ESP map, Conformers) and the `.vizlist` beside it holds that
-kind's instances — the ten frontier orbitals are rows, not ten tiles. A row
+kind's instances — a whole orbital manifold is rows, not one tile each. A row
 opens the pop-out viewer through `NB.mv.open({pick})`; a cube already on disk
 opens at once, one that is not asks first, because the click would otherwise
 spend an orca_plot run (minutes, for an ESP map) as a side effect. The per-kind cost the question quotes is `COST` in
@@ -152,19 +152,95 @@ Its markup and stylesheet ARE the approved design: `web/next/app.css` is a copy
 of `design/notebook-reference.html`'s stylesheet, so the markup uses the design's
 class vocabulary and the two can be diffed element for element —
 `python tools/uispec.py mock|real <out.json>` then `python tools/uidiff.py`,
-whose exit code is the number of differences (currently 0 over 46 landmarks).
+whose exit code is the number of differences (currently 0 over 121 landmarks,
+measured in three passes — the window at rest, a result section, the overlays).
+A deliberate departure is TWO edits, not one: the rule goes in a named block at
+the bottom of `app.css`, and the landmark it moves goes in `uidiff.py`'s
+`PER_LANDMARK_SKIP` with its reason — otherwise the check reports a difference
+nobody can act on, and the next reader "fixes" it back.
+It measures three things beyond the landmark properties, and all three exist
+because a green number hid a real difference (DESIGN.md §17.0a): **`__fonts`**
+is the width of one sample line rendered in each stack against an unresolvable
+family as the control — a computed `fontFamily` is the *declared* stack,
+identical on both sides, so it could never show that one side was drawing in a
+substitute; **`__structure`** is a census of every class on each page, printed
+as an advisory and **not counted**, since class presence follows the sample
+data; and **`__styles`** is a metric audit over every `(parent, element)` class
+combination both pages draw — padding, margin, border, radius, type, min-height,
+display — which is **counted**, because the two pages share one stylesheet and a
+metric that differs means the markup put the element where the rules read
+differently. Its key carries the parent (the rules are contextual, and a flex
+parent blockifies a child's `display`), it skips any element with its own
+`style=` (the audit measures the stylesheet, not a one-off) and it omits colour
+and opacity (those carry state). A height difference is printed but not counted
+— a box's height is its content on a data-driven page.
+`run_mock()` injects `web/fonts/fonts.css` into the reference so both sides are
+measured in the faces the design is drawn in, with no network.
 **Re-run it after touching web/next/.** `web/next/README.md` is the guide to
 editing that UI by hand — the F5 reload, `ORCADESK_REMOTE_DEBUG=9222` for live
 DevTools, and where each region is drawn.
 
+It also links `../fonts/fonts.css`, which is **not** a classic file but a
+sibling asset directory: Inter and JetBrains Mono, the two faces the design is
+drawn in, carried as variable woff2 (latin + latin-ext, SIL OFL) because the
+reference pulls them from Google Fonts and this app runs offline. Without them
+the stack fell through to `system-ui`/`ui-monospace` and the whole preview was
+drawn in Segoe UI Variable and Consolas — see DESIGN.md §17.0c, and
+`tests/test_next_ui.py::test_preview_ships_the_typefaces_the_design_is_drawn_in`,
+which pins the link, the files and the stack together. The classic front-end is
+deliberately left alone: its `--font-sans` never named Inter.
+
+`MainWindow._SIZE_BY_VARIANT` opens the notebook at **1680×1000** (the size
+`uispec.py` measures at), clamped to the screen, because `app.css` folds the
+queue rail away entirely below 1320px — at the classic 1100 the preview came up
+in a layout the design never shows. `_ui_variant()` is the one reader of the
+setting, so the file that loads and the size it opens at cannot disagree.
+
 `web/next/` borrows exactly two classic files — `../scf_graph.js` and
 `../progress_panels.js`, the trackers and chart/step renderers, which own no DOM
-— and is otherwise `mol.js` (2D ball-and-stick thumbnails) → `boot.js` (channel,
+— and is otherwise `mol.js` (2D ball-and-stick; see below) → `boot.js` (channel,
 polled state, per-calc trackers, routing, toast/modal) → `rail.js` (queue rail +
 run controls) → `build.js` (the builder — a cell becomes the form) →
 `stream.js` (one cell per calculation) → `results.js` (the report) →
 `settings.js` (a slide-over), in that load order, all hanging off one global
 `NB` (and `MOL`).
+The rail holds three state groups, of which only **Finished** folds and carries
+its own *Clear* (queue-list only — no folder is touched), plus an **Opened
+files** group listing results read from outside the workspace this session,
+whose header is also the rail's *Open file…*; `results.js` hands each one over
+through `NB.rail.noteOpened`. A row expands (`.qdet`) into the design's own
+controls, in its wording: **↑ earlier / ↓ later** (the keyboard path for a
+reorder the drag only adds to — they walk the row's own group and disable
+themselves at its ends), *results*, *duplicate* (the setup back as a new PENDING
+row under a free name, whatever the original became), *folder*, *remove*. Two of
+the design's are deliberately absent and the code says so: *requeue* on a failed
+row contradicts P24, and *stop* on one row would have to call `cancel_queue`,
+which stops every job in flight (P57). It emits the design's own ids (`q-total`,
+`c-running`, `q-done`, `fin-toggle`, `clear-finished`, `opened-group`), so a
+landmark can address both pages with one selector.
+`mol.js` is the ONE painter behind every structure the preview draws — the cell
+thumbnails, the report's Structure and Visual stages, and the pop-out viewer —
+so a sizing or colour rule lives there once. Its covalent-radius table (Cordero
+2008, H–Pu) answers **two** questions with two fallbacks, which is the thing to
+keep straight: what is bonded to what (an unknown element guesses GENEROUSLY —
+a missed bond draws a molecule as dust) and how big to draw an atom (an unknown
+element looks ORDINARY — the old shared 1.2 fallback rendered it larger than
+iodine). The drawn radius is `rdraw(el) * s * 0.32` with one floor, `line *
+0.62`, stated against the stick width rather than as a pixel count: a flat
+2.5px minimum clamps the SMALL atoms first, so it erased the H-vs-C distinction
+exactly where the molecule is large against its box — every cell thumbnail of a
+real molecule. The **axis marker** in a stage's bottom-left corner is drawn by the
+same file and IS the control for the axis views — the old *View down x/y/z*
+button is gone. The arm's LABEL is the target (two arms nearly edge-on cross at
+the origin), `gizmoArms()` is the one speller of where an arm is so the drawn
+one and the clicked one cannot disagree, `opts.gizmoBottom` lifts it clear of a
+stage that writes in that corner (the Visual stage's `.vizcap` does), and x/y/z
+on the focused canvas are the keyboard route, since nothing drawn can be
+tabbed to. The view scale is fitted to the molecule's BOUNDING SPHERE, not
+to its projected extent — the projected one is recomputed every frame, so a drag
+re-zoomed continuously (1.6x between end-on and broadside on a Tf2O-shaped
+molecule). DESIGN.md §17.4e.
+
 One tsc project checks both front-ends and classic scripts share a global scope,
 so **a top-level declaration in `web/next/` other than `NB` collides with
 `app.js`** — `tests/test_next_ui.py` fails the build if one appears, and also
@@ -248,6 +324,36 @@ parse results, server status, the `{"ok": ...}`/`{"error": ...}` envelopes).
 the front-end. Don't annotate FastAPI endpoints with these TypedDicts as return types
 — FastAPI would infer a response_model and put pydantic between the dict and the wire;
 endpoints keep `-> dict` and only *construct* through the schema types.
+
+In the **notebook preview** the Results window has no result picker of its own:
+the rail is the picker (DESIGN.md §17.0e), *Open file… / Open folder…* bring in
+anything else and put it in the rail's **Opened files** group, and the toolbar's
+`Output | Visual` pair jumps to a section rather than switching a mode — Visual
+is one of the report's sections there. `list_workspace_results` is therefore
+unused by `web/next/` (the classic UI still uses it). A finished cell also
+carries **New from this**, which opens the builder on a NEW calculation already
+referencing that run (`NB.build.open("", seed)`); the geometry is a reference,
+resolved at run time by the same `_resolve_geometry` path as opt→freq.
+
+In the preview, **a surface is drawn in the Visual panel, not in a pop-out**:
+picking an orbital or the ESP map plots it on the panel's own stage, and the
+window is the same picture with the isovalue beside it. The isosurface renderer
+is one shared object (`volumeView` in `mvwin.js`, reached as `NB.mv.vol`) with
+**one WebGL context** for the whole app; the box that holds it (`#mv-gl`) is
+re-parented to whichever stage is drawing (`adopt`), and anything about to
+re-render a stage sends it home first (`park` — `results.js paint()` does, since
+it replaces `#reswin` wholesale). Closing the pop-out hands the box back through
+`NB.viewer.reclaimSurface()`. Two contexts would be one too many: a browser
+keeps only a handful alive and drops the oldest without asking, and the panel's
+stage is destroyed on every report render.
+
+One rule the preview's stages all depend on: **a `.molcv` is
+`position:absolute; inset:0` and its ResizeObserver watches the stage, not the
+canvas.** `mol.js` sets the bitmap from the canvas's own measured box every
+frame, so in flow the bitmap becomes its own input wherever `height:100%` cannot
+resolve — which is every stage sized by a grid row. Invisible at
+`devicePixelRatio: 1`, a 1.25x-per-resize runaway above it. DESIGN.md §17.4f,
+and the named block at the bottom of `app.css`.
 
 The **Results tab has two modes over one selected result**: `Output` (what the
 parser read) and `Visual` (what can be *drawn* from it) — `setResultsMode` in
