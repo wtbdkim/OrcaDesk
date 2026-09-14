@@ -364,12 +364,16 @@
   function gridFor(opts, kind) {
     return kind === "esp" ? (opts.esp_grid || opts.default_grid) : opts.default_grid;
   }
-  /** @param {any} opts @param {any} p */
-  function cached(opts, p) {
+  /** Is this pick already on disk at this grid? The grid is a parameter because
+   *  it is a CHOICE: the same orbital at 40 and at 80 are two different files,
+   *  and "ready" has to mean the one that would actually be drawn.
+   *  @param {any} opts @param {any} p @param {number} [grid] */
+  function cached(opts, p, grid) {
+    const g = grid || gridFor(opts, p.kind);
     const names = p.kind === "esp"
-      ? [cubeName(opts, { kind: "eldens", index: 0, operator: 0 }, gridFor(opts, "esp")),
-         cubeName(opts, p, gridFor(opts, "esp"))]
-      : [cubeName(opts, p)];
+      ? [cubeName(opts, { kind: "eldens", index: 0, operator: 0 }, g),
+         cubeName(opts, p, g)]
+      : [cubeName(opts, p, g)];
     return names.every(n => (opts.cached || []).indexOf(n) >= 0);
   }
 
@@ -454,8 +458,9 @@
     /** Draw one surface into the stage that currently holds the box.
      *  @param {string} source @param {any} p one pick @param {any} opts
      *  @param {(text: string) => void} [say] where to report progress
+     *  @param {number} [gridChoice] a grid other than this kind's default
      *  @returns {Promise<boolean>} true when something was drawn */
-    async function plot(source, p, opts, say) {
+    async function plot(source, p, opts, say, gridChoice) {
       if (!p || !opts) return false;
       if (say) report = say;
       const $3Dmol = await load3Dmol();
@@ -478,7 +483,7 @@
       gl.resize();
       espRange = opts.esp_range || espRange;
       const mySeq = ++seq;
-      const grid = gridFor(opts, p.kind);
+      const grid = gridChoice || gridFor(opts, p.kind);
       if (p.kind === "esp") {
         // Two fields on ONE grid: the density gives the surface, the potential
         // colours it per vertex. Different grids would be two different boxes.
@@ -573,6 +578,12 @@
       /** @param {number} v */
       setIso(v) { iso = v; draw(false); },
       iso: () => iso,
+      /** The ESP colour half-width, in a.u. Only an ESP map has one, and it is
+       *  the other half of reading the picture: the surface says where, the
+       *  scale says how much. @param {number} v */
+      setEspRange(v) { espRange = v; draw(false); },
+      espRange: () => espRange,
+      isEsp: () => !!espData,
       hasData: () => !!volData,
     };
   }
@@ -749,7 +760,10 @@
              *  the box into its own stage and draws there. One renderer, one
              *  WebGL context; see volumeView. */
             vol: _vol,
-            /** Everything the panel needs to turn a pick into a plot, asked
-             *  once per result. @param {string} source */
-            plotOptions(source) { return NB.call("get_plot_options", source); } };
+            /** Is a pick already on disk at this grid? The panel asks before
+             *  spending an orca_plot run, and the grid is part of the question.
+             *  @param {any} opts @param {any} p @param {number} [grid] */
+            readyAt(opts, p, grid) { return cached(opts, p, grid); },
+            /** This kind's default grid. @param {any} opts @param {string} kind */
+            gridFor: gridFor };
 })();

@@ -343,7 +343,14 @@ is one shared object (`volumeView` in `mvwin.js`, reached as `NB.mv.vol`) with
 re-parented to whichever stage is drawing (`adopt`), and anything about to
 re-render a stage sends it home first (`park` — `results.js paint()` does, since
 it replaces `#reswin` wholesale). Closing the pop-out hands the box back through
-`NB.viewer.reclaimSurface()`. Two contexts would be one too many: a browser
+`NB.viewer.reclaimSurface()`. The panel carries the surface controls under its
+list (`.vizctl`, an addition to the reference — DESIGN.md §17.4a): **isovalue**
+(and, for an ESP map, the colour half-width) re-mesh in place through
+`NB.mv.vol.setIso` / `setEspRange` with no backend call, while **grid**
+(`_gridByKind`, per kind) is a fresh orca_plot run — so it goes back through the
+same question and re-answers every *ready* mark via `NB.mv.readyAt(opts, pick,
+grid)`, which takes the grid because the same orbital at 40³ and 80³ are two
+different files. A kind with one instance gets no list at all (§17.4g). Two contexts would be one too many: a browser
 keeps only a handful alive and drops the oldest without asking, and the panel's
 stage is destroyed on every report render.
 
