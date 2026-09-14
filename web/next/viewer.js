@@ -33,6 +33,13 @@
    *  the isovalue beside it, and the two share one renderer. */
   let _opts = null;
   /** @type {any} */ let _surfPick = null;
+  /** the tile whose surfaces are listed: {picks, cap} @type {any} */
+  let _kind = null;
+  /** the grid each kind is drawn at, when the user has chosen one. Per KIND,
+   *  because the costs are not comparable: an orbital at 80 is a second, an ESP
+   *  map at 80 is minutes, so one number for both would be wrong twice.
+   *  @type {Record<string, number>} */
+  const _gridByKind = {};
   let _source = "";
 
   /** Elements present, for the legend — a key to colours that are actually on
@@ -168,7 +175,10 @@
         been plotted yet asks first — orca_plot has to run, and an ESP map takes
         minutes.</p>
       <div class="vizpanel">
-        <div class="vizlist" data-v="vlist" role="listbox" aria-label="Frames"></div>
+        <div class="vizside">
+          <div class="vizlist" data-v="vlist" role="listbox" aria-label="Frames"></div>
+          <div class="vizctl" data-v="vctl" hidden></div>
+        </div>
         <div class="vizstage" data-v="vstage">
           <canvas class="molcv" data-v="vcanvas"
             aria-label="Structure viewer. Drag to turn; the arrow keys turn it too, and
@@ -282,31 +292,60 @@
     loadSet(sec, sets[0]);
   }
 
-  /** The surfaces of one kind, as the list on the left. This stage paints
-   *  atoms, not volumes — an isosurface needs the pop-out viewer's renderer —
-   *  so a row here opens that window rather than changing what is drawn below.
-   *  The structure on the stage is left alone: it is what the surface belongs
-   *  to, and blanking it would say the panel had lost its place.
+  /** The surfaces of one kind, on the left. The stage draws them in place now,
+   *  so a row here changes what is on screen rather than opening a window.
+   *
+   *  A kind with ONE instance gets no list: an ESP map is one map, and a
+   *  one-row list is a list of one thing to choose between. The column says so
+   *  and carries the controls instead — which is the useful half of it, and the
+   *  reference's own answer here ("nothing to step through"). A single surface
+   *  already on disk is simply drawn; one that is not offers the button,
+   *  because plotting it costs an orca_plot run and a tile press is not
+   *  permission to spend one (P26).
    *  @param {HTMLElement} sec @param {string} source @param {any} d @param {any} t */
   function loadPicks(sec, source, d, t) {
     const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
     _setKey = "";
-    const ready = t.picks.filter(p => p.ready).length;
-    q("vmeta").textContent = t.picks.length === 1
-      ? (t.picks[0].ready ? "plotted" : "not plotted yet")
-      : `${t.picks.length} orbitals \u00b7 ${ready} already plotted`;
-    q("vlist").innerHTML = t.picks.map((p, i) =>
+    _kind = t;
+    const list = q("vlist");
+
+    // "ready" is a question about the GRID too -- the same orbital at 40 and at
+    // 80 are two different files -- so it is asked here rather than read off the
+    // mark the tile strip was built with
+    const isReady = (/** @type {any} */ p) => NB.mv.readyAt(_opts, p, gridOf(p.kind));
+
+    if (t.picks.length === 1) {
+      const p = t.picks[0];
+      q("vmeta").textContent = isReady(p) ? "plotted" : "not plotted yet";
+      list.onclick = null;
+      list.innerHTML = `<div class="vizempty">One surface — nothing to step
+        through.${isReady(p) ? "" : ` It has not been plotted yet: ${NB.esc(p.cost)}.`}
+        <div style="margin-top:10px">${isReady(p) ? ""
+          : `<button class="btn btn-sm" type="button" data-plot="1">Plot it</button>`}
+        </div></div>`;
+      q("vcap").textContent = t.cap;
+      // the controls exist before the plot does, so the plot can put them in
+      // step with the level it chose for itself
+      buildControls(sec, source);
+      const go = list.querySelector("[data-plot]");
+      if (go) go.addEventListener("click", () => showSurface(sec, source, p));
+      else showSurface(sec, source, p);
+      return;
+    }
+
+    const ready = t.picks.filter(isReady).length;
+    q("vmeta").textContent = `${t.picks.length} orbitals · ${ready} already plotted`;
+    list.innerHTML = t.picks.map((p, i) =>
       `<button class="vizitem" type="button" role="option" aria-selected="false"
-         data-pick="${i}" title="${NB.esc(p.ready
-           ? "Already plotted — opens at once" : "Not plotted yet — " + p.cost)}">
+         data-pick="${i}" title="${NB.esc(isReady(p)
+           ? "Already plotted — draws at once" : "Not plotted yet — " + p.cost)}">
          <span>${NB.esc(p.short || p.label)}</span>
          <span class="v">${NB.esc(p.ev != null ? p.ev.toFixed(2)
-                                  : (p.ready ? "ready" : p.cost))}</span>
+                                  : (isReady(p) ? "ready" : p.cost))}</span>
        </button>`).join("");
     // one handler on the list, not one per row: a whole orbital manifold is
     // hundreds of rows on a real basis set, and the list is rebuilt on every
     // tile press
-    const list = q("vlist");
     list.onclick = (e) => {
       const b = /** @type {HTMLElement} */ (e.target).closest("[data-pick]");
       if (!b || !list.contains(b)) return;
@@ -318,9 +357,100 @@
     // reads -520.12, and three characters of " eV" repeated per row is what
     // pushed the name that identifies it out of the column
     const unit = t.picks.some(p => p.ev != null) ? ", energies in eV" : "";
-    q("vcap").textContent = t.picks.length === 1
-      ? `${t.cap}${unit}`
-      : `${t.cap}${unit} \u2014 pick one on the left`;
+    q("vcap").textContent = `${t.cap}${unit} — pick one on the left`;
+    buildControls(sec, source);
+  }
+
+  /** The controls under the list: what level to draw the surface at, and at
+   *  what sampling. Two very different costs sit side by side here and the
+   *  wording is what keeps them apart -- the isovalue re-meshes what is already
+   *  in memory (instant, no backend), while the grid is a fresh orca_plot run
+   *  over the wavefunction, which for an ESP map is minutes. So the grid asks
+   *  before it spends, exactly as picking an unplotted surface does.
+   *  @param {HTMLElement} sec @param {string} source */
+  function buildControls(sec, source) {
+    const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
+    const ctl = q("vctl");
+    if (!ctl || !_opts || !_kind) return;
+    const kind = _kind.picks[0].kind;
+    const grids = _opts.grids || [_opts.default_grid];
+    const grid = gridOf(kind);
+    ctl.hidden = false;
+    ctl.innerHTML = `
+      <div class="field"><label for="viz-iso">Isovalue</label>
+        <input id="viz-iso" class="mono" type="number" step="0.005" min="0"
+               data-v="iso" value="${NB.mv.vol.iso().toFixed(4)}"></div>
+      <div class="field" data-v="rangewrap" hidden>
+        <label for="viz-range">Colour ± (a.u.)</label>
+        <input id="viz-range" class="mono" type="number" step="0.01" min="0"
+               data-v="range" value="${NB.mv.vol.espRange().toFixed(3)}"></div>
+      <div class="field"><label for="viz-grid">Grid</label>
+        <select id="viz-grid" data-v="grid">${grids.map(g =>
+          `<option value="${g}"${g === grid ? " selected" : ""}>${g}³</option>`
+        ).join("")}</select></div>`;
+    q("iso").addEventListener("change", () => {
+      const v = parseFloat(q("iso").value);
+      if (!isFinite(v) || v <= 0) { q("iso").value = NB.mv.vol.iso().toFixed(4); return; }
+      NB.mv.vol.setIso(v);
+    });
+    q("range").addEventListener("change", () => {
+      const v = parseFloat(q("range").value);
+      if (!isFinite(v) || v <= 0) { q("range").value = NB.mv.vol.espRange().toFixed(3); return; }
+      NB.mv.vol.setEspRange(v);
+    });
+    q("grid").addEventListener("change", () => {
+      const g = Number(q("grid").value);
+      _gridByKind[kind] = g;
+      refreshReady(sec, g);
+      // a grid change is a re-plot, not a re-mesh: the same orbital at 40 and at
+      // 80 are two different files on disk, so this goes back through the
+      // question -- and at a grid nothing has been plotted at yet, it asks
+      if (_surfPick) showSurface(sec, source, _surfPick);
+    });
+    syncControls(sec);
+  }
+
+  /** Every "ready" mark on screen answers a question about one grid, and the
+   *  grid has just changed. The rows and the tile are re-marked in place rather
+   *  than the list being rebuilt: rebuilding it would drop the row the user is
+   *  looking at, which is the one about to be re-plotted.
+   *  @param {HTMLElement} sec @param {number} g */
+  function refreshReady(sec, g) {
+    if (!_kind || !_opts) return;
+    const mark = sec.querySelector('[data-tile][aria-pressed="true"] .d');
+    if (mark && _kind.picks.length === 1) {
+      mark.textContent = NB.mv.readyAt(_opts, _kind.picks[0], g)
+        ? "ready" : _kind.picks[0].cost;
+    }
+    sec.querySelectorAll("[data-pick]").forEach(b => {
+      const p = _kind.picks[Number(/** @type {HTMLElement} */ (b).dataset.pick)];
+      if (!p) return;
+      const ok = NB.mv.readyAt(_opts, p, g);
+      b.setAttribute("title", ok ? "Already plotted — draws at once"
+                                 : "Not plotted yet — " + p.cost);
+      const v = b.querySelector(".v");
+      if (v && p.ev == null) v.textContent = ok ? "ready" : p.cost;
+    });
+  }
+
+  /** Put the controls back in step with what is actually on the stage: the
+   *  isovalue a plot chose for itself (an orbital's is fitted to its own peak,
+   *  a density's is the 0.002 convention), and whether a colour scale means
+   *  anything at all here. @param {HTMLElement} sec */
+  function syncControls(sec) {
+    const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
+    const iso = q("iso"), range = q("range"), wrap = q("rangewrap");
+    if (!iso) return;
+    iso.value = NB.mv.vol.iso().toFixed(4);
+    if (wrap) wrap.hidden = !NB.mv.vol.isEsp();
+    if (range) range.value = NB.mv.vol.espRange().toFixed(3);
+  }
+
+  /** The grid this kind is drawn at: the user's choice for it, else its own
+   *  default (an ESP map opens coarser than an orbital -- it costs minutes,
+   *  not a second). @param {string} kind */
+  function gridOf(kind) {
+    return _gridByKind[kind] || NB.mv.gridFor(_opts, kind);
   }
 
   /** Draw one surface IN THE PANEL, asking first when it has to be computed.
@@ -342,6 +472,7 @@
   function showSurface(sec, source, p) {
     if (!p || !_opts) return;
     const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
+    const grid = gridOf(p.kind);
     const go = async () => {
       _surfPick = p;
       _setKey = "";
@@ -351,14 +482,16 @@
       NB.mv.vol.adopt(q("vstage"));
       q("vcap").textContent = `${p.label} \u2014 working\u2026`;
       const ok = await NB.mv.vol.plot(source, p, _opts,
-                                      t => { q("vcap").textContent = t; });
+                                      t => { q("vcap").textContent = t; }, grid);
       if (!ok) hideSurface(sec);
-      else p.ready = true;   // it is on disk now; the next click is instant
+      else syncControls(sec);
     };
-    if (p.ready) { go(); return; }
+    // "ready" is a question about the grid too: the same orbital at 40 and at
+    // 80 are two different files, so a grid change re-asks
+    if (NB.mv.readyAt(_opts, p, grid)) { go(); return; }
     NB.modalRaw(`Plot ${p.label}?`,
       `<p>This has not been plotted yet, so ORCA's orca_plot has to run
-        over the wavefunction at a ${p.grid}&times;${p.grid}&times;${p.grid} grid —
+        over the wavefunction at a ${grid}&times;${grid}&times;${grid} grid —
         ${NB.esc(p.cost)}${NB.esc(p.why || "")}. The cube is kept beside the run, so
         drawing it again is instant.</p>`,
       [{ label: "Not now", cls: "btn-ghost" },
@@ -388,8 +521,12 @@
   /** @param {HTMLElement} sec @param {any} set */
   async function loadSet(sec, set) {
     const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
-    // a structure tile takes the stage back from whatever surface had it
+    // a structure tile takes the stage back from whatever surface had it, and
+    // the surface controls go with it: there is no isovalue for a molecule
     if (_surfPick) hideSurface(sec);
+    _kind = null;
+    const ctl = q("vctl");
+    if (ctl) ctl.hidden = true;
     _setKey = set.key;
     q("vlist").innerHTML = `<div class="vizempty">reading…</div>`;
     const r = await NB.call("get_structure_frames", set.path);

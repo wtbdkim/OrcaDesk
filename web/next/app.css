@@ -1080,3 +1080,36 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
 .mvstage canvas.molcv,
 .vizstage canvas.molcv,
 .viewstage canvas.molcv{position:absolute; inset:0;}
+
+
+/* ---------------------------- isovalue, range, grid ----------------------------
+   The reference's Visual panel has no controls, because its surface is a
+   picture of one and a picture needs no isovalue. A real one does: an isovalue
+   is what an isosurface IS, and the grid is what it cost. Both lived in the
+   pop-out window while that window was the only thing able to draw a volume;
+   now that the panel draws it, leaving them there would mean picking a surface
+   in one place and going somewhere else to say how to draw it.
+
+   They go UNDER the list, in the column that already answers "which one" -- so
+   the stage keeps its full width, and a kind with a single instance (an ESP map
+   is one map) fills a column that would otherwise be empty. The list scrolls;
+   the controls do not.
+
+   .vizside is a bare column: the card and the right border stay on .vizlist,
+   exactly as the reference sets them, and .vizctl repeats them for its own
+   strip. Lifting them onto the wrapper would have looked identical and read as
+   a difference -- the landmark check names .vizlist, and .vizlist would no
+   longer have been the thing carrying the card. */
+.vizside{grid-area:list; min-height:0; display:flex; flex-direction:column;}
+.vizside > .vizlist{grid-area:auto; flex:1 1 auto;}
+.vizctl{
+  flex:0 0 auto; display:flex; flex-direction:column; gap:8px;
+  padding:10px; background:var(--card);
+  border-top:1px solid var(--border); border-right:1px solid var(--border);
+}
+.vizctl .field{gap:4px;}
+.vizctl .field label{
+  font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
+}
+.vizctl .field input,.vizctl .field select{font-size:12px; padding:5px 8px; min-height:28px;}
+.vizctl .hint{margin:0;}

@@ -1489,6 +1489,26 @@ render — so the *box* moves between the two stages instead (`adopt`), and
 anything that is about to re-render a stage sends it home first (`park`). A
 context lost with an `innerHTML` would take every later surface with it.
 
+Drawing it there brings its controls with it. The reference's panel has none,
+because its surface is a picture of one and a picture needs no isovalue; a real
+one does, and the grid it was sampled at is the other thing worth changing. They
+go under the list, in the column that already answers *which one* — a deliberate
+addition to the reference, named in `app.css` ("isovalue, range, grid"). The two
+are not the same kind of control and the panel does not pretend they are: an
+isovalue re-meshes what is already in memory, instant and with no backend, while
+a grid is a fresh orca_plot run, so it asks before it spends and re-answers
+every *ready* mark on screen — the same orbital at 40³ and 80³ are two different
+files. The grid is remembered per KIND, because an orbital at 80³ is a second
+and an ESP map at 80³ is minutes.
+
+**17.4g A list of one is not a list.** A kind with a single instance — an ESP
+map is one map — used to draw a one-row list beside an otherwise empty column.
+The column says there is nothing to step through (the reference's own words
+here) and carries the controls instead, which is the useful half of it. What is
+already on disk is simply drawn; what is not offers a button that names the
+cost, because selecting a tile is not permission to spend an orca_plot run
+(P26).
+
 **17.4b A band is 1.6px wide, so the plot is the hit target.** The reference's
 spectrum is a picture of one; a real one is 150 bands whose exact wavenumber is
 the reason to look at it. The table that used to carry those numbers is gone —

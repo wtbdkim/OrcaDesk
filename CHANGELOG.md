@@ -228,6 +228,25 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   holding it moves to whichever stage is drawing — a browser keeps only a
   handful of contexts alive and drops the oldest without asking, and the panel's
   stage is rebuilt on every report render.
+- **The isovalue is back, and the grid is now yours too.** Both lived in the
+  pop-out viewer while that window was the only thing that could draw a volume;
+  with surfaces drawn in the Visual panel they sat somewhere you had to go to
+  say how to draw what was already on screen. They are under the list now, in
+  the column that already answers *which one*. **Isovalue** re-meshes what is
+  in memory — instant, no ORCA — and an **ESP map** also gets its colour
+  half-width, which is the other half of reading the picture. **Grid** (40³ /
+  60³ / 80³) is a different kind of knob and behaves like one: it is a fresh
+  orca_plot run, so it asks before it spends, and every *ready* mark on screen
+  is re-answered for the grid you chose, because the same orbital at 40 and at
+  80 are two different files. The choice is remembered per KIND — an orbital at
+  80³ is a second, an ESP map at 80³ is minutes, so one number for both would be
+  wrong twice.
+- **A kind with one instance no longer gets a list of one.** An ESP map is one
+  map; picking that tile used to draw a single-row list beside an otherwise
+  empty column. The column says there is nothing to step through and carries
+  the controls instead, the surface is drawn straight away when it is already on
+  disk, and when it is not there is a button that says what it will cost — a
+  tile press is not permission to spend an orca_plot run.
 
 ### Security
 - **The phone-sync PIN can no longer be switched off by putting a reverse proxy
