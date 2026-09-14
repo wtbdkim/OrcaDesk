@@ -111,10 +111,20 @@
    *  otherwise the name being edited. The stream reads it. @type {string|null} */
   let _target = null;
 
+  /** What a NEW calculation starts from, when it starts from something: the
+   *  partial calc "New from this" hands over. Cleared as soon as it is used,
+   *  so the next new calculation is a blank one. @type {any} */
+  let _seed = null;
+
   /** Open the builder on a calculation, or on a new one with "". Closing is
-   *  open(null). @param {string|null} target */
-  function open(target) {
-    _target = _target === target ? null : target;
+   *  open(null).
+   *  @param {string|null} target
+   *  @param {any} [seed] for a new one: fields it opens already carrying */
+  function open(target, seed) {
+    // a seeded open is never a toggle -- clicking "New from this" on a second
+    // calculation while the builder is open must move it, not close it
+    _target = (_target === target && !seed) ? null : target;
+    _seed = _target === null ? null : (seed || null);
     NB.stream.render();
     if (_target !== null) {
       const cell = document.querySelector(".cell.editing, .cell.stub.editing");
@@ -176,6 +186,11 @@
         return;
       }
     }
+    // A new calculation started FROM another one opens carrying that one's
+    // name as its geometry source -- the same reference an opt->freq handoff
+    // uses, resolved to the optimized geometry at run time. It is a seed, not
+    // an edit: nothing is saved until Add.
+    if (!calc && _seed) { calc = _seed; _seed = null; }
     const st = {
       editing: summary ? summary.name : "",
       raw: calc ? !!calc.is_raw : false,

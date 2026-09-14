@@ -27,6 +27,13 @@
   let _frames = [];
   let _frameIdx = 0;
   let _setKey = "";
+  /** The Visual panel's own plot state: the options for the result on screen,
+   *  and the surface it is currently drawing (null = it is drawing atoms). The
+   *  panel draws surfaces in place now; the pop-out is the same picture with
+   *  the isovalue beside it, and the two share one renderer. */
+  let _opts = null;
+  /** @type {any} */ let _surfPick = null;
+  let _source = "";
 
   /** Elements present, for the legend — a key to colours that are actually on
    *  screen, rather than a periodic table. @param {any[]} atoms */
@@ -49,16 +56,16 @@
       <div class="sech"><h2>Structure</h2><span class="sp"></span>
         <span class="meta">${atoms.length} atoms</span></div>
       <p class="secdesc">Drag to turn it. Click an atom or a bond for its numbers,
-        right-drag between two atoms to measure, and the axis button walks x, y, z.</p>
+        right-drag between two atoms to measure, and press an arm of the axis marker
+        in the corner to look straight down x, y or z.</p>
       <div class="viewstage" data-v="stage">
         <canvas class="molcv" data-v="canvas"
           aria-label="Final geometry, ball and stick. Drag to turn, right-drag between two
             atoms to measure, click an atom or a bond for its numbers; the arrow keys turn
-            it too."></canvas>
+            it too, and x, y or z looks straight down that axis."></canvas>
         ${legend(atoms)}
         <div class="stageacts">
           <button class="act" type="button" data-v="open">Open in viewer</button>
-          <button class="act" type="button" data-v="axis">View down x</button>
         </div>
       </div>
     </section>`;
@@ -138,21 +145,10 @@
     _stage = MOL.mount(canvas, { onPick: (p) => showPick(stage, p, d) });
     _stage.setAtoms(atoms);
 
-    const axisBtn = /** @type {HTMLElement} */ (sec.querySelector('[data-v="axis"]'));
-    axisBtn.addEventListener("click", () => {
-      const ax = _stage.nextAxis();
-      axisBtn.textContent = "View down " + nextAxisLabel(ax);
-    });
     sec.querySelector('[data-v="open"]').addEventListener("click", () => NB.mv.open({
       source: source, title: title(source) + " \u2014 structure",
       orbitals: d.orbitals || [] }));
   }
-  /** The button names the axis the NEXT press will show, so it says what it does.
-   *  @param {string} shown */
-  function nextAxisLabel(shown) {
-    return shown === "x" ? "y" : shown === "y" ? "z" : "x";
-  }
-
   /** What to call this result in a window title. The source is how the backend
    *  addresses it, which is not a name anyone reads. @param {string} source */
   function title(source) {
@@ -175,10 +171,10 @@
         <div class="vizlist" data-v="vlist" role="listbox" aria-label="Frames"></div>
         <div class="vizstage" data-v="vstage">
           <canvas class="molcv" data-v="vcanvas"
-            aria-label="Structure viewer. Drag to turn; the arrow keys turn it too."></canvas>
+            aria-label="Structure viewer. Drag to turn; the arrow keys turn it too, and
+              x, y or z looks straight down that axis."></canvas>
           <div class="stageacts">
             <button class="act" type="button" data-v="vopen">Open in viewer</button>
-            <button class="act" type="button" data-v="vaxis">View down x</button>
           </div>
           <span class="vizcap" data-v="vcap"></span>
         </div>
@@ -195,11 +191,9 @@
     if (!sec) return;
     const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
     if (_viz) _viz.destroy();
-    _viz = MOL.mount(q("vcanvas"), {});
-    const axisBtn = q("vaxis");
-    axisBtn.addEventListener("click", () => {
-      axisBtn.textContent = "View down " + nextAxisLabel(_viz.nextAxis());
-    });
+    // .vizcap writes the frame's name in this stage's bottom-left corner, which
+    // is where the axis marker goes — so the marker sits above it
+    _viz = MOL.mount(q("vcanvas"), { gizmoBottom: 60 });
 
     // The two halves of "what can be drawn" are found in different ways — the
     // .xyz sets by listing the folder, the surfaces by asking the wavefunction —
@@ -211,6 +205,9 @@
     ]);
     const sets = (r && r.ok && r.sets) ? r.sets : [];
     const picks = (surf && surf.ok && surf.picks) ? surf.picks : [];
+    _opts = (surf && surf.opts) || null;
+    _source = source;
+    _surfPick = null;
     if (!sets.length && !picks.length) {
       q("vtypes").innerHTML =
         `<p class="hint" style="margin:0;grid-column:1/-1">Nothing in this result's folder
@@ -227,8 +224,10 @@
       n: s.label, d: `${s.count} ${s.count === 1 ? "frame" : "frames"}`, set: s }));
     const mos = picks.filter(p => p.kind === "mo");
     if (mos.length) {
+      // the whole manifold is here, so the tile COUNTS it rather than naming
+      // its ends: "HOMO-4 ... LUMO+4" described a window that no longer exists
       tiles.push({ n: "Orbitals",
-                   d: `${mos[0].short} \u2026 ${mos[mos.length - 1].short}`,
+                   d: `${mos.length} ${mos.length === 1 ? "orbital" : "orbitals"}`,
                    picks: mos, cap: "molecular orbital" });
     }
     picks.filter(p => p.kind !== "mo").forEach(p => tiles.push({
@@ -252,6 +251,14 @@
     // orbitals ride along so the pop-out's own Surface picker can offer them
     // too — without the list it can only ever draw a density, never an orbital.
     q("vopen").addEventListener("click", () => {
+      // whatever is on the stage, bigger: a surface opens ON that surface, a
+      // structure set on that set. "Open in viewer" means this one.
+      if (_surfPick) {
+        NB.mv.open({ source: source, orbitals: (d && d.orbitals) || [],
+                     pick: _surfPick,
+                     title: title(source) + " — " + _surfPick.label });
+        return;
+      }
       const set = sets.filter(s => s.key === _setKey)[0] || sets[0];
       NB.mv.open({ source: source, path: set && set.path,
                    orbitals: (d && d.orbitals) || [],
@@ -293,44 +300,96 @@
          data-pick="${i}" title="${NB.esc(p.ready
            ? "Already plotted — opens at once" : "Not plotted yet — " + p.cost)}">
          <span>${NB.esc(p.short || p.label)}</span>
-         <span class="v">${NB.esc(p.ev != null ? p.ev.toFixed(2) + " eV"
+         <span class="v">${NB.esc(p.ev != null ? p.ev.toFixed(2)
                                   : (p.ready ? "ready" : p.cost))}</span>
        </button>`).join("");
-    sec.querySelectorAll("[data-pick]").forEach(b => b.addEventListener("click", () => {
-      sec.querySelectorAll("[data-pick]").forEach(o => o.setAttribute(
+    // one handler on the list, not one per row: a whole orbital manifold is
+    // hundreds of rows on a real basis set, and the list is rebuilt on every
+    // tile press
+    const list = q("vlist");
+    list.onclick = (e) => {
+      const b = /** @type {HTMLElement} */ (e.target).closest("[data-pick]");
+      if (!b || !list.contains(b)) return;
+      list.querySelectorAll("[data-pick]").forEach(o => o.setAttribute(
         "aria-selected", String(o === b)));
-      openSurface(source, d, t.picks[Number(/** @type {HTMLElement} */ (b).dataset.pick)]);
-    }));
+      showSurface(sec, source, t.picks[Number(b.dataset.pick)]);
+    };
+    // the unit is said once, not on all of a few hundred rows: a core orbital
+    // reads -520.12, and three characters of " eV" repeated per row is what
+    // pushed the name that identifies it out of the column
+    const unit = t.picks.some(p => p.ev != null) ? ", energies in eV" : "";
     q("vcap").textContent = t.picks.length === 1
-      ? `${t.cap} \u2014 opens in the 3D viewer`
-      : `${t.cap} \u2014 pick one on the left; it opens in the 3D viewer`;
+      ? `${t.cap}${unit}`
+      : `${t.cap}${unit} \u2014 pick one on the left`;
   }
 
-  /** Open one surface in the pop-out viewer, asking first when it has to be
-   *  computed. A cube already on disk opens at once — there is nothing to
-   *  decide. One that is not costs an orca_plot run, which for an ESP map is
-   *  minutes of a machine the user may be running calculations on, so it is
-   *  their call and not a side effect of a click (P26). The question names the
-   *  cost rather than warning in the abstract.
-   *  @param {string} source @param {any} d @param {any} p */
-  function openSurface(source, d, p) {
-    if (!p) return;
-    const go = () => NB.mv.open({
-      source: source, orbitals: (d && d.orbitals) || [], pick: p,
-      title: title(source) + " — " + p.label });
+  /** Draw one surface IN THE PANEL, asking first when it has to be computed.
+   *
+   *  A cube already on disk appears at once — there is nothing to decide. One
+   *  that is not costs an orca_plot run, which for an ESP map is minutes of a
+   *  machine the user may be running calculations on, so it is their call and
+   *  not a side effect of a click (P26). The question names the cost rather
+   *  than warning in the abstract.
+   *
+   *  It used to open the pop-out window instead, because this stage paints
+   *  atoms and an isosurface is a volume. That was a renderer's limitation
+   *  showing through as behaviour: you picked something on the left and the
+   *  answer arrived somewhere else, over the report you were reading. The
+   *  renderer is shared now (mvwin.js volumeView) and its box moves to whichever
+   *  stage is drawing — so a pick lands where it was made, and the window is
+   *  what you open when you want it big, with the isovalue beside it.
+   *  @param {HTMLElement} sec @param {string} source @param {any} p */
+  function showSurface(sec, source, p) {
+    if (!p || !_opts) return;
+    const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
+    const go = async () => {
+      _surfPick = p;
+      _setKey = "";
+      // the atom painter steps aside rather than being cleared: what is on the
+      // stage is replaced, not blanked, so the panel never shows an empty box
+      q("vcanvas").hidden = true;
+      NB.mv.vol.adopt(q("vstage"));
+      q("vcap").textContent = `${p.label} \u2014 working\u2026`;
+      const ok = await NB.mv.vol.plot(source, p, _opts,
+                                      t => { q("vcap").textContent = t; });
+      if (!ok) hideSurface(sec);
+      else p.ready = true;   // it is on disk now; the next click is instant
+    };
     if (p.ready) { go(); return; }
     NB.modalRaw(`Plot ${p.label}?`,
       `<p>This has not been plotted yet, so ORCA's orca_plot has to run
         over the wavefunction at a ${p.grid}&times;${p.grid}&times;${p.grid} grid —
         ${NB.esc(p.cost)}${NB.esc(p.why || "")}. The cube is kept beside the run, so
-        opening it again is instant.</p>`,
+        drawing it again is instant.</p>`,
       [{ label: "Not now", cls: "btn-ghost" },
        { label: "Plot it", cls: "btn-primary", act: go }]);
+  }
+
+  /** Give the stage back to the atom painter. @param {HTMLElement} sec */
+  function hideSurface(sec) {
+    const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
+    _surfPick = null;
+    const box = NB.$("mv-gl");
+    if (box) box.hidden = true;
+    q("vcanvas").hidden = false;
+    if (_viz) _viz.repaint();
+  }
+
+  /** Take the shared box back after the pop-out window has had it. Called by
+   *  mvwin on close: the window borrowed the one renderer there is, and a panel
+   *  left with an empty stage would read as the pick having been lost. The cube
+   *  is on disk by now, so this is a redraw and not another orca_plot run. */
+  function reclaimSurface() {
+    const sec = NB.$("sec-visual");
+    if (!sec || !_surfPick) return;
+    showSurface(sec, _source, _surfPick);
   }
 
   /** @param {HTMLElement} sec @param {any} set */
   async function loadSet(sec, set) {
     const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
+    // a structure tile takes the stage back from whatever surface had it
+    if (_surfPick) hideSurface(sec);
     _setKey = set.key;
     q("vlist").innerHTML = `<div class="vizempty">reading…</div>`;
     const r = await NB.call("get_structure_frames", set.path);
@@ -449,6 +508,7 @@
   NB.viewer = {
     /** the Structure section's stage, for anything that needs to drive it */
     stage: () => _stage,
+    reclaimSurface: reclaimSurface,
     structureSection: structureSection, mountStructure: mountStructure,
     visualSection: visualSection, mountVisual: mountVisual,
     nboSection: nboSection, mountNbo: mountNbo,

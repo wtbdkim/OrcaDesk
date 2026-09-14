@@ -278,3 +278,11 @@ output files for developing the optimization-time estimator.
 
 MIT License — Copyright (c) 2026 Taewoo Kim (Korea Science Academy of KAIST).
 See the `LICENSE` file for details.
+
+Third-party files ship with the app under their own terms:
+
+- **Inter** and **JetBrains Mono** — the two typefaces the notebook front-end is
+  drawn in, carried rather than fetched because the app runs offline.
+  `web/fonts/`, SIL Open Font License 1.1 (full text in `web/fonts/OFL.txt`).
+- **3Dmol.js** 2.4.2 — the isosurface renderer. `web/vendor/`, see that file's
+  own header and the upstream project for its terms.

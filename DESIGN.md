@@ -464,7 +464,9 @@ consume the tint token, never a hand-mixed rgba (D13).
   Mobile: 10px / 7px (fork drift — Appendix B).
 - Fonts: `--font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
   sans-serif`; `--font-mono: "JetBrains Mono", "Cascadia Code", Consolas,
-  ui-monospace, monospace`.
+  ui-monospace, monospace`. The notebook front-end names the reference's own
+  two faces first (`Inter`, `JetBrains Mono`) and **ships them** rather than
+  naming and hoping — see §17.0c; the classic window keeps the stack above.
 - Type: base 14px/1.5 (mobile 15px); labels 12px/500; card titles
   13px/600/−0.01em; badges 10–11px uppercase; HUD numeral 26px/700
   tabular-nums.
@@ -1250,7 +1252,7 @@ python tools/uispec.py real spec_real.json     # web/next/, in the real window
 python tools/uidiff.py spec_mock.json spec_real.json    # exit code = differences
 ```
 
-79 landmarks × 23 computed properties, currently **0 differences** — in two
+116 landmarks × 23 computed properties, currently **0 differences** — in three
 passes, because the first list was chrome only (top bar, rail, cell, pane) and a
 0 over it said nothing about the inside of a result section, which was markup
 `app.css` had never heard of. The second pass opens a real result, turns *Show
@@ -1267,9 +1269,21 @@ Element boxes and grid ROW sizes are excluded for that reason (they are
 content), and column splits are compared as ratios, so a scrollbar on one side
 does not read as a different layout.
 
+The third pass opens what nothing at rest can see — the pop-out viewer, the
+settings sheet, and the builder's conditional blocks (NEB slots, a per-element
+basis row, the snippet strip) — with both sides opened to the same state first.
+
 Deliberate departures from the reference live in one named block at the bottom
 of `app.css`, not scattered through it, so the diff has one place to account
-for. `web/next/README.md` is the hand-editing guide: save, press F5 in the app
+for — and the landmark each one moves is listed in `uidiff.py`'s
+`PER_LANDMARK_SKIP` with the reason, because a departure the check still
+reports is a difference the next reader will helpfully undo. The standing
+example: `.secchips` is sticky at `top:0`, and a sticky top sticks to the
+SCROLLPORT'S PADDING EDGE — so the reference's 20px of `.rescontent` padding is
+a band the outline can never cover, and in a report that actually scrolls a
+table header sat over the chips. The 20px moved onto the bar. It is the same
+20px on the other side of one edge, which is why both paddings are skipped
+rather than the rule being re-argued. `web/next/README.md` is the hand-editing guide: save, press F5 in the app
 (the reload costs nothing — the queue is Python-side), and
 `ORCADESK_REMOTE_DEBUG=9222` opens Chromium's inspector on the live page.
 
@@ -1359,6 +1373,87 @@ unstyled: the first list was chrome only and missed a report of markup `app.css`
 had never heard of; the second stopped at the window at rest and could not see a
 single overlay. A green number that stops the looking is worse than no number.
 
+Twice more it read zero while something real was wrong, and both were blind
+spots of the same kind — a property the check compared could not *express* the
+difference. A computed `font-family` is the stack that was **declared**,
+identical on both sides by construction, so the whole page being drawn in a
+substituted face was not a value it could disagree on (17.0c). And the landmark
+list measures the properties of elements it *names*, so a control that exists on
+one side only changes nothing it looks at: the Finished group's *Clear* and the
+entire *Opened files* group were missing from the rail without a single
+difference. The check now measures the face that actually renders — the width of
+one sample line in each stack, against a deliberately unresolvable family as the
+control — and prints a census of every class present on each page as an advisory
+that is reported but not counted, because class presence follows the sample
+data.
+
+And a third kind, for the differences that are *inside* no landmark: a
+**metric audit** over every `(parent, element)` class combination both pages
+draw, comparing the box-model and type properties the stylesheet fixes —
+padding, margin, border, radius, font size/weight/leading/tracking, min-height,
+display. The landmark list is 121 selectors somebody chose; a padding a pixel
+off on a control nobody named is exactly as visible. Three rules keep it
+readable rather than noisy, and each was forced by a false report: the key
+carries the **parent**, because these rules are contextual and a flex or grid
+parent also blockifies its children's `display`; an element carrying its own
+`style=` attribute is **skipped**, because the audit measures the stylesheet and
+not a one-off; and **colour and opacity are absent**, because they carry state
+(a badge is green or red by what it reports) while metrics do not. It is what
+found an 11px separator in a control the design sizes exactly (17.0d).
+
+The rule this leaves: **when a difference is invisible to the check, the fix is
+a new kind of measurement, not a new landmark of the same kind.**
+
+**17.0d A divider divides groups, not buttons.** `.seg .sep` is the rule that
+separates two groups inside one segmented control — the reference uses it in
+exactly one place, the builder's `DFT | MLIP | CREST . Beginner | Expert`. A
+two-button control has no groups, and the divider is not free: a 1px rule, 8px
+of margin and one more 2px gap is **11px** of extra width on a control whose
+size the design fixes. Two of them had appeared in the preview's top bar and
+viewer head. The general form: a class the design uses once, for one job, is not
+a decoration to reach for — read what it divides before using it.
+
+**17.0c The design's typefaces ship with the app.** `design/notebook-reference.html`
+loads Inter and JetBrains Mono from Google Fonts, as the artifact it was
+published as could. A desktop app that runs offline against a local ORCA cannot,
+and shipping the stack without the faces is not a smaller version of the design —
+it is a different one: the substitutes (Segoe UI Variable and Consolas on
+Windows) have a smaller x-height than the faces the spacing was set for, so every
+10–11px muted label reads fainter and leaves more air inside a box whose padding
+never changed. That is the whole of why the preview looked *less dense* than the
+design it is a copy of. Both families are carried in `web/fonts/` as variable
+woff2, latin + latin-ext, under the SIL OFL, and linked from
+`web/next/index.html` — the local stand-in for the reference's own `<link>`, and
+the reason `app.css` itself stays a verbatim copy of the reference stylesheet.
+`font-display` is `block`, not `swap`: the files are on disk, so the only thing a
+swap could do is flash the substitution this exists to remove.
+
+**17.0e The rail is the picker; the toolbar is not a second one.** A result is
+chosen by clicking its row — in either view — and a result that is not in the
+rail is opened with *Open file…* / *Open folder…*, which is also what puts it
+there, under **Opened files**, with the folder it came from. The preview had
+grown a `<select>` in the Results toolbar listing the queue *and* a scan of the
+workspace: a second picker for the same job, the one that could not say where an
+entry came from, and a disk walk on every entry to the tab. *Output / Visual*
+takes that place, and it does not switch a mode — Visual is one of the report's
+sections, so the pair jumps to it exactly as the outline chips do, and *Show
+all*, which is Output's, goes away while Visual is being read.
+
+**17.4f A canvas that sizes itself from its own box must be out of flow.** Every
+stage here draws into a `.molcv` whose bitmap is set from its own measured box
+each frame (`canvas.width = box.width * dpr`). With the reference's
+`width:100%; height:100%` *in flow*, that is a feedback loop wherever the
+percentage cannot resolve — `.viewstage` is `flex:1` in a column whose height
+comes from a grid row measured from its content, so the canvas falls back to its
+intrinsic size, which is the bitmap the last frame set. At
+`devicePixelRatio: 1` the two coincide and nothing moves; at 1.25 each frame
+multiplies the height by 1.25 and the Structure stage walks away from the Visual
+panel beside it. Chromium says so out loud — *"ResizeObserver loop completed
+with undelivered notifications"*. So: the canvas is `position:absolute; inset:0`
+(every stage is already `position:relative`), and the ResizeObserver watches the
+**stage**, not the canvas it is about to resize. Both halves, because either
+alone leaves the loop one step from closing.
+
 **17.3 A rule that sets `display` names the whole state.** Regions are hidden by
 default and revealed by the view — never the other way round — so no two rules
 that both set `display` can match the same element. This is written down
@@ -1381,6 +1476,18 @@ atoms, so that half uses the vendored 3Dmol the classic UI already ships — and
 it is fetched on the first surface, never at boot. A machine with no WebGL
 context can still walk a trajectory, and the one thing it cannot do says so
 instead of failing silently.
+
+And one renderer, two stages: **a pick is drawn where it was made.** The Visual
+panel used to answer a click on an orbital by opening the pop-out window over
+the report you were reading — a renderer's limitation showing through as
+behaviour, because that stage paints atoms and an isosurface is a volume. The
+surface now appears in the panel, and the window is what you open when you want
+it big with the isovalue beside it. There is still exactly one WebGL context,
+because a browser keeps only a handful alive and drops the oldest without
+asking, and because the panel's stage is destroyed and rebuilt on every report
+render — so the *box* moves between the two stages instead (`adopt`), and
+anything that is about to re-render a stage sends it home first (`park`). A
+context lost with an `innerHTML` would take every later surface with it.
 
 **17.4b A band is 1.6px wide, so the plot is the hit target.** The reference's
 spectrum is a picture of one; a real one is 150 bands whose exact wavenumber is
@@ -1408,12 +1515,103 @@ pick, so the question cannot quote a figure the backend has stopped believing.
 **A tile is a KIND; the list beside it is the instances.** The strip is one
 line of the panel, so what goes in it has to be a closed set of categories —
 Structure, Trajectory, Orbitals, ESP map, Conformers — and everything countable
-goes in the `.vizlist`: ten frontier orbitals, forty-two conformers, a hundred
+goes in the `.vizlist`: every orbital of a manifold, forty-two conformers, a hundred
 trajectory frames. Putting instances in the strip is a mistake that looks fine
 at four orbitals and cannot survive ten, which is the tell that they were never
 tiles. Selecting a surface kind fills the list rather than drawing: this stage
 paints atoms, an isosurface needs the pop-out viewer's renderer, so a **row**
 opens that window and the structure on the stage is left where it was.
+
+**17.4f A marker that states the orientation is the control for it.** The axis
+gizmo in the corner is drawn from the same rotation as the molecule, so it
+already answers "which way am I facing". Putting the axis views behind a button
+that cycles *x -> y -> z* asks the reader to answer that question themselves and
+then press up to three times to act on it. Pressing the arm is one gesture, it
+needs no label, and it cannot be off by a step. The rule generalizes: **when a
+thing on screen already depicts the state, make the depiction the control**
+rather than adding a widget beside it that names the state again.
+
+Two obligations come with it, because a shape painted on a canvas is not a
+button. The target is the arm's LABEL, not its line — two arms nearly edge-on
+cross near the origin and a click there cannot mean one of them, while the
+labels stay at least an arm apart — and it is sized for a pointer (a 28px
+target, the desktop minimum), with hover changing the arm so it reads as
+pressable. And it needs a keyboard route, since nothing drawn can be tabbed to:
+the stage already takes focus for its arrow keys, so x, y and z ride there and
+are named in the canvas's own label.
+
+**17.4g A list of instances is not the place to guess which one matters.** The
+orbital list offered HOMO−4 … LUMO+4 — a window chosen on the theory that the
+interesting orbital is near the frontier. It often is not: a ligand-field
+argument wants the metal d set wherever it fell, a charge-transfer one the
+donor lone pair, a core-hole one nothing near the frontier at all. A row costs
+a line; the expensive thing is behind the click, and that is what asks before
+it spends. So enumerate everything and let the reader choose. The consequences
+are the list's, not the chooser's: the rows are one delegated handler rather
+than one listener each, and a unit is stated ONCE beside the list instead of on
+every row — a core orbital reads −520.12, and repeating " eV" three hundred
+times is what pushed the name that identifies it out of the column.
+
+**17.4e A ball states its element, so its size has to be the element's.**
+Ball-and-stick draws a sphere per atom sized by the **covalent radius** — H at
+0.31 Å against C at 0.76 Å, so hydrogen is 41% of carbon and the picture says
+which atom is which before any label does. Two ways that gets quietly lost, both
+of which had happened:
+
+*A radius table that stops.* The 24 elements an organic run contains were
+listed and everything else took one fallback. That fallback exists for bond
+perception, where guessing large is safe (a missed bond draws a molecule as
+dust), and it was being reused as a drawing size, where guessing large is a
+claim — an unlisted element rendered bigger than iodine. The table is the
+published set (Cordero 2008) from H to Pu, and the two questions have separate
+fallbacks: generous for bonding, ordinary for drawing.
+
+*A floor with a number in it.* `max(2.5px, r)` clamps the small atoms first,
+so it does not shrink a picture evenly — it deletes the distinction the picture
+is for, and only when the molecule is large against its box, which is exactly
+the cell thumbnail. A floor still has to exist (an atom at a third of a pixel
+is a gap in a line), but it is stated relative to what is beside it: **a ball is
+never thinner than the stick it sits on.** Below that it reads as a kink, not an
+atom, and above it every ratio is the real one.
+
+**Turning a thing is not a reason for it to change size.** Fitting the view to
+the PROJECTED extent re-zooms on every frame of a drag: an elongated molecule
+seen end-on is narrow and gets magnified, seen broadside it is wide and shrinks,
+so the structure breathes under the cursor and nothing on screen has a stable
+size to judge by. Fit to a rotation-INVARIANT quantity instead — the bounding
+sphere about the centroid — and the scale is a property of the molecule rather
+than of where you happen to be standing. It costs a little fill in the flattest
+orientation, which is the right trade: the picture stops arguing with the hand.
+
+**A structure is the one the run ended on.** Geometry cached under a
+calculation's name, read once, is the geometry it was *handed* — and a run's
+whole purpose is that those are not the same coordinates. Anything holding a
+structure records which of the two it has, and re-reads when the run acquires
+an output of its own; the caption says which, so it can never claim a final
+structure over input coordinates.
+
+**17.4d Say a failure once, and number an atom once.** Two content rules the
+report and the stream kept breaking in opposite directions.
+
+*A failure is stated where the run is being read.* The rail is an index — every
+row gets one line of state, so a failed one gets a one-line `⚠` summary,
+ellipsised, exactly like a running row's ETA. The reason itself belongs at the
+top of the cell body, which is the thing that *is* the calculation. Putting the
+full box in the rail instead cost twice: four failures filled the rail and
+pushed the queue off the screen, and the cell — the one place a reader is
+actually looking at that run — had to squeeze the same sentence into its fact
+line. The fact line states facts (kind, charge, cycles, criteria met); it is
+not where a sentence goes.
+
+*Every atom-numbered table on a screen counts from the same end.* ORCA prints
+its Mayer and NMR tables indexed from zero and its geometry from one, and the
+parse keeps each verbatim — correctly, since the parse's job is to report what
+the file says. The report's job is the opposite: one molecule may not wear two
+numberings at once, least of all beside copy that says "also on any bond you
+click in **Structure**" while the viewer labels that bond `O1 – H2` and the
+table calls it `0-O – 1-H`. Everything user-facing counts from one, through a
+single helper (`results.js atomLabel` / `mayerAtom`) that is the one place
+knowing ORCA does not.
 
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
@@ -1463,4 +1661,4 @@ Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
 | B28 | Settings → CREST's *Install CREST* button was pretend-enabled: it disabled only once CREST was already installed, never when there was **no WSL distro to install into** (the one prerequisite ORCAdesk cannot script). The click's only feedback was a Log-tab line, so a failed install read as a dead button — and the installer's actionable diagnostics never reached the card | D41, D2, §13.2 | resolved (0.7.0-beta — the button disables with the reason in its tooltip when WSL or a distro is absent, or while a probe is in flight; the install outcome is published on `CrestStatusPayload.install_error` and surfaced as the card's detail line + a toast) |
 | B29 | Two color literals had come back after B3/B5 removed the pattern: `renderInputEcho`'s `<pre>` used a raw `rgba(127,127,127,0.08)` (a theme-independent grey that is neither a token nor an alpha-ladder value), and the 3D viewer fell back to the literal `#18181b` — the DARK `--card` — when its token read came back empty, painting the stage near-black on a light theme | D10, D13, §15.1 | resolved (unreleased — the echo uses `--input-bg`; the viewer passes no background at all when the token is unreadable, rather than the wrong theme's value) |
 | B31 | The notebook front-end still lacks three of the reference's blocks: the MLIP environment rows and the glass-intensity slider in Settings (`.envrow`, `.slider`), the builder's NEB-endpoint / per-element-basis / structure-findings blocks (`.nebrow`, `.nebslot`, `.basis-row`, `.snips`, `.finding`), and the pop-out 3D viewer window with its frame walker and ESP ramp (`.mvwin` …) | §17 | resolved (0.10.1 — all ten landed; the `OUTSTANDING` set in `tests/test_next_ui.py::test_the_preview_uses_the_references_own_component_vocabulary` is now empty and is kept that way, so dropping an element is a decision somebody took rather than something that quietly happened) |
-| B30 | The notebook front-end (§17) does not yet cover the MLIP and CREST **calculation kinds** in the builder, and it draws flat — the Liquid-Glass appearance variants (§16) are set from its Settings but rendered only by the classic window | D2, §17.5 | accepted (0.10.1 — narrowed: the MLIP environment setup, the 3D viewer, the Visual panel and the natural-orbital analysis have landed. It stays a preview, off by default, and its Interface card names what is left rather than letting it be found as a control that is not there) |
+| B30 | The notebook front-end (§17) does not yet cover the MLIP and CREST **calculation kinds** in the builder, and it draws flat — the Liquid-Glass appearance variants (§16) are set from its Settings but rendered only by the classic window. One knock-on: `.seg .sep` (§17.0d) appears nowhere in the preview, because the reference's only use of it is the backend picker this gap is about | D2, §17.5 | accepted (0.10.1 — narrowed: the MLIP environment setup, the 3D viewer, the Visual panel and the natural-orbital analysis have landed. It stays a preview, off by default, and its Interface card names what is left rather than letting it be found as a control that is not there) |

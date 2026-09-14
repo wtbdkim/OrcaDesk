@@ -31,7 +31,9 @@
   let _curName = "";
   let _curPath = "";
   /** @type {any[]} */
-  let _ws = [];
+  /** Which of the two the Output/Visual pair last jumped to. It is a cursor on
+   *  one scrolling report, not a mode: both halves are always rendered. */
+  let _visual = false;
   let _showAll = false;
   /** @type {{id: string, title: string}[]} rebuilt as the sections render */
   let _present = [];
@@ -83,6 +85,25 @@
     return pairs.map(p =>
       `<div class="kvline"><span>${NB.esc(p[0])}</span><span class="v">${p[1]}</span></div>`).join("");
   }
+  /** One atom, numbered the way every atom on this screen is numbered.
+   *
+   *  ORCA indexes its Mayer and NMR tables from ZERO, and the parse keeps that
+   *  index verbatim; the geometry, Mulliken and Löwdin tables here are numbered
+   *  by position from ONE, and so is the label the 3D picker puts on an atom
+   *  (`O1`). Passing ORCA's number through meant one molecule wearing two
+   *  numberings on one screen — the Mayer section even says "also on any bond
+   *  you click in Structure", which then answered `O1 – H2` for the row called
+   *  `0-O – 1-H`. Everything user-facing counts from one; this is the one place
+   *  that knows ORCA does not. @param {number} i @param {string} el */
+  function atomLabel(i, el) { return (i + 1) + " " + NB.esc(el); }
+
+  /** The same, for a Mayer bond end, which the parser keeps as ORCA printed it
+   *  ("0-O"). @param {string} label */
+  function mayerAtom(label) {
+    const m = /^\s*(\d+)\s*-\s*(.*)$/.exec(String(label));
+    return m ? atomLabel(Number(m[1]), m[2].trim()) : NB.esc(String(label));
+  }
+
   /** @param {string} v @param {string} label */
   function tone(v, label) {
     if (/ABNORMAL|NOT converged/i.test(v)) return "err";
@@ -315,7 +336,7 @@
         plate(chart(d.nmr.map(n => ({ x: n.idx, y: n.iso })), half, Math.round(half * 0.5),
                     { xlab: "nucleus", ylab: "σ iso (ppm)", stick: true }))
         + tw(["Nucleus", "σ iso (ppm)", "Anisotropy (ppm)"], d.nmr.map(n =>
-            [`${n.idx} ${NB.esc(n.el)}`, n.iso.toFixed(3), n.aniso.toFixed(3)]))));
+            [atomLabel(n.idx, n.el), n.iso.toFixed(3), n.aniso.toFixed(3)]))));
     }
 
     if (d.neb_path && d.neb_path.length) {
@@ -367,28 +388,28 @@
         "Also on any atom you click in <b>Structure</b>. Basis-set dependent, so read "
         + "the pattern rather than the digits.",
         tw(["Atom", "Charge (e)"], d.mulliken.map((m, i) =>
-          [`${i + 1} ${NB.esc(m[0])}`, m[1].toFixed(6)]))));
+          [atomLabel(i, m[0]), m[1].toFixed(6)]))));
     }
     if (d.loewdin && d.loewdin.length) {
       out.push(sec("sec-loew", "Löwdin charges", d.loewdin.length + " atoms",
         "The same partition after symmetric orthogonalization; usually the steadier of "
         + "the two across basis sets.",
         tw(["Atom", "Charge (e)"], d.loewdin.map((m, i) =>
-          [`${i + 1} ${NB.esc(m[0])}`, m[1].toFixed(6)]))));
+          [atomLabel(i, m[0]), m[1].toFixed(6)]))));
     }
     if (d.mayer_bonds && d.mayer_bonds.length) {
       out.push(sec("sec-mbo", "Mayer bond orders", d.mayer_bonds.length + " bonds",
         "Also on any bond you click in <b>Structure</b>. Near 1, 2 and 3 for single, "
         + "double and triple bonds.",
         tw(["Bond", "Order"], d.mayer_bonds.map(b =>
-          [`${NB.esc(b[0])} – ${NB.esc(b[1])}`, b[2].toFixed(4)]))));
+          [`${mayerAtom(b[0])} – ${mayerAtom(b[1])}`, b[2].toFixed(4)]))));
     }
     if (d.mayer_valences && d.mayer_valences.length) {
       out.push(sec("sec-mval", "Mayer valences", d.mayer_valences.length + " atoms",
         "Total bonding capacity used per atom; a value well below the usual one points "
         + "at a bond the geometry has stretched.",
         tw(["Atom", "Valence"], d.mayer_valences.map(v =>
-          [`${v[0]} ${NB.esc(v[1])}`, v[2].toFixed(4)]))));
+          [atomLabel(v[0], v[1]), v[2].toFixed(4)]))));
     }
     if (d.geometry && d.geometry.length) {
       out.push(sec("sec-geom", "Final geometry", d.geometry.length + " atoms",
@@ -471,9 +492,12 @@
       }
     }
     // last resort: the parser echoes the input it read out of the .out itself,
-    // which is the only source for a result whose .inp is gone
+    // which is the only source for a result whose .inp is gone. input_block is
+    // the whole echo and already CONTAINS the "!" line input_keywords is the
+    // summary of, so joining the two printed that line twice; the keywords are
+    // the fallback for an echo the parser could not read, not an addition.
     if (!inp && d && (d.input_keywords || d.input_block)) {
-      inp = [d.input_keywords || "", d.input_block || ""].filter(Boolean).join("\n");
+      inp = d.input_block || ("! " + d.input_keywords);
     }
     inEl.textContent = inp || "No input file for this result.";
 
@@ -547,30 +571,28 @@
   // ---------------------------------------------------------------- shell
 
   function toolbar() {
-    const opts = [];
-    NB.queue.forEach(c => {
-      if (c.state === "done" || c.state === "failed") opts.push({ v: "calc:" + c.name, l: c.name });
-    });
-    _ws.forEach(w => {
-      if (opts.some(o => o.l === w.name)) return;
-      opts.push({ v: "file:" + w.path, l: w.name + "  (on disk)" });
-    });
-    const cur = _curName ? "calc:" + _curName : (_curPath ? "file:" + _curPath : "");
     const title = _curName || (_curPath ? nameFromPath(_curPath) : "Results");
     const calc = _curName ? NB.queue.find(c => c.name === _curName) : null;
+    // No result picker here: the RAIL is the picker, in either view, and a
+    // result that is not in it is opened with the two buttons on the right --
+    // which puts it in the rail's Opened files group and keeps it there. A
+    // select listing the workspace as well was a second picker for the same
+    // job, and the one that could not say where a result came from.
+    //
+    // Output / Visual does not switch a mode: Visual IS one of the sections, so
+    // the pair jumps to it, the way the outline chips below do. Show all is
+    // Output's and goes away while Visual is the one being read.
     return `<div>
       <div class="restool">
         <span class="restitle">${NB.esc(title)}</span>
         ${calc ? `<span class="badge ${calc.state}">${calc.state}</span>` : ""}
-        <label class="lb" for="res-pick">Result</label>
-        <select id="res-pick" data-r="pick">
-          <option value="">Choose a result…</option>
-          ${opts.map(o => `<option value="${NB.esc(o.v)}"${
-            o.v === cur ? " selected" : ""}>${NB.esc(o.l)}</option>`).join("")}
-        </select>
+        <div class="seg" role="group" aria-label="Result view">
+          <button type="button" aria-pressed="${!_visual}" data-resmode="output">Output</button>
+          <button type="button" aria-pressed="${_visual}" data-resmode="visual">Visual</button>
+        </div>
         <span class="sp"></span>
         <button class="btn btn-sm btn-ghost" type="button" data-r="showall"
-          aria-pressed="${_showAll}"
+          aria-pressed="${_showAll}"${_visual ? " hidden" : ""}
           title="Every parsed value, including the SCF decomposition">Show all</button>
         <button class="btn btn-sm btn-ghost" type="button" data-r="openfile">Open file…</button>
         <button class="btn btn-sm btn-ghost" type="button" data-r="openfolder">Open folder…</button>
@@ -585,6 +607,11 @@
   function paint() {
     const host = NB.$("reswin");
     if (!host) return;
+    // The Visual panel may be holding the app's only WebGL box inside a stage
+    // this render is about to replace wholesale. Send it home first: losing it
+    // with the innerHTML would lose the renderer, and every later surface with
+    // it. (mvwin.js volumeView, "the BOX moves".)
+    if (NB.mv && NB.mv.vol) NB.mv.vol.park();
     // .rescontent has 24px side padding; a wide section is what is left of it
     const px = Math.max(host.clientWidth - 48, 360);
     const name = _curName || nameFromPath(_curPath);
@@ -594,8 +621,8 @@
       ? sections(_cur, px, name) + `<section class="secblock wide" id="fep"></section>`
       : `<section class="secblock wide">${plate(
           `<p class="hint" style="margin:0">No result open. Pick a finished calculation
-           above, or open any ORCA output from disk — a result stays readable after it
-           leaves the queue, because the run folder is still there.</p>`)}</section>
+           in the queue, or open any ORCA output from disk — a result stays readable
+           after it leaves the queue, because the run folder is still there.</p>`)}</section>
          <section class="secblock wide" id="fep"></section>`;
     _present.push({ id: "fep", title: "Free energy profile" });
 
@@ -608,12 +635,14 @@
          </div></div>`;
 
     const q = (s) => /** @type {any} */ (host.querySelector(s));
-    q('[data-r="pick"]').addEventListener("change", e => {
-      const v = e.target.value;
-      if (!v) return;
-      if (v.startsWith("calc:")) open(v.slice(5));
-      else openPath(v.slice(5));
-    });
+    host.querySelectorAll("[data-resmode]").forEach(b => b.addEventListener("click", () => {
+      _visual = /** @type {HTMLElement} */ (b).dataset.resmode === "visual";
+      host.querySelectorAll("[data-resmode]").forEach(o =>
+        o.setAttribute("aria-pressed", String(o === b)));
+      const sa = q('[data-r="showall"]');
+      if (sa) sa.hidden = _visual;
+      jump(_visual ? "sec-visual" : "sec-summary");
+    }));
     q('[data-r="openfile"]').addEventListener("click", openFileDialog);
     q('[data-r="openfolder"]').addEventListener("click", openFolderDialog);
     q('[data-r="showall"]').addEventListener("click", () => { _showAll = !_showAll; paint(); });
@@ -623,10 +652,8 @@
       const o = q('[data-r="out"]');
       if (o) o.scrollTop = o.scrollHeight;
     });
-    host.querySelectorAll("[data-jump]").forEach(b => b.addEventListener("click", () => {
-      const t = document.getElementById(/** @type {HTMLElement} */ (b).dataset.jump);
-      if (t) t.scrollIntoView({ behavior: "smooth", block: "start" });
-    }));
+    host.querySelectorAll("[data-jump]").forEach(b => b.addEventListener("click",
+      () => jump(/** @type {HTMLElement} */ (b).dataset.jump)));
     spy(host);
     bindCharts(host);
 
@@ -758,13 +785,60 @@
     if (!d || !d.summary) { NB.fail((d && d.error) || `No readable output for "${name}" yet.`); return; }
     show(d, name, d.path || "");
   }
-  /** @param {string} path */
+  /** @param {string} path @returns {Promise<any>} the payload, or null */
   async function openPath(path) {
     NB.go("results");
     const d = await NB.call("parse_out_path", path);
-    if (!d || !d.summary) { NB.fail((d && d.error) || "Could not read that output file."); return; }
+    if (!d || !d.summary) {
+      NB.fail((d && d.error) || "Could not read that output file.");
+      return null;
+    }
     show(d, "", d.path || path);
+    return d;
   }
+
+  /** What a result opened from disk IS, in one line, for the rail's row. The
+   *  parse payload carries no kind and no charge -- it is what the parser
+   *  found, not what someone asked for -- so this says what is in the file
+   *  rather than repeating the design's "Opt / 12 atoms / charge 0 / mult 1"
+   *  with two invented numbers. @param {any} d @returns {string} */
+  function describeResult(d) {
+    const kind = d.is_conformer_search ? "Conformer search"
+      : d.transitions && d.transitions.length ? "TD-DFT"
+      : d.nmr && d.nmr.length ? "NMR"
+      : d.neb_path && d.neb_path.length ? (d.neb_path_kind === "irc" ? "IRC" : "NEB")
+      : d.frequencies && d.frequencies.length ? (d.is_optimization ? "Opt + Freq" : "Frequencies")
+      : d.is_optimization ? "Optimization"
+      : "Single point";
+    const n = (d.geometry || []).length;
+    return n ? `${kind} · ${n} atom${n === 1 ? "" : "s"}` : kind;
+  }
+
+  /** The backend a file came out of, read from the file itself: an engine-
+   *  written *.mlip.json is the MLIP worker's, a conformer list is CREST's.
+   *  @param {string} path @param {any} d @returns {string} */
+  function backendOfResult(path, d) {
+    if (/[.]mlip[.]json$/i.test(path)) return "MLIP";
+    if (d && d.is_conformer_search) return "CREST";
+    return "DFT";
+  }
+
+  /** Hand a result opened from outside the workspace to the rail, which keeps
+   *  the list. @param {string} path @param {any} d */
+  function noteOpened(path, d) {
+    // a Windows path is what the picker hands back; the basename split needs
+    // one separator, and the row shows the path as the user knows it
+    const norm = String(path).replace(/\\/g, "/");
+    const cut = norm.lastIndexOf("/");
+    NB.rail.noteOpened({
+      path: path,
+      name: cut >= 0 ? norm.slice(cut + 1) : norm,
+      folder: cut >= 0 ? path.slice(0, cut) : "",
+      backend: backendOfResult(path, d),
+      meta: describeResult(d),
+    });
+  }
+
   async function openFileDialog() {
     const r = await NB.call("pick_result_file");
     if (!r || r.cancelled || !r.ok) return;
@@ -772,12 +846,14 @@
       NB.toast("Structure files open in the 3D viewer, which is not in this preview yet.");
       return;
     }
-    openPath(r.path);
+    const d = await openPath(r.path);
+    if (d) noteOpened(r.path, d);
   }
   async function openFolderDialog() {
     const r = await NB.call("pick_result_folder");
     if (!r || r.cancelled || !r.ok) return;
-    openPath(r.path);
+    const d = await openPath(r.path);
+    if (d) noteOpened(r.path, d);
   }
   async function showInFolder() {
     if (!_curPath) { NB.toast("Open a result first."); return; }
@@ -804,15 +880,23 @@
       "<p>No input file yet, and nothing to generate one from.</p>");
   }
 
-  /** On entry: rescan the workspace, because results outlive the queue and a
-   *  folder written since the last look should be offerable. */
-  async function enter() {
-    const r = await NB.call("list_workspace_results");
-    _ws = (r && r.ok && r.results) ? r.results : [];
+  /** Scroll a section to the top of the report. @param {string} id */
+  function jump(id) {
+    const t = document.getElementById(id);
+    if (t) t.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  /** On entry there is nothing to fetch: the rail is the picker, and it is
+   *  already drawn from the queue the app polls. The workspace scan that used
+   *  to run here filled a second picker in the toolbar -- a disk walk on every
+   *  entry to the tab, for a list the rail already holds, minus the provenance
+   *  it could not show. A result from outside comes in through Open file... /
+   *  Open folder..., which is also how it gets a row. */
+  function enter() {
     paint();
   }
 
   NB.results = { enter: enter, open: open, openPath: openPath, show: show,
-                 showInp: showInp, paint: paint,
-                 currentName: () => _curName };
+                 showInp: showInp, paint: paint, openFileDialog: openFileDialog,
+                 currentName: () => _curName, currentPath: () => _curPath };
 })();

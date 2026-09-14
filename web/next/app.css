@@ -1036,3 +1036,47 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
   white-space:nowrap;
   box-shadow:0 1px 2px rgba(0,0,0,.28), 0 6px 16px rgba(0,0,0,.22);
 }
+
+/* ---------------------------- sticky outline ----------------------------
+   A sticky top:0 sticks to the SCROLLPORT's padding edge, so .rescontent's
+   20px of top padding was a band the chips could never cover: scrolled
+   content rode through it and a table header sat above the outline, legible
+   and half cut off. The 20px moves onto the bar itself — the scrollport's
+   top padding goes to 0 and .secchips carries it, over its own background.
+   Nothing moves at rest; the gap simply stops existing while scrolling.
+   uidiff reads this as two paddingTop differences and is told why. */
+.rescontent{padding-top:0;}
+.secchips{padding-top:20px;}
+
+/* ---------------------------- the whole manifold ----------------------------
+   The orbital list used to hold ten frontier orbitals, whose energies are one
+   or two digits. It holds every orbital now, and a core one is -520.12 eV —
+   four characters wider, which wrapped the value under its own label and made
+   every third row two lines tall. The value keeps its line and the name gives
+   way, because a truncated "HOMO-12" is still findable and a number split
+   across two lines is not a number. */
+.vizitem > span:first-child{min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap;}
+.vizitem .v{white-space:nowrap; flex:0 0 auto;}
+
+
+/* ---------------------------- the stage owns its height ----------------------------
+   A .molcv sizes its own bitmap from its own box every frame
+   (mol.js render(): canvas.width = box.width * dpr), and the reference gives it
+   width:100%/height:100% IN FLOW. Those two facts are a feedback loop wherever
+   the percentage cannot resolve -- .viewstage is flex:1 inside a column whose
+   height comes from the grid row, which is measured FROM ITS CONTENT, so the
+   canvas falls back to its intrinsic size, which is the bitmap the last frame
+   set. At devicePixelRatio 1 the two coincide and nothing moves; at 1.25 each
+   frame multiplies the height by 1.25 and the Structure stage grows away from
+   the Visual panel beside it, one resize at a time. Chromium says so out loud:
+   "ResizeObserver loop completed with undelivered notifications".
+
+   Out of flow, the bitmap can no longer be its own input: the box is the
+   stage's, always, and the two stages in one row end level at any DPR. Every
+   stage that holds one is already position:relative. Scoped to .molcv so the
+   3Dmol canvas inside .mvgl keeps its own arrangement. */
+.thumb canvas.molcv,
+.mvstage canvas.molcv,
+.vizstage canvas.molcv,
+.viewstage canvas.molcv{position:absolute; inset:0;}

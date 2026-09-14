@@ -48,9 +48,20 @@ SEL = [
     "rail_foot", ".railfoot",
     "runrow", ".railfoot .runrow",
     "runrow_btn", ".railfoot .runrow .btn",
+    "q_total", "#q-total",
     "q_group", ".qgroup",
     "q_group_head", ".qgroup .qgh",
     "q_list", ".qgroup .qlist",
+    # The three controls the landmark list used to be blind to: only the
+    # Finished group folds and offers to be emptied, and the rail's way to a
+    # result that is not in the workspace is its own group's header. Addressed
+    # by the design's ids, which web/next/ now carries. The opened LIST is not a
+    # landmark: a seeded session has opened nothing, and an empty group is the
+    # honest state of it.
+    "q_group_fin", "#fin-toggle",
+    "q_clear_fin", "#clear-finished",
+    "opened_group", "#opened-group",
+    "opened_head", "#opened-group .qgh",
     "q_row", '.qrow[data-state="queued"]',
     "q_main", '.qrow[data-state="queued"] .qmain',
     "q_dot", '.qrow[data-state="queued"] .qmain .d.raw',
@@ -206,6 +217,91 @@ JS = """
   });
   out.__window = {w: window.innerWidth, h: window.innerHeight,
                   bodyW: document.documentElement.scrollWidth};
+  // Which FACE the stacks actually resolve to. A computed fontFamily is the
+  // declared list, identical on both sides by construction, so it can never
+  // show that one side fell through to a substitute -- which is what happened:
+  // the design pulls Inter and JetBrains Mono from Google Fonts and the app
+  // shipped no copy, so every label in it was drawn in Segoe UI Variable and
+  // Consolas and the check said zero differences. A rendered width names the
+  // face; a width equal to `fallback` means the whole stack resolved to
+  // nothing and the page is drawing in the engine's default.
+  out.__fonts = (function () {
+    var TXT = "TS Opt + Freq / charge +2 / mult 1 / 0123456789";
+    function w(stack) {
+      var s = document.createElement("span");
+      s.style.cssText = "position:absolute;left:-9999px;top:0;visibility:hidden;"
+                      + "white-space:pre;font-size:11px;font-family:" + stack;
+      s.textContent = TXT;
+      document.body.appendChild(s);
+      var v = Math.round(s.getBoundingClientRect().width * 100) / 100;
+      s.remove();
+      return v;
+    }
+    return {sans: w(root.getPropertyValue("--font-sans")),
+            mono: w(root.getPropertyValue("--font-mono")),
+            fallback: w('"NoSuchFaceZZ"')};
+  })();
+  // Every class name actually in the DOM. The landmark list measures the
+  // PROPERTIES of the elements it names, so a control that exists on one side
+  // and not the other -- the Finished group's Clear button, the Opened files
+  // group -- changes nothing it looks at and reads as no difference at all.
+  // This is the structural half: what is on the page, rather than how it looks.
+  out.__classes = (function () {
+    var seen = {};
+    var all = document.querySelectorAll("*");
+    for (var i = 0; i < all.length; i++) {
+      var cl = all[i].classList;
+      for (var j = 0; j < cl.length; j++) seen[cl[j]] = 1;
+    }
+    return Object.keys(seen).sort();
+  })();
+  // Every distinct (parent, element) class combination the page draws, with the
+  // metrics the stylesheet gives it. The landmark list is 121 selectors somebody
+  // chose; a padding a pixel off on a control nobody named is exactly as visible
+  // and was never looked at.
+  //
+  // The key carries the PARENT because these rules are contextual: .qacts > .badge
+  // and .viztype > .d are not the same element wearing the same class, and a flex
+  // or grid parent also blockifies its children's `display` and turns their
+  // `min-height` into `auto`. Keyed by the class alone, half the report was the
+  // two sides having picked different elements.
+  //
+  // Elements that are not rendered are skipped, so a region open on one side and
+  // closed on the other drops out instead of comparing a hidden box with a shown
+  // one. Colour and opacity are absent on purpose: they carry STATE (a badge is
+  // green or red by what it reports, a button half-lit by whether it is
+  // disabled), and state is the sample, not the design.
+  out.__styles = (function () {
+    var METRIC = ["display", "gap",
+      "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+      "marginTop", "marginRight", "marginBottom", "marginLeft",
+      "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth",
+      "borderRadius", "fontSize", "fontWeight", "lineHeight", "letterSpacing",
+      "textTransform", "minHeight", "alignItems", "flexDirection"];
+    function sig(el) {
+      var cl = Array.prototype.slice.call(el.classList).sort().join(".");
+      return cl ? "." + cl : el.tagName.toLowerCase();
+    }
+    var res = {}, all = document.querySelectorAll("*");
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (!el.classList.length) continue;
+      if (!el.getClientRects().length) continue;      // not rendered
+      // What the STYLESHEET gives the element, not what one instance was told
+      // on the spot. Both pages use inline style= for one-off spacing, and the
+      // first instance bearing a key is rarely the same one on both sides -- so
+      // an inline margin on either read as a rule that differed, and the report
+      // filled with pairs that were never the same element to begin with.
+      if (el.getAttribute("style")) continue;
+      var key = (el.parentElement ? sig(el.parentElement) : "?") + " > " + sig(el);
+      if (res[key]) continue;
+      var cs = getComputedStyle(el);
+      var o = {h: Math.round(el.getBoundingClientRect().height * 10) / 10};
+      for (var m = 0; m < METRIC.length; m++) o[METRIC[m]] = cs[METRIC[m]];
+      res[key] = o;
+    }
+    return res;
+  })();
   Object.keys(map).forEach(function (role) {
     var el = document.querySelector(map[role]);
     if (!el) { out[role] = null; return; }
@@ -229,10 +325,19 @@ def measure(page, side, on_done, table=None):
 
 def merge(a, b):
     """Fold the report pass into the jobs pass. __tokens/__window come from the
-    first, which is the one measured with the window in its normal state."""
+    first, which is the one measured with the window in its normal state.
+
+    __classes is the exception: it is a census of what is ON the page, and the
+    three passes deliberately show different parts of it, so the union over all
+    of them is the answer and the first pass alone is not.
+    """
     for k, v in b.items():
         if not k.startswith("__"):
             a[k] = v
+    a["__classes"] = sorted(set(a.get("__classes", [])) | set(b.get("__classes", [])))
+    merged = dict(b.get("__styles", {}))
+    merged.update(a.get("__styles", {}))   # the first pass wins where both saw it
+    a["__styles"] = merged
     return a
 
 
@@ -249,8 +354,19 @@ def run_mock():
     # the window chrome the real app has (title bar) is not in the mockup, so
     # both sides are measured at the same INNER size
     view.load(QUrl.fromLocalFile(str(MOCK)))
-    # the mockup opens light; both sides are measured in the same theme
-    FORCE_DARK = "document.documentElement.setAttribute('data-theme','dark')"
+    # Both sides are measured in the same theme -- the mockup opens light -- and
+    # in the same TYPEFACES. The mockup asks Google Fonts for Inter and JetBrains
+    # Mono; here it gets the copies the app ships (web/fonts/), so the comparison
+    # holds with no network and, more to the point, so the mockup is measured in
+    # the faces it was drawn in rather than in whatever the engine substitutes.
+    FONTS_HREF = QUrl.fromLocalFile(str(ROOT / "web" / "fonts" / "fonts.css")).toString()
+    PREPARE = (
+        "(function(){"
+        "document.documentElement.setAttribute('data-theme','dark');"
+        "var l=document.createElement('link');l.rel='stylesheet';"
+        "l.href=" + json.dumps(FONTS_HREF) + ";document.head.appendChild(l);"
+        "return true;})()"
+    )
 
     state = {}
 
@@ -281,7 +397,7 @@ def run_mock():
 
     view.loadFinished.connect(
         lambda ok: QTimer.singleShot(1200, lambda: view.page().runJavaScript(
-            FORCE_DARK, lambda _r: QTimer.singleShot(900,
+            PREPARE, lambda _r: QTimer.singleShot(900,
                 lambda: measure(view.page(), "mock", jobs_done)))))
     QTimer.singleShot(60000, app.quit)
     app.exec()
