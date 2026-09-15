@@ -52,11 +52,17 @@
     const b = NB.trackers(c.name);
     const st = CHARTS.stages(b);
     if (st) return { t: st.title, stages: true, h: st.html };
-    const cv = CHARTS.convergence(b, c, px);
+    // the SCF of the cycle running RIGHT NOW, under the geometry it belongs to:
+    // an optimization is an SCF per cycle, and the chart used to switch away
+    // from it the moment the first cycle landed, leaving the thing actually
+    // happening with no picture while the output pane filled with its
+    // iterations. Both charts shrink to share the column (CHART_H_SPLIT).
+    const inner = c.state === "running" ? CHARTS.innerScf(b, c, px) : "";
+    const cv = CHARTS.convergence(b, c, px, !!inner);
     if (!cv) return null;
     return { t: cv.title, meta: cv.meta,
              h: cv.html + (c.state === "running"
-                  ? CHARTS.progress(cv.progress, cv.eta) : "") };
+                  ? CHARTS.progress(cv.progress, cv.eta) : "") + inner };
   }
 
   /** What a line of ORCA output is, for colour. The design gives the log four
@@ -69,6 +75,12 @@
     if (/HURRAY|CONVERGED|TERMINATED NORMALLY/i.test(l)) return "l-ok";
     return "l-orca";
   }
+
+  /** One mol.js stage per thumbnail canvas, so a cell's structure turns under
+   *  the pointer like every other stage here. Keyed by the canvas because the
+   *  cell element is reused across polls and the canvas is what the listeners
+   *  are bound to. @type {WeakMap<HTMLCanvasElement, any>} */
+  const _thumbs = new WeakMap();
 
   /** @param {any} c @returns {HTMLElement} */
   function build(c) {
@@ -97,7 +109,9 @@
         <div class="celgrid">
           <div class="firstcol">
             <div class="thumb">
-              <canvas aria-label="Structure, ball and stick"></canvas>
+              <canvas class="molcv"
+                aria-label="Structure, ball and stick. Drag to turn it; the arrow keys
+                  turn it too, and x, y or z looks straight down that axis."></canvas>
               <button class="act" type="button" data-open="viewer">Open in viewer</button>
               <span class="cap"></span>
             </div>
@@ -179,7 +193,15 @@
       // final structure over input coordinates
       q(".thumb .cap").textContent =
         (got.final ? "final · " : "input · ") + geom.length + " atoms";
-      MOL.draw(q(".thumb canvas"), geom);
+      // MOUNTED, not drawn once: every other stage in this UI turns under the
+      // pointer, and a thumbnail that does not is the one place the molecule is
+      // a picture instead of a thing. The stage is per canvas and outlives the
+      // 1s poll -- setAtoms only when the geometry has actually changed, or a
+      // measurement in progress would be cleared every second.
+      const cv = q(".thumb canvas");
+      let st = _thumbs.get(cv);
+      if (!st) { st = MOL.mount(cv, { gizmoBottom: 26 }); _thumbs.set(cv, st); }
+      if (st.__atoms !== geom) { st.setAtoms(geom); st.__atoms = geom; }
       // the trajectory, not this one frame: the thumbnail is the door to every
       // structure the run has written, which is what the big window is for
       q('.thumb [data-open="viewer"]').onclick = () => NB.mv.open({

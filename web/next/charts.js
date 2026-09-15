@@ -30,57 +30,82 @@ var CHARTS = {};
     return (v || "").trim() || fallback;
   }
 
-  /** A converging trace on a log axis: the shape every ORCA convergence has.
-   *  @param {{x: number, y: number}[]} pts  y already in log10
+  /** Converging traces on a log axis: the shape every ORCA convergence has.
+   *
+   *  Several series, not one, because a geometry optimization converges five
+   *  things at once and which one is holding it up is the question being asked.
+   *  Each is plotted as value / its OWN tolerance, so they share a single goal
+   *  line at ratio 1 and "3/5 met" is readable straight off the picture.
+   *
+   *  Gridlines land on whole decades. They used to be five evenly spaced lines
+   *  labelled with a ROUNDED exponent, which on a range of about three decades
+   *  printed 1e3 twice and skipped a value that was actually on the axis.
+   *
+   *  @param {{color: string, pts: {x: number, y: number}[]}[]} series  y in log10
    *  @param {number} w @param {number} h
-   *  @param {{xlab: string, ylab: string, goal?: number, done?: boolean}} o */
-  function trace(pts, w, h, o) {
-    const L = 52, R = 14, T = 10, B = 34;
+   *  @param {{xlab: string, goal?: number, goalLabel?: string, done?: boolean}} o */
+  function trace(series, w, h, o) {
+    const L = 52, R = 14, T = 12, B = 34;
     const iw = Math.max(w - L - R, 40), ih = Math.max(h - T - B, 40);
-    const grid = token("--border", "#27272a");
+    const grid = token("--grid", "rgba(161,161,170,.15)");
+    const axis = token("--border", "#27272a");
     const mut = token("--muted-foreground", "#a1a1aa");
     const mono = token("--font-mono", "monospace");
-    const warn = token("--warn", "#fbbf24");
     const ok = token("--ok", "#4ade80");
-    const line = o.done ? ok : warn;
 
-    const ys = pts.map(p => p.y);
-    let y0 = Math.min(...ys), y1 = Math.max(...ys);
-    if (o.goal != null) { y0 = Math.min(y0, o.goal); y1 = Math.max(y1, o.goal); }
-    if (y1 - y0 < 1) { const c = (y0 + y1) / 2; y0 = c - 0.5; y1 = c + 0.5; }
-    const pad = (y1 - y0) * 0.12; y0 -= pad; y1 += pad;
-    const x0 = pts[0].x, x1 = pts[pts.length - 1].x;
+    const ys = series.reduce((a, s) => a.concat(s.pts.map(p => p.y)), []);
+    let lo = Math.floor(Math.min.apply(null, ys));
+    let hi = Math.ceil(Math.max.apply(null, ys));
+    if (o.goal != null) {
+      lo = Math.min(lo, Math.floor(o.goal));
+      hi = Math.max(hi, Math.ceil(o.goal));
+    }
+    if (hi - lo < 2) hi = lo + 2;             // a flat trace still gets an axis
+    // one label per decade until they would crowd, then every second or third
+    const dstep = Math.ceil((hi - lo) / 7) || 1;
+
+    const xs = series.reduce((a, s) => a.concat(s.pts.map(p => p.x)), []);
+    const x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
     const sx = (v) => L + (x1 === x0 ? iw / 2 : ((v - x0) / (x1 - x0)) * iw);
-    const sy = (v) => T + ih - ((v - y0) / (y1 - y0)) * ih;
+    const sy = (v) => T + ih - ((v - lo) / (hi - lo)) * ih;
 
     let g = "";
-    for (let i = 0; i <= 4; i++) {
-      const yy = T + (ih * i) / 4;
-      const v = y1 - ((y1 - y0) * i) / 4;
+    for (let d = lo; d <= hi; d += dstep) {
+      const yy = sy(d);
+      if (o.goal === d) continue;             // the goal draws its own line below
       g += `<line x1="${L}" y1="${yy.toFixed(1)}" x2="${L + iw}" y2="${yy.toFixed(1)}"
               stroke="${grid}" stroke-width="1"/>`
         + `<text x="${L - 7}" y="${(yy + 3).toFixed(1)}" text-anchor="end" font-size="9"
-             font-family="${mono}" fill="${mut}">1e${Math.round(v)}</text>`;
+             font-family="${mono}" fill="${mut}">1e${d}</text>`;
     }
     const goal = o.goal == null ? "" :
       `<line x1="${L}" y1="${sy(o.goal).toFixed(1)}" x2="${L + iw}" y2="${sy(o.goal).toFixed(1)}"
-         stroke="${ok}" stroke-width="1" stroke-dasharray="4 3" opacity=".75"/>`;
-    const d = pts.map((p, i) =>
-      `${i ? "L" : "M"}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ");
-    const last = pts[pts.length - 1];
+         stroke="${ok}" stroke-width="1" stroke-dasharray="4 3" opacity=".75"/>`
+      + `<text x="${L - 7}" y="${(sy(o.goal) + 3).toFixed(1)}" text-anchor="end" font-size="9"
+           font-family="${mono}" fill="${ok}">${NB.esc(o.goalLabel || "goal")}</text>`;
+
+    const lines = series.map(s => {
+      if (!s.pts.length) return "";
+      const d = s.pts.map((p, i) =>
+        `${i ? "L" : "M"}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ");
+      const last = s.pts[s.pts.length - 1];
+      return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="1.6"
+          stroke-linejoin="round" stroke-linecap="round" opacity=".92"/>`
+        + `<circle cx="${sx(last.x).toFixed(1)}" cy="${sy(last.y).toFixed(1)}"
+             r="3" fill="${s.color}"/>`;
+    }).join("");
+
     const ticks = [x0, x1].map((v, i) =>
       `<text x="${sx(v).toFixed(1)}" y="${(T + ih + 14).toFixed(1)}"
          text-anchor="${i ? "end" : "start"}" font-size="9" font-family="${mono}"
          fill="${mut}">${Math.round(v)}</text>`).join("");
 
     return `<div class="chart"><svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}"
-        role="img" aria-label="${NB.esc(o.ylab)} against ${NB.esc(o.xlab)}">
+        role="img" aria-label="${NB.esc(o.xlab)}">
       ${g}${goal}
-      <line x1="${L}" y1="${T}" x2="${L}" y2="${T + ih}" stroke="${grid}" stroke-width="1"/>
-      <line x1="${L}" y1="${T + ih}" x2="${L + iw}" y2="${T + ih}" stroke="${grid}" stroke-width="1"/>
-      <path d="${d}" fill="none" stroke="${line}" stroke-width="1.6"
-        stroke-linejoin="round" stroke-linecap="round"/>
-      <circle cx="${sx(last.x).toFixed(1)}" cy="${sy(last.y).toFixed(1)}" r="3" fill="${line}"/>
+      <line x1="${L}" y1="${T}" x2="${L}" y2="${T + ih}" stroke="${axis}" stroke-width="1"/>
+      <line x1="${L}" y1="${T + ih}" x2="${L + iw}" y2="${T + ih}" stroke="${axis}" stroke-width="1"/>
+      ${lines}
       ${ticks}
       <text x="${(L + iw / 2).toFixed(1)}" y="${h - 3}" text-anchor="middle" font-size="9"
         font-family="${mono}" fill="${mut}">${NB.esc(o.xlab)}</text>
@@ -97,29 +122,74 @@ var CHARTS = {};
     ).join("")}</div>`;
   }
 
+  /** The five geometry criteria ORCA prints each cycle, with the colour each
+   *  one is drawn in. The keys are the tracker's (scf_graph.js GEO_CRITERIA);
+   *  the tokens exist for exactly this and were going unused while the chart
+   *  drew a single line. */
+  const GEO_SERIES = [
+    { key: "Energy change", label: "ΔE", token: "--crit-de", fallback: "#4cc9f0" },
+    { key: "RMS gradient", label: "RMS grad", token: "--crit-rmsg", fallback: "#52b788" },
+    { key: "MAX gradient", label: "MAX grad", token: "--crit-maxg", fallback: "#ffd166" },
+    { key: "RMS step", label: "RMS step", token: "--crit-rmss", fallback: "#c08eff" },
+    { key: "MAX step", label: "MAX step", token: "--crit-maxs", fallback: "#ff8fa3" },
+  ];
+
+  /** The chart is drawn at a FIXED height, not at a fraction of its width. It
+   *  shares a row with the output pane, whose .logbox tops out at 425px, so a
+   *  chart that grew with the window pushed the two panes out of step -- at a
+   *  wide window the left column ran 200px past the right one, which is the
+   *  misalignment you see rather than any rule about either box. 270 is the
+   *  reference's own height for a cell chart.
+   *
+   *  When the SCF of the running cycle is drawn under it, the two share that
+   *  room. Measured, not guessed: 170 + 120 puts the column's content at 419px,
+   *  and with its own pane head that is 457 against the 463 the output column
+   *  can give (a .logbox is flex:1 up to 425, under a 38px head). The numbers
+   *  are written down because they are a BUDGET -- grow either chart and the
+   *  two columns stop ending level, which is the whole reason this is a fixed
+   *  height and not a proportional one. */
+  const CHART_H = 270;
+  const CHART_H_SPLIT = 170;
+  const SCF_INNER_H = 120;
+
   /** The converging trace for a calculation, or null when it has none yet.
    *  @param {any} b the tracker bundle @param {any} c the queue row
-   *  @param {number} px the box width in device pixels */
-  CHARTS.convergence = function (b, c, px) {
+   *  @param {number} px the box width in device pixels
+   *  @param {boolean} [compact] another chart is sharing the column */
+  CHARTS.convergence = function (b, c, px, compact) {
     const w = Math.max(px, 280);
-    const h = Math.round(w * 0.52);
-    if (b.geo.hasData() && b.geo.worst.length > 1) {
-      // worst-ratio per cycle: log10(max(value / tolerance)). Below 0 is met,
-      // which is why the goal line sits there and needs no separate legend.
-      const pts = b.geo.worst.map((y, i) => ({ x: i + 1, y: y }));
+    const h = compact ? CHART_H_SPLIT : CHART_H;
+    if (b.geo.hasData() && b.geo.steps.length > 1) {
+      // Each criterion as value / its OWN tolerance, so one goal line at ratio 1
+      // serves all five and "n/5 met" is the count of lines at or below it.
+      const series = [], keys = [];
+      GEO_SERIES.forEach(g => {
+        const color = token(g.token, g.fallback);
+        const pts = [];
+        b.geo.steps.forEach((s, i) => {
+          const v = s.vals ? s.vals[g.key] : (g.key === "MAX gradient" ? s.maxGrad : null);
+          const tol = s.tols ? s.tols[g.key] : null;
+          if (v != null && v > 0 && isFinite(v) && tol != null && tol > 0) {
+            pts.push({ x: i + 1, y: Math.log10(v / tol) });
+          }
+        });
+        if (!pts.length) return;
+        series.push({ color: color, pts: pts });
+        const last = pts[pts.length - 1];
+        keys.push({ color: color, label: g.label,
+                    value: Math.pow(10, last.y).toPrecision(2) + "×",
+                    state: last.y <= 0 ? "met" : "pend" });
+      });
+      if (!series.length) return null;
       const s = b.geo.criteriaSummary();
-      const met = s && s.total ? `${s.met}/${s.total} met` : "";
       const eta = b.geo.estimateETA && b.geo.estimateETA();
       return {
         title: "Geometry convergence",
-        meta: b.geo.steps.length + (b.geo.steps.length === 1 ? " cycle" : " cycles"),
-        html: trace(pts, w, h, { xlab: "optimization cycle", ylab: "worst ratio",
-                                 goal: 0, done: b.geo.done })
-          + serieskey([
-              { color: b.geo.done ? token("--ok", "#4ade80") : token("--warn", "#fbbf24"),
-                label: "worst criterion", value: met || "—",
-                state: b.geo.done ? "met" : "pend" },
-            ]),
+        meta: b.geo.steps.length + (b.geo.steps.length === 1 ? " cycle" : " cycles")
+          + (s && s.total ? ` · ${s.met}/${s.total} met` : ""),
+        html: trace(series, w, h, { xlab: "optimization cycle", goal: 0,
+                                    goalLabel: "limit", done: b.geo.done })
+          + serieskey(keys),
         eta: eta && eta.etaMs ? eta : null,
         progress: b.geo.progress(),
       };
@@ -131,22 +201,48 @@ var CHARTS = {};
       if (pts.length < 2) return null;
       const target = SCFGraph.targetFor(c.scf_convergence || "TightSCF");
       const cur = pts[pts.length - 1];
+      const warn = token("--warn", "#fbbf24");
       return {
         title: "SCF convergence",
         meta: b.scf.points.length + " iterations",
-        html: trace(pts, w, h, { xlab: "SCF iteration", ylab: "|ΔE|",
-                                 goal: Math.log10(target) })
+        html: trace([{ color: warn, pts: pts }], w, h,
+                    { xlab: "SCF iteration", goal: Math.log10(target),
+                      goalLabel: "target" })
           + serieskey([
-              { color: token("--warn", "#fbbf24"), label: "|ΔE|",
+              { color: warn, label: "|ΔE|",
                 value: Math.pow(10, cur.y).toExponential(1),
                 state: cur.y <= Math.log10(target) ? "met" : "pend" },
-              { color: token("--ok", "#4ade80"), label: "target",
-                value: target.toExponential(0) },
             ]),
         progress: b.scf.progress(target),
       };
     }
     return null;
+  };
+
+  /** The SCF going on RIGHT NOW inside the current optimization cycle.
+   *
+   *  A geometry optimization is an SCF per cycle, and while one is running the
+   *  output pane is a wall of its iterations -- but the chart above it had
+   *  switched to the geometry the moment the first cycle landed, so the thing
+   *  actually happening had no picture at all. This is that picture, under the
+   *  geometry one: small, because it answers a smaller question (is this cycle
+   *  behaving), and only while there is an SCF in flight to answer it about.
+   *  @param {any} b @param {any} c @param {number} px */
+  CHARTS.innerScf = function (b, c, px) {
+    if (!b.geo.hasData() || b.geo.done) return "";
+    if (!b.scf.hasData() || b.scf.points.length < 2) return "";
+    const pts = b.scf.points
+      .filter(p => p.dE > 0)
+      .map(p => ({ x: p.iter, y: Math.log10(p.dE) }));
+    if (pts.length < 2) return "";
+    const target = SCFGraph.targetFor(c.scf_convergence || "TightSCF");
+    const warn = token("--warn", "#fbbf24");
+    const cur = pts[pts.length - 1];
+    return `<div class="panehead" style="margin-top:16px"><span class="t">SCF, this cycle</span>
+        <span class="sp"></span><span class="meta">${b.scf.points.length} iterations · |ΔE| ${
+          NB.esc(Math.pow(10, cur.y).toExponential(1))}</span></div>`
+      + trace([{ color: warn, pts: pts }], Math.max(px, 280), SCF_INNER_H,
+              { xlab: "SCF iteration", goal: Math.log10(target), goalLabel: "target" });
   };
 
   /* A run that is a sequence of named stages rather than a converging trace.
