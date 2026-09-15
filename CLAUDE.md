@@ -343,8 +343,14 @@ in queue order, which is a list of unrelated molecules rather than a reaction.
 `get_free_energy_profile` therefore sends each candidate's **composition and
 charge** (`FepPoint.atoms` / `.charge`, summed from the parsed geometry) so the
 front-end can say when two stages do not hold the same matter — reported, never
-enforced (P2). A stage with an unfilled row has no energy at all rather than a
-partial sum.
+enforced (P2). It sends **every DONE calc with an energy**, not only those with
+a Gibbs value (`gibbs_eh` may be null): a monatomic ion has no vibrations to
+compute, so filtering on "has frequencies" removed exactly the species that
+cannot have them — `CoCl4²⁻ + 6 H₂O → Co(H₂O)₆²⁺ + 4 Cl⁻` needs that Cl⁻. The
+**basis** (G or E) is therefore a choice in the UI and the two are never mixed;
+a species that cannot supply the chosen one is listed in the picker saying so,
+and the stages holding it read as a dash. A stage with an unfilled row likewise
+has no energy at all rather than a partial sum.
 
 A cell's chart is `web/next/charts.js`, which uses `scf_graph.js` /
 `progress_panels.js` as **parsers only** and draws in the design's own class

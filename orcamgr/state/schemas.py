@@ -416,8 +416,12 @@ class LogTailResult(_Ok, total=False):
 
 
 class FepPoint(TypedDict):
-    """One finished calculation that has a Gibbs energy, i.e. a candidate
-    species for a reaction profile.
+    """One finished calculation that can stand in a reaction profile.
+
+    "gibbs_eh" is None when the run produced no thermochemistry — which
+    includes the species that CANNOT have any: a monatomic ion has no
+    vibrations, and an sp of one is still a species in the reaction. The UI
+    picks the basis (G or E) and refuses to mix them.
 
     "atoms" and "charge" are what let the UI check that the two sides of a step
     are the same matter: a profile is built by giving each stage a set of these
@@ -425,7 +429,7 @@ class FepPoint(TypedDict):
     holds different atoms is a number with no meaning. Reported, never enforced
     (P2) — a deliberate fragment comparison is the user's to make."""
     name: str
-    gibbs_eh: float
+    gibbs_eh: "float | None"
     final_energy_eh: "float | None"
     kind: str
     atoms: "dict[str, int]"   # element symbol -> count, from the parsed geometry

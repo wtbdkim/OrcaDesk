@@ -518,6 +518,16 @@
   // ---------------------------------------------------------------- profile
 
   let _fepUnit = "kcal";
+  /** Which energy the stages are summed on: "g" (Gibbs free energy) or "e"
+   *  (electronic energy).
+   *
+   *  It is a choice and not a fallback because the two cannot be mixed: adding
+   *  a G to an E is neither. A monatomic ion is why the choice exists at all --
+   *  Cl(-) has no vibrations to compute, so an sp of it has no G, and it is
+   *  still a species in CoCl4(2-) + 6 H2O -> Co(H2O)6(2+) + 4 Cl(-). On G the
+   *  profile says which species is missing one; on E every finished run can
+   *  stand in it, at the price of leaving out the thermal terms. */
+  let _fepBasis = "g";
   /** Which stage sits at zero. An index, not a name: stages are positions on a
    *  reaction coordinate and two of them may hold the same species. */
   let _fepRef = 0;
@@ -542,20 +552,39 @@
             { label: "Products", terms: [{ name: "", coeff: 1 }] }];
   }
 
-  /** G of a stage in Hartree, or null when it is not fully described.
+  /** The energy a species supplies on the current basis, or null.
+   *  @param {any} p @returns {number|null} */
+  function speciesE(p) {
+    if (!p) return null;
+    const v = _fepBasis === "g" ? p.gibbs_eh : p.final_energy_eh;
+    return (typeof v === "number" && isFinite(v)) ? v : null;
+  }
+
+  /** A stage's energy in Hartree, or null when it is not fully described.
    *
-   *  Null rather than a partial sum: a stage with an empty row is a reaction
-   *  nobody has finished writing down, and quietly summing what is there would
-   *  print a number for it. @param {any} st @param {any} by */
+   *  Null rather than a partial sum: a stage with an empty row -- or one whose
+   *  species has no energy on the chosen basis -- is a reaction nobody has
+   *  finished writing down, and quietly summing what is there would print a
+   *  number for it. @param {any} st @param {any} by */
   function stageG(st, by) {
     if (!st.terms.length) return null;
     let g = 0;
     for (const t of st.terms) {
-      const p = by[t.name];
-      if (!p || !isFinite(t.coeff)) return null;
-      g += t.coeff * p.gibbs_eh;
+      const e = speciesE(by[t.name]);
+      if (e == null || !isFinite(t.coeff)) return null;
+      g += t.coeff * e;
     }
     return g;
+  }
+
+  /** The species this profile uses that have no energy on the chosen basis --
+   *  the reason a stage reads as a dash. @param {any} by @returns {string[]} */
+  function fepMissing(by) {
+    const out = [];
+    (_fepStages || []).forEach(st => st.terms.forEach(t => {
+      if (t.name && speciesE(by[t.name]) == null && out.indexOf(t.name) < 0) out.push(t.name);
+    }));
+    return out;
   }
 
   /** The matter standing at a stage: coefficient-weighted element counts and
@@ -692,6 +721,10 @@
 
     const k = _fepUnit === "kj" ? HA_KJ : HA_KCAL;
     const unit = _fepUnit === "kj" ? "kJ/mol" : "kcal/mol";
+    // the symbol says which energy this is: a profile on electronic energies is
+    // not a free-energy profile, and calling it one would be the lie
+    const sym = _fepBasis === "g" ? "ΔG" : "ΔE";
+    const abs = _fepBasis === "g" ? "G" : "E";
     const gs = _fepStages.map(st => stageG(st, by));
     const refG = gs[_fepRef];
     const levels = _fepStages.map((st, i) => ({
@@ -717,16 +750,38 @@
       }
     });
 
+    // every finished species is listed, and the ones that cannot supply the
+    // chosen energy say so in the row rather than being missing from it: a
+    // picker that silently omits Cl(-) looks broken, which is exactly how the
+    // frequencies-only filter read
+    // A species with no energy on this basis is why a stage reads as a dash. Say
+    // which one, and what the two ways out are -- for a single atom a frequency
+    // run is still the right answer, since ORCA gives it translational and
+    // electronic thermochemistry even though it has no vibrations to compute.
+    const missing = fepMissing(by);
+    if (missing.length) {
+      warnings.unshift(`<div class="finding warn"><span>⚠</span><span>${
+        missing.map(n => NB.esc(n)).join(", ")} ${missing.length === 1 ? "has" : "have"}
+        no ${_fepBasis === "g" ? "Gibbs free energy" : "electronic energy"}, so every
+        stage holding ${missing.length === 1 ? "it" : "them"} is left blank rather than
+        summed on a different quantity. ${_fepBasis === "g"
+          ? `Run a frequency calculation for ${missing.length === 1 ? "it" : "them"} —
+             a single atom gets its translational and electronic thermochemistry even
+             with nothing to vibrate — or switch the energy above to electronic.`
+          : "Re-run it, or pick another calculation."}</span></div>`);
+    }
+
     const speciesOptions = (sel) => `<option value="">pick a calculation…</option>`
       + pts.map(p => `<option value="${NB.esc(p.name)}"${
-          p.name === sel ? " selected" : ""}>${NB.esc(p.name)}</option>`).join("");
+          p.name === sel ? " selected" : ""}>${NB.esc(p.name)}${
+          speciesE(p) == null ? " — no " + abs : ""}</option>`).join("");
 
     const stageHtml = _fepStages.map((st, i) => `
       <div class="field-row" style="margin-bottom:8px">
         <div class="field mid"><label>Stage ${i + 1}</label>
           <input data-fep="label" data-i="${i}" value="${NB.esc(st.label)}"
                  placeholder="Reactants"></div>
-        <div class="field narrow"><label>ΔG (${NB.esc(unit)})</label>
+        <div class="field narrow"><label>${sym} (${NB.esc(unit)})</label>
           <input class="mono" value="${levels[i].y == null ? "—" : fmt(levels[i].y)}"
                  readonly tabindex="-1"></div>
         <div class="field"><label>&nbsp;</label>
@@ -757,10 +812,16 @@
       <p class="secdesc">Build the reaction: each stage is a point on the coordinate and
         holds the species standing there, with the stoichiometric coefficient each one
         is taken with. Its energy is the weighted sum, and the profile is every stage
-        against the reference. Only finished runs WITH frequencies appear in the
-        pickers — a Gibbs energy comes from nowhere else. This section spans the whole
-        workspace, not the selected result.</p>`
+        against the reference. Every finished calculation can stand in it; which
+        energy they are summed on is a choice, because a Gibbs energy and an
+        electronic one cannot be added together — a species with no thermochemistry
+        says so in the picker. This section spans the whole workspace, not the
+        selected result.</p>`
       + plate(`<div class="field-row" style="margin-bottom:14px">
+            <div class="field mid"><label>Energy</label><select data-fep="basis">
+              <option value="g"${_fepBasis === "g" ? " selected" : ""}>Gibbs free energy (G)</option>
+              <option value="e"${_fepBasis === "e" ? " selected" : ""}>Electronic energy (E)</option>
+            </select></div>
             <div class="field mid"><label>Units</label><select data-fep="unit">
               <option value="kcal"${_fepUnit === "kcal" ? " selected" : ""}>kcal/mol</option>
               <option value="kj"${_fepUnit === "kj" ? " selected" : ""}>kJ/mol</option>
@@ -778,7 +839,7 @@
           </div>`)
       + warnings.join("")
       + plate(fepChart(levels, cw, Math.round(cw * 0.34), unit))
-      + tw(["Stage", "Species", `ΔG (${unit})`, "G (Eh)"],
+      + tw(["Stage", "Species", `${sym} (${unit})`, `${abs} (Eh)`],
            _fepStages.map((st, i) => [
              NB.esc(st.label || "stage " + (i + 1)),
              st.terms.filter(t => t.name)
@@ -813,7 +874,8 @@
       // change, not input: the section re-renders on every edit, and a keystroke
       // handler would take the caret out of the field being typed in
       b.addEventListener("change", () => edit(() => {
-        if (what === "unit") _fepUnit = b.value;
+        if (what === "basis") _fepBasis = b.value;
+        else if (what === "unit") _fepUnit = b.value;
         else if (what === "ref") _fepRef = Number(b.value);
         else if (what === "label") _fepStages[i].label = b.value;
         else if (what === "term") _fepStages[i].terms[j].name = b.value;

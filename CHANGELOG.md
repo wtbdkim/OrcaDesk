@@ -297,6 +297,16 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     comparing a fragment against a whole is something people do on purpose.
   - A stage with an empty row has **no** energy rather than a partial sum: a
     reaction nobody has finished writing down should not produce a number.
+  - **Every finished calculation can stand in it**, not only those with
+    frequencies. A chloride ion has no vibrations to compute, so the old filter
+    removed exactly the species that cannot have them — and `CoCl₄²⁻ + 6 H₂O →
+    Co(H₂O)₆²⁺ + 4 Cl⁻` needs that Cl⁻. Which energy the stages are summed on is
+    a **choice** (Gibbs free energy or electronic energy) because the two cannot
+    be added together; a species that has no thermochemistry says so in the
+    picker, the stages holding it read as a dash rather than a number on a mixed
+    basis, and the section says both ways out — run a frequency calculation for
+    it (a single atom still gets its translational and electronic terms), or
+    switch the basis.
 
 ### Security
 - **The phone-sync PIN can no longer be switched off by putting a reverse proxy
