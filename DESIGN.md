@@ -1509,6 +1509,29 @@ already on disk is simply drawn; what is not offers a button that names the
 cost, because selecting a tile is not permission to spend an orca_plot run
 (P26).
 
+**17.4h A cell's two columns end level, so a chart has a height and not a
+ratio.** The chart shares its row with the output pane, whose `.logbox` is
+`flex:1` up to 425px — so a chart sized as a fraction of its own width ran
+further past that cap the wider the window got, and the two columns drifted
+apart by 200px at full screen. Chart heights here are fixed numbers with the
+budget written beside them (`charts.js`: 270 alone; 170 + 120 when the SCF of
+the running cycle shares the column, measured at 457 against the 463 the output
+column can give). The general rule: **when two columns are meant to end
+together, the one that can grow states its height in the same units as the one
+that cannot.**
+
+**17.4i A convergence is five things at once.** A geometry optimization
+converges ΔE, RMS/MAX gradient and RMS/MAX step, and *which one is holding it
+up* is the question being asked of the chart — a single worst-of line answers
+"how far" and never "what". Each is drawn as a multiple of **its own**
+tolerance, so all five share one goal line at 1 and the `n/5 met` count is
+readable straight off the picture; the `--crit-*` tokens exist for exactly this.
+Gridlines land on whole decades: five evenly spaced lines labelled with a
+rounded exponent printed `1e3` twice over a three-decade range, which is an axis
+that lies. And because an optimization is an SCF per cycle, the SCF of the cycle
+now running is drawn under it rather than being dropped the moment the first
+cycle lands.
+
 **17.4b A band is 1.6px wide, so the plot is the hit target.** The reference's
 spectrum is a picture of one; a real one is 150 bands whose exact wavenumber is
 the reason to look at it. The table that used to carry those numbers is gone —

@@ -247,6 +247,31 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   the controls instead, the surface is drawn straight away when it is already on
   disk, and when it is not there is a button that says what it will cost — a
   tile press is not permission to spend an orca_plot run.
+- **A running optimization shows all five criteria again, and the SCF going on
+  inside it.** The cell's chart had been reduced to one line — the worst
+  criterion — which says how far off you are but never which of the five is
+  holding it up, and that is the question. All five are back, each drawn as a
+  multiple of *its own* tolerance so they share one dashed **limit** line and
+  the "3/5 met" count is readable straight off the picture, in the five colours
+  the design reserves for them. Under it, while a cycle is running, the **SCF of
+  that cycle**: an optimization is an SCF per cycle, and the chart used to
+  switch away from the SCF the moment the first cycle landed — leaving the thing
+  actually happening with no picture at all while the output pane filled with
+  its iterations.
+- **The convergence axis stopped printing the same decade twice.** Its
+  gridlines were five evenly spaced lines labelled with a *rounded* exponent,
+  so a range of about three decades drew `1e3` twice and skipped a value that
+  was really on the axis. Gridlines land on whole decades now, and the goal line
+  says what it is (`limit` for a geometry, `target` for an SCF).
+- **The chart and the output beside it end level.** The chart was drawn at 52%
+  of its own width, so on a wide window it ran past the output pane, whose log
+  box tops out at 425px — the further you widened, the further out of step the
+  two columns got. Heights are fixed and the budget is written down next to
+  them: 270 alone, 170 + 120 when the SCF chart shares the column.
+- **A cell's structure turns under the pointer.** The thumbnail was drawn once
+  and left as a picture, which made it the one stage in the window that did not
+  respond to a drag; it is a real stage now, with the same axis marker and
+  keyboard axes as every other.
 
 ### Security
 - **The phone-sync PIN can no longer be switched off by putting a reverse proxy
