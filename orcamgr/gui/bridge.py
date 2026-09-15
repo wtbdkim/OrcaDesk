@@ -1882,10 +1882,19 @@ class Bridge(QObject):
     # --- run / cancel ---
     @pyqtSlot(result=str)
     def get_free_energy_profile(self) -> str:
-        """Gibbs free energies of finished calculations, in queue order, for the
-        free-energy profile. Only calcs that have a Gibbs value (i.e. a frequency
-        run) are included. Energies are absolute Hartree; the UI picks a
-        reference and converts to relative kcal/mol or kJ/mol."""
+        """Finished calculations that can stand in a reaction profile, in queue
+        order, with whatever energies they have.
+
+        Every DONE calc with an energy is here, not only those with a Gibbs
+        value. A chloride ion has no vibrations to compute, and an `sp` of one
+        is a perfectly good species in `CoCl4(2-) + 6 H2O -> Co(H2O)6(2+) +
+        4 Cl(-)`; filtering on "has frequencies" removed exactly the species
+        that cannot have them. `gibbs_eh` is None when the run produced no
+        thermochemistry, and the UI picks the BASIS (G or E) and refuses to mix
+        the two rather than quietly substituting one for the other.
+
+        Energies are absolute Hartree; the UI picks a reference and converts to
+        relative kcal/mol or kJ/mol."""
         pts = []
         for c in self.store.list():
             if c.state != CalcState.DONE:
@@ -1910,7 +1919,8 @@ class Bridge(QObject):
             if not c.result:
                 continue
             g = getattr(c.result, "gibbs_eh", None)
-            if g is None:
+            e = getattr(c.result, "final_energy_eh", None)
+            if g is None and e is None:
                 continue
             # the composition, so the UI can say whether a step's two sides hold
             # the same matter before it prints a difference between them
@@ -1922,7 +1932,7 @@ class Bridge(QObject):
             pts.append(FepPoint(
                 name=c.name,
                 gibbs_eh=g,
-                final_energy_eh=getattr(c.result, "final_energy_eh", None),
+                final_energy_eh=e,
                 kind=c.kind,
                 atoms=atoms,
                 charge=int(getattr(c, "charge", 0) or 0),

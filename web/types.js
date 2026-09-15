@@ -835,13 +835,15 @@
  */
 
 /**
- * One finished calculation that has a Gibbs energy: a candidate species for a
- * reaction profile. `atoms` and `charge` are what let the UI say whether the
- * two sides of a step hold the same matter before it prints a difference
- * between them.
+ * One finished calculation that can stand in a reaction profile. `gibbs_eh` is
+ * null when the run produced no thermochemistry — including the species that
+ * cannot have any (a monatomic ion has no vibrations), so the UI picks the
+ * basis and refuses to mix G with E. `atoms` and `charge` are what let it say
+ * whether the two sides of a step hold the same matter before it prints a
+ * difference between them.
  * @typedef {Object} FepPoint
  * @property {string} name
- * @property {number} gibbs_eh
+ * @property {number|null} gibbs_eh
  * @property {number|null} final_energy_eh
  * @property {string} kind
  * @property {Record<string, number>} atoms   element symbol -> count
