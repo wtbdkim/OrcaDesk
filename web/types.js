@@ -835,11 +835,17 @@
  */
 
 /**
+ * One finished calculation that has a Gibbs energy: a candidate species for a
+ * reaction profile. `atoms` and `charge` are what let the UI say whether the
+ * two sides of a step hold the same matter before it prints a difference
+ * between them.
  * @typedef {Object} FepPoint
  * @property {string} name
  * @property {number} gibbs_eh
  * @property {number|null} final_energy_eh
  * @property {string} kind
+ * @property {Record<string, number>} atoms   element symbol -> count
+ * @property {number} charge
  */
 
 /**

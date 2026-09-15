@@ -276,6 +276,27 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   and left as a picture, which made it the one stage in the window that did not
   respond to a drag; it is a real stage now, with the same axis marker and
   keyboard axes as every other.
+- **The free-energy profile is a reaction now, not a list.** It used to plot
+  every finished frequency calculation in the workspace in *queue order* and
+  print differences between them — which is not a profile: unrelated molecules
+  on one axis, and a ΔG between two things that are not the same matter. You
+  build the reaction instead. Each **stage** is a point on the coordinate and
+  holds the species standing there, each with the **stoichiometric coefficient**
+  it is taken with; the stage's energy is the weighted sum, and the profile is
+  every stage against the one you pick as zero. `A + 2 B → P` is two stages and
+  three rows.
+  - It is drawn as a **level diagram** — a flat bar per stage joined by a thin
+    line — because a stage is a state, not a sample of something continuous.
+    The old line sloped between two molecules and invited the reading that
+    something happens along it.
+  - **It says when the two sides are not the same matter.** Each stage's
+    composition and charge are summed with its coefficients and compared against
+    the reference: drop the `2 B` from the example above and it says
+    *"Products does not hold the same matter as Reactants: +4 O. The difference
+    between them is not a reaction energy."* Reported, never enforced —
+    comparing a fragment against a whole is something people do on purpose.
+  - A stage with an empty row has **no** energy rather than a partial sum: a
+    reaction nobody has finished writing down should not produce a number.
 
 ### Security
 - **The phone-sync PIN can no longer be switched off by putting a reverse proxy

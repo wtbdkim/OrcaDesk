@@ -335,6 +335,17 @@ carries **New from this**, which opens the builder on a NEW calculation already
 referencing that run (`NB.build.open("", seed)`); the geometry is a reference,
 resolved at run time by the same `_resolve_geometry` path as opt→freq.
 
+The **free-energy profile** (`results.js`, the `#fep` section) is built by the
+user, not discovered: a list of **stages**, each holding species with
+stoichiometric coefficients, where G(stage) = Σ coeff × G(calc) and the profile
+is every stage against a chosen zero. It used to plot every DONE frequency calc
+in queue order, which is a list of unrelated molecules rather than a reaction.
+`get_free_energy_profile` therefore sends each candidate's **composition and
+charge** (`FepPoint.atoms` / `.charge`, summed from the parsed geometry) so the
+front-end can say when two stages do not hold the same matter — reported, never
+enforced (P2). A stage with an unfilled row has no energy at all rather than a
+partial sum.
+
 A cell's chart is `web/next/charts.js`, which uses `scf_graph.js` /
 `progress_panels.js` as **parsers only** and draws in the design's own class
 vocabulary. Three rules there are load-bearing: the chart height is a **fixed

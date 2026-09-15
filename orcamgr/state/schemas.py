@@ -416,10 +416,20 @@ class LogTailResult(_Ok, total=False):
 
 
 class FepPoint(TypedDict):
+    """One finished calculation that has a Gibbs energy, i.e. a candidate
+    species for a reaction profile.
+
+    "atoms" and "charge" are what let the UI check that the two sides of a step
+    are the same matter: a profile is built by giving each stage a set of these
+    with stoichiometric coefficients, and comparing a stage against one that
+    holds different atoms is a number with no meaning. Reported, never enforced
+    (P2) — a deliberate fragment comparison is the user's to make."""
     name: str
     gibbs_eh: float
     final_energy_eh: "float | None"
     kind: str
+    atoms: "dict[str, int]"   # element symbol -> count, from the parsed geometry
+    charge: int
 
 
 class FepResult(TypedDict):
