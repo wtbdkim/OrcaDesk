@@ -141,25 +141,32 @@ var CHARTS = {};
    *  misalignment you see rather than any rule about either box. 270 is the
    *  reference's own height for a cell chart.
    *
-   *  When the SCF of the running cycle is drawn under it, the two share that
-   *  room. Measured, not guessed: 170 + 120 puts the column's content at 419px,
-   *  and with its own pane head that is 457 against the 463 the output column
-   *  can give (a .logbox is flex:1 up to 425, under a 38px head). The numbers
-   *  are written down because they are a BUDGET -- grow either chart and the
-   *  two columns stop ending level, which is the whole reason this is a fixed
-   *  height and not a proportional one. */
+   *  Measured, not guessed: at 270 the column's content is 345px and with its
+   *  own pane head 383, against the 463 the output column can give (a .logbox is
+   *  flex:1 up to 425, under a 38px head). The number is written down because it
+   *  is a BUDGET -- grow the chart and the two columns stop ending level, which
+   *  is the whole reason this is a fixed height and not a proportional one. */
   const CHART_H = 270;
-  const CHART_H_SPLIT = 170;
-  const SCF_INNER_H = 120;
 
   /** The converging trace for a calculation, or null when it has none yet.
    *  @param {any} b the tracker bundle @param {any} c the queue row
+   *
+   *  `kind` is which of the two the cell is showing -- the whole optimization,
+   *  or the SCF solving right now inside the current cycle. They are the same
+   *  question at two scales and the answer is a toggle, not two charts: stacking
+   *  them halves both and pushes the column past the output pane beside it.
+   *  Falls back to whichever HAS data, so the toggle can be asked for before
+   *  there is anything to show.
    *  @param {number} px the box width in device pixels
-   *  @param {boolean} [compact] another chart is sharing the column */
-  CHARTS.convergence = function (b, c, px, compact) {
+   *  @param {string} [kind] "geo" (default) or "scf" */
+  CHARTS.convergence = function (b, c, px, kind) {
     const w = Math.max(px, 280);
-    const h = compact ? CHART_H_SPLIT : CHART_H;
-    if (b.geo.hasData() && b.geo.steps.length > 1) {
+    const h = CHART_H;
+    const hasGeo = b.geo.hasData() && b.geo.steps.length > 1;
+    const hasScf = b.scf.hasData() && b.scf.points.filter(p => p.dE > 0).length > 1;
+    const has = { geo: hasGeo, scf: hasScf };
+    const show = (kind === "scf" && hasScf) ? "scf" : (hasGeo ? "geo" : "scf");
+    if (show === "geo" && hasGeo) {
       // Each criterion as value / its OWN tolerance, so one goal line at ratio 1
       // serves all five and "n/5 met" is the count of lines at or below it.
       const series = [], keys = [];
@@ -184,6 +191,7 @@ var CHARTS = {};
       const s = b.geo.criteriaSummary();
       const eta = b.geo.estimateETA && b.geo.estimateETA();
       return {
+        has: has, kind: "geo",
         title: "Geometry convergence",
         meta: b.geo.steps.length + (b.geo.steps.length === 1 ? " cycle" : " cycles")
           + (s && s.total ? ` · ${s.met}/${s.total} met` : ""),
@@ -194,16 +202,18 @@ var CHARTS = {};
         progress: b.geo.progress(),
       };
     }
-    if (b.scf.hasData() && b.scf.points.length > 1) {
+    if (hasScf) {
       const pts = b.scf.points
         .filter(p => p.dE > 0)
         .map(p => ({ x: p.iter, y: Math.log10(p.dE) }));
-      if (pts.length < 2) return null;
       const target = SCFGraph.targetFor(c.scf_convergence || "TightSCF");
       const cur = pts[pts.length - 1];
       const warn = token("--warn", "#fbbf24");
       return {
-        title: "SCF convergence",
+        has: has, kind: "scf",
+        // named for WHICH SCF it is: during an optimization this is the cycle
+        // running right now, not the whole run
+        title: hasGeo ? "SCF, this cycle" : "SCF convergence",
         meta: b.scf.points.length + " iterations",
         html: trace([{ color: warn, pts: pts }], w, h,
                     { xlab: "SCF iteration", goal: Math.log10(target),
@@ -219,31 +229,6 @@ var CHARTS = {};
     return null;
   };
 
-  /** The SCF going on RIGHT NOW inside the current optimization cycle.
-   *
-   *  A geometry optimization is an SCF per cycle, and while one is running the
-   *  output pane is a wall of its iterations -- but the chart above it had
-   *  switched to the geometry the moment the first cycle landed, so the thing
-   *  actually happening had no picture at all. This is that picture, under the
-   *  geometry one: small, because it answers a smaller question (is this cycle
-   *  behaving), and only while there is an SCF in flight to answer it about.
-   *  @param {any} b @param {any} c @param {number} px */
-  CHARTS.innerScf = function (b, c, px) {
-    if (!b.geo.hasData() || b.geo.done) return "";
-    if (!b.scf.hasData() || b.scf.points.length < 2) return "";
-    const pts = b.scf.points
-      .filter(p => p.dE > 0)
-      .map(p => ({ x: p.iter, y: Math.log10(p.dE) }));
-    if (pts.length < 2) return "";
-    const target = SCFGraph.targetFor(c.scf_convergence || "TightSCF");
-    const warn = token("--warn", "#fbbf24");
-    const cur = pts[pts.length - 1];
-    return `<div class="panehead" style="margin-top:16px"><span class="t">SCF, this cycle</span>
-        <span class="sp"></span><span class="meta">${b.scf.points.length} iterations · |ΔE| ${
-          NB.esc(Math.pow(10, cur.y).toExponential(1))}</span></div>`
-      + trace([{ color: warn, pts: pts }], Math.max(px, 280), SCF_INNER_H,
-              { xlab: "SCF iteration", goal: Math.log10(target), goalLabel: "target" });
-  };
 
   /* A run that is a sequence of named stages rather than a converging trace.
      The labels are the backends' own (progress_panels.js A_STAGES / the TD-DFT

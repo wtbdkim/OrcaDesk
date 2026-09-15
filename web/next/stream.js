@@ -52,17 +52,15 @@
     const b = NB.trackers(c.name);
     const st = CHARTS.stages(b);
     if (st) return { t: st.title, stages: true, h: st.html };
-    // the SCF of the cycle running RIGHT NOW, under the geometry it belongs to:
-    // an optimization is an SCF per cycle, and the chart used to switch away
-    // from it the moment the first cycle landed, leaving the thing actually
-    // happening with no picture while the output pane filled with its
-    // iterations. Both charts shrink to share the column (CHART_H_SPLIT).
-    const inner = c.state === "running" ? CHARTS.innerScf(b, c, px) : "";
-    const cv = CHARTS.convergence(b, c, px, !!inner);
+    // An optimization is an SCF per cycle, so a running cell has two convergences
+    // to look at: the whole run, and the one solving right now. They are the same
+    // question at two scales and the answer is a TOGGLE -- stacking them halves
+    // both charts and pushes the column past the output pane beside it.
+    const cv = CHARTS.convergence(b, c, px, _gkind.get(c.name));
     if (!cv) return null;
-    return { t: cv.title, meta: cv.meta,
+    return { t: cv.title, meta: cv.meta, has: cv.has, kind: cv.kind,
              h: cv.html + (c.state === "running"
-                  ? CHARTS.progress(cv.progress, cv.eta) : "") + inner };
+                  ? CHARTS.progress(cv.progress, cv.eta) : "") };
   }
 
   /** What a line of ORCA output is, for colour. The design gives the log four
@@ -81,6 +79,13 @@
    *  cell element is reused across polls and the canvas is what the listeners
    *  are bound to. @type {WeakMap<HTMLCanvasElement, any>} */
   const _thumbs = new WeakMap();
+
+  /** Which convergence each cell is showing: "geo" (the whole optimization) or
+   *  "scf" (the cycle running now). Session-lived and per calculation, because
+   *  it is a question about one run -- and sticky, because a chart that flipped
+   *  back on the next poll would be a control that undoes itself.
+   *  @type {Map<string, string>} */
+  const _gkind = new Map();
 
   /** @param {any} c @returns {HTMLElement} */
   function build(c) {
@@ -117,8 +122,12 @@
             </div>
           </div>
           <div class="pane chart">
-            <div class="panehead"><span class="t"></span><span class="sp"></span>
-              <span class="meta"></span></div>
+            <div class="panehead"><span class="t"></span>
+              <div class="seg" role="group" aria-label="Graph view" hidden>
+                <button type="button" data-gkind="geo" aria-pressed="true">Optimization</button>
+                <button type="button" data-gkind="scf" aria-pressed="false">Current SCF</button>
+              </div>
+              <span class="sp"></span><span class="meta"></span></div>
             <div class="chartbox"></div>
           </div>
           <div class="pane out">
@@ -129,6 +138,10 @@
         </div>
         <div class="factline"></div>
       </div>`;
+    el.querySelectorAll("[data-gkind]").forEach(b => b.addEventListener("click", () => {
+      _gkind.set(c.name, /** @type {HTMLElement} */ (b).dataset.gkind);
+      render();      // now, not on the next poll: a control waits for nothing
+    }));
     el.querySelector(".cellinp").addEventListener("click", () => NB.results.showInp(c.name));
     el.querySelector(".cellres").addEventListener("click", () => NB.results.open(c.name));
     // the geometry is taken by REFERENCE, not copied: the engine resolves it to
@@ -173,6 +186,13 @@
       q(".pane.chart").hidden = false;
       q(".pane.chart .panehead .t").textContent = ch.t;
       q(".pane.chart .panehead .meta").textContent = ch.meta || "";
+      // the toggle appears only once there are two things to toggle between:
+      // before the first cycle lands there is only an SCF, and after the run
+      // ends there is no cycle solving now
+      const seg = q(".pane.chart .panehead .seg");
+      seg.hidden = !(ch.has && ch.has.geo && ch.has.scf);
+      seg.querySelectorAll("[data-gkind]").forEach(b => b.setAttribute(
+        "aria-pressed", String(/** @type {HTMLElement} */ (b).dataset.gkind === ch.kind)));
       box.innerHTML = ch.h;
     } else {
       q(".pane.chart").hidden = true;
