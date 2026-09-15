@@ -337,12 +337,14 @@ resolved at run time by the same `_resolve_geometry` path as opt→freq.
 
 A cell's chart is `web/next/charts.js`, which uses `scf_graph.js` /
 `progress_panels.js` as **parsers only** and draws in the design's own class
-vocabulary. Two rules there are load-bearing: chart heights are **fixed
-numbers with a budget beside them** (270 alone, 170 + 120 when the running
-cycle's SCF shares the column) because the pane next to it caps its `.logbox` at
-425px and a proportional height pulled the two columns apart; and a geometry
-convergence is drawn as **five series**, each value over *its own* tolerance, so
-one goal line at ratio 1 serves all of them. DESIGN.md §17.4h / §17.4i.
+vocabulary. Three rules there are load-bearing: the chart height is a **fixed
+number with its budget beside it** (270) because the pane next to it caps its
+`.logbox` at 425px and a proportional height pulled the two columns apart; a
+geometry convergence is drawn as **five series**, each value over *its own*
+tolerance, so one goal line at ratio 1 serves all of them; and a running cell's
+two convergences — the whole optimization and the cycle solving now — are a
+**toggle** (`_gkind` in `stream.js`, `CHARTS.convergence(..., kind)`), shown only
+when both have data, never two stacked charts. DESIGN.md §17.4h / §17.4i.
 
 In the preview, **a surface is drawn in the Visual panel, not in a pop-out**:
 picking an orbital or the ESP map plots it on the panel's own stage, and the

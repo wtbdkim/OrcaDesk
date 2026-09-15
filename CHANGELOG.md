@@ -253,11 +253,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   holding it up, and that is the question. All five are back, each drawn as a
   multiple of *its own* tolerance so they share one dashed **limit** line and
   the "3/5 met" count is readable straight off the picture, in the five colours
-  the design reserves for them. Under it, while a cycle is running, the **SCF of
-  that cycle**: an optimization is an SCF per cycle, and the chart used to
-  switch away from the SCF the moment the first cycle landed — leaving the thing
-  actually happening with no picture at all while the output pane filled with
-  its iterations.
+  the design reserves for them. And the two convergences a running cell has are
+  a **toggle** above the chart — *Optimization* / *Current SCF*. An optimization
+  is an SCF per cycle, and the chart used to switch away from the SCF the moment
+  the first cycle landed, leaving the thing actually happening with no picture
+  at all while the output pane filled with its iterations. They are the same
+  question at two scales, so one chart shows whichever you asked for rather than
+  two half-height ones fighting for the column; the toggle appears only once
+  there are two things to switch between.
 - **The convergence axis stopped printing the same decade twice.** Its
   gridlines were five evenly spaced lines labelled with a *rounded* exponent,
   so a range of about three decades drew `1e3` twice and skipped a value that
@@ -266,8 +269,9 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 - **The chart and the output beside it end level.** The chart was drawn at 52%
   of its own width, so on a wide window it ran past the output pane, whose log
   box tops out at 425px — the further you widened, the further out of step the
-  two columns got. Heights are fixed and the budget is written down next to
-  them: 270 alone, 170 + 120 when the SCF chart shares the column.
+  two columns got. The height is fixed at 270 with the budget written down next
+  to it: 345px of content, 383 with the pane head, against the 463 the output
+  column can give.
 - **A cell's structure turns under the pointer.** The thumbnail was drawn once
   and left as a picture, which made it the one stage in the window that did not
   respond to a drag; it is a real stage now, with the same axis marker and
