@@ -518,53 +518,310 @@
   // ---------------------------------------------------------------- profile
 
   let _fepUnit = "kcal";
-  let _fepRef = "";
+  /** Which stage sits at zero. An index, not a name: stages are positions on a
+   *  reaction coordinate and two of them may hold the same species. */
+  let _fepRef = 0;
+  /** The profile being built. One entry per point on the reaction coordinate,
+   *  each a label and the species standing at it with their stoichiometric
+   *  coefficients.
+   *
+   *  This replaced a chart of every finished frequency calculation in queue
+   *  order, which is not a reaction profile: it put unrelated molecules on one
+   *  axis and printed differences between them. A step in a real profile is
+   *  A + 2B -> C, and both the SET and the COEFFICIENTS are the user's to give
+   *  -- nothing in a run folder says which calculation is a reactant, or that
+   *  two of it are needed.
+   *  @type {{label: string, terms: {name: string, coeff: number}[]}[]} */
+  let _fepStages = null;
+  /** get_free_energy_profile's answer, fetched once per open rather than on
+   *  every keystroke. @type {any[]} */
+  let _fepPts = [];
+
+  function fepDefault() {
+    return [{ label: "Reactants", terms: [{ name: "", coeff: 1 }] },
+            { label: "Products", terms: [{ name: "", coeff: 1 }] }];
+  }
+
+  /** G of a stage in Hartree, or null when it is not fully described.
+   *
+   *  Null rather than a partial sum: a stage with an empty row is a reaction
+   *  nobody has finished writing down, and quietly summing what is there would
+   *  print a number for it. @param {any} st @param {any} by */
+  function stageG(st, by) {
+    if (!st.terms.length) return null;
+    let g = 0;
+    for (const t of st.terms) {
+      const p = by[t.name];
+      if (!p || !isFinite(t.coeff)) return null;
+      g += t.coeff * p.gibbs_eh;
+    }
+    return g;
+  }
+
+  /** The matter standing at a stage: coefficient-weighted element counts and
+   *  charge, so two stages can be asked whether they are the same stuff.
+   *  @param {any} st @param {any} by */
+  function stageMatter(st, by) {
+    /** @type {Record<string, number>} */
+    const el = {};
+    let charge = 0, known = true;
+    st.terms.forEach(t => {
+      const p = by[t.name];
+      if (!p) { known = false; return; }
+      charge += t.coeff * (p.charge || 0);
+      Object.keys(p.atoms || {}).forEach(k => {
+        el[k] = (el[k] || 0) + t.coeff * p.atoms[k];
+      });
+    });
+    return { el: el, charge: charge, known: known };
+  }
+
+  /** How two stages differ in matter, in words, or "" when they do not.
+   *  @param {any} a @param {any} b */
+  function matterDiff(a, b) {
+    const bits = [];
+    const keys = Object.keys(Object.assign({}, a.el, b.el)).sort();
+    keys.forEach(k => {
+      const d = (b.el[k] || 0) - (a.el[k] || 0);
+      if (Math.abs(d) > 1e-9) bits.push(`${d > 0 ? "+" : ""}${+d.toFixed(3)} ${k}`);
+    });
+    if (Math.abs(b.charge - a.charge) > 1e-9) {
+      const d = b.charge - a.charge;
+      bits.push(`${d > 0 ? "+" : ""}${+d.toFixed(3)} charge`);
+    }
+    return bits.join(", ");
+  }
+
+  /** A reaction-coordinate diagram: a level per stage, joined by a thin line.
+   *
+   *  Not a line through the points. A stage is a STATE, not a sample of
+   *  something continuous, and the flat bar is what says so -- the line chart
+   *  this replaced drew a slope between two molecules and invited the reading
+   *  that something happens along it.
+   *  @param {{label: string, y: number|null}[]} lv
+   *  @param {number} w @param {number} h @param {string} unit */
+  function fepChart(lv, w, h, unit) {
+    const L = 64, R = 16, T = 16, B = 46;
+    const iw = Math.max(w - L - R, 40), ih = Math.max(h - T - B, 40);
+    const known = lv.filter(s => s.y != null);
+    if (known.length < 2) {
+      return `<p class="hint" style="margin:0">Give at least two stages a complete
+        set of species and the profile appears here.</p>`;
+    }
+    const ys = known.map(s => /** @type {number} */ (s.y));
+    let y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+    if (y1 === y0) { y0 -= 1; y1 += 1; }
+    const pad = (y1 - y0) * 0.16; y0 -= pad; y1 += pad;
+    const slot = iw / lv.length;
+    const bw = Math.min(slot * 0.56, 130);
+    const cx = (i) => L + slot * (i + 0.5);
+    const py = (v) => T + ih - ((v - y0) / (y1 - y0)) * ih;
+
+    let grid = "";
+    for (let i = 0; i <= 4; i++) {
+      const y = T + (ih * i) / 4;
+      const v = y1 - ((y1 - y0) * i) / 4;
+      grid += `<line x1="${L}" y1="${y}" x2="${L + iw}" y2="${y}"
+                 stroke="var(--grid)" stroke-width="1"/>`
+        + `<text x="${L - 8}" y="${y + 3.5}" text-anchor="end" font-size="10"
+             fill="var(--muted-foreground)">${fmt(v)}</text>`;
+    }
+    let body = "";
+    for (let i = 0; i < lv.length; i++) {
+      const s = lv[i];
+      if (s.y == null) continue;
+      const y = py(s.y);
+      body += `<line x1="${(cx(i) - bw / 2).toFixed(1)}" y1="${y.toFixed(1)}"
+                 x2="${(cx(i) + bw / 2).toFixed(1)}" y2="${y.toFixed(1)}"
+                 stroke="var(--crit-de)" stroke-width="3" stroke-linecap="round"/>`
+        + `<text x="${cx(i).toFixed(1)}" y="${(y - 8).toFixed(1)}" text-anchor="middle"
+             font-size="10" font-family="var(--font-mono)"
+             fill="var(--foreground)">${fmt(s.y)}</text>`;
+      // the connector reaches the next stage that HAS a level, so one
+      // incomplete stage in the middle does not break the diagram in two
+      let j = i + 1;
+      while (j < lv.length && lv[j].y == null) j++;
+      if (j < lv.length) {
+        body += `<line x1="${(cx(i) + bw / 2).toFixed(1)}" y1="${y.toFixed(1)}"
+                   x2="${(cx(j) - bw / 2).toFixed(1)}" y2="${py(/** @type {number} */ (lv[j].y)).toFixed(1)}"
+                   stroke="var(--muted-foreground)" stroke-width="1"
+                   stroke-dasharray="4 3" opacity=".7"/>`;
+      }
+    }
+    const labs = lv.map((s, i) =>
+      `<text x="${cx(i).toFixed(1)}" y="${T + ih + 18}" text-anchor="middle" font-size="10"
+         fill="var(--muted-foreground)">${NB.esc(s.label || "stage " + (i + 1))}</text>`).join("");
+
+    return `<div class="chart"><svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}"
+        role="img" aria-label="Relative Gibbs free energy per stage, in ${NB.esc(unit)}">
+      ${grid}
+      <line x1="${L}" y1="${T}" x2="${L}" y2="${T + ih}" stroke="var(--border)" stroke-width="1"/>
+      <line x1="${L}" y1="${T + ih}" x2="${L + iw}" y2="${T + ih}" stroke="var(--border)" stroke-width="1"/>
+      ${body}${labs}
+      <text x="${(L + iw / 2).toFixed(1)}" y="${h - 4}" text-anchor="middle" font-size="10"
+        fill="var(--muted-foreground)">reaction coordinate</text>
+    </svg></div>`;
+  }
 
   /** @param {number} px */
   async function profile(px) {
+    const r = await NB.call("get_free_energy_profile");
+    _fepPts = (r && r.ok && r.points) ? r.points : [];
+    renderFep(px);
+  }
+
+  /** @param {number} px */
+  function renderFep(px) {
     const holder = NB.$("fep");
     if (!holder) return;
     const cw = px - 36;
-    const r = await NB.call("get_free_energy_profile");
-    const pts = (r && r.ok && r.points) ? r.points : [];
+    const pts = _fepPts;
+    /** @type {any} */
+    const by = {};
+    pts.forEach(p => { by[p.name] = p; });
 
-    if (pts.length < 2) {
+    if (!pts.length) {
       holder.innerHTML = `<div class="sech"><h2>Free energy profile</h2></div>
-        <p class="secdesc">Two or more finished frequency calculations build the profile —
-          a Gibbs energy only comes from a run with frequencies.</p>
-        ${plate('<p class="hint" style="margin:0">Nothing to compare yet.</p>')}`;
+        <p class="secdesc">A profile is built from Gibbs free energies, and a Gibbs
+          energy only comes from a run with frequencies.</p>
+        ${plate('<p class="hint" style="margin:0">No finished frequency calculation yet.</p>')}`;
       return;
     }
-    if (!_fepRef || !pts.some(p => p.name === _fepRef)) _fepRef = pts[0].name;
-    const ref = pts.filter(p => p.name === _fepRef)[0];
+    if (!_fepStages) _fepStages = fepDefault();
+    if (_fepRef >= _fepStages.length) _fepRef = 0;
+
     const k = _fepUnit === "kj" ? HA_KJ : HA_KCAL;
     const unit = _fepUnit === "kj" ? "kJ/mol" : "kcal/mol";
-    const rows = pts.map((p, i) => ({ x: i, y: (p.gibbs_eh - ref.gibbs_eh) * k, name: p.name }));
+    const gs = _fepStages.map(st => stageG(st, by));
+    const refG = gs[_fepRef];
+    const levels = _fepStages.map((st, i) => ({
+      label: st.label,
+      y: (gs[i] == null || refG == null) ? null : (gs[i] - refG) * k,
+    }));
+
+    // Does each stage hold the same matter as the reference? Reported, not
+    // enforced: comparing a fragment against a whole is a thing people do on
+    // purpose, and the app's job is to say what the number is made of (P2).
+    const refM = stageMatter(_fepStages[_fepRef], by);
+    const warnings = [];
+    _fepStages.forEach((st, i) => {
+      if (i === _fepRef || !st.terms.length) return;
+      const m = stageMatter(st, by);
+      if (!m.known || !refM.known) return;
+      const d = matterDiff(refM, m);
+      if (d) {
+        warnings.push(`<div class="finding warn"><span>⚠</span><span>${
+          NB.esc(st.label || "stage " + (i + 1))} does not hold the same matter as ${
+          NB.esc(_fepStages[_fepRef].label || "the reference")}: ${NB.esc(d)}. The
+          difference between them is not a reaction energy.</span></div>`);
+      }
+    });
+
+    const speciesOptions = (sel) => `<option value="">pick a calculation…</option>`
+      + pts.map(p => `<option value="${NB.esc(p.name)}"${
+          p.name === sel ? " selected" : ""}>${NB.esc(p.name)}</option>`).join("");
+
+    const stageHtml = _fepStages.map((st, i) => `
+      <div class="field-row" style="margin-bottom:8px">
+        <div class="field mid"><label>Stage ${i + 1}</label>
+          <input data-fep="label" data-i="${i}" value="${NB.esc(st.label)}"
+                 placeholder="Reactants"></div>
+        <div class="field narrow"><label>ΔG (${NB.esc(unit)})</label>
+          <input class="mono" value="${levels[i].y == null ? "—" : fmt(levels[i].y)}"
+                 readonly tabindex="-1"></div>
+        <div class="field"><label>&nbsp;</label>
+          <div class="snips" style="margin:0">
+            <button class="btn btn-xs btn-ghost" type="button" data-fep="addterm" data-i="${i}"
+              >+ species</button>
+            ${_fepStages.length > 2
+              ? `<button class="btn btn-xs btn-danger" type="button" data-fep="delstage"
+                   data-i="${i}">remove stage</button>` : ""}
+          </div></div>
+      </div>
+      ${st.terms.map((t, j) => `
+        <div class="basis-row" style="margin-bottom:8px">
+          <div class="field narrow"><label>Coefficient</label>
+            <input class="mono" type="number" step="any" data-fep="coeff"
+                   data-i="${i}" data-j="${j}" value="${t.coeff}"></div>
+          <div class="field"><label>Calculation</label>
+            <select data-fep="term" data-i="${i}" data-j="${j}"
+              >${speciesOptions(t.name)}</select></div>
+          <button class="rm" type="button" data-fep="delterm" data-i="${i}" data-j="${j}"
+            aria-label="Remove this species">×</button>
+        </div>`).join("")}
+      ${i < _fepStages.length - 1 ? '<div class="divider"></div>' : ""}`).join("");
 
     holder.innerHTML = `<div class="sech"><h2>Free energy profile</h2><span class="sp"></span>
-        <span class="meta">${pts.length} frequency calculations</span></div>
-      <p class="secdesc">Relative Gibbs free energy across the finished frequency
-        calculations, in queue order. This one spans the whole workspace, not the
-        selected result.</p>`
+        <span class="meta">${pts.length} ${
+          pts.length === 1 ? "species available" : "species available"}</span></div>
+      <p class="secdesc">Build the reaction: each stage is a point on the coordinate and
+        holds the species standing there, with the stoichiometric coefficient each one
+        is taken with. Its energy is the weighted sum, and the profile is every stage
+        against the reference. Only finished runs WITH frequencies appear in the
+        pickers — a Gibbs energy comes from nowhere else. This section spans the whole
+        workspace, not the selected result.</p>`
       + plate(`<div class="field-row" style="margin-bottom:14px">
-            <div class="field mid"><label>Units</label><select data-f="unit">
+            <div class="field mid"><label>Units</label><select data-fep="unit">
               <option value="kcal"${_fepUnit === "kcal" ? " selected" : ""}>kcal/mol</option>
               <option value="kj"${_fepUnit === "kj" ? " selected" : ""}>kJ/mol</option>
             </select></div>
-            <div class="field mid"><label>Reference (= 0)</label><select data-f="ref">${
-              pts.map(p => `<option value="${NB.esc(p.name)}"${
-                p.name === _fepRef ? " selected" : ""}>${NB.esc(p.name)}</option>`).join("")
+            <div class="field mid"><label>Reference (= 0)</label><select data-fep="ref">${
+              _fepStages.map((st, i) => `<option value="${i}"${
+                i === _fepRef ? " selected" : ""}>${
+                NB.esc(st.label || "stage " + (i + 1))}</option>`).join("")
             }</select></div>
-          </div>`
-        + chart(rows, cw, Math.round(cw * 0.28), { xlab: "queue order", ylab: `ΔG (${unit})` }))
-      + tw(["Calculation", `ΔG (${unit})`, "G (Eh)"], rows.map((p, i) =>
-          [NB.esc(p.name), p.y.toFixed(2), pts[i].gibbs_eh.toFixed(6)]));
+          </div>
+          ${stageHtml}
+          <div class="btn-group" style="margin-top:14px">
+            <button class="btn btn-sm" type="button" data-fep="addstage">+ stage</button>
+            <button class="btn btn-sm btn-ghost" type="button" data-fep="reset">Start over</button>
+          </div>`)
+      + warnings.join("")
+      + plate(fepChart(levels, cw, Math.round(cw * 0.34), unit))
+      + tw(["Stage", "Species", `ΔG (${unit})`, "G (Eh)"],
+           _fepStages.map((st, i) => [
+             NB.esc(st.label || "stage " + (i + 1)),
+             st.terms.filter(t => t.name)
+               .map(t => `${t.coeff === 1 ? "" : t.coeff + " × "}${NB.esc(t.name)}`)
+               .join(" + ") || "—",
+             levels[i].y == null ? "—" : fmt(levels[i].y),
+             gs[i] == null ? "—" : gs[i].toFixed(6),
+           ]), [false, false, true, true]);
 
-    holder.querySelector('[data-f="unit"]').addEventListener("change", e => {
-      _fepUnit = e.target.value; profile(px);
-    });
-    holder.querySelector('[data-f="ref"]').addEventListener("change", e => {
-      _fepRef = e.target.value; profile(px);
+    // one handler for the whole section: the stage list is rebuilt on every
+    // edit, and a listener per control would be re-attached on each rebuild
+    const edit = (fn) => { fn(); renderFep(px); };
+    holder.querySelectorAll("[data-fep]").forEach(elm => {
+      const b = /** @type {any} */ (elm);
+      const i = Number(b.dataset.i), j = Number(b.dataset.j);
+      const what = b.dataset.fep;
+      if (what === "addterm" || what === "delterm" || what === "delstage"
+          || what === "addstage" || what === "reset") {
+        b.addEventListener("click", () => edit(() => {
+          if (what === "addterm") _fepStages[i].terms.push({ name: "", coeff: 1 });
+          else if (what === "delterm") _fepStages[i].terms.splice(j, 1);
+          else if (what === "delstage") {
+            _fepStages.splice(i, 1);
+            if (_fepRef >= _fepStages.length) _fepRef = 0;
+          } else if (what === "addstage") {
+            _fepStages.push({ label: "Stage " + (_fepStages.length + 1),
+                              terms: [{ name: "", coeff: 1 }] });
+          } else { _fepStages = fepDefault(); _fepRef = 0; }
+        }));
+        return;
+      }
+      // change, not input: the section re-renders on every edit, and a keystroke
+      // handler would take the caret out of the field being typed in
+      b.addEventListener("change", () => edit(() => {
+        if (what === "unit") _fepUnit = b.value;
+        else if (what === "ref") _fepRef = Number(b.value);
+        else if (what === "label") _fepStages[i].label = b.value;
+        else if (what === "term") _fepStages[i].terms[j].name = b.value;
+        else if (what === "coeff") {
+          const v = parseFloat(b.value);
+          _fepStages[i].terms[j].coeff = isFinite(v) ? v : 1;
+        }
+      }));
     });
   }
 

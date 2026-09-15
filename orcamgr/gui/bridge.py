@@ -1912,11 +1912,20 @@ class Bridge(QObject):
             g = getattr(c.result, "gibbs_eh", None)
             if g is None:
                 continue
+            # the composition, so the UI can say whether a step's two sides hold
+            # the same matter before it prints a difference between them
+            atoms: dict[str, int] = {}
+            for a in getattr(c.result, "geometry", None) or []:
+                sym = str(getattr(a, "symbol", "") or "").strip().capitalize()
+                if sym:
+                    atoms[sym] = atoms.get(sym, 0) + 1
             pts.append(FepPoint(
                 name=c.name,
                 gibbs_eh=g,
                 final_energy_eh=getattr(c.result, "final_energy_eh", None),
                 kind=c.kind,
+                atoms=atoms,
+                charge=int(getattr(c, "charge", 0) or 0),
             ))
         return json.dumps(FepResult(ok=True, points=pts))
 
