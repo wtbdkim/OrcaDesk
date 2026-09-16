@@ -42,7 +42,7 @@ launching. Any port above 1024 works. It is off unless you set it.)
 | `rail.js` | the queue rail — groups, rows, drag reorder, run controls |
 | `build.js` | the builder (a cell becomes the form) |
 | `stream.js` | one cell per calculation: thumbnail, chart, output, facts |
-| `results.js` | the report — sections, charts, input/output, free-energy profile |
+| `results.js` | the report — sections, charts, input/output, reaction profile |
 | `settings.js` | the settings slide-over |
 | `viewer.js` | Structure (picking, measuring), Visual, natural orbitals |
 | `mvwin.js` | the pop-out viewer: frame walker, favourites, orbitals & maps |

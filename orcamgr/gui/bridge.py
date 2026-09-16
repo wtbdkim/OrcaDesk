@@ -1890,8 +1890,10 @@ class Bridge(QObject):
         is a perfectly good species in `CoCl4(2-) + 6 H2O -> Co(H2O)6(2+) +
         4 Cl(-)`; filtering on "has frequencies" removed exactly the species
         that cannot have them. `gibbs_eh` is None when the run produced no
-        thermochemistry, and the UI picks the BASIS (G or E) and refuses to mix
-        the two rather than quietly substituting one for the other.
+        thermochemistry, and the UI picks the QUANTITY (G, H, T·S, S, U, E+ZPE,
+        E) and refuses to mix them rather than quietly substituting one for
+        another. Every thermochemical term is sent, not just G, because the
+        reaction profile analyses each of them.
 
         Energies are absolute Hartree; the UI picks a reference and converts to
         relative kcal/mol or kJ/mol."""
@@ -1901,7 +1903,7 @@ class Bridge(QObject):
                 continue
             # Parse-on-miss: DONE calcs restored from a previous session aren't
             # eagerly re-parsed at startup, so read the .out on demand here (only
-            # when the user actually opens the free-energy profile).
+            # when the user actually opens the reaction profile).
             # Writing c.result WITHOUT the store lock is safe only via the
             # DONE-frozen invariant (P24): the engine never touches a DONE calc
             # again, and this loop reads DONE calcs exclusively, so no other
@@ -1933,6 +1935,11 @@ class Bridge(QObject):
                 name=c.name,
                 gibbs_eh=g,
                 final_energy_eh=e,
+                zpe_eh=getattr(c.result, "zpe_eh", None),
+                total_thermal_eh=getattr(c.result, "total_thermal_eh", None),
+                enthalpy_eh=getattr(c.result, "enthalpy_eh", None),
+                entropy_term_eh=getattr(c.result, "entropy_term_eh", None),
+                temperature_k=getattr(c.result, "temperature_k", None),
                 kind=c.kind,
                 atoms=atoms,
                 charge=int(getattr(c, "charge", 0) or 0),
