@@ -421,7 +421,7 @@ class FepPoint(TypedDict):
     "gibbs_eh" is None when the run produced no thermochemistry — which
     includes the species that CANNOT have any: a monatomic ion has no
     vibrations, and an sp of one is still a species in the reaction. The UI
-    picks the basis (G or E) and refuses to mix them.
+    picks the quantity (G, H, T·S, S, U, E+ZPE, E) and refuses to mix them.
 
     "atoms" and "charge" are what let the UI check that the two sides of a step
     are the same matter: a profile is built by giving each stage a set of these
@@ -431,6 +431,14 @@ class FepPoint(TypedDict):
     name: str
     gibbs_eh: "float | None"
     final_energy_eh: "float | None"
+    # the rest of the thermochemistry, each None when the run printed none:
+    # ZPE and the thermal energy U, H, and T*S (Eh) at temperature_k (K), so the
+    # profile can show dH, TdS, dS and dU as well as dG
+    zpe_eh: "float | None"
+    total_thermal_eh: "float | None"
+    enthalpy_eh: "float | None"
+    entropy_term_eh: "float | None"
+    temperature_k: "float | None"
     kind: str
     atoms: "dict[str, int]"   # element symbol -> count, from the parsed geometry
     charge: int

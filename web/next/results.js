@@ -518,16 +518,49 @@
   // ---------------------------------------------------------------- profile
 
   let _fepUnit = "kcal";
-  /** Which energy the stages are summed on: "g" (Gibbs free energy) or "e"
-   *  (electronic energy).
+  /** The thermodynamic quantities a reaction profile can be read on, each as
+   *  what one species supplies in Hartree (or Hartree/K for S) -- null when the
+   *  run printed none.
    *
-   *  It is a choice and not a fallback because the two cannot be mixed: adding
-   *  a G to an E is neither. A monatomic ion is why the choice exists at all --
-   *  Cl(-) has no vibrations to compute, so an sp of it has no G, and it is
-   *  still a species in CoCl4(2-) + 6 H2O -> Co(H2O)6(2+) + 4 Cl(-). On G the
-   *  profile says which species is missing one; on E every finished run can
-   *  stand in it, at the price of leaving out the thermal terms. */
-  let _fepBasis = "g";
+   *  A profile is not only ΔG. Whether a step is enthalpy- or entropy-driven is
+   *  the question ΔG alone cannot answer, and ORCA prints every term it is
+   *  built from, so all of them are here and each is its own column.
+   *
+   *  They are never mixed: a stage whose species cannot supply the chosen
+   *  quantity has no value on it. A monatomic ion is why E is on the list at
+   *  all -- Cl(-) has no vibrations, so an sp of it has no G, and it is still a
+   *  species in CoCl4(2-) + 6 H2O -> Co(H2O)6(2+) + 4 Cl(-).
+   *
+   *  `name` is written to sit mid-sentence ("has no enthalpy").
+   *
+   *  S is derived as (T·S)/T per species rather than sent, because ORCA prints
+   *  the entropy TERM; a species without a temperature has no S.
+   *  @type {{key: string, sym: string, abs: string, name: string,
+   *          entropy?: boolean, get: (p: any) => any}[]} */
+  const RXN_QTY = [
+    { key: "g", sym: "ΔG", abs: "G", name: "Gibbs free energy", get: p => p.gibbs_eh },
+    { key: "h", sym: "ΔH", abs: "H", name: "enthalpy", get: p => p.enthalpy_eh },
+    { key: "ts", sym: "TΔS", abs: "T·S", name: "entropy term", get: p => p.entropy_term_eh },
+    { key: "s", sym: "ΔS", abs: "S", name: "entropy", entropy: true,
+      get: p => (num(p.entropy_term_eh) && num(p.temperature_k) && p.temperature_k > 0)
+        ? p.entropy_term_eh / p.temperature_k : null },
+    { key: "u", sym: "ΔU", abs: "U", name: "internal energy", get: p => p.total_thermal_eh },
+    { key: "e0", sym: "ΔE₀", abs: "E+ZPE", name: "E + zero-point energy",
+      get: p => (num(p.final_energy_eh) && num(p.zpe_eh))
+        ? p.final_energy_eh + p.zpe_eh : null },
+    { key: "e", sym: "ΔE", abs: "E", name: "electronic energy", get: p => p.final_energy_eh },
+  ];
+  /** @param {any} v @returns {boolean} */
+  function num(v) { return typeof v === "number" && isFinite(v); }
+  /** @param {string} key */
+  function qtyOf(key) { return RXN_QTY.find(q => q.key === key) || RXN_QTY[0]; }
+
+  /** Which quantity the diagram is drawn on. The table shows them all. */
+  let _fepQty = "g";
+  /** What the table's Δ is taken against: "ref" (the stage at zero) or "prev"
+   *  (the stage before it -- a step's own ΔH and TΔS, which is what says
+   *  whether that step is enthalpy- or entropy-driven). */
+  let _fepCmp = "ref";
   /** Which stage sits at zero. An index, not a name: stages are positions on a
    *  reaction coordinate and two of them may hold the same species. */
   let _fepRef = 0;
@@ -552,39 +585,52 @@
             { label: "Products", terms: [{ name: "", coeff: 1 }] }];
   }
 
-  /** The energy a species supplies on the current basis, or null.
-   *  @param {any} p @returns {number|null} */
-  function speciesE(p) {
+  /** What a species supplies on quantity q, or null.
+   *  @param {any} p @param {any} q @returns {number|null} */
+  function speciesE(p, q) {
     if (!p) return null;
-    const v = _fepBasis === "g" ? p.gibbs_eh : p.final_energy_eh;
-    return (typeof v === "number" && isFinite(v)) ? v : null;
+    const v = q.get(p);
+    return num(v) ? v : null;
   }
 
-  /** A stage's energy in Hartree, or null when it is not fully described.
+  /** A stage's value of quantity q, or null when it is not fully described.
    *
    *  Null rather than a partial sum: a stage with an empty row -- or one whose
-   *  species has no energy on the chosen basis -- is a reaction nobody has
-   *  finished writing down, and quietly summing what is there would print a
-   *  number for it. @param {any} st @param {any} by */
-  function stageG(st, by) {
+   *  species cannot supply q -- is a reaction nobody has finished writing down,
+   *  and quietly summing what is there would print a number for it.
+   *  @param {any} st @param {any} by @param {any} q */
+  function stageG(st, by, q) {
     if (!st.terms.length) return null;
     let g = 0;
     for (const t of st.terms) {
-      const e = speciesE(by[t.name]);
+      const e = speciesE(by[t.name], q);
       if (e == null || !isFinite(t.coeff)) return null;
       g += t.coeff * e;
     }
     return g;
   }
 
-  /** The species this profile uses that have no energy on the chosen basis --
-   *  the reason a stage reads as a dash. @param {any} by @returns {string[]} */
-  function fepMissing(by) {
+  /** The species this profile uses that cannot supply quantity q -- the reason
+   *  a stage reads as a dash. @param {any} by @param {any} q @returns {string[]} */
+  function fepMissing(by, q) {
     const out = [];
     (_fepStages || []).forEach(st => st.terms.forEach(t => {
-      if (t.name && speciesE(by[t.name]) == null && out.indexOf(t.name) < 0) out.push(t.name);
+      if (t.name && speciesE(by[t.name], q) == null && out.indexOf(t.name) < 0) out.push(t.name);
     }));
     return out;
+  }
+
+  /** The temperatures the profile's thermochemistry was computed at, distinct.
+   *  More than one means every thermal Δ subtracts terms taken at different
+   *  temperatures. @param {any} by @returns {number[]} */
+  function fepTemps(by) {
+    const ts = [];
+    (_fepStages || []).forEach(st => st.terms.forEach(t => {
+      const p = by[t.name];
+      if (!p || !num(p.temperature_k)) return;
+      if (!ts.some(x => Math.abs(x - p.temperature_k) < 0.01)) ts.push(p.temperature_k);
+    }));
+    return ts;
   }
 
   /** The matter standing at a stage: coefficient-weighted element counts and
@@ -628,8 +674,8 @@
    *  this replaced drew a slope between two molecules and invited the reading
    *  that something happens along it.
    *  @param {{label: string, y: number|null}[]} lv
-   *  @param {number} w @param {number} h @param {string} unit */
-  function fepChart(lv, w, h, unit) {
+   *  @param {number} w @param {number} h @param {string} unit @param {string} what */
+  function fepChart(lv, w, h, unit, what) {
     const L = 64, R = 16, T = 16, B = 46;
     const iw = Math.max(w - L - R, 40), ih = Math.max(h - T - B, 40);
     const known = lv.filter(s => s.y != null);
@@ -682,7 +728,7 @@
          fill="var(--muted-foreground)">${NB.esc(s.label || "stage " + (i + 1))}</text>`).join("");
 
     return `<div class="chart"><svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}"
-        role="img" aria-label="Relative Gibbs free energy per stage, in ${NB.esc(unit)}">
+        role="img" aria-label="Relative ${NB.esc(what)} per stage, in ${NB.esc(unit)}">
       ${grid}
       <line x1="${L}" y1="${T}" x2="${L}" y2="${T + ih}" stroke="var(--border)" stroke-width="1"/>
       <line x1="${L}" y1="${T + ih}" x2="${L + iw}" y2="${T + ih}" stroke="var(--border)" stroke-width="1"/>
@@ -710,27 +756,39 @@
     pts.forEach(p => { by[p.name] = p; });
 
     if (!pts.length) {
-      holder.innerHTML = `<div class="sech"><h2>Free energy profile</h2></div>
-        <p class="secdesc">A profile is built from Gibbs free energies, and a Gibbs
-          energy only comes from a run with frequencies.</p>
-        ${plate('<p class="hint" style="margin:0">No finished frequency calculation yet.</p>')}`;
+      holder.innerHTML = `<div class="sech"><h2>Reaction profile</h2></div>
+        <p class="secdesc">A profile is built from finished calculations: each stage of
+          the reaction holds the species standing there.</p>
+        ${plate('<p class="hint" style="margin:0">No finished calculation yet.</p>')}`;
       return;
     }
     if (!_fepStages) _fepStages = fepDefault();
     if (_fepRef >= _fepStages.length) _fepRef = 0;
 
-    const k = _fepUnit === "kj" ? HA_KJ : HA_KCAL;
-    const unit = _fepUnit === "kj" ? "kJ/mol" : "kcal/mol";
-    // the symbol says which energy this is: a profile on electronic energies is
-    // not a free-energy profile, and calling it one would be the lie
-    const sym = _fepBasis === "g" ? "ΔG" : "ΔE";
-    const abs = _fepBasis === "g" ? "G" : "E";
-    const gs = _fepStages.map(st => stageG(st, by));
-    const refG = gs[_fepRef];
-    const levels = _fepStages.map((st, i) => ({
-      label: st.label,
-      y: (gs[i] == null || refG == null) ? null : (gs[i] - refG) * k,
-    }));
+    const kj = _fepUnit === "kj";
+    const unit = kj ? "kJ/mol" : "kcal/mol";
+    // S is per kelvin and reads in cal or J, not kcal or kJ -- a reaction
+    // entropy of -0.03 kcal/(mol·K) is a number nobody quotes
+    const sUnit = kj ? "J/(mol·K)" : "cal/(mol·K)";
+    /** @param {any} q */
+    const scale = (q) => (kj ? HA_KJ : HA_KCAL) * (q.entropy ? 1000 : 1);
+    /** @param {any} q */
+    const unitOf = (q) => q.entropy ? sUnit : unit;
+
+    const Q = qtyOf(_fepQty);
+    // every quantity for every stage, in Hartree (Hartree/K for S)
+    /** @type {Record<string, (number|null)[]>} */
+    const abs = {};
+    RXN_QTY.forEach(q => { abs[q.key] = _fepStages.map(st => stageG(st, by, q)); });
+    /** A stage's Δ on q against the reference, or against the stage before it,
+     *  in display units. @param {any} q @param {number} i @param {string} cmp */
+    const delta = (q, i, cmp) => {
+      const j = cmp === "prev" ? i - 1 : _fepRef;
+      if (j < 0) return null;
+      const a = abs[q.key][i], b = abs[q.key][j];
+      return (a == null || b == null) ? null : (a - b) * scale(q);
+    };
+    const levels = _fepStages.map((st, i) => ({ label: st.label, y: delta(Q, i, "ref") }));
 
     // Does each stage hold the same matter as the reference? Reported, not
     // enforced: comparing a fragment against a whole is a thing people do on
@@ -750,38 +808,49 @@
       }
     });
 
-    // every finished species is listed, and the ones that cannot supply the
-    // chosen energy say so in the row rather than being missing from it: a
-    // picker that silently omits Cl(-) looks broken, which is exactly how the
-    // frequencies-only filter read
-    // A species with no energy on this basis is why a stage reads as a dash. Say
-    // which one, and what the two ways out are -- for a single atom a frequency
-    // run is still the right answer, since ORCA gives it translational and
-    // electronic thermochemistry even though it has no vibrations to compute.
-    const missing = fepMissing(by);
-    if (missing.length) {
-      warnings.unshift(`<div class="finding warn"><span>⚠</span><span>${
-        missing.map(n => NB.esc(n)).join(", ")} ${missing.length === 1 ? "has" : "have"}
-        no ${_fepBasis === "g" ? "Gibbs free energy" : "electronic energy"}, so every
-        stage holding ${missing.length === 1 ? "it" : "them"} is left blank rather than
-        summed on a different quantity. ${_fepBasis === "g"
-          ? `Run a frequency calculation for ${missing.length === 1 ? "it" : "them"} —
-             a single atom gets its translational and electronic thermochemistry even
-             with nothing to vibrate — or switch the energy above to electronic.`
-          : "Re-run it, or pick another calculation."}</span></div>`);
+    // Thermochemistry at two temperatures: every thermal Δ would subtract terms
+    // taken under different conditions. Said, not refused -- a deliberate
+    // temperature scan compares exactly that.
+    const temps = fepTemps(by);
+    if (temps.length > 1) {
+      warnings.push(`<div class="finding warn"><span>⚠</span><span>The species'
+        thermochemistry was computed at different temperatures (${
+        temps.map(t => t.toFixed(2) + " K").join(", ")}), so ΔG, ΔH, TΔS and ΔS
+        mix conditions. ΔE is unaffected.</span></div>`);
     }
 
+    // A species that cannot supply the drawn quantity is why a stage reads as a
+    // dash. Say which one, and what the ways out are -- for a single atom a
+    // frequency run is still the right answer, since ORCA gives it
+    // translational and electronic thermochemistry with nothing to vibrate.
+    const missing = fepMissing(by, Q);
+    if (missing.length) {
+      const it = missing.length === 1 ? "it" : "them";
+      warnings.unshift(`<div class="finding warn"><span>⚠</span><span>${
+        missing.map(n => NB.esc(n)).join(", ")} ${missing.length === 1 ? "has" : "have"}
+        no ${NB.esc(Q.name)} (${NB.esc(Q.abs)}), so every stage holding
+        ${it} is left blank rather than summed on a different quantity. ${
+        Q.key === "e"
+          ? "Re-run it, or pick another calculation."
+          : `Run a frequency calculation for ${it} — a single atom gets its
+             translational and electronic thermochemistry even with nothing to
+             vibrate — or draw the profile on the electronic energy.`}</span></div>`);
+    }
+
+    // every finished species is listed, and the ones that cannot supply the
+    // drawn quantity say so in the row rather than being missing from it: a
+    // picker that silently omits Cl(-) looks broken
     const speciesOptions = (sel) => `<option value="">pick a calculation…</option>`
       + pts.map(p => `<option value="${NB.esc(p.name)}"${
           p.name === sel ? " selected" : ""}>${NB.esc(p.name)}${
-          speciesE(p) == null ? " — no " + abs : ""}</option>`).join("");
+          speciesE(p, Q) == null ? " — no " + Q.abs : ""}</option>`).join("");
 
     const stageHtml = _fepStages.map((st, i) => `
       <div class="field-row" style="margin-bottom:8px">
         <div class="field mid"><label>Stage ${i + 1}</label>
           <input data-fep="label" data-i="${i}" value="${NB.esc(st.label)}"
                  placeholder="Reactants"></div>
-        <div class="field narrow"><label>${sym} (${NB.esc(unit)})</label>
+        <div class="field narrow"><label>${Q.sym} (${NB.esc(unitOf(Q))})</label>
           <input class="mono" value="${levels[i].y == null ? "—" : fmt(levels[i].y)}"
                  readonly tabindex="-1"></div>
         <div class="field"><label>&nbsp;</label>
@@ -806,25 +875,44 @@
         </div>`).join("")}
       ${i < _fepStages.length - 1 ? '<div class="divider"></div>' : ""}`).join("");
 
-    holder.innerHTML = `<div class="sech"><h2>Free energy profile</h2><span class="sp"></span>
-        <span class="meta">${pts.length} ${
-          pts.length === 1 ? "species available" : "species available"}</span></div>
+    // The table: every quantity, so ΔG can be read as ΔH − TΔS beside it. A
+    // column is kept only when some stage has a value on it -- a profile built
+    // entirely from single points has nothing to say about entropy.
+    // in the order they build on each other, E up to G, whatever the diagram shows
+    const cols = ["e", "e0", "u", "h", "ts", "s", "g"].map(qtyOf)
+      .filter(q => abs[q.key].some(v => v != null));
+    const rows = _fepStages.map((st, i) => [
+      NB.esc(st.label || "stage " + (i + 1)),
+      st.terms.filter(t => t.name)
+        .map(t => `${t.coeff === 1 ? "" : t.coeff + " × "}${NB.esc(t.name)}`)
+        .join(" + ") || "—",
+    ].concat(cols.map(q => {
+      const v = delta(q, i, _fepCmp);
+      if (_fepCmp === "prev" && i === 0) return "";
+      if (v == null) return "—";
+      return q.key === Q.key ? `<b>${fmt(v)}</b>` : fmt(v);
+    })));
+    const T = temps.length === 1 ? temps[0] : null;
+
+    holder.innerHTML = `<div class="sech"><h2>Reaction profile</h2><span class="sp"></span>
+        <span class="meta">${pts.length} species available${
+          T != null ? ` · ${T.toFixed(2)} K` : ""}</span></div>
       <p class="secdesc">Build the reaction: each stage is a point on the coordinate and
         holds the species standing there, with the stoichiometric coefficient each one
-        is taken with. Its energy is the weighted sum, and the profile is every stage
-        against the reference. Every finished calculation can stand in it; which
-        energy they are summed on is a choice, because a Gibbs energy and an
-        electronic one cannot be added together — a species with no thermochemistry
-        says so in the picker. This section spans the whole workspace, not the
-        selected result.</p>`
+        is taken with. A stage's value is the weighted sum, and the profile is every
+        stage against the reference. The diagram is drawn on one quantity and the table
+        gives them all — ΔE, ΔE₀, ΔU, ΔH, TΔS, ΔS and ΔG — so a step can be read as
+        enthalpy- or entropy-driven. Quantities are never mixed: a species with no
+        thermochemistry says so in the picker. This section spans the whole workspace,
+        not the selected result.</p>`
       + plate(`<div class="field-row" style="margin-bottom:14px">
-            <div class="field mid"><label>Energy</label><select data-fep="basis">
-              <option value="g"${_fepBasis === "g" ? " selected" : ""}>Gibbs free energy (G)</option>
-              <option value="e"${_fepBasis === "e" ? " selected" : ""}>Electronic energy (E)</option>
-            </select></div>
+            <div class="field mid"><label>Diagram</label><select data-fep="qty">${
+              RXN_QTY.map(q => `<option value="${q.key}"${q.key === Q.key ? " selected" : ""}>${
+                NB.esc(q.sym)} — ${NB.esc(q.name.charAt(0).toUpperCase() + q.name.slice(1))}</option>`).join("")
+            }</select></div>
             <div class="field mid"><label>Units</label><select data-fep="unit">
-              <option value="kcal"${_fepUnit === "kcal" ? " selected" : ""}>kcal/mol</option>
-              <option value="kj"${_fepUnit === "kj" ? " selected" : ""}>kJ/mol</option>
+              <option value="kcal"${!kj ? " selected" : ""}>kcal/mol</option>
+              <option value="kj"${kj ? " selected" : ""}>kJ/mol</option>
             </select></div>
             <div class="field mid"><label>Reference (= 0)</label><select data-fep="ref">${
               _fepStages.map((st, i) => `<option value="${i}"${
@@ -838,16 +926,16 @@
             <button class="btn btn-sm btn-ghost" type="button" data-fep="reset">Start over</button>
           </div>`)
       + warnings.join("")
-      + plate(fepChart(levels, cw, Math.round(cw * 0.34), unit))
-      + tw(["Stage", "Species", `${sym} (${unit})`, `${abs} (Eh)`],
-           _fepStages.map((st, i) => [
-             NB.esc(st.label || "stage " + (i + 1)),
-             st.terms.filter(t => t.name)
-               .map(t => `${t.coeff === 1 ? "" : t.coeff + " × "}${NB.esc(t.name)}`)
-               .join(" + ") || "—",
-             levels[i].y == null ? "—" : fmt(levels[i].y),
-             gs[i] == null ? "—" : gs[i].toFixed(6),
-           ]), [false, false, true, true]);
+      + plate(fepChart(levels, cw, Math.round(cw * 0.34), unitOf(Q), Q.name))
+      + `<div class="field-row" style="margin:14px 0 8px">
+          <div class="field mid"><label>Table Δ against</label><select data-fep="cmp">
+            <option value="ref"${_fepCmp === "ref" ? " selected" : ""}>the reference stage</option>
+            <option value="prev"${_fepCmp === "prev" ? " selected" : ""}>the stage before (per step)</option>
+          </select></div></div>`
+      + (cols.length
+        ? tw(["Stage", "Species"].concat(cols.map(q => `${q.sym} (${unitOf(q)})`)),
+             rows, [false, false].concat(cols.map(() => true)))
+        : plate('<p class="hint" style="margin:0">No stage is complete yet.</p>'));
 
     // one handler for the whole section: the stage list is rebuilt on every
     // edit, and a listener per control would be re-attached on each rebuild
@@ -874,7 +962,8 @@
       // change, not input: the section re-renders on every edit, and a keystroke
       // handler would take the caret out of the field being typed in
       b.addEventListener("change", () => edit(() => {
-        if (what === "basis") _fepBasis = b.value;
+        if (what === "qty") _fepQty = b.value;
+        else if (what === "cmp") _fepCmp = b.value;
         else if (what === "unit") _fepUnit = b.value;
         else if (what === "ref") _fepRef = Number(b.value);
         else if (what === "label") _fepStages[i].label = b.value;
@@ -943,7 +1032,7 @@
            in the queue, or open any ORCA output from disk — a result stays readable
            after it leaves the queue, because the run folder is still there.</p>`)}</section>
          <section class="secblock wide" id="fep"></section>`;
-    _present.push({ id: "fep", title: "Free energy profile" });
+    _present.push({ id: "fep", title: "Reaction profile" });
 
     host.innerHTML = toolbar()
       + `<div class="resmain"><div class="rescontent">

@@ -161,8 +161,9 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
     warnings) and full thermochemistry, TD-DFT transitions + a UV-Vis plot and
     the excited-state composition, NMR shieldings, and the NEB path. Sections
     are shown for the relevant calculation type; a **`Show all`** toggle reveals
-    everything regardless of type. A **free-energy profile** view plots relative
-    Gibbs free energy across finished frequency calculations in queue order.
+    everything regardless of type. A **reaction profile** is built from the finished calculations —
+    stages of species with stoichiometric coefficients — and gives ΔE, ΔE₀, ΔU,
+    ΔH, TΔS, ΔS and ΔG per stage, with a level diagram on any one of them.
     A **Natural bond orbital analysis** card runs ORCAdesk's own NPA/NBO on
     the finished run's wavefunction — no NBO licence — and shows NPA charges
     with electron configurations, Wiberg bond orders, the Lewis structure with

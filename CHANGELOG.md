@@ -44,6 +44,17 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     common `%`-blocks, at the cursor.
 
 ### Changed
+- **The free-energy profile is now the Reaction profile, and it reads every
+  thermodynamic quantity, not only ΔG.** The table gives each stage's ΔE, ΔE₀
+  (E + ZPE), ΔU, ΔH, TΔS, ΔS and ΔG side by side, so a step can be read as
+  enthalpy- or entropy-driven (ΔG = ΔH − TΔS is on one line); the level diagram
+  is drawn on whichever of them you pick. ΔS is in cal/(mol·K) or J/(mol·K),
+  from ORCA's entropy term over its temperature. The table's Δ can be taken
+  against the reference stage or **per step**, against the stage before. A
+  column appears only when some stage has a value on it, quantities are never
+  mixed (a species that cannot supply one leaves that cell blank and says why),
+  and species whose thermochemistry was computed at different temperatures are
+  flagged.
 - The design check runs in **three passes** and 116 landmarks rather than 79:
   the window at rest, a result section, and the overlays — the viewer, the
   settings sheet and the builder's conditional blocks, both sides opened to the

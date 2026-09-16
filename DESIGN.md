@@ -1358,7 +1358,7 @@ and a 600px rail that stays on screen in both:
   trajectory, a CREST ensemble, an exported set. Discovered, never asked for.
 - **Report** — the parsed result as a document, on the design's 12-column grid:
   the summary wide, what the parser found beside it, the **input this run read
-  next to the output it produced** (`third` : `twothirds`), and the free-energy
+  next to the output it produced** (`third` : `twothirds`), and the reaction
   profile last. A sticky outline lists only the sections the result has.
 - **Settings** — a right-hand slide-over, not a third view: somewhere you go and
   come straight back from, and taking the window for it would throw away the

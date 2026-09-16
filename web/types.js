@@ -845,6 +845,11 @@
  * @property {string} name
  * @property {number|null} gibbs_eh
  * @property {number|null} final_energy_eh
+ * @property {number|null} zpe_eh            ZPE correction (Eh)
+ * @property {number|null} total_thermal_eh  inner energy U (Eh)
+ * @property {number|null} enthalpy_eh       H (Eh)
+ * @property {number|null} entropy_term_eh   T*S (Eh)
+ * @property {number|null} temperature_k
  * @property {string} kind
  * @property {Record<string, number>} atoms   element symbol -> count
  * @property {number} charge
