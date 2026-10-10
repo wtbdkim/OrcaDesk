@@ -802,7 +802,9 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 - **Result validation is per-kind**: `opt`/`ts_opt` (and the combined
   `opt_freq`/`ts_opt_freq`) must converge; every freq kind must have PRODUCED
   frequencies at all (the imaginary-mode rule is vacuously true of an empty
-  table, so a run that never computed a Hessian used to pass);
+  table, so a run that never computed a Hessian used to pass — the one
+  exception is a single atom, whose 3 translational modes print as 0.00 and are
+  dropped while its thermochemistry is still there, `_has_vibrational_analysis`);
   `freq`/`opt_freq` must have zero imaginary frequencies; `ts_freq`/`ts_opt_freq` must have exactly one;
   `neb_ts` must have exactly one when frequencies were computed. A
   validation failure marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`,

@@ -411,6 +411,37 @@ def test_a_marked_zero_mode_is_recorded_as_imaginary(tmp_path):
     assert r.imaginary_frequencies == [-0.0]
 
 
+def test_a_single_atom_frequency_job_keeps_its_section_and_thermochemistry(tmp_path):
+    # Shape of a real ORCA 6.1.1 `! Freq` on Cl- (CPCM water): the three modes
+    # are translations printed as 0.00 and dropped, but the section is there and
+    # the free energy is computed. validate_result relies on exactly this shape.
+    text = ("CARTESIAN COORDINATES (ANGSTROEM)\n"
+            "---------------------------------\n"
+            "  Cl     0.000000    0.000000    0.000000\n"
+            "\n"
+            "VIBRATIONAL FREQUENCIES\n"
+            "-----------------------\n"
+            "\n"
+            "Scaling factor for frequencies =  1.000000000  (already applied!)\n"
+            "\n"
+            "     0:       0.00 cm**-1\n"
+            "     1:       0.00 cm**-1\n"
+            "     2:       0.00 cm**-1\n"
+            "\n"
+            "------------\n"
+            "NORMAL MODES\n"
+            "------------\n"
+            "Total enthalpy                    ...   -460.39283660 Eh \n"
+            "Final Gibbs free energy         ...   -460.41023922 Eh\n"
+            "****ORCA TERMINATED NORMALLY****\n")
+    r = parse_file(_write_out(tmp_path, text, "cl.out"))
+
+    assert r.has_frequencies is True
+    assert r.frequencies == []
+    assert len(r.geometry) == 1
+    assert r.gibbs_eh == pytest.approx(-460.41023922)
+
+
 def test_a_negative_mode_without_the_marker_still_counts(tmp_path):
     text = ("VIBRATIONAL FREQUENCIES\n"
             "-----------------------\n"

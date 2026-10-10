@@ -255,6 +255,25 @@ def test_a_frequency_kind_with_no_frequency_table_fails(kind):
     assert "no vibrational frequencies" in str(e.value).lower()
 
 
+@pytest.mark.parametrize("kind", ["freq", "opt_freq"])
+def test_a_single_atom_frequency_job_passes_with_no_modes(kind):
+    """An atom has nothing to vibrate: its 3 modes are translations, printed as
+    0.00 and dropped. The frequency section and the thermochemistry are still
+    there, and rejecting the run left an ion like Cl- no way to get the Gibbs
+    energy a reaction profile needs — FAILED, and locked."""
+    result = make_result(has_frequencies=True, frequencies=[], n_imaginary=0,
+                         opt_converged=True, geometry=[object()])
+    validate_result(make_calc(kind), result)
+
+
+def test_a_molecule_with_a_frequency_section_but_no_modes_still_fails():
+    # the single-atom allowance is about the atom count, not the section header
+    result = make_result(has_frequencies=True, frequencies=[], n_imaginary=0,
+                         geometry=[object(), object()])
+    with pytest.raises(OrcaRunError, match="(?i)no vibrational frequencies"):
+        validate_result(make_calc("freq"), result)
+
+
 def test_neb_ts_without_frequencies_still_passes():
     # its FREQ step is optional — the imaginary-mode rule is gated on the table
     # existing, and that is deliberate
