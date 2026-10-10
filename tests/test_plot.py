@@ -15,7 +15,8 @@ import pytest
 
 from orcamgr.core.plot import (
     DEFAULT_GRID, GRID_CHOICES, MAX_CUBE_BYTES, PLOT_KINDS,
-    CubeRequest, _menu_sequence, cube_filename, default_grid_for, generate_cube,
+    CubeRequest, _menu_sequence, cube_filename, cube_is_current, default_grid_for,
+    generate_cube,
     orca_plot_exe, plot_output_name,
 )
 
@@ -161,6 +162,34 @@ def test_an_empty_cached_file_is_not_reused(tmp_path):
     r = generate_cube(tmp_path / "no-orca.exe", tmp_path, "w",
                       CubeRequest(kind="mo", index=4, grid=60))
     assert r["ok"] is False
+
+
+def test_a_cube_older_than_the_wavefunction_is_not_reused(tmp_path):
+    """Re-running a name rewrites the .gbw and leaves cubes/ alone, so the old
+    cube is the PREVIOUS molecule's (observed: a pyridine density drawn over a
+    phenol). It must be regenerated, not served."""
+    import os
+    cubes = tmp_path / "cubes"
+    cubes.mkdir()
+    old = cubes / "w.eldens.g60.cube"
+    old.write_text("previous molecule")
+    gbw = tmp_path / "w.gbw"
+    gbw.write_bytes(b"new wavefunction")
+    os.utime(old, (1_000_000, 1_000_000))
+    os.utime(gbw, (2_000_000, 2_000_000))
+    assert cube_is_current(old, gbw) is False
+    r = generate_cube(tmp_path / "no-orca.exe", tmp_path, "w",
+                      CubeRequest(kind="eldens", grid=60))
+    assert r.get("cached") is not True    # falls through to the missing-orca_plot refusal
+    os.utime(old, (3_000_000, 3_000_000))
+    assert cube_is_current(old, gbw) is True
+
+
+def test_a_cube_with_no_wavefunction_beside_it_still_stands(tmp_path):
+    """A pruned folder has nothing to compare against; the cube is all there is."""
+    c = tmp_path / "w.mo4a.g60.cube"
+    c.write_text("cube")
+    assert cube_is_current(c, tmp_path / "w.gbw") is True
 
 
 def test_payload_cap_leaves_room_for_the_largest_offered_grid():

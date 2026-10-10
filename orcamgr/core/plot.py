@@ -177,6 +177,30 @@ def cube_filename(base: str, req: CubeRequest) -> str:
     return f"{stem}.g{req.grid}.cube"
 
 
+def cube_is_current(cube: Path, gbw: Path) -> bool:
+    """True when ``cube`` may be served for the wavefunction in ``gbw``.
+
+    A cube is named after the run, not the wavefunction, and run folders are
+    reused: re-running a name (the overwrite modal allows it) rewrites the
+    ``.gbw`` and leaves ``cubes/`` alone. Without this check the previous
+    molecule's density came back as this one's — measured: an 11-atom pyridine
+    cube from 12:54 drawn over a 13-atom phenol whose ``.gbw`` was rewritten at
+    12:57. So a cube older than the ``.gbw`` is stale. With no ``.gbw`` to
+    compare against (a pruned folder) the cube is all there is, and it stands.
+    The reuse check and the "already on disk" list both ask this, so a row
+    marked ready never opens onto a regenerated file and vice versa (P4)."""
+    try:
+        st = cube.stat()
+    except OSError:
+        return False
+    if st.st_size <= 0:
+        return False
+    try:
+        return st.st_mtime >= gbw.stat().st_mtime
+    except OSError:
+        return True
+
+
 def _menu_sequence(req: CubeRequest, base: str = "") -> str:
     """The keystrokes that drive ``orca_plot``'s interactive menu.
 
@@ -312,12 +336,12 @@ def generate_cube(orca_path: str | Path, run_dir: str | Path, base: str,
     produced_name = plot_output_name(base, req)   # what orca_plot writes
     final = dest / cube_filename(base, req)       # what we keep it as
 
-    if reuse and final.exists() and final.stat().st_size > 0:
+    gbw = run_dir / f"{base}.gbw"
+    if reuse and cube_is_current(final, gbw):
         # Cubes are deterministic in their inputs, and a regenerated one would be
         # byte-identical; reopening a previously viewed orbital should be instant.
         return {"ok": True, "path": str(final), "cached": True, "seconds": 0.0}
 
-    gbw = run_dir / f"{base}.gbw"
     if not gbw.exists():
         return {"ok": False, "error": f"No wavefunction file ({base}.gbw) in the "
                                       f"run folder — orbitals need a finished ORCA job."}

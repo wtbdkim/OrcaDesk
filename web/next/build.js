@@ -418,7 +418,7 @@
     /** @param {string} sel */
     const all = (sel) => [...el.querySelectorAll(sel)];
 
-    all(".backendrow .seg button").forEach(b => b.addEventListener("click", () => {
+    all(".backendrow .seg button").forEach(b => b.addEventListener("click", async () => {
       const wantRaw = b.getAttribute("data-mode") === "raw";
       if (wantRaw === st.raw) return;
       // The two modes are not two views of one thing: the guided form GENERATES
@@ -431,19 +431,46 @@
           "Discard", () => { st.raw = false; st.rawText = ""; st.xyz = snap.xyz; render(el, st, snap, close); });
         return;
       }
+      // Going the other way IS a conversion: the form becomes the .inp it would
+      // have generated (the classic setDftSub does the same), so the text starts
+      // as what Preview showed rather than an empty editor that throws the form
+      // away. No coordinates yet -> {{GEOMETRY}}, filled from the box at run
+      // time. A failed conversion does not switch; the filled form stays.
+      let text = snap.raw_text;
+      if (wantRaw && !text.trim()) {
+        const src = (snap.geometry_source === "direct" && !snap.xyz)
+          ? Object.assign({}, snap, { geometry_source: "reference" }) : snap;
+        const pv = await NB.call("build_inp_preview", JSON.stringify(src));
+        if (!pv || !pv.ok) {
+          NB.fail("Could not convert the form to .inp: " + ((pv && pv.error) || "no answer"));
+          return;
+        }
+        text = pv.text || "";
+      }
       st.raw = wantRaw;
-      st.xyz = snap.xyz; st.rawText = snap.raw_text;
-      render(el, st, snap, close);
+      st.xyz = snap.xyz; st.rawText = text;
+      render(el, st, Object.assign({}, snap, { raw_text: text }), close);
     }));
 
     q('[data-f="kind"]').addEventListener("change", e => {
       const snap = readForm(el, st, calc);
+      const prev = KINDS[st.kind] || KINDS.general;
       st.kind = e.target.value;
       st.xyz = snap.xyz; st.rawText = snap.raw_text;
+      // The calculation type IS the kind, so it always takes the new kind's
+      // default (as the classic onKindChange does). Carried over, Optimization's
+      // "TightOpt" became an Opt + Freq's whole job line: no Freq keyword, a run
+      // that never computed a Hessian, FAILED and locked. SCF and extra keywords
+      // follow the new kind only while they still hold the old kind's default —
+      // a value the user chose survives the switch.
+      const cfg = Object.assign({}, snap.config);
+      delete cfg.calculation_type;
+      if (cfg.scf_convergence === prev.scf) delete cfg.scf_convergence;
+      if ((cfg.options || "") === (prev.options || "")) delete cfg.options;
       // the kind decides which blocks exist, so the form is rebuilt rather than
       // shown/hidden — a hidden block that still reads its value is how stale
       // settings ride into a calculation nobody configured
-      render(el, st, Object.assign({}, snap, { kind: st.kind, config: snap.config }), close);
+      render(el, st, Object.assign({}, snap, { kind: st.kind, config: cfg }), close);
     });
 
     all('input[name="gsrc"]').forEach(r => r.addEventListener("change", () => {

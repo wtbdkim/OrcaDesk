@@ -1616,15 +1616,19 @@ class Bridge(QObject):
         The ESP map rides the same availability as the electron density: both are
         computed from the SCF density orca_plot lists as ``<base>.scfp``, so a run
         that can plot one can plot the other."""
-        from ..core.plot import GRID_CHOICES, DEFAULT_GRID, default_grid_for
+        from ..core.plot import GRID_CHOICES, DEFAULT_GRID, default_grid_for, cube_is_current
         from ..cube import ESP_SURFACE_ISOVALUE, ESP_DEFAULT_RANGE
         try:
             run_dir, base, open_shell, err = self._plot_source(source)
             if err:
                 return json.dumps(PlotOptionsResult(ok=False, error=err))
-            has_gbw = (run_dir / f"{base}.gbw").exists()
+            gbw = run_dir / f"{base}.gbw"
+            has_gbw = gbw.exists()
             cubes = run_dir / "cubes"
-            cached = sorted(p.name for p in cubes.glob("*.cube")) if cubes.is_dir() else []
+            # only cubes of THIS wavefunction: a re-run under the same name
+            # leaves the previous molecule's cubes behind
+            cached = sorted(p.name for p in cubes.glob("*.cube")
+                            if cube_is_current(p, gbw)) if cubes.is_dir() else []
         except OSError as e:
             return json.dumps(PlotOptionsResult(ok=False, error=str(e)))
         return json.dumps(PlotOptionsResult(
