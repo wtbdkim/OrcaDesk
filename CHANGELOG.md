@@ -86,6 +86,22 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   hit-target rule can save.
 
 ### Fixed
+- **Changing the Type in the notebook builder now changes the job.** The
+  calculation type carried over from the previous Type, so a new calculation
+  switched from Optimization to Opt + Freq kept `TightOpt` on its keyword line:
+  ORCA optimized, never computed a Hessian, and the run was marked FAILED. The
+  calculation type now follows the Type (as in the classic UI); SCF convergence
+  and extra keywords follow it only while they still hold the old Type's default.
+- **Guided → .inp text converts the form.** The notebook builder opened an empty
+  editor, so everything filled in on the form was lost. The editor now starts
+  with the input the form generates — what *Preview .inp* shows — with a
+  `{{GEOMETRY}}` placeholder when no coordinates are given yet.
+- **A re-run calculation no longer shows the previous molecule's surface.**
+  Re-running a name rewrites its `.gbw` but leaves its `cubes/` folder, and a
+  cube was reused whenever a file of that name existed — so a density plotted
+  before the re-run (a pyridine, in the report) was drawn over the new molecule
+  (a phenol) and marked *ready*. A cube older than the `.gbw` is now regenerated,
+  and is no longer listed as already on disk.
 - **A frequency job on a single atom or monatomic ion no longer fails.** An atom
   has nothing to vibrate — its three modes are translations, which ORCA prints
   as 0.00 cm⁻¹ — so the frequency table came back empty and the run was marked
