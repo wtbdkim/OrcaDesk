@@ -86,6 +86,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   hit-target rule can save.
 
 ### Fixed
+- **A frequency job on a single atom or monatomic ion no longer fails.** An atom
+  has nothing to vibrate — its three modes are translations, which ORCA prints
+  as 0.00 cm⁻¹ — so the frequency table came back empty and the run was marked
+  FAILED ("No vibrational frequencies"), even though ORCA had computed its
+  translational thermochemistry. That left an ion like Cl⁻ with no way to get
+  the Gibbs free energy the reaction-profile card asks for, and the card's own
+  advice was to run exactly that job. A one-atom structure with a frequency
+  section is now accepted; a molecule whose output has no modes still fails.
 - **The axis marker in the corner is the control for the axis views.** It used
   to be a button that cycled *View down x -> y -> z*, which asks you to know
   which way you are already facing and to press up to three times to get where

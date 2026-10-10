@@ -193,10 +193,23 @@ def _guess_signature(inp_text: str) -> str:
 # absence is unambiguous are listed: a freq output without a frequency table is
 # not a frequency calculation, whatever else it is. (Convergence and the
 # imaginary-mode count stay with validate_result — this is identity, not quality.)
+def _has_vibrational_analysis(result: ParseResult) -> bool:
+    """Whether the output holds a completed frequency analysis.
+
+    An empty mode list is the answer, not a missing section, for a single atom:
+    its 3N = 3 modes are all translations, which ORCA prints as 0.00 cm**-1 and
+    the parser drops, while the thermochemistry (translational + electronic) is
+    still computed. Rejecting it left no way to give an ion like Cl- the Gibbs
+    free energy a reaction profile sums — and FAILED is locked (P24)."""
+    if result.frequencies:
+        return True
+    return bool(result.has_frequencies) and len(result.geometry or ()) == 1
+
+
 def _missing_section_for_kind(kind: str, result: ParseResult) -> str:
     kind = kind or ""
     if kind in ("freq", "ts_freq", "opt_freq", "ts_opt_freq", "mlip_freq",
-                "mlip_opt_freq") and not result.frequencies:
+                "mlip_opt_freq") and not _has_vibrational_analysis(result):
         return "frequencies"
     if kind in ("opt", "ts_opt", "opt_freq", "ts_opt_freq", "mlip_opt",
                 "mlip_opt_freq") and not result.is_optimization:
@@ -341,7 +354,7 @@ def validate_result(calc: Calculation, result: ParseResult) -> None:
     # frequencies and no thermochemistry — while the symmetric opt-that-never-
     # optimized case correctly fails. Reachable in Expert mode, where the raw
     # text owns the keyword line and may simply not ask for frequencies.
-    if calc.kind in _FREQ_KINDS and not result.frequencies:
+    if calc.kind in _FREQ_KINDS and not _has_vibrational_analysis(result):
         raise OrcaRunError(
             "No vibrational frequencies in the output — this run did not "
             "compute a Hessian. Check that the input asks for it (Freq / "
