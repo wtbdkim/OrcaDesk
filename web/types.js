@@ -511,6 +511,36 @@
  */
 
 /**
+ * get_output_info(name) result: the shape of a whole .out.
+ * @typedef {Object} OutputInfoResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {string} [file]
+ * @property {number} [bytes]
+ * @property {number} [lines]
+ * @property {number} [max_len]
+ */
+
+/**
+ * get_output_lines(name, start, count) result; "lines" is always present.
+ * @typedef {Object} OutputLinesResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {number} [start]
+ * @property {string[]} lines
+ */
+
+/**
+ * find_in_output(name, query) result: the line of every match, in order;
+ * "hits" is always present, "total" counts past the cap.
+ * @typedef {Object} OutputFindResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {number[]} hits
+ * @property {number} [total]
+ */
+
+/**
  * export_conformers(name) / export_frames(...) result: how many .xyz files
  * were written and into which folder.
  * @typedef {Object} ExportResult

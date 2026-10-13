@@ -1113,3 +1113,25 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
 }
 .vizctl .field input,.vizctl .field select{font-size:12px; padding:5px 8px; min-height:28px;}
 .vizctl .hint{margin:0;}
+
+
+/* ---------------------------- the whole output ----------------------------
+   The reference's output pane holds a short file in full. A real .out runs to
+   hundreds of MB, so the pane draws only the lines on screen (results.js,
+   "output"): .rawsize is a spacer as tall as the WHOLE file and .rawwin the
+   lines actually drawn, placed where they belong inside it. The scrollbar is
+   therefore the file's, and it is the pane's main control -- so it is drawn
+   on purpose rather than left to the platform's thin auto-hiding default, and
+   its gutter is kept so the text does not shift when it appears.
+
+   Find marks its matches with the Custom Highlight API: every match amber,
+   the current one solid, the way a browser's own find bar does. */
+.rawout[data-r="out"]{
+  scrollbar-width:auto; scrollbar-gutter:stable;
+  scrollbar-color:color-mix(in srgb, var(--muted-foreground) 55%, transparent) transparent;
+}
+.rawsize{position:relative;}
+.rawwin{position:absolute; left:0; min-width:100%;}
+::highlight(outfind){background-color:var(--warn-tint); color:var(--foreground);}
+::highlight(outfind-cur){background-color:var(--warn); color:var(--primary-foreground);}
+.outbar [data-r="fcount"]{font-variant-numeric:tabular-nums;}

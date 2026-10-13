@@ -459,29 +459,44 @@
           <span class="meta" data-r="ometa"></span></div>
         <p class="secdesc">Everything ORCA wrote. Every other section here is read out of it.</p>
         <div class="plate" style="padding:0;overflow:hidden">
-          <div class="outbar"><span class="sp"></span>
+          <div class="outbar">
+            <label class="lb" for="out-find">Find</label>
+            <input id="out-find" type="search" placeholder="e.g. CONVERGED"
+              spellcheck="false" autocomplete="off" data-r="find" disabled>
+            <span class="lb" data-r="fcount" aria-live="polite"></span>
+            <button class="btn btn-sm btn-ghost" type="button" data-r="fprev"
+              aria-label="Previous match" disabled>Prev</button>
+            <button class="btn btn-sm btn-ghost" type="button" data-r="fnext"
+              aria-label="Next match" disabled>Next</button>
+            <span class="sp"></span>
+            <button class="btn btn-sm btn-ghost" type="button" data-r="top">↑ Top</button>
             <button class="btn btn-sm btn-ghost" type="button" data-r="tail">↓ End</button>
           </div>
-          <div class="rawout" data-r="out"></div>
+          <div class="rawout" data-r="out" tabindex="0" role="region"
+            aria-label="ORCA output"></div>
         </div>
       </section>`;
   }
 
-  /** @param {string} name @param {any} d the payload, for its input echo */
+  /** @param {string} name a calc name, or "file:<path>" for a result opened
+   *  from disk -- its folder is the file's own, not {workspace}/{stem}
+   *  @param {any} d the payload, for its input echo */
   async function fillRaw(name, d) {
     const host = NB.$("reswin");
     const inEl = host.querySelector('[data-r="in"]');
     const outEl = host.querySelector('[data-r="out"]');
-    const meta = host.querySelector('[data-r="ometa"]');
     if (!inEl || !outEl) return;
     if (!name) { inEl.textContent = "—"; outEl.textContent = "—"; return; }
+    // first, not after the input's awaits: a report re-rendered meanwhile
+    // must not have this (older) result's output mounted over its own
+    mountOutput(host, name);
 
     // the .inp ORCA actually read, off disk — not a preview regenerated from
     // the form, which can differ from what ran
     let inp = "";
     const disk = await NB.call("get_inp", name);
     if (disk && disk.ok && disk.text) inp = disk.text;
-    if (!inp) {
+    if (!inp && !name.startsWith("file:")) {
       const g = await NB.call("get_calc", name);
       if (g && g.ok && g.calc) {
         if (g.calc.is_raw && g.calc.raw_text) inp = g.calc.raw_text;
@@ -500,20 +515,285 @@
       inp = d.input_block || ("! " + d.input_keywords);
     }
     inEl.textContent = inp || "No input file for this result.";
-
-    const r = await NB.call("get_output_tail", name, 6000);
-    if (r && r.ok && r.lines && r.lines.length) {
-      outEl.innerHTML = r.lines.map(l => `<div>${NB.esc(l)}</div>`).join("");
-      if (meta) {
-        meta.textContent = (r.file || name + ".out")
-          + (r.truncated ? " · last " + r.lines.length + " lines" : " · complete");
-      }
-      outEl.scrollTop = outEl.scrollHeight;
-    } else {
-      outEl.textContent = "No output on disk.";
-      if (meta) meta.textContent = "";
-    }
   }
+
+  // ---------------------------------------------------------------- output
+  /* The whole .out, from its first line. A real one runs to hundreds of MB, so
+     the page never holds it: the backend indexes the line offsets once
+     (orcamgr/outview.py) and this draws the lines on screen plus a margin,
+     fetched by number in chunks, inside a spacer as tall as the whole file --
+     so the scrollbar is the file's scrollbar. Find runs on the backend for the
+     same reason and returns the line of every match; the matches on screen
+     are marked with the CSS Custom Highlight API, which paints ranges over the
+     text nodes without splitting them. */
+
+  const OUT_CHUNK = 400;        // lines per fetch
+  const OUT_OVERSCAN = 40;      // lines drawn above and below the screen
+  const OUT_CACHE = 120;        // chunks kept (48k lines)
+  // Chromium stops laying out a box somewhere past 33M px; above this the
+  // spacer stays at this height and the scroll position maps onto the file
+  // proportionally instead of 1:1 (a ~750k-line .out)
+  const OUT_MAXPX = 15e6;
+
+  /** @type {any} the live pane; a later mount replaces it, and a stale reply
+   *  checks identity against it */
+  let _out = null;
+
+  /** ASCII-only case folding, because that is what the backend's search does
+   *  (bytes.lower) -- folding more here would mark text it never counted.
+   *  @param {string} s */
+  const asciiLower = (s) => s.replace(/[A-Z]+/g, m => m.toLowerCase());
+
+  /** @param {number} b */
+  function fmtSize(b) {
+    if (b < 1024) return b + " B";
+    if (b < 1048576) return (b / 1024).toFixed(b < 10240 ? 1 : 0) + " kB";
+    return (b / 1048576).toFixed(b < 10485760 ? 1 : 0) + " MB";
+  }
+
+  /** @param {any} hl {all, cur} Highlights, or null to clear */
+  function setMarks(hl) {
+    const reg = /** @type {any} */ (CSS).highlights;
+    if (!reg) return;
+    if (!hl) { reg.delete("outfind"); reg.delete("outfind-cur"); return; }
+    reg.set("outfind", hl.all);
+    reg.set("outfind-cur", hl.cur);
+  }
+
+  /** @param {HTMLElement} host @param {string} src a calc name or "file:<path>" */
+  async function mountOutput(host, src) {
+    const q = (/** @type {string} */ k) =>
+      /** @type {any} */ (host.querySelector(`[data-r="${k}"]`));
+    const box = q("out"), meta = q("ometa");
+    if (!box) return;
+    if (_out && _out.ro) _out.ro.disconnect();
+    const st = /** @type {any} */ ({ src, box, chunks: new Map(), pending: new Set(),
+      total: 0, lh: 19.8, pad: 0, scaled: false, sizeH: 0, raf: 0, drawn: "",
+      ver: 0, query: "", hits: [], hitTotal: 0, cur: -1, ro: null, win: null });
+    _out = st;
+    setMarks(null);
+    const info = await NB.call("get_output_info", src);
+    if (_out !== st) return;
+    if (!info || !info.ok || !info.lines) {
+      box.textContent = info && info.ok ? "The output file is empty." : "No output on disk.";
+      if (meta) meta.textContent = info && info.ok ? info.file : "";
+      return;
+    }
+    st.total = info.lines;
+    if (meta) meta.textContent = `${info.file} · ${fmtSize(info.bytes)} · `
+      + `${info.lines.toLocaleString()} lines`;
+
+    box.innerHTML = `<div class="rawsize"><div class="rawwin"><div>0</div></div></div>`;
+    const size = box.firstElementChild;
+    st.win = size.firstElementChild;
+    st.lh = st.win.firstElementChild.getBoundingClientRect().height || 19.8;
+    st.pad = parseFloat(getComputedStyle(box).paddingTop) || 0;
+    const full = st.total * st.lh;
+    st.scaled = full > OUT_MAXPX;
+    st.sizeH = Math.min(full, OUT_MAXPX);
+    size.style.height = st.sizeH + "px";
+    // the longest line in BYTES, so a wide character over-reserves a little;
+    // capped, because one runaway line must not make the bar useless
+    size.style.width = `max(100%, ${Math.min(info.max_len || 0, 2000) + 1}ch)`;
+
+    box.addEventListener("scroll", () => outSchedule(st));
+    st.ro = new ResizeObserver(() => outSchedule(st));
+    st.ro.observe(box);
+    bindFind(host, st);
+    q("top").addEventListener("click", () => { box.scrollTop = 0; });
+    q("tail").addEventListener("click", () => { box.scrollTop = box.scrollHeight; });
+    outRender(st);
+  }
+
+  /** @param {any} st */
+  function outSchedule(st) {
+    if (st.raf) return;
+    st.raf = requestAnimationFrame(() => { st.raf = 0; if (_out === st) outRender(st); });
+  }
+
+  /** How many lines fit on screen. @param {any} st */
+  const outVisible = (st) => Math.ceil(st.box.clientHeight / st.lh) + 1;
+
+  /** The first line on screen and where its box starts inside the spacer.
+   *  @param {any} st @returns {[number, number]} */
+  function outFirst(st) {
+    const box = st.box, vis = outVisible(st);
+    if (!st.scaled) {
+      const first = Math.floor(Math.max(0, box.scrollTop - st.pad) / st.lh);
+      return [first, first * st.lh];
+    }
+    const max = Math.max(1, box.scrollHeight - box.clientHeight);
+    const first = Math.round(Math.min(1, box.scrollTop / max) * Math.max(0, st.total - vis));
+    const top = Math.min(Math.max(0, box.scrollTop - st.pad), st.sizeH - vis * st.lh);
+    return [first, Math.max(0, top)];
+  }
+
+  /** Line k's text, or null while its chunk is being fetched.
+   *  @param {any} st @param {number} k @returns {string|null} */
+  function outLine(st, k) {
+    const ci = Math.floor(k / OUT_CHUNK);
+    const c = st.chunks.get(ci);
+    if (c) return c[k - ci * OUT_CHUNK] ?? "";
+    if (!st.pending.has(ci)) {
+      st.pending.add(ci);
+      NB.call("get_output_lines", st.src, ci * OUT_CHUNK, OUT_CHUNK).then(r => {
+        if (_out !== st) return;
+        st.pending.delete(ci);
+        st.chunks.set(ci, r && r.ok ? r.lines : []);
+        while (st.chunks.size > OUT_CACHE) st.chunks.delete(st.chunks.keys().next().value);
+        st.ver++;
+        outSchedule(st);
+      });
+    }
+    return null;
+  }
+
+  /** @param {any} st */
+  function outRender(st) {
+    const [first, top] = outFirst(st);
+    const a = Math.max(0, first - OUT_OVERSCAN);
+    const b = Math.min(st.total, first + outVisible(st) + OUT_OVERSCAN);
+    const key = `${a}:${b}:${top}:${st.ver}:${st.query}:${st.cur}`;
+    if (key === st.drawn) return;
+    st.drawn = key;
+    // the chunks on screen become the most recently used, so eviction takes others
+    for (let ci = Math.floor(a / OUT_CHUNK); ci <= Math.floor((b - 1) / OUT_CHUNK); ci++) {
+      const c = st.chunks.get(ci);
+      if (c) { st.chunks.delete(ci); st.chunks.set(ci, c); }
+    }
+    const rows = [];
+    for (let k = a; k < b; k++) {
+      const t = outLine(st, k);
+      rows.push(t === null ? `<div></div>` : `<div>${NB.esc(t)}</div>`);
+    }
+    st.win.style.top = (top - (first - a) * st.lh) + "px";
+    st.win.innerHTML = rows.join("");
+    outMark(st, a);
+  }
+
+  /** Mark every match among the lines drawn, the current one apart.
+   *  @param {any} st @param {number} a the first line drawn */
+  function outMark(st, a) {
+    const H = /** @type {any} */ (window).Highlight;
+    if (!H || !st.query) { setMarks(null); return; }
+    const all = new H(), cur = new H();
+    const ql = asciiLower(st.query), n = ql.length;
+    const curLine = st.cur >= 0 ? st.hits[st.cur] : -1;
+    const curOcc = curLine >= 0 ? st.cur - lowerBound(st.hits, curLine) : -1;
+    const kids = st.win.children;
+    for (let i = 0; i < kids.length; i++) {
+      const node = kids[i].firstChild;
+      if (!node) continue;
+      const text = asciiLower(node.nodeValue || "");
+      let at = text.indexOf(ql), occ = 0;
+      while (at !== -1) {
+        const r = new Range();
+        r.setStart(node, at);
+        r.setEnd(node, at + n);
+        (a + i === curLine && occ === curOcc ? cur : all).add(r);
+        at = text.indexOf(ql, at + n);
+        occ++;
+      }
+    }
+    setMarks({ all, cur });
+  }
+
+  /** The first index in a sorted array whose value is >= v.
+   *  @param {number[]} arr @param {number} v */
+  function lowerBound(arr, v) {
+    let lo = 0, hi = arr.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < v) lo = m + 1; else hi = m; }
+    return lo;
+  }
+
+  /** Bring line k on screen, centred, unless it is already well inside it.
+   *  @param {any} st @param {number} k */
+  function outReveal(st, k) {
+    const box = st.box, vis = outVisible(st);
+    const [first] = outFirst(st);
+    if (k > first && k < first + vis - 2) { outRender(st); return; }
+    if (!st.scaled) {
+      box.scrollTop = st.pad + k * st.lh - (box.clientHeight - st.lh) / 2;
+    } else {
+      const want = Math.max(0, k - Math.floor(vis / 2));
+      box.scrollTop = want / Math.max(1, st.total - vis) * (box.scrollHeight - box.clientHeight);
+    }
+    outRender(st);
+  }
+
+  /** @param {HTMLElement} host @param {any} st */
+  function bindFind(host, st) {
+    const q = (/** @type {string} */ k) =>
+      /** @type {any} */ (host.querySelector(`[data-r="${k}"]`));
+    const input = q("find"), count = q("fcount"), prev = q("fprev"), next = q("fnext");
+    if (!input) return;
+    input.disabled = false;
+    let timer = 0, asked = "";
+
+    const show = () => {
+      const n = st.hits.length;
+      prev.disabled = next.disabled = n === 0;
+      if (!st.query) count.textContent = "";
+      else if (!st.hitTotal) count.textContent = "No matches";
+      else count.textContent = `${(st.cur + 1).toLocaleString()} of ${st.hitTotal.toLocaleString()}`
+        + (st.hitTotal > n ? ` · first ${n.toLocaleString()} reachable` : "");
+    };
+    /** @param {number} i */
+    const go = (i) => {
+      const n = st.hits.length;
+      if (!n) return;
+      st.cur = ((i % n) + n) % n;
+      show();
+      outReveal(st, st.hits[st.cur]);
+    };
+    const run = async () => {
+      const want = input.value;
+      asked = want;
+      if (!want) {
+        st.query = ""; st.hits = []; st.hitTotal = 0; st.cur = -1;
+        show();
+        outRender(st);
+        return;
+      }
+      count.textContent = "Searching…";
+      const r = await NB.call("find_in_output", st.src, want);
+      if (_out !== st || asked !== want) return;
+      st.query = want;
+      st.hits = r && r.ok ? r.hits : [];
+      st.hitTotal = r && r.ok ? (r.total || 0) : 0;
+      st.cur = -1;
+      if (!st.hits.length) { show(); outRender(st); return; }
+      // from where the reader is, the way a browser's find goes on
+      const i = lowerBound(st.hits, outFirst(st)[0]);
+      go(i < st.hits.length ? i : 0);
+    };
+
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(run, 250);
+    });
+    input.addEventListener("keydown", (/** @type {KeyboardEvent} */ e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      if (input.value !== st.query || asked !== input.value) {
+        clearTimeout(timer);
+        run();
+      } else go(st.cur + (e.shiftKey ? -1 : 1));
+    });
+    prev.addEventListener("click", () => go(st.cur - 1));
+    next.addEventListener("click", () => go(st.cur + 1));
+  }
+
+  // Ctrl+F finds in the output: the embedded browser has no find bar of its
+  // own, so without this the shortcut every reader tries did nothing
+  document.addEventListener("keydown", e => {
+    if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "f") return;
+    const f = /** @type {any} */ (document.getElementById("out-find"));
+    if (!f || f.disabled || !f.offsetParent) return;
+    e.preventDefault();
+    f.focus();
+    f.select();
+  });
 
   // ---------------------------------------------------------------- profile
 
@@ -1055,18 +1335,13 @@
     q('[data-r="openfolder"]').addEventListener("click", openFolderDialog);
     q('[data-r="showall"]').addEventListener("click", () => { _showAll = !_showAll; paint(); });
     q('[data-r="infolder"]').addEventListener("click", showInFolder);
-    const tail = q('[data-r="tail"]');
-    if (tail) tail.addEventListener("click", () => {
-      const o = q('[data-r="out"]');
-      if (o) o.scrollTop = o.scrollHeight;
-    });
     host.querySelectorAll("[data-jump]").forEach(b => b.addEventListener("click",
       () => jump(/** @type {HTMLElement} */ (b).dataset.jump)));
     spy(host);
     bindCharts(host);
 
     if (_cur) {
-      fillRaw(name, _cur);
+      fillRaw(_curName || (_curPath ? "file:" + _curPath : ""), _cur);
       // how the BACKEND addresses this result. A queued calculation is parsed
       // by kind, a file on disk by its folder — the prefix keeps the two routes
       // apart, and an MLIP or CREST run read the wrong way is a bogus result.

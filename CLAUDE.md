@@ -133,6 +133,20 @@ the nearest band winning, because a band is 1.6px; ←/→/Home/End step the sam
 cursor and the plate is a `role="status"`, so the numbers are never hover-only.
 DESIGN.md §17.4b.
 
+Its **Output pane is the whole `.out` from line one, virtualized**: a spacer as
+tall as the file holds only the lines on screen, fetched by number through
+`get_output_info` / `get_output_lines`, and *Find* is `find_in_output` — the
+search runs on the backend because the page never holds the file. All three
+read `orcamgr/outview.py` (Qt-free, numpy): a newline-offset index cached per
+path, **extended** when a running job appends and **re-scanned** when a re-run
+rewrites (a head/tail fingerprint tells the two apart — size and mtime alone
+cannot). Case folding is ASCII-only on both sides (`bytes.lower` / `asciiLower`)
+so the count and the on-screen marks agree. These slots, and `get_inp` /
+`get_output_tail`, take a calc name **or `file:<path>`** (`Bridge._result_file`):
+a result opened from outside the workspace has no queue entry, and resolving it
+as `{workspace}/{stem}/` is how its Output pane read "No output on disk." beside
+a parsed summary. DESIGN.md §17.4j.
+
 Its **Visual strip is both halves of "what can be drawn"**: the `.xyz` sets from
 `list_structure_sets` and the wavefunction's surfaces from `NB.mv.surfaces`
 (`web/next/mvwin.js` — `get_plot_options` + `picksFor` + the cube-name rule, in

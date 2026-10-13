@@ -146,3 +146,20 @@ def test_line_count_is_clamped_to_a_sane_range(tmp_path):
     assert len(tail_lines(p, 0)[0]) == 1                 # 0/None -> at least one
     assert len(tail_lines(p, -20)[0]) == 1
     assert len(tail_lines(p, 10 ** 6)[0]) == _LOG_TAIL_MAX
+
+
+def test_a_result_opened_from_disk_reads_its_own_folder(tmp_path):
+    """The notebook's Output pane addresses an opened file as ``file:<path>``.
+    Resolving it by stem under the workspace looked in a folder that does not
+    exist, and the pane read "No output on disk." beside a parsed summary."""
+    from types import SimpleNamespace
+    from orcamgr.gui.bridge import Bridge
+    run = tmp_path / "Part A" / "001A_pyridine_opt"
+    run.mkdir(parents=True)
+    out = run / "001A_pyridine_opt.out"
+    out.write_text("****ORCA TERMINATED NORMALLY****\n", encoding="utf-8")
+    stub = SimpleNamespace()   # the file: route never touches the store
+    assert Bridge._result_file(stub, f"file:{out}", ".out") == out
+    assert Bridge._result_file(stub, f"file:{out}", ".inp") == run / "001A_pyridine_opt.inp"
+    mlip = run / "m.mlip.json"
+    assert Bridge._result_file(stub, f"file:{mlip}", ".out") == run / "m.out"
