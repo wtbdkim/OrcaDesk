@@ -1663,6 +1663,26 @@ table calls it `0-O – 1-H`. Everything user-facing counts from one, through a
 single helper (`results.js atomLabel` / `mayerAtom`) that is the one place
 knowing ORCA does not.
 
+**17.4j The output is the whole file, and its scrollbar is the file's.** The
+reference's Output pane holds a short file in full, with *Find*, *↑ Top* and
+*↓ Latest* above it. A real `.out` is hundreds of MB, and the pane used to hold
+the last 2000 lines scrolled to the bottom — the opposite of "everything ORCA
+wrote", and the input echo, the basis summary and the first cycles were simply
+not there. It now opens at line one and draws only what is on screen inside a
+spacer as tall as the whole file (`results.js` "output", `orcamgr/outview.py`),
+so the scrollbar is the navigation and is drawn on purpose rather than left to
+the platform's auto-hiding default (the named block "the whole output" at the
+bottom of `app.css`). Above ~750k lines the spacer stops growing and the
+position maps onto the file proportionally — Chromium does not lay out an
+element much past 33M px. *Find* is the reference's control and its
+placeholder; the search runs on the backend, which holds the file, and the
+matches on screen are marked with the Custom Highlight API — every match amber
+(`--warn-tint`), the current one solid (`--warn`), the way a browser's find
+does. Enter / Shift+Enter and *Prev* / *Next* step through them, Ctrl+F
+reaches the box (the embedded browser has no find bar of its own), and the
+count is a live region. The button keeps the app's *↓ End* over the
+reference's *↓ Latest*: a finished file has an end, not a latest.
+
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
 **both** front-ends — the way out of a preview has to be inside it — and saving

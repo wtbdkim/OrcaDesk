@@ -415,6 +415,34 @@ class LogTailResult(_Ok, total=False):
     truncated: bool  # the file held more than the requested tail
 
 
+class OutputInfoResult(_Ok, total=False):
+    """get_output_info — the shape of a run's whole .out, for the Results
+    window's output pane, which draws only the lines on screen and fetches
+    them by number (orcamgr/outview.py)."""
+    error: str
+    file: str        # basename, for the section's meta line
+    bytes: int
+    lines: int       # line count
+    max_len: int     # longest line in bytes -- sizes the horizontal scroll
+
+
+class OutputLinesResult(_Ok, total=False):
+    """get_output_lines — lines start .. start+len(lines)-1 of a .out.
+    "lines" is present on every branch."""
+    error: str
+    start: int
+    lines: "list[str]"
+
+
+class OutputFindResult(_Ok, total=False):
+    """find_in_output — the line of every match, in order (a line holding two
+    is listed twice), capped; "total" counts every match. "hits" is present on
+    every branch."""
+    error: str
+    hits: "list[int]"
+    total: int
+
+
 class FepPoint(TypedDict):
     """One finished calculation that can stand in a reaction profile.
 

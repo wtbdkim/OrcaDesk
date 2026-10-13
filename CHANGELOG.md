@@ -42,6 +42,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     you add and remove.
   - **Insertable blocks for a hand-written `.inp`** — `{{GEOMETRY}}` and the
     common `%`-blocks, at the cursor.
+- **The notebook report's Output shows the whole file, with Find.** It used to
+  show the last 2000 lines, scrolled to the end. It now opens at the first line
+  and scrolls through the entire `.out` — a 1-million-line, 52 MB output scrolls
+  as easily as a small one, because only the lines on screen are drawn — with a
+  visible scrollbar and *↑ Top* / *↓ End*. **Find** (or Ctrl+F) marks every
+  match on screen, highlights the current one, counts them (`12 of 23`) and
+  steps with Enter / Shift+Enter or *Prev* / *Next*; case is ignored.
 
 ### Changed
 - **The free-energy profile is now the Reaction profile, and it reads every
@@ -86,6 +93,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   hit-target rule can save.
 
 ### Fixed
+- **A result opened from disk shows its output.** In the notebook report, a
+  `.out` opened with *Open file…* from outside the workspace parsed correctly
+  but its Output pane read "No output on disk." — the file was looked for under
+  the workspace by name instead of in its own folder. Its Input pane now also
+  shows the real `.inp` from that folder rather than the echo inside the `.out`.
 - **Changing the Type in the notebook builder now changes the job.** The
   calculation type carried over from the previous Type, so a new calculation
   switched from Optimization to Opt + Freq kept `TightOpt` on its keyword line:

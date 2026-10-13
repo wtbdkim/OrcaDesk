@@ -67,6 +67,9 @@ interface OrcaBridge {
   get_inp(name: string): Promise<string>;
   get_graph_lines(name: string): Promise<string>;
   get_output_tail(name: string, max_lines: number): Promise<string>;
+  get_output_info(name: string): Promise<string>;
+  get_output_lines(name: string, start: number, count: number): Promise<string>;
+  find_in_output(name: string, query: string): Promise<string>;
   export_conformers(name: string): Promise<string>;
   // 3D structure viewer (Results › Visual). The .xyz sets sitting with a result
   // — the CREST ensemble, the conformers/ export, a trajectory — discovered

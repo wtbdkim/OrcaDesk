@@ -55,7 +55,7 @@ from ..state.schemas import (
     AboutPayload, AutodetectResult, ConflictsResult, ErrorPayload, ExistsResult,
     FepPoint,
     FepResult, GeomAtomPayload, GetCalcResult, GraphLinesResult, LoadResult,
-    LogTailResult,
+    LogTailResult, OutputInfoResult, OutputLinesResult, OutputFindResult,
     MlipStatusPayload, MlipInstallPayload, MlipInstallOptionsPayload,
     MutationResult, NboJobPayload, NboResultPayload, NmrPayload, OkResult,
     OrbitalPayload, SavedFileResult,
@@ -1314,12 +1314,32 @@ class Bridge(QObject):
             return Path(calc.output_path).parent
         return Path(self.settings.workspace_root) / name
 
+    def _result_file(self, name: str, suffix: str) -> Path:
+        """``{base}{suffix}`` for a calc NAME or a ``file:<path>`` result.
+
+        A result opened from disk has no queue entry, so its name says nothing
+        about where it lives: resolving it as ``{workspace}/{stem}/`` looked in
+        a folder that does not exist and the notebook's Output pane read "No
+        output on disk." beside a fully parsed summary. The file's own folder
+        is the run folder (ORCA writes ``{base}.inp``/``.out`` side by side).
+        A calc name cannot contain ``:``, so the prefix is unambiguous."""
+        if name.startswith("file:"):
+            p = Path(name[5:])
+            if suffix == ".out" and p.name.lower().endswith(".out"):
+                return p
+            low = p.name.lower()
+            base = (p.name[:-len(".mlip.json")] if low.endswith(".mlip.json")
+                    else p.name[:-4] if low.endswith(".out") else p.stem)
+            return p.parent / f"{base}{suffix}"
+        return self._calc_run_dir(name) / f"{name}{suffix}"
+
     @pyqtSlot(str, result=str)
     def get_inp(self, name: str) -> str:
         """Return the on-disk ORCA .inp for a calculation, so a running or finished
-        job's actual input can be viewed read-only (not only editable ones)."""
+        job's actual input can be viewed read-only (not only editable ones).
+        ``name`` is a calc name or ``file:<path>`` (see :meth:`_result_file`)."""
         try:
-            p = self._calc_run_dir(name) / f"{name}.inp"
+            p = self._result_file(name, ".inp")
             if not p.exists():
                 return json.dumps(TextResult(ok=False, error="no input on disk yet"))
             return json.dumps(TextResult(ok=True, text=p.read_text(encoding="utf-8", errors="replace")))
@@ -1417,9 +1437,10 @@ class Bridge(QObject):
         Reads from the END of the file (a bounded seek + decode, never a full
         scan) so a multi-hundred-MB .out costs the same as a small one, and
         drops the first line of the block read, which is usually a partial
-        line."""
+        line. ``name`` is a calc name or ``file:<path>`` (see
+        :meth:`_result_file`)."""
         try:
-            out_path = self._calc_run_dir(name) / f"{name}.out"
+            out_path = self._result_file(name, ".out")
             if not out_path.exists():
                 return json.dumps(LogTailResult(ok=False, error="no output", lines=[]))
             lines, more = tail_lines(out_path, max_lines)
@@ -1427,6 +1448,52 @@ class Bridge(QObject):
                 ok=True, lines=lines, file=out_path.name, truncated=more))
         except Exception as e:
             return json.dumps(LogTailResult(ok=False, error=str(e), lines=[]))
+
+    # The Results window's output pane: the whole file, a screenful at a time.
+    # Every slot takes a calc name or "file:<path>" (see _result_file).
+    @pyqtSlot(str, result=str)
+    def get_output_info(self, name: str) -> str:
+        """Line count, size and longest line of a result's .out -- what the
+        pane needs to size its scrollbar before it has read a single line."""
+        from ..outview import index_for
+        try:
+            p = self._result_file(name, ".out")
+            if not p.exists():
+                return json.dumps(OutputInfoResult(ok=False, error="no output"))
+            idx = index_for(p)
+            return json.dumps(OutputInfoResult(
+                ok=True, file=p.name, bytes=idx.size, lines=idx.line_count,
+                max_len=idx.max_len))
+        except Exception as e:
+            return json.dumps(OutputInfoResult(ok=False, error=str(e)))
+
+    @pyqtSlot(str, int, int, result=str)
+    def get_output_lines(self, name: str, start: int, count: int) -> str:
+        """Lines ``start .. start+count-1`` of a result's .out (capped at
+        outview.MAX_LINES_PER_REQUEST)."""
+        from ..outview import index_for
+        try:
+            p = self._result_file(name, ".out")
+            if not p.exists():
+                return json.dumps(OutputLinesResult(ok=False, error="no output", lines=[]))
+            return json.dumps(OutputLinesResult(
+                ok=True, start=max(0, start), lines=index_for(p).lines(start, count)))
+        except Exception as e:
+            return json.dumps(OutputLinesResult(ok=False, error=str(e), lines=[]))
+
+    @pyqtSlot(str, str, result=str)
+    def find_in_output(self, name: str, query: str) -> str:
+        """Every match of ``query`` in a result's .out, ASCII case ignored --
+        searched here rather than in the page, which never holds the file."""
+        from ..outview import index_for
+        try:
+            p = self._result_file(name, ".out")
+            if not p.exists():
+                return json.dumps(OutputFindResult(ok=False, error="no output", hits=[]))
+            hits, total = index_for(p).find(query)
+            return json.dumps(OutputFindResult(ok=True, hits=hits, total=total))
+        except Exception as e:
+            return json.dumps(OutputFindResult(ok=False, error=str(e), hits=[]))
 
     @pyqtSlot(str, result=str)
     def export_conformers(self, name: str) -> str:
