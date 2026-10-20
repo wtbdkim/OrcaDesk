@@ -289,6 +289,17 @@ graph alone, so it never ships the panel half. In node both files export the
 namespace, so `tests/web/scf_graph.test.js` requires `scf_graph.js` and then
 `progress_panels.js` for its side effect.
 
+**One instance per user** (`orcamgr/gui/single_instance.py`, wired in
+`main.py` before `MainWindow` exists — the window restores the session and
+reattaches running jobs, which a second instance must never do). Two
+mechanisms because each answers one question: a `QLockFile`
+(`user_data_root()/instance.lock`, stale only when its owner PID is gone) says
+whether one is running — a `QLocalServer` cannot, since on Windows a second
+`listen()` on the same pipe name succeeds — and a per-user `QLocalServer` is
+how a later launch asks the running one to `bring_to_front()`. The server opens
+before the window is built, so a launch made during startup is still answered;
+`tests/test_single_instance.py` pins the lock, crash recovery and the round trip.
+
 The view's page is `_ConsoleCapturePage` (`window.py`), which forwards JS console
 output into the shared log buffer as `[web] ...` lines (rate-limited per identical
 message) — so front-end errors are visible in the Log tab even in a deployed build

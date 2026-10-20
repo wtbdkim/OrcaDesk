@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QUrl, QEvent, QTimer
+from PyQt6.QtCore import QUrl, QEvent, QTimer, Qt
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QApplication
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -431,6 +431,25 @@ class MainWindow(QMainWindow):
             and self._page.recommendedState() != QWebEnginePage.LifecycleState.Active
         ):
             self._page.setLifecycleState(QWebEnginePage.LifecycleState.Frozen)
+
+    def bring_to_front(self):
+        """Show this window over everything — what a second launch asks for
+        (see single_instance.py). Un-minimizing keeps a maximized window
+        maximized, and the state change wakes a frozen page (changeEvent)."""
+        self.setWindowState(
+            (self.windowState() & ~Qt.WindowState.WindowMinimized)
+            | Qt.WindowState.WindowActive)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if sys.platform == "win32":
+            # activateWindow alone only flashes the taskbar button on Windows;
+            # the launching process has granted us the foreground already.
+            try:
+                import ctypes
+                ctypes.windll.user32.SetForegroundWindow(int(self.winId()))
+            except Exception:
+                pass
 
     def closeEvent(self, event):
         self.shutdown()
