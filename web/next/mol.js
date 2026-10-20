@@ -102,6 +102,7 @@ var MOL = {};
    *  algorithm for the tens of atoms this draws.
    *  @param {any[]} atoms @returns {[number, number][]} */
   function bonds(atoms) {
+    /** @type {[number, number][]} */
     const out = [];
     for (let i = 0; i < atoms.length; i++) {
       for (let j = i + 1; j < atoms.length; j++) {
@@ -133,8 +134,11 @@ var MOL = {};
    *  what picking and measuring are done against — the projection is computed
    *  once per frame either way.
    *  @param {HTMLCanvasElement} canvas @param {any[]} atoms
-   *  @param {{yaw: number, pitch: number, mark?: number[], measure?: number[],
-   *           labels?: boolean}} view */
+   *  @param {{yaw: number, pitch: number, mark?: number[],
+   *           measure?: {from: number|null, to?: number|null,
+   *                      cur?: {x: number, y: number}|null}|null,
+   *           labels?: boolean, gizmo?: boolean, hotAxis?: string,
+   *           gizmoBottom?: number}} view */
   function render(canvas, atoms, view) {
     const box = canvas.getBoundingClientRect();
     if (!atoms || !atoms.length || box.width < 2 || box.height < 2) return null;

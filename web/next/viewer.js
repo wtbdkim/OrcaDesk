@@ -347,7 +347,8 @@
     // hundreds of rows on a real basis set, and the list is rebuilt on every
     // tile press
     list.onclick = (e) => {
-      const b = /** @type {HTMLElement} */ (e.target).closest("[data-pick]");
+      const b = /** @type {HTMLElement|null} */ (
+        /** @type {HTMLElement} */ (e.target).closest("[data-pick]"));
       if (!b || !list.contains(b)) return;
       list.querySelectorAll("[data-pick]").forEach(o => o.setAttribute(
         "aria-selected", String(o === b)));

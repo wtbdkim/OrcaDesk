@@ -86,7 +86,8 @@ var NB = {};
   /** Open the shared modal.
    *  @param {string} title
    *  @param {string} bodyHtml
-   *  @param {{label: string, cls?: string, act?: () => void}[]} [buttons] */
+   *  @param {{label: string, cls?: string, act?: () => void}[]} [buttons]
+   *  @param {boolean} [wide] */
   NB.modalRaw = function (title, bodyHtml, buttons, wide) {
     NB.$("modal-title").textContent = title;
     NB.$("modal-body").innerHTML = bodyHtml;

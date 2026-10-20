@@ -176,6 +176,9 @@ interface Window {
   switchTab: (name: string) => void;
   /* the notebook front-end's top-level navigation (web/next.js) */
   nbGo?: (view: string) => void;
+  /* selectmenu.js: upgrade the <select>s under a root now, not on the
+     observer's next microtask */
+  selectmenuScan?: (root?: ParentNode) => void;
 }
 
 /* ---------- pragmatic DOM loosening ----------
