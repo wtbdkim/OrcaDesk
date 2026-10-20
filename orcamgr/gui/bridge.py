@@ -63,7 +63,7 @@ from ..state.schemas import (
     StartServerResult, TextResult, TransitionPayload,
     CrestStatusPayload, ConformerPayload,
     WallpaperResult, ExportResult, FramesResult, FavoritesResult,
-    StructureSetsResult, PickedResultPayload,
+    StructureSetsResult, PickedResultPayload, PickedFilePayload,
     PlotOptionsResult, CubeJobPayload, CubeDataResult, WorkspaceResultsResult,
     AtomOrderPayload, StructureCheckPayload,
 )
@@ -951,6 +951,21 @@ class Bridge(QObject):
             "XYZ file (*.xyz);;All files (*.*)"
         )
         return self._load_result(path)
+
+    @pyqtSlot(result=str)
+    def pick_hess_file(self) -> str:
+        """Pick the .hess an IRC starts from (InitHess read); returns a
+        PickedFilePayload JSON. Only the PATH comes back — the file is copied
+        into the run folder at launch (QueueEngine._stage_irc_hessian), so a
+        Hessian picked from a TS frequency run's folder needs no typing and
+        no manual copy. Opens at the workspace, where those runs live."""
+        path, _ = QFileDialog.getOpenFileName(
+            self.window, "Load ORCA Hessian (.hess)", self._dialog_start_dir(),
+            "ORCA Hessian (*.hess);;All files (*.*)"
+        )
+        if not path:
+            return json.dumps(PickedFilePayload(ok=False, cancelled=True))
+        return json.dumps(PickedFilePayload(ok=True, path=path))
 
     @pyqtSlot(result=str)
     def load_inp_file(self) -> str:

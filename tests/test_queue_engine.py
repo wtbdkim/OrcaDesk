@@ -687,6 +687,33 @@ def test_irc_read_hess_staged_from_referenced_calc_folder(tmp_path):
     assert (tmp_path / "irc2" / "TS2.hess").exists()
 
 
+def test_irc_picked_hess_is_copied_into_the_run_folder(tmp_path):
+    # Load .hess stores the picked file's full path; the input names only the
+    # file, so it must be in the run folder before ORCA starts
+    engine = _real_engine(tmp_path)
+    src_dir = tmp_path / "elsewhere with space"
+    src_dir.mkdir()
+    (src_dir / "TS2.hess").write_text("$hessian\n", encoding="utf-8")
+    calc = Calculation(name="irc3", kind="irc",
+                       config=StepConfig(kind="irc", irc_init_hess="read",
+                                         irc_hess_file=str(src_dir / "TS2.hess")))
+    calc.xyz = "H 0.0 0.0 0.0"
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+    assert (tmp_path / "irc3" / "TS2.hess").read_text(encoding="utf-8") == "$hessian\n"
+    assert 'Hess_Filename "TS2.hess"' in (tmp_path / "irc3" / "irc3.inp").read_text(encoding="utf-8")
+
+
+def test_irc_picked_hess_that_vanished_fails_before_launch(tmp_path):
+    engine = _real_engine(tmp_path)
+    calc = Calculation(name="irc4", kind="irc",
+                       config=StepConfig(kind="irc", irc_init_hess="read",
+                                         irc_hess_file=str(tmp_path / "gone" / "TS2.hess")))
+    calc.xyz = "H 0.0 0.0 0.0"
+    with pytest.raises(OrcaRunError, match="Load the .hess again"):
+        engine._run_calc(calc, 0)
+
+
 def test_raw_neb_custom_end_file_ignores_stale_stored_product(tmp_path):
     # A stored product is dead state for a raw text that points NEB_End_XYZFile
     # at its own file (the _nebProductXyz global survives excursions): no

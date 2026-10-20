@@ -823,7 +823,14 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   named `.hess` from the referenced calc's folder when it isn't in the run
   folder, and fails fast when it can't be found; a blank filename is refused
   by `build_input` itself (`ValueError` — the trust boundary, so phone/API
-  payloads fail loudly too).
+  payloads fail loudly too). The notebook builder fills `irc_hess_file` from a
+  **Load .hess…** picker (`pick_hess_file`) instead of a typed name, and the
+  load itself switches Initial Hessian to `read`. What it stores is the picked
+  file's absolute path: `irc_hess_input_name` writes only the file name into
+  `Hess_Filename` (ORCA runs in the run folder and truncates arguments at a
+  space), and `_stage_irc_hessian` copies the file in before every launch.
+  A plain name still means "in the run folder / the referenced calc's
+  folder", and a raw input's own `Hess_Filename` is never rewritten.
 - **Result validation is per-kind**: `opt`/`ts_opt` (and the combined
   `opt_freq`/`ts_opt_freq`) must converge; every freq kind must have PRODUCED
   frequencies at all (the imaginary-mode rule is vacuously true of an empty

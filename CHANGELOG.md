@@ -51,6 +51,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   steps with Enter / Shift+Enter or *Prev* / *Next*; case is ignored.
 
 ### Changed
+- **An IRC's starting Hessian is loaded, not typed.** The notebook builder's
+  `.hess file` text field is now a **Load .hess…** button, like *Load .xyz…*:
+  pick the `.hess` a TS frequency run left behind (from any folder) and
+  Initial Hessian switches to *read* by itself. The file is copied into the
+  IRC's run folder when it starts, so the Hessian is not computed a second
+  time and nothing has to be copied by hand. Saving with *read* and no file
+  loaded is refused with a sentence saying so.
 - **Only one ORCAdesk runs at a time.** Starting it again while it is open
   brings the open window to the front (restoring it if it was minimized)
   instead of opening a second one. Two instances restored the same queue,
