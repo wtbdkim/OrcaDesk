@@ -437,6 +437,49 @@ test("BATCH lines outside the integrals stage never touch the count", function (
   assert.strictEqual(f.batchIdx, -1);
 });
 
+test("an OptTS initial Hessian is drawn as the Hessian alone, not as a frequency job", function () {
+  // real ORCA 6.1.1 OptTS (Calc_Hess true) order: the Hessian runs INSIDE
+  // cycle 1 and prints a THERMOCHEMISTRY block, but no frequency table
+  const f = new SCFGraph.FreqTracker();
+  f.push("         *                GEOMETRY OPTIMIZATION CYCLE   1            *");
+  f.push("GEOMETRIC PERTURBATIONS (16 nuclei)");
+  f.push("SHARK CP-SCF DRIVER");
+  assert.strictEqual(f.prestep, true);
+  assert.strictEqual(f.title(), "Initial Hessian");
+  let html = SCFGraph.renderFreqProgress(f);
+  assert.ok(html.includes("Initial Hessian"), "titled as the Hessian");
+  assert.ok(!html.includes("Normal modes") && !html.includes("Thermochemistry"),
+            "no frequency stages listed after the Hessian");
+  f.push("SCF HESSIAN");
+  f.push("THERMOCHEMISTRY AT 298.15K");
+  assert.strictEqual(f.finished, true, "past the Hessian the pre-step is complete");
+  assert.strictEqual(f.aIdx, 2, "the chain never walks into the frequency stages");
+  f.push("         *                GEOMETRY OPTIMIZATION CYCLE   2            *");
+  assert.strictEqual(f.active, false, "the next cycle clears the panel");
+  assert.strictEqual(f.prestep, false);
+});
+
+test("an opt_freq's frequencies after convergence stay a frequency job", function () {
+  const f = new SCFGraph.FreqTracker();
+  f.push("         *                GEOMETRY OPTIMIZATION CYCLE   7            *");
+  f.push("                    ***        THE OPTIMIZATION HAS CONVERGED     ***");
+  f.push("                 *** FINAL ENERGY EVALUATION AT THE STATIONARY POINT ***");
+  f.push("GEOMETRIC PERTURBATIONS (13 nuclei)");
+  f.push("                                *** OPTIMIZATION RUN DONE ***");
+  f.push("SCF HESSIAN");
+  f.push("VIBRATIONAL FREQUENCIES");
+  assert.strictEqual(f.prestep, false);
+  assert.strictEqual(f.title(), "Analytical frequencies");
+  assert.strictEqual(f.aStage, "freq");
+});
+
+test("a Hessian recomputed in a later cycle names that cycle", function () {
+  const f = new SCFGraph.FreqTracker();
+  f.push("         *                GEOMETRY OPTIMIZATION CYCLE   5            *");
+  f.push("GEOMETRIC PERTURBATIONS (4 nuclei)");
+  assert.strictEqual(f.title(), "Hessian · optimization cycle 5");
+});
+
 // ============================================================
 // ETA: real estimator + bucket boundaries
 // ============================================================
