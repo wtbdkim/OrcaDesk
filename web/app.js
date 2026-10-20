@@ -1053,7 +1053,7 @@ function renderCrest(st) {
 function crestIsLocal(st) { return !!st && st.transport === "local"; }
 /** How to name one target in prose. The local pseudo-target is called "local"
  *  on the wire (it is what round-trips through settings), which is not a name
- *  to show a person. @param {CrestStatusPayload} [st] @param {string} name */
+ *  to show a person. @param {CrestStatusPayload|undefined} st @param {string} name */
 function crestTargetLabel(st, name) {
   return crestIsLocal(st) && name === "local" ? "this machine" : name;
 }

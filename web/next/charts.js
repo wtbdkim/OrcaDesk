@@ -233,15 +233,18 @@ var CHARTS = {};
   /* A run that is a sequence of named stages rather than a converging trace.
      The labels are the backends' own (progress_panels.js A_STAGES / the TD-DFT
      and CREST chains); the detail under each is read off the tracker. */
+  /** @type {[string, string][]} */
   const FREQ_STAGES = [
     ["integrals", "Derivative integrals"], ["cpscf", "CP-SCF response"],
     ["hessian", "SCF Hessian"], ["freq", "Frequencies"], ["modes", "Normal modes"],
     ["ir", "IR spectrum"], ["thermo", "Thermochemistry"],
   ];
+  /** @type {[string, string][]} */
   const TDDFT_STAGES = [
     ["setup", "XC kernel"], ["solver", "Diagonalization"], ["states", "Excited states"],
     ["spectra", "Transition spectra"], ["energy", "Total energy"],
   ];
+  /** @type {[string, string][]} */
   const CREST_STAGES = [
     ["init", "Initial optimization"], ["sample", "Metadynamics sampling"],
     ["md", "Regular MD"], ["gc", "Genetic crossing (GC)"],
