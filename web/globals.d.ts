@@ -43,6 +43,7 @@ interface OrcaBridge {
   load_xyz_path(path: string): Promise<string>; // LoadResult JSON
   load_inp_file(): Promise<string>;            // LoadResult JSON
   load_inp_path(path: string): Promise<string>; // LoadResult JSON
+  pick_hess_file(): Promise<string>;           // PickedFilePayload JSON (IRC InitHess read)
   load_choices(name: string): Promise<string>;
   // structure screening (Build tab; both over core/structure.py — read-only)
   check_structure(xyz: string, charge: number, multiplicity: number): Promise<string>;  // StructureCheck JSON

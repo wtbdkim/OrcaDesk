@@ -692,3 +692,14 @@ def test_numfreq_asked_for_in_the_extra_options_is_capped_too():
     # cap reads the composed keyword line, so both spellings reach it (P4).
     cfg = StepConfig(kind="sp", calculation_type="", options="NumFreq", nprocs=15)
     assert _pal_line(build_input(cfg, WATER_XYZ)) == "%pal nprocs 12 end"
+
+
+def test_irc_picked_hess_path_is_written_as_its_file_name():
+    # a .hess loaded through the picker is stored as a full path and copied
+    # into the run folder at launch; the input names only the file, since ORCA
+    # runs in that folder and truncates arguments at a space
+    for path in (r"D:\Calc Work\ts freq\TS2.hess", "/home/u/runs/TS2.hess"):
+        cfg = StepConfig(kind="irc", irc_init_hess="read", irc_hess_file=path)
+        text = build_input(cfg, "H 0 0 0\nH 0 0 0.74", 0, 1)
+        assert 'Hess_Filename "TS2.hess"' in text, path
+        assert "Calc Work" not in text and "/home/u" not in text

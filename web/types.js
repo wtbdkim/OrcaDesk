@@ -608,6 +608,16 @@
  */
 
 /**
+ * pick_hess_file() result — a file chosen to be used by path (copied into the
+ * run folder at launch). Mirror of the Python PickedFilePayload.
+ * @typedef {Object} PickedFilePayload
+ * @property {boolean} ok
+ * @property {boolean} [cancelled]
+ * @property {string} [path]
+ * @property {string} [error]
+ */
+
+/**
  * get_favorites(source) / toggle_favorite(...) result. Mirror of the Python
  * FavoritesResult; "labels" is present on every branch — the backend's
  * in-memory list, so a star that could not be PERSISTED still reports

@@ -46,7 +46,7 @@ from typing import Callable, Optional
 
 from .input_generator import (
     StepConfig, build_input, render_raw_input, GEOMETRY_PLACEHOLDER, check_neb_atom_order,
-    _xyz_elements,
+    _xyz_elements, irc_hess_input_name, irc_hess_is_path,
 )
 from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
                         numfreq_rank_cap, ram_headroom_mb, raw_nprocs, uses_gpu,
@@ -922,6 +922,24 @@ class QueueEngine:
         else:
             hess_name = ""
         if not hess_name:
+            return
+
+        if not calc.is_raw and irc_hess_is_path(hess_name):
+            # A picked file: the generated input names only the file
+            # (irc_hess_input_name), so it must be in the run folder by launch.
+            # Copied fresh every time, so re-picking a file of the same name
+            # never leaves the previous one in place.
+            src = Path(hess_name)
+            if not src.is_file():
+                raise OrcaRunError(
+                    f'IRC needs the Hessian file "{hess_name}", but it is not '
+                    f"there any more. Load the .hess again.")
+            dest = calc_dir / irc_hess_input_name(hess_name)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if src.resolve() != dest.resolve():
+                shutil.copyfile(src, dest)
+                self.cb.log(f"[{calc.name}] copied {src.name} into the run folder.",
+                            "info", calc.name)
             return
 
         hess_path = Path(hess_name)

@@ -580,6 +580,15 @@ class PickedResultPayload(_Ok, total=False):
     route: str
 
 
+class PickedFilePayload(_Ok, total=False):
+    """pick_hess_file — a file chosen to be used by PATH (it is copied into the
+    run folder at launch, never read here). "cancelled" marks a closed picker,
+    which is a choice rather than a failure."""
+    cancelled: bool
+    error: str
+    path: str
+
+
 class FavoritesResult(_Ok, total=False):
     """get_favorites / toggle_favorite — "labels" is present on every branch
     ([] on failure)."""

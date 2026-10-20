@@ -14,6 +14,7 @@ Each step produces a complete .inp text given an XYZ coordinate block.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields as dataclass_fields, asdict
+from pathlib import PurePosixPath, PureWindowsPath
 
 from .resources import numfreq_rank_cap
 from .structure import compare_atom_order, parse_block
@@ -310,7 +311,8 @@ class StepConfig:
     irc_maxiter: int = 100               # max IRC steps
     irc_direction: str = "both"          # both | forward | backward
     irc_init_hess: str = "calc_anfreq"   # calc_anfreq | calc_numfreq | read
-    irc_hess_file: str = ""              # .hess to read when init_hess == "read"
+    irc_hess_file: str = ""              # .hess to read when init_hess == "read": a picked
+                                         # absolute path (copied in) or a run-folder name
     # NEB-TS (nudged elastic band -> transition state). The reactant goes in the
     # usual coordinate block; the PRODUCT geometry is written to a side .xyz file
     # that the %neb block points at. neb_product_xyz holds that product geometry.
@@ -575,6 +577,24 @@ def _keyword_line(cfg: StepConfig) -> str:
 GEOMETRY_PLACEHOLDER = "{{GEOMETRY}}"
 
 
+def irc_hess_is_path(hess: str) -> bool:
+    """True when an IRC's .hess is a picked file (an absolute path) rather than
+    a name inside the run folder. Judged on both path syntaxes, so a Windows
+    path stored by the desktop reads as a path wherever the input is built."""
+    h = (hess or "").strip()
+    return bool(h) and (PureWindowsPath(h).is_absolute() or PurePosixPath(h).is_absolute())
+
+
+def irc_hess_input_name(hess: str) -> str:
+    """What ``Hess_Filename`` says. A picked file is copied into the run folder
+    before launch (QueueEngine._stage_irc_hessian), so the input names only the
+    file: ORCA runs with the run folder as its cwd, and a full path would carry
+    the spaces and non-ASCII characters its argument handling truncates on.
+    A plain name (typed, or from a raw input) is passed through unchanged."""
+    h = (hess or "").strip()
+    return PureWindowsPath(h).name if irc_hess_is_path(h) else h
+
+
 def _xyz_elements(xyz: str) -> list:
     """Element symbol of each atom line in an xyz coordinate block (no header)."""
     els = []
@@ -706,7 +726,7 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         # the one selected, with the named .hess quietly ignored.
         init = (cfg.irc_init_hess or "calc_anfreq").strip().lower()
         if init == "read":
-            hess = cfg.irc_hess_file.strip()
+            hess = irc_hess_input_name(cfg.irc_hess_file)
             if not hess:
                 # Silently substituting calc_anfreq for an explicit "read"
                 # selection would run a different (and possibly far more

@@ -330,8 +330,16 @@
           ${select("Direction", ["both", "forward", "backward"], cfg.irc_direction || "both", "mid")}
           ${select("Initial Hessian", ["calc_anfreq", "calc_numfreq", "read"],
                    cfg.irc_init_hess || "calc_anfreq", "mid")}
-          ${text(".hess file", cfg.irc_hess_file || "")}
-        </div>` : ""}
+        </div>
+        <!-- a picked .hess, by path: it is copied into the run folder at launch,
+             so the Hessian a TS frequency run already paid for is reused
+             rather than computed again -->
+        <div class="btn-group" style="align-items:center;margin-top:10px">
+          <button class="btn btn-sm" type="button" data-act="loadhess">Load .hess…</button>
+          <span class="hint" style="margin:0" data-x="hess"></span>
+          <button class="btn btn-sm btn-ghost" type="button" data-act="clearhess">Clear</button>
+        </div>
+        <input type="hidden" data-f="hessfile" value="${NB.esc(cfg.irc_hess_file || "")}">` : ""}
 
         ${K.neb ? `<div class="divider"></div>
         <div class="grouplabel">NEB endpoints</div>
@@ -480,6 +488,39 @@
     }));
 
     const act = (name, fn) => { const b = q(`[data-act="${name}"]`); if (b) b.addEventListener("click", fn); };
+
+    // --- the IRC's starting Hessian -------------------------------------------
+    // Loading a .hess IS choosing to read it, so the Initial Hessian follows the
+    // load. The line beside the button says what will actually happen, because
+    // a file loaded under calc_anfreq is ignored.
+    const hessEl = q('[data-f="hessfile"]');
+    if (hessEl) {
+      const initField = [...el.querySelectorAll(".field")].find(f => {
+        const l = f.querySelector("label");
+        return l && l.textContent.trim() === "Initial Hessian";
+      });
+      const initSel = /** @type {any} */ (initField ? initField.querySelector("select") : null);
+      const sayHess = () => {
+        const path = hessEl.value.trim();
+        const file = path.split(/[\\/]/).pop();
+        const reading = initSel && initSel.value === "read";
+        q('[data-x="hess"]').textContent = !path
+          ? (reading ? "no .hess loaded" : "computed at the start of the run")
+          : (reading ? file : `${file} — not used unless Initial Hessian is read`);
+        q('[data-act="clearhess"]').hidden = !path;
+      };
+      if (initSel) initSel.addEventListener("change", sayHess);
+      act("loadhess", async () => {
+        const r = await NB.call("pick_hess_file");
+        if (!r || r.cancelled) return;
+        if (!r.ok || !r.path) { NB.fail(r && r.error ? r.error : "Could not pick that file."); return; }
+        hessEl.value = r.path;
+        if (initSel) initSel.value = "read";
+        sayHess();
+      });
+      act("clearhess", () => { hessEl.value = ""; sayHess(); });
+      sayHess();
+    }
 
     act("loadxyz", async () => {
       const r = await NB.call("load_xyz_file");
@@ -730,7 +771,8 @@
       config.irc_maxiter = Math.round(num("Max points", 40));
       config.irc_direction = val("Direction", "both");
       config.irc_init_hess = val("Initial Hessian", "calc_anfreq");
-      config.irc_hess_file = val(".hess file", "");
+      const hf = q('[data-f="hessfile"]');
+      config.irc_hess_file = hf ? hf.value.trim() : "";
     }
     if (K.neb) {
       const nb = q('[data-f="nebxyz"]');
@@ -764,6 +806,10 @@
     if (!p.is_raw && p.geometry_source === "direct" && !p.xyz) return "Load or paste a geometry first.";
     if (p.geometry_source === "reference" && !p.ref_name) return "Pick the calculation to take the geometry from.";
     if (p.multiplicity < 1) return "Multiplicity is at least 1.";
+    if (!p.is_raw && p.kind === "irc" && p.config.irc_init_hess === "read"
+        && !p.config.irc_hess_file) {
+      return "Initial Hessian is read — load the .hess it starts from.";
+    }
     return "";
   }
 
