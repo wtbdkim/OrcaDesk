@@ -137,7 +137,12 @@ _PHASE_GRAPH = re.compile(
     r"TD-DFT XC SETUP|RPA-DIAGONALIZATION|DAVIDSON-DIAGONALIZATION|"
     r"TD-DFT(?:/TDA)? EXCITED STATES|ABSORPTION SPECTRUM VIA TRANSITION|"
     r"CIS/TD-DFT TOTAL ENERGY|Number of roots to be determined|"
-    r"\*{4}\s*Iteration\s+\d+\s*\*{4}|ORCA TERMINATED NORMALLY")
+    r"\*{4}\s*Iteration\s+\d+\s*\*{4}|ORCA TERMINATED NORMALLY|"
+    # what tells a pre-step Hessian (OptTS Calc_Hess, IRC InitHess) from a
+    # frequency job, and what clears it: mirrors OPT_DONE_RE / IRC_START_RE /
+    # PHASE_RESET_RE in progress_panels.js
+    r"FINAL ENERGY EVALUATION AT THE STATIONARY POINT|"
+    r"Intrinsic Reaction Coordinate Calculation|FORWARD IRC|BACKWARD IRC")
 # The job meta the step panel's header line shows (method · cores): ORCA's own
 # echo of the input file (mirror of progress_panels.js _grabOrcaMeta).
 _G_META = re.compile(r"^\|\s*\d+>\s*(?:!|%pal\s+nprocs\b)")

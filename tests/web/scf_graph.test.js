@@ -473,6 +473,23 @@ test("an opt_freq's frequencies after convergence stay a frequency job", functio
   assert.strictEqual(f.aStage, "freq");
 });
 
+test("an IRC's InitHess is drawn as the initial Hessian, not as a frequency job", function () {
+  // real ORCA 6.1.1 IRC (InitHess calc_anfreq): the IRC header precedes the
+  // Hessian, and the walk's banner clears it
+  const f = new SCFGraph.FreqTracker();
+  f.push("                   Intrinsic Reaction Coordinate Calculation");
+  f.push("GEOMETRIC PERTURBATIONS (16 nuclei)");
+  assert.strictEqual(f.prestep, true);
+  assert.strictEqual(f.title(), "Initial Hessian");
+  const html = SCFGraph.renderFreqProgress(f);
+  assert.ok(!html.includes("Normal modes"), "no frequency stages listed");
+  f.push("SCF HESSIAN");
+  f.push("THERMOCHEMISTRY AT 298.15K");
+  assert.strictEqual(f.finished, true);
+  f.push("                              FORWARD IRC");
+  assert.strictEqual(f.active, false, "the walk clears the panel");
+});
+
 test("a Hessian recomputed in a later cycle names that cycle", function () {
   const f = new SCFGraph.FreqTracker();
   f.push("         *                GEOMETRY OPTIMIZATION CYCLE   5            *");

@@ -49,7 +49,7 @@ python tools/uidiff.py spec_mock.json spec_real.json   # exit code = differences
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
 python -m pytest                       # 1015 tests over the framework-free layers
-node tests/web/scf_graph.test.js       # 43 tracker/progress tests, no npm deps
+node tests/web/scf_graph.test.js       # 44 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
 # Real-backend smoke matrix (opt-in): one answer-known input per calc kind,
