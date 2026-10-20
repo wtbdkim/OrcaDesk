@@ -105,6 +105,9 @@
   // "OPTIMIZATION RUN DONE", which is why that one cannot be the marker).
   const OPT_CYCLE_RE = /GEOMETRY OPTIMIZATION CYCLE\s+(\d+)/;
   const OPT_DONE_RE = /THE OPTIMIZATION HAS CONVERGED|FINAL ENERGY EVALUATION AT THE STATIONARY POINT/;
+  // An IRC's InitHess is the same kind of pre-step: ORCA prints this header,
+  // then the Hessian, then the walk (verified on a real ORCA 6.1.1 IRC run).
+  const IRC_START_RE = /Intrinsic Reaction Coordinate Calculation/;
   const PRE_N = 3;   // A_STAGES[0..2]: integrals, CP-SCF, SCF Hessian
 
   // Job meta echoed at the top of the .out, shown on the stepper's meta line
@@ -144,13 +147,14 @@
     this.method = "";      // echoed method ("!"-line, first two tokens)
     this.cores = 0;        // echoed %pal nprocs
     this.optCycle = 0;     // optimization cycle in progress (0 = not inside one)
+    this.irc = false;      // inside an IRC job (its Hessian precedes the walk)
     this.prestep = false;  // the chain is an optimization's Hessian, not a freq job
   }
   // advance the analytical phase chain — monotonic, so a re-seen banner (or a
   // late "K/N done" line) can never move the chain backwards. Entering a new
   // stage stamps its wall clock and freezes the key result of the stage left.
   FreqTracker.prototype._advance = function (idx) {
-    if (!this.active && this.optCycle) this.prestep = true;
+    if (!this.active && (this.optCycle || this.irc)) this.prestep = true;
     this.mode = "analytical"; this.active = true;
     if (!this.t0) this.t0 = Date.now();
     if (this.prestep && idx >= PRE_N) {
@@ -204,6 +208,7 @@
     const oc = line.match(OPT_CYCLE_RE);
     if (oc) this.optCycle = parseInt(oc[1], 10);
     else if (OPT_DONE_RE.test(line)) this.optCycle = 0;
+    else if (IRC_START_RE.test(line)) this.irc = true;
     if (PHASE_RESET_RE.test(line)) {
       const was = this.active;
       if (was) this._resetChain();
@@ -280,7 +285,7 @@
       if (ATERM_RE.test(line)) { this.finished = true; if (!this.tEnd) this.tEnd = Date.now(); return true; }
     }
     if (AFREQ_RE.test(line)) {
-      if (!this.active && this.optCycle) this.prestep = true;
+      if (!this.active && (this.optCycle || this.irc)) this.prestep = true;
       this.mode = "analytical"; this.active = true; return true;
     }
     return false;

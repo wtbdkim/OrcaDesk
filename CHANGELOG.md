@@ -101,7 +101,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   were coming. A Hessian that starts inside an optimization cycle is now
   titled **Initial Hessian** (or names its cycle, for a recomputed one) and
   lists only its own three stages; the panel still clears when the next cycle
-  starts. An `opt_freq`'s frequencies after convergence are unchanged.
+  starts. An `opt_freq`'s frequencies after convergence are unchanged. An
+  `irc`'s InitHess Hessian is drawn the same way, and a run reattached after
+  a restart keeps the distinction (the markers now survive the output filter
+  the panel is rebuilt from).
 - **A result opened from disk shows its output.** In the notebook report, a
   `.out` opened with *Open file…* from outside the workspace parsed correctly
   but its Output pane read "No output on disk." — the file was looked for under

@@ -80,6 +80,17 @@ def test_the_reset_marker_is_kept_for_the_phase_chain():
     assert _G_CYCLE.search("*** GEOMETRY OPTIMIZATION CYCLE   7 ***")
 
 
+@pytest.mark.parametrize("line", [
+    # verbatim from real ORCA 6.1.1 OptTS / opt+freq / IRC outputs
+    "                   Intrinsic Reaction Coordinate Calculation",
+    "                 *** FINAL ENERGY EVALUATION AT THE STATIONARY POINT ***",
+])
+def test_the_pre_step_context_survives_the_filter(line):
+    # a reattached ts_opt / irc must still draw its Hessian as a pre-step
+    # rather than as a frequency job
+    assert _PHASE_GRAPH.search(line), line
+
+
 def test_ordinary_output_is_not_dragged_in():
     # the filter is a whitelist: bulk output (this is 78k lines on a real run)
     # must not ride along, or the payload stops being bounded
