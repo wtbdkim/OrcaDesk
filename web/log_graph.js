@@ -96,7 +96,7 @@ let _graphKind = "auto";   // "auto" | "scf" | "geo" | "phase"  (view inside the
  *  @param {JobTrackers} b */
 function phaseView(b) {
   if (b.crest.hasData()) return { label: "Conformers", tracker: b.crest, render: SCFGraph.renderCrestProgress };
-  if (b.freq.hasData()) return { label: "Frequencies", tracker: b.freq, render: SCFGraph.renderFreqProgress };
+  if (b.freq.hasData()) return { label: b.freq.prestep ? "Hessian" : "Frequencies", tracker: b.freq, render: SCFGraph.renderFreqProgress };
   if (b.tddft.hasData()) return { label: "TD-DFT", tracker: b.tddft, render: SCFGraph.renderTddftProgress };
   return null;
 }

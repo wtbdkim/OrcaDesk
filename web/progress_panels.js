@@ -95,6 +95,17 @@
   // runs) — so the panel must clear instead of sitting stale through the
   // remaining cycles. Banners are uppercase; matched case-sensitively.
   const PHASE_RESET_RE = /GEOMETRY OPTIMIZATION CYCLE|FORWARD IRC|BACKWARD IRC/;
+  // While that chain runs it is not a frequency job at all: an OptTS Hessian
+  // prints derivative integrals -> CP-SCF -> SCF HESSIAN and then goes straight
+  // back to the optimizer (verified on a real ORCA 6.1.1 OptTS run: it even
+  // prints a THERMOCHEMISTRY block, but never VIBRATIONAL FREQUENCIES / NORMAL
+  // MODES). So a chain that boots INSIDE an optimization cycle is a "pre-step"
+  // and is drawn as the Hessian alone. The optimization is over once ORCA says
+  // so — an opt_freq's real frequencies follow these banners (and precede its
+  // "OPTIMIZATION RUN DONE", which is why that one cannot be the marker).
+  const OPT_CYCLE_RE = /GEOMETRY OPTIMIZATION CYCLE\s+(\d+)/;
+  const OPT_DONE_RE = /THE OPTIMIZATION HAS CONVERGED|FINAL ENERGY EVALUATION AT THE STATIONARY POINT/;
+  const PRE_N = 3;   // A_STAGES[0..2]: integrals, CP-SCF, SCF Hessian
 
   // Job meta echoed at the top of the .out, shown on the stepper's meta line
   // (name · method · cores · elapsed): ORCA echoes the input file ("|  1> ! ..."
@@ -132,13 +143,25 @@
     this.noTimes = false;  // rebuilt from disk — wall-clock stamps would be meaningless
     this.method = "";      // echoed method ("!"-line, first two tokens)
     this.cores = 0;        // echoed %pal nprocs
+    this.optCycle = 0;     // optimization cycle in progress (0 = not inside one)
+    this.prestep = false;  // the chain is an optimization's Hessian, not a freq job
   }
   // advance the analytical phase chain — monotonic, so a re-seen banner (or a
   // late "K/N done" line) can never move the chain backwards. Entering a new
   // stage stamps its wall clock and freezes the key result of the stage left.
   FreqTracker.prototype._advance = function (idx) {
+    if (!this.active && this.optCycle) this.prestep = true;
     this.mode = "analytical"; this.active = true;
     if (!this.t0) this.t0 = Date.now();
+    if (this.prestep && idx >= PRE_N) {
+      // past the Hessian: the optimizer takes over, so the pre-step is complete
+      if (!this.finished) {
+        if (this.aIdx >= 0) this.subs[this.aIdx] = this._curSub();
+        this.finished = true; this.dispDone = true;
+        if (!this.tEnd) this.tEnd = Date.now();
+      }
+      return true;
+    }
     if (idx > this.aIdx) {
       // leaving the integrals stage: its last batch finished, so freeze the
       // count as complete instead of the "N-1 of N" the last BATCH line left
@@ -173,11 +196,14 @@
     this.perturbTotal = 0; this.perturbDone = 0; this.cpscfIter = 0;
     this.aStage = ""; this.aIdx = -1; this.nuclei = 0; this.tempK = 0;
     this.atomsDone = 0; this.batchAtoms = 0; this.batchIdx = -1;
-    this.finished = false;
+    this.finished = false; this.prestep = false;
     this.stageT = []; this.subs = []; this.t0 = 0; this.tEnd = 0;   // meta (method/cores) survives: same job
   };
   FreqTracker.prototype.push = function (line) {
     _grabOrcaMeta(this, line);
+    const oc = line.match(OPT_CYCLE_RE);
+    if (oc) this.optCycle = parseInt(oc[1], 10);
+    else if (OPT_DONE_RE.test(line)) this.optCycle = 0;
     if (PHASE_RESET_RE.test(line)) {
       const was = this.active;
       if (was) this._resetChain();
@@ -253,10 +279,18 @@
       }
       if (ATERM_RE.test(line)) { this.finished = true; if (!this.tEnd) this.tEnd = Date.now(); return true; }
     }
-    if (AFREQ_RE.test(line)) { this.mode = "analytical"; this.active = true; return true; }
+    if (AFREQ_RE.test(line)) {
+      if (!this.active && this.optCycle) this.prestep = true;
+      this.mode = "analytical"; this.active = true; return true;
+    }
     return false;
   };
   FreqTracker.prototype.hasData = function () { return this.active; };
+  // what the analytical chain is: a frequency job, or an optimization's Hessian
+  FreqTracker.prototype.title = function () {
+    if (!this.prestep) return "Analytical frequencies";
+    return this.optCycle > 1 ? `Hessian · optimization cycle ${this.optCycle}` : "Initial Hessian";
+  };
   FreqTracker.prototype.progress = function () {
     if (this.dispDone) return 1;
     if (this.mode === "numerical") return this.total ? Math.min(this.cur / this.total, 0.999) : 0;
@@ -557,11 +591,12 @@
   function _renderAnalyticalPanel(freq, opts) {
     const state = freq.finished ? "done" : "running";
     const now = Date.now();
+    const stages = freq.prestep ? A_STAGES.slice(0, PRE_N) : A_STAGES;
     return _stepPanelHtml({
-      title: "Analytical frequencies",
+      title: freq.title(),
       state: state,
-      at: state === "done" ? A_STAGES.length : Math.max(freq.aIdx, 0),
-      rows: _stepRows(freq, A_STAGES, state, freq._curSub(), now),
+      at: state === "done" ? stages.length : Math.max(freq.aIdx, 0),
+      rows: _stepRows(freq, stages, state, freq._curSub(), now),
       meta: _stepMetaParts(freq),
       elapsed: _stepElapsed(freq, now),
     }, opts);

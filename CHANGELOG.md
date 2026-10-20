@@ -93,6 +93,15 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   hit-target rule can save.
 
 ### Fixed
+- **A TS optimization no longer looks like it turned into a frequency job.**
+  `ts_opt` computes an exact Hessian inside its first cycle (`Calc_Hess true`),
+  and that Hessian prints the same banners an analytical frequency run does —
+  so the cell switched to an "Analytical frequencies" panel listing
+  Frequencies, Normal modes, IR spectrum and Thermochemistry, none of which
+  were coming. A Hessian that starts inside an optimization cycle is now
+  titled **Initial Hessian** (or names its cycle, for a recomputed one) and
+  lists only its own three stages; the panel still clears when the next cycle
+  starts. An `opt_freq`'s frequencies after convergence are unchanged.
 - **A result opened from disk shows its output.** In the notebook report, a
   `.out` opened with *Open file…* from outside the workspace parsed correctly
   but its Output pane read "No output on disk." — the file was looked for under

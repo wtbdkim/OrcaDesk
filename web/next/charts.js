@@ -278,8 +278,11 @@ var CHARTS = {};
                              k => k === "disp"
                                ? `${f.cur}/${f.total} · ${pct}%` : "") };
       }
-      return { title: "Analytical frequencies",
-               html: chain("Analytical frequencies", FREQ_STAGES,
+      // an optimization's own Hessian (OptTS Calc_Hess) stops at the Hessian:
+      // listing the frequency stages after it read as the job turning into one
+      const title = f.title();
+      return { title,
+               html: chain(title, f.prestep ? FREQ_STAGES.slice(0, 3) : FREQ_STAGES,
                            Math.max(f.aIdx, 0), !!f.finished, k => {
         if (k === "integrals") return f.nuclei
           ? (f.atomsDone ? `${f.atomsDone}/${f.nuclei} nuclei` : `${f.nuclei} nuclei`) : "";
