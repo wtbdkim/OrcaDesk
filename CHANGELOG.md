@@ -51,6 +51,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   steps with Enter / Shift+Enter or *Prev* / *Next*; case is ignored.
 
 ### Changed
+- **Only one ORCAdesk runs at a time.** Starting it again while it is open
+  brings the open window to the front (restoring it if it was minimized)
+  instead of opening a second one. Two instances restored the same queue,
+  reattached the same running ORCA job and overwrote each other's saved
+  session, so a calculation could be launched twice into one folder.
 - **The free-energy profile is now the Reaction profile, and it reads every
   thermodynamic quantity, not only ΔG.** The table gives each stage's ΔE, ΔE₀
   (E + ZPE), ΔU, ΔH, TΔS, ΔS and ΔG side by side, so a step can be read as
