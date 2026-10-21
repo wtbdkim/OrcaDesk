@@ -62,9 +62,6 @@
     return `<section class="secblock viewer" data-sec="sec-structure" id="sec-structure">
       <div class="sech"><h2>Structure</h2><span class="sp"></span>
         <span class="meta">${atoms.length} atoms</span></div>
-      <p class="secdesc">Drag to turn it. Click an atom or a bond for its numbers,
-        right-drag between two atoms to measure, and press an arm of the axis marker
-        in the corner to look straight down x, y or z.</p>
       <div class="viewstage" data-v="stage">
         <canvas class="molcv" data-v="canvas"
           aria-label="Final geometry, ball and stick. Drag to turn, right-drag between two
@@ -170,10 +167,6 @@
     return `<section class="secblock vizhalf" data-sec="sec-visual" id="sec-visual">
       <div class="sech"><h2>Visual</h2><span class="sp"></span>
         <span class="meta" data-v="vmeta"></span></div>
-      <p class="secdesc">Everything in this result's folder that can be drawn. Pick what to
-        look at along the bottom; step through it on the left. A surface that has not
-        been plotted yet asks first — orca_plot has to run, and an ESP map takes
-        minutes.</p>
       <div class="vizpanel">
         <div class="vizside">
           <div class="vizlist" data-v="vlist" role="listbox" aria-label="Frames"></div>

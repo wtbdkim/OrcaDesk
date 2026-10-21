@@ -191,23 +191,6 @@
 
   // ---------------------------------------------------------------- summary
 
-  /** What kind of run this was, in a sentence. The design gives every section a
-   *  line saying what it is; the summary's says what was run. @param {any} d */
-  function whatItWas(d) {
-    const bits = [];
-    if (d.is_optimization) bits.push("a geometry optimization");
-    if (d.frequencies && d.frequencies.length) bits.push("a frequency calculation");
-    if (d.transitions && d.transitions.length) bits.push("a TD-DFT excited-state calculation");
-    if (d.nmr && d.nmr.length) bits.push("an NMR shielding calculation");
-    if (d.neb_path && d.neb_path.length)
-      bits.push(d.neb_path_kind === "irc" ? "an IRC path" : "a NEB-TS search");
-    if (d.is_conformer_search) bits.push("a conformer search");
-    if (!bits.length) bits.push("a single-point calculation");
-    const what = bits.length === 1 ? bits[0]
-      : bits.slice(0, -1).join(", ") + " followed by " + bits[bits.length - 1];
-    return "This is " + what + ". Everything below is read out of its output file.";
-  }
-
   /** @param {any} d */
   function summary(d) {
     const rows = (d.summary || []).filter(r =>
@@ -224,12 +207,12 @@
     const facts = head.map(p => {
       const t = tone(p[1], p[0]);
       const short = p[0] === "Charge / Mult" ? "charge / mult"
-        : p[0] === "Run time" ? "took" : p[0].toLowerCase();
+        : p[0] === "Run time" ? "time" : p[0].toLowerCase();
       return `<span>${NB.esc(short)} <b${t ? ` class="${t}"` : ""}>${NB.esc(p[1])}</b></span>`;
     }).join("");
 
     // the reference's own summary: not in a card — a .sech carrying the name,
-    // the line saying what was run, then the facts
+    // then the facts
     _present.push({ id: "sec-summary", title: "Summary" });
     let out = `<section class="secblock wide" data-sec="sec-summary" id="sec-summary">
       <div class="sech">
@@ -238,7 +221,6 @@
           ${calc ? `<span class="badge ${calc.state}">${calc.state}</span>` : ""}
         </div>
       </div>
-      <p class="secdesc">${NB.esc(whatItWas(d))}</p>
       ${facts ? `<div class="factline" style="margin:0 0 18px">${facts}</div>` : ""}
       ${key.length ? plate(kvlines(key.map(p => [p[0], NB.esc(p[1])]))) : ""}
     </section>`;
@@ -253,15 +235,14 @@
 
   // ---------------------------------------------------------------- sections
 
-  /** @param {any} d @param {number} px width of a full-width section
-   *  @param {string} name */
-  function sections(d, px, name) {
+  /** @param {any} d @param {number} px width of a full-width section */
+  function sections(d, px) {
     const out = [summary(d)];
     const cw = px - 36;                       // inside a .plate (18px each side)
     const half = Math.round(px / 2) - 36;     // ...of a half-width section
 
     // the input beside the output, first: every other section is read out of it
-    out.push(rawSections(name));
+    out.push(rawSections());
 
     if (d.frequencies && d.frequencies.length) {
       const imag = d.n_imaginary || d.frequencies.filter(f => f < 0).length;
@@ -443,13 +424,11 @@
     return file.replace(/\.(out|mlip\.json|log)$/i, "");
   }
 
-  /** @param {string} name */
-  function rawSections(name) {
+  function rawSections() {
     _present.push({ id: "sec-input", title: "Input" });
     _present.push({ id: "sec-output", title: "Output" });
     return `<section class="secblock third" data-sec="sec-input" id="sec-input">
-        <div class="sech"><h2>Input</h2><span class="sp"></span>
-          <span class="meta">${NB.esc(name)}.inp</span></div>
+        <div class="sech"><h2>Input</h2></div>
         <p class="secdesc">The file handed to ORCA, exactly as it ran.</p>
         <div class="plate" style="padding:0;overflow:hidden">
           <div class="rawin" data-r="in"></div></div>
@@ -576,11 +555,11 @@
     if (_out !== st) return;
     if (!info || !info.ok || !info.lines) {
       box.textContent = info && info.ok ? "The output file is empty." : "No output on disk.";
-      if (meta) meta.textContent = info && info.ok ? info.file : "";
+      if (meta) meta.textContent = "";
       return;
     }
     st.total = info.lines;
-    if (meta) meta.textContent = `${info.file} · ${fmtSize(info.bytes)} · `
+    if (meta) meta.textContent = `${fmtSize(info.bytes)} · `
       + `${info.lines.toLocaleString()} lines`;
 
     box.innerHTML = `<div class="rawsize"><div class="rawwin"><div>0</div></div></div>`;
@@ -1302,15 +1281,11 @@
     if (NB.mv && NB.mv.vol) NB.mv.vol.park();
     // .rescontent has 24px side padding; a wide section is what is left of it
     const px = Math.max(host.clientWidth - 48, 360);
-    const name = _curName || nameFromPath(_curPath);
-
     _present = [];
     const body = _cur
-      ? sections(_cur, px, name) + `<section class="secblock wide" id="fep"></section>`
+      ? sections(_cur, px) + `<section class="secblock wide" id="fep"></section>`
       : `<section class="secblock wide">${plate(
-          `<p class="hint" style="margin:0">No result open. Pick a finished calculation
-           in the queue, or open any ORCA output from disk — a result stays readable
-           after it leaves the queue, because the run folder is still there.</p>`)}</section>
+          `<p class="hint" style="margin:0">No result open.</p>`)}</section>
          <section class="secblock wide" id="fep"></section>`;
     _present.push({ id: "fep", title: "Reaction profile" });
 

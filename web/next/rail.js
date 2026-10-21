@@ -316,8 +316,7 @@
 
     if (!NB.queue.length) {
       host.appendChild(NB.el("div", "qgroup",
-        `<p class="hint" style="padding:0 6px">Nothing queued yet. <b>New calculation</b>
-          starts one; it appears here, and its progress and output appear beside it.</p>`));
+        `<p class="hint" style="padding:0 6px">Nothing queued yet.</p>`));
     }
 
     GROUPS.forEach(g => {

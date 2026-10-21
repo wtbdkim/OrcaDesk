@@ -25,12 +25,12 @@
     ts_opt_freq:  { label: "TS Opt + Freq",    group: null,                          calc: "OptTS Freq",    scf: "VeryTightSCF", maxiter: true,  freq: true },
     freq:         { label: "Frequencies",      group: "calculation_types_frequency", calc: "Freq",          scf: "VeryTightSCF", freq: true },
     ts_freq:      { label: "TS frequencies",   group: "calculation_types_frequency", calc: "Freq",          scf: "VeryTightSCF", freq: true },
-    neb_ts:       { label: "NEB-TS (find TS)", group: null,                          calc: "NEB-TS",        scf: "TightSCF",     neb: true, options: "FREQ" },
-    irc:          { label: "IRC (verify TS)",  group: null,                          calc: "IRC",           scf: "TightSCF",     irc: true },
+    neb_ts:       { label: "NEB-TS",           group: null,                          calc: "NEB-TS",        scf: "TightSCF",     neb: true, options: "FREQ" },
+    irc:          { label: "IRC",              group: null,                          calc: "IRC",           scf: "TightSCF",     irc: true },
     tddft:        { label: "TD-DFT",           group: null,                          calc: "",              scf: "TightSCF",     tddft: true },
     nmr:          { label: "NMR",              group: null,                          calc: "NMR",           scf: "TightSCF",     nmr: true },
     sp:           { label: "Single point",     group: "calculation_types_energy",    calc: "SP",            scf: "TightSCF" },
-    general:      { label: "General (any)",    group: null,                          calc: "",              scf: "TightSCF",     allTypes: true },
+    general:      { label: "General",          group: null,                          calc: "",              scf: "TightSCF",     allTypes: true },
   };
   const KIND_ORDER = ["opt", "opt_freq", "ts_opt", "ts_opt_freq", "freq", "ts_freq",
                       "neb_ts", "irc", "tddft", "nmr", "sp", "general"];
@@ -159,8 +159,7 @@
     el.innerHTML = `
       <div class="editbar">
         <b>${calc ? "Editing " + NB.esc(calc.name) : "New calculation"}</b>
-        <span>${calc ? "changes apply to the queued calculation"
-                     : "it joins the queue when you add it"}</span>
+        ${calc ? "<span>changes apply to the queued calculation</span>" : ""}
         <span class="sp"></span>
         <button class="iconbtn ebclose" type="button" data-act="cancel"
                 aria-label="Close the builder" title="Close">×</button>
@@ -222,9 +221,6 @@
           <button type="button" data-mode="form" aria-pressed="${!st.raw}">Guided</button>
           <button type="button" data-mode="raw" aria-pressed="${st.raw}">.inp text</button>
         </div>
-        <span class="hint" style="margin:0">${st.raw
-          ? "The text below is what ORCA runs, verbatim."
-          : "The form builds the .inp for you; Preview shows exactly what it will run."}</span>
       </div>
 
       <div class="field-row">
@@ -377,12 +373,7 @@
 
         <div class="divider"></div>
         <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:12px">
-          <div>
-            <div class="grouplabel" style="margin:0">Per-element basis / ECP</div>
-            <div class="hint" style="margin:2px 0 0">Overrides for single elements
-              (%basis newgto / newecp) — a heavy atom at a larger basis than the rest.
-              Empty for none.</div>
-          </div>
+          <div class="grouplabel" style="margin:0">Per-element basis / ECP</div>
           <button class="btn btn-sm" type="button" data-act="addbasis">+ Element</button>
         </div>
         <div data-a="basis">${

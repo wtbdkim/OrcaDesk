@@ -51,6 +51,16 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   steps with Enter / Shift+Enter or *Prev* / *Next*; case is ignored.
 
 ### Changed
+- **Less explanatory text in the notebook preview.** The sentences that
+  explained a control the control already shows are gone: the empty queue
+  reads *Nothing queued yet.*, the builder lost its mode and per-element-basis
+  explanations and the "joins the queue" subtitle, an empty Results window
+  reads *No result open.*, and the report dropped the summary's "This is a
+  geometry optimization…" line and the Structure / Visual section
+  descriptions. The summary's run time reads *time* instead of *took*, and the
+  Input / Output headers no longer repeat the file names (the Output header
+  keeps its size and line count). The Type list drops its parenthetical
+  glosses: *NEB-TS*, *IRC* and *General*.
 - **An IRC's starting Hessian is loaded, not typed.** The notebook builder's
   `.hess file` text field is now a **Load .hess…** button, like *Load .xyz…*:
   pick the `.hess` a TS frequency run left behind (from any folder) and

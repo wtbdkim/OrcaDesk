@@ -1059,7 +1059,7 @@ in the 0.4.3-beta sweep (B20).
 | Field label | noun phrase; units in `( )`; ORCA keywords verbatim (`maxcore (MB / core)`) | Sentence (keywords as-is) | none |
 | Placeholder | `e.g. {example}` or a literal example value | lower | none |
 | Button | imperative verb phrase; `→` for the forward action; no trailing `…` | Sentence | none |
-| Tab / mode / option | noun (ORCA abbreviations verbatim; `Opt + Freq`; `NEB-TS (find TS)`) | Sentence | none |
+| Tab / mode / option | noun (ORCA abbreviations verbatim; `Opt + Freq`; `NEB-TS`) | Sentence | none |
 | Validation error | `{Diagnosis}. {Imperative fix}.` or `{Requirement} (where to fix).` | Sentence | period |
 | Toast | one sentence | Sentence | period |
 | Log ok/info | `"{name}" ({kind}) {verbed}.`; next step as `Next: {step}, then {action}.` | Sentence | period |
