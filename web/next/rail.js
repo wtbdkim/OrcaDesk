@@ -59,6 +59,13 @@
     return c.is_raw ? "raw" : "";
   }
 
+  /** Rows whose controls are unfolded, by calc name -- or "file:<path>" for an
+   *  opened file; a calc name never holds a ":". The rail is rebuilt on every
+   *  poll, so without this an unfolded row folded itself again within a
+   *  second, taking the button the user was reaching for with it (an opened
+   *  file's "close" could not be clicked at all). @type {Set<string>} */
+  const _expanded = new Set();
+
   /** @param {any} c @param {number} idx @returns {HTMLElement} */
   function row(c, idx) {
     const editable = EDITABLE.indexOf(c.state) >= 0;
@@ -121,6 +128,7 @@
     if (inp) inp.addEventListener("click", e => { e.stopPropagation(); NB.results.showInp(c.name); });
 
     if (editable) attachDrag(el);
+    if (_expanded.has(c.name)) toggleDetail(el, c);
     return el;
   }
 
@@ -133,7 +141,8 @@
     const old = el.querySelector(".qdet");
     if (old) old.remove();
     btn.setAttribute("aria-expanded", String(!open));
-    if (open) return;
+    if (open) { _expanded.delete(c.name); return; }
+    _expanded.add(c.name);
     const queued = c.state === "pending" || c.state === "blocked";
     const readable = c.state === "done" || c.state === "failed";
     const det = NB.el("div", "qdet");
@@ -357,6 +366,10 @@
 
     host.appendChild(openedGroup());
 
+    // forget rows that are gone, so a name reused later does not open unfolded
+    const live = new Set(NB.queue.map(c => c.name).concat(_opened.map(o => "file:" + o.path)));
+    _expanded.forEach(k => { if (!live.has(k)) _expanded.delete(k); });
+
     if (NB.running && NB.resources) host.appendChild(occupancy(NB.resources));
     host.scrollTop = scroll;
     paintFoot();
@@ -432,6 +445,7 @@
       </span>`;
     el.querySelector(".qexp").addEventListener("click", () => toggleOpenedDetail(el, o));
     el.querySelector(".qmain").addEventListener("click", () => NB.results.openPath(o.path));
+    if (_expanded.has("file:" + o.path)) toggleOpenedDetail(el, o);
     return el;
   }
 
@@ -445,7 +459,8 @@
     const old = el.querySelector(".qdet");
     if (old) old.remove();
     btn.setAttribute("aria-expanded", String(!open));
-    if (open) return;
+    if (open) { _expanded.delete("file:" + o.path); return; }
+    _expanded.add("file:" + o.path);
     const det = NB.el("div", "qdet");
     // the design's wording for this row: it is closed, not removed -- nothing
     // of it was ever in the workspace to take out
@@ -457,6 +472,7 @@
     on("rm", () => {
       const at = _opened.findIndex(x => x.path === o.path);
       if (at >= 0) _opened.splice(at, 1);
+      _expanded.delete("file:" + o.path);
       render();
     });
     el.appendChild(det);

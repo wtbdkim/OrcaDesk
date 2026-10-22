@@ -205,9 +205,16 @@ which pins the link, the files and the stack together. The classic front-end is
 deliberately left alone: its `--font-sans` never named Inter.
 
 `MainWindow._SIZE_BY_VARIANT` opens the notebook at **1680×1000** (the size
-`uispec.py` measures at), clamped to the screen, because `app.css` folds the
-queue rail away entirely below 1320px — at the classic 1100 the preview came up
-in a layout the design never shows. `_ui_variant()` is the one reader of the
+`uispec.py` measures at), clamped to the screen, because `app.css` narrows the
+queue rail below 1320px (from the design's 600px to `clamp(360px, 40vw, 520px)`,
+and below 760px stacks it above the cells with the top bar wrapping) — at the
+classic 1100 the preview came up in a layout the design never shows. The rail
+is never hidden: it is the queue, the run controls and the result picker, and a
+window dragged narrower used to lose all three
+(`test_the_rail_never_leaves_a_narrow_window`). The top bar carries all three
+backend pills — ORCA, MLIP, CREST — always (DESIGN.md B32), polled by
+`pollBackends` in `boot.js`: every second while a probe is checking, every five
+once both have settled. `_ui_variant()` is the one reader of the
 setting, so the file that loads and the size it opens at cannot disagree.
 
 `web/next/` borrows exactly two classic files — `../scf_graph.js` and
@@ -260,9 +267,13 @@ so **a top-level declaration in `web/next/` other than `NB` collides with
 `app.js`** — `tests/test_next_ui.py` fails the build if one appears, and also
 checks that every bridge slot the preview calls actually exists.
 
-Not in the preview yet: the MLIP/CREST builders and their setup, the 3D viewer
-and the Visual tab, the natural-orbital analysis, the Liquid-Glass variants
-(DESIGN.md B30). Its Interface card says so and switches back to classic.
+Not in the preview yet: the MLIP/CREST builders and the Liquid-Glass variants
+(DESIGN.md B30). Its Interface card says so and switches back to classic. The
+backends themselves ARE set up from its Settings sheet: the MLIP environments
+card, and a CREST card (`paintCrest` in `settings.js` — one `.envrow` per
+target, the WSL-distribution picker, *Install CREST* / *Re-check*) over the
+same four slots the classic card uses; while the sheet is open both poll, and
+the CREST card hands each payload to the top-bar pill (`NB.backends`).
 
 The JS is plain scripts sharing one global scope (no modules/bundler). `app.js`
 holds the app shell (tabs, build cards, queue, polling); self-contained sections

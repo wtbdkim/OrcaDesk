@@ -19,6 +19,10 @@
   /** the MLIP poll while the sheet is open, so a probe that finishes is seen
    *  without the user re-opening Settings @type {any} */
   let _mlipTimer = null;
+  /** the CREST poll, same lifetime as the MLIP one @type {any} */
+  let _crestTimer = null;
+  /** an install was started from this sheet: report how it ended, once */
+  let _crestInstallWatch = false;
 
   /** The five Liquid-Glass steps, in the order the slider walks them. The
    *  setting is a word, not a number: the slider is a way of picking one. */
@@ -43,6 +47,8 @@
     // the MLIP poll belongs to the open sheet, not to the session
     clearInterval(_mlipTimer);
     _mlipTimer = null;
+    clearInterval(_crestTimer);
+    _crestTimer = null;
   }
 
   function render() {
@@ -185,6 +191,20 @@
         </div>
 
         <div class="scard">
+          <div class="scard-title" data-a="c-title">CREST</div>
+          <p class="scard-desc" data-a="c-desc"></p>
+          <div data-a="crest"><p class="hint" style="margin:0">Checking…</p></div>
+          <div class="btn-group" style="margin-top:10px;align-items:flex-end">
+            <div class="field mid" data-a="c-pick" style="margin:0"><label for="c-distro">WSL distribution</label>
+              <select id="c-distro" data-a="c-distro"><option value="">auto-detect</option></select></div>
+            <button class="btn btn-sm btn-primary" type="button" data-a="c-install">Install CREST</button>
+            <button class="btn btn-sm btn-ghost" type="button" data-a="c-recheck">Re-check</button>
+            <span class="sp" style="flex:1"></span>
+            <span class="hint" style="margin:0" data-a="c-state"></span>
+          </div>
+        </div>
+
+        <div class="scard">
           <div class="scard-title">About</div>
           <div class="kvline"><span>Version</span>
             <span class="v">${NB.esc((NB.about && NB.about.version) || "")}</span></div>
@@ -261,6 +281,116 @@
     q('[data-a="e-create"]').addEventListener("click", () => createEnv(host));
     q('[data-a="e-cancel"]').addEventListener("click", () => NB.call("cancel_mlip_install"));
     loadEnvs(host);
+
+    // --- CREST
+    q('[data-a="c-recheck"]').addEventListener("click", async () => {
+      _crestInstallWatch = false;
+      paintCrest(host, await NB.call("check_crest"));
+    });
+    q('[data-a="c-install"]').addEventListener("click", async () => {
+      const st = NB.backends.crest;
+      const local = !!st && st.transport === "local";
+      const distro = local ? "" : q('[data-a="c-distro"]').value;
+      NB.toast((local ? "Installing CREST" : "Installing CREST into WSL")
+        + " — this downloads ~8 MB…");
+      _crestInstallWatch = true;
+      paintCrest(host, await NB.call("install_crest", distro));
+    });
+    q('[data-a="c-distro"]').addEventListener("change", async () => {
+      const v = q('[data-a="c-distro"]').value;
+      if (NB.settings) NB.settings.crest_distro = v;
+      paintCrest(host, await NB.call("set_crest_distro", v));
+    });
+    loadCrest(host);
+  }
+
+  // ---------------------------------------------------------------- CREST
+
+  /** Same shape as the MLIP card: paint once, then keep polling while the
+   *  sheet is open -- the probe runs `crest --version` in every WSL distro and
+   *  an install downloads, so both finish after the click that started them.
+   *  @param {HTMLElement} host */
+  async function loadCrest(host) {
+    paintCrest(host, await NB.call("get_crest_status"));
+    clearInterval(_crestTimer);
+    _crestTimer = setInterval(async () => {
+      if (NB.$("settings").hidden) { clearInterval(_crestTimer); _crestTimer = null; return; }
+      const st = await NB.call("get_crest_status");
+      paintCrest(host, st);
+      if (_crestInstallWatch && st && st.state !== "checking") {
+        _crestInstallWatch = false;
+        if (st.install_error) NB.fail("CREST install failed — " + st.install_error);
+        else NB.toast("CREST installed.", "ok");
+      }
+    }, 1200);
+  }
+
+  /** @param {HTMLElement} host @param {any} st CrestStatusPayload */
+  function paintCrest(host, st) {
+    const q = (sel) => /** @type {any} */ (host.querySelector(sel));
+    const box = q('[data-a="crest"]');
+    if (!box || !st || !st.distros) return;
+    // the top-bar pill reads the same payload; hand it over rather than wait
+    NB.backends.crest = st;
+    NB.renderPills();
+
+    const local = st.transport === "local";
+    const distros = st.distros;
+    const checking = st.state === "checking";
+    q('[data-a="c-title"]').textContent = local ? "CREST" : "CREST (WSL)";
+    q('[data-a="c-desc"]').textContent = local
+      ? "Conformer search. CREST runs natively here; ORCAdesk can install the static "
+        + "binary into your home directory, or use one already on PATH."
+      : "Conformer search. CREST has no Windows build, so it runs in a WSL distribution "
+        + "you already have; ORCAdesk can install it there.";
+    const noTarget = local ? "No POSIX shell found — CREST needs bash on PATH."
+      : !st.wsl ? "WSL is not available on this machine."
+      : "No usable WSL distribution found. Install one, e.g. wsl --install -d Ubuntu.";
+
+    if (!distros.length) {
+      box.innerHTML = `<p class="hint" style="margin:0">${checking
+        ? (local ? "Looking for CREST…" : "Checking WSL for CREST…")
+        : NB.esc(noTarget)}</p>`;
+    } else {
+      box.innerHTML = distros.map(d => {
+        const name = local && d.distro === "local" ? "this machine" : d.distro;
+        const detail = d.ready ? [d.version, d.crest_bin].filter(Boolean).join(" · ")
+          : (d.error || "CREST is not installed here");
+        return `<div class="envrow">
+          <div><div class="n">${NB.esc(name)}</div>
+            <div class="d">${NB.esc(detail)}</div></div>
+          <span class="sp"></span>
+          <span class="badge${d.ready ? " done" : ""}">${d.ready ? "ready" : "not installed"}</span>
+        </div>`;
+      }).join("");
+    }
+
+    // one target locally: nothing to pick
+    q('[data-a="c-pick"]').hidden = local;
+    const sel = q('[data-a="c-distro"]');
+    if (!local && document.activeElement !== sel) {
+      const prev = (NB.settings && NB.settings.crest_distro) || "";
+      const names = distros.map(d => d.distro);
+      if (prev && names.indexOf(prev) < 0) names.push(prev);
+      sel.innerHTML = `<option value="">auto-detect</option>` + names.map(n =>
+        `<option value="${NB.esc(n)}">${NB.esc(n)}</option>`).join("");
+      sel.value = prev;
+    }
+
+    // Installing is pointless where CREST already is, and impossible with
+    // nowhere to install into -- creating a distro needs a Linux account,
+    // the one step ORCAdesk cannot script.
+    const target = local ? "" : sel.value;
+    const already = target ? distros.some(d => d.distro === target && d.ready)
+                           : distros.some(d => d.ready);
+    const btn = q('[data-a="c-install"]');
+    btn.disabled = already || !st.wsl || checking || !distros.length;
+    btn.title = already ? "CREST is already installed here" : "";
+
+    q('[data-a="c-state"]').textContent = st.install_error
+      ? "Install failed — " + st.install_error
+      : checking ? (_crestInstallWatch ? "Installing…" : "Checking…")
+      : "";
   }
 
   // ---------------------------------------------------------------- MLIP

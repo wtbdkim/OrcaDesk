@@ -88,16 +88,16 @@ class MainWindow(QMainWindow):
 
     # The size each front-end opens at. These are not preferences: the notebook
     # layout is DRAWN at one width. design/notebook-reference.html and
-    # tools/uispec.py both measure at 1680x1000, and app.css collapses the
-    # queue rail away entirely below 1320 (@media max-width:1320px), so opening
-    # the preview at the classic 1100 put it in a layout the design never shows
-    # -- no rail, cells at full width -- which reads as a different UI rather
+    # tools/uispec.py both measure at 1680x1000, and app.css narrows the
+    # queue rail below 1320 (@media max-width:1320px), so opening the preview
+    # at the classic 1100 put it in a layout the design never shows -- a
+    # narrow rail, cells in one column -- which reads as a different UI rather
     # than as a narrow one. Classic has no such breakpoint and keeps its size.
     _SIZE_BY_VARIANT = {"notebook": (1680, 1000)}
     _SIZE_DEFAULT = (1100, 820)
     # ...but never larger than the screen it opens on. On a display too narrow
     # for the design (a 1366-wide laptop) the clamp does drop below 1320 and the
-    # rail collapses -- that is the responsive layout doing its job, and the
+    # rail narrows -- that is the responsive layout doing its job, and the
     # floor only keeps the clamp from producing something absurd.
     _MIN_SIZE = (1100, 720)
     _SCREEN_MARGIN = 80
