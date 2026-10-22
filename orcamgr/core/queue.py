@@ -51,7 +51,7 @@ from .input_generator import (
 from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
                         numfreq_rank_cap, ram_headroom_mb, raw_nprocs, uses_gpu,
                         worker_threads)
-from .runner import OrcaRunner, OrcaRunError, OrcaCancelled, OrcaDetached
+from .runner import OrcaRunner, OrcaRunError, OrcaCancelled, OrcaDetached, OrcaHung
 from .parser import parse_file, ParseResult
 from .procutil import process_matches
 from .xyzutil import as_xyz_file
@@ -1842,6 +1842,10 @@ class QueueEngine:
         except OrcaRunError as e:
             calc.state = CalcState.FAILED
             calc.message = self._failure_reason(calc, str(e))
+            if isinstance(e, OrcaHung) and calc.message != str(e):
+                # The .out names what died; the runner's note says why the
+                # process is gone — ORCAdesk ended it, ORCA never did.
+                calc.message = f"{calc.message} {e}"
             calc.pid = None
             calc.create_time = None
             self.cb.log(f"[{calc.name}] FAILED: {calc.message}", "err", calc.name)

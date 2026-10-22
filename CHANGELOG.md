@@ -115,6 +115,18 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   hit-target rule can save.
 
 ### Fixed
+- **An ORCA run that died but never exited no longer shows RUNNING forever.**
+  Inside a NumFreq, ORCA prints `error termination` for a failed displacement,
+  skips it and carries on — and can then spin on one core without ever
+  exiting: two CCSD(T) frequency jobs whose AUTOCI died on a displacement sat
+  at RUNNING for 14 hours with nothing written in their folders. The monitor
+  only knew the process's exit. It now watches for ORCA's fatal markers
+  (`error termination`, `aborting the run`) and, once one has appeared, ends
+  the job when nothing in its run folder has been written for 10 minutes. The
+  calculation is FAILED with the cause read from the `.out` plus a note that
+  ORCAdesk stopped the process. A reattach after a restart reads the marker off
+  the file, since it tails from the end. A silent folder without a marker is
+  never treated as a hang: a long CCSD(T) step is silent too.
 - **A TS optimization no longer looks like it turned into a frequency job.**
   `ts_opt` computes an exact Hessian inside its first cycle (`Calc_Hess true`),
   and that Hessian prints the same banners an analytical frequency run does —
