@@ -33,6 +33,7 @@ thread never blocks waiting on the process to die.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -51,6 +52,22 @@ _TAIL_POLL = 0.35   # seconds
 # Bound on reaping our own child after it exits (avoids a POSIX zombie).
 _REAP_TIMEOUT = 5.0
 
+# What ORCA prints when one of its programs has died. In a plain job ORCA exits
+# right after it, but inside a NumFreq the parent prints it per failed
+# displacement, "skips" that gradient and carries on — and can then never exit:
+# a CCSD(T) NumFreq whose AUTOCI died on 2 of 12 displacements spun one core
+# for 14 hours with nothing written anywhere in its folder (ORCA 6.1.1). Exit
+# is the only end the monitor knew, so it showed RUNNING all that time. The
+# run is already lost once this prints (a skipped displacement is a missing
+# Hessian column), so the watchdog below only has to decide it has stopped.
+_FATAL_MARKERS = ("error termination", "aborting the run")
+# How long the run folder may stay silent after a fatal marker before the job
+# is judged hung. Silence is measured over the whole folder, not the .out: a
+# NumFreq's .out says nothing while a displacement runs, but its _D files and
+# .last* logs keep moving.
+_HUNG_AFTER = 600.0   # seconds
+_HUNG_CHECK = 30.0    # how often the folder is looked at once a marker is seen
+
 
 class OrcaRunError(RuntimeError):
     pass
@@ -66,6 +83,14 @@ class OrcaDetached(OrcaRunError):
     """Raised when monitoring stops because the app is shutting down. The ORCA
     process is deliberately LEFT RUNNING so it can be reattached next launch —
     so the queue must NOT mark the calc finished/failed."""
+    pass
+
+
+class OrcaHung(OrcaRunError):
+    """Raised when ORCA reported a fatal error and then went silent without
+    exiting; the process tree has been killed. A real failure (FAILED), but
+    the queue appends this message to the cause it reads from the .out, so the
+    user learns ORCAdesk ended the process rather than ORCA."""
     pass
 
 
@@ -189,19 +214,41 @@ class OrcaRunner:
         isn't re-streamed into the live log; a fresh launch leaves it 0 to read
         from the start. The full graph history is rebuilt separately by the UI
         from the .out on disk."""
+        output_path = Path(output_path)
         tail = FileTailer(output_path, start_pos)
+        # A reattach tails from EOF, so a marker printed while ORCAdesk was
+        # closed would never pass through the tail — read it off the file.
+        fatal = bool(start_pos) and _has_fatal_marker(output_path)
+        next_check = 0.0
+
+        def see(line: str) -> None:
+            nonlocal fatal
+            if not fatal:
+                low = line.lower()
+                fatal = any(m in low for m in _FATAL_MARKERS)
+            if on_line is not None:
+                on_line(line)
 
         while True:
-            tail.drain(on_line)
+            tail.drain(see)
             if self._cancel_event.is_set():
                 self._kill()
                 raise OrcaCancelled("Cancelled by user.")
             if self._detach_event.is_set():
                 raise OrcaDetached("Monitoring stopped; ORCA left running.")
             if not self._is_alive():
-                tail.drain(on_line)  # capture trailing output written just before exit
-                tail.flush_tail(on_line)
+                tail.drain(see)  # capture trailing output written just before exit
+                tail.flush_tail(see)
                 break
+            if fatal and time.monotonic() >= next_check:
+                next_check = time.monotonic() + _HUNG_CHECK
+                idle = time.time() - _last_write(output_path.parent)
+                if idle >= _HUNG_AFTER:
+                    self._kill()
+                    raise OrcaHung(
+                        f"ORCA reported an error and then wrote nothing for "
+                        f"{int(idle // 60)} min without exiting; ORCAdesk "
+                        f"stopped it.")
             time.sleep(_TAIL_POLL)
 
         # reap our own child so it doesn't linger as a zombie (POSIX); harmless
@@ -235,3 +282,40 @@ class OrcaRunner:
                 proc.wait(timeout=_REAP_TIMEOUT)
             except (subprocess.TimeoutExpired, OSError, ValueError):
                 pass
+
+
+def _has_fatal_marker(path: Path) -> bool:
+    """Whether the .out already holds a fatal marker (read in binary chunks —
+    the markers are ASCII, and a reattached .out can be hundreds of MB)."""
+    needles = [m.encode() for m in _FATAL_MARKERS]
+    keep = max(len(n) for n in needles) - 1
+    try:
+        with open(path, "rb") as f:
+            prev = b""
+            while True:
+                chunk = f.read(1 << 20)
+                if not chunk:
+                    return False
+                buf = (prev + chunk).lower()
+                if any(n in buf for n in needles):
+                    return True
+                prev = buf[-keep:]
+    except OSError:
+        return False
+
+
+def _last_write(folder: Path) -> float:
+    """The newest mtime among the run folder's own entries (not recursive —
+    ORCA writes its scratch beside the .inp). Now when the folder cannot be
+    read, so an unreadable folder never looks idle."""
+    newest = 0.0
+    try:
+        with os.scandir(folder) as it:
+            for e in it:
+                try:
+                    newest = max(newest, e.stat().st_mtime)
+                except OSError:
+                    pass
+    except OSError:
+        return time.time()
+    return newest or time.time()

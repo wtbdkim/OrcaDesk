@@ -559,7 +559,16 @@ The `core/` pipeline:
   process from a previous session), `monitor()` (tail until exit/cancel/detach),
   `cancel()` (kill the tree), `detach()` (stop monitoring, leave ORCA running).
   Process identity + tree-kill go through `procutil.py` (psutil), which guards
-  against PID reuse via `create_time`.
+  against PID reuse via `create_time`. `monitor()` has one more way out, a
+  **hang watchdog** (`OrcaHung`): ORCA 6.1.1 can print `error termination` for
+  a failed NumFreq displacement and then never exit (measured: a CCSD(T)
+  NumFreq that spun one core for 14 h with an idle folder). After a fatal marker
+  (`_FATAL_MARKERS`), once the whole run folder has been silent for
+  `_HUNG_AFTER` (10 min), the tree is killed and the calc FAILED. The queue
+  appends the runner's note to the `.out` cause. Silence is measured over the
+  folder rather than the `.out`, because a NumFreq's `.out` is quiet while its
+  `_D` files move. A reattach scans the file for the marker, since it tails from
+  EOF. Silence without a marker is never a hang.
 - `procutil.py` — psutil-backed `process_matches(pid, create_time)` and
   `kill_tree(...)`, used for reattach and reliable tree termination.
 - `tailer.py` — `FileTailer`, the incremental tail behind the live log for both
