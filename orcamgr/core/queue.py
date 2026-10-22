@@ -114,6 +114,13 @@ class Calculation:
     pid: Optional[int] = None
     create_time: Optional[float] = None
 
+    # set while RUNNING once ORCA has printed a fatal marker: the run is lost,
+    # but its process is still alive (it may end on its own, or hang until the
+    # runner's watchdog ends it). The row stays RUNNING — cores are still held
+    # and Stop still applies — and reads as failed. Not persisted: a reattach
+    # finds the marker in the .out again.
+    faulted: bool = False
+
 
 # ---- callbacks ----------------------------------------------------------
 @dataclass
@@ -703,6 +710,7 @@ class QueueEngine:
         # dependency failed." for the whole time it was running. The MLIP and
         # CREST entry points already clear it.
         calc.message = ""
+        calc.faulted = False
         self.cb.calc_update(index, calc)
 
         xyz = self._resolve_geometry(calc)
@@ -992,9 +1000,16 @@ class QueueEngine:
         parse + validate + mark DONE. Shared by the fresh-launch and reattach
         paths (reattach passes start_pos = current EOF). OrcaCancelled /
         OrcaDetached propagate to run_all."""
+        def fatal(line: str) -> None:
+            calc.faulted = True
+            calc.message = line
+            self.cb.log(f"[{calc.name}] ORCA reported an error; the run is lost "
+                        f"but its process is still going.", "err", calc.name)
+            self.cb.calc_update(index, calc)
+
         self._job.runner.monitor(
             out_path, on_line=lambda ln: self.cb.log(ln, "orca", calc.name),
-            start_pos=start_pos)
+            start_pos=start_pos, on_fatal=fatal)
         self._finish_ok(calc, index, parse_file(str(out_path)), out_path)
 
     # -- single MLIP calculation (runs OUTSIDE the ORCA pipeline) --

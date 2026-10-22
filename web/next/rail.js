@@ -52,7 +52,7 @@
 
   /** The dot's state class: what the row is doing, or that it is raw input. */
   function dotClass(c) {
-    if (c.state === "running") return "running";
+    if (c.state === "running") return c.faulted ? "failed" : "running";
     if (c.state === "done") return "done";
     if (c.state === "failed") return "failed";
     if (c.state === "blocked") return "blocked";
@@ -78,13 +78,19 @@
       : (c.state === "pending" || c.state === "blocked") ? "queued" : "done";
     if (NB.results && NB.results.currentName() === c.name) el.setAttribute("aria-current", "true");
 
-    const frac = progressOf(c);
+    // ORCA has reported a fatal error but its process lives on (a NumFreq
+    // can spin for hours after a displacement dies): it is failed, and it is
+    // still running -- it holds its cores and Stop still reaches it. So it
+    // stays in this group and reads as failed, with no progress to show.
+    const lost = c.state === "running" && !!c.faulted;
+    const frac = lost ? null : progressOf(c);
     const isOrca = backendOf(c) === "DFT";
     // Every row carries its message, finished ones included: the design reads
     // a done row as the answer it found ("0 imaginary / G -1268.19844 Eh"),
     // and the "Completed ..." line used to be filtered out as noise -- which
     // left a finished row two lines tall and saying nothing.
-    const msgCls = c.state === "failed" ? "err" : c.state === "blocked" ? "warn" : "";
+    const failedLike = c.state === "failed" || lost;
+    const msgCls = failedLike ? "err" : c.state === "blocked" ? "warn" : "";
 
     el.innerHTML = `
       <span class="grip" aria-hidden="true">⋮</span>
@@ -100,11 +106,13 @@
           <span class="qm">${NB.esc(c.meta || (c.kind + " · charge " + c.charge + " · mult " + c.multiplicity))}</span>
           ${c.message
             ? `<span class="qmsg ${msgCls}">${
-                c.state === "failed" ? "⚠ " : ""}${NB.esc(c.message)}</span>` : ""}
+                failedLike ? "⚠ " : ""}${NB.esc(c.message)}</span>` : ""}
         </span>
       </button>
       <span class="qacts">
-        <span class="badge ${c.state}">${c.state}</span>
+        ${lost
+          ? `<span class="badge failed" title="ORCA reported an error. Its process is still running.">failed</span>`
+          : `<span class="badge ${c.state}">${c.state}</span>`}
         <span class="qeditslot">${editable
           ? `<button class="btn btn-xs btn-ghost qedit" type="button">edit</button>`
           : `<button class="btn btn-xs btn-ghost qedit" type="button" disabled title="${

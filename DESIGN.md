@@ -971,6 +971,13 @@ change, never on the redraw.
 | Badge bg | `--accent` | warn-15% | ok-15% | err-15% | `--accent` | `--accent` | raw-15% |
 | Badge text | muted | `--warn` | `--ok` | `--err` | muted | muted | `--raw` |
 
+A **running calc ORCA has already failed** (`CalcSummary.faulted`: a fatal
+marker printed, the process still alive) stays where running rows go, because
+it still holds its cores and Stop still reaches it, but it wears the *failed*
+column: the badge reads "failed" in err colours, the dot is `--err`, the message
+is the error chip, and the progress bar is dropped. The amber of a live row is
+a promise of an answer, and this row will not give one.
+
 Verdict badges (a comparison result, not a run state — §11.7):
 
 | Surface | match | mismatch |

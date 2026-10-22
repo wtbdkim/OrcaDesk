@@ -436,6 +436,7 @@ function mirrorCalc(c) {
     scf_convergence: c.scf_convergence || "TightSCF",
     mlip_model: c.mlip_model || "",
     crest_method: c.crest_method || "",
+    faulted: !!c.faulted,
     // config/xyz aren't returned by the snapshot; editing pulls from here only
     // for display. (Full re-edit of phone-added calcs is a later refinement.)
   };
@@ -2904,6 +2905,9 @@ function renderQueue() {
       : "";
     // a "Completed." note is redundant with the done badge — hide completion notices
     const showMsg = !!c.message && !(c.state === "done" && /^Completed\b/.test(c.message));
+    // ORCA reported a fatal error but its process lives on: still running
+    // (cores held, Stop reaches it), already failed
+    const lost = c.state === "running" && c.faulted;
     const editable = isEditableState(c.state);   // pending/cancelled/blocked: edit + drag
     // idle: anything but running can be deleted; mid-run the store only
     // accepts removal of editable rows (DONE/FAILED keep their mid-run
@@ -2942,12 +2946,14 @@ function renderQueue() {
         <div class="qname">${escapeHtml(c.name)}${rawBadge}${backendBadge}</div>
         <div class="qsteps">${escapeHtml(c.kind)} · ${srcLabel}${backendDetail}${cmLabel}</div>
         ${showMsg ? (
-          c.state === "failed"
+          c.state === "failed" || lost
             ? `<div class="qerror">⚠ ${escapeHtml(c.message)}</div>`
             : `<div class="qsteps" style="color:var(--muted-foreground)">${escapeHtml(c.message)}</div>`
         ) : ""}
       </div>
-      <span class="qstate ${c.state}">${c.state}</span>
+      ${lost
+        ? `<span class="qstate failed" title="ORCA reported an error. Its process is still running.">failed</span>`
+        : `<span class="qstate ${c.state}">${c.state}</span>`}
       ${viewBtn}
       ${editBtn}
       ${delBtn}`;

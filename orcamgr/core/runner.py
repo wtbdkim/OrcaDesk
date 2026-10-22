@@ -204,7 +204,8 @@ class OrcaRunner:
     # ---- monitor (worker thread, blocks) ----
     def monitor(self, output_path: Path,
                 on_line: Optional[LogCallback] = None,
-                start_pos: int = 0) -> None:
+                start_pos: int = 0,
+                on_fatal: Optional[LogCallback] = None) -> None:
         """Tail ``output_path`` from ``start_pos`` and block until the process
         exits, is cancelled, or is detached. Raises OrcaCancelled / OrcaDetached
         accordingly; returns normally when ORCA finishes on its own.
@@ -213,12 +214,19 @@ class OrcaRunner:
         at the current end of file so the output written before the app closed
         isn't re-streamed into the live log; a fresh launch leaves it 0 to read
         from the start. The full graph history is rebuilt separately by the UI
-        from the .out on disk."""
+        from the .out on disk.
+
+        ``on_fatal`` is called once, with ORCA's own line, when the first fatal
+        marker appears — the run is lost from then on, though the process may
+        go on for a while (or forever: see _HUNG_AFTER)."""
         output_path = Path(output_path)
         tail = FileTailer(output_path, start_pos)
         # A reattach tails from EOF, so a marker printed while ORCAdesk was
         # closed would never pass through the tail — read it off the file.
-        fatal = bool(start_pos) and _has_fatal_marker(output_path)
+        first = _fatal_line(output_path) if start_pos else ""
+        fatal = bool(first)
+        if fatal and on_fatal is not None:
+            on_fatal(first)
         next_check = 0.0
 
         def see(line: str) -> None:
@@ -226,6 +234,8 @@ class OrcaRunner:
             if not fatal:
                 low = line.lower()
                 fatal = any(m in low for m in _FATAL_MARKERS)
+                if fatal and on_fatal is not None:
+                    on_fatal(line.strip())
             if on_line is not None:
                 on_line(line)
 
@@ -284,24 +294,31 @@ class OrcaRunner:
                 pass
 
 
-def _has_fatal_marker(path: Path) -> bool:
-    """Whether the .out already holds a fatal marker (read in binary chunks —
-    the markers are ASCII, and a reattached .out can be hundreds of MB)."""
+def _fatal_line(path: Path) -> str:
+    """The first line of the .out holding a fatal marker, "" when none (read
+    in binary chunks — the markers are ASCII, and a reattached .out can be
+    hundreds of MB). A chunk carries the previous one's last partial line, so
+    a marker split across two reads is still whole."""
     needles = [m.encode() for m in _FATAL_MARKERS]
-    keep = max(len(n) for n in needles) - 1
     try:
         with open(path, "rb") as f:
             prev = b""
             while True:
                 chunk = f.read(1 << 20)
+                buf = prev + chunk
+                low = buf.lower()
+                hits = [i for i in (low.find(n) for n in needles) if i >= 0]
+                if hits:
+                    at = min(hits)
+                    start = buf.rfind(b"\n", 0, at) + 1
+                    end = buf.find(b"\n", at)
+                    line = buf[start:end if end >= 0 else len(buf)]
+                    return line.decode("utf-8", "replace").strip()
                 if not chunk:
-                    return False
-                buf = (prev + chunk).lower()
-                if any(n in buf for n in needles):
-                    return True
-                prev = buf[-keep:]
+                    return ""
+                prev = buf[buf.rfind(b"\n") + 1:]
     except OSError:
-        return False
+        return ""
 
 
 def _last_write(folder: Path) -> float:

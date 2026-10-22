@@ -579,7 +579,13 @@ The `core/` pipeline:
   appends the runner's note to the `.out` cause. Silence is measured over the
   folder rather than the `.out`, because a NumFreq's `.out` is quiet while its
   `_D` files move. A reattach scans the file for the marker, since it tails from
-  EOF. Silence without a marker is never a hang.
+  EOF. Silence without a marker is never a hang. The first marker also fires
+  `monitor(on_fatal=...)`. The queue sets `Calculation.faulted` and puts
+  ORCA's line in the message, but leaves the state RUNNING: the process still
+  holds its cores and Stop still applies. `calc_to_dict` sends `faulted` only
+  while RUNNING, and both front-ends draw such a row as failed inside the
+  running group (DESIGN.md §12). The flag is not persisted, because a
+  reattach finds the marker again.
 - `procutil.py` — psutil-backed `process_matches(pid, create_time)` and
   `kill_tree(...)`, used for reattach and reliable tree termination.
 - `tailer.py` — `FileTailer`, the incremental tail behind the live log for both
