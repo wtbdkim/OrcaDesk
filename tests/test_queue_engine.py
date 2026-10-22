@@ -799,7 +799,7 @@ class _DetachingRunner:
     def end_position(self, out_path):
         return 0
 
-    def monitor(self, out_path, on_line=None, start_pos=0):
+    def monitor(self, out_path, on_line=None, start_pos=0, on_fatal=None):
         raise OrcaDetached("Monitoring stopped; ORCA left running.")
 
 

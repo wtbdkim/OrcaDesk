@@ -230,6 +230,9 @@ def calc_to_dict(c: Calculation) -> CalcSummary:
         if c.kind.startswith("mlip") else "",
         crest_method=(getattr(c.config, "crest_method", "") if c.config else "")
         if c.kind.startswith("crest") else "",
+        # only while the process lives: once the calc leaves RUNNING its state
+        # says everything, and the flag is not reset on the way out
+        faulted=bool(c.faulted) and c.state == CalcState.RUNNING,
     )
 
 

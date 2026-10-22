@@ -138,6 +138,12 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   ORCAdesk stopped the process. A reattach after a restart reads the marker off
   the file, since it tails from the end. A silent folder without a marker is
   never treated as a hang: a long CCSD(T) step is silent too.
+  From the moment the marker appears, the calculation reads as **failed
+  while it stays in the running group**: its process still holds cores and
+  Stop still reaches it, so it is not finished. The badge says failed, the
+  dot is red, the row shows ORCA's error line and the progress bar is gone,
+  in both the notebook preview and the classic queue
+  (`CalcSummary.faulted`).
 - **An opened file can be closed again, and a row's controls stay open.**
   The notebook preview's queue rail is redrawn every second, and each redraw
   folded every row that had been unfolded with ▸ — so the controls under a

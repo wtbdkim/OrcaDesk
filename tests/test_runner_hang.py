@@ -149,7 +149,7 @@ def test_a_hung_job_fails_with_both_the_cause_and_who_ended_it(tmp_path):
         def end_position(self, out_path):
             return 0
 
-        def monitor(self, out_path, on_line=None, start_pos=0):
+        def monitor(self, out_path, on_line=None, start_pos=0, on_fatal=None):
             raise OrcaHung("ORCA reported an error and then wrote nothing "
                            "for 10 min without exiting; ORCAdesk stopped it.")
 
@@ -162,3 +162,63 @@ def test_a_hung_job_fails_with_both_the_cause_and_who_ended_it(tmp_path):
     assert calc.state is CalcState.FAILED
     assert "error termination" in calc.message.lower()     # from the .out
     assert calc.message.endswith("ORCAdesk stopped it.")   # from the runner
+
+
+# ---- a lost run whose process is still alive --------------------------------
+# Between the marker and the process's end (its own exit, or the watchdog) the
+# calc is failed but still running: it stays RUNNING and is flagged `faulted`.
+
+def test_on_fatal_hands_over_orcas_own_line_once(tmp_path, sleeper):
+    proc = sleeper(1.5)
+    out = _run_folder(tmp_path, FATAL_OUT + FATAL_OUT, age=0)
+    hits = []
+
+    _adopted(proc).monitor(out, on_fatal=hits.append)
+
+    assert hits == ["ORCA finished by error termination in AUTOCI"]
+
+
+def test_a_reattach_hands_over_the_line_read_off_the_file(tmp_path, sleeper):
+    proc = sleeper(1.5)
+    out = _run_folder(tmp_path, HEALTHY_OUT * 5000 + FATAL_OUT, age=0)
+    hits = []
+
+    _adopted(proc).monitor(out, start_pos=OrcaRunner.end_position(out),
+                           on_fatal=hits.append)
+
+    assert hits == ["ORCA finished by error termination in AUTOCI"]
+
+
+def test_a_faulted_calc_stays_running_and_reads_as_failed(tmp_path):
+    from orcamgr.state.store import calc_to_dict
+    seen = []
+    engine = QueueEngine(
+        orca_path="orca-not-needed-in-tests",
+        workspace_root=str(tmp_path),
+        callbacks=QueueCallbacks(
+            log=lambda m, l, _calc="": None,
+            calc_update=lambda i, c: seen.append(
+                (c.state, calc_to_dict(c)["faulted"], c.message))))
+
+    class _FaultingRunner:
+        def launch(self, inp_path, out_path):
+            out_path.write_text(FATAL_OUT, encoding="utf-8")
+            return 4321, 1234.5
+
+        def end_position(self, out_path):
+            return 0
+
+        def monitor(self, out_path, on_line=None, start_pos=0, on_fatal=None):
+            on_fatal("ORCA finished by error termination in AUTOCI")
+            raise OrcaHung("ORCAdesk stopped it.")
+
+    engine._orca_runner_factory = _FaultingRunner
+    calc = Calculation(name="lost", kind="sp", config=StepConfig(kind="sp"))
+    calc.xyz = "H 0.0 0.0 0.0"
+
+    engine.run_all([calc])
+
+    assert (CalcState.RUNNING, True,
+            "ORCA finished by error termination in AUTOCI") in seen
+    assert calc.state is CalcState.FAILED
+    assert calc_to_dict(calc)["faulted"] is False   # the state says it now

@@ -40,6 +40,8 @@
  * @property {string} meta              one-line list-row summary, built server-side
  * @property {string} mlip_model        mlip* kinds: MACE model label; "" otherwise
  * @property {string} crest_method      crest* kinds: tight-binding method; "" otherwise
+ * @property {boolean} faulted          running only: ORCA reported a fatal error
+ *                                      but its process is still alive
  */
 
 /**

@@ -162,11 +162,14 @@
     q(".idx").textContent = "[" + (i + 1) + "]";
     q(".nm").textContent = c.name;
 
+    // a running calc ORCA has already failed (its process lives on -- see the
+    // rail's row()) reads as failed here too
+    const lost = c.state === "running" && !!c.faulted;
     const badge = q(".acts .badge");
-    badge.textContent = c.state;
-    badge.className = "badge " + c.state;
+    badge.textContent = lost ? "failed" : c.state;
+    badge.className = "badge " + (lost ? "failed" : c.state);
 
-    el.className = "cell" + (c.state === "running" ? " live"
+    el.className = "cell" + (lost ? " dead" : c.state === "running" ? " live"
                            : c.state === "failed" ? " dead" : "");
 
     // .inp is ORCA-only: an MLIP or CREST calculation produces no ORCA input,
@@ -263,13 +266,13 @@
     const quiet = c.state === "done" && /^Completed\b/.test(c.message || "");
     // a failure is not a fact among facts: the reason goes in the .qerror box
     // at the top of the body, so no cell states the same sentence twice
-    if (c.message && !quiet && c.state !== "failed") {
+    if (c.message && !quiet && c.state !== "failed" && !lost) {
       bits.push(`<span>${NB.esc(c.message)}</span>`);
     }
     q(".factline").innerHTML = bits.join("");
 
     const err = q(".qerror");
-    const failed = c.state === "failed" && !!c.message;
+    const failed = (c.state === "failed" || lost) && !!c.message;
     err.hidden = !failed;
     err.innerHTML = failed ? `<span>${NB.esc(c.message)}</span>` : "";
   }

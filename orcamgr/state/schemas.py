@@ -31,7 +31,7 @@ from typing import TypedDict
 # these names exist so snapshot/envelope schemas can reference the shapes.)
 
 class CalcSummary(TypedDict):
-    """Compact queue-row form — mirror of store.calc_to_dict (14 keys)."""
+    """Compact queue-row form — mirror of store.calc_to_dict (15 keys)."""
     name: str
     kind: str
     charge: int
@@ -49,6 +49,9 @@ class CalcSummary(TypedDict):
     # it must never land in innerHTML)
     mlip_model: str           # mlip* kinds: the MACE model label
     crest_method: str         # crest* kinds: the tight-binding method
+    # RUNNING only: ORCA printed a fatal marker but its process is still alive
+    # — the run is lost, the row stays among the running ones
+    faulted: bool
 
 
 class CalcFull(TypedDict):
