@@ -61,6 +61,17 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   Input / Output headers no longer repeat the file names (the Output header
   keeps its size and line count). The Type list drops its parenthetical
   glosses: *NEB-TS*, *IRC* and *General*.
+- **The notebook preview's top bar shows ORCA, MLIP and CREST.** All three
+  pills are always there, each with its state (ready / checking… / error /
+  not set) and a tooltip naming what was found, so what this machine can run
+  is visible without opening Settings. They update on their own once a probe
+  finishes or an environment is added.
+- **CREST in the notebook preview's Settings.** The preview's Settings sheet
+  had no CREST section at all, so it could only be installed or pointed at a
+  WSL distribution from the classic window. It now has the same card: each
+  distribution with whether CREST is in it (version and path), the
+  distribution picker, *Install CREST* and *Re-check*.
+
 - **An IRC's starting Hessian is loaded, not typed.** The notebook builder's
   `.hess file` text field is now a **Load .hess…** button, like *Load .xyz…*:
   pick the `.hess` a TS frequency run left behind (from any folder) and
@@ -127,6 +138,16 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   ORCAdesk stopped the process. A reattach after a restart reads the marker off
   the file, since it tails from the end. A silent folder without a marker is
   never treated as a hang: a long CCSD(T) step is silent too.
+- **An opened file can be closed again, and a row's controls stay open.**
+  The notebook preview's queue rail is redrawn every second, and each redraw
+  folded every row that had been unfolded with ▸ — so the controls under a
+  row vanished before they could be clicked, and an opened file's *close*
+  could not be reached at all. Unfolded rows now stay unfolded.
+- **The queue no longer disappears when the preview window is narrowed.**
+  Below 1320px the queue rail used to be hidden outright, taking the run
+  controls and the opened files with it. It now narrows instead, and in a very
+  narrow window (below 760px) it moves above the calculations while the top
+  bar wraps onto a second line.
 - **A TS optimization no longer looks like it turned into a frequency job.**
   `ts_opt` computes an exact Hessian inside its first cycle (`Calc_Hess true`),
   and that Hessian prints the same banners an analytical frequency run does —

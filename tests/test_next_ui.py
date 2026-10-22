@@ -309,17 +309,25 @@ def test_preview_ships_the_typefaces_the_design_is_drawn_in():
 
 
 def test_window_opens_the_notebook_above_its_own_breakpoint():
-    """app.css hides the queue rail below 1320px, so the preview must not open
-    under it: at the classic 1100 the app came up in a layout the design never
-    shows -- no rail at all -- which reads as a different UI, not a narrow one.
+    """app.css narrows the queue rail below 1320px; the preview opens above
+    that, in the layout the design is drawn in (a 600px rail). At the classic
+    1100 it came up in the narrow layout, which reads as a different UI.
     """
     app_css = _read(NEXT / "app.css")
-    collapse = re.search(r"@media \(max-width:(\d+)px\)\{.*?\.rail\{display:none;\}",
-                         app_css, re.S)
-    assert collapse, "the rail's collapse breakpoint moved or changed shape"
-    limit = int(collapse.group(1))
+    narrow = re.search(r"@media \(max-width:(\d+)px\)\{\s*\.app\{grid-template-columns:clamp\(",
+                       app_css)
+    assert narrow, "the rail's narrowing breakpoint moved or changed shape"
+    limit = int(narrow.group(1))
 
     src = _read(ROOT / "orcamgr" / "gui" / "window.py")
     sizes = re.search(r"_SIZE_BY_VARIANT = \{([^}]*)\}", src).group(1)
     width = int(re.search(r'"notebook":\s*\((\d+)', sizes).group(1))
-    assert width > limit, f"the notebook opens at {width}px, under the {limit}px collapse"
+    assert width > limit, f"the notebook opens at {width}px, under the {limit}px breakpoint"
+
+
+def test_the_rail_never_leaves_a_narrow_window():
+    """The rail is the queue, the run controls and the result picker for both
+    views. It used to be display:none below 1320px, so a window dragged
+    narrower lost all three; it narrows (and below 760 stacks) instead."""
+    app_css = _read(NEXT / "app.css")
+    assert not re.search(r"\.rail\{[^}]*display:none", app_css)

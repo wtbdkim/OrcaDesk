@@ -308,12 +308,49 @@ var NB = {};
       bits.push(`<span class="status-pill"><span class="dot ${runN ? "warn" : ""}"></span>${
         runN ? runN + " running" : ""}${runN && pendN ? " · " : ""}${pendN ? pendN + " queued" : ""}</span>`);
     }
-    bits.push(`<span class="status-pill"><span class="dot ${NB.settings.orca_valid ? "ok" : ""}"></span>${
-      NB.settings.orca_valid ? "ORCA ready" : "ORCA not set"}</span>`);
+    bits.push(pill("ORCA", NB.settings.orca_valid ? "ready" : "unset", ""));
+    const m = NB.backends.mlip, c = NB.backends.crest;
+    bits.push(pill("MLIP", m ? m.state : "checking", m && m.envs.length
+      ? m.envs.map(e => e.name + ": " + (e.state === "ready" ? "ready"
+          : e.state === "checking" ? "checking…" : (e.message || "not ready"))).join("\n")
+      : "No MLIP environment registered"));
+    // CREST's "error" is a working shell with no target carrying CREST -- the
+    // ordinary never-installed case, so it reads as not set rather than broken
+    const cs = c ? (c.state === "error" ? "unset" : c.state) : "checking";
+    bits.push(pill("CREST", cs, c && c.distros.length
+      ? c.distros.map(d => d.distro + ": " + (d.ready ? (d.version || "ready")
+          : (d.error || "not installed"))).join("\n")
+      : "CREST is not installed"));
     host.innerHTML = bits.join("");
+  }
+
+  /** One backend's pill: the name always, its state beside it -- the state
+   *  word folds away when the top bar is narrow, the dot still carries it.
+   *  @param {string} name @param {string} state @param {string} detail */
+  function pill(name, state, detail) {
+    const word = state === "ready" ? "ready" : state === "checking" ? "checking…"
+      : state === "error" ? "error" : "not set";
+    const dot = state === "ready" ? "ok" : state === "error" ? "err" : "";
+    return `<span class="status-pill" title="${NB.esc(detail || name + " " + word)}">`
+      + `<span class="dot ${dot}"></span>${name}<span class="st"> ${word}</span></span>`;
   }
   NB.watch(() => renderPills());
   NB.renderPills = renderPills;
+
+  /** The MLIP and CREST probes run in the backend from startup (they import
+   *  torch / run crest --version, seconds each); this asks how they went --
+   *  quickly while one is still checking, rarely once both have settled, so
+   *  an environment registered or installed in Settings shows up on its own.
+   *  @type {{mlip: any, crest: any}} */
+  NB.backends = { mlip: null, crest: null };
+  async function pollBackends() {
+    const [m, c] = await Promise.all([NB.call("get_mlip_status"), NB.call("get_crest_status")]);
+    if (m && m.envs) NB.backends.mlip = m;
+    if (c && c.distros) NB.backends.crest = c;
+    renderPills();
+    const busy = [NB.backends.mlip, NB.backends.crest].some(s => !s || s.state === "checking");
+    setTimeout(pollBackends, busy ? 1000 : 5000);
+  }
 
   // ---------------------------------------------------------------- start
 
@@ -369,6 +406,7 @@ var NB = {};
     await poll();
     NB.go("jobs");
     setInterval(poll, POLL_MS);
+    pollBackends();
   };
 
 })();
