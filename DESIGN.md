@@ -1792,6 +1792,34 @@ there; an atom the motion lands on top of is reported, not refused. The
 result is an edit OF the coordinates box — only the moved atoms' numbers
 change, the user's spacing and comments stay — so Ctrl+Z there undoes it.
 
+**17.4n A running output follows the reader, not the run.** A cell's Output
+pane is the last 260 lines of a running `.out`, re-read on every poll. It
+follows the end only while the reader is **at** the end (within half a line).
+Scrolling away from it holds the pane still, whether by wheel, scrollbar or
+keys. Following resumes when the reader scrolls back down or presses
+*↓ Latest*. The pane used to scroll every running job to the end on every
+poll, and a running job is exactly when there is earlier output worth reading.
+Holding still means holding the **line**, not the pixel. The tail is a sliding
+window, so each read is laid over the last one (`stream.js` `slid` /
+`paintLog`): lines that left the window come off the top, the last line is
+rewritten if it grew, and new ones are appended. The first line on screen is
+then put back at the offset it had. If that line has slid out of the window,
+the pane shows the oldest line still held. If a read does not continue the last
+one (a re-run rewrote the file), `scrollTop` is left as it was. The box's own
+scroll anchoring is off (`overflow-anchor:none`), because two mechanisms that
+pick an anchor by different rules fight over one `scrollTop`. Laying reads over
+each other also keeps a selection through a poll, and lets `role="log"`
+announce only the lines that were added. *↓ Latest* is the reference's own
+label. There it is an always-present ghost button in the pane head; here it is
+the stage pill (`.act`, an addition in the last named block of `app.css`). It
+sits on the box's bottom-right corner, appears only while there is somewhere to
+go, and counts what arrived meanwhile (*↓ Latest · 12 new*). Its corner is
+measured inside the box's scrollbars, because one long ORCA line adds a
+horizontal one. The box is focusable, so the keyboard can scroll it, and the
+pill hands focus to it as it hides. A run that has just stopped is read once
+more, because its last read can be up to a poll older than ORCA's closing
+lines.
+
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
 **both** front-ends — the way out of a preview has to be inside it — and saving

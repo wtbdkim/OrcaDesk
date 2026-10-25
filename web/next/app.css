@@ -1247,3 +1247,18 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
   border:1px solid color-mix(in srgb, var(--input) 85%, transparent);
   border-radius:var(--radius-sm); font-size:12px; padding:5px 8px; min-height:28px;}
 .consadd{display:flex; gap:8px; align-items:center; max-width:320px;}
+
+/* ---------------------------- following the output ----------------------------
+   An addition to the reference (DESIGN.md §17.4n). A running cell's output pane
+   follows the end only while the reader is AT the end; scrolled up, it holds
+   still, and "↓ Latest" -- the reference's own label, there a ghost button in
+   the pane head -- appears on the pane instead, where the reading is, saying
+   how much has arrived. It is the stage pill (.act), on the box's bottom-right
+   corner -- stream.js measures that corner and the box's scrollbars into its
+   right/bottom, so these are only the fallback. stream.js keeps the reader's
+   line in place itself when lines leave the top of the tail window, so the
+   browser's own scroll anchoring is off: two mechanisms choosing an anchor by
+   different rules would fight over the same scrollTop. */
+.pane.out{position:relative;}
+.pane.out > .act{position:absolute; right:8px; bottom:8px;}
+.pane.out .logbox{overflow-anchor:none;}

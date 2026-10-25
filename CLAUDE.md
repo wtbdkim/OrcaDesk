@@ -421,6 +421,17 @@ two convergences — the whole optimization and the cycle solving now — are a
 **toggle** (`_gkind` in `stream.js`, `CHARTS.convergence(..., kind)`), shown only
 when both have data, never two stacked charts. DESIGN.md §17.4h / §17.4i.
 
+A cell's **Output pane** (the `.logbox` beside the chart, the last 260 lines
+of the `.out`, re-read every poll while the job runs) follows the end **only
+while the reader is at the end** — per box in `stream.js` `_logs`, read off
+the box's own scroll events. Scrolled up, a poll leaves it where it is and an
+`.act` pill, *↓ Latest · N new*, appears on the box's corner. Each read is laid
+over the previous one rather than replacing it (`slid` / `paintLog`: the lines
+that left the window come off the top, new ones are appended), and the first
+line on screen is put back at its offset. That keeps the reader on their line
+while the window slides, and keeps a selection through a poll. It used to scroll
+every RUNNING job to the end on every poll. DESIGN.md §17.4n.
+
 In the preview, **a surface is drawn in the Visual panel, not in a pop-out**:
 picking an orbital or the ESP map plots it on the panel's own stage, and the
 window is the same picture with the isovalue beside it. The isosurface renderer
