@@ -37,16 +37,22 @@
 
   /** @type {Record<string, any>} option groups from data/*.json, loaded once */
   const CHOICES = {};
+  /** StepConfig's own defaults (get_step_defaults), loaded once. A new
+   *  calculation is seeded from these and from nothing else: this file kept
+   *  its own numbers once, and they drifted from the backend's — MaxIter 0
+   *  (clamped to 1), IRC MaxIter 40 for 100, TD-DFT maxdim 0 (clamped to 1).
+   *  @type {Record<string, any>} */
+  let DEF = {};
   let _loaded = false;
 
   async function loadChoices() {
     if (_loaded) return;
     const names = ["functionals", "basis_sets", "calculation_types",
                    "scf_convergences", "ri_approximations", "solvents"];
-    await Promise.all(names.map(async n => {
+    await Promise.all([...names.map(async n => {
       const g = await NB.call("load_choices", n);
       CHOICES[n] = (g && !g.error) ? g : {};
-    }));
+    }), NB.call("get_step_defaults").then(r => { DEF = (r && !r.error) ? r : {}; })]);
     _loaded = true;
   }
 
@@ -301,11 +307,11 @@
         <div class="divider"></div>
         <div class="grouplabel">Method &amp; options</div>
         <div class="field-row">
-          ${combo("Functional", items(CHOICES.functionals), cfg.functional || "wB97X-D4")}
-          ${combo("Basis set", items(CHOICES.basis_sets), cfg.basis_set || "def2-TZVP")}
+          ${combo("Functional", items(CHOICES.functionals), cfg.functional || DEF.functional)}
+          ${combo("Basis set", items(CHOICES.basis_sets), cfg.basis_set || DEF.basis_set)}
         </div>
         <div class="field-row">
-          ${select("RI", items(CHOICES.ri_approximations), cfg.ri_approximation || "RIJCOSX", "mid")}
+          ${select("RI", items(CHOICES.ri_approximations), cfg.ri_approximation || DEF.ri_approximation, "mid")}
           ${select("SCF convergence", items(CHOICES.scf_convergences), cfg.scf_convergence || K.scf, "mid")}
           ${calcTypes.length
             ? select("Calculation type", calcTypes, cfg.calculation_type || K.calc)
@@ -325,23 +331,23 @@
         <div class="divider"></div>
         <div class="grouplabel">Resources</div>
         <div class="field-row">
-          ${text("nprocs", cfg.nprocs || d.default_nprocs || 6, "narrow", "number")}
-          ${text("maxcore (MB / core)", cfg.maxcore_mb || d.default_maxcore_mb || 2400, "mid", "number")}
-          ${K.maxiter ? text("Max iterations", cfg.max_iter || 200, "mid", "number") : ""}
+          ${text("nprocs", cfg.nprocs || d.default_nprocs || DEF.nprocs, "narrow", "number")}
+          ${text("maxcore (MB / core)", cfg.maxcore_mb || d.default_maxcore_mb || DEF.maxcore_mb, "mid", "number")}
+          ${K.maxiter ? text("Max iterations", cfg.max_iter || DEF.max_iter, "mid", "number") : ""}
         </div>
 
         ${K.freq ? `<div class="divider"></div>
         <div class="grouplabel">Thermochemistry</div>
         <div class="field-row">
-          ${text("Temperature (K)", cfg.freq_temp_k || 298.15, "mid", "number")}
-          ${text("Pressure (atm)", cfg.freq_pressure_atm || 1.0, "mid", "number")}
+          ${text("Temperature (K)", cfg.freq_temp_k || DEF.freq_temp_k, "mid", "number")}
+          ${text("Pressure (atm)", cfg.freq_pressure_atm || DEF.freq_pressure_atm, "mid", "number")}
         </div>` : ""}
 
         ${K.tddft ? `<div class="divider"></div>
         <div class="grouplabel">TD-DFT</div>
         <div class="field-row" style="align-items:center">
-          ${text("Roots", cfg.tddft_nroots || 10, "narrow", "number")}
-          ${text("MaxDim", cfg.tddft_maxdim || 0, "narrow", "number")}
+          ${text("Roots", cfg.tddft_nroots || DEF.tddft_nroots, "narrow", "number")}
+          ${text("MaxDim", cfg.tddft_maxdim || DEF.tddft_maxdim, "narrow", "number")}
           <label class="checkbox"><input type="checkbox" data-f="tda"
             ${cfg.tddft_tda !== false ? "checked" : ""}> TDA</label>
           <label class="checkbox"><input type="checkbox" data-f="triplets"
@@ -358,10 +364,10 @@
         ${K.irc ? `<div class="divider"></div>
         <div class="grouplabel">IRC</div>
         <div class="field-row">
-          ${text("Max points", cfg.irc_maxiter || 40, "narrow", "number")}
-          ${select("Direction", ["both", "forward", "backward"], cfg.irc_direction || "both", "mid")}
+          ${text("Max points", cfg.irc_maxiter || DEF.irc_maxiter, "narrow", "number")}
+          ${select("Direction", ["both", "forward", "backward"], cfg.irc_direction || DEF.irc_direction, "mid")}
           ${select("Initial Hessian", ["calc_anfreq", "calc_numfreq", "read"],
-                   cfg.irc_init_hess || "calc_anfreq", "mid")}
+                   cfg.irc_init_hess || DEF.irc_init_hess, "mid")}
         </div>
         <!-- a picked .hess, by path: it is copied into the run folder at launch,
              so the Hessian a TS frequency run already paid for is reused
@@ -396,7 +402,7 @@
              product block into the .inp, so what is stored is the block -->
         <textarea data-f="nebxyz" hidden>${NB.esc(cfg.neb_product_xyz || "")}</textarea>
         <div class="field-row" style="margin-top:14px;align-items:center">
-          ${text("Images", cfg.neb_nimages || 8, "narrow", "number")}
+          ${text("Images", cfg.neb_nimages || DEF.neb_nimages, "narrow", "number")}
           <label class="checkbox"><input type="checkbox" data-f="preopt"
             ${cfg.neb_preopt_ends ? "checked" : ""}> Pre-optimize ends</label>
         </div>
@@ -994,11 +1000,12 @@
       scf_convergence: val("SCF convergence", K.scf),
       calculation_type: val("Calculation type", K.calc),
       options: val("Extra keywords", K.options || ""),
-      maxcore_mb: Math.round(num("maxcore (MB / core)", d.default_maxcore_mb || 2400)),
-      nprocs: Math.round(num("nprocs", d.default_nprocs || 6)),
-      // 200 is StepConfig's own default: 0 here was clamped to MaxIter 1 by
-      // from_dict, and every new optimization stopped after one cycle
-      max_iter: K.maxiter ? Math.round(num("Max iterations", 200)) : 0,
+      maxcore_mb: Math.round(num("maxcore (MB / core)", d.default_maxcore_mb || DEF.maxcore_mb)),
+      nprocs: Math.round(num("nprocs", d.default_nprocs || DEF.nprocs)),
+      // an empty field falls back to StepConfig's own default (DEF): 0 here
+      // was clamped to MaxIter 1 by from_dict, and every new optimization
+      // stopped after one cycle
+      max_iter: K.maxiter ? Math.round(num("Max iterations", DEF.max_iter)) : 0,
       solvation: { model: val("Model", ""), solvent: val("Solvent", "") },
       // read off the rows on screen, not carried over from the stored calc:
       // a row the user deleted has to actually go
@@ -1015,27 +1022,27 @@
         ({ kind: c.kind, atoms: c.atoms.slice(), value: c.value }));
     }
     if (K.freq) {
-      config.freq_temp_k = num("Temperature (K)", 298.15);
-      config.freq_pressure_atm = num("Pressure (atm)", 1.0);
+      config.freq_temp_k = num("Temperature (K)", DEF.freq_temp_k);
+      config.freq_pressure_atm = num("Pressure (atm)", DEF.freq_pressure_atm);
     }
     if (K.tddft) {
-      config.tddft_nroots = Math.round(num("Roots", 10));
-      config.tddft_maxdim = Math.round(num("MaxDim", 0));
+      config.tddft_nroots = Math.round(num("Roots", DEF.tddft_nroots));
+      config.tddft_maxdim = Math.round(num("MaxDim", DEF.tddft_maxdim));
       config.tddft_tda = chk("tda");
       config.tddft_triplets = chk("triplets");
     }
     if (K.nmr) config.nmr_jcoupling = chk("jcoupling");
     if (K.irc) {
-      config.irc_maxiter = Math.round(num("Max points", 40));
-      config.irc_direction = val("Direction", "both");
-      config.irc_init_hess = val("Initial Hessian", "calc_anfreq");
+      config.irc_maxiter = Math.round(num("Max points", DEF.irc_maxiter));
+      config.irc_direction = val("Direction", DEF.irc_direction);
+      config.irc_init_hess = val("Initial Hessian", DEF.irc_init_hess);
       const hf = q('[data-f="hessfile"]');
       config.irc_hess_file = hf ? hf.value.trim() : "";
     }
     if (K.neb) {
       const nb = q('[data-f="nebxyz"]');
       config.neb_product_xyz = nb ? nb.value.trim() : "";
-      config.neb_nimages = Math.round(num("Images", 8));
+      config.neb_nimages = Math.round(num("Images", DEF.neb_nimages));
       config.neb_preopt_ends = chk("preopt");
     }
 

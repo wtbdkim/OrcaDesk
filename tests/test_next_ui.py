@@ -331,3 +331,20 @@ def test_the_rail_never_leaves_a_narrow_window():
     narrower lost all three; it narrows (and below 760 stacks) instead."""
     app_css = _read(NEXT / "app.css")
     assert not re.search(r"\.rail\{[^}]*display:none", app_css)
+
+
+def test_the_builder_seeds_a_new_calculation_from_stepconfig_alone():
+    """A new calculation's numbers come from get_step_defaults, never from a
+    literal in build.js. The builder kept its own once and every one of them
+    drifted somewhere: MaxIter 0 (clamped to 1, so an optimization stopped
+    after one cycle), IRC MaxIter 40 against 100, TD-DFT maxdim 0 (clamped to
+    1) and nroots 10 against 40."""
+    src = re.sub(r"/\*.*?\*/", "", _read(NEXT / "build.js"), flags=re.S)
+    # "" is "nothing", not a default; a number or a non-empty string is one
+    seeded = re.findall(r'cfg\.(\w+) \|\| (?:d\.\w+ \|\| )?([0-9][^,)}]*|"[^"]+")', src)
+    assert not seeded, f"literal defaults in build.js: {seeded}"
+    fallback = re.findall(r'num\("[^"]+", (?:d\.\w+ \|\| )?([0-9][0-9.]*)\)', src)
+    # Charge 0 / Mult. 1 are the calculation's own, not StepConfig's
+    assert sorted(fallback) == ["0", "1"], f"literal fallbacks in build.js: {fallback}"
+    from orcamgr.gui import bridge
+    assert "def get_step_defaults" in Path(bridge.__file__).read_text(encoding="utf-8")

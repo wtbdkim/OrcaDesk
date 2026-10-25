@@ -163,6 +163,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   hit-target rule can save.
 
 ### Fixed
+- The notebook preview's builder started a new IRC at `MaxIter 40` instead of
+  100, and a new TD-DFT at `nroots 10` / `maxdim 1` instead of 40 / 10. It
+  kept its own copies of the defaults and they had drifted from the
+  backend's; it now takes every default from the backend
+  (`get_step_defaults`), so they cannot drift again.
 - A running calculation's Output pane in the notebook preview no longer pulls
   you back to the bottom every second. It follows new output only while you
   are at the end; scroll up and it stays on the line you are reading, and a
