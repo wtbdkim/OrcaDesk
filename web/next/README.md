@@ -47,7 +47,7 @@ launching. Any port above 1024 works. It is off unless you set it.)
 | `viewer.js` | Structure (picking, measuring), Visual, natural orbitals |
 | `mvwin.js` | the pop-out viewer: frame walker, favourites, orbitals & maps |
 | `charts.js` | a cell's convergence trace, stage chain and progress row |
-| `mol.js` | ball-and-stick: the cell thumbnails and the interactive stages |
+| `mol.js` | every structure drawn (Avogadro-style display types, depth cues, the Display menu): the cell thumbnails and the interactive stages |
 
 Colours, radii, fonts and the rail width are **tokens** at the top of `app.css`
 (`:root` for dark, `html[data-theme="light"]` for light). Changing a token

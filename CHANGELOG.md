@@ -51,6 +51,21 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   steps with Enter / Shift+Enter or *Prev* / *Next*; case is ignored.
 
 ### Changed
+- **The notebook preview's structure viewer draws like Avogadro2, and shows
+  which atom is in front.** Lit spheres and shaded sticks at Avogadro's
+  ball-and-stick proportions (0.3 × the van der Waals radius on 0.1 Å sticks,
+  so hydrogen is a ball, not a dot), and three depth cues where there were
+  none: mild perspective, depth fog and a dark rim on every atom and bond.
+  - A **Display** menu on every stage: ball and stick, sticks, space-filling
+    or wireframe; hydrogens on or off; atom labels (element, or `C12` as the
+    pick panel names it); and **double and triple bonds** drawn from the run's
+    own Mayer bond orders, with a delocalized bond as one solid and one dashed
+    stick. One setting for the whole app, remembered; keys 1–4, H, L.
+  - **Zoom and move**: the wheel zooms in the pop-out viewer (Ctrl+wheel or a
+    touchpad pinch in the report, which still scrolls), Shift+drag or a
+    middle-drag moves the structure, 0 puts the view back. A drag now turns it
+    the way the hand moves — the near side follows the cursor — and it can be
+    turned all the way over.
 - **Less explanatory text in the notebook preview.** The sentences that
   explained a control the control already shows are gone: the empty queue
   reads *Nothing queued yet.*, the builder lost its mode and per-element-basis

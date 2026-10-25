@@ -241,14 +241,30 @@ which stops every job in flight (P57). It emits the design's own ids (`q-total`,
 landmark can address both pages with one selector.
 `mol.js` is the ONE painter behind every structure the preview draws — the cell
 thumbnails, the report's Structure and Visual stages, and the pop-out viewer —
-so a sizing or colour rule lives there once. Its covalent-radius table (Cordero
-2008, H–Pu) answers **two** questions with two fallbacks, which is the thing to
-keep straight: what is bonded to what (an unknown element guesses GENEROUSLY —
-a missed bond draws a molecule as dust) and how big to draw an atom (an unknown
-element looks ORDINARY — the old shared 1.2 fallback rendered it larger than
-iodine). The drawn radius is `rdraw(el) * s * 0.32` with one floor, `line *
-0.62`, stated against the stick width rather than as a pixel count: a flat
-2.5px minimum clamps the SMALL atoms first, so it erased the H-vs-C distinction
+so a sizing or colour rule lives there once. It draws the way Avogadro2 does
+(DESIGN.md §17.4k): lit spheres and shaded cylinder sticks, the four display
+types (`STYLES`: ball and stick at 0.3 × the van der Waals radius on 0.1 Å
+sticks, sticks, space-filling, wireframe), hydrogens on/off, atom labels and
+multiple bonds — and, because a 2D canvas has no depth, three depth cues:
+mild perspective (`PERSPECTIVE`, camera at 4 bounding radii, allowed for
+exactly in the fit), depth fog toward `--stage` (`FOG`) and a dark rim on
+every sphere and stick. Multiple bonds come only from the run's Mayer bond
+orders (`setAtoms(atoms, {orders})`, passed by `viewer.js` for the parsed
+geometry and never for a trajectory frame). The display is app-wide
+(`MOL.display` / `MOL.setDisplay`, every live stage repaints, kept in
+localStorage) and is set from `MOL.displayMenu` — the *Display* popover — or
+keys on a focused stage (1–4, H, L, +/−, 0). The orientation is a rotation
+matrix turned about the screen's axes; Shift/middle-drag pans; the wheel zooms
+only on a stage mounted with `wheel: "plain"` (the pop-out), elsewhere
+Ctrl+wheel, so the report still scrolls. It keeps **two** radius tables with two
+fallbacks, which is the thing to keep straight: the covalent table (Cordero
+2008, H–Pu) decides what is bonded to what (an unknown element guesses
+GENEROUSLY — a missed bond draws a molecule as dust), and the van der Waals
+table (Bondi/Mantina for the main group; covalent + 0.4 Å as a stated
+convention for the d/f blocks) decides how big to draw an atom (an unknown
+element looks ORDINARY — carbon). The ball's one floor is `stickPx * 0.62`,
+stated against the stick width rather than as a pixel count: a flat 2.5px
+minimum clamps the SMALL atoms first, so it erased the H-vs-C distinction
 exactly where the molecule is large against its box — every cell thumbnail of a
 real molecule. The **axis marker** in a stage's bottom-left corner is drawn by the
 same file and IS the control for the axis views — the old *View down x/y/z*

@@ -1610,18 +1610,28 @@ every row — a core orbital reads −520.12, and repeating " eV" three hundred
 times is what pushed the name that identifies it out of the column.
 
 **17.4e A ball states its element, so its size has to be the element's.**
-Ball-and-stick draws a sphere per atom sized by the **covalent radius** — H at
-0.31 Å against C at 0.76 Å, so hydrogen is 41% of carbon and the picture says
-which atom is which before any label does. Two ways that gets quietly lost, both
-of which had happened:
+Ball-and-stick draws a sphere per atom at **0.3 × the van der Waals radius**,
+the convention Avogadro, Jmol and 3Dmol share — H at 1.20 Å against C at
+1.70 Å, so hydrogen is 71% of carbon: small enough to read as hydrogen, large
+enough to be a ball rather than a knob on a stick, and the picture says which
+atom is which before any label does. (It was the covalent radius at 0.32×,
+which made H 41% of C and every atom a dot on a hairline stick; the rule this
+section states — the size is the element's — is unchanged, the radius it is
+read from is the one the reader's other tools use.) Main-group radii are
+Bondi's, with Mantina 2009 for the elements Bondi left out; the d and f blocks
+have no van der Waals radius anyone agrees on, so for those the drawing size
+is a stated convention — covalent radius + 0.4 Å — rather than a number
+dressed up as data. Two ways the element's size gets quietly lost, both of
+which had happened:
 
 *A radius table that stops.* The 24 elements an organic run contains were
 listed and everything else took one fallback. That fallback exists for bond
 perception, where guessing large is safe (a missed bond draws a molecule as
 dust), and it was being reused as a drawing size, where guessing large is a
-claim — an unlisted element rendered bigger than iodine. The table is the
-published set (Cordero 2008) from H to Pu, and the two questions have separate
-fallbacks: generous for bonding, ordinary for drawing.
+claim — an unlisted element rendered bigger than iodine. Bonding reads the
+covalent table (Cordero 2008, H to Pu) and drawing reads the van der Waals
+one, and the two have separate fallbacks: generous for bonding, ordinary
+(carbon) for drawing.
 
 *A floor with a number in it.* `max(2.5px, r)` clamps the small atoms first,
 so it does not shrink a picture evenly — it deletes the distinction the picture
@@ -1646,6 +1656,47 @@ whole purpose is that those are not the same coordinates. Anything holding a
 structure records which of the two it has, and re-reads when the run acquires
 an output of its own; the caption says which, so it can never claim a final
 structure over input coordinates.
+
+**17.4k Depth has to be drawn, because a canvas has none.** The structure
+stages paint on a 2D canvas — several thumbnails on screen at once cannot each
+hold a WebGL context — and painter's order alone says which atom covers which
+but not how far apart they are: a ring seen face-on read as flat, and the
+front and back of a conformer were the same size and the same colour. Three
+cues carry it together, and each is cheap: **perspective** (the camera sits
+four bounding radii out, so the nearest atom is drawn 1.33× and the farthest
+0.8×, and the fit allows for that exactly so §17.4e's "turning is not a reason
+to change size" still holds for the molecule as a whole), **depth fog** (a far
+atom keeps 40% of its own colour and fades toward `--stage`), and a **dark
+rim** on every sphere and stick, which cuts a near one out against what it
+covers. Sticks are shaded across their width so they read as cylinders, and a
+bond is painted as two halves at their own depths, since a bond running front
+to back is in front of one atom and behind the other.
+
+The display follows Avogadro2, the editor most ORCA users read structures in:
+its four display types (ball and stick, sticks, space-filling, wireframe),
+hydrogens on/off, atom labels (the element, or the element and number the
+pick panel uses — `C12`), and multiple bonds drawn as parallel sticks in the
+plane of a neighbour so they close up edge-on. **Multiple bonds come only from
+the run's own Mayer bond orders**, on the geometry they were computed for
+(Structure, and Visual when it draws the parsed geometry); a trajectory frame
+is a different geometry and draws every bond single, and the Display menu says
+which of the two the stage on screen is. The bands are wide — under 1.25
+single, to 1.75 a partial bond (one solid stick and one dashed: an aromatic
+ring's 1.3–1.5), to 2.4 double, above that triple — because a Mayer order is
+not an integer and the picture should not claim one more precisely than it is.
+The display belongs to the app, not to a stage: switching to sticks in the
+pop-out switches the report beside it, as Avogadro's display types belong to
+the scene. It lives in a *Display* popover under *Open in viewer* (an addition
+to the reference, in the named `.dispmenu` block of `app.css`), and every
+setting has a key on a focused stage — 1–4, H, L, 0 to reset the view.
+
+Navigation is Avogadro's too: a drag turns about the **screen's** axes (the
+near side follows the cursor — two Euler angles with a clamped pitch could
+never turn a molecule over), Shift+drag or a middle-drag moves it, and the
+wheel zooms about the cursor — but **only where the stage owns its window**.
+In the report the wheel belongs to the page, since a stage that took it would
+trap the reader halfway down a long result, so there it is Ctrl+wheel, which is
+also what a touchpad pinch sends.
 
 **17.4d Say a failure once, and number an atom once.** Two content rules the
 report and the stream kept breaking in opposite directions.
