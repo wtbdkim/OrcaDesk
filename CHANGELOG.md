@@ -169,6 +169,16 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   hit-target rule can save.
 
 ### Fixed
+- Finished calculations can be removed from the queue while it is running —
+  one at a time or with the Finished group's *Clear*. Removing one never
+  touched its files, but the queue refused it until the whole run ended. A
+  finished calculation that a calculation still to finish takes its geometry
+  from stays, as before.
+- A stage chain in a notebook cell (analytical or numerical frequencies,
+  TD-DFT, a conformer search) printed its title twice — once in the pane head
+  and once above the stages. It is said once now. The reaction profile's
+  species rows likewise label Coefficient / Calculation on a stage's first row
+  only.
 - The notebook preview's builder started a new IRC at `MaxIter 40` instead of
   100, and a new TD-DFT at `nroots 10` / `maxdim 1` instead of 40 / 10. It
   kept its own copies of the defaults and they had drifted from the

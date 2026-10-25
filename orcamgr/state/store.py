@@ -697,10 +697,17 @@ class QueueStore:
                 target = next((c for c in self._calcs if c.name == name), None)
                 if target is None:
                     return False
-                if target.state not in EDITABLE_STATES:
+                # A finished row (DONE / FAILED) leaves the LIST mid-run too:
+                # removal touches no file, the engine walks rows by identity,
+                # and the reference check below still keeps a parent that a
+                # row yet to finish reads its geometry from. Only the in-flight
+                # one is held. (It used to be refused until the run ended, so a
+                # long run left its finished rows impossible to tidy.)
+                if (target.state not in EDITABLE_STATES
+                        and target.state not in (CalcState.DONE, CalcState.FAILED)):
                     raise ValueError(
-                        "While the queue is running, only pending, cancelled, "
-                        "or blocked calculations can be removed.")
+                        "While the queue is running, a running calculation "
+                        "cannot be removed.")
                 if self._engine_active(name):
                     raise ValueError(
                         "Cannot remove: this calculation is about to run.")

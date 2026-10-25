@@ -753,7 +753,8 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   its edited form), and reordered (the walk follows live list order).
   Still protected mid-run: the in-flight calcs (state RUNNING plus
   `QueueEngine.active_names` for the picked-but-not-yet-stamped window),
-  DONE/FAILED rows (remove/edit refused until the run ends), `clear`, and
+  DONE/FAILED rows (never edited — P24; but they CAN be removed mid-run, the
+  list being only the record), `clear`, and
   reference integrity — a mid-run add/edit with a dangling reference and a
   remove/rename of a referenced parent are refused at the store, because
   the pre-run screen (`find_dangling_reference`) never sees mid-run

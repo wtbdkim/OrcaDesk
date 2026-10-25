@@ -380,17 +380,31 @@ def test_non_editable_states_immune_while_running(store):
     add_with_state(store, "done", CalcState.DONE)
     add_with_state(store, "dead", CalcState.FAILED)
     store.set_running(True)
+    # finished rows are never EDITED (DONE is frozen, FAILED locked, P24) ...
     for name in ("hot", "done", "dead"):
         with pytest.raises(ValueError):
-            store.remove(name)
-        with pytest.raises(ValueError):
             store.replace(name, make_calc(name))
-    store.set_running(False)
-    # idle-time semantics unchanged: anything but RUNNING can be removed
-    assert store.remove("done") is True
-    assert store.remove("dead") is True
+    # ... but they leave the list mid-run like any other row that is not in
+    # flight: removal touches no file, and a long run left them untidyable
     with pytest.raises(ValueError):
         store.remove("hot")
+    assert store.remove("done") is True
+    assert store.remove("dead") is True
+    store.set_running(False)
+    with pytest.raises(ValueError):
+        store.remove("hot")
+
+
+def test_a_finished_parent_a_running_child_reads_stays_mid_run(store):
+    # the reference check still holds a DONE parent while something that has
+    # not finished reads its geometry
+    add_with_state(store, "parent", CalcState.DONE)
+    add_with_state(store, "child", CalcState.RUNNING)
+    store.get("child").geometry_source = "reference"
+    store.get("child").ref_name = "parent"
+    store.set_running(True)
+    with pytest.raises(ValueError, match="references its geometry"):
+        store.remove("parent")
 
 
 def test_mid_run_add_or_edit_with_dangling_reference_refused(store):
