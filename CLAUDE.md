@@ -429,7 +429,8 @@ when both have data, never two stacked charts. DESIGN.md §17.4h / §17.4i.
 An **IRC** cell draws its path instead (`CHARTS.irc`, from
 `progress_panels.js` `IrcTracker`): ΔE against the TS in kcal/mol, linear,
 backward to the left and forward to the right of the TS, each direction's
-steps / ΔE / max|G| against its threshold in the key, and progress from
+steps / ΔE / max|G| and RMS(G) against their thresholds in the key (ORCA
+needs both under to end a direction), and progress from
 MaxIter and the directions asked for. Before it the cell showed whichever
 single SCF had run last. `get_graph_lines` keeps the same lines
 (`_IRC_GRAPH` / `_IRC_ROW` in `bridge.py`, pinned in `test_log_replay.py`) so

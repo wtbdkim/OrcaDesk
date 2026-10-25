@@ -1830,8 +1830,10 @@ forward to the right**, the TS marked at the origin, a converged end ringed.
 A walking direction's half of the axis has room ahead of it (twice its steps,
 capped at MaxIter) so the path grows into the box rather than the box
 re-scaling under every step. The key says, per direction, where it is (ΔE),
-how far it has walked, and how far it still has to go — max|G| as a multiple
-of its threshold until it reads *converged*.
+how far it has walked, and how far it still has to go — max|G| AND RMS(G),
+each as a multiple of its own threshold, until it reads *converged*. Both,
+because ORCA ends a direction only when both are under: max|G| alone read
+"0.96× limit" on a direction that still had steps to walk.
 
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
