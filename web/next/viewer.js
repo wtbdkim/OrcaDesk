@@ -23,6 +23,9 @@
   let _stage = null;
   /** the interactive stage in the Visual panel @type {any} */
   let _viz = null;
+  /** the Visual stage's Display menu, closed when a surface takes the stage
+   *  @type {any} */
+  let _vizMenu = null;
   /** @type {any[]} frames of the selected set */
   let _frames = [];
   let _frameIdx = 0;
@@ -64,12 +67,14 @@
         <span class="meta">${atoms.length} atoms</span></div>
       <div class="viewstage" data-v="stage">
         <canvas class="molcv" data-v="canvas"
-          aria-label="Final geometry, ball and stick. Drag to turn, right-drag between two
-            atoms to measure, click an atom or a bond for its numbers; the arrow keys turn
-            it too, and x, y or z looks straight down that axis."></canvas>
+          aria-label="Final geometry. Drag to turn, Shift+drag to move, Ctrl+scroll to zoom,
+            right-drag between two atoms to measure, click an atom or a bond for its numbers;
+            the arrow keys turn it too, x, y or z looks straight down that axis, 1 to 4
+            change the display type, H hides hydrogens, L labels the atoms."></canvas>
         ${legend(atoms)}
         <div class="stageacts">
           <button class="act" type="button" data-v="open">Open in viewer</button>
+          <button class="act" type="button" data-v="disp">Display</button>
         </div>
       </div>
     </section>`;
@@ -99,6 +104,14 @@
       return (a === i && c === j) || (a === j && c === i);
     })[0];
     return hit ? hit[2] : null;
+  }
+
+  /** Every Mayer bond order as [i, j, order], for the stage to draw multiple
+   *  bonds from. Same index rule as mayerOrder. @param {any} d */
+  function mayerOrders(d) {
+    const idx = (s) => parseInt(String(s).split("-")[0], 10);
+    return (d.mayer_bonds || []).map(b => [idx(b[0]), idx(b[1]), b[2]])
+      .filter(b => isFinite(b[0]) && isFinite(b[1]));
   }
 
   /** @param {HTMLElement} stage @param {any} pick @param {any} d */
@@ -147,7 +160,11 @@
     const atoms = (d.geometry || []).map(a => ({ el: a.el, x: a.x, y: a.y, z: a.z }));
     if (_stage) _stage.destroy();
     _stage = MOL.mount(canvas, { onPick: (p) => showPick(stage, p, d) });
-    _stage.setAtoms(atoms);
+    // the run's own Mayer orders draw the double bonds: this IS the geometry
+    // they were computed for
+    _stage.setAtoms(atoms, { orders: mayerOrders(d) });
+    MOL.displayMenu(sec.querySelector('[data-v="disp"]'),
+                    sec.querySelector(".stageacts"), _stage);
 
     sec.querySelector('[data-v="open"]').addEventListener("click", () => NB.mv.open({
       source: source, title: title(source) + " \u2014 structure",
@@ -174,10 +191,12 @@
         </div>
         <div class="vizstage" data-v="vstage">
           <canvas class="molcv" data-v="vcanvas"
-            aria-label="Structure viewer. Drag to turn; the arrow keys turn it too, and
-              x, y or z looks straight down that axis."></canvas>
+            aria-label="Structure viewer. Drag to turn, Shift+drag to move, Ctrl+scroll to
+              zoom; the arrow keys turn it too, x, y or z looks straight down that axis,
+              1 to 4 change the display type, H hides hydrogens, L labels the atoms."></canvas>
           <div class="stageacts">
             <button class="act" type="button" data-v="vopen">Open in viewer</button>
+            <button class="act" type="button" data-v="vdisp">Display</button>
           </div>
           <span class="vizcap" data-v="vcap"></span>
         </div>
@@ -197,6 +216,7 @@
     // .vizcap writes the frame's name in this stage's bottom-left corner, which
     // is where the axis marker goes — so the marker sits above it
     _viz = MOL.mount(q("vcanvas"), { gizmoBottom: 60 });
+    _vizMenu = MOL.displayMenu(q("vdisp"), q("vdisp").parentElement, _viz);
 
     // The two halves of "what can be drawn" are found in different ways — the
     // .xyz sets by listing the folder, the surfaces by asking the wavefunction —
@@ -276,7 +296,7 @@
       const g = (d && d.geometry) || [];
       if (g.length) {
         const atoms = g.map(a => ({ el: a.el, x: a.x, y: a.y, z: a.z }));
-        _viz.setAtoms(atoms);
+        _viz.setAtoms(atoms, { orders: mayerOrders(d) });
         q("vstage").insertAdjacentHTML("beforeend", legend(atoms));
       }
       loadPicks(sec, source, d, tiles[0]);
@@ -473,6 +493,9 @@
       // the atom painter steps aside rather than being cleared: what is on the
       // stage is replaced, not blanked, so the panel never shows an empty box
       q("vcanvas").hidden = true;
+      // the Display menu is the atom painter's; a surface is 3Dmol's picture
+      if (_vizMenu) _vizMenu.close();
+      q("vdisp").hidden = true;
       NB.mv.vol.adopt(q("vstage"));
       q("vcap").textContent = `${p.label} \u2014 working\u2026`;
       const ok = await NB.mv.vol.plot(source, p, _opts,
@@ -499,6 +522,7 @@
     const box = NB.$("mv-gl");
     if (box) box.hidden = true;
     q("vcanvas").hidden = false;
+    q("vdisp").hidden = false;
     if (_viz) _viz.repaint();
   }
 

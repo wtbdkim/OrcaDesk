@@ -106,8 +106,9 @@
          place and borrows it by re-parenting, so it lives here but does not
          belong to this window. See volumeView in mvwin.js. -->
     <canvas class="molcv" id="mv-canvas" data-interactive="1"
-      aria-label="Structure viewer. Drag to turn; click an atom or bond for its numbers,
-        right-drag between two atoms to measure."></canvas>
+      aria-label="Structure viewer. Drag to turn, Shift+drag to move, scroll to zoom; click
+        an atom or bond for its numbers, right-drag between two atoms to measure; 1 to 4
+        change the display type, H hides hydrogens, L labels the atoms, 0 resets."></canvas>
     <div class="mvgl" id="mv-gl" hidden></div>
     <div class="mvlegend" id="mv-legend"></div>
     <span class="vizcap" id="mv-cap"></span>
@@ -121,6 +122,7 @@
     <button class="btn btn-sm btn-ghost" type="button" id="mv-favonly" aria-pressed="false">Favourites only</button>
     <button class="btn btn-sm btn-ghost" type="button" id="mv-export">Export favourites…</button>
     <button class="btn btn-sm btn-ghost" type="button" id="mv-copyxyz">Copy .xyz</button>
+    <button class="btn btn-sm btn-ghost" type="button" id="mv-display">Display</button>
   </div>
   <div class="mvbar" id="mv-volume" hidden>
     <label class="lb" for="mv-vol">Surface</label>

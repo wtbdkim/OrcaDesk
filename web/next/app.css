@@ -877,6 +877,36 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
   color:var(--muted-foreground); cursor:pointer; font-size:14px; line-height:1;
 }
 .pickinfo .pclose:hover{background:var(--secondary); color:var(--foreground);}
+/* the Display menu -- an addition to the reference (DESIGN.md §17.4k):
+   Avogadro's display types in a popover, because a stage in a reading column
+   has no room for a panel. Under its button in a stage's .stageacts; floating
+   over the bottom-right of the pop-out viewer's stage, whose button is in the
+   bar below it. */
+.dispmenu{
+  display:flex; flex-direction:column; align-items:stretch; gap:8px;
+  background:var(--popover); border:1px solid var(--border);
+  border-radius:var(--radius-sm); box-shadow:var(--shadow-md);
+  padding:11px 13px; max-width:340px; text-align:left;
+}
+.mvstage > .dispmenu{position:absolute; right:14px; bottom:12px; z-index:3;}
+.dispmenu .dmh{
+  display:flex; align-items:center; gap:8px;
+  font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
+  color:var(--muted-foreground);
+}
+.dispmenu .seg{align-self:flex-start;}
+.dispmenu .seg button{padding:4px 10px; font-size:11.5px;}
+.dispmenu .dmrow{display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;}
+.dispmenu .dmrow input{width:15px; height:15px; accent-color:var(--foreground); margin:0;}
+.dispmenu .dmrow[aria-disabled="true"]{opacity:.55; cursor:default;}
+.dispmenu .dmnote{margin:-3px 0 0; font-size:11px; line-height:1.45; color:var(--muted-foreground);}
+.dispmenu .dmfoot{display:flex; gap:8px; margin-top:2px;}
+.dispmenu kbd{
+  margin-left:auto; font-family:var(--font-mono); font-size:10px; font-weight:400;
+  letter-spacing:0; text-transform:none; border:1px solid var(--border);
+  border-radius:4px; padding:1px 4px; color:var(--muted-foreground);
+}
+.dispmenu .dmfoot kbd{margin-left:6px;}
 .outbar .t{font-size:12px; font-weight:600; letter-spacing:.03em; text-transform:uppercase;
   color:var(--muted-foreground);}
 .rawout,.rawin{

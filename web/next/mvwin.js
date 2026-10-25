@@ -35,6 +35,8 @@
 
   /** the mol.js stage, created once the window first opens @type {any} */
   let _stage = null;
+  /** its Display menu, made with the stage @type {any} */
+  let _menu = null;
   /** @type {any[]} frames of the open set */
   let _frames = [];
   let _idx = 0;
@@ -90,6 +92,7 @@
     // display:none box draws into a 0x0 framebuffer, which leaves the old scene
     // on the card instead of clearing it.
     _vol.release();
+    if (_menu) _menu.close();
     q("mvwin").hidden = true;
     q("mv-scrim").hidden = true;
     document.removeEventListener("keydown", onKey);
@@ -111,8 +114,10 @@
     q("mv-legend").hidden = vol;
     // the box is shared with the Visual panel and may be parented there, so
     // this takes it back rather than assuming it is already here
-    if (vol) _vol.adopt(q("mv-stage"));
-    else q("mv-gl").hidden = true;
+    if (vol) {
+      if (_menu) _menu.close();        // the menu belongs to the atom painter
+      _vol.adopt(q("mv-stage"));
+    } else q("mv-gl").hidden = true;
     document.querySelectorAll("[data-mvmode]").forEach(b =>
       b.setAttribute("aria-pressed", String(/** @type {any} */ (b).dataset.mvmode === m)));
     if (!vol && _stage) _stage.repaint();
@@ -642,8 +647,11 @@
     document.addEventListener("keydown", onKey);
     q("mv-close").focus();
 
-    if (!_stage) _stage = MOL.mount(q("mv-canvas"), {});
-    else _stage.repaint();
+    // this stage owns its window, so the wheel is its own and zooms bare
+    if (!_stage) {
+      _stage = MOL.mount(q("mv-canvas"), { wheel: "plain" });
+      _menu = MOL.displayMenu(q("mv-display"), q("mv-stage"), _stage);
+    } else _stage.repaint();
 
     setMode((o.mode === "volume" || o.pick) ? "volume" : "frames");
     // Opening ON a surface: wait for the picker to be filled, then select the
