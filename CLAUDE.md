@@ -48,7 +48,7 @@ python tools/uispec.py real spec_real.json
 python tools/uidiff.py spec_mock.json spec_real.json   # exit code = differences
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 1015 tests over the framework-free layers
+python -m pytest                       # 1086 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 44 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -564,7 +564,24 @@ knowledge of Qt or HTTP. `make_engine_factory` wires those callbacks back to the
 The `core/` pipeline:
 - `input_generator.py` — `StepConfig` → ORCA `.inp` text (`build_input`). Handles
   solvation (CPCM/SMD), RI, per-element basis/ECP, charge/multiplicity, raw-input mode
-  (verbatim text with a `{{GEOMETRY}}` placeholder), and NEB-TS side `.xyz` files.
+  (verbatim text with a `{{GEOMETRY}}` placeholder), NEB-TS side `.xyz` files,
+  and **`%geom Constraints`** (`StepConfig.geom_constraints`: a list of
+  `{kind: C|B|A|D, atoms: [0-based], value: float|None}` where None holds the
+  starting value). They are written inside the ONE `%geom` block, and only for
+  `CONSTRAINED_KINDS` (opt / opt_freq / ts_opt / ts_opt_freq). Any other kind
+  gets a `#` note saying they were left out. `general` is excluded on purpose:
+  its job line is free text. `normalize_constraints` (called from `from_dict`,
+  the trust boundary) DROPS a malformed entry (unknown kind, wrong atom count,
+  non-int/negative/duplicate index, non-finite value) rather than guessing,
+  clamps a bond to 0.1–50 Å and an angle to 0–180°, wraps a dihedral, and
+  dedups a constraint named in either direction. An index past the last atom
+  is refused (`constraint_index_error`) by `build_input`, and by
+  `calc_from_dict` at add time for direct coordinates (not on restore). ORCA
+  6.1.1's own response to such an index is `Could not make G matrix` in setup.
+  A template's `{{GEOMETRY}}` defers the check to the run-time call with the
+  resolved geometry. The format and ORCA's IUPAC dihedral sign were verified on
+  6.1.1. The notebook builder picks them on its structure stage (DESIGN.md
+  §17.4l); the classic UI has only the `.inp` snippet.
 - `runner.py` — `OrcaRunner` launches ORCA **detached**, with ORCA writing its own
   stdout straight to the `.out` file (not via a Python pipe), so a run survives
   ORCAdesk closing. It is invoked with the input's **bare file name** and `cwd`
@@ -905,8 +922,8 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 `orcamgr/core/structure.py` is the one place geometry is reasoned about. It is
 pure and Qt-free (it needs no numpy, though `orcamgr/nbo/` has since made numpy
 a core dependency — see P5), so it unit-tests directly (`tests/test_structure.py`); the front-end reaches it only
-through five thin Bridge slots — `check_structure`, `compare_structures`,
-`measure_structure`, `structure_fragment`, `edit_structure` — and holds **no**
+through two thin Bridge slots — `check_structure` and `compare_structures` —
+and holds **no**
 geometry logic of its own. That is deliberate (P4): the Build tab's NEB badge
 and `input_generator.check_neb_atom_order`'s gate are now the same judgment,
 where they used to be a Python implementation and a hand-mirrored JS copy that

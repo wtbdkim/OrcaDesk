@@ -19,10 +19,10 @@
      generator's expectations: which calculation-type group to offer, the
      convergence default that kind deserves, and the extra block it needs. */
   const KINDS = {
-    opt:          { label: "Optimization",     group: "calculation_types_geometry",  calc: "TightOpt",      scf: "TightSCF",     maxiter: true },
-    opt_freq:     { label: "Opt + Freq",       group: null,                          calc: "TightOpt Freq", scf: "VeryTightSCF", maxiter: true,  freq: true },
-    ts_opt:       { label: "TS optimization",  group: "calculation_types_geometry",  calc: "OptTS",         scf: "TightSCF",     maxiter: true },
-    ts_opt_freq:  { label: "TS Opt + Freq",    group: null,                          calc: "OptTS Freq",    scf: "VeryTightSCF", maxiter: true,  freq: true },
+    opt:          { label: "Optimization",     group: "calculation_types_geometry",  calc: "TightOpt",      scf: "TightSCF",     maxiter: true, cons: true },
+    opt_freq:     { label: "Opt + Freq",       group: null,                          calc: "TightOpt Freq", scf: "VeryTightSCF", maxiter: true, cons: true,  freq: true },
+    ts_opt:       { label: "TS optimization",  group: "calculation_types_geometry",  calc: "OptTS",         scf: "TightSCF",     maxiter: true, cons: true },
+    ts_opt_freq:  { label: "TS Opt + Freq",    group: null,                          calc: "OptTS Freq",    scf: "VeryTightSCF", maxiter: true, cons: true,  freq: true },
     freq:         { label: "Frequencies",      group: "calculation_types_frequency", calc: "Freq",          scf: "VeryTightSCF", freq: true },
     ts_freq:      { label: "TS frequencies",   group: "calculation_types_frequency", calc: "Freq",          scf: "VeryTightSCF", freq: true },
     neb_ts:       { label: "NEB-TS",           group: null,                          calc: "NEB-TS",        scf: "TightSCF",     neb: true, options: "FREQ" },
@@ -196,6 +196,13 @@
       kind: calc ? calc.kind : "opt",
       xyz: calc ? (calc.xyz || "") : "",
       rawText: calc ? (calc.raw_text || "") : "",
+      // the constraints live here rather than in the form: they are picked on
+      // the stage, and a re-render (a kind switch, Guided <-> .inp) must not
+      // lose them — a switch to a kind that cannot use them only hides them
+      cons: ((calc && calc.config && calc.config.geom_constraints) || [])
+        .map(c => ({ kind: c.kind, atoms: c.atoms.slice(), value: c.value })),
+      /** @type {any} the structure stage, destroyed on the next render */
+      stage: null,
     };
     if (!KINDS[st.kind]) st.kind = "general";
     render(body, st, calc, close);
@@ -203,6 +210,7 @@
 
   /** @param {HTMLElement} el @param {any} st @param {any} calc @param {() => void} close */
   function render(el, st, calc, close) {
+    if (st.stage) { st.stage.destroy(); st.stage = null; }
     const K = KINDS[st.kind];
     const cfg = (calc && calc.config) || {};
     const d = NB.settings || {};
@@ -247,8 +255,22 @@
           <span class="hint" style="margin:0" data-x="status">${
             st.xyz ? st.xyz.trim().split("\n").length + " atoms" : ""}</span>
         </div>
-        <div class="field"><textarea rows="7" data-f="xyz" spellcheck="false"
-          placeholder="C   0.000   0.000   0.000">${NB.esc(st.xyz)}</textarea></div>
+        <!-- the coordinates and the structure they describe, side by side: the
+             stage redraws as the text changes, and is where constraints are
+             picked (DESIGN.md §17.4l) -->
+        <div class="geomsplit">
+          <div class="field"><textarea rows="7" data-f="xyz" spellcheck="false"
+            aria-label="Coordinates"
+            placeholder="C   0.000   0.000   0.000">${NB.esc(st.xyz)}</textarea></div>
+          <div class="geomstage">
+            <canvas class="molcv" data-v="geomcv"
+                    aria-label="The structure in the coordinates box"></canvas>
+            <p class="geomempty" data-x="geomempty">No coordinates yet</p>
+            ${K.cons && !st.raw ? `<div class="stageacts">
+              <button class="btn btn-sm" type="button" data-act="fixatom" disabled
+                      title="Hold the selected atom's position">Fix atom</button></div>` : ""}
+          </div>
+        </div>
         <!-- what is wrong with this structure, said BEFORE it costs hours of
              compute rather than after: a multiplicity the electron count cannot
              produce, two atoms on top of each other, coordinates in Bohr -->
@@ -260,6 +282,20 @@
               select("Take the optimized geometry from", refs, calc ? calc.ref_name : refs[0])}</div>`
           : `<p class="hint" style="margin:0">No other calculation to take a geometry from yet.</p>`}
       </div>
+
+      ${K.cons && !st.raw ? `<div data-cons>
+        <div class="divider"></div>
+        <div class="grouplabel">Constraints</div>
+        <p class="hint" style="margin:0 0 10px" data-x="conshint"></p>
+        <div class="conslist" data-a="cons"></div>
+        <!-- the keyboard's way in, and the only one for a referenced geometry,
+             which has no coordinates here to pick on -->
+        <div class="consadd">
+          <input class="mono" data-f="consatoms" spellcheck="false"
+                 placeholder="atoms, e.g. 3 7" aria-label="Atoms to constrain, numbered from 1">
+          <button class="btn btn-sm" type="button" data-act="consadd">Add</button>
+        </div>
+      </div>` : ""}
 
       <div data-form${st.raw ? " hidden" : ""}>
         <div class="divider"></div>
@@ -291,7 +327,7 @@
         <div class="field-row">
           ${text("nprocs", cfg.nprocs || d.default_nprocs || 6, "narrow", "number")}
           ${text("maxcore (MB / core)", cfg.maxcore_mb || d.default_maxcore_mb || 2400, "mid", "number")}
-          ${K.maxiter ? text("Max iterations", cfg.max_iter || 0, "mid", "number") : ""}
+          ${K.maxiter ? text("Max iterations", cfg.max_iter || 200, "mid", "number") : ""}
         </div>
 
         ${K.freq ? `<div class="divider"></div>
@@ -520,8 +556,11 @@
       const body = stripXyzHeader(r.text || "");
       q('[data-f="xyz"]').value = body;
       q('[data-x="status"]').textContent = body ? body.trim().split("\n").length + " atoms" : "";
+      // a value set from code fires nothing; the stage listens for "input"
+      q('[data-f="xyz"]').dispatchEvent(new Event("input"));
       recheck();
     });
+    wireStage(el, st);
     // --- the structure, checked ---------------------------------------------
     /** Ask the backend what is wrong with the coordinates on screen. It cannot
      *  fail — an unreadable block is itself one of the findings — so there is
@@ -679,6 +718,169 @@
     });
   }
 
+  /* %geom Constraints, as input_generator.CONSTRAINT_ATOMS has them: what a
+     chain of n atoms constrains is the coordinate n atoms define. */
+  const CONS_NAME = { C: "Position", B: "Bond", A: "Angle", D: "Dihedral" };
+  const CONS_BY_COUNT = ["", "C", "B", "A", "D"];
+
+  /** The same coordinate, named in either direction — O1–H2 is H2–O1, and
+   *  ORCA would be handed it twice. @param {any} a @param {any} b */
+  function sameCons(a, b) {
+    if (a.kind !== b.kind || a.atoms.length !== b.atoms.length) return false;
+    const n = a.atoms.length;
+    return a.atoms.every((v, k) => v === b.atoms[k])
+        || a.atoms.every((v, k) => v === b.atoms[n - 1 - k]);
+  }
+
+  /** The structure stage beside the coordinates, and the constraints picked on
+   *  it. The stage draws whatever the box holds as it is typed; for a kind that
+   *  optimizes, a drag across atoms adds the constraint they name, a selected
+   *  atom can be fixed, and a row in the list shows its atoms on the stage.
+   *  @param {HTMLElement} el @param {any} st */
+  function wireStage(el, st) {
+    /** @param {string} sel */
+    const q = (sel) => /** @type {any} */ (el.querySelector(sel));
+    const ta = q('[data-f="xyz"]'), cv = q('[data-v="geomcv"]');
+    if (!ta || !cv) return;
+    const K = KINDS[st.kind] || KINDS.general;
+    const picking = !!K.cons && !st.raw;
+    const fix = q('[data-act="fixatom"]');
+    const useRef = () => q('input[name="gsrc"][value="reference"]').checked;
+    /** @type {any[]} */
+    let atoms = [];
+    /** the atom a click selected, for Fix @type {number|null} */
+    let picked = null;
+
+    const stage = MOL.mount(cv, Object.assign({
+      gizmoBottom: 26,
+      onPick: (/** @type {any} */ p) => { picked = p && p.kind === "atom" ? p.i : null; sayFix(); },
+    }, picking ? { onChain: (/** @type {number[]} */ idx) => add(idx) } : {}));
+    st.stage = stage;
+
+    /** @param {number} i */
+    const atomName = (i) => atoms[i] ? atoms[i].el + (i + 1) : String(i + 1);
+    /** C3–O7, the report's own naming; bare numbers when there is nothing to
+     *  read the elements from @param {any} c @param {boolean} ref */
+    const consLabel = (c, ref) => c.atoms.map(i => ref ? String(i + 1) : atomName(i)).join("–");
+
+    function sayFix() {
+      if (!fix) return;
+      fix.disabled = picked == null;
+      fix.textContent = picked == null ? "Fix atom" : "Fix " + atomName(picked);
+    }
+
+    /** @param {number[]} idx 0-based */
+    function add(idx) {
+      const c = { kind: CONS_BY_COUNT[idx.length], atoms: idx.slice(), value: null };
+      if (!c.kind) return;
+      if (st.cons.some(x => sameCons(x, c))) {
+        NB.toast(`${CONS_NAME[c.kind]} ${consLabel(c, useRef())} is already constrained.`);
+      } else {
+        st.cons.push(c);
+        list();
+      }
+      if (!useRef()) stage.setHighlight(c.atoms);
+    }
+
+    function list() {
+      const box = q('[data-a="cons"]');
+      if (!box) return;
+      const ref = useRef();
+      const hint = q('[data-x="conshint"]');
+      if (hint) hint.textContent = ref
+        ? "Atoms are numbered from 1. They are checked against the referenced geometry when the run starts."
+        : "Drag across 2, 3 or 4 atoms for a bond, angle or dihedral; select one atom to fix it. Leave a target empty to hold the current value.";
+      box.innerHTML = st.cons.map((c, k) => {
+        const lab = consLabel(c, ref);
+        const miss = ref ? null : c.atoms.find(i => i >= atoms.length);
+        const unit = c.kind === "B" ? "Å" : "°";
+        const mv = ref || miss != null ? null : MOL.measureChain(atoms, c.atoms);
+        const now = miss != null ? `no atom ${miss + 1}`
+          : mv ? mv.value.toFixed(c.kind === "B" ? 3 : 1) + " " + unit
+          : c.kind === "C" ? "fixed" : "";
+        return `<div class="consrow${miss != null ? " bad" : ""}" data-k="${k}" tabindex="0">
+          <span class="ck">${CONS_NAME[c.kind]}</span>
+          <span class="ca">${NB.esc(lab)}</span>
+          <span class="cv" title="measured on the coordinates above">${NB.esc(now)}</span>
+          ${c.kind === "C" ? "<span></span>" : `<label class="ct">to <input class="mono" type="number"
+            step="any" value="${c.value == null ? "" : NB.esc(String(c.value))}" placeholder="current"
+            aria-label="Target for ${CONS_NAME[c.kind].toLowerCase()} ${NB.esc(lab)}, ${unit}"> ${unit}</label>`}
+          <button class="rm" type="button" aria-label="Remove the ${
+            CONS_NAME[c.kind].toLowerCase()} constraint on ${NB.esc(lab)}">×</button>
+        </div>`;
+      }).join("");
+      box.querySelectorAll(".consrow").forEach(r => {
+        const c = st.cons[Number(/** @type {HTMLElement} */ (r).dataset.k)];
+        const show = () => { if (!useRef()) stage.setHighlight(c.atoms); };
+        const hide = () => stage.setHighlight([]);
+        r.addEventListener("mouseenter", show); r.addEventListener("focusin", show);
+        r.addEventListener("mouseleave", hide); r.addEventListener("focusout", hide);
+        const inp = /** @type {HTMLInputElement|null} */ (r.querySelector("input"));
+        // the value is kept as it is typed, and the list is NOT redrawn for
+        // it: a redraw would take the field out from under the cursor
+        if (inp) inp.addEventListener("input", () => {
+          const v = parseFloat(inp.value);
+          c.value = isFinite(v) ? v : null;
+        });
+        /** @type {HTMLElement} */ (r.querySelector(".rm")).addEventListener("click", () => {
+          st.cons.splice(st.cons.indexOf(c), 1);
+          stage.setHighlight([]);
+          list();
+        });
+      });
+    }
+
+    /** What is in the box, drawn — and the list re-measured against it. */
+    function showGeom() {
+      atoms = MOL.parseXyz(ta.value);
+      stage.setAtoms(atoms);
+      picked = null; sayFix();
+      const empty = q('[data-x="geomempty"]');
+      if (empty) empty.hidden = atoms.length > 0;
+      const status = q('[data-x="status"]');
+      if (status) status.textContent = atoms.length ? atoms.length + " atoms" : "";
+      list();
+    }
+    /** @type {any} */
+    let timer = 0;
+    ta.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(showGeom, 180); });
+
+    if (fix) fix.addEventListener("click", () => {
+      if (picked == null) return;
+      add([picked]);
+      stage.clearPick();
+      picked = null; sayFix();
+    });
+
+    const typed = q('[data-f="consatoms"]');
+    const addTyped = () => {
+      const nums = String(typed.value || "").split(/[\s,;–-]+/).filter(Boolean).map(Number);
+      const n = useRef() ? Infinity : atoms.length;
+      if (!nums.length || nums.length > 4) { NB.fail("Name 1 to 4 atoms: 1 fixes a position, 2 a bond, 3 an angle, 4 a dihedral."); return; }
+      if (nums.some(x => !Number.isInteger(x) || x < 1)) { NB.fail("Atoms are whole numbers, counted from 1."); return; }
+      if (new Set(nums).size !== nums.length) { NB.fail("Name each atom once."); return; }
+      const over = nums.find(x => x > n);
+      if (over != null) { NB.fail(`There is no atom ${over} — the structure has ${n}.`); return; }
+      add(nums.map(x => x - 1));
+      typed.value = "";
+    };
+    const addBtn = q('[data-act="consadd"]');
+    if (addBtn) addBtn.addEventListener("click", addTyped);
+    if (typed) typed.addEventListener("keydown", (/** @type {KeyboardEvent} */ e) => {
+      if (e.key === "Enter") { e.preventDefault(); addTyped(); }
+    });
+
+    // the source decides what a row can say: a referenced geometry is not
+    // here, so its rows are numbers without elements or measurements
+    el.querySelectorAll('input[name="gsrc"]').forEach(r => r.addEventListener("change", () => {
+      stage.setHighlight([]);
+      list();
+      if (!useRef()) stage.repaint();
+    }));
+
+    showGeom();
+  }
+
   /** The control under a labelled field, by the label's text. Shared by the
    *  form reader and the live structure check, which need the same two numbers.
    *  @param {HTMLElement} root @param {string} label @returns {string|null} */
@@ -737,7 +939,9 @@
       options: val("Extra keywords", K.options || ""),
       maxcore_mb: Math.round(num("maxcore (MB / core)", d.default_maxcore_mb || 2400)),
       nprocs: Math.round(num("nprocs", d.default_nprocs || 6)),
-      max_iter: K.maxiter ? Math.round(num("Max iterations", 0)) : 0,
+      // 200 is StepConfig's own default: 0 here was clamped to MaxIter 1 by
+      // from_dict, and every new optimization stopped after one cycle
+      max_iter: K.maxiter ? Math.round(num("Max iterations", 200)) : 0,
       solvation: { model: val("Model", ""), solvent: val("Solvent", "") },
       // read off the rows on screen, not carried over from the stored calc:
       // a row the user deleted has to actually go
@@ -747,6 +951,12 @@
         ecp: /** @type {any} */ (r.querySelector('[data-b="ecp"]')).value.trim(),
       })).filter(a => a.element),
     };
+    // only for a kind that optimizes: a constraint on a frequency job is a
+    // setting nobody can see, riding along into a calculation it cannot affect
+    if (K.cons) {
+      config.geom_constraints = (st.cons || []).map(c =>
+        ({ kind: c.kind, atoms: c.atoms.slice(), value: c.value }));
+    }
     if (K.freq) {
       config.freq_temp_k = num("Temperature (K)", 298.15);
       config.freq_pressure_atm = num("Pressure (atm)", 1.0);
@@ -797,6 +1007,17 @@
     if (!p.is_raw && p.geometry_source === "direct" && !p.xyz) return "Load or paste a geometry first.";
     if (p.geometry_source === "reference" && !p.ref_name) return "Pick the calculation to take the geometry from.";
     if (p.multiplicity < 1) return "Multiplicity is at least 1.";
+    // the backend refuses this too (calc_from_dict), but the row that is wrong
+    // is on screen here, marked
+    const cons = (p.config && p.config.geom_constraints) || [];
+    if (!p.is_raw && p.geometry_source === "direct" && cons.length) {
+      const n = MOL.parseXyz(p.xyz).length;
+      const bad = cons.find(c => Math.max(...c.atoms) >= n);
+      if (bad) {
+        return `The ${CONS_NAME[bad.kind].toLowerCase()} constraint names atom ${
+          Math.max(...bad.atoms) + 1}, but the structure has ${n} atoms.`;
+      }
+    }
     if (!p.is_raw && p.kind === "irc" && p.config.irc_init_hess === "read"
         && !p.config.irc_hess_file) {
       return "Initial Hessian is read — load the .hess it starts from.";

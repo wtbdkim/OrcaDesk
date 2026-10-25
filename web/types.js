@@ -83,11 +83,21 @@
  */
 
 /**
+ * One %geom constraint. Mirror of the dicts input_generator.normalize_constraints
+ * keeps: kind C (a fixed atom) / B (bond) / A (angle, vertex in the middle) /
+ * D (dihedral), naming 1 / 2 / 3 / 4 atoms, 0-based as ORCA counts them.
+ * @typedef {Object} GeomConstraintPayload
+ * @property {"C"|"B"|"A"|"D"} kind
+ * @property {number[]} atoms
+ * @property {number|null} value       target (Å or °); null = hold the start value
+ */
+
+/**
  * Method configuration. Mirror of StepConfig in input_generator.py
- * (to_dict()/from_dict are a plain asdict round-trip) — 48 fields.
+ * (to_dict()/from_dict are a plain asdict round-trip) — 49 fields.
  * The [optional] markers describe the JS→Python SEND direction (the build
  * forms omit keys that don't apply, e.g. crest_* on a DFT calc); in the
- * Python→JS direction to_dict() = asdict(), so all 48 keys always arrive.
+ * Python→JS direction to_dict() = asdict(), so all 49 keys always arrive.
  * @typedef {Object} StepConfigPayload
  * @property {string} kind
  * @property {string} functional
@@ -99,6 +109,8 @@
  * @property {number} maxcore_mb
  * @property {number} nprocs
  * @property {number} max_iter
+ * @property {GeomConstraintPayload[]} [geom_constraints]  %geom Constraints;
+ *                                     sent only for the kinds that optimize
  * @property {SolvationPayload} solvation
  * @property {BasisAssignmentPayload[]} basis_assignments
  * @property {number} freq_temp_k

@@ -13,6 +13,7 @@ Each step produces a complete .inp text given an XYZ coordinate block.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, fields as dataclass_fields, asdict
 from pathlib import PurePosixPath, PureWindowsPath
 
@@ -289,6 +290,11 @@ class StepConfig:
     maxcore_mb: int = 2400
     nprocs: int = 6
     max_iter: int = 200                  # geometry optimiser cap
+    # %geom Constraints, emitted only for the kinds that optimize
+    # (CONSTRAINED_KINDS): {"kind": "C"|"B"|"A"|"D", "atoms": [0-based ints],
+    # "value": float|None}. None = hold at the starting value. Normalized by
+    # normalize_constraints() in from_dict.
+    geom_constraints: list = field(default_factory=list)
     solvation: Solvation = field(default_factory=Solvation)
 
     # per-element basis/ECP (%basis newgto/newecp), applies to any kind
@@ -412,6 +418,7 @@ class StepConfig:
         cfg.tddft_maxdim = _clamp_int(cfg.tddft_maxdim, 10, 1, 100_000)
         cfg.freq_temp_k = _clamp_float(cfg.freq_temp_k, 298.15, 0.0, 100_000.0)
         cfg.freq_pressure_atm = _clamp_float(cfg.freq_pressure_atm, 1.0, 0.0, 100_000.0)
+        cfg.geom_constraints = normalize_constraints(cfg.geom_constraints)
         # ORCA has no "MediumSCF" convergence tier — it aborts with "UNRECOGNIZED
         # OR DUPLICATED KEYWORD(S) IN SIMPLE INPUT LINE". Older sessions/calcs may
         # still carry it (it used to be offered in the picker), so map it to the
@@ -477,6 +484,114 @@ def _clamp_float(v, default: float, lo: float, hi: float) -> float:
     if x != x:  # NaN
         return default
     return max(lo, min(x, hi))
+
+
+# ---- geometry constraints (%geom Constraints) ----------------------------
+# ORCA 6.1.1's four constraint kinds and the atoms each one names, 0-based:
+# C i (all three Cartesians of one atom), B i j, A i j k (j is the vertex),
+# D i j k l. Each may carry a target value ("{ B 0 1 1.25 C }"); without one
+# ORCA holds the starting value. Verified on 6.1.1 (H2O2, all four kinds in
+# one block): every one is echoed with a C in the redundant-coordinate table
+# and holds to the last cycle, targets included.
+CONSTRAINT_ATOMS = {"C": 1, "B": 2, "A": 3, "D": 4}
+# What a target may be, per kind: a bond in Å, an angle in degrees. A dihedral
+# is wrapped rather than clamped (-190 and 170 are the same torsion).
+_CONSTRAINT_RANGE = {"B": (0.1, 50.0), "A": (0.0, 180.0)}
+_CONSTRAINT_NOUN = {"C": "position", "B": "bond", "A": "angle", "D": "dihedral"}
+_MAX_CONSTRAINTS = 1000          # a list longer than this is a payload, not a plan
+_MAX_ATOM_INDEX = 1_000_000
+# The kinds whose run optimizes a geometry, and so the only ones a constraint
+# means anything for. Exactly the kinds build_input writes a %geom block for.
+# "general" is left out on purpose: its job line is free text, so whether it
+# optimizes at all is not knowable here — its .inp text mode takes a
+# hand-written block. IRC and NEB-TS follow a path; %geom constraints do not
+# steer either.
+CONSTRAINED_KINDS = ("opt", "ts_opt", "opt_freq", "ts_opt_freq")
+
+
+def normalize_constraints(raw) -> list:
+    """The trust boundary for ``StepConfig.geom_constraints``.
+
+    A malformed entry is DROPPED rather than repaired: an unknown kind, the
+    wrong number of atoms, an index that is not a non-negative int (a bool is
+    not one), the same atom twice, or a target that is not a finite number.
+    None of those can come out of the builder, and guessing what was meant
+    would constrain a coordinate nobody chose. A target in range is kept, one
+    out of range is clamped (a dihedral wrapped), and a repeat of a constraint
+    already listed — the same atoms in either direction — is dropped, since
+    ORCA would be handed the same coordinate twice.
+    """
+    if not isinstance(raw, list):
+        return []
+    out, seen = [], set()
+    for c in raw[:_MAX_CONSTRAINTS]:
+        if not isinstance(c, dict):
+            continue
+        kind = c.get("kind")
+        if not isinstance(kind, str):
+            continue
+        kind = kind.strip().upper()
+        n = CONSTRAINT_ATOMS.get(kind)
+        atoms = c.get("atoms")
+        if not n or not isinstance(atoms, list) or len(atoms) != n:
+            continue
+        if any(isinstance(a, bool) or not isinstance(a, int)
+               or a < 0 or a > _MAX_ATOM_INDEX for a in atoms):
+            continue
+        if len(set(atoms)) != n:
+            continue
+        key = (kind, min(tuple(atoms), tuple(reversed(atoms))))
+        if key in seen:
+            continue
+        value = c.get("value")
+        if kind == "C" or value is None or value == "":
+            value = None                 # a fixed atom has no value to target
+        else:
+            if isinstance(value, bool):
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            if kind == "D":
+                value = (value + 180.0) % 360.0 - 180.0
+            else:
+                lo, hi = _CONSTRAINT_RANGE[kind]
+                value = max(lo, min(value, hi))
+        seen.add(key)
+        out.append({"kind": kind, "atoms": list(atoms), "value": value})
+    return out
+
+
+def constraint_index_error(constraints: list, n_atoms: int) -> str:
+    """The first constraint naming an atom the structure does not have, as a
+    sentence in the 1-based numbering the builder shows, or "" when all fit.
+
+    ORCA does not say this itself: an out-of-range index dies in the
+    optimizer's setup with "Could not make G matrix" (measured, 6.1.1) — a
+    FAILED, locked calculation (P24) whose cause the user has to guess."""
+    for c in constraints or []:
+        atoms = c.get("atoms") or []
+        if atoms and max(atoms) >= n_atoms:
+            return (f"The {_CONSTRAINT_NOUN.get(c.get('kind'), '')} constraint on "
+                    f"atom{'s' if len(atoms) > 1 else ''} "
+                    f"{'-'.join(str(a + 1) for a in atoms)} names atom "
+                    f"{max(atoms) + 1}, but the structure has {n_atoms} atoms.")
+    return ""
+
+
+def _constraint_line(c: dict) -> str:
+    """``{ B 0 1 C }`` / ``{ B 0 1 1.2500 C }`` — a bond to four decimals (Å),
+    an angle or dihedral to two (degrees), which is finer than ORCA's own
+    convergence on either."""
+    atoms = " ".join(str(a) for a in c["atoms"])
+    v = c.get("value")
+    if v is None:
+        return f"    {{ {c['kind']} {atoms} C }}"
+    return f"    {{ {c['kind']} {atoms} {v:.4f} C }}" if c["kind"] == "B" \
+        else f"    {{ {c['kind']} {atoms} {v:.2f} C }}"
 
 
 def _needs_auxj(ri: str) -> bool:
@@ -684,13 +799,33 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         lines.extend(basis_lines)
         lines.append("end")
 
-    if cfg.kind in ("opt", "ts_opt", "opt_freq", "ts_opt_freq"):
+    # normalized again: a StepConfig built in code never passed from_dict
+    constraints = normalize_constraints(cfg.geom_constraints)
+    if constraints and cfg.kind in CONSTRAINED_KINDS and GEOMETRY_PLACEHOLDER not in xyz:
+        # A template's coordinates arrive at run time, so its indices are
+        # checked then — this same call, with the resolved geometry.
+        err = constraint_index_error(constraints, len(parse_block(xyz)))
+        if err:
+            raise ValueError(err)
+    if constraints and cfg.kind not in CONSTRAINED_KINDS:
+        # P2: a constraint that cannot apply is said, not swallowed — the
+        # builder sends none for these kinds, but an API payload can.
+        lines.append(f"# {len(constraints)} geometry constraint(s) left out: "
+                     f"a {cfg.kind} calculation does not optimize the geometry.")
+
+    if cfg.kind in CONSTRAINED_KINDS:
         lines.append("%geom")
         lines.append(f"  MaxIter {cfg.max_iter}")
         if cfg.kind in ("ts_opt", "ts_opt_freq"):
             # TS optimization needs a good initial Hessian; the manual computes
             # an exact Hessian before the first step (%geom Calc_Hess true).
             lines.append("  Calc_Hess true")
+        if constraints:
+            # inside the ONE %geom block: a second %geom would be a second
+            # block for ORCA to merge, and the generator never relies on that
+            lines.append("  Constraints")
+            lines.extend(_constraint_line(c) for c in constraints)
+            lines.append("  end")
         lines.append("end")
 
     if cfg.kind in ("freq", "ts_freq", "opt_freq", "ts_opt_freq"):

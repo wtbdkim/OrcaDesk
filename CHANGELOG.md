@@ -6,6 +6,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [0.10.1] — 2026-09-11
 
 ### Added
+- **Geometry constraints, picked on the structure.** The notebook builder
+  draws the structure beside its coordinates as you type. For an optimization
+  (Opt, Opt + Freq, TS Opt, TS Opt + Freq), drag across 2, 3 or 4 atoms to
+  hold a bond, an angle or a dihedral, fix a selected atom's position, or type
+  the atom numbers. Each constraint holds its starting value or takes a
+  target, and is written into the `%geom` block as ORCA `Constraints`. A
+  constraint naming an atom the structure does not have is refused when it is
+  added, rather than failing in ORCA's setup.
 - **The notebook preview's last ten design elements.** Everything the approved
   design draws is now in the front-end; the element-by-element check that used
   to carry a list of exceptions carries an empty one.
@@ -141,6 +149,9 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   hit-target rule can save.
 
 ### Fixed
+- A new optimization built in the notebook preview was written with
+  `MaxIter 1`, so it stopped after one cycle: the field started at 0 and the
+  input generator raised it to its minimum. It starts at 200, the default.
 - **An ORCA run that died but never exited no longer shows RUNNING forever.**
   Inside a NumFreq, ORCA prints `error termination` for a failed displacement,
   skips it and carries on — and can then spin on one core without ever

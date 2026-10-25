@@ -1741,6 +1741,31 @@ reaches the box (the embedded browser has no find bar of its own), and the
 count is a live region. The button keeps the app's *↓ End* over the
 reference's *↓ Latest*: a finished file has an end, not a latest.
 
+**17.4l The builder draws what it is given, and constraints are picked on
+the drawing.** The reference's builder puts a still thumbnail of the loaded
+file beside the structure check. The preview puts a live stage beside the
+**coordinates box** instead (`.geomsplit` / `.geomstage`, an addition in the
+last named block of `app.css`), redrawn as the text is typed, because that box
+is what it draws. For a kind that optimizes (opt, opt_freq, ts_opt,
+ts_opt_freq, the kinds the generator writes a `%geom` block for) the stage is
+also where `%geom Constraints` are picked. A left drag that **starts on an
+atom** collects the atoms it passes over (2 = bond, 3 = angle with the middle
+atom as the vertex, 4 = dihedral), with the live value drawn as it goes, and
+dragging back onto the previous atom takes the last one off. A drag from empty
+space still turns the structure, and a click still selects, so an atom can be
+fixed with *Fix C3*. This is the opt-in `onChain` of `MOL.mount`, so every
+other stage is unchanged. The list under it names atoms the way the report
+does (`C3–O7`, numbered from 1, while the `.inp` counts from 0) beside what the
+coordinates measure now and an optional target. A row shows its atoms on the
+stage, joined in order (`setHighlight`), because a ring alone would not say
+which atom is the vertex. The drag is an addition, never the only way in: a
+typed atom list adds the same constraint, and it is the **only** way when the
+geometry is referenced from another calculation, which has no coordinates here
+to pick on. Those rows are bare numbers, checked against the resolved geometry
+when the run starts. A constraint naming an atom the coordinates do not have
+is marked on its row and refused at Add, because ORCA's own answer
+(`Could not make G matrix`) arrives as a FAILED, locked calculation.
+
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
 **both** front-ends — the way out of a preview has to be inside it — and saving
