@@ -174,3 +174,38 @@ def test_a_result_opened_from_disk_reads_its_own_folder(tmp_path):
     assert Bridge._result_file(stub, f"file:{out}", ".inp") == run / "001A_pyridine_opt.inp"
     mlip = run / "m.mlip.json"
     assert Bridge._result_file(stub, f"file:{mlip}", ".out") == run / "m.out"
+
+
+# An IRC's path, as ORCA 6.1.1 prints it (a real B3LYP-D3/cc-pVTZ run): the
+# replay filter has to keep exactly what web/progress_panels.js IrcTracker
+# reads, or a reopened IRC cell draws the last SCF instead of the path.
+IRC_KEEP = [
+    "                   Intrinsic Reaction Coordinate Calculation",
+    "Max. no of cycles        MaxIter    .... 40",
+    "Direction                           .... Forward and backward",
+    "         *                          FORWARD IRC                      *",
+    "Convergence thresholds                0.002000  0.000500            ",
+    "    0     -2807.804492   -0.767014    0.006621  0.001844",
+    "    3     -2807.821680   -11.552961    0.035104  0.007293",
+    "                      ***            THE IRC HAS CONVERGED          ***",
+    "         *                          BACKWARD IRC                     *",
+]
+IRC_DROP = [
+    # an SCF iteration row: same leading shape, more columns
+    "  1  -2807.79123456789   0.000000000000  0.00133  0.00004  0.1000  0.7000",
+    # orbital energies: an index and three numbers
+    "   0   2.0000    -482.523391   -13130.1045",
+    "Iteration    E(Eh)      dE(kcal/mol)  max(|G|)   RMS(G) ",
+]
+
+
+@pytest.mark.parametrize("line", IRC_KEEP)
+def test_the_replay_filter_keeps_an_ircs_path(line):
+    from orcamgr.gui.bridge import _IRC_GRAPH, _IRC_ROW
+    assert _IRC_GRAPH.search(line) or _IRC_ROW.match(line), line
+
+
+@pytest.mark.parametrize("line", IRC_DROP)
+def test_the_replay_filter_leaves_look_alikes_out(line):
+    from orcamgr.gui.bridge import _IRC_GRAPH, _IRC_ROW
+    assert not (_IRC_GRAPH.search(line) or _IRC_ROW.match(line)), line

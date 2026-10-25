@@ -875,6 +875,79 @@ test("geo tracker: post-opt stage reads complete after ORCA TERMINATED NORMALLY 
   assert.strictEqual(g.postDone, true, "terminated -> the post-opt stage is complete");
 });
 
+// ---------- IRC ----------
+// Real ORCA 6.1.1 IRC output (B3LYP-D3/cc-pVTZ, 16 atoms): the settings echo,
+// a converged forward walk, and a backward walk still running.
+const IRC_OUT = [
+  "                   Intrinsic Reaction Coordinate Calculation",
+  "Max. no of cycles        MaxIter    .... 40",
+  "Direction                           .... Forward and backward",
+  "         *                          FORWARD IRC                      *",
+  "Iteration    E(Eh)      dE(kcal/mol)  max(|G|)   RMS(G) ",
+  "Convergence thresholds                0.002000  0.000500            ",
+  "    0     -2807.804492   -0.767014    0.006621  0.001844",
+  "    1     -2807.804737   -0.920972    0.005764  0.001396",
+  "   12     -2807.806381   -1.952715    0.001833  0.000362",
+  "",
+  "                      ***********************HURRAY********************",
+  "                      ***            THE IRC HAS CONVERGED          ***",
+  "         *                          BACKWARD IRC                     *",
+  "Iteration    E(Eh)      dE(kcal/mol)  max(|G|)   RMS(G) ",
+  "Convergence thresholds                0.002000  0.000500            ",
+  "    0     -2807.805680   -1.512565    0.017678  0.003494",
+  "    3     -2807.821680   -11.552961    0.035104  0.007293",
+];
+
+test("irc tracker reads both directions' rows, thresholds and settings", function () {
+  const t = new SCFGraph.IrcTracker();
+  IRC_OUT.forEach(l => t.push(l));
+  assert.strictEqual(t.maxIter, 40);
+  assert.ok(t.wantF && t.wantB);
+  assert.strictEqual(t.tolMaxG, 0.002);
+  assert.strictEqual(t.tolRmsG, 0.0005);
+  assert.deepStrictEqual(t.F.pts.map(p => p.i), [0, 1, 12]);
+  assert.strictEqual(t.F.done, true, "the forward walk converged");
+  assert.deepStrictEqual(t.B.pts.map(p => p.dE), [-1.512565, -11.552961]);
+  assert.strictEqual(t.B.done, false);
+  assert.strictEqual(t.dir, "B");
+});
+
+test("irc progress: a converged forward is half, the backward counts its steps", function () {
+  const t = new SCFGraph.IrcTracker();
+  IRC_OUT.forEach(l => t.push(l));
+  assert.ok(Math.abs(t.progress() - (1 + 2 / 40) / 2) < 1e-9, String(t.progress()));
+  t.push("IRC PATH SUMMARY");
+  assert.strictEqual(t.progress(), 1);
+});
+
+test("irc rows are read only under a direction banner, and a replay does not double them", function () {
+  const t = new SCFGraph.IrcTracker();
+  // an SCF-looking five-number line before any banner is not a step
+  t.push("    0     -2807.804492   -0.767014    0.006621  0.001844");
+  assert.strictEqual(t.hasData(), false);
+  IRC_OUT.forEach(l => t.push(l));
+  IRC_OUT.forEach(l => t.push(l));
+  assert.strictEqual(t.F.pts.length, 3);
+  assert.strictEqual(t.B.pts.length, 2);
+  // an SCF iteration row has more columns and never matches
+  t.push("  1  -2807.79123456789   0.000000000000  0.00133  0.00004  0.1000  0.7000");
+  assert.strictEqual(t.B.pts.length, 2);
+});
+
+test("irc forward-only run is done when the forward walk converges", function () {
+  const t = new SCFGraph.IrcTracker();
+  ["Intrinsic Reaction Coordinate Calculation",
+   "Max. no of cycles        MaxIter    .... 100",
+   "Direction                           .... Forward",
+   "         *                          FORWARD IRC                      *",
+   "Convergence thresholds                0.002000  0.000500            ",
+   "    0     -1.0   -0.5    0.006621  0.001844",
+   "                      ***            THE IRC HAS CONVERGED          ***",
+  ].forEach(l => t.push(l));
+  assert.ok(t.wantF && !t.wantB);
+  assert.strictEqual(t.progress(), 0.99, "held under 1 until the summary");
+});
+
 // ---------- summary ----------
 console.log("");
 console.log(passed + " passed, " + failed + " failed");

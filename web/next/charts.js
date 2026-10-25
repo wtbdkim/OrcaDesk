@@ -230,6 +230,133 @@ var CHARTS = {};
   };
 
 
+  /** Round step for a linear axis: 1, 2 or 5 times a power of ten, so about
+   *  five labelled lines span the range. @param {number} span */
+  function niceStep(span) {
+    const raw = span / 5;
+    const p = Math.pow(10, Math.floor(Math.log10(raw)));
+    const f = raw / p;
+    return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * p;
+  }
+
+  /** An IRC's path as it is being walked: ΔE against the TS (kcal/mol, linear
+   *  — this is an energy, not a residual) over the step count, backward to the
+   *  LEFT of the TS and forward to the right, which is how the finished path is
+   *  read in the report (the IRC profile) and in every paper. Each direction's
+   *  last point is where it has got to; a converged end is ringed.
+   *  @param {any} t the IrcTracker @param {number} w @param {number} h */
+  function ircProfile(t, w, h) {
+    const L = 52, R = 14, T = 14, B = 34;
+    const iw = Math.max(w - L - R, 40), ih = Math.max(h - T - B, 40);
+    const grid = token("--grid", "rgba(161,161,170,.15)");
+    const axis = token("--border", "#27272a");
+    const mut = token("--muted-foreground", "#a1a1aa");
+    const mono = token("--font-mono", "monospace");
+    const fg = token("--foreground", "#fafafa");
+    const cF = token("--crit-de", "#4cc9f0"), cB = token("--crit-maxs", "#ff8fa3");
+
+    // the TS is the shared origin: step 0 of a direction is one step out
+    const fw = t.F.pts.map((/** @type {any} */ p) => ({ x: p.i + 1, y: p.dE }));
+    const bw = t.B.pts.map((/** @type {any} */ p) => ({ x: -(p.i + 1), y: p.dE }));
+    const all = fw.concat(bw).concat([{ x: 0, y: 0 }]);
+    // A walking direction's half of the axis has room ahead of it (twice its
+    // steps, capped at MaxIter), so the path grows into the box rather than
+    // the box re-scaling under it every step; a finished one ends at its end.
+    /** @param {any} s @param {boolean} want */
+    const extent = (s, want) => {
+      if (!want) return 1;
+      const n = s.pts.length ? s.pts[s.pts.length - 1].i + 1 : 0;
+      return Math.max(1, s.done ? n : Math.min(t.maxIter || Infinity, 2 * n + 4));
+    };
+    const xR = extent(t.F, t.wantF), xL = -extent(t.B, t.wantB);
+    const ys = all.map(p => p.y);
+    let lo = Math.min.apply(null, ys), hi = Math.max.apply(null, ys);
+    if (hi - lo < 1) { lo -= 0.5; hi += 0.5; }
+    const st = niceStep(hi - lo);
+    lo = Math.floor(lo / st) * st; hi = Math.ceil(hi / st) * st;
+    const sx = (v) => L + ((v - xL) / (xR - xL)) * iw;
+    const sy = (v) => T + ih - ((v - lo) / (hi - lo)) * ih;
+
+    let g = "";
+    for (let v = lo; v <= hi + st / 2; v += st) {
+      const yy = sy(v);
+      g += `<line x1="${L}" y1="${yy.toFixed(1)}" x2="${L + iw}" y2="${yy.toFixed(1)}"
+              stroke="${grid}" stroke-width="1"/>`
+        + `<text x="${L - 7}" y="${(yy + 3).toFixed(1)}" text-anchor="end" font-size="9"
+             font-family="${mono}" fill="${mut}">${+v.toFixed(6)}</text>`;
+    }
+    // the TS: a vertical rule at 0 and its own label
+    const tsx = sx(0);
+    g += `<line x1="${tsx.toFixed(1)}" y1="${T}" x2="${tsx.toFixed(1)}" y2="${T + ih}"
+            stroke="${axis}" stroke-width="1" stroke-dasharray="3 3"/>`;
+
+    /** @param {{x: number, y: number}[]} pts @param {string} col @param {boolean} done */
+    const path = (pts, col, done) => {
+      if (!pts.length) return "";
+      const seq = [{ x: 0, y: 0 }].concat(pts);
+      const d = seq.map((p, i) => `${i ? "L" : "M"}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ");
+      const last = pts[pts.length - 1];
+      return `<path d="${d}" fill="none" stroke="${col}" stroke-width="1.6"
+                stroke-linejoin="round" stroke-linecap="round" opacity=".92"/>`
+        + pts.map(p => `<circle cx="${sx(p.x).toFixed(1)}" cy="${sy(p.y).toFixed(1)}"
+                          r="1.8" fill="${col}"/>`).join("")
+        + `<circle cx="${sx(last.x).toFixed(1)}" cy="${sy(last.y).toFixed(1)}" r="3.2" fill="${col}"/>`
+        + (done ? `<circle cx="${sx(last.x).toFixed(1)}" cy="${sy(last.y).toFixed(1)}" r="6"
+                     fill="none" stroke="${col}" stroke-width="1.4"/>` : "");
+    };
+    const lines = path(bw, cB, t.B.done) + path(fw, cF, t.F.done)
+      + `<circle cx="${tsx.toFixed(1)}" cy="${sy(0).toFixed(1)}" r="3.6" fill="${fg}"/>`
+      + `<text x="${(tsx + 6).toFixed(1)}" y="${(sy(0) - 6).toFixed(1)}" font-size="9"
+           font-family="${mono}" fill="${fg}">TS</text>`;
+
+    const ticks = `<text x="${L}" y="${(T + ih + 14).toFixed(1)}" font-size="9"
+         font-family="${mono}" fill="${mut}">${t.wantB ? "← backward" : ""}</text>`
+      + `<text x="${L + iw}" y="${(T + ih + 14).toFixed(1)}" text-anchor="end" font-size="9"
+         font-family="${mono}" fill="${mut}">${t.wantF ? "forward →" : ""}</text>`;
+
+    return `<div class="chart"><svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}"
+        role="img" aria-label="IRC energy profile, kcal/mol against the TS">
+      ${g}
+      <line x1="${L}" y1="${T}" x2="${L}" y2="${T + ih}" stroke="${axis}" stroke-width="1"/>
+      <line x1="${L}" y1="${T + ih}" x2="${L + iw}" y2="${T + ih}" stroke="${axis}" stroke-width="1"/>
+      ${lines}${ticks}
+      <text x="${(L + iw / 2).toFixed(1)}" y="${h - 3}" text-anchor="middle" font-size="9"
+        font-family="${mono}" fill="${mut}">IRC step · ΔE vs TS (kcal/mol)</text>
+    </svg></div>`;
+  }
+
+  /** A running IRC's path, or null when there is no IRC data. Replaces the
+   *  "SCF convergence" chart such a cell used to draw: the single SCF that ran
+   *  last says nothing about how far either direction has walked.
+   *  @param {any} b the tracker bundle @param {number} px the box width */
+  CHARTS.irc = function (b, px) {
+    const t = b.irc;
+    if (!t || !t.hasData()) return null;
+    const w = Math.max(px, 280);
+    /** @param {any} s @param {string} label @param {string} color */
+    const key = (s, label, color) => {
+      const last = s.pts[s.pts.length - 1];
+      if (!last) return { color: color, label: label, value: "not started" };
+      const ratio = t.tolMaxG ? last.maxG / t.tolMaxG : null;
+      return { color: color, label: label,
+               value: `${last.dE.toFixed(2)} kcal/mol · ${s.pts.length} steps · `
+                 + (s.done ? "converged" : ratio != null
+                      ? `max|G| ${ratio.toPrecision(2)}× limit` : "walking"),
+               state: s.done ? "met" : "pend" };
+    };
+    const keys = [];
+    if (t.wantB) keys.push(key(t.B, "Backward", token("--crit-maxs", "#ff8fa3")));
+    if (t.wantF) keys.push(key(t.F, "Forward", token("--crit-de", "#4cc9f0")));
+    const n = t.F.pts.length + t.B.pts.length;
+    return {
+      title: "IRC path",
+      meta: `${n} ${n === 1 ? "step" : "steps"}${t.maxIter ? ` · up to ${t.maxIter} each way` : ""}`,
+      html: ircProfile(t, w, CHART_H) + serieskey(keys),
+      progress: t.progress(),
+    };
+  };
+
+
   /* A run that is a sequence of named stages rather than a converging trace.
      The labels are the backends' own (progress_panels.js A_STAGES / the TD-DFT
      and CREST chains); the detail under each is read off the tracker. */

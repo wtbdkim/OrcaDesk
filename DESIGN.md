@@ -1820,6 +1820,19 @@ pill hands focus to it as it hides. A run that has just stopped is read once
 more, because its last read can be up to a poll older than ORCA's closing
 lines.
 
+**17.4o An IRC is a path, so its cell draws the path.** A running IRC cell
+used to fall through to the SCF chart and show the convergence of whichever
+single SCF ran last — the one thing about an IRC nobody is asking. ORCA prints
+a row per step with ΔE against the TS, so the cell draws exactly the picture
+the finished run will have in the report: energy (linear, kcal/mol — an
+energy, not a residual) against step, **backward to the left of the TS and
+forward to the right**, the TS marked at the origin, a converged end ringed.
+A walking direction's half of the axis has room ahead of it (twice its steps,
+capped at MaxIter) so the path grows into the box rather than the box
+re-scaling under every step. The key says, per direction, where it is (ΔE),
+how far it has walked, and how far it still has to go — max|G| as a multiple
+of its threshold until it reads *converged*.
+
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
 **both** front-ends — the way out of a preview has to be inside it — and saving

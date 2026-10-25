@@ -885,9 +885,107 @@
     }, opts);
   }
 
+  // ---------------------------------------------------------------- IRC
+  // An IRC walks downhill from the TS, forward and then backward, and ORCA
+  // prints ONE row per step in a running table under each direction's banner
+  // (verified on a real ORCA 6.1.1 IRC, B3LYP-D3/cc-pVTZ, 16 atoms):
+  //
+  //   *                          FORWARD IRC                      *
+  //   Iteration    E(Eh)      dE(kcal/mol)  max(|G|)   RMS(G)
+  //   Convergence thresholds                0.002000  0.000500
+  //       0     -2807.804492   -0.767014    0.006621  0.001844
+  //   ***            THE IRC HAS CONVERGED          ***
+  //
+  // dE is relative to the TS, so the rows ARE the energy profile, and max|G|
+  // against its threshold is how far the direction still has to go. Before
+  // this, a running IRC cell drew the convergence of whichever single SCF had
+  // last run, which says nothing about the path.
+  const IRC_MAXITER_RE = /Max\.\s*no of cycles\s+MaxIter\s+\.+\s*(\d+)/;
+  const IRC_DIRSET_RE = /^Direction\s+\.+\s*(.+?)\s*$/;
+  const IRC_BANNER_RE = /\*\s+(FORWARD|BACKWARD) IRC\s+\*/;
+  const IRC_TOL_RE = /^Convergence thresholds\s+([\d.]+)\s+([\d.]+)/;
+  // exactly five numbers: an SCF iteration row has seven or more, and the
+  // banner state gates it besides
+  const IRC_ROW_RE = /^\s*(\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)\s*$/;
+  const IRC_DONE_RE = /THE IRC HAS CONVERGED/;
+  const IRC_SUMMARY_RE = /IRC PATH SUMMARY/;
+
+  class IrcTracker {
+    constructor() { this.reset(); }
+    reset() {
+      this.on = false;          // inside an IRC job at all
+      this.maxIter = 0;         // per direction, from the settings echo
+      this.wantF = true;        // which directions the run will walk
+      this.wantB = true;
+      this.tolMaxG = null;
+      this.tolRmsG = null;
+      /** @type {"F"|"B"|null} the table rows are being read into */
+      this.dir = null;
+      this.F = { pts: [], done: false };
+      this.B = { pts: [], done: false };
+      this.finished = false;    // the path summary has been printed
+    }
+    hasData() { return this.F.pts.length + this.B.pts.length > 0; }
+    /** @param {string} line @returns {boolean} whether anything changed */
+    push(line) {
+      if (IRC_START_RE.test(line)) { this.on = true; return false; }
+      let m = IRC_MAXITER_RE.exec(line);
+      if (m) { this.maxIter = parseInt(m[1], 10); return false; }
+      if (this.on) {
+        m = IRC_DIRSET_RE.exec(line);
+        if (m) {
+          const d = m[1].toLowerCase();
+          this.wantF = d.indexOf("forward") >= 0;
+          this.wantB = d.indexOf("backward") >= 0;
+          if (!this.wantF && !this.wantB) { this.wantF = this.wantB = true; }
+          return false;
+        }
+      }
+      m = IRC_BANNER_RE.exec(line);
+      if (m) {
+        // (a direction starting means the one before it has ended, converged
+        // or not - progress() reads that off the backward rows existing)
+        this.dir = m[1] === "FORWARD" ? "F" : "B";
+        this.on = true;
+        return true;
+      }
+      if (IRC_SUMMARY_RE.test(line)) { this.dir = null; this.finished = true; return true; }
+      if (!this.dir) return false;
+      m = IRC_TOL_RE.exec(line);
+      if (m) { this.tolMaxG = parseFloat(m[1]); this.tolRmsG = parseFloat(m[2]); return false; }
+      if (IRC_DONE_RE.test(line)) { this[this.dir].done = true; return true; }
+      m = IRC_ROW_RE.exec(line);
+      if (!m) return false;
+      const p = { i: parseInt(m[1], 10), E: parseFloat(m[2]), dE: parseFloat(m[3]),
+                  maxG: parseFloat(m[4]), rmsG: parseFloat(m[5]) };
+      const side = this[this.dir];
+      // keyed by step number, so a replay of lines already seen overwrites
+      // rather than doubles the path
+      const at = side.pts.findIndex(q => q.i === p.i);
+      if (at >= 0) side.pts[at] = p; else side.pts.push(p);
+      return true;
+    }
+    /** How far along: each direction it will walk is an equal share, done when
+     *  it converged (or the other one started), else its steps over MaxIter.
+     *  Held under 1 until the path summary says the job is through. */
+    progress() {
+      if (!this.hasData()) return null;
+      const share = [];
+      const part = (/** @type {any} */ s, /** @type {boolean} */ over) => {
+        if (s.done || over) return 1;
+        return this.maxIter ? Math.min(0.95, s.pts.length / this.maxIter) : 0.5;
+      };
+      if (this.wantF) share.push(part(this.F, this.wantB && this.B.pts.length > 0));
+      if (this.wantB) share.push(part(this.B, false));
+      const f = share.reduce((a, v) => a + v, 0) / Math.max(1, share.length);
+      return this.finished ? 1 : Math.min(0.99, f);
+    }
+  }
+
   // Extend the shared namespace in place — SCFGraph.* is the single entry point
   // for every caller, before and after this split.
   Object.assign(SCFGraph, {
+    IrcTracker: IrcTracker,
     FreqTracker: FreqTracker,
     TddftTracker: TddftTracker,
     CrestTracker: CrestTracker,

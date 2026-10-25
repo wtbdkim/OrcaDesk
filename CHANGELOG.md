@@ -68,6 +68,12 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   steps with Enter / Shift+Enter or *Prev* / *Next*; case is ignored.
 
 ### Changed
+- **A running IRC shows its path.** The cell used to draw the convergence of
+  the last single SCF; it now draws the energy profile as it is walked — ΔE
+  against the TS, backward to the left and forward to the right — with each
+  direction's steps, current ΔE and how far its gradient still is from the
+  threshold, and a progress bar from MaxIter. A reopened or reattached IRC
+  rebuilds the path from its `.out`.
 - **A generated `.inp` no longer carries ORCAdesk's own `#` comments.** The
   notes that explained a composite method's missing basis, a dropped RI
   keyword, a capped NumFreq process count or left-out constraints are gone;
