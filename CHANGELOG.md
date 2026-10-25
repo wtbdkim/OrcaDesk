@@ -8,12 +8,16 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ### Added
 - **Geometry constraints, picked on the structure.** The notebook builder
   draws the structure beside its coordinates as you type. For an optimization
-  (Opt, Opt + Freq, TS Opt, TS Opt + Freq), drag across 2, 3 or 4 atoms to
-  hold a bond, an angle or a dihedral, fix a selected atom's position, or type
-  the atom numbers. Each constraint holds its starting value or takes a
+  (Opt, Opt + Freq, TS Opt, TS Opt + Freq), drag across 2, 3 or 4 atoms — or
+  Ctrl+click them in order and press *Add* — to hold a bond, an angle or a
+  dihedral, fix a selected atom's position, or type the atom numbers. Each constraint holds its starting value or takes a
   target, and is written into the `%geom` block as ORCA `Constraints`. A
   constraint naming an atom the structure does not have is refused when it is
-  added, rather than failing in ORCA's setup.
+  added, rather than failing in ORCA's setup. An angle target ORCA cannot
+  take is warned about when the calculation is added, and noted in the
+  `.inp`: past 175° an angle is a linear bend to ORCA, which it will only hold
+  where it starts — a 180° target stopped the run in setup even when the
+  coordinates were already at 180°. Leave the target empty to hold it.
   - **Apply** moves the coordinates to a constraint's target before the run,
     so you can see the structure you are asking for. The smaller side of the
     bond moves as one piece — a hydroxyl turned to 120° takes its hydrogen

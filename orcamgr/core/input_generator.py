@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, fields as dataclass_fields, asdict
 from pathlib import PurePosixPath, PureWindowsPath
 
 from .resources import numfreq_rank_cap
-from .structure import compare_atom_order, parse_block
+from .structure import compare_atom_order, measure, parse_block
 
 
 # ---- defaults (match the user's established workflow) -------------------
@@ -582,6 +582,59 @@ def constraint_index_error(constraints: list, n_atoms: int) -> str:
     return ""
 
 
+# Above this an angle is a LINEAR BEND to ORCA, and a linear bend can only be
+# held where it starts: an angle constraint carrying ANY value stops in the
+# optimizer's setup with "For a linear bend you can only keep the initial value
+# of your structure as constraint!!!" when either end is past it. Measured on
+# 6.1.1 (HF/STO-3G, a Br-C-O angle walked by rigid rotation): start = value =
+# 175.0 runs; 175.5, 176, 177, 178, 179.5 and 180 all stop; a 170 start with a
+# 180 target stops too. Without a value the same 180 degree angle is held, as
+# two linear-bend components, and runs.
+LINEAR_BEND_DEG = 175.0
+
+
+def constraint_linear_warning(constraints: list, atoms=None) -> str:
+    """The first angle constraint ORCA will stop on as a linear bend, as the
+    sentence that says what to do instead, or "".
+
+    A WARNING, not a refusal: the rule is measured on one ORCA version, and
+    whether to run anyway is the user's call. It is said where it can still
+    be acted on — when the calculation is added (the builder shows it) and as
+    a note in the .inp itself (P2) — because a FAILED calculation is locked
+    (P24).
+
+    `atoms` is the structure when it is in hand (then a valued angle that
+    STARTS past the line is caught too); without it only the target is
+    judged, which is all that can be known about a referenced geometry before
+    the run resolves it."""
+    for c in constraints or []:
+        if c.get("kind") != "A" or c.get("value") is None:
+            continue
+        lab = "-".join(str(a + 1) for a in c.get("atoms") or [])
+        hold = ("Leave its target empty to hold the angle where the coordinates "
+                "put it - move them there first with Apply if they are not.")
+        if round(float(c["value"]), 2) > LINEAR_BEND_DEG:
+            return (f"The angle constraint on atoms {lab} has a target of "
+                    f"{c['value']:.2f}°. ORCA treats an angle past "
+                    f"{LINEAR_BEND_DEG:.0f}° as a linear bend, which it can only "
+                    f"hold at its starting value - it stops before the first "
+                    f"step. {hold}")
+        if atoms is not None:
+            idx = c.get("atoms") or []
+            if len(idx) == 3 and max(idx) < len(atoms):
+                try:
+                    start = measure(atoms, idx)
+                except ValueError:
+                    continue
+                if round(start, 2) > LINEAR_BEND_DEG:
+                    return (f"The angle on atoms {lab} starts at {start:.1f}°, "
+                            f"which ORCA treats as a linear bend: it can only hold "
+                            f"it there, not take it to {c['value']:.2f}°. Leave "
+                            f"its target empty to hold it, or bend the "
+                            f"coordinates below {LINEAR_BEND_DEG:.0f}° first.")
+    return ""
+
+
 def _constraint_line(c: dict) -> str:
     """``{ B 0 1 C }`` / ``{ B 0 1 1.2500 C }`` — a bond to four decimals (Å),
     an angle or dihedral to two (degrees), which is finer than ORCA's own
@@ -804,9 +857,18 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
     if constraints and cfg.kind in CONSTRAINED_KINDS and GEOMETRY_PLACEHOLDER not in xyz:
         # A template's coordinates arrive at run time, so its indices are
         # checked then — this same call, with the resolved geometry.
-        err = constraint_index_error(constraints, len(parse_block(xyz)))
+        atoms = parse_block(xyz)
+        err = constraint_index_error(constraints, len(atoms))
         if err:
             raise ValueError(err)
+        linear = constraint_linear_warning(constraints, atoms)
+    else:
+        linear = (constraint_linear_warning(constraints)
+                  if constraints and cfg.kind in CONSTRAINED_KINDS else "")
+    if linear:
+        # said in the input, where the run that stops on it can be traced back
+        # ASCII only: it is ORCA's input file, whatever the toast says
+        lines.append("# WARNING: " + linear.replace("°", " deg"))
     if constraints and cfg.kind not in CONSTRAINED_KINDS:
         # P2: a constraint that cannot apply is said, not swallowed — the
         # builder sends none for these kinds, but an API payload can.
@@ -817,8 +879,18 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         lines.append("%geom")
         lines.append(f"  MaxIter {cfg.max_iter}")
         if cfg.kind in ("ts_opt", "ts_opt_freq"):
-            # TS optimization needs a good initial Hessian; the manual computes
-            # an exact Hessian before the first step (%geom Calc_Hess true).
+            # OptTS follows the LOWEST mode of its initial Hessian, and the
+            # default (Almloef's model) has no negative curvature at all, so
+            # the first steps climb a mode chosen by the model, not the
+            # reaction. Calc_Hess computes the exact Hessian inside cycle 1
+            # (after the first gradient) and the first step reads it — the
+            # settings echo still prints "InHess .... Almloef's Model"; the
+            # proof is "Evaluating the initial hessian .... (read)". Measured
+            # on ORCA 6.1.1, B3LYP-D3BJ/def2-SVP, OptTS Freq, same guess:
+            # HCN<->HNC 2 cycles vs 11 without (17 s vs 25 s); malonaldehyde
+            # proton transfer 7 vs 27 (203 s vs 355 s, ~68 s of it the
+            # Hessian). Both reached the same 1-imaginary saddle — the exact
+            # Hessian buys the start, not a different answer.
             lines.append("  Calc_Hess true")
         if constraints:
             # inside the ONE %geom block: a second %geom would be a second

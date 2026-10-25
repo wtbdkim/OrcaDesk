@@ -25,7 +25,8 @@ from ..core.queue import (
     QueueCallbacks, result_from_output, validate_result,
 )
 from ..core.input_generator import (CONSTRAINED_KINDS, StepConfig,
-                                    constraint_index_error)
+                                    constraint_index_error,
+                                    constraint_linear_warning)
 from ..core.structure import parse_block
 from ..core.runner import OrcaRunError
 from ..core.procutil import process_matches
@@ -254,6 +255,22 @@ def _meta_line(c: Calculation) -> str:
     return f"{c.kind} · {src} · q{c.charge} m{c.multiplicity}"
 
 
+def constraint_warning(calc) -> str:
+    """What the queue says, without refusing, about a calculation's geometry
+    constraints when it is added or edited: a valued angle ORCA will stop on
+    as a linear bend (input_generator.constraint_linear_warning). The start
+    angle is judged when the coordinates are in hand, the target alone for a
+    referenced geometry. "" when there is nothing to say."""
+    cfg = calc.config
+    if calc.is_raw or not cfg.geom_constraints or cfg.kind not in CONSTRAINED_KINDS:
+        return ""
+    if calc.geometry_source == GeometrySource.DIRECT:
+        atoms = parse_block(calc.xyz or "")
+        if atoms:
+            return constraint_linear_warning(cfg.geom_constraints, atoms)
+    return constraint_linear_warning(cfg.geom_constraints)
+
+
 def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
     """
     Build a Calculation from a client payload dict (used by both the HTTP
@@ -298,6 +315,8 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
     # is FAILED and locked (P24). Only for coordinates in hand — a reference's
     # geometry exists at run time, where build_input checks it — and never on
     # restore, which must not evict an entry for a rule a new run obeys.
+    # (A valued angle ORCA will stop on as a linear bend is NOT refused: it is
+    # a warning — constraint_warning below — and the user's call.)
     is_raw = bool(d.get("is_raw", False))
     if (not restoring and not is_raw and src == "direct"
             and cfg.geom_constraints and cfg.kind in CONSTRAINED_KINDS):

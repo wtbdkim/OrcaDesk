@@ -387,8 +387,11 @@ class OkResult(_Ok, total=False):
 
 class MutationResult(_Ok, total=False):
     """Queue mutations (add/update/remove/clear/reorder, desktop and HTTP):
-    a fresh snapshot rides along on success."""
+    a fresh snapshot rides along on success. "warning" is a sentence the
+    calculation was accepted DESPITE (store.constraint_warning) - shown, not
+    a refusal."""
     error: str
+    warning: str
     snapshot: QueueSnapshot
 
 

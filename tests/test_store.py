@@ -31,6 +31,7 @@ from orcamgr.state.store import (
     EDITABLE_STATES,
     QueueStore,
     calc_from_dict,
+    constraint_warning,
     calc_from_session_dict,
     calc_to_dict,
     calc_to_session_dict,
@@ -972,6 +973,25 @@ def test_a_constraint_past_the_coordinates_is_refused_when_added():
     with pytest.raises(ValueError, match="atom 4, but the structure has 3"):
         make_calc("w", kind="opt", xyz=_WATER, config={
             "kind": "opt", "geom_constraints": [{"kind": "B", "atoms": [0, 3]}]})
+
+
+def test_a_linear_bend_with_a_value_is_added_with_a_warning():
+    # the calc that failed: Br-C-O at 180 with a 180.00 target. ORCA stops in
+    # setup, but whether to run it anyway is the user's call - the queue takes
+    # it and says why it will stop
+    line = "C 0 0 0\nBr 0 0 2.0\nO 0 0 -1.6\nH 1.0 0.3 0"
+    c = make_calc("l", kind="opt", xyz=line, config={"kind": "opt", "geom_constraints": [
+        {"kind": "A", "atoms": [1, 0, 2], "value": 180.0}]})
+    assert "linear bend" in constraint_warning(c)
+    # held without a value there is nothing to say
+    h = make_calc("h", kind="opt", xyz=line, config={"kind": "opt", "geom_constraints": [
+        {"kind": "A", "atoms": [1, 0, 2], "value": None}]})
+    assert constraint_warning(h) == ""
+    # a referenced geometry: the target alone decides
+    r = make_calc("r", kind="opt", geometry_source="reference", ref_name="p", xyz="",
+                  config={"kind": "opt", "geom_constraints": [
+                      {"kind": "A", "atoms": [1, 0, 2], "value": 180.0}]})
+    assert "target of 180.00" in constraint_warning(r)
 
 
 def test_the_add_time_check_applies_only_where_it_can_and_should():

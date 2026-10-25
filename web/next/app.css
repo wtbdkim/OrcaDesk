@@ -677,6 +677,7 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
 }
 .toast.err{border-color:var(--err-outline); color:var(--err);}
 .toast.ok{border-color:var(--ok-tint); color:var(--ok);}
+.toast.warn{border-color:var(--warn); color:var(--warn);}
 
 /* ---------------------------- confirm modal ---------------------------- */
 .modalscrim{position:fixed; inset:0; background:var(--scrim); z-index:80;}

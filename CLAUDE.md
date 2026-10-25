@@ -579,8 +579,17 @@ The `core/` pipeline:
   `calc_from_dict` at add time for direct coordinates (not on restore). ORCA
   6.1.1's own response to such an index is `Could not make G matrix` in setup.
   A template's `{{GEOMETRY}}` defers the check to the run-time call with the
-  resolved geometry. The format and ORCA's IUPAC dihedral sign were verified on
-  6.1.1. The notebook builder picks them on its structure stage (DESIGN.md
+  resolved geometry. **An angle past 175° is a linear bend to ORCA**, which it
+  can only hold where it starts: a valued `A` constraint whose start OR target
+  is past `LINEAR_BEND_DEG` stops in setup ("For a linear bend you can only
+  keep the initial value"), even a 180.00 target on a 180° start — measured on
+  6.1.1, 175.0 runs and 175.5 stops; without a value the same angle is held.
+  `constraint_linear_warning` WARNS rather than refuses (the user's call, and
+  the rule is one version's measurement): `store.constraint_warning` rides on
+  add/update as `MutationResult.warning`, which the builder shows as a `warn`
+  toast, and `build_input` writes it into the `.inp` as a `# WARNING:` line
+  (the target alone for a referenced geometry). The format and ORCA's IUPAC dihedral sign
+  were verified on 6.1.1. The notebook builder picks them on its structure stage (DESIGN.md
   §17.4l); the classic UI has only the `.inp` snippet.
 - `runner.py` — `OrcaRunner` launches ORCA **detached**, with ORCA writing its own
   stdout straight to the `.out` file (not via a Python pipe), so a run survives
