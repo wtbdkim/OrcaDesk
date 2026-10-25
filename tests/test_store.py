@@ -948,3 +948,43 @@ def test_find_dangling_reference_skips_locked_states():
     assert store_mod.find_dangling_reference([dead, ok]) is None
     pending = make_calc("pend", geometry_source="reference", ref_name="gone", xyz="")
     assert store_mod.find_dangling_reference([pending, ok]) is not None
+
+
+# ---- geometry constraints at the choke point ----------------------------
+
+_WATER = ("O 0.0 0.0 0.1173\n"
+          "H 0.0 0.7572 -0.4692\n"
+          "H 0.0 -0.7572 -0.4692")
+
+
+def test_constraints_round_trip_through_the_session_file():
+    cons = [{"kind": "A", "atoms": [1, 0, 2], "value": 104.5},
+            {"kind": "C", "atoms": [0], "value": None}]
+    c = make_calc("w", kind="opt", xyz=_WATER,
+                  config={"kind": "opt", "geom_constraints": cons})
+    back = calc_from_session_dict(json.loads(json.dumps(calc_to_session_dict(c))))
+    assert back.config.geom_constraints == cons
+
+
+def test_a_constraint_past_the_coordinates_is_refused_when_added():
+    # refused at the choke point, not at launch: by then the calc would be
+    # FAILED and locked (P24) for a typo
+    with pytest.raises(ValueError, match="atom 4, but the structure has 3"):
+        make_calc("w", kind="opt", xyz=_WATER, config={
+            "kind": "opt", "geom_constraints": [{"kind": "B", "atoms": [0, 3]}]})
+
+
+def test_the_add_time_check_applies_only_where_it_can_and_should():
+    bad = {"geom_constraints": [{"kind": "B", "atoms": [0, 3]}]}
+    # a referenced geometry is checked at run time, by build_input
+    make_calc("r", kind="opt", geometry_source="reference", ref_name="p", xyz="",
+              config=dict(bad, kind="opt"))
+    # a raw calc's input is its text; the config's constraints are not used
+    make_calc("x", kind="opt", xyz=_WATER, is_raw=True, raw_text="! Opt",
+              config=dict(bad, kind="opt"))
+    # a kind that does not optimize never writes them
+    make_calc("f", kind="freq", xyz=_WATER, config=dict(bad, kind="freq"))
+    # and a restore never evicts an entry for a rule a NEW run obeys
+    d = calc_to_session_dict(make_calc("s", kind="opt", xyz=_WATER))
+    d["config"]["geom_constraints"] = bad["geom_constraints"]
+    assert calc_from_session_dict(d).config.geom_constraints[0]["atoms"] == [0, 3]

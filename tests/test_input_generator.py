@@ -703,3 +703,160 @@ def test_irc_picked_hess_path_is_written_as_its_file_name():
         text = build_input(cfg, "H 0 0 0\nH 0 0 0.74", 0, 1)
         assert 'Hess_Filename "TS2.hess"' in text, path
         assert "Calc Work" not in text and "/home/u" not in text
+
+
+# ---------------------------------------------------------------------------
+# %geom Constraints
+#
+# Verified on ORCA 6.1.1 (H2O2, HF/STO-3G, all four kinds in one block): the
+# syntax below is echoed with a C in the redundant-coordinate table and every
+# coordinate holds to the last cycle, targets included (B 1.45, D -100.00).
+# An index past the last atom dies in setup with "Could not make G matrix",
+# which is why build_input refuses one first (P26).
+# ---------------------------------------------------------------------------
+
+H2O2_XYZ = (
+    "O   0.000   0.700  -0.050\n"
+    "O   0.000  -0.700  -0.050\n"
+    "H   0.800   0.900   0.500\n"
+    "H  -0.800  -0.900   0.500"
+)
+
+
+def _geom_block(text: str) -> str:
+    lines = text.splitlines()
+    start = lines.index("%geom")
+    end = start + lines[start:].index("end")
+    return "\n".join(lines[start:end + 1])
+
+
+def test_constraints_are_written_inside_the_one_geom_block():
+    cfg = StepConfig.from_dict({"kind": "ts_opt", "max_iter": 150, "geom_constraints": [
+        {"kind": "B", "atoms": [0, 1], "value": None},
+        {"kind": "B", "atoms": [0, 2], "value": 1.25},
+        {"kind": "A", "atoms": [2, 0, 1], "value": 104.5},
+        {"kind": "D", "atoms": [2, 0, 1, 3], "value": 120},
+        {"kind": "C", "atoms": [3], "value": None},
+    ]})
+    text = build_input(cfg, H2O2_XYZ)
+    assert text.count("%geom") == 1
+    assert _geom_block(text) == (
+        "%geom\n"
+        "  MaxIter 150\n"
+        "  Calc_Hess true\n"
+        "  Constraints\n"
+        "    { B 0 1 C }\n"
+        "    { B 0 2 1.2500 C }\n"
+        "    { A 2 0 1 104.50 C }\n"
+        "    { D 2 0 1 3 120.00 C }\n"
+        "    { C 3 C }\n"
+        "  end\n"
+        "end")
+
+
+def test_no_constraints_leaves_the_geom_block_as_it_was():
+    text = build_input(StepConfig(kind="opt", max_iter=200), WATER_XYZ)
+    assert _geom_block(text) == "%geom\n  MaxIter 200\nend"
+
+
+@pytest.mark.parametrize("kind", ["opt", "opt_freq", "ts_opt", "ts_opt_freq"])
+def test_every_optimizing_kind_carries_its_constraints(kind):
+    cfg = StepConfig.from_dict({"kind": kind, "geom_constraints": [
+        {"kind": "B", "atoms": [0, 1]}]})
+    assert "    { B 0 1 C }" in build_input(cfg, WATER_XYZ)
+
+
+@pytest.mark.parametrize("kind", ["freq", "sp", "irc", "general", "tddft", "nmr"])
+def test_a_kind_that_does_not_optimize_says_its_constraints_were_left_out(kind):
+    cfg = StepConfig.from_dict({"kind": kind, "geom_constraints": [
+        {"kind": "B", "atoms": [0, 1]}]})
+    text = build_input(cfg, WATER_XYZ)
+    assert "Constraints" not in text
+    assert "{ B" not in text
+    assert "# 1 geometry constraint(s) left out" in text   # P2: reported
+
+
+def test_an_index_past_the_last_atom_is_refused_with_its_number():
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_constraints": [
+        {"kind": "B", "atoms": [0, 1]}, {"kind": "A", "atoms": [0, 1, 3]}]})
+    with pytest.raises(ValueError, match=r"atom 4, but the structure has 3 atoms"):
+        build_input(cfg, WATER_XYZ)
+
+
+def test_a_template_defers_the_index_check_to_the_resolved_geometry():
+    # a referenced geometry is not known until run time; the engine calls
+    # build_input again with it, and that call checks
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_constraints": [
+        {"kind": "D", "atoms": [0, 1, 2, 9]}]})
+    text = build_input_template(cfg, 0, 1, use_placeholder=True)
+    assert "    { D 0 1 2 9 C }" in text
+    with pytest.raises(ValueError):
+        build_input(cfg, WATER_XYZ)
+
+
+@pytest.mark.parametrize("bad", [
+    {"kind": "X", "atoms": [0, 1]},                 # unknown kind
+    {"kind": "B", "atoms": [0]},                    # wrong count
+    {"kind": "A", "atoms": [0, 1]},
+    {"kind": "D", "atoms": [0, 1, 2, 3, 4]},
+    {"kind": "B", "atoms": [0, -1]},                # negative
+    {"kind": "B", "atoms": [0, 1.0]},               # not an int
+    {"kind": "B", "atoms": [0, "1"]},
+    {"kind": "B", "atoms": [True, 1]},              # a bool is not an index
+    {"kind": "B", "atoms": [2, 2]},                 # the same atom twice
+    {"kind": "B", "atoms": "0 1"},
+    {"kind": "B", "atoms": [0, 1], "value": float("nan")},
+    {"kind": "B", "atoms": [0, 1], "value": float("inf")},
+    {"kind": "B", "atoms": [0, 1], "value": "1.2\n* xyz 0 1"},   # line injection
+    {"kind": "B", "atoms": [0, 1], "value": True},
+    {"kind": ["B"], "atoms": [0, 1]},
+    "B 0 1",
+    None,
+])
+def test_a_malformed_constraint_is_dropped_at_the_boundary(bad):
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_constraints": [
+        bad, {"kind": "C", "atoms": [2]}]})
+    assert cfg.geom_constraints == [{"kind": "C", "atoms": [2], "value": None}]
+
+
+def test_constraint_values_are_normalized_at_the_boundary():
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_constraints": [
+        {"kind": " b ", "atoms": [0, 1], "value": "1.5"},   # case, numeric string
+        {"kind": "B", "atoms": [1, 2], "value": 0.0},       # clamped up
+        {"kind": "A", "atoms": [0, 1, 2], "value": 200},    # clamped to 180
+        {"kind": "D", "atoms": [0, 1, 2, 3], "value": -190},  # wrapped, not clamped
+        {"kind": "C", "atoms": [3], "value": 2.0},          # a position has no value
+        {"kind": "D", "atoms": [1, 2, 3, 4], "value": ""},  # empty = hold
+    ]})
+    assert cfg.geom_constraints == [
+        {"kind": "B", "atoms": [0, 1], "value": 1.5},
+        {"kind": "B", "atoms": [1, 2], "value": 0.1},
+        {"kind": "A", "atoms": [0, 1, 2], "value": 180.0},
+        {"kind": "D", "atoms": [0, 1, 2, 3], "value": 170.0},
+        {"kind": "C", "atoms": [3], "value": None},
+        {"kind": "D", "atoms": [1, 2, 3, 4], "value": None},
+    ]
+
+
+def test_a_constraint_named_twice_in_either_direction_is_kept_once():
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_constraints": [
+        {"kind": "A", "atoms": [0, 1, 2], "value": 100},
+        {"kind": "A", "atoms": [2, 1, 0], "value": 110},    # the same angle
+        {"kind": "A", "atoms": [1, 0, 2]},                  # a different one
+    ]})
+    assert [c["atoms"] for c in cfg.geom_constraints] == [[0, 1, 2], [1, 0, 2]]
+    assert cfg.geom_constraints[0]["value"] == 100.0
+
+
+def test_constraints_that_are_not_a_list_degrade_to_none():
+    for junk in ("{ B 0 1 C }", 3, {"kind": "B"}, None):
+        assert StepConfig.from_dict({"geom_constraints": junk}).geom_constraints == []
+
+
+def test_constraints_survive_the_config_round_trip():
+    cons = [{"kind": "B", "atoms": [0, 1], "value": 1.25},
+            {"kind": "C", "atoms": [2], "value": None}]
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_constraints": cons})
+    again = StepConfig.from_dict(cfg.to_dict())
+    assert again.geom_constraints == cons
+    assert again.to_dict() == cfg.to_dict()

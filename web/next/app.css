@@ -1204,3 +1204,44 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
     clip:rect(0 0 0 0); white-space:nowrap;}
   .topbar .studypick{flex:0 1 auto;}
 }
+
+/* ---------------------------- the builder's structure stage ----------------------------
+   An addition to the reference (DESIGN.md §17.4l). The reference's builder
+   puts a still thumbnail of the loaded file beside the structure check; this
+   one puts a live stage beside the COORDINATES, because that is the text it
+   draws, redrawn as it is typed -- and because it is where geometry
+   constraints are picked: a drag across atoms names a bond, an angle or a
+   dihedral, which four 0-based indices typed from memory get wrong. auto-fit
+   stacks the two columns once they would be narrower than 260px rather than
+   squeezing either. The canvas is out of flow, as on every stage (§17.4f) --
+   and sized 100% as well, because inset:0 alone does not stretch a canvas:
+   an absolutely placed REPLACED element keeps its intrinsic 300x150. */
+.geomsplit{display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));
+  gap:12px; margin-bottom:10px;}
+.geomsplit .field textarea{flex:1 1 auto; min-height:260px; resize:vertical;
+  font-family:var(--font-mono); font-size:12px; line-height:1.6;}
+.geomstage{position:relative; min-height:260px; overflow:hidden;
+  background:var(--stage); border:1px solid var(--border); border-radius:var(--radius-sm);}
+.geomstage canvas.molcv{position:absolute; inset:0; display:block; width:100%; height:100%;}
+.geomempty{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  margin:0; font-size:12px; color:var(--muted-foreground); pointer-events:none;}
+/* one row per constraint: what it is, its atoms, what it measures now, and
+   the target it is driven to (empty = held where it starts) */
+.conslist{display:flex; flex-direction:column; gap:6px; margin-bottom:10px;}
+.conslist:empty{display:none;}
+.consrow{display:grid; grid-template-columns:72px minmax(0,1fr) 96px 136px 34px;
+  align-items:center; gap:10px; padding:4px 4px 4px 12px; font-size:12px;
+  background:var(--card); border:1px solid var(--border); border-radius:var(--radius-sm);}
+.consrow:hover,.consrow:focus-within{border-color:var(--ring);}
+.consrow .ck{color:var(--muted-foreground); font-weight:500;}
+.consrow .ca,.consrow .cv{font-family:var(--font-mono); font-variant-numeric:tabular-nums;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.consrow .cv{color:var(--muted-foreground);}
+.consrow.bad{border-color:var(--err-tint); background:var(--err-tint-bg);}
+.consrow.bad .cv{color:var(--err);}
+.consrow .ct{display:flex; align-items:center; gap:6px; color:var(--muted-foreground);}
+.consrow .ct input,.consadd input{
+  width:100%; min-width:0; background:var(--input-bg);
+  border:1px solid color-mix(in srgb, var(--input) 85%, transparent);
+  border-radius:var(--radius-sm); font-size:12px; padding:5px 8px; min-height:28px;}
+.consadd{display:flex; gap:8px; align-items:center; max-width:320px;}

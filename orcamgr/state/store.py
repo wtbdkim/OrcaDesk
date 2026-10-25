@@ -24,7 +24,9 @@ from ..core.queue import (
     KNOWN_KINDS, Calculation, CalcState, GeometrySource, QueueEngine,
     QueueCallbacks, result_from_output, validate_result,
 )
-from ..core.input_generator import StepConfig
+from ..core.input_generator import (CONSTRAINED_KINDS, StepConfig,
+                                    constraint_index_error)
+from ..core.structure import parse_block
 from ..core.runner import OrcaRunError
 from ..core.procutil import process_matches
 from ..paths import data_dir, user_data_root
@@ -291,6 +293,19 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
         v = d.get(key, "")
         return v if isinstance(v, str) else ""
 
+    # A constraint naming an atom the coordinates do not have is refused when it
+    # is ADDED, not at launch: build_input refuses it too, but by then the calc
+    # is FAILED and locked (P24). Only for coordinates in hand — a reference's
+    # geometry exists at run time, where build_input checks it — and never on
+    # restore, which must not evict an entry for a rule a new run obeys.
+    is_raw = bool(d.get("is_raw", False))
+    if (not restoring and not is_raw and src == "direct"
+            and cfg.geom_constraints and cfg.kind in CONSTRAINED_KINDS):
+        n_atoms = len(parse_block(_s("xyz")))
+        err = constraint_index_error(cfg.geom_constraints, n_atoms) if n_atoms else ""
+        if err:
+            raise ValueError(err)
+
     kind = d.get("kind", cfg.kind)
     return Calculation(
         name=name,
@@ -301,7 +316,7 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
         geometry_source=GeometrySource(src),
         xyz=_s("xyz"),
         ref_name=_s("ref_name"),
-        is_raw=bool(d.get("is_raw", False)),
+        is_raw=is_raw,
         raw_text=_s("raw_text"),
     )
 
