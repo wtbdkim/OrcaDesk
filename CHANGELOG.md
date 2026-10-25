@@ -68,6 +68,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   steps with Enter / Shift+Enter or *Prev* / *Next*; case is ignored.
 
 ### Changed
+- **A generated `.inp` no longer carries ORCAdesk's own `#` comments.** The
+  notes that explained a composite method's missing basis, a dropped RI
+  keyword, a capped NumFreq process count or left-out constraints are gone;
+  what they described still happens. A constraint ORCA will stop on is warned
+  about when the calculation is added instead.
 - **The notebook preview's structure viewer draws like Avogadro2, and shows
   which atom is in front.** Lit spheres and shaded sticks at Avogadro's
   ball-and-stick proportions (0.3 × the van der Waals radius on 0.1 Å sticks,

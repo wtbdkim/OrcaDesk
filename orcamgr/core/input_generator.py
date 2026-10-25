@@ -111,13 +111,6 @@ def is_composite_method(functional: str) -> bool:
     return normalize_functional(functional).strip().lower().endswith("3c")
 
 
-def composite_basis_note(functional: str) -> str:
-    """The one-line .inp comment explaining why the basis picker was ignored."""
-    return (f"# {normalize_functional(functional).strip()} is a composite method: "
-            "it brings its own basis set, so the basis and auxiliary basis "
-            "selections are deliberately left off this line.")
-
-
 # Double-hybrid functionals: their MP2 correlation part needs a correlation-
 # fitting ("/C") auxiliary basis. Verified to run in ORCA 6.1.1 (the others
 # from the old list — B2PLYP-D/-D3, revDSD/revDOD-PBEP86-D4, B2PLYP21,
@@ -599,9 +592,8 @@ def constraint_linear_warning(constraints: list, atoms=None) -> str:
 
     A WARNING, not a refusal: the rule is measured on one ORCA version, and
     whether to run anyway is the user's call. It is said where it can still
-    be acted on — when the calculation is added (the builder shows it) and as
-    a note in the .inp itself (P2) — because a FAILED calculation is locked
-    (P24).
+    be acted on — when the calculation is added, which the builder shows —
+    because a FAILED calculation is locked (P24).
 
     `atoms` is the structure when it is in hand (then a valued angle that
     STARTS past the line is caught too); without it only the target is
@@ -801,32 +793,20 @@ def check_neb_atom_order(reactant_xyz: str, product_xyz: str) -> dict:
 
 def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 1) -> str:
     """Return the full text of an ORCA .inp file for this step."""
+    # The input carries no comments of ORCAdesk's own: what it leaves out (a
+    # composite method's basis, an RI keyword ORCA refuses, a constraint for a
+    # kind that does not optimize) or changes (a NumFreq's ranks) is decided
+    # by the rules below and documented there, and the file is the input ORCA
+    # reads, not a place for notes the user did not write.
     lines = [_keyword_line(cfg)]
-    if is_composite_method(cfg.functional):
-        # P2: the dropped basis is reported, not silently swallowed. The .inp is
-        # what the Expert editor and the preview show, so the note lands there.
-        lines.append(composite_basis_note(cfg.functional))
-    if method_forbids_ri(cfg.functional) and cfg.ri_approximation.strip():
-        lines.append(f"# {normalize_functional(cfg.functional).strip()} cannot be "
-                     "combined with an RI approximation (ORCA refuses the input), "
-                     "so the RI selection was left off this line.")
     lines.append(f"%maxcore {cfg.maxcore_mb}")
     # A NumFreq runs one displaced-geometry gradient per rank and deadlocks when
     # asked for more ranks than it has displacements (resources.numfreq_rank_cap
     # carries the measurement). The surplus ranks had no work to do, so capping
-    # costs nothing — but the number came from the form's field, and a silently
-    # different one in the .inp is exactly the kind of edit that is noticed too
-    # late, so the file says what happened (P2), where the Expert editor and the
-    # input preview both show it.
+    # costs nothing.
     nprocs = cfg.nprocs
     cap = numfreq_rank_cap(lines[0], len(parse_block(xyz)), nprocs)
     if cap:
-        lines.append(
-            "# A numerical frequency runs one displaced-geometry gradient per\n"
-            f"# process and this molecule has {cap}, so the {nprocs} processes "
-            f"requested\n# were reduced to {cap}. ORCA hangs after the last "
-            "gradient when it is\n# given more, and the extra processes "
-            "would have had nothing to run.")
         nprocs = cap
     lines.append(f"%pal nprocs {nprocs} end")
 
@@ -857,23 +837,11 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
     if constraints and cfg.kind in CONSTRAINED_KINDS and GEOMETRY_PLACEHOLDER not in xyz:
         # A template's coordinates arrive at run time, so its indices are
         # checked then — this same call, with the resolved geometry.
-        atoms = parse_block(xyz)
-        err = constraint_index_error(constraints, len(atoms))
+        err = constraint_index_error(constraints, len(parse_block(xyz)))
         if err:
             raise ValueError(err)
-        linear = constraint_linear_warning(constraints, atoms)
-    else:
-        linear = (constraint_linear_warning(constraints)
-                  if constraints and cfg.kind in CONSTRAINED_KINDS else "")
-    if linear:
-        # said in the input, where the run that stops on it can be traced back
-        # ASCII only: it is ORCA's input file, whatever the toast says
-        lines.append("# WARNING: " + linear.replace("°", " deg"))
-    if constraints and cfg.kind not in CONSTRAINED_KINDS:
-        # P2: a constraint that cannot apply is said, not swallowed — the
-        # builder sends none for these kinds, but an API payload can.
-        lines.append(f"# {len(constraints)} geometry constraint(s) left out: "
-                     f"a {cfg.kind} calculation does not optimize the geometry.")
+    # (a kind that does not optimize writes no %geom block, so its constraints
+    # are simply not in the input; the builder sends none for those kinds)
 
     if cfg.kind in CONSTRAINED_KINDS:
         lines.append("%geom")

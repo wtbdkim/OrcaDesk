@@ -20,7 +20,10 @@ import re
 
 import pytest
 
+from orcamgr.core.structure import parse_block
+
 from orcamgr.core.input_generator import (
+    constraint_linear_warning,
     DEFAULT_AUX,
     GEOMETRY_PLACEHOLDER,
     Solvation,
@@ -78,13 +81,18 @@ def test_composite_method_keeps_its_own_basis(functional):
     assert DEFAULT_AUX not in line       # nor is an aux chosen from that basis
 
 
-def test_composite_method_says_why_the_basis_is_missing():
-    cfg = StepConfig(kind="sp", functional="r2SCAN-3c", basis_set="def2-TZVP")
-    text = build_input(cfg, WATER_XYZ)
-
-    note = [ln for ln in text.splitlines() if ln.startswith("#")]
-    assert len(note) == 1
-    assert "composite" in note[0] and "r2SCAN-3c" in note[0]
+def test_the_input_carries_no_comments_of_its_own():
+    """The .inp is what ORCA reads: what the generator leaves out or changes
+    is decided by its rules, not narrated in the file. A composite method's
+    dropped basis, an RI ORCA refuses, a capped NumFreq and constraints on a
+    kind that does not optimize all used to write a `#` note here."""
+    for cfg in (StepConfig(kind="sp", functional="r2SCAN-3c", basis_set="def2-TZVP"),
+                StepConfig(kind="sp", functional="HF-3c", ri_approximation="RIJCOSX"),
+                StepConfig(kind="freq", calculation_type="NumFreq", nprocs=15),
+                StepConfig.from_dict({"kind": "sp", "geom_constraints": [
+                    {"kind": "B", "atoms": [0, 1]}]})):
+        text = build_input(cfg, WATER_XYZ)
+    assert not [ln for ln in text.splitlines() if ln.startswith("#")]
 
 
 def test_non_composite_functional_still_gets_its_basis_and_aux():
@@ -165,8 +173,6 @@ def test_methods_that_cannot_use_ri_get_no_ri_keyword(functional):
 
     assert "RIJCOSX" not in line
     assert DEFAULT_AUX not in line
-    assert any("RI approximation" in ln for ln in text.splitlines()
-               if ln.startswith("#"))
 
 
 @pytest.mark.parametrize("functional", ["r2SCAN-3c", "B97-3c", "PBEh-3c", "wB97X-3c",
@@ -659,17 +665,6 @@ def test_numfreq_caps_the_ranks_at_the_displacement_count():
     assert _pal_line(text) == "%pal nprocs 12 end"
 
 
-def test_the_capped_input_says_it_was_capped():
-    # The number came from the form's field; a silently different one in the
-    # .inp is noticed far too late, so the file carries the reason (P2).
-    cfg = StepConfig(kind="freq", calculation_type="NumFreq", nprocs=15)
-    note = " ".join(ln for ln in build_input(cfg, WATER_XYZ).splitlines()
-                    if ln.startswith("#"))
-
-    assert "12" in note and "15" in note
-    assert "displaced-geometry gradient per" in note
-
-
 def test_a_request_that_already_fits_is_left_exactly_as_asked():
     for nprocs in (1, 6, 12):
         cfg = StepConfig(kind="freq", calculation_type="NumFreq", nprocs=nprocs)
@@ -767,13 +762,13 @@ def test_every_optimizing_kind_carries_its_constraints(kind):
 
 
 @pytest.mark.parametrize("kind", ["freq", "sp", "irc", "general", "tddft", "nmr"])
-def test_a_kind_that_does_not_optimize_says_its_constraints_were_left_out(kind):
+def test_a_kind_that_does_not_optimize_leaves_its_constraints_out(kind):
     cfg = StepConfig.from_dict({"kind": kind, "geom_constraints": [
         {"kind": "B", "atoms": [0, 1]}]})
     text = build_input(cfg, WATER_XYZ)
     assert "Constraints" not in text
     assert "{ B" not in text
-    assert "# 1 geometry constraint(s) left out" in text   # P2: reported
+    assert not [ln for ln in text.splitlines() if ln.startswith("#")]
 
 
 def test_an_index_past_the_last_atom_is_refused_with_its_number():
@@ -800,45 +795,46 @@ def _angle(value):
         {"kind": "A", "atoms": [1, 0, 2], "value": value}]})
 
 
-def _warning(text):
-    w = [ln for ln in text.splitlines() if ln.startswith("# WARNING:")]
-    return w[0] if w else ""
-
-
-def test_a_valued_angle_on_a_straight_line_is_warned_about_in_the_input():
+def test_a_valued_angle_on_a_straight_line_is_warned_about():
     """ORCA 6.1.1 takes an angle past 175 degrees as a linear bend and stops
     in setup ("For a linear bend you can only keep the initial value") when
     the constraint carries ANY value - even the 180.00 the coordinates
-    already have. Measured; this is the run that failed. Said, not refused:
-    the input is still written, constraint and all, with the note on top."""
+    already have. Measured; this is the run that failed. Said when the calc
+    is added (store.constraint_warning), not refused, and not written into
+    the input, which is still the constraint as asked."""
+    cons = _angle(180.0).geom_constraints
+    line = parse_block(LINE_XYZ)
+    assert re.search(r"linear bend.*Leave its target empty",
+                     constraint_linear_warning(cons, line))
+    assert "starts at 180" in constraint_linear_warning(
+        _angle(120.0).geom_constraints, line)
     text = build_input(_angle(180.0), LINE_XYZ)
     assert "    { A 1 0 2 180.00 C }" in text
-    assert re.search(r"linear bend.*Leave its target empty", _warning(text))
-    assert "starts at 180" in _warning(build_input(_angle(120.0), LINE_XYZ))
+    assert not [ln for ln in text.splitlines() if ln.startswith("#")]
 
 
 def test_a_target_past_175_is_warned_about_wherever_it_starts():
     # a 170 start with a 180 target stopped too (measured)
-    # the note in the .inp is ASCII: "180.00 deg", not the toast's "180.00°"
-    assert re.search(r"target of 180\.00 deg.*Leave its target empty",
-                     _warning(build_input(_angle(180.0), BENT_XYZ)))
-    assert "target of 175.50" in _warning(build_input(_angle(175.5), BENT_XYZ))
+    bent = parse_block(BENT_XYZ)
+    assert re.search(r"target of 180\.00°.*Leave its target empty",
+                     constraint_linear_warning(_angle(180.0).geom_constraints, bent))
+    assert "target of 175.50" in constraint_linear_warning(
+        _angle(175.5).geom_constraints, bent)
 
 
 def test_the_line_held_without_a_value_and_175_carry_no_warning():
     held = build_input(_angle(None), LINE_XYZ)
     assert "    { A 1 0 2 C }" in held           # measured: runs, as two L(...) parts
-    assert not _warning(held)
-    at175 = build_input(_angle(175.0), BENT_XYZ)
-    assert "    { A 1 0 2 175.00 C }" in at175 and not _warning(at175)
+    assert not constraint_linear_warning(_angle(None).geom_constraints,
+                                         parse_block(LINE_XYZ))
+    assert not constraint_linear_warning(_angle(175.0).geom_constraints,
+                                         parse_block(BENT_XYZ))
 
 
 def test_a_referenced_geometry_is_judged_by_its_target_alone():
-    # no coordinates before the run, so only the target can be asked about;
-    # the run-time build_input asks the start too
-    assert "target of 180.00" in _warning(
-        build_input_template(_angle(180.0), 0, 1, use_placeholder=True))
-    assert not _warning(build_input_template(_angle(120.0), 0, 1, use_placeholder=True))
+    # no coordinates before the run, so only the target can be asked about
+    assert "target of 180.00" in constraint_linear_warning(_angle(180.0).geom_constraints)
+    assert not constraint_linear_warning(_angle(120.0).geom_constraints)
 
 
 def test_a_template_defers_the_index_check_to_the_resolved_geometry():

@@ -746,10 +746,10 @@ after the last one when given more — measured on 6.1.1: CO2 (12 displacements)
 at `nprocs 15` wrote every gradient and then spun on a single core with no MPI
 children left, while the same input at `nprocs 12` finished in 38 s. That is not
 a budget edit and costs no wall-clock, because the surplus processes had no
-displacement to work on; and it is not silent — the cap is written into the
-`.inp` as a `#` note, where the Expert editor and the input preview both show it
-(P2). A hand-written `.inp` is still never touched: the engine logs the ceiling
-and runs the text as typed (`core/resources.numfreq_rank_cap`).
+displacement to work on. The cap is visible in the `.inp`'s own `%pal` line
+(it used to carry a `#` note too — see A26). A hand-written `.inp` is still
+never touched: the engine logs the ceiling and runs the text as typed
+(`core/resources.numfreq_rank_cap`).
 
 Three consequences the sequential engine got for free and the dispatcher
 must now state outright:
@@ -866,3 +866,4 @@ tradeoff, kept), or **stale-doc** (the description, not the code, is wrong).
 | A23 | `mlip_env_id == ""` is documented as *first **ready** env* (`StepConfig.mlip_env_id`, `web/types.js`, CLAUDE.md) but `_resolve_mlip_python` took `mlip_envs[0]` — the first **registered** env. Readiness is a live probe result held by the Bridge and was never plumbed to the engine, so with two envs whose first is broken, every MLIP calc routed to the broken one while the pill read "ready" off the other | P2, D2 | resolved (0.7.0-beta — the Bridge orders the list it hands the engine by last-known readiness (`order_envs_by_readiness`, Qt-free and unit-tested); the engine still takes `envs[0]`, so the contract now holds end to end) |
 | A24 | P5 read *"never installs them"*, but `crest/installer.py` has downloaded and installed the CREST binary since 0.5.0-beta — the principle was stale the day it shipped, and the MLIP env installer widened the gap | P5, P2 | resolved (0.7.0-beta — stale-doc: P5 rewritten as *never bundle, never import*, with provisioning a **private** copy allowed where fully scriptable and the un-scriptable step named as a prerequisite instead) |
 | A25 | P5 opened *"ORCAdesk does not do the chemistry"* and fixed the core dependencies at *PyQt6 + PyQt6-WebEngine + psutil*; `orcamgr/nbo/` (0.8.0-beta) computes natural-orbital analysis in ORCAdesk's own process and needs numpy to do it. Read literally the principle forbade the package outright — and it stated a mechanism (*shell out*) without the purpose that mechanism serves, so it could not settle the case either way | P5 | resolved (0.8.0-beta — P5 rewritten around its actual purpose, *the user never needs a terminal*: the boundary falls around **producing** a wavefunction, not arithmetic on one ORCA already wrote (which `parser.py`/`plot.py` have always done), and shelling `nbo/` out to `gennbo`/PySCF/JANPA would have *added* a command line and a licence. numpy admitted only after confirming the reconstruction needs no integral library, so no compiled chemistry stack enters the build) |
+| A26 | P2 asked that what the generator drops or changes be *reported, not swallowed*, and `build_input` did it with `#` comment lines in the `.inp` (a composite method's dropped basis, an RI keyword ORCA refuses, a NumFreq rank cap, constraints on a kind that does not optimize, a linear-bend warning). The user asked for every such line to go: the `.inp` is ORCA's input and the text they read and edit, not a place for notes they did not write | P2 | accepted (the rules stay and are documented in CLAUDE.md; the %pal line shows a cap; a constraint ORCA will stop on is warned about at add time instead) |
