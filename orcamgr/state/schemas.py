@@ -650,6 +650,22 @@ class AtomOrderPayload(TypedDict):
     formula_product: str
 
 
+class ConstraintApplyPayload(TypedDict):
+    """apply_constraint_target — 7 keys, exactly
+    core.structure.apply_constraint_target's dict. "xyz" is the whole
+    coordinate text back, only the moved atoms' lines rewritten; "moved" their
+    0-based indices; "before"/"after" the coordinate's value (A or degrees),
+    None on a refusal; "warnings" the atoms the motion put too close to one
+    that stayed. "error" is the sentence when "ok" is false."""
+    ok: bool
+    error: str
+    xyz: str
+    moved: "list[int]"
+    before: "float | None"
+    after: "float | None"
+    warnings: "list[str]"
+
+
 # ---- orbital / density cubes (Results tab 3D viewer) --------------------------
 
 class WorkspaceResultPayload(TypedDict):

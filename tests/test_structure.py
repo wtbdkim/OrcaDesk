@@ -14,8 +14,10 @@ The contracts pinned here:
   refuse is an error.
 * **P4** — ``input_generator.check_neb_atom_order`` is a projection of
   ``compare_atom_order``, not a second implementation.
-* everything here READS: there is no structure editing to test, because
-  building molecules is a molecular editor's job and not ORCAdesk's.
+* everything here READS but one thing: ``apply_constraint_target`` moves a
+  constraint's atoms to its target, rigidly, and nothing else. There is no
+  structure editor to test, because building molecules is a molecular
+  editor's job and not ORCAdesk's.
 """
 
 import math
@@ -24,8 +26,9 @@ import pytest
 
 from orcamgr.core.input_generator import check_neb_atom_order
 from orcamgr.core.structure import (
-    atomic_number, bonds, check_geometry, compare_atom_order, covalent_radius,
-    electron_count, formula, fragments, normalize_symbol, parse_block,
+    apply_constraint_target, atomic_number, bonds, check_geometry,
+    compare_atom_order, covalent_radius, electron_count, formula, fragments,
+    measure, normalize_symbol, parse_block,
 )
 
 # trans-H2O2 — a four-atom chain, so bond perception has something to chain.
@@ -294,3 +297,117 @@ def test_non_finite_coordinates_are_not_coordinates():
     atoms = parse_block("O 0 0 0\nH inf 0 0\nH nan 1 0\nH 0.96 0 0")
     assert len(atoms) == 2
     assert check_geometry("O 0 0 0\nH inf 0 0", 0, 1)["n_atoms"] == 1
+
+
+# ---- moving to a constraint's target (the builder's Apply) ---------------------
+
+def _phenol():
+    """A planar phenol: ring C1..C6 (atoms 0-5), ring H on C2..C6 (6-10), the
+    hydroxyl O (11) on C1 and its H (12) - a group hanging off a ring, which is
+    the case the button exists for."""
+    rows = []
+    for k in range(6):
+        a = math.radians(60 * k)
+        rows.append(("C", 1.39 * math.cos(a), 1.39 * math.sin(a), 0.0))
+    for k in range(1, 6):
+        a = math.radians(60 * k)
+        rows.append(("H", 2.47 * math.cos(a), 2.47 * math.sin(a), 0.0))
+    rows.append(("O", 2.75, 0.0, 0.0))
+    rows.append(("H", 3.06, 0.91, 0.0))
+    return "\n".join(f"{e:<2s} {x:10.5f} {y:10.5f} {z:10.5f}" for e, x, y, z in rows)
+
+
+def _dist(a, b):
+    return math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+
+
+def test_a_dihedral_turns_the_hydroxyl_and_takes_its_hydrogen():
+    """The case that asked for this: turning C-O-H out of plane moves the H,
+    rigidly, and leaves the ring where it was."""
+    text = _phenol()
+    r = apply_constraint_target(text, "D", [1, 0, 11, 12], 90.0)
+    assert r["ok"], r["error"]
+    assert r["moved"] == [12]          # O sits on the hinge axis and stays
+    after = parse_block(r["xyz"])
+    assert measure(after, [1, 0, 11, 12]) == pytest.approx(90.0, abs=1e-4)
+    assert r["after"] == pytest.approx(90.0, abs=1e-4)
+    assert r["before"] == pytest.approx(0.0, abs=1e-6)   # H cis to C2
+    before = parse_block(text)
+    assert _dist(after[11], after[12]) == pytest.approx(_dist(before[11], before[12]), abs=1e-5)
+    assert measure(after, [0, 11, 12]) == pytest.approx(measure(before, [0, 11, 12]), abs=1e-4)
+
+
+def test_the_smaller_side_moves_whichever_way_the_atoms_were_named():
+    """A drag can start at either end. The ring never moves for a group
+    hanging off it, so naming the angle O-C1-C2 or C2-C1-O is the same edit."""
+    text = _phenol()
+    fwd = apply_constraint_target(text, "A", [1, 0, 11], 100.0)
+    rev = apply_constraint_target(text, "A", [11, 0, 1], 100.0)
+    assert fwd["ok"] and rev["ok"]
+    assert fwd["moved"] == rev["moved"] == [11, 12]
+    assert fwd["xyz"] == rev["xyz"]
+    assert measure(parse_block(fwd["xyz"]), [1, 0, 11]) == pytest.approx(100.0, abs=1e-4)
+
+
+def test_a_bond_target_moves_the_group_along_the_bond():
+    text = _phenol()
+    r = apply_constraint_target(text, "B", [0, 11], 1.50)
+    assert r["ok"] and r["moved"] == [11, 12]
+    after, before = parse_block(r["xyz"]), parse_block(text)
+    assert _dist(after[0], after[11]) == pytest.approx(1.50, abs=1e-5)
+    # a translation along the bond: the O-H vector is untouched
+    assert (after[12].x - after[11].x) == pytest.approx(before[12].x - before[11].x)
+    assert (after[12].y - after[11].y) == pytest.approx(before[12].y - before[11].y)
+
+
+def test_a_ring_bond_is_refused_not_bent():
+    """No rigid motion changes a ring bond without deforming the ring (P2): the
+    answer says so, and that the optimization will still get there."""
+    r = apply_constraint_target(_phenol(), "B", [0, 1], 1.60)
+    assert not r["ok"]
+    assert "ring" in r["error"] and r["xyz"] == ""
+
+
+def test_only_the_moved_lines_are_rewritten():
+    """Every other line is the user's text, byte for byte - header, comments,
+    CRLF and all - so an Apply is a small edit and not a reformat."""
+    body = _phenol().replace("\n", "\r\n")
+    text = "13\r\nphenol, hand made\r\n" + body + "\r\n"
+    r = apply_constraint_target(text, "D", [1, 0, 11, 12], 45.0)
+    assert r["ok"]
+    old, new = text.split("\n"), r["xyz"].split("\n")
+    assert len(old) == len(new)
+    changed = [n for n, (a, b) in enumerate(zip(old, new)) if a != b]
+    assert changed == [2 + 12]
+    assert new[2 + 12].endswith("\r") and new[2 + 12].split()[0] == "H"
+
+
+def test_landing_on_another_atom_is_reported_not_refused():
+    r = apply_constraint_target(_phenol(), "A", [1, 0, 11], 35.0)
+    assert r["ok"]
+    assert r["warnings"] and "closer than a bond" in r["warnings"][0]
+
+
+@pytest.mark.parametrize("kind, atoms, value, says", [
+    ("C", [0], 1.0, "bond, angle or dihedral"),
+    ("B", [0, 1, 2], 1.0, "2 different"),
+    ("B", [0, 0], 1.0, "different"),
+    ("B", [0, 99], 1.0, "no atom 100"),
+    ("B", [0, 11], float("nan"), "not a number"),
+    ("B", [0, 11], None, "no target"),
+    ("B", [0, 11], 0.0, "between"),
+    ("A", [1, 0, 11], 200.0, "180"),
+])
+def test_a_target_it_cannot_reach_is_a_sentence(kind, atoms, value, says):
+    r = apply_constraint_target(_phenol(), kind, atoms, value)
+    assert not r["ok"] and says in r["error"]
+
+
+def test_the_dihedral_sign_is_iupacs_like_orcas_and_the_stages():
+    """Looking from C1 down to O, C2 points up and H points left: the front
+    bond turns ANTI-clockwise onto the back one, which IUPAC (and ORCA, and
+    MOL.dihedral on the stage) call -90. The editor this was revived from said
+    +90, so an Apply to 90 read back as -90 on the row beside the button."""
+    atoms = parse_block("C 0.695 1.2038 0\nC 1.39 0 0\nO 2.75 0 0\nH 3.06 0 -0.91")
+    assert measure(atoms, [0, 1, 2, 3]) == pytest.approx(-90.0, abs=1e-6)
+    assert measure(atoms, [3, 2, 1, 0]) == pytest.approx(-90.0, abs=1e-6)

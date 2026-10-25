@@ -698,6 +698,21 @@
  */
 
 /**
+ * apply_constraint_target(xyz, constraint) result. Mirror of the Python
+ * ConstraintApplyPayload (7 keys). "xyz" is the whole coordinate text with only
+ * the moved atoms' lines rewritten; "moved" their 0-based indices; "warnings"
+ * the atoms the motion left too close to one that stayed.
+ * @typedef {Object} ConstraintApply
+ * @property {boolean} ok
+ * @property {string} error
+ * @property {string} xyz
+ * @property {number[]} moved
+ * @property {number|null} before
+ * @property {number|null} after
+ * @property {string[]} warnings
+ */
+
+/**
  * One result found in the workspace. Mirror of the Python
  * WorkspaceResultPayload. "path" is the artifact to parse ({name}.mlip.json for
  * an MLIP run, else {name}.out); "queued" marks the ones the queue also holds —

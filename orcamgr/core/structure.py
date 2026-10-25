@@ -14,10 +14,14 @@ Bohr arrive where Angstrom was expected. Answers are reported, never fixed
 wrong" (P2). :func:`compare_atom_order` is the same idea for a NEB endpoint
 pair.
 
-Everything here READS. There is deliberately no structure editing: building and
-modifying molecules is what a molecular editor is for, Avogadro2 and its peers
-do it properly, and a side feature here could only be a worse one. ORCAdesk's
-job is to tell you what the file you are about to run contains.
+Everything here READS, with one narrow exception. There is deliberately no
+structure editing: building and modifying molecules is what a molecular editor
+is for, Avogadro2 and its peers do it properly, and a side feature here could
+only be a worse one. ORCAdesk's job is to tell you what the file you are about
+to run contains. The exception is :func:`apply_constraint_target`: a
+constraint with a target names a geometry the run will be driven to, and
+showing those coordinates before the run - one rigid motion, nothing else - is
+part of telling you what you are about to run.
 
 Bond perception is distance-based: i and j are bonded when their separation is
 under the sum of their covalent radii plus :data:`BOND_TOLERANCE`. That is the
@@ -123,13 +127,20 @@ def parse_block(text: str) -> "list[Atom]":
     app's readers (P27): a full .xyz (count + comment header) is accepted too,
     and any line that is not four readable fields is skipped rather than
     raising - a half-pasted file yields the atoms it does have."""
-    lines = (text or "").splitlines()
+    return [a for _, a in _atom_lines(text)]
+
+
+def _atom_lines(text: str) -> "list[tuple[int, Atom]]":
+    """parse_block, with the line each atom came from - so a change to some
+    atoms can be written back into the user's own text without reformatting
+    the lines it did not touch."""
+    lines = (text or "").split("\n")
     start = 0
     if len(lines) >= 2 and re.match(r"^\s*\d+\s*$", lines[0]):
         start = 2                      # count + comment header
-    atoms = []
-    for ln in lines[start:]:
-        parts = ln.split()
+    out = []
+    for n in range(start, len(lines)):
+        parts = lines[n].split()
         if len(parts) < 4:
             continue
         try:
@@ -140,8 +151,8 @@ def parse_block(text: str) -> "list[Atom]":
         # the neighbour grid's cell arithmetic — they are not coordinates
         if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
             continue
-        atoms.append(Atom(parts[0], x, y, z))
-    return atoms
+        out.append((n, Atom(parts[0], x, y, z)))
+    return out
 
 
 def formula(atoms) -> str:
@@ -478,4 +489,277 @@ def compare_atom_order(reactant_xyz: str, product_xyz: str) -> dict:
         return out
 
     out["ok"] = True
+    return out
+
+
+# ---------------------------------------------------------------------------
+# moving a structure to a constraint's target - the one place this WRITES
+# ---------------------------------------------------------------------------
+#
+# A constraint with a target (`{ A 0 1 2 120.0 C }`) states a geometry the
+# coordinates do not have yet. ORCA drags the coordinate there during the
+# optimization, but the user cannot SEE that structure before it runs, and a
+# large jump is a poor first step. So the builder can move the coordinates to
+# the target first: one rigid motion of the smaller side of the hinge bond,
+# the convention every structure editor uses. A hydroxyl turned to 120 degrees
+# takes its hydrogen with it rather than leaving it where the oxygen was.
+#
+# This is deliberately NOT a structure editor (one was removed from here - see
+# the module docstring). It answers one question - "show me these coordinates
+# at the value I am about to constrain them to" - and nothing else: no free
+# moves, no force field, no relaxation of what the motion bends.
+
+
+class StructureError(ValueError):
+    """A target the coordinates cannot be moved to rigidly; the message is the
+    sentence the user reads."""
+
+
+def _add(a, b):
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+
+def _scale(v, k):
+    return (v[0] * k, v[1] * k, v[2] * k)
+
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0])
+
+
+def _unit(v):
+    n = _norm(v)
+    if n < 1e-12:
+        raise StructureError("Two of those atoms are at the same position.")
+    return _scale(v, 1.0 / n)
+
+
+def _rodrigues(v, axis, angle_rad):
+    """Rotate vector `v` about the unit vector `axis` by `angle_rad`."""
+    c, s = math.cos(angle_rad), math.sin(angle_rad)
+    return _add(_add(_scale(v, c), _scale(_cross(axis, v), s)),
+                _scale(axis, _dot(axis, v) * (1.0 - c)))
+
+
+def measure(atoms, indices) -> float:
+    """Distance (2 indices, Angstrom), angle (3, degrees, the middle atom the
+    vertex) or dihedral (4, IUPAC-signed degrees) - the coordinate ORCA's
+    B / A / D constraint names."""
+    p = [_pos(atoms[i]) for i in indices]
+    if len(p) == 2:
+        return _norm(_sub(p[1], p[0]))
+    if len(p) == 3:
+        u, v = _unit(_sub(p[0], p[1])), _unit(_sub(p[2], p[1]))
+        return math.degrees(math.acos(max(-1.0, min(1.0, _dot(u, v)))))
+    # The atan2 form, stable near 0 and 180 where an acos of the two plane
+    # normals loses both the sign and most of the precision. The sign is
+    # IUPAC's - positive when the front bond turns CLOCKWISE onto the back one,
+    # looking from j to k - which is ORCA's and the stage's (MOL.dihedral). The
+    # editor this came from had it the other way round, and an Apply to +90
+    # read back as -90 on the row beside it.
+    b1, b2, b3 = _sub(p[1], p[0]), _sub(p[2], p[1]), _sub(p[3], p[2])
+    y = _norm(b2) * _dot(b1, _cross(b2, b3))
+    x = _dot(_cross(b1, b2), _cross(b2, b3))
+    return math.degrees(math.atan2(y, x))
+
+
+def _moving_side(adj, anchor: int, moving: int):
+    """Everything reachable from `moving` without crossing the anchor-moving
+    bond - the part that moves rigidly when that bond is the hinge.
+
+    None when `anchor` is still reachable: the two are in a ring, and no rigid
+    motion changes the coordinate without deforming the ring. Refusing is the
+    honest answer; quietly bending the ring would not be (P2). When the two are
+    not bonded at all the cut is a no-op, so for two separate fragments this is
+    "the whole fragment `moving` belongs to", which is what setting an approach
+    distance in a complex wants."""
+    seen = {moving}
+    stack = [moving]
+    while stack:
+        a = stack.pop()
+        for b in adj[a]:
+            if (a == moving and b == anchor) or (a == anchor and b == moving):
+                continue                      # the cut bond
+            if b not in seen:
+                seen.add(b)
+                stack.append(b)
+    return None if anchor in seen else seen
+
+
+def _side_for(adj, idx):
+    """The side that moves for this ordering of the atoms: the one carrying the
+    LAST atom, cut at the bond nearest it (a dihedral's at its central bond, an
+    angle's at the vertex-last bond). None when it cannot move rigidly."""
+    if len(idx) == 2:
+        return _moving_side(adj, idx[0], idx[1])
+    if len(idx) == 3:
+        return _moving_side(adj, idx[1], idx[2])
+    side = _moving_side(adj, idx[1], idx[2])
+    if side is not None and idx[3] not in side:
+        return None
+    return side
+
+
+def set_internal(atoms, indices, value: float):
+    """Move atoms rigidly so the coordinate `indices` names reads `value`.
+    Returns (new atom list, set of moved indices).
+
+    Of the two sides of the hinge, the SMALLER one moves: turning a hydroxyl on
+    a ring moves O and H, not the ring - whichever end the drag happened to
+    start from. A coordinate reads the same in either direction (B i j = B j i,
+    A i j k = A k j i, D i j k l = D l k j i), so the choice is free. The atom
+    order is preserved by construction."""
+    n = len(indices)
+    adj = _adjacency(len(atoms), bonds(atoms))
+    options = []
+    for idx in (tuple(indices), tuple(reversed(indices))):
+        side = _side_for(adj, idx)
+        if side is not None:
+            options.append((len(side), idx, side))
+    if not options:
+        a, b = (indices[1], indices[2]) if n == 4 else (indices[0], indices[1])
+        what = {2: "pull them apart", 3: "open the angle",
+                4: "turn about that bond"}[n]
+        raise StructureError(
+            f"Atoms {a + 1} and {b + 1} are in a ring, so the coordinates cannot "
+            f"{what} without bending the ring. The optimization will still move "
+            f"it to the target.")
+    # fewest atoms first; a stable sort keeps the side of the last atom named
+    # on a tie, which is what "select outwards along the chain" reads as
+    options.sort(key=lambda o: o[0])
+    _, idx, side = options[0]
+    p = [_pos(atoms[i]) for i in idx]
+
+    if n == 2:
+        shift = _scale(_unit(_sub(p[1], p[0])), value - _norm(_sub(p[1], p[0])))
+
+        def fn(q):
+            return _add(q, shift)
+    else:
+        if n == 3:
+            axis_raw = _cross(_sub(p[0], p[1]), _sub(p[2], p[1]))
+            if _norm(axis_raw) < 1e-8:
+                raise StructureError("Those three atoms are in a straight line, "
+                                     "so the angle has no plane to open in.")
+            axis = _unit(axis_raw)
+            delta = math.radians(value - measure(atoms, idx))
+        else:
+            # Seen from j looking at k, a right-handed turn about j->k moves
+            # the back bond clockwise, so it INCREASES the IUPAC dihedral.
+            axis = _unit(_sub(p[2], p[1]))
+            delta = math.radians(value - measure(atoms, idx))
+        origin = p[1]
+
+        def fn(q):
+            return _add(origin, _rodrigues(_sub(q, origin), axis, delta))
+
+    out = []
+    for i, a in enumerate(atoms):
+        if i in side:
+            x, y, z = fn(_pos(a))
+            out.append(Atom(a.sym, x, y, z))
+        else:
+            out.append(a)
+    return out, side
+
+
+#: The coordinates a target can be applied to, by ORCA constraint letter. A
+#: fixed position (C) has no value to move to.
+_TARGET_ATOMS = {"B": 2, "A": 3, "D": 4}
+
+_MAX_LISTED_CLASHES = 3
+
+
+def _decimals(tok: str) -> int:
+    return len(tok.split(".", 1)[1]) if "." in tok else 0
+
+
+def apply_constraint_target(text: str, kind: str, indices, value) -> dict:
+    """The coordinate block `text` with a constraint's atoms moved to its
+    target - the builder's *Apply* button.
+
+    Returns {ok, error, xyz, moved, before, after, warnings}. Only the lines of
+    atoms that moved are rewritten, at their own precision but never fewer than
+    6 decimals (at 5 a 100 degree target read back as 99.9998: the rounding is
+    a bend); every other line is the user's text, byte for byte. "after" is
+    measured on the text handed back, not on the unrounded motion, so it states
+    what the box now holds. A moved atom that lands on one that
+    stayed is reported, not refused (P26): it is the structure that was asked
+    for, and worth a look before it runs."""
+    out = {"ok": False, "error": "", "xyz": "", "moved": [],
+           "before": None, "after": None, "warnings": []}
+    n = _TARGET_ATOMS.get(str(kind or "").upper())
+    if n is None:
+        out["error"] = "Only a bond, angle or dihedral has a target to move to."
+        return out
+    try:
+        idx = [int(i) for i in indices]
+        v = float(value)
+    except (TypeError, ValueError):
+        out["error"] = "That constraint has no target value."
+        return out
+    if len(idx) != n or len(set(idx)) != n:
+        out["error"] = f"That constraint needs {n} different atoms."
+        return out
+    if not math.isfinite(v):
+        out["error"] = "That target is not a number."
+        return out
+    rows = _atom_lines(text)
+    atoms = [a for _, a in rows]
+    for i in idx:
+        if not 0 <= i < len(atoms):
+            out["error"] = f"There is no atom {i + 1} — the structure has {len(atoms)}."
+            return out
+    if n == 2 and not 0.1 <= v <= 50:
+        out["error"] = "A bond target must be between 0.1 and 50 Å."
+        return out
+    if n == 3 and not 0 < v <= 180:
+        out["error"] = "An angle target must be above 0° and at most 180°."
+        return out
+    try:
+        before = measure(atoms, idx)
+        moved_atoms, side = set_internal(atoms, idx, v)
+    except StructureError as e:
+        out["error"] = str(e)
+        return out
+
+    # an atom ON the hinge axis (a dihedral's own k) belongs to the moving side
+    # but does not move, and its line stays the user's
+    side = {k for k in side
+            if _norm(_sub(_pos(moved_atoms[k]), _pos(atoms[k]))) > 1e-9}
+    lines = (text or "").split("\n")
+    for k in sorted(side):
+        n_line = rows[k][0]
+        # the three numbers are swapped in place; the symbol, the whitespace
+        # between fields and anything after them stay as the user wrote them
+        pieces = re.split(r"(\s+)", lines[n_line])
+        words = [n for n, t in enumerate(pieces) if t and not t.isspace()]
+        dec = min(10, max(6, *(_decimals(pieces[n]) for n in words[1:4])))
+        a = moved_atoms[k]
+        for n, v in zip(words[1:4], (a.x, a.y, a.z)):
+            pieces[n] = f"{v:.{dec}f}"
+        lines[n_line] = "".join(pieces)
+
+    radii = [covalent_radius(a.sym) for a in moved_atoms]
+    clashes = []
+    for i in sorted(side):
+        for j in range(len(moved_atoms)):
+            if j in side:
+                continue
+            d = _norm(_sub(_pos(moved_atoms[i]), _pos(moved_atoms[j])))
+            if d < _OVERLAP_FACTOR * (radii[i] + radii[j]):
+                clashes.append((d, i, j))
+    clashes.sort()
+
+    def name(i):
+        return f"{normalize_symbol(atoms[i].sym) or atoms[i].sym}{i + 1}"
+
+    out["warnings"] = [
+        f"{name(i)} is now {d:.2f} Å from {name(j)} — closer than a bond."
+        for d, i, j in clashes[:_MAX_LISTED_CLASHES]]
+    xyz = "\n".join(lines)
+    out.update(ok=True, xyz=xyz, moved=sorted(side), before=before,
+               after=measure(parse_block(xyz), idx))
     return out

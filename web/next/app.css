@@ -1229,7 +1229,7 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
    the target it is driven to (empty = held where it starts) */
 .conslist{display:flex; flex-direction:column; gap:6px; margin-bottom:10px;}
 .conslist:empty{display:none;}
-.consrow{display:grid; grid-template-columns:72px minmax(0,1fr) 96px 136px 34px;
+.consrow{display:grid; grid-template-columns:72px minmax(0,1fr) 96px 136px 62px 34px;
   align-items:center; gap:10px; padding:4px 4px 4px 12px; font-size:12px;
   background:var(--card); border:1px solid var(--border); border-radius:var(--radius-sm);}
 .consrow:hover,.consrow:focus-within{border-color:var(--ring);}
@@ -1237,6 +1237,7 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
 .consrow .ca,.consrow .cv{font-family:var(--font-mono); font-variant-numeric:tabular-nums;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .consrow .cv{color:var(--muted-foreground);}
+.consrow .ap{padding:4px 10px; min-height:28px; font-size:11.5px;}
 .consrow.bad{border-color:var(--err-tint); background:var(--err-tint-bg);}
 .consrow.bad .cv{color:var(--err);}
 .consrow .ct{display:flex; align-items:center; gap:6px; color:var(--muted-foreground);}

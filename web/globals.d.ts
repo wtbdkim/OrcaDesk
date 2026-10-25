@@ -48,6 +48,7 @@ interface OrcaBridge {
   // structure screening (Build tab; both over core/structure.py — read-only)
   check_structure(xyz: string, charge: number, multiplicity: number): Promise<string>;  // StructureCheck JSON
   compare_structures(reactantXyz: string, productXyz: string): Promise<string>;         // AtomOrder JSON
+  apply_constraint_target(xyz: string, constraintJson: string): Promise<string>;      // ConstraintApply JSON
   // parsing
   // the Results tab's one file button: picks a result file and says how to read
   // it — {ok, path, route:"parse"|"structure"} | {ok:false, cancelled:true}

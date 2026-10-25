@@ -14,6 +14,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   target, and is written into the `%geom` block as ORCA `Constraints`. A
   constraint naming an atom the structure does not have is refused when it is
   added, rather than failing in ORCA's setup.
+  - **Apply** moves the coordinates to a constraint's target before the run,
+    so you can see the structure you are asking for. The smaller side of the
+    bond moves as one piece — a hydroxyl turned to 120° takes its hydrogen
+    with it — and a ring bond is refused rather than bent. Only the moved
+    atoms' numbers change in the box, and Ctrl+Z there undoes it.
 - **The notebook preview's last ten design elements.** Everything the approved
   design draws is now in the front-end; the element-by-element check that used
   to carry a list of exceptions carries an empty one.
