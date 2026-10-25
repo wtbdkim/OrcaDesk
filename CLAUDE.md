@@ -579,8 +579,8 @@ The `core/` pipeline:
   and **`%geom Constraints`** (`StepConfig.geom_constraints`: a list of
   `{kind: C|B|A|D, atoms: [0-based], value: float|None}` where None holds the
   starting value). They are written inside the ONE `%geom` block, and only for
-  `CONSTRAINED_KINDS` (opt / opt_freq / ts_opt / ts_opt_freq). Any other kind
-  gets a `#` note saying they were left out. `general` is excluded on purpose:
+  `CONSTRAINED_KINDS` (opt / opt_freq / ts_opt / ts_opt_freq); any other kind
+  writes no `%geom` block, so they are simply not in its input. `general` is excluded on purpose:
   its job line is free text. `normalize_constraints` (called from `from_dict`,
   the trust boundary) DROPS a malformed entry (unknown kind, wrong atom count,
   non-int/negative/duplicate index, non-finite value) rather than guessing,
@@ -598,8 +598,7 @@ The `core/` pipeline:
   `constraint_linear_warning` WARNS rather than refuses (the user's call, and
   the rule is one version's measurement): `store.constraint_warning` rides on
   add/update as `MutationResult.warning`, which the builder shows as a `warn`
-  toast, and `build_input` writes it into the `.inp` as a `# WARNING:` line
-  (the target alone for a referenced geometry). The format and ORCA's IUPAC dihedral sign
+  toast (the target alone for a referenced geometry). The format and ORCA's IUPAC dihedral sign
   were verified on 6.1.1. The notebook builder picks them on its structure stage (DESIGN.md
   §17.4l); the classic UI has only the `.inp` snippet.
 - `runner.py` — `OrcaRunner` launches ORCA **detached**, with ORCA writing its own
@@ -660,7 +659,7 @@ The `core/` pipeline:
   `numfreq_rank_cap()` — a numerical frequency runs one displaced-geometry
   gradient per process and deadlocks when given more processes than it has
   displacements (`6N - 6`), so the generator caps a generated `%pal nprocs` to
-  it with a `#` note and the engine warns about a raw one (P57). Qt-free, psutil
+  it and the engine warns about a raw one (P57). Qt-free, psutil
   for the machine's physical core count / installed RAM.
 - `queue.py` — `QueueEngine` orchestrates the pipeline (details below). Validation
   is the module-level `validate_result()` (shared by the engine and session
@@ -1978,14 +1977,22 @@ them there.
   `B97-D3`, `LC-BLYP`) are left untouched — the map is an exact dict, never a
   hyphen-stripping heuristic. When adding functionals, verify the spelling against the
   installed ORCA, not just the manual.
+- **The generated `.inp` carries no comments of ORCAdesk's own.** It is the
+  input ORCA reads and the text the Expert editor and the preview show, and
+  notes the user did not write had no place in it (they asked for every one
+  to go). What the generator leaves out or changes — a composite method's
+  basis, an RI keyword ORCA refuses, a NumFreq's rank cap, constraints on a
+  kind that does not optimize — is decided by the rules below and documented
+  here; a constraint ORCA will stop on is warned about when the calculation is
+  added. `test_the_input_carries_no_comments_of_its_own` pins it, and
+  PRINCIPLES.md appendix A26 records the deviation from P2.
 - **Composite ("3c") methods bring their own basis; never append one.** HF-3c,
   PBEh-3c, B97-3c, B3LYP-3c, r2SCAN-3c and wB97X-3c are functional + basis +
   gCP + dispersion parameterized *together*, and ORCA treats an explicit basis
   on the `!` line as an override — so appending the picker's default runs a
   different method that terminates normally and validates DONE. `_keyword_line`
   drops the basis (and `_auto_aux` the aux, which is chosen from it) when
-  `is_composite_method()` says so, and `build_input` writes a `#` note into the
-  `.inp` saying why (P2: reported, not silently swallowed). Detection is the
+  `is_composite_method()` says so. Detection is the
   `-3c` suffix, not a closed list — the picker lists are not closed enums.
   Measured on ORCA 6.1.1 (water, sp): `! r2SCAN-3c def2-TZVP` → def2-TZVP,
   43 bf, −76.417967 Eh; `! r2SCAN-3c` → def2-mTZVPP, 34 bf, −76.418907 Eh.
