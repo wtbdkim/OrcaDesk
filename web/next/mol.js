@@ -916,14 +916,22 @@ var MOL = {};
     }
 
     /** The atom under a point, nearest to the viewer where they overlap.
-     *  @param {number} X @param {number} Y @returns {number|null} */
-    function atomAt(X, Y) {
+     *  `core` narrows the target to the middle of each ball, for a pointer that
+     *  is MOVING: in a small molecule the balls overlap on screen, and a chain
+     *  drag that took any ball the cursor brushed picked up the one in front
+     *  of the atom being aimed at — three atoms dragged came back as a
+     *  dihedral. A click aims and keeps the whole ball.
+     *  @param {number} X @param {number} Y @param {boolean} [core]
+     *  @returns {number|null} */
+    function atomAt(X, Y, core) {
       if (!proj) return null;
       let best = null, bz = -Infinity;
       proj.pts.forEach((p, i) => {
         if (!proj.vis[i]) return;
         const d = Math.hypot(p.X - X, p.Y - Y);
-        if (d <= proj.radOf(p) + 3 && p.z > bz) { best = i; bz = p.z; }
+        const r = proj.radOf(p);
+        const lim = core ? Math.max(6, r * 0.6) : r + 3;
+        if (d <= lim && p.z > bz) { best = i; bz = p.z; }
       });
       return best;
     }
@@ -998,7 +1006,7 @@ var MOL = {};
         if (chain.moved <= 4) return;              // still a click
         canvas.style.cursor = "crosshair";
         chain.cur = p;
-        const over = atomAt(p.x, p.y), n = chain.atoms.length;
+        const over = atomAt(p.x, p.y, true), n = chain.atoms.length;
         if (over != null) {
           // back onto the atom before the last takes the last one off, so a
           // wrong turn is undone without starting again
