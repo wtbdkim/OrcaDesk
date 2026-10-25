@@ -158,6 +158,12 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   hit-target rule can save.
 
 ### Fixed
+- A running calculation's Output pane in the notebook preview no longer pulls
+  you back to the bottom every second. It follows new output only while you
+  are at the end; scroll up and it stays on the line you are reading, and a
+  **↓ Latest · N new** button on the pane jumps back and resumes following.
+  Text selected in the pane survives a refresh, and a finished run's pane
+  shows ORCA's closing lines instead of stopping up to a second short.
 - A new optimization built in the notebook preview was written with
   `MaxIter 1`, so it stopped after one cycle: the field started at 0 and the
   input generator raised it to its minimum. It starts at 200, the default.

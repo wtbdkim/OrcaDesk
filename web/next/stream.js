@@ -22,7 +22,7 @@
 
   /** @type {Map<string, HTMLElement>} */
   const _cells = new Map();
-  /** @type {Map<string, {lines: string[], file: string, truncated: boolean}>} */
+  /** @type {Map<string, {lines: string[], file: string, truncated: boolean, at: string}>} */
   const _tails = new Map();
   /** @type {Set<string>} */
   const _busy = new Set();
@@ -87,6 +87,133 @@
    *  @type {Map<string, string>} */
   const _gkind = new Map();
 
+  /** What each output pane is showing and whether it is following the end.
+   *  `follow` is the reader's choice, read off their own scrolling: a pane
+   *  follows the tail only while it is at the bottom, so a poll never takes
+   *  the reader away from the line they scrolled up to. It used to follow
+   *  every RUNNING job unconditionally, which is exactly when there is
+   *  something worth scrolling back to read. `lines` is the tail as painted,
+   *  so the next read can be laid over it rather than replacing it; `unseen`
+   *  counts what arrived while the reader was elsewhere.
+   *  @type {WeakMap<HTMLElement, {lines: string[]|null, follow: boolean, unseen: number}>} */
+  const _logs = new WeakMap();
+
+  /** Half a line at 11.5px/1.6: closer than this IS the bottom. The old 40px
+   *  slack meant a reader who scrolled up two lines was pulled back down. */
+  const AT_END_PX = 8;
+
+  /** @param {HTMLElement} log */
+  const atEnd = (log) => log.scrollHeight - log.scrollTop - log.clientHeight < AT_END_PX;
+
+  /** One line of output as the pane draws it. @param {string} l */
+  const logRow = (l) => `<div class="${logClass(l)}">${NB.esc(l)}</div>`;
+
+  /** How many lines fell off the top between two reads of the same tail, or
+   *  -1 when the new read does not continue the old one (a re-run rewrote the
+   *  file, or more arrived in one poll than the window holds).
+   *
+   *  The tail is a sliding window of the last TAIL_LINES lines, so a read is
+   *  the previous one with `d` lines gone from the top and some added at the
+   *  bottom. The previous LAST line is left out of the comparison: it can have
+   *  been read while ORCA was halfway through writing it. A few lines of
+   *  agreement are required, because an .out repeats itself (rules, blank
+   *  lines) and one matching line proves nothing.
+   *  @param {string[]} old @param {string[]} nw */
+  function slid(old, nw) {
+    const need = Math.min(4, old.length - 1);
+    for (let d = 0; d < old.length; d++) {
+      const keep = old.length - d;            // old lines that are new[0 .. keep-1]
+      if (keep - 1 < need) break;
+      if (keep > nw.length) continue;
+      let i = 0;
+      while (i < keep - 1 && nw[i] === old[d + i]) i++;
+      if (i === keep - 1) return d;
+    }
+    return -1;
+  }
+
+  /** The first line of the pane that is on screen, and how far below the
+   *  pane's top edge it sits -- what the reader is looking at, measured, so it
+   *  can be put back where it was after the lines around it change. Measured
+   *  rather than counted in line heights: an empty line draws no box at all.
+   *  @param {HTMLElement} log @returns {{i: number, dy: number}|null} */
+  function anchorOf(log) {
+    const top = log.getBoundingClientRect().top + log.clientTop;
+    const kids = log.children;
+    for (let i = 0; i < kids.length; i++) {
+      const r = kids[i].getBoundingClientRect();
+      if (r.height > 0 && r.bottom > top) return { i, dy: r.top - top };
+    }
+    return null;
+  }
+
+  /** Put the pane's tail on screen, keeping the reader where they are.
+   *
+   *  A read that continues the last one is laid over it -- the lines that left
+   *  the window removed, the last one rewritten if it grew, the new ones
+   *  appended -- instead of replacing the whole pane. The pane is then the same
+   *  elements a second later, so a selection inside it survives a poll, and a
+   *  screen reader's role="log" announces what was added, not the whole box.
+   *  @param {HTMLElement} log @param {string[]} lines */
+  function paintLog(log, lines) {
+    const ls = _logs.get(log);
+    if (ls.lines === lines) return;
+    const old = ls.lines;
+    const d = old ? slid(old, lines) : -1;
+    const anchor = !ls.follow && log.clientHeight ? anchorOf(log) : null;
+    let added;
+    if (d < 0) {
+      log.innerHTML = lines.map(logRow).join("");
+      added = lines.length;
+    } else {
+      for (let k = 0; k < d; k++) log.firstElementChild.remove();
+      const keep = old.length - d;
+      if (old[old.length - 1] !== lines[keep - 1]) {
+        const last = /** @type {HTMLElement} */ (log.children[keep - 1]);
+        last.className = logClass(lines[keep - 1]);
+        last.textContent = lines[keep - 1];
+      }
+      if (lines.length > keep) {
+        log.insertAdjacentHTML("beforeend", lines.slice(keep).map(logRow).join(""));
+      }
+      added = lines.length - keep;
+    }
+    ls.lines = lines;
+    if (ls.follow) return;
+    ls.unseen += added;
+    if (!anchor || d < 0) return;     // nothing to hold on to: leave scrollTop as it was
+    if (anchor.i < d) { log.scrollTop = 0; return; }    // it slid out of the window:
+    // the oldest line still held is the nearest thing to it
+    const top = log.getBoundingClientRect().top + log.clientTop;
+    const now = log.children[anchor.i - d].getBoundingClientRect().top - top;
+    log.scrollTop += now - anchor.dy;
+  }
+
+  /** The "↓ Latest" pill: there only while the pane is scrolled away from the
+   *  end, and saying how much has arrived since. @param {HTMLElement} el */
+  function paintLatest(el) {
+    const log = /** @type {HTMLElement} */ (el.querySelector(".logbox"));
+    const btn = /** @type {HTMLElement} */ (el.querySelector('[data-act="latest"]'));
+    const ls = _logs.get(log);
+    btn.hidden = ls.follow || log.scrollHeight <= log.clientHeight;
+    if (!btn.hidden) {
+      // on the BOX's corner, inside its scrollbars -- measured, because neither
+      // is fixed: the pane can be taller than the box (the box's height is
+      // capped, the row's is not), and one long ORCA line gives the box a
+      // horizontal scrollbar the pill would otherwise sit on
+      const pane = log.parentElement.getBoundingClientRect();
+      const box = log.getBoundingClientRect();
+      const sbx = Math.max(0, log.offsetWidth - log.clientWidth - 2 * log.clientLeft);
+      const sby = Math.max(0, log.offsetHeight - log.clientHeight - 2 * log.clientTop);
+      btn.style.right = Math.round(pane.right - box.right + sbx + 8) + "px";
+      btn.style.bottom = Math.round(pane.bottom - box.bottom + sby + 8) + "px";
+    }
+    const n = ls.unseen;
+    btn.textContent = n ? `↓ Latest · ${n} new` : "↓ Latest";
+    btn.setAttribute("aria-label", "Latest output" + (n ? `, ${n} new line${n === 1 ? "" : "s"}` : "")
+      + ": scroll to the end and follow it");
+  }
+
   /** @param {any} c @returns {HTMLElement} */
   function build(c) {
     const el = NB.el("article", "cell");
@@ -133,7 +260,8 @@
           <div class="pane out">
             <div class="panehead"><span class="t">Output</span><span class="sp"></span>
               <span class="meta"></span></div>
-            <div class="logbox" role="log"></div>
+            <div class="logbox" role="log" tabindex="0"></div>
+            <button class="act" type="button" data-act="latest" hidden>↓ Latest</button>
           </div>
         </div>
         <div class="factline"></div>
@@ -144,6 +272,35 @@
     }));
     el.querySelector(".cellinp").addEventListener("click", () => NB.results.showInp(c.name));
     el.querySelector(".cellres").addEventListener("click", () => NB.results.open(c.name));
+
+    // Following is read off the reader's own scrolling -- wheel, scrollbar,
+    // keys, a touchpad: they all end in a scroll event, and the pane's own
+    // scroll-to-end lands at the end, so it never turns following off. A wheel
+    // turn upward ends it at once rather than a frame later: a poll landing in
+    // between would otherwise scroll to the end and cut the wheel's smooth
+    // scroll short.
+    const log = /** @type {HTMLElement} */ (el.querySelector(".logbox"));
+    _logs.set(log, { lines: null, follow: true, unseen: 0 });
+    log.addEventListener("scroll", () => {
+      if (!log.clientHeight) return;   // a hidden pane measures as zero, not as scrolled
+      const ls = _logs.get(log);
+      ls.follow = atEnd(log);
+      if (ls.follow) ls.unseen = 0;
+      paintLatest(el);
+    });
+    log.addEventListener("wheel", (/** @type {WheelEvent} */ e) => {
+      if (e.deltaY < 0 && log.scrollTop > 0) { _logs.get(log).follow = false; paintLatest(el); }
+    }, { passive: true });
+    el.querySelector('[data-act="latest"]').addEventListener("click", () => {
+      const ls = _logs.get(log);
+      ls.follow = true;
+      ls.unseen = 0;
+      log.scrollTop = log.scrollHeight;
+      paintLatest(el);
+      // the pill has just hidden itself; focus goes to the pane it scrolled,
+      // not to the top of the document
+      log.focus({ preventScroll: true });
+    });
     // the geometry is taken by REFERENCE, not copied: the engine resolves it to
     // this calculation's optimized structure when the new one actually runs, so
     // it is the geometry as it finally was and not as it was when the button
@@ -235,18 +392,24 @@
     const tail = _tails.get(c.name);
     const log = q(".logbox");
     const meta = q(".out .meta");
+    const ls = _logs.get(log);
     if (tail && tail.lines.length) {
       meta.textContent = tail.file + (tail.truncated ? " · last " + tail.lines.length + " lines" : "");
-      const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-      log.innerHTML = tail.lines.map(l => `<div class="${logClass(l)}">${NB.esc(l)}</div>`).join("");
-      if (stick || c.state === "running") log.scrollTop = log.scrollHeight;
+      paintLog(log, tail.lines);
     } else {
       meta.textContent = "";
+      ls.lines = null;
+      ls.follow = true;
+      ls.unseen = 0;
       log.innerHTML = `<div class="l-info">${
         c.state === "pending" ? "Not started yet."
         : c.state === "blocked" ? "Waiting on another calculation."
         : "No output on disk yet."}</div>`;
     }
+    // on every update, not only when lines arrived: the chart beside the pane
+    // can change the row's height, and a following pane has to stay at the end
+    if (ls.follow) log.scrollTop = log.scrollHeight;
+    paintLatest(el);
 
     // --- facts
     const bits = [];
@@ -279,19 +442,32 @@
 
   /** Read the output the screen is missing. A finished calculation's tail never
    *  changes, so it is read once; a running one is re-read, which is what makes
-   *  the pane a live terminal. @param {any[]} calcs */
+   *  the pane a live terminal. `at` is the state a tail was read in, so a run
+   *  that has just finished is read ONCE more: the last read was taken while
+   *  it was still running, up to a second before ORCA wrote its closing lines.
+   *  @param {any[]} calcs */
   function fetchTails(calcs) {
     calcs.forEach(c => {
       if (c.state === "pending" || c.state === "blocked") return;
       if (_busy.has(c.name)) return;
-      if (_tails.has(c.name) && c.state !== "running") return;
+      const have = _tails.get(c.name);
+      if (have && c.state !== "running" && have.at !== "running") return;
       _busy.add(c.name);
+      const at = c.state;
       NB.call("get_output_tail", c.name, TAIL_LINES).then(r => {
         _busy.delete(c.name);
-        if (!r || !r.ok || !r.lines || !r.lines.length) return;
-        _tails.set(c.name, { lines: r.lines, file: r.file || (c.name + ".out"),
-                             truncated: !!r.truncated });
-        repaintOne(c.name);
+        const prev = _tails.get(c.name);
+        if (!r || !r.ok || !r.lines || !r.lines.length) {
+          if (prev) prev.at = at;
+          return;
+        }
+        // an unchanged read keeps the lines the pane already painted, so the
+        // pane is not touched at all -- most polls of a running job
+        const same = prev && prev.lines.length === r.lines.length
+          && prev.lines.every((l, k) => l === r.lines[k]);
+        _tails.set(c.name, { lines: same ? prev.lines : r.lines, at: at,
+                             file: r.file || (c.name + ".out"), truncated: !!r.truncated });
+        if (!same) repaintOne(c.name);
       });
     });
   }
