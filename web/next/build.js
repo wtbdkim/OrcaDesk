@@ -753,10 +753,15 @@
     /** the atom a click selected, for Fix @type {number|null} */
     let picked = null;
 
+    /** the Ctrl+clicked atoms, in order, waiting for the button @type {number[]} */
+    let sel = [];
     const stage = MOL.mount(cv, Object.assign({
       gizmoBottom: 26,
       onPick: (/** @type {any} */ p) => { picked = p && p.kind === "atom" ? p.i : null; sayFix(); },
-    }, picking ? { onChain: (/** @type {number[]} */ idx) => add(idx) } : {}));
+    }, picking ? {
+      onChain: (/** @type {number[]} */ idx) => add(idx),
+      onSelect: (/** @type {number[]} */ idx) => { sel = idx; sayFix(); },
+    } : {}));
     st.stage = stage;
 
     /** @param {number} i */
@@ -765,10 +770,21 @@
      *  read the elements from @param {any} c @param {boolean} ref */
     const consLabel = (c, ref) => c.atoms.map(i => ref ? String(i + 1) : atomName(i)).join("–");
 
+    /** The stage's one button names what it would add: the atom a click
+     *  picked (fix it), or the 2-4 atoms Ctrl+click selected (hold that bond,
+     *  angle or dihedral). The selection outlives the Ctrl key, so it is this
+     *  press that turns it into a constraint (or Enter on the stage). */
     function sayFix() {
       if (!fix) return;
-      fix.disabled = picked == null;
-      fix.textContent = picked == null ? "Fix atom" : "Fix " + atomName(picked);
+      if (sel.length >= 2) {
+        fix.disabled = false;
+        fix.textContent = "Add " + CONS_NAME[CONS_BY_COUNT[sel.length]].toLowerCase()
+          + " " + sel.map(atomName).join("–");
+        return;
+      }
+      const one = sel.length === 1 ? sel[0] : picked;
+      fix.disabled = one == null;
+      fix.textContent = one == null ? "Fix atom" : "Fix " + atomName(one);
     }
 
     /** @param {number[]} idx 0-based */
@@ -791,7 +807,7 @@
       const hint = q('[data-x="conshint"]');
       if (hint) hint.textContent = ref
         ? "Atoms are numbered from 1. They are checked against the referenced geometry when the run starts."
-        : "Drag across 2, 3 or 4 atoms for a bond, angle or dihedral; select one atom to fix it. Leave a target empty to hold the current value.";
+        : "Drag across 2, 3 or 4 atoms for a bond, angle or dihedral — or Ctrl+click them in order and press Add; select one atom to fix it. Leave a target empty to hold the current value.";
       box.innerHTML = st.cons.map((c, k) => {
         const lab = consLabel(c, ref);
         const miss = ref ? null : c.atoms.find(i => i >= atoms.length);
@@ -886,6 +902,7 @@
     ta.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(showGeom, 180); });
 
     if (fix) fix.addEventListener("click", () => {
+      if (sel.length) { add(stage.takePicks()); return; }
       if (picked == null) return;
       add([picked]);
       stage.clearPick();

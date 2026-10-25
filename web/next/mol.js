@@ -420,7 +420,7 @@ var MOL = {};
    *           labels?: boolean, gizmo?: boolean, hotAxis?: string,
    *           gizmoBottom?: number,
    *           chain?: {atoms: number[], cur?: {x: number, y: number}|null}|null,
-   *           hilite?: number[]}} view */
+   *           hilite?: number[], picks?: number[]}} view */
   function render(canvas, atoms, sc, view) {
     const box = canvas.getBoundingClientRect();
     if (!atoms || !atoms.length || box.width < 2 || box.height < 2) return null;
@@ -691,8 +691,10 @@ var MOL = {};
     // Both carry the value they name, so the drag says "bond, 1.43 Å" before it
     // is released.
     /** @param {number[]} idx @param {{x: number, y: number}|null|undefined} cur
-     *  @param {string} col @param {boolean} dashed */
-    function chainPath(idx, cur, col, dashed) {
+     *  @param {string} col @param {boolean} dashed
+     *  @param {boolean} [numbered] the order is the constraint, and a Ctrl+click
+     *    selection has no drag to show it, so each atom carries its number */
+    function chainPath(idx, cur, col, dashed, numbered) {
       const ps = idx.map(i => pts[i]).filter(Boolean);
       if (!ps.length) return;
       g.save();
@@ -704,6 +706,18 @@ var MOL = {};
       if (ps.length > 1 || cur) g.stroke();
       g.setLineDash([]);
       ps.forEach(p => { g.beginPath(); g.arc(p.X, p.Y, radOf(p) + 4, 0, Math.PI * 2); g.stroke(); });
+      if (numbered) {
+        g.font = "bold 10px " + mono;
+        g.textAlign = "center"; g.textBaseline = "middle";
+        ps.forEach((p, k) => {
+          const bx = p.X + (radOf(p) + 4) * 0.72, by = p.Y - (radOf(p) + 4) * 0.72;
+          g.fillStyle = col;
+          g.beginPath(); g.arc(bx, by, 7, 0, Math.PI * 2); g.fill();
+          g.fillStyle = css(ground);
+          g.fillText(String(k + 1), bx, by + 0.5);
+        });
+        g.textAlign = "left"; g.textBaseline = "alphabetic";
+      }
       const mv = idx.length >= 2 ? MOL.measureChain(atoms, idx) : null;
       if (mv) {
         const last = ps[ps.length - 1];
@@ -724,6 +738,10 @@ var MOL = {};
     if (view.chain && view.chain.atoms.length) {
       chainPath(view.chain.atoms, view.chain.cur,
                 (cssv.getPropertyValue("--crit-de") || "").trim() || "#4cc9f0", true);
+    }
+    if (view.picks && view.picks.length) {
+      chainPath(view.picks, null,
+                (cssv.getPropertyValue("--crit-de") || "").trim() || "#4cc9f0", false, true);
     }
 
     // The axis marker, last so nothing is drawn over it.
@@ -824,15 +842,17 @@ var MOL = {};
    *  hides hydrogens and L cycles the labels.
    *
    *  @param {HTMLCanvasElement} canvas
-   *  @param {{onPick?: (p: any) => void, yaw?: number, pitch?: number,
-   *           gizmoBottom?: number, wheel?: string, labels?: boolean,
-   *           onChain?: (atoms: number[]) => void}} [opts]
+   *  @param {{onPick?: (p: any) => void, onChain?: (atoms: number[]) => void,
+   *           onSelect?: (atoms: number[]) => void, yaw?: number, pitch?: number,
+   *           gizmoBottom?: number, wheel?: string, labels?: boolean}} [opts]
    *    onChain (opt-in; the builder's constraint picking) changes what a left
    *    drag that STARTS ON AN ATOM does: it collects the atoms it passes over,
    *    up to four, and hands them over on release when there are at least two
    *    (dragging back onto the previous atom takes the last one off). A drag
    *    from empty space still turns the structure, and a press-and-release on
-   *    one atom is still a click. Without it, nothing here changes.
+   *    one atom is still a click. With it, Ctrl+click builds a selection of up
+   *    to four atoms that survives the Ctrl key; onSelect hears every change,
+   *    takePicks() or Enter hands it over. Without it, nothing here changes.
    *    gizmoBottom lifts the axis marker clear of whatever the stage draws in
    *    its bottom-left corner. wheel "plain" zooms on a bare wheel — for a stage
    *    that owns its window; anywhere else the wheel scrolls the page, as it
@@ -860,6 +880,18 @@ var MOL = {};
     let chain = null;
     /** atoms a caller asked to be shown joined (setHighlight) @type {number[]} */
     let hilite = [];
+    /** Atoms Ctrl+clicked so far (opts.onChain), in order — the second way to
+     *  name a bond, angle or dihedral, for atoms a drag cannot reach in one
+     *  sweep: behind another, or across the molecule. It is a SELECTION, the
+     *  way Ctrl+click is everywhere else: letting go of Ctrl keeps it (the
+     *  first version handed it over on the keyup, and a hand that lets go of
+     *  Ctrl between clicks lost every atom but the first). The caller is told
+     *  of each change (opts.onSelect) and takes it with takePicks(); Enter on
+     *  the stage hands it over as a chain.
+     *  @type {number[]} */
+    let picks = [];
+    /** a Ctrl press on an atom, until it is known to be a click @type {any} */
+    let ctrlTap = null;
 
     /** The axis arm the cursor is over, so the marker can say it is a target
      *  before it is pressed. @type {string} */
@@ -871,7 +903,17 @@ var MOL = {};
       proj = render(canvas, atoms, sc, {
         R: R, zoom: zoom, panX: panX, panY: panY, mark: mark, measure: measure,
         gizmo: true, hotAxis: hotAxis, gizmoBottom: opts.gizmoBottom,
-        labels: opts.labels !== false, chain: chain, hilite: hilite });
+        labels: opts.labels !== false, chain: chain, hilite: hilite, picks: picks });
+    }
+
+    /** Tell the caller what is selected now. @param {number[]} s */
+    function selected(s) { if (opts.onSelect) opts.onSelect(s.slice()); }
+    /** Empty the Ctrl+click selection (a plain click, Esc, new atoms). */
+    function dropPicks() {
+      if (!picks.length) return;
+      picks = [];
+      paint();
+      selected([]);
     }
 
     /** Turn the structure down one axis. @param {string} name x, y or z */
@@ -974,9 +1016,14 @@ var MOL = {};
         return;
       }
       const pan = e.button === 1 || (e.button === 0 && e.shiftKey);
+      const ctrl = e.ctrlKey || e.metaKey;
       // the marker is a control, not part of the scene: pressing an arm must
       // not also start turning the structure under it
       if (!pan && armUnder(p)) return;
+      if (!pan && ctrl && opts.onChain && e.button === 0) {
+        const at = atomAt(p.x, p.y);
+        if (at != null) { ctrlTap = { i: at, x: e.clientX, y: e.clientY }; return; }
+      }
       if (!pan && opts.onChain && e.button === 0) {
         const at = atomAt(p.x, p.y);
         if (at != null) {        // on an atom: this drag names atoms, not a turn
@@ -998,6 +1045,10 @@ var MOL = {};
         const over = atomAt(p.x, p.y);
         measure.to = (over != null && over !== measure.from) ? over : null;
         paint();
+        return;
+      }
+      if (ctrlTap) {
+        if (Math.hypot(e.clientX - ctrlTap.x, e.clientY - ctrlTap.y) > 4) ctrlTap = null;
         return;
       }
       if (chain) {
@@ -1037,6 +1088,21 @@ var MOL = {};
     });
 
     canvas.addEventListener("pointerup", e => {
+      if (ctrlTap && e.button === 0) {
+        const i = ctrlTap.i;
+        ctrlTap = null;
+        // an atom already picked with a plain click starts the selection, as
+        // a click-then-Ctrl+click does in any file list
+        if (!picks.length && mark.length === 1 && mark[0] !== i) picks = [mark[0]];
+        // picking one again takes it out — the way back from a wrong click
+        const at = picks.indexOf(i);
+        if (at >= 0) picks.splice(at, 1);
+        else if (picks.length < 4) picks.push(i);
+        mark = []; paint();
+        if (opts.onPick) opts.onPick(null);
+        selected(picks);
+        return;
+      }
       if (chain && e.button === 0) {
         const c = chain;
         chain = null;
@@ -1070,10 +1136,13 @@ var MOL = {};
       drag = null;
       canvas.style.cursor = "grab";
       if (moved > 4 || panned) return;             // a turn or a move, not a click
+      // a Ctrl+click on nothing keeps the selection, as it would in a file list
+      if ((e.ctrlKey || e.metaKey) && picks.length) return;
       clickAt(up);
     });
     /** A click: pick what is under it. @param {{x: number, y: number}} up */
     function clickAt(up) {
+      dropPicks();
       const h = hitAt(up.x, up.y);
       if (!h) { mark = []; paint(); if (opts.onPick) opts.onPick(null); return; }
       // clicking what is already selected lets it go
@@ -1132,7 +1201,14 @@ var MOL = {};
         setDisplay({ labels: LABELS[(at + 1) % LABELS.length][0] });
         e.preventDefault();
         return;
+      } else if (k === "Enter" && picks.length >= 2 && opts.onChain) {
+        const s = picks;
+        picks = []; paint(); selected([]);
+        opts.onChain(s.slice());
+        e.preventDefault();
+        return;
       } else if (k === "Escape") {
+        if (picks.length) { dropPicks(); e.preventDefault(); return; }
         measure = null; mark = []; chain = null;
         e.preventDefault(); paint();
         if (opts.onPick) opts.onPick(null);
@@ -1165,7 +1241,10 @@ var MOL = {};
         atoms = a || [];
         const o = extra && extra.orders && extra.orders.length ? extra.orders : null;
         sc = scene(atoms, o);
-        mark = []; measure = null; chain = null; hilite = []; paint();
+        const had = picks.length > 0;
+        mark = []; measure = null; chain = null; hilite = []; picks = []; ctrlTap = null; paint();
+        // the indices were about the old atoms; the caller's button says so
+        if (had) selected([]);
       },
       /** Show these atoms joined, in this order — a constraint's atoms; [] to
        *  clear. Dropped by setAtoms, whose structure the indices may not fit.
@@ -1176,6 +1255,11 @@ var MOL = {};
       },
       /** the chain in flight, for anything that needs to know */
       chainState() { return chain ? { atoms: chain.atoms.slice(), moved: chain.moved } : null; },
+      /** the Ctrl+clicked atoms not yet handed over */
+      pickState() { return picks.slice(); },
+      /** Hand the Ctrl+clicked atoms over and clear them — what the caller's
+       *  "Add" button does. @returns {number[]} */
+      takePicks() { const s = picks; picks = []; paint(); selected([]); return s.slice(); },
       /** Turn the structure down one axis — what pressing that arm of the
        *  marker does, for a caller that wants it without a click.
        *  @param {string} name x, y or z */
