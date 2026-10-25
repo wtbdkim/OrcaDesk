@@ -426,6 +426,14 @@ tolerance, so one goal line at ratio 1 serves all of them; and a running cell's
 two convergences — the whole optimization and the cycle solving now — are a
 **toggle** (`_gkind` in `stream.js`, `CHARTS.convergence(..., kind)`), shown only
 when both have data, never two stacked charts. DESIGN.md §17.4h / §17.4i.
+An **IRC** cell draws its path instead (`CHARTS.irc`, from
+`progress_panels.js` `IrcTracker`): ΔE against the TS in kcal/mol, linear,
+backward to the left and forward to the right of the TS, each direction's
+steps / ΔE / max|G| against its threshold in the key, and progress from
+MaxIter and the directions asked for. Before it the cell showed whichever
+single SCF had run last. `get_graph_lines` keeps the same lines
+(`_IRC_GRAPH` / `_IRC_ROW` in `bridge.py`, pinned in `test_log_replay.py`) so
+a reopened IRC rebuilds its path from the `.out`.
 
 A cell's **Output pane** (the `.logbox` beside the chart, the last 260 lines
 of the `.out`, re-read every poll while the job runs) follows the end **only

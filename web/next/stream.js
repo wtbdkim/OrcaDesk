@@ -52,6 +52,13 @@
     const b = NB.trackers(c.name);
     const st = CHARTS.stages(b);
     if (st) return { t: st.title, stages: true, h: st.html };
+    // an IRC is a path, not a convergence: once it has walked a step, the
+    // path is the picture (the SCF chart before it is the TS's own energy)
+    const ir = CHARTS.irc(b, px);
+    if (ir) {
+      return { t: ir.title, meta: ir.meta,
+               h: ir.html + (c.state === "running" ? CHARTS.progress(ir.progress) : "") };
+    }
     // An optimization is an SCF per cycle, so a running cell has two convergences
     // to look at: the whole run, and the one solving right now. They are the same
     // question at two scales and the answer is a TOGGLE -- stacking them halves

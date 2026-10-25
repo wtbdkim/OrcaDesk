@@ -141,10 +141,11 @@ declare class QWebChannel {
 interface SCFGraphAPI {
   SCFTracker: new () => any;
   GeoTracker: new () => any;
-  /* the four below come from progress_panels.js */
+  /* the five below come from progress_panels.js */
   FreqTracker: new () => any;
   TddftTracker: new () => any;
   CrestTracker: new () => any;
+  IrcTracker: new () => any;
   isScfIter(line: string): boolean;
   fmtClock(sec: number): string;
   targetFor(scfConvergence: string): number;

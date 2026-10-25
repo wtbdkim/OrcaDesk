@@ -158,6 +158,7 @@ var NB = {};
       freq: new SCFGraph.FreqTracker(),
       tddft: new SCFGraph.TddftTracker(),
       crest: new SCFGraph.CrestTracker(),
+      irc: new SCFGraph.IrcTracker(),
     };
   }
   /** @param {string} name @returns {any} */
@@ -173,7 +174,8 @@ var NB = {};
     const b = _jobs.get(name);
     if (!b) return false;
     return !!(b.geo.hasData() || b.freq.hasData() || b.tddft.hasData()
-              || b.crest.hasData() || b.scf.hasData?.() || b.scf.points.length > 0);
+              || b.crest.hasData() || b.irc.hasData()
+              || b.scf.hasData?.() || b.scf.points.length > 0);
   };
 
   /** @param {string} name @param {string} msg */
@@ -186,6 +188,7 @@ var NB = {};
     if (b.freq.push(msg)) changed = true;
     if (b.tddft.push(msg)) changed = true;
     if (b.crest.push(msg)) changed = true;
+    if (b.irc.push(msg)) changed = true;
     return changed;
   }
 
@@ -207,7 +210,7 @@ var NB = {};
     const b = NB.trackers(name);
     r.lines.forEach(ln => {
       b.scf.push(ln); b.geo.push(ln); b.freq.push(ln);
-      b.tddft.push(ln); b.crest.push(ln);
+      b.tddft.push(ln); b.crest.push(ln); b.irc.push(ln);
     });
     return true;
   }

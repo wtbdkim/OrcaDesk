@@ -127,6 +127,17 @@ _CREST_GRAPH = re.compile(
 # other tracker regex but not this one, so a graph re-seeded from disk after a
 # restart came back without the timing it had before the restart.
 _G_ITERTIME = re.compile(r"Time for complete geometry iter\s*:\s*[\d.]+\s*s", re.I)
+# An IRC's path, mirror of web/progress_panels.js IrcTracker: the settings echo
+# (MaxIter, which directions), each direction's banner and thresholds, its
+# per-step rows (exactly five numbers - an SCF row has seven or more) and the
+# convergence / summary markers. Without these a reopened IRC cell drew the
+# last single SCF instead of the path walked so far.
+_IRC_GRAPH = re.compile(
+    r"Intrinsic Reaction Coordinate Calculation|Max\.\s*no of cycles\s+MaxIter|"
+    r"^Direction\s+\.+|\*\s+(?:FORWARD|BACKWARD) IRC\s+\*|^Convergence thresholds\s|"
+    r"THE IRC HAS CONVERGED|IRC PATH SUMMARY")
+_IRC_ROW = re.compile(
+    r"^\s*\d+\s+-?\d+\.\d+\s+-?\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s*$")
 
 _PHASE_GRAPH = re.compile(
     # "displaced geometry K (of N)" is what ORCA 6.1.1 prints; the old
@@ -1465,6 +1476,9 @@ class Bridge(QObject):
                         conv.append((i, ln))
                         phase.append((i, ln))
                     elif _G_ITER.match(ln):
+                        conv.append((i, ln))
+                    elif _IRC_GRAPH.search(ln) or _IRC_ROW.match(ln):
+                        # an IRC's path: settings, banners, step rows, markers
                         conv.append((i, ln))
                     elif _G_ITERTIME.search(ln):
                         # ORCA's own per-cycle wall time — GeoTracker's PRIMARY
