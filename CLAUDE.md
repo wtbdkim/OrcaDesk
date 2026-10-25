@@ -922,8 +922,8 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 `orcamgr/core/structure.py` is the one place geometry is reasoned about. It is
 pure and Qt-free (it needs no numpy, though `orcamgr/nbo/` has since made numpy
 a core dependency — see P5), so it unit-tests directly (`tests/test_structure.py`); the front-end reaches it only
-through two thin Bridge slots — `check_structure` and `compare_structures` —
-and holds **no**
+through three thin Bridge slots — `check_structure`, `compare_structures`
+and `apply_constraint_target` — and holds **no**
 geometry logic of its own. That is deliberate (P4): the Build tab's NEB badge
 and `input_generator.check_neb_atom_order`'s gate are now the same judgment,
 where they used to be a Python implementation and a hand-mirrored JS copy that
@@ -938,13 +938,25 @@ read as a molecule with no bonds), disconnected fragments. `level` separates
 "ORCA will refuse this" (error) from "worth a look" (warn) — a two-fragment
 complex never blocks the queue. Nothing is auto-corrected.
 
-**Everything in this module READS.** There was a structure editor here (rigid
-bond/angle/dihedral edits, fragment moves); it was removed, along with its three
-Bridge slots and the geometry math behind it, because building and modifying
+**Everything in this module READS, with one narrow exception.** There was a
+structure editor here (rigid bond/angle/dihedral edits, fragment moves); it was
+removed, along with its three Bridge slots, because building and modifying
 molecules is a molecular editor's job — Avogadro2 and its peers do it properly,
-and a side feature here could only be a worse one. If a future change needs to
-*write* a structure, weigh that first: ORCAdesk's job is to tell you what the
-file you are about to run contains.
+and a side feature here could only be a worse one. The exception is
+`apply_constraint_target`, the notebook builder's **Apply** on a constraint
+row: a constraint with a target names a geometry the run will be driven to,
+and showing those coordinates before the run is part of telling you what you
+are about to run. It is one rigid motion (`set_internal`) of the **smaller**
+side of the hinge bond — so a hydroxyl turned to 120° takes its H with it, and
+the drag direction does not matter — refused for a ring bond, with no free
+moves, no force field and no relaxation. Only the moved atoms' three numbers
+are rewritten in the user's text (≥ 6 decimals; 5 rounded a 100° target to
+99.9998°), and the builder inserts the result with `insertText` so Ctrl+Z in
+the box undoes it. `measure`'s dihedral is **IUPAC-signed**, matching ORCA and
+`MOL.dihedral`: the editor it was revived from had the sign reversed, and an
+Apply to +90 read back as −90 (pinned by
+`test_the_dihedral_sign_is_iupacs_like_orcas_and_the_stages`). If a future
+change needs to write a structure in any other way, weigh that first.
 
 One implementation note worth keeping: **bond perception is a uniform grid, not
 an all-pairs sweep.** `check_structure` runs on the Qt UI thread on every charge

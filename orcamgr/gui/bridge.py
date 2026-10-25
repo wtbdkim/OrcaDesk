@@ -41,7 +41,9 @@ from ..paths import (APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL,
 from ..textio import repair_ansi_line
 from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import CalcState, result_from_output
-from ..core.structure import check_geometry, compare_atom_order
+from ..core.structure import (
+    apply_constraint_target, check_geometry, compare_atom_order,
+)
 from ..core.parser import parse_file
 from ..core.resources import ResourceBudget, auto_cores, auto_ram_mb
 from ..state.store import (
@@ -65,7 +67,7 @@ from ..state.schemas import (
     WallpaperResult, ExportResult, FramesResult, FavoritesResult,
     StructureSetsResult, PickedResultPayload, PickedFilePayload,
     PlotOptionsResult, CubeJobPayload, CubeDataResult, WorkspaceResultsResult,
-    AtomOrderPayload, StructureCheckPayload,
+    AtomOrderPayload, StructureCheckPayload, ConstraintApplyPayload,
 )
 
 # Ceiling on the workspace scan behind the Results picker. Generous next to any
@@ -993,9 +995,11 @@ class Bridge(QObject):
     # --- structure screening (Build tab) ---
     # Thin adapters over core/structure.py: the geometry lives there, pure and
     # unit-tested, so the desktop and any later caller reach one implementation
-    # (P4). Both slots answer from the coordinate text the front-end holds —
-    # nothing here touches the store or the disk, and nothing here WRITES:
-    # ORCAdesk reads a structure and reports on it, it does not edit one.
+    # (P4). Every slot answers from the coordinate text the front-end holds —
+    # nothing here touches the store or the disk. ORCAdesk reads a structure
+    # and reports on it; the one thing that writes coordinates is
+    # apply_constraint_target, which moves a constraint's atoms to its target
+    # and hands the TEXT back for the user to keep or undo.
 
     @pyqtSlot(str, int, int, result=str)
     def check_structure(self, xyz: str, charge: int, multiplicity: int) -> str:
@@ -1014,6 +1018,25 @@ class Bridge(QObject):
         Returns an AtomOrderPayload."""
         return json.dumps(AtomOrderPayload(
             **compare_atom_order(reactant_xyz, product_xyz)))
+
+    @pyqtSlot(str, str, result=str)
+    def apply_constraint_target(self, xyz: str, payload: str) -> str:
+        """Move a constraint's atoms to its target value — one rigid motion of
+        the smaller side of the hinge bond, so a group turns as a group. The
+        payload is one GeomConstraint ({kind, atoms (0-based), value}); the
+        answer is the coordinate text back with only the moved lines rewritten
+        (ConstraintApplyPayload). Nothing is saved: the builder puts the text
+        in its own box, where the user can undo it."""
+        try:
+            c = json.loads(payload or "{}")
+            if not isinstance(c, dict):
+                raise ValueError
+        except ValueError:
+            return json.dumps(ConstraintApplyPayload(
+                ok=False, error="Unreadable constraint.", xyz="", moved=[],
+                before=None, after=None, warnings=[]))
+        return json.dumps(ConstraintApplyPayload(**apply_constraint_target(
+            xyz, c.get("kind", ""), c.get("atoms") or [], c.get("value"))))
 
     # --- option lists ---
     @pyqtSlot(str, result=str)

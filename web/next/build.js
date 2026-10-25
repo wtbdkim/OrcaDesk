@@ -802,9 +802,13 @@
           <span class="ck">${CONS_NAME[c.kind]}</span>
           <span class="ca">${NB.esc(lab)}</span>
           <span class="cv" title="measured on the coordinates above">${NB.esc(now)}</span>
-          ${c.kind === "C" ? "<span></span>" : `<label class="ct">to <input class="mono" type="number"
+          ${c.kind === "C" ? "<span></span><span></span>" : `<label class="ct">to <input class="mono" type="number"
             step="any" value="${c.value == null ? "" : NB.esc(String(c.value))}" placeholder="current"
-            aria-label="Target for ${CONS_NAME[c.kind].toLowerCase()} ${NB.esc(lab)}, ${unit}"> ${unit}</label>`}
+            aria-label="Target for ${CONS_NAME[c.kind].toLowerCase()} ${NB.esc(lab)}, ${unit}"> ${unit}</label>
+            <button class="btn btn-sm btn-ghost ap" type="button" data-apply="1"${
+              ref || miss != null || c.value == null ? " disabled" : ""}
+              title="Move the coordinates to this target: the smaller side of the bond turns as one piece"
+              aria-label="Move the coordinates to the target for ${NB.esc(lab)}">Apply</button>`}
           <button class="rm" type="button" aria-label="Remove the ${
             CONS_NAME[c.kind].toLowerCase()} constraint on ${NB.esc(lab)}">×</button>
         </div>`;
@@ -818,16 +822,50 @@
         const inp = /** @type {HTMLInputElement|null} */ (r.querySelector("input"));
         // the value is kept as it is typed, and the list is NOT redrawn for
         // it: a redraw would take the field out from under the cursor
+        const ap = /** @type {HTMLButtonElement|null} */ (r.querySelector("[data-apply]"));
         if (inp) inp.addEventListener("input", () => {
           const v = parseFloat(inp.value);
           c.value = isFinite(v) ? v : null;
+          if (ap) ap.disabled = useRef() || c.value == null
+            || c.atoms.some(i => i >= atoms.length);
         });
+        if (ap) ap.addEventListener("click", () => applyTarget(c));
         /** @type {HTMLElement} */ (r.querySelector(".rm")).addEventListener("click", () => {
           st.cons.splice(st.cons.indexOf(c), 1);
           stage.setHighlight([]);
           list();
         });
       });
+    }
+
+    /** Move the coordinates to a constraint's target. The geometry is the
+     *  backend's (core/structure.py, P4) — one rigid motion of the smaller side
+     *  of the hinge bond, so a hydroxyl turned to 120° takes its hydrogen with
+     *  it. The text comes back with only the moved lines rewritten and goes
+     *  into the box as an EDIT of it, so Ctrl+Z there puts the old coordinates
+     *  back (DESIGN.md §17.4l). @param {any} c */
+    async function applyTarget(c) {
+      if (c.value == null || useRef()) return;
+      const r = await NB.call("apply_constraint_target", ta.value,
+        JSON.stringify({ kind: c.kind, atoms: c.atoms, value: c.value }));
+      if (!r || !r.ok) { NB.fail((r && r.error) || "Could not move the coordinates."); return; }
+      const top = ta.scrollTop;
+      ta.focus({ preventScroll: true });
+      ta.select();
+      // insertText rather than .value: the box keeps its own undo history
+      if (!document.execCommand("insertText", false, r.xyz)) {
+        ta.value = r.xyz;
+      }
+      ta.scrollTop = top;
+      clearTimeout(timer);
+      showGeom();
+      stage.setHighlight(c.atoms);
+      const moved = (r.moved || []).map(atomName);
+      NB.toast(moved.length
+        ? `Moved ${moved.length > 4 ? moved.length + " atoms" : moved.join(", ")}. `
+          + "Ctrl+Z in the coordinates puts them back."
+        : "Already at the target.", "ok");
+      (r.warnings || []).forEach(w => NB.fail(w));
     }
 
     /** What is in the box, drawn — and the list re-measured against it. */

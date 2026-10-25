@@ -1766,6 +1766,20 @@ when the run starts. A constraint naming an atom the coordinates do not have
 is marked on its row and refused at Add, because ORCA's own answer
 (`Could not make G matrix`) arrives as a FAILED, locked calculation.
 
+A target is a geometry the user cannot see until the run reaches it, and
+editing the coordinates by hand to show it moves one atom and strands the ones
+bonded to it — turn a hydroxyl's O and its H is left where the O was. So a row
+with a target carries **Apply**: the coordinates move to the target by one
+rigid motion of the **smaller** side of the hinge bond, the way every
+structure editor sets an internal coordinate. The group moves as a group, and
+the end the drag started from does not matter. It stays narrow on purpose
+(§17.4e's sibling rule — ORCAdesk reads structures, a molecular editor writes
+them): no free moves, no force field, nothing relaxed afterwards. A ring bond
+is refused with a sentence saying so and that the optimization will still get
+there; an atom the motion lands on top of is reported, not refused. The
+result is an edit OF the coordinates box — only the moved atoms' numbers
+change, the user's spacing and comments stay — so Ctrl+Z there undoes it.
+
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
 **both** front-ends — the way out of a preview has to be inside it — and saving
