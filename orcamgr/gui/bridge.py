@@ -1039,6 +1039,14 @@ class Bridge(QObject):
         return json.dumps(ConstraintApplyPayload(**apply_constraint_target(
             xyz, c.get("kind", ""), c.get("atoms") or [], c.get("value"))))
 
+    @pyqtSlot(result=str)
+    def get_step_defaults(self) -> str:
+        """StepConfig's own defaults, so a builder seeds a new calculation from
+        the one place they are defined (P4). The notebook builder kept its own
+        literals and they drifted: MaxIter 0 (clamped to 1), IRC MaxIter 40
+        against 100, TD-DFT nroots 10 / maxdim 0 against 40 / 10."""
+        return json.dumps(StepConfig().to_dict())
+
     # --- option lists ---
     @pyqtSlot(str, result=str)
     def load_choices(self, name: str) -> str:

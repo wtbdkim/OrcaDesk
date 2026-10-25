@@ -278,6 +278,12 @@ to its projected extent — the projected one is recomputed every frame, so a dr
 re-zoomed continuously (1.6x between end-on and broadside on a Tf2O-shaped
 molecule). DESIGN.md §17.4e.
 
+The builder seeds a new calculation from **`get_step_defaults`** (StepConfig's
+own defaults) and from no literal of its own: its copies had drifted — MaxIter
+0 clamped to 1, IRC MaxIter 40 for 100, TD-DFT maxdim 0 clamped to 1 — and
+`tests/test_next_ui.py::test_the_builder_seeds_a_new_calculation_from_stepconfig_alone`
+fails if a numeric default reappears in `build.js`.
+
 One tsc project checks both front-ends and classic scripts share a global scope,
 so **a top-level declaration in `web/next/` other than `NB` collides with
 `app.js`** — `tests/test_next_ui.py` fails the build if one appears, and also
