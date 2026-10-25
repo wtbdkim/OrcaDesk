@@ -1262,3 +1262,11 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
 .pane.out{position:relative;}
 .pane.out > .act{position:absolute; right:8px; bottom:8px;}
 .pane.out .logbox{overflow-anchor:none;}
+
+/* ---------------------------- said once ----------------------------
+   An addition to the reference. A column label repeated on every row of the
+   same group is the same words twice: the reaction profile's species rows
+   label Coefficient / Calculation on the FIRST row of a stage only. The later
+   rows keep their labels for a screen reader (.vh), out of sight. */
+.vh{position:absolute; width:1px; height:1px; overflow:hidden;
+  clip:rect(0 0 0 0); white-space:nowrap;}

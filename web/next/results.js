@@ -1123,10 +1123,10 @@
       </div>
       ${st.terms.map((t, j) => `
         <div class="basis-row" style="margin-bottom:8px">
-          <div class="field narrow"><label>Coefficient</label>
+          <div class="field narrow"><label${j ? ' class="vh"' : ""}>Coefficient</label>
             <input class="mono" type="number" step="any" data-fep="coeff"
                    data-i="${i}" data-j="${j}" value="${t.coeff}"></div>
-          <div class="field"><label>Calculation</label>
+          <div class="field"><label${j ? ' class="vh"' : ""}>Calculation</label>
             <select data-fep="term" data-i="${i}" data-j="${j}"
               >${speciesOptions(t.name)}</select></div>
           <button class="rm" type="button" data-fep="delterm" data-i="${i}" data-j="${j}"

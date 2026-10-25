@@ -352,6 +352,9 @@
     if (ch) {
       q(".pane.chart").hidden = false;
       q(".pane.chart .panehead .t").textContent = ch.t;
+      // a stage chain carries its own title (.stagestitle, the reference's),
+      // so the pane head would say the same thing twice above it
+      q(".pane.chart .panehead").hidden = !!ch.stages;
       q(".pane.chart .panehead .meta").textContent = ch.meta || "";
       // the toggle appears only once there are two things to toggle between:
       // before the first cycle lands there is only an SCF, and after the run
