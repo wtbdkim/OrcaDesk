@@ -70,14 +70,16 @@ var NB = {};
     return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
   };
 
-  /** @param {string} msg @param {string} [kind] "" | "ok" | "err" */
+  /** @param {string} msg @param {string} [kind] "" | "ok" | "warn" | "err" */
   NB.toast = function (msg, kind) {
     const wrap = NB.$("toastwrap");
     if (!wrap) return;
     const t = NB.el("div", "toast" + (kind ? " " + kind : ""));
     t.textContent = msg;
     wrap.appendChild(t);
-    setTimeout(() => t.remove(), 3200);
+    // a warning is a sentence to act on before a run, not a receipt: it stays
+    // long enough to be read
+    setTimeout(() => t.remove(), kind === "warn" ? 10000 : 3200);
   };
   /** An error the user has to see: the toast, and nothing swallowed silently.
    *  @param {string} msg */

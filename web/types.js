@@ -487,6 +487,7 @@
  * @typedef {Object} MutationResult
  * @property {boolean} ok
  * @property {string} [error]
+ * @property {string} [warning]  accepted despite this (add/update only)
  * @property {QueueSnapshot} [snapshot]
  */
 

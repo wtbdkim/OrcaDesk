@@ -713,6 +713,8 @@
       if (r && r.ok === false) { NB.fail(r.error || "The queue refused that calculation."); return; }
       NB.toast(st.editing ? `"${payload.name}" saved.`
                           : `"${payload.name}" added to the queue.`, "ok");
+      // accepted DESPITE this - said, not refused (store.constraint_warning)
+      if (r && r.warning) NB.toast(r.warning, "warn");
       close();
       await NB.poll();
     });

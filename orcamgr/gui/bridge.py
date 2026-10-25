@@ -49,6 +49,7 @@ from ..core.resources import ResourceBudget, auto_cores, auto_ram_mb
 from ..state.store import (
     QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory,
     load_choice_groups, queue_needs_orca, find_dangling_reference,
+    constraint_warning,
 )
 # Response payloads are CONSTRUCTED through these TypedDicts (plain dicts at
 # runtime, so the JSON wire format is unchanged) — schemas.py is the single
@@ -1285,7 +1286,7 @@ class Bridge(QObject):
             self.store.add(calc)
         except ValueError as e:
             return json.dumps(MutationResult(ok=False, error=str(e)))
-        return json.dumps(MutationResult(ok=True, snapshot=self.store.snapshot()))
+        return json.dumps(self._accepted(calc))
 
     @pyqtSlot(str, result=str)
     def remove_calc(self, name: str) -> str:
@@ -1324,7 +1325,16 @@ class Bridge(QObject):
             self.store.replace(old_name, calc)
         except ValueError as e:
             return json.dumps(MutationResult(ok=False, error=str(e)))
-        return json.dumps(MutationResult(ok=True, snapshot=self.store.snapshot()))
+        return json.dumps(self._accepted(calc))
+
+    def _accepted(self, calc) -> MutationResult:
+        """The success answer for add/update, carrying anything the queue
+        accepted the calculation DESPITE, for the builder to show."""
+        out = MutationResult(ok=True, snapshot=self.store.snapshot())
+        warning = constraint_warning(calc)
+        if warning:
+            out["warning"] = warning
+        return out
 
     @pyqtSlot(result=str)
     def get_queue(self) -> str:

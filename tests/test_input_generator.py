@@ -783,6 +783,64 @@ def test_an_index_past_the_last_atom_is_refused_with_its_number():
         build_input(cfg, WATER_XYZ)
 
 
+# Three atoms on a straight line (Br-C-O at exactly 180 degrees), the SN2-like
+# arrangement that first hit the rule, and the same three bent to 170.
+LINE_XYZ = ("C 0.0 0.0 0.0\n"
+            "Br 0.0 0.0 2.0\n"
+            "O 0.0 0.0 -1.6\n"
+            "H 1.0 0.3 0.0")
+BENT_XYZ = ("C 0.0 0.0 0.0\n"
+            "Br 0.0 0.0 2.0\n"
+            "O 0.2778 0.0 -1.5757\n"
+            "H 1.0 0.3 0.0")
+
+
+def _angle(value):
+    return StepConfig.from_dict({"kind": "opt", "geom_constraints": [
+        {"kind": "A", "atoms": [1, 0, 2], "value": value}]})
+
+
+def _warning(text):
+    w = [ln for ln in text.splitlines() if ln.startswith("# WARNING:")]
+    return w[0] if w else ""
+
+
+def test_a_valued_angle_on_a_straight_line_is_warned_about_in_the_input():
+    """ORCA 6.1.1 takes an angle past 175 degrees as a linear bend and stops
+    in setup ("For a linear bend you can only keep the initial value") when
+    the constraint carries ANY value - even the 180.00 the coordinates
+    already have. Measured; this is the run that failed. Said, not refused:
+    the input is still written, constraint and all, with the note on top."""
+    text = build_input(_angle(180.0), LINE_XYZ)
+    assert "    { A 1 0 2 180.00 C }" in text
+    assert re.search(r"linear bend.*Leave its target empty", _warning(text))
+    assert "starts at 180" in _warning(build_input(_angle(120.0), LINE_XYZ))
+
+
+def test_a_target_past_175_is_warned_about_wherever_it_starts():
+    # a 170 start with a 180 target stopped too (measured)
+    # the note in the .inp is ASCII: "180.00 deg", not the toast's "180.00°"
+    assert re.search(r"target of 180\.00 deg.*Leave its target empty",
+                     _warning(build_input(_angle(180.0), BENT_XYZ)))
+    assert "target of 175.50" in _warning(build_input(_angle(175.5), BENT_XYZ))
+
+
+def test_the_line_held_without_a_value_and_175_carry_no_warning():
+    held = build_input(_angle(None), LINE_XYZ)
+    assert "    { A 1 0 2 C }" in held           # measured: runs, as two L(...) parts
+    assert not _warning(held)
+    at175 = build_input(_angle(175.0), BENT_XYZ)
+    assert "    { A 1 0 2 175.00 C }" in at175 and not _warning(at175)
+
+
+def test_a_referenced_geometry_is_judged_by_its_target_alone():
+    # no coordinates before the run, so only the target can be asked about;
+    # the run-time build_input asks the start too
+    assert "target of 180.00" in _warning(
+        build_input_template(_angle(180.0), 0, 1, use_placeholder=True))
+    assert not _warning(build_input_template(_angle(120.0), 0, 1, use_placeholder=True))
+
+
 def test_a_template_defers_the_index_check_to_the_resolved_geometry():
     # a referenced geometry is not known until run time; the engine calls
     # build_input again with it, and that call checks
