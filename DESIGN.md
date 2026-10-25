@@ -1751,7 +1751,19 @@ ts_opt_freq, the kinds the generator writes a `%geom` block for) the stage is
 also where `%geom Constraints` are picked. A left drag that **starts on an
 atom** collects the atoms it passes over (2 = bond, 3 = angle with the middle
 atom as the vertex, 4 = dihedral), with the live value drawn as it goes, and
-dragging back onto the previous atom takes the last one off. A drag from empty
+dragging back onto the previous atom takes the last one off. While the drag
+is moving, an atom joins only when the pointer reaches the middle of its ball:
+the balls overlap on screen, and a drag that took any ball it brushed picked up
+the one in front of the atom aimed at. **Ctrl+click** is the second way, for
+atoms one sweep cannot reach (behind another, across the molecule), and it is
+a SELECTION, the way Ctrl+click is everywhere else: each click adds an atom,
+numbered on the stage in order, a second click on one takes it out, and the
+selection outlives the Ctrl key. The stage's one button names what it would
+add — *Fix H4* for one atom, *Add angle H3–O1–O2* for three — and pressing it
+(or Enter on the stage) adds it. The first version handed the selection over
+when Ctrl was let go, and a hand that lets go of Ctrl between clicks lost
+every atom but the first. A plain click starts again from that atom; Esc
+clears. A drag from empty
 space still turns the structure, and a click still selects, so an atom can be
 fixed with *Fix C3*. This is the opt-in `onChain` of `MOL.mount`, so every
 other stage is unchanged. The list under it names atoms the way the report
