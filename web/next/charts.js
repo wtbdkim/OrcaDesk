@@ -337,11 +337,17 @@ var CHARTS = {};
     const key = (s, label, color) => {
       const last = s.pts[s.pts.length - 1];
       if (!last) return { color: color, label: label, value: "not started" };
-      const ratio = t.tolMaxG ? last.maxG / t.tolMaxG : null;
+      // ORCA ends a direction only when BOTH gradients are under their
+      // thresholds (real run: forward stopped at max 0.00183 / RMS 0.00036,
+      // backward walked on at max 0.00198 / RMS 0.00058). Showing max|G| alone
+      // read "0.96× limit" on a direction that still had a step to go.
+      /** @param {number} v @param {number|null} tol */
+      const x = (v, tol) => tol ? (v / tol).toPrecision(2) + "×" : "–";
       return { color: color, label: label,
                value: `${last.dE.toFixed(2)} kcal/mol · ${s.pts.length} steps · `
-                 + (s.done ? "converged" : ratio != null
-                      ? `max|G| ${ratio.toPrecision(2)}× limit` : "walking"),
+                 + (s.done ? "converged" : t.tolMaxG
+                      ? `max|G| ${x(last.maxG, t.tolMaxG)} · RMS(G) ${x(last.rmsG, t.tolRmsG)} of limit`
+                      : "walking"),
                state: s.done ? "met" : "pend" };
     };
     const keys = [];
