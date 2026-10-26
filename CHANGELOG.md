@@ -3,7 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [0.10.1] — 2026-09-11
+## [0.10.5] — 2026-10-26
 
 ### Added
 - **Push a structure along a vibrational mode.** In the notebook builder,
@@ -14,6 +14,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   it. The standard way off a saddle point before re-optimizing; an empty box
   takes the Hessian's own geometry, and coordinates for other atoms are
   refused.
+
+## [0.10.4] — 2026-10-26
+
+### Added
 - **Geometry constraints, picked on the structure.** The notebook builder
   draws the structure beside its coordinates as you type. For an optimization
   (Opt, Opt + Freq, TS Opt, TS Opt + Freq), drag across 2, 3 or 4 atoms — or
@@ -31,49 +35,6 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     bond moves as one piece — a hydroxyl turned to 120° takes its hydrogen
     with it — and a ring bond is refused rather than bent. Only the moved
     atoms' numbers change in the box, and Ctrl+Z there undoes it.
-- **The notebook preview's last ten design elements.** Everything the approved
-  design draws is now in the front-end; the element-by-element check that used
-  to carry a list of exceptions carries an empty one.
-  - **A pop-out 3D viewer.** A trajectory, a CREST ensemble or a folder of
-    exported conformers opens in its own window: walk it with ‹ › or the arrow
-    keys, star the frames worth keeping (**F**), show only those, export them
-    as `.xyz`, or copy the frame on screen. Its second half draws **orbitals,
-    the electron density, the spin density and an ESP map** as isosurfaces,
-    with the isovalue editable without re-plotting.
-    - Two renderers on one stage: structures use the same painter as every
-      other stage here, so drag, click and right-drag-to-measure behave
-      identically; the volume half uses the vendored 3Dmol, fetched on the
-      first surface rather than at boot. A machine with no WebGL can still
-      walk a trajectory, and says so if a surface is asked for.
-    - Reachable from a cell's thumbnail, the report's Structure section, and
-      the Visual panel — which used to hand the folder to the operating system
-      and now opens the set that is actually on screen.
-  - **MLIP environments in Settings.** One row per registered environment with
-    what it carries (which backends import, CPU or which GPU, which Python),
-    build a new one, register an existing interpreter, remove, re-check.
-    Building reports its steps and can be cancelled.
-  - **The appearance style and glass intensity**, saved from the notebook so
-    the choice does not depend on which front-end you are in. The notebook
-    itself draws flat; the classic window renders the styles.
-  - **The builder says what is wrong with a structure before it costs hours**:
-    atoms on top of each other, a multiplicity the electron count cannot
-    produce, coordinates that are really in Bohr — with the formula, electron
-    count and fragment count beside them.
-  - **NEB endpoints as two slots.** The reactant is the geometry above, the
-    product loads into its own slot, and *Compare endpoints* answers whether
-    both carry the same atoms in the same order — a reordered atom makes the
-    band meaningless, and it used to be found by ORCA.
-  - **Per-element basis / ECP overrides** (`%basis newgto` / `newecp`) as rows
-    you add and remove.
-  - **Insertable blocks for a hand-written `.inp`** — `{{GEOMETRY}}` and the
-    common `%`-blocks, at the cursor.
-- **The notebook report's Output shows the whole file, with Find.** It used to
-  show the last 2000 lines, scrolled to the end. It now opens at the first line
-  and scrolls through the entire `.out` — a 1-million-line, 52 MB output scrolls
-  as easily as a small one, because only the lines on screen are drawn — with a
-  visible scrollbar and *↑ Top* / *↓ End*. **Find** (or Ctrl+F) marks every
-  match on screen, highlights the current one, counts them (`12 of 23`) and
-  steps with Enter / Shift+Enter or *Prev* / *Next*; case is ignored.
 
 ### Changed
 - **A running IRC shows its path.** The cell used to draw the convergence of
@@ -102,79 +63,6 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
     middle-drag moves the structure, 0 puts the view back. A drag now turns it
     the way the hand moves — the near side follows the cursor — and it can be
     turned all the way over.
-- **Less explanatory text in the notebook preview.** The sentences that
-  explained a control the control already shows are gone: the empty queue
-  reads *Nothing queued yet.*, the builder lost its mode and per-element-basis
-  explanations and the "joins the queue" subtitle, an empty Results window
-  reads *No result open.*, and the report dropped the summary's "This is a
-  geometry optimization…" line and the Structure / Visual section
-  descriptions. The summary's run time reads *time* instead of *took*, and the
-  Input / Output headers no longer repeat the file names (the Output header
-  keeps its size and line count). The Type list drops its parenthetical
-  glosses: *NEB-TS*, *IRC* and *General*.
-- **The notebook preview's top bar shows ORCA, MLIP and CREST.** All three
-  pills are always there, each with its state (ready / checking… / error /
-  not set) and a tooltip naming what was found, so what this machine can run
-  is visible without opening Settings. They update on their own once a probe
-  finishes or an environment is added.
-- **CREST in the notebook preview's Settings.** The preview's Settings sheet
-  had no CREST section at all, so it could only be installed or pointed at a
-  WSL distribution from the classic window. It now has the same card: each
-  distribution with whether CREST is in it (version and path), the
-  distribution picker, *Install CREST* and *Re-check*.
-
-- **An IRC's starting Hessian is loaded, not typed.** The notebook builder's
-  `.hess file` text field is now a **Load .hess…** button, like *Load .xyz…*:
-  pick the `.hess` a TS frequency run left behind (from any folder) and
-  Initial Hessian switches to *read* by itself. The file is copied into the
-  IRC's run folder when it starts, so the Hessian is not computed a second
-  time and nothing has to be copied by hand. Saving with *read* and no file
-  loaded is refused with a sentence saying so.
-- **Only one ORCAdesk runs at a time.** Starting it again while it is open
-  brings the open window to the front (restoring it if it was minimized)
-  instead of opening a second one. Two instances restored the same queue,
-  reattached the same running ORCA job and overwrote each other's saved
-  session, so a calculation could be launched twice into one folder.
-- **The free-energy profile is now the Reaction profile, and it reads every
-  thermodynamic quantity, not only ΔG.** The table gives each stage's ΔE, ΔE₀
-  (E + ZPE), ΔU, ΔH, TΔS, ΔS and ΔG side by side, so a step can be read as
-  enthalpy- or entropy-driven (ΔG = ΔH − TΔS is on one line); the level diagram
-  is drawn on whichever of them you pick. ΔS is in cal/(mol·K) or J/(mol·K),
-  from ORCA's entropy term over its temperature. The table's Δ can be taken
-  against the reference stage or **per step**, against the stage before. A
-  column appears only when some stage has a value on it, quantities are never
-  mixed (a species that cannot supply one leaves that cell blank and says why),
-  and species whose thermochemistry was computed at different temperatures are
-  flagged.
-- The design check runs in **three passes** and 116 landmarks rather than 79:
-  the window at rest, a result section, and the overlays — the viewer, the
-  settings sheet and the builder's conditional blocks, both sides opened to the
-  same state first. The second pass exists because a chrome-only list read
-  `DIFFERENCES: 0` over a report of unstyled markup; the third exists because a
-  list that stops at the window at rest cannot see a single overlay.
-- The Interface card names what the preview is still missing, which is now only
-  the MLIP and CREST *calculation kinds* and the Liquid-Glass rendering.
-- **The Visual strip lists the surfaces too, and asks before computing one.**
-  It used to show only the `.xyz` sets in the run folder; the orbitals, the
-  electron density, the spin density and the ESP map were reachable only from
-  inside the pop-out viewer, and the viewer was never handed the orbital list,
-  so it could draw a density but never an orbital. They now sit in the same
-  strip as the structures — as **kinds**: one *Orbitals* tile reading
-  its orbital count, with the orbitals themselves in the list beside it,
-  each with its energy. A cube already on disk opens at once. One that is not
-  costs an orca_plot run over the wavefunction, so the click asks first —
-  naming the grid and what the wait actually is (an orbital is about a second,
-  an ESP map a few minutes, because it is two cubes on one grid).
-  A single-point run with no `.xyz` beside it is no longer an empty Visual
-  section: the strip carries its surfaces and the stage says what it is missing.
-- **The vibrational spectrum reads out on the band instead of under it.** The
-  list of every mode that used to sit below the chart is gone — for a real
-  molecule that is a hundred-odd rows of one number each, the chart transcribed,
-  and it pushed every section after it off the screen. Point at a band for its
-  mode number and exact wavenumber (imaginary modes say so); the arrow keys step
-  through them, so the numbers are reachable without a pointer. The whole plot is
-  the hit target and the nearest band wins — a band is 1.6px wide, which no
-  hit-target rule can save.
 
 ### Fixed
 - Clicking a finished calculation in the queue now shows its controls —
@@ -205,6 +93,64 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 - A new optimization built in the notebook preview was written with
   `MaxIter 1`, so it stopped after one cycle: the field started at 0 and the
   input generator raised it to its minimum. It starts at 200, the default.
+
+## [0.10.3] — 2026-10-22
+
+### Added
+- **The notebook report's Output shows the whole file, with Find.** It used to
+  show the last 2000 lines, scrolled to the end. It now opens at the first line
+  and scrolls through the entire `.out` — a 1-million-line, 52 MB output scrolls
+  as easily as a small one, because only the lines on screen are drawn — with a
+  visible scrollbar and *↑ Top* / *↓ End*. **Find** (or Ctrl+F) marks every
+  match on screen, highlights the current one, counts them (`12 of 23`) and
+  steps with Enter / Shift+Enter or *Prev* / *Next*; case is ignored.
+
+### Changed
+- **Less explanatory text in the notebook preview.** The sentences that
+  explained a control the control already shows are gone: the empty queue
+  reads *Nothing queued yet.*, the builder lost its mode and per-element-basis
+  explanations and the "joins the queue" subtitle, an empty Results window
+  reads *No result open.*, and the report dropped the summary's "This is a
+  geometry optimization…" line and the Structure / Visual section
+  descriptions. The summary's run time reads *time* instead of *took*, and the
+  Input / Output headers no longer repeat the file names (the Output header
+  keeps its size and line count). The Type list drops its parenthetical
+  glosses: *NEB-TS*, *IRC* and *General*.
+- **The notebook preview's top bar shows ORCA, MLIP and CREST.** All three
+  pills are always there, each with its state (ready / checking… / error /
+  not set) and a tooltip naming what was found, so what this machine can run
+  is visible without opening Settings. They update on their own once a probe
+  finishes or an environment is added.
+- **CREST in the notebook preview's Settings.** The preview's Settings sheet
+  had no CREST section at all, so it could only be installed or pointed at a
+  WSL distribution from the classic window. It now has the same card: each
+  distribution with whether CREST is in it (version and path), the
+  distribution picker, *Install CREST* and *Re-check*.
+- **An IRC's starting Hessian is loaded, not typed.** The notebook builder's
+  `.hess file` text field is now a **Load .hess…** button, like *Load .xyz…*:
+  pick the `.hess` a TS frequency run left behind (from any folder) and
+  Initial Hessian switches to *read* by itself. The file is copied into the
+  IRC's run folder when it starts, so the Hessian is not computed a second
+  time and nothing has to be copied by hand. Saving with *read* and no file
+  loaded is refused with a sentence saying so.
+- **Only one ORCAdesk runs at a time.** Starting it again while it is open
+  brings the open window to the front (restoring it if it was minimized)
+  instead of opening a second one. Two instances restored the same queue,
+  reattached the same running ORCA job and overwrote each other's saved
+  session, so a calculation could be launched twice into one folder.
+- **The free-energy profile is now the Reaction profile, and it reads every
+  thermodynamic quantity, not only ΔG.** The table gives each stage's ΔE, ΔE₀
+  (E + ZPE), ΔU, ΔH, TΔS, ΔS and ΔG side by side, so a step can be read as
+  enthalpy- or entropy-driven (ΔG = ΔH − TΔS is on one line); the level diagram
+  is drawn on whichever of them you pick. ΔS is in cal/(mol·K) or J/(mol·K),
+  from ORCA's entropy term over its temperature. The table's Δ can be taken
+  against the reference stage or **per step**, against the stage before. A
+  column appears only when some stage has a value on it, quantities are never
+  mixed (a species that cannot supply one leaves that cell blank and says why),
+  and species whose thermochemistry was computed at different temperatures are
+  flagged.
+
+### Fixed
 - **An ORCA run that died but never exited no longer shows RUNNING forever.**
   Inside a NumFreq, ORCA prints `error termination` for a failed displacement,
   skips it and carries on — and can then spin on one core without ever
@@ -274,6 +220,64 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   the Gibbs free energy the reaction-profile card asks for, and the card's own
   advice was to run exactly that job. A one-atom structure with a frequency
   section is now accepted; a molecule whose output has no modes still fails.
+- **The free-energy profile is a reaction now, not a list.** It used to plot
+  every finished frequency calculation in the workspace in *queue order* and
+  print differences between them — which is not a profile: unrelated molecules
+  on one axis, and a ΔG between two things that are not the same matter. You
+  build the reaction instead. Each **stage** is a point on the coordinate and
+  holds the species standing there, each with the **stoichiometric coefficient**
+  it is taken with; the stage's energy is the weighted sum, and the profile is
+  every stage against the one you pick as zero. `A + 2 B → P` is two stages and
+  three rows.
+  - It is drawn as a **level diagram** — a flat bar per stage joined by a thin
+    line — because a stage is a state, not a sample of something continuous.
+    The old line sloped between two molecules and invited the reading that
+    something happens along it.
+  - **It says when the two sides are not the same matter.** Each stage's
+    composition and charge are summed with its coefficients and compared against
+    the reference: drop the `2 B` from the example above and it says
+    *"Products does not hold the same matter as Reactants: +4 O. The difference
+    between them is not a reaction energy."* Reported, never enforced —
+    comparing a fragment against a whole is something people do on purpose.
+  - A stage with an empty row has **no** energy rather than a partial sum: a
+    reaction nobody has finished writing down should not produce a number.
+  - **Every finished calculation can stand in it**, not only those with
+    frequencies. A chloride ion has no vibrations to compute, so the old filter
+    removed exactly the species that cannot have them — and `CoCl₄²⁻ + 6 H₂O →
+    Co(H₂O)₆²⁺ + 4 Cl⁻` needs that Cl⁻. Which energy the stages are summed on is
+    a **choice** (Gibbs free energy or electronic energy) because the two cannot
+    be added together; a species that has no thermochemistry says so in the
+    picker, the stages holding it read as a dash rather than a number on a mixed
+    basis, and the section says both ways out — run a frequency calculation for
+    it (a single atom still gets its translational and electronic terms), or
+    switch the basis.
+
+## [0.10.2] — 2026-09-16
+
+### Changed
+- **The Visual strip lists the surfaces too, and asks before computing one.**
+  It used to show only the `.xyz` sets in the run folder; the orbitals, the
+  electron density, the spin density and the ESP map were reachable only from
+  inside the pop-out viewer, and the viewer was never handed the orbital list,
+  so it could draw a density but never an orbital. They now sit in the same
+  strip as the structures — as **kinds**: one *Orbitals* tile reading
+  its orbital count, with the orbitals themselves in the list beside it,
+  each with its energy. A cube already on disk opens at once. One that is not
+  costs an orca_plot run over the wavefunction, so the click asks first —
+  naming the grid and what the wait actually is (an orbital is about a second,
+  an ESP map a few minutes, because it is two cubes on one grid).
+  A single-point run with no `.xyz` beside it is no longer an empty Visual
+  section: the strip carries its surfaces and the stage says what it is missing.
+- **The vibrational spectrum reads out on the band instead of under it.** The
+  list of every mode that used to sit below the chart is gone — for a real
+  molecule that is a hundred-odd rows of one number each, the chart transcribed,
+  and it pushed every section after it off the screen. Point at a band for its
+  mode number and exact wavenumber (imaginary modes say so); the arrow keys step
+  through them, so the numbers are reachable without a pointer. The whole plot is
+  the hit target and the nearest band wins — a band is 1.6px wide, which no
+  hit-target rule can save.
+
+### Fixed
 - **The axis marker in the corner is the control for the axis views.** It used
   to be a button that cycled *View down x -> y -> z*, which asks you to know
   which way you are already facing and to press up to three times to get where
@@ -475,37 +479,56 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   and left as a picture, which made it the one stage in the window that did not
   respond to a drag; it is a real stage now, with the same axis marker and
   keyboard axes as every other.
-- **The free-energy profile is a reaction now, not a list.** It used to plot
-  every finished frequency calculation in the workspace in *queue order* and
-  print differences between them — which is not a profile: unrelated molecules
-  on one axis, and a ΔG between two things that are not the same matter. You
-  build the reaction instead. Each **stage** is a point on the coordinate and
-  holds the species standing there, each with the **stoichiometric coefficient**
-  it is taken with; the stage's energy is the weighted sum, and the profile is
-  every stage against the one you pick as zero. `A + 2 B → P` is two stages and
-  three rows.
-  - It is drawn as a **level diagram** — a flat bar per stage joined by a thin
-    line — because a stage is a state, not a sample of something continuous.
-    The old line sloped between two molecules and invited the reading that
-    something happens along it.
-  - **It says when the two sides are not the same matter.** Each stage's
-    composition and charge are summed with its coefficients and compared against
-    the reference: drop the `2 B` from the example above and it says
-    *"Products does not hold the same matter as Reactants: +4 O. The difference
-    between them is not a reaction energy."* Reported, never enforced —
-    comparing a fragment against a whole is something people do on purpose.
-  - A stage with an empty row has **no** energy rather than a partial sum: a
-    reaction nobody has finished writing down should not produce a number.
-  - **Every finished calculation can stand in it**, not only those with
-    frequencies. A chloride ion has no vibrations to compute, so the old filter
-    removed exactly the species that cannot have them — and `CoCl₄²⁻ + 6 H₂O →
-    Co(H₂O)₆²⁺ + 4 Cl⁻` needs that Cl⁻. Which energy the stages are summed on is
-    a **choice** (Gibbs free energy or electronic energy) because the two cannot
-    be added together; a species that has no thermochemistry says so in the
-    picker, the stages holding it read as a dash rather than a number on a mixed
-    basis, and the section says both ways out — run a frequency calculation for
-    it (a single atom still gets its translational and electronic terms), or
-    switch the basis.
+
+## [0.10.1] — 2026-09-11
+
+### Added
+- **The notebook preview's last ten design elements.** Everything the approved
+  design draws is now in the front-end; the element-by-element check that used
+  to carry a list of exceptions carries an empty one.
+  - **A pop-out 3D viewer.** A trajectory, a CREST ensemble or a folder of
+    exported conformers opens in its own window: walk it with ‹ › or the arrow
+    keys, star the frames worth keeping (**F**), show only those, export them
+    as `.xyz`, or copy the frame on screen. Its second half draws **orbitals,
+    the electron density, the spin density and an ESP map** as isosurfaces,
+    with the isovalue editable without re-plotting.
+    - Two renderers on one stage: structures use the same painter as every
+      other stage here, so drag, click and right-drag-to-measure behave
+      identically; the volume half uses the vendored 3Dmol, fetched on the
+      first surface rather than at boot. A machine with no WebGL can still
+      walk a trajectory, and says so if a surface is asked for.
+    - Reachable from a cell's thumbnail, the report's Structure section, and
+      the Visual panel — which used to hand the folder to the operating system
+      and now opens the set that is actually on screen.
+  - **MLIP environments in Settings.** One row per registered environment with
+    what it carries (which backends import, CPU or which GPU, which Python),
+    build a new one, register an existing interpreter, remove, re-check.
+    Building reports its steps and can be cancelled.
+  - **The appearance style and glass intensity**, saved from the notebook so
+    the choice does not depend on which front-end you are in. The notebook
+    itself draws flat; the classic window renders the styles.
+  - **The builder says what is wrong with a structure before it costs hours**:
+    atoms on top of each other, a multiplicity the electron count cannot
+    produce, coordinates that are really in Bohr — with the formula, electron
+    count and fragment count beside them.
+  - **NEB endpoints as two slots.** The reactant is the geometry above, the
+    product loads into its own slot, and *Compare endpoints* answers whether
+    both carry the same atoms in the same order — a reordered atom makes the
+    band meaningless, and it used to be found by ORCA.
+  - **Per-element basis / ECP overrides** (`%basis newgto` / `newecp`) as rows
+    you add and remove.
+  - **Insertable blocks for a hand-written `.inp`** — `{{GEOMETRY}}` and the
+    common `%`-blocks, at the cursor.
+
+### Changed
+- The design check runs in **three passes** and 116 landmarks rather than 79:
+  the window at rest, a result section, and the overlays — the viewer, the
+  settings sheet and the builder's conditional blocks, both sides opened to the
+  same state first. The second pass exists because a chrome-only list read
+  `DIFFERENCES: 0` over a report of unstyled markup; the third exists because a
+  list that stops at the window at rest cannot see a single overlay.
+- The Interface card names what the preview is still missing, which is now only
+  the MLIP and CREST *calculation kinds* and the Liquid-Glass rendering.
 
 ### Security
 - **The phone-sync PIN can no longer be switched off by putting a reverse proxy
