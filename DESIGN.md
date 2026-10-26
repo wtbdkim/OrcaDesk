@@ -273,8 +273,11 @@ never a blank box, never just "empty".
 ### D53 — Motion is quiet
 
 Interaction color transitions 0.12s; panel fade-in 0.15s (+3px translateY);
-toast 0.2s; progress-bar width 0.3s. Nothing else animates. No entrance
-choreography, no hover lifts (D32).
+toast 0.2s; progress-bar width 0.3s. Nothing else animates on its own. The
+one motion that is content rather than chrome — a normal mode moving on a
+structure (§17.4q) — starts only when the reader asks for it, stops when they
+say so, and opens held still when the system asks for reduced motion. No
+entrance choreography, no hover lifts (D32).
 
 ### D54 — Mobile: same identity, touch density
 
@@ -1854,6 +1857,106 @@ push is offered, not urged. It lives in the builder rather than the report
 because a push is the first step of a NEW calculation, and the builder is
 where one is made (a deliberate move from the report, at the user's call).
 
+**17.4q A vibration is judged by watching it.** A wavenumber says how stiff
+a mode is, not what it does, and the question a frequency result is opened
+for — is this imaginary mode the reaction coordinate, or a methyl rotor that
+a tighter optimization would remove? — is answered by seeing the atoms move.
+So a band on the vibrational spectrum is also a control: **clicking it, or
+Enter on the keyboard cursor, shows that mode moving on the Structure
+stage**, and the imaginary modes — the ones people come for, on the crowded
+left edge of the axis — get a button each under the spectrum. The Structure
+stage rather than the Visual one, because it already draws the geometry the
+frequencies were computed at, it sits directly under the spectrum, and it
+holds nothing else; the Visual stage is the folder's sets and the app's one
+surface renderer, and a mode there would evict whichever was on screen. A bar
+above the stage (not on it — its corners already hold the atom readout, the
+Display pills, the axis marker and the legend) is the whole control: the
+mode, ‹ › to the neighbouring ones, Play / Pause, the **swing** (how far the
+most-moved atom travels either way, in Å — the push panel's rule, §17.4p, for
+the same reason), and *Show structure*, which is also Esc. The band that is
+moving stays marked. The motion is one period for every mode (a real one is
+picoseconds, so any rate is a convention, and one rate compares shapes); the
+view is not refitted per frame (§17.4e), and a turn or a zoom made while it
+plays is kept. **Paused, the arrows replace the motion**: each atom's
+displacement, the longest a fixed 1 Å so they read as direction rather than
+distance. This is the one thing in the window that animates as content, so
+it starts only when asked, stops when the stage leaves the document or
+scrolls out of view, and opens **held still, with arrows**, when the system
+asks for reduced motion — Play stays, because pressing it is asking (D53).
+The vectors are matched to the report's numbering **by wavenumber**: the
+`.hess` beside the result first, the `.out`'s own NORMAL MODES table when it
+is absent or is another Hessian's (an OptTS's first one), and the bar says
+which file it read. A small imaginary mode carries the push panel's note
+that it is often noise.
+
+**17.4r A scan is picked where a constraint is, and read as a curve.** A
+relaxed surface scan names its coordinate with the same atoms a constraint
+does, so it is picked the same way, on the same stage, with no second picker.
+The constraint panel's heading carries a `.seg`, **Constrain | Scan**
+(`.conshead`, an addition in the last named block of `app.css`), which says
+what the next pick defines. A drag, a Ctrl+click selection with the stage's
+button (now *Scan bond O1–H2*) or a typed atom list all go to the scan in
+*Scan* mode. One atom has nothing to walk along, so the button reads *Pick 2–4
+atoms* and stays disabled. Both lists stay on screen in either mode, because a
+scan runs **with** the constraints (measured: they share the `%geom` block and
+both act). The switch picks what a gesture does, not which half exists. The
+builder offers ONE coordinate: a new pick replaces it, and a toast says so.
+ORCA takes three, but a grid is a surface, and this report does not draw
+surfaces.
+
+The scan's row is a constraint row with **from / to / in N steps** where the
+target and *Apply* were. *From* opens at what the coordinates measure now, so
+the first point is the structure on the stage. A referenced geometry has
+nothing to measure, so it opens empty. Under the three numbers a second line
+says what they imply (*0.049 Å per step · 7 constrained optimizations*),
+because "0.958 to 1.25 in 7" is a spacing nobody sees at a glance. There is no
+*Apply*: ORCA walks the coordinate itself. An unfinished row is refused at Add
+with the field it lacks. The backend would drop it at the boundary and queue
+a plain optimization in its place, so *Preview* warns that the input has no
+scan yet.
+
+Only an optimization scans (measured on 6.1.1: a single point ignores the
+block, and Opt + Freq computes frequencies after the first point only). On the
+other optimizing kinds *Scan* is greyed out and its title says why. It is not
+hidden, because a missing control reads as a missing feature, not as a rule.
+
+The report reads the scan as **ΔE (kcal/mol, against the lowest point) along
+the coordinate**, in the coordinate's own unit (Å or °). The highest point is
+marked and named in the section's sentence, since a scan is most often run to
+find it. The table under the chart lists every point. A scan that stopped
+part-way says *3 of 5 points* and that the rest are missing, never presenting
+the finished part as the whole. A 2-D or 3-D scan is listed, not drawn: one
+line through a grid would invent neighbours. Each point's optimized structure
+is the *Scan points* set in Visual, `Step 1 … Step n` in scan order, each
+frame carrying its energy.
+
+**17.4s One builder, three backends; a backend that cannot run says why.**
+The builder's first control is the reference's own backend picker: `DFT |
+MLIP | CREST`, then the `.seg .sep` divider and `Guided | .inp text`, which
+exist only for DFT (the reference hides them the same way). Switching backend
+keeps what the three share — name, charge, multiplicity, the coordinates box
+with its stage and structure check, or the reference — and swaps only the block
+under them; each backend's own settings survive a switch away and back. An
+MLIP or CREST calculation is not an ORCA one, so none of the ORCA-only blocks
+are drawn for it (method, constraints, push along a mode, Preview .inp), rather
+than drawn and ignored. D41 as amended decides the picker, from the polled
+backend status: a backend never set up has **no button**, only *+ More
+backends…*, which opens Settings; one set up but not ready (an environment that
+fails to import, no WSL distribution with CREST) keeps its button and opens
+**locked** — its block at the locked opacity, every control and *Add*
+disabled, the reason above it in a `.finding` with *Open Settings* — and
+unlocks by itself when the probe turns ready. Add refuses on its own as well,
+since a disabled button is not the guard. A backend stays visible while the
+form is on it or the queue holds one of its calculations, so *edit* on such a
+row always opens on its own form. Two content rules ride along: the device
+choice states what *CPU threads* means on that device (the worker's cap always,
+the queue's charge only off the GPU, D2), and CREST's MD/MTD numbers and
+toggles sit in a closed *Advanced* section that opens by itself when one of
+them is set, so a stored knob is never behind a closed door. In the report an
+MLIP or CREST result has no Input section and no Natural orbitals — it was
+handed no `.inp` and left no wavefunction; the Input pane used to show an ORCA
+input generated for a job ORCA never ran.
+
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
 **both** front-ends — the way out of a preview has to be inside it — and saving
@@ -1902,5 +2005,5 @@ Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
 | B28 | Settings → CREST's *Install CREST* button was pretend-enabled: it disabled only once CREST was already installed, never when there was **no WSL distro to install into** (the one prerequisite ORCAdesk cannot script). The click's only feedback was a Log-tab line, so a failed install read as a dead button — and the installer's actionable diagnostics never reached the card | D41, D2, §13.2 | resolved (0.7.0-beta — the button disables with the reason in its tooltip when WSL or a distro is absent, or while a probe is in flight; the install outcome is published on `CrestStatusPayload.install_error` and surfaced as the card's detail line + a toast) |
 | B29 | Two color literals had come back after B3/B5 removed the pattern: `renderInputEcho`'s `<pre>` used a raw `rgba(127,127,127,0.08)` (a theme-independent grey that is neither a token nor an alpha-ladder value), and the 3D viewer fell back to the literal `#18181b` — the DARK `--card` — when its token read came back empty, painting the stage near-black on a light theme | D10, D13, §15.1 | resolved (unreleased — the echo uses `--input-bg`; the viewer passes no background at all when the token is unreadable, rather than the wrong theme's value) |
 | B31 | The notebook front-end still lacks three of the reference's blocks: the MLIP environment rows and the glass-intensity slider in Settings (`.envrow`, `.slider`), the builder's NEB-endpoint / per-element-basis / structure-findings blocks (`.nebrow`, `.nebslot`, `.basis-row`, `.snips`, `.finding`), and the pop-out 3D viewer window with its frame walker and ESP ramp (`.mvwin` …) | §17 | resolved (0.10.1 — all ten landed; the `OUTSTANDING` set in `tests/test_next_ui.py::test_the_preview_uses_the_references_own_component_vocabulary` is now empty and is kept that way, so dropping an element is a decision somebody took rather than something that quietly happened) |
-| B30 | The notebook front-end (§17) does not yet cover the MLIP and CREST **calculation kinds** in the builder, and it draws flat — the Liquid-Glass appearance variants (§16) are set from its Settings but rendered only by the classic window. One knock-on: `.seg .sep` (§17.0d) appears nowhere in the preview, because the reference's only use of it is the backend picker this gap is about | D2, §17.5 | accepted (0.10.1 — narrowed: the MLIP environment setup, the 3D viewer, the Visual panel and the natural-orbital analysis have landed. It stays a preview, off by default, and its Interface card names what is left rather than letting it be found as a control that is not there) |
+| B30 | The notebook front-end (§17) draws flat — the Liquid-Glass appearance variants (§16) are set from its Settings but rendered only by the classic window | D2, §17.5 | accepted (0.10.1 — narrowed: the MLIP environment setup, the 3D viewer, the Visual panel and the natural-orbital analysis have landed; unreleased — narrowed again: the MLIP and CREST builders landed (§17.4s), and with them the backend picker's `.seg .sep`. It stays a preview, off by default, and its Interface card names what is left rather than letting it be found as a control that is not there) |
 | B32 | The notebook preview's top bar shows **all three backend pills** — ORCA, MLIP, CREST — whether or not MLIP/CREST were ever set up, where D41 hides an unadopted backend's pill. Asked for directly: the pills are how the user sees, at a glance and without opening Settings, what this machine can run. They follow D42's four states; CREST's probe `error` (a shell with no target carrying CREST, the never-installed case) reads *not set*, not *error*. Below 1320px the state word folds into the tooltip and the screen-reader text, the name and dot stay | D41 | accepted (0.10.1 — preview only; the classic window keeps D41's hide-until-adopted) |

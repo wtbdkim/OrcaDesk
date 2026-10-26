@@ -21,6 +21,18 @@
 
   /** the interactive stage in the Structure section @type {any} */
   let _stage = null;
+  /** The result the Structure stage draws, and how the backend addresses it:
+   *  what a normal mode is fetched against. @type {any} */
+  let _sd = null;
+  let _ssrc = "";
+  /** The normal mode on the Structure stage: its number in the report (0 =
+   *  none), the swing in Å and whether it is moving. The swing outlives the
+   *  mode, so stepping to the next one keeps the reader's choice.
+   *  @type {{n: number, amp: number, playing: boolean, m: any}} */
+  const _mode = { n: 0, amp: 0.25, playing: true, m: null };
+  /** told the mode on screen (0 = none), so the spectrum can mark its band
+   *  @type {((n: number) => void)|null} */
+  let _onMode = null;
   /** the interactive stage in the Visual panel @type {any} */
   let _viz = null;
   /** the Visual stage's Display menu, closed when a surface takes the stage
@@ -65,6 +77,7 @@
     return `<section class="secblock viewer" data-sec="sec-structure" id="sec-structure">
       <div class="sech"><h2>Structure</h2><span class="sp"></span>
         <span class="meta">${atoms.length} atoms</span></div>
+      <div class="modeplay" data-v="mode" role="group" aria-label="Normal mode" hidden></div>
       <div class="viewstage" data-v="stage">
         <canvas class="molcv" data-v="canvas"
           aria-label="Final geometry. Drag to turn, Shift+drag to move, Ctrl+scroll to zoom,
@@ -159,6 +172,8 @@
     const canvas = /** @type {any} */ (sec.querySelector('[data-v="canvas"]'));
     const atoms = (d.geometry || []).map(a => ({ el: a.el, x: a.x, y: a.y, z: a.z }));
     if (_stage) _stage.destroy();
+    _sd = d; _ssrc = source;
+    _mode.n = 0; _mode.m = null;
     _stage = MOL.mount(canvas, { onPick: (p) => showPick(stage, p, d) });
     // the run's own Mayer orders draw the double bonds: this IS the geometry
     // they were computed for
@@ -176,6 +191,145 @@
     if (source.indexOf("calc:") === 0) return source.slice(5);
     const p = source.indexOf("file:") === 0 ? source.slice(5) : source;
     return p.split(/[\\/]/).pop() || "Structure";
+  }
+
+  // ---------------------------------------------------------------- normal modes
+
+  /* A vibration picked on the spectrum moves on the Structure stage (DESIGN.md
+     §17.4q). That stage and not the Visual one: it already draws the geometry
+     the frequencies were computed at, it sits directly under the spectrum, and
+     it holds nothing else -- the Visual stage is the folder's sets and the
+     app's one surface renderer, and a mode there would have to evict whichever
+     of them was on screen. The bar above the stage is the whole control: which
+     mode, play/pause, how far it swings, and the way back to the still
+     structure. */
+
+  /** Whether the reader has asked the system for less motion. A mode then
+   *  opens held still, with arrows; Play is still there, because pressing it
+   *  is asking. */
+  function stillFirst() {
+    return !!(window.matchMedia
+              && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+
+  /** Show report mode `n` (1-based, the spectrum's own numbering) on the
+   *  Structure stage. The vector is the backend's: the .hess beside the result,
+   *  else the .out's own table, matched to this report by wavenumber.
+   *  @param {number} n @param {(k: number) => void} [onMode] told the mode on
+   *    screen, 0 once it stops @returns {Promise<boolean>} */
+  async function playMode(n, onMode) {
+    if (onMode) _onMode = onMode;
+    const sec = NB.$("sec-structure");
+    const d = _sd;
+    if (!sec || !_stage || !d || !d.frequencies || !d.frequencies.length) {
+      NB.fail("There is no structure in this result to show the mode on.");
+      return false;
+    }
+    const r = await NB.call("get_vibration_mode", JSON.stringify({
+      source: _ssrc, freqs: d.frequencies, n: n,
+      geometry: (d.geometry || []).map(a => ({ el: a.el, x: a.x, y: a.y, z: a.z })) }));
+    // the report may have been re-rendered while the backend read the file
+    if (_sd !== d || !_stage) return false;
+    if (!r || !r.ok) { NB.fail((r && r.error) || "Could not read that mode."); return false; }
+    // the first mode opens moving, unless the system asks for less motion;
+    // stepping to another keeps whatever the reader chose
+    const playing = _mode.n ? _mode.playing : !stillFirst();
+    if (!_stage.vibrate({ base: r.coords, vec: r.vec, amp: _mode.amp, playing: playing })) {
+      NB.fail("That mode does not fit the structure on screen.");
+      return false;
+    }
+    _mode.n = n; _mode.m = r; _mode.playing = playing;
+    paintModeBar(sec);
+    if (_onMode) _onMode(n);
+    // From the spectrum the stage may be below the fold. Bring it up only as
+    // far as it takes, so the spectrum stays in view as much as it can.
+    const st = sec.querySelector('[data-v="stage"]');
+    if (st) {
+      const b = st.getBoundingClientRect();
+      const seen = Math.min(b.bottom, window.innerHeight) - Math.max(b.top, 0);
+      if (seen < b.height / 2) sec.scrollIntoView({ block: "nearest" });
+    }
+    return true;
+  }
+
+  /** Back to the structure itself. */
+  function stopMode() {
+    const sec = NB.$("sec-structure");
+    if (_stage) _stage.vibrate(null);
+    _mode.n = 0; _mode.m = null;
+    if (sec) {
+      const bar = /** @type {HTMLElement} */ (sec.querySelector('[data-v="mode"]'));
+      if (bar) { bar.hidden = true; bar.innerHTML = ""; }
+      const cv = /** @type {HTMLElement} */ (sec.querySelector('[data-v="canvas"]'));
+      if (cv) cv.focus({ preventScroll: true });
+    }
+    if (_onMode) _onMode(0);
+  }
+
+  /** The bar above the stage, for the mode on it. @param {HTMLElement} sec */
+  function paintModeBar(sec) {
+    const bar = /** @type {HTMLElement} */ (sec.querySelector('[data-v="mode"]'));
+    const r = _mode.m;
+    if (!bar || !r) return;
+    const f = r.freq, imag = f < 0;
+    const notes = [`From ${r.origin}.`];
+    if (r.max_dev > 0.05) {
+      notes.push(`The Hessian was taken at a geometry up to ${r.max_dev.toFixed(2)} Å from `
+                 + "this one; the mode is drawn at its own.");
+    }
+    if (imag && f > -50) {
+      notes.push("A small imaginary mode is often numerical noise — a methyl rotor, a soft "
+                 + "torsion; a tighter optimization or a finer grid may remove it.");
+    }
+    if (!_mode.playing) notes.push("Held still: each arrow shows which way its atom goes.");
+    bar.innerHTML = `
+      <div class="mprow">
+        <button class="btn btn-sm btn-ghost" type="button" data-m="prev"
+          aria-label="Previous mode"${_mode.n <= 1 ? " disabled" : ""}>‹</button>
+        <span class="mpt">Mode ${_mode.n} · ${f.toFixed(2)} cm⁻¹${
+          imag ? ' · <b class="imag">imaginary</b>' : ""}</span>
+        <button class="btn btn-sm btn-ghost" type="button" data-m="next"
+          aria-label="Next mode"${_mode.n >= r.count ? " disabled" : ""}>›</button>
+        <span class="sp"></span>
+        <button class="btn btn-sm" type="button" data-m="play">${
+          _mode.playing ? "Pause" : "Play"}</button>
+        <label class="mpamp" title="How far the atom that moves most swings either way">Swing
+          <input type="range" min="0.05" max="1" step="0.05" value="${_mode.amp}" data-m="amp"
+            aria-label="Swing of the atom that moves most, Å">
+          <output data-m="ampv">${_mode.amp.toFixed(2)} Å</output></label>
+        <button class="btn btn-sm btn-ghost" type="button" data-m="stop"
+          title="Stop, and show the structure itself (Esc)">Show structure</button>
+      </div>
+      <p class="hint mpnote">${NB.esc(notes.join(" "))}</p>`;
+    bar.hidden = false;
+    const q = (k) => /** @type {any} */ (bar.querySelector(`[data-m="${k}"]`));
+    // the bar is redrawn for the new mode: the focus goes back to the button
+    // that was pressed, or to its twin once that one is disabled at an end
+    /** @param {number} step */
+    const go = (step) => playMode(_mode.n + step).then(() => {
+      const b = q(step < 0 ? "prev" : "next");
+      (b && !b.disabled ? b : q(step < 0 ? "next" : "prev")).focus();
+    });
+    q("prev").addEventListener("click", () => go(-1));
+    q("next").addEventListener("click", () => go(1));
+    q("stop").addEventListener("click", stopMode);
+    q("play").addEventListener("click", () => {
+      _mode.playing = !_mode.playing;
+      _stage.vibrate({ base: r.coords, vec: r.vec, amp: _mode.amp, playing: _mode.playing });
+      paintModeBar(sec);
+      // the bar was redrawn under the hand: keep the focus on the same button
+      q("play").focus();
+    });
+    q("amp").addEventListener("input", () => {
+      const v = parseFloat(q("amp").value);
+      if (!isFinite(v)) return;
+      _mode.amp = v;
+      q("ampv").textContent = v.toFixed(2) + " Å";
+      _stage.vibrate({ base: r.coords, vec: r.vec, amp: v, playing: _mode.playing });
+    });
+    bar.onkeydown = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); stopMode(); }
+    };
   }
 
   // ---------------------------------------------------------------- visual
@@ -665,6 +819,9 @@
     stage: () => _stage,
     reclaimSurface: reclaimSurface,
     structureSection: structureSection, mountStructure: mountStructure,
+    playMode: playMode, stopMode: stopMode,
+    /** the report mode on the Structure stage, 0 for none */
+    modeShown: () => _mode.n,
     visualSection: visualSection, mountVisual: mountVisual,
     nboSection: nboSection, mountNbo: mountNbo,
   };

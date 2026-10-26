@@ -914,3 +914,129 @@ def test_constraints_survive_the_config_round_trip():
     again = StepConfig.from_dict(cfg.to_dict())
     assert again.geom_constraints == cons
     assert again.to_dict() == cfg.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# %geom Scan — a relaxed surface scan
+#
+# Measured on ORCA 6.1.1 (HF/def2-SVP; water, H2O2): the line below scans a
+# bond from 0.90 to 1.10 Å in 5 points (0.05 Å apart, ends included); a Scan
+# and Constraints share the one %geom block (an angle scan held a bond
+# constraint at 0.9578 Å through every point); only an Opt scans (an SP reads
+# the block and ignores it; Opt Freq computes frequencies after point 1 only);
+# four coordinates stop in input parsing ("maximum number of scan-parameters
+# is 3"); a dihedral range past 180 runs (120, 240, 360).
+# ---------------------------------------------------------------------------
+
+from orcamgr.core.input_generator import SCAN_KINDS, normalize_scan  # noqa: E402
+
+
+def test_a_scan_is_written_inside_the_one_geom_block_after_its_constraints():
+    cfg = StepConfig.from_dict({
+        "kind": "opt", "max_iter": 150,
+        "geom_constraints": [{"kind": "B", "atoms": [0, 2]}],
+        "geom_scan": [{"kind": "A", "atoms": [1, 0, 2], "start": 100,
+                       "end": 120, "steps": 3}]})
+    text = build_input(cfg, WATER_XYZ)
+    assert text.count("%geom") == 1
+    assert _geom_block(text) == (
+        "%geom\n"
+        "  MaxIter 150\n"
+        "  Constraints\n"
+        "    { B 0 2 C }\n"
+        "  end\n"
+        "  Scan\n"
+        "    A 1 0 2 = 100.00, 120.00, 3\n"
+        "  end\n"
+        "end")
+
+
+def test_a_bond_scan_is_written_in_angstrom_to_four_decimals():
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_scan": [
+        {"kind": "B", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": 5}]})
+    assert "    B 0 1 = 0.9000, 1.1000, 5" in build_input(cfg, WATER_XYZ)
+
+
+def test_a_two_dimensional_scan_writes_both_coordinates():
+    # measured: ran as a 2 x 2 grid, one results column per coordinate
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_scan": [
+        {"kind": "B", "atoms": [0, 1], "start": 0.95, "end": 1.05, "steps": 2},
+        {"kind": "A", "atoms": [1, 0, 2], "start": 100, "end": 110, "steps": 2}]})
+    block = _geom_block(build_input(cfg, WATER_XYZ))
+    assert "    B 0 1 = 0.9500, 1.0500, 2\n    A 1 0 2 = 100.00, 110.00, 2" in block
+
+
+def test_only_an_optimization_scans():
+    assert SCAN_KINDS == ("opt",)
+    scan = [{"kind": "B", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": 5}]
+    for kind in ("opt_freq", "ts_opt", "ts_opt_freq", "freq", "sp", "irc", "general"):
+        text = build_input(StepConfig.from_dict({"kind": kind, "geom_scan": scan}), WATER_XYZ)
+        assert "Scan" not in text, kind
+        # nothing is said about the scan left out, either (the input carries
+        # no comments of ORCAdesk's own)
+        assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+
+
+def test_a_scan_index_past_the_last_atom_is_refused_with_its_number():
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_scan": [
+        {"kind": "B", "atoms": [0, 3], "start": 0.9, "end": 1.1, "steps": 5}]})
+    with pytest.raises(ValueError, match=r"bond scan on atoms 1-4 names atom 4, but "
+                                         r"the structure has 3 atoms"):
+        build_input(cfg, WATER_XYZ)
+    # a template's coordinates arrive at run time, and are checked then
+    assert "B 0 3 =" in build_input_template(cfg, 0, 1, use_placeholder=True)
+
+
+@pytest.mark.parametrize("bad", [
+    {"kind": "C", "atoms": [0], "start": 0, "end": 1, "steps": 3},      # nothing to scan
+    {"kind": "X", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": 3},
+    {"kind": "B", "atoms": [0, 1, 2], "start": 0.9, "end": 1.1, "steps": 3},
+    {"kind": "B", "atoms": [0, 0], "start": 0.9, "end": 1.1, "steps": 3},
+    {"kind": "B", "atoms": [0, True], "start": 0.9, "end": 1.1, "steps": 3},
+    {"kind": "B", "atoms": [0, -1], "start": 0.9, "end": 1.1, "steps": 3},
+    {"kind": "B", "atoms": [0, 1], "start": None, "end": 1.1, "steps": 3},
+    {"kind": "B", "atoms": [0, 1], "start": 0.9, "end": "far", "steps": 3},
+    {"kind": "B", "atoms": [0, 1], "start": 0.9, "end": float("nan"), "steps": 3},
+    {"kind": "B", "atoms": [0, 1], "start": 1.0, "end": 1.00001, "steps": 3},  # one point
+    {"kind": "B", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": "many"},
+    {"kind": "B", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": True},
+    "B 0 1 = 0.9, 1.1, 5",
+])
+def test_a_malformed_scan_is_dropped_at_the_boundary(bad):
+    assert StepConfig.from_dict({"kind": "opt", "geom_scan": [bad]}).geom_scan == []
+
+
+def test_scan_values_are_clamped_never_wrapped():
+    got = normalize_scan([
+        {"kind": "b", "atoms": [0, 1], "start": 0.0, "end": 99, "steps": 1},
+        {"kind": "A", "atoms": [1, 0, 2], "start": -5, "end": 200, "steps": 5000},
+        {"kind": "D", "atoms": [2, 0, 1, 3], "start": 0, "end": 720, "steps": "37"},
+    ])
+    assert got == [
+        {"kind": "B", "atoms": [0, 1], "start": 0.1, "end": 50.0, "steps": 2},
+        {"kind": "A", "atoms": [1, 0, 2], "start": 0.0, "end": 180.0, "steps": 1000},
+        # a full turn is a range: wrapped, 360 would be 0 and the scan nothing
+        {"kind": "D", "atoms": [2, 0, 1, 3], "start": 0.0, "end": 360.0, "steps": 37},
+    ]
+
+
+def test_a_scan_named_twice_or_past_orcas_three_is_cut():
+    one = {"kind": "B", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": 3}
+    same = dict(one, atoms=[1, 0])
+    assert len(normalize_scan([one, same])) == 1
+    four = [{"kind": "B", "atoms": [0, k], "start": 0.9, "end": 1.1, "steps": 2}
+            for k in range(1, 5)]
+    assert len(normalize_scan(four)) == 3
+
+
+def test_scans_that_are_not_a_list_degrade_to_none():
+    for junk in ("B 0 1 = 0.9, 1.1, 5", 3, {"kind": "B"}, None):
+        assert StepConfig.from_dict({"geom_scan": junk}).geom_scan == []
+
+
+def test_a_scan_survives_the_config_round_trip():
+    scan = [{"kind": "D", "atoms": [2, 0, 1, 3], "start": 60.0, "end": 180.0, "steps": 3}]
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_scan": scan})
+    again = StepConfig.from_dict(cfg.to_dict())
+    assert again.geom_scan == scan
+    assert again.to_dict() == cfg.to_dict()

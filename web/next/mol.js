@@ -420,7 +420,8 @@ var MOL = {};
    *           labels?: boolean, gizmo?: boolean, hotAxis?: string,
    *           gizmoBottom?: number,
    *           chain?: {atoms: number[], cur?: {x: number, y: number}|null}|null,
-   *           hilite?: number[], picks?: number[]}} view */
+   *           hilite?: number[], picks?: number[],
+   *           arrows?: (number[]|null)[]|null}} view */
   function render(canvas, atoms, sc, view) {
     const box = canvas.getBoundingClientRect();
     if (!atoms || !atoms.length || box.width < 2 || box.height < 2) return null;
@@ -647,6 +648,33 @@ var MOL = {};
       if (labels) pts.forEach((p, i) => { if (vis[i]) label(i); });
     }
 
+    // A mode held still (vibrate(), paused): an arrow from each atom along its
+    // displacement, so the direction is there without the motion. Drawn over
+    // the atoms with a dark rim under it, since an arrow hidden behind the ball
+    // it starts in says nothing.
+    if (view.arrows) {
+      const ac = (cssv.getPropertyValue("--warn") || "").trim() || "#fbbf24";
+      g.save();
+      g.lineCap = "round"; g.lineJoin = "round";
+      view.arrows.forEach((v, i) => {
+        if (!v || !vis[i] || !pts[i]) return;
+        const a = atoms[i], P = pts[i];
+        const Q = project(a.x + v[0], a.y + v[1], a.z + v[2]);
+        const dx = Q.X - P.X, dy = Q.Y - P.Y, L = Math.hypot(dx, dy);
+        if (L < 4) return;                    // end-on, or an atom that hardly moves
+        const ux = dx / L, uy = dy / L, hd = Math.min(8, L * 0.45);
+        const path = () => {
+          g.beginPath(); g.moveTo(P.X, P.Y); g.lineTo(Q.X, Q.Y);
+          g.moveTo(Q.X - ux * hd - uy * hd * 0.55, Q.Y - uy * hd + ux * hd * 0.55);
+          g.lineTo(Q.X, Q.Y);
+          g.lineTo(Q.X - ux * hd + uy * hd * 0.55, Q.Y - uy * hd - ux * hd * 0.55);
+        };
+        g.strokeStyle = "rgba(0,0,0,.6)"; g.lineWidth = 4.5; path(); g.stroke();
+        g.strokeStyle = ac; g.lineWidth = 2; path(); g.stroke();
+      });
+      g.restore();
+    }
+
     // The measurement, drawn over everything - INCLUDING while the button is
     // still down. `to` is the atom under the cursor (null while over nothing),
     // `cur` is the cursor itself, so the drag is visible from the first pixel
@@ -830,6 +858,14 @@ var MOL = {};
   }
 
   const ZOOM_MIN = 0.25, ZOOM_MAX = 25;
+  /* A shown normal mode: one swing there and back in VIB_PERIOD_MS, the same
+     for every mode -- a real one is picoseconds, so any rate is a convention,
+     and one rate lets two modes be compared by their shape alone. Paused, the
+     arrows say DIRECTION, so their scale is fixed rather than the swing's: the
+     most-moved atom's arrow is ARROW_LEN Å and the rest in proportion. Tied to
+     the swing they were a few pixels at 0.25 Å and longer than the molecule
+     at 0.8 (measured on water). */
+  const VIB_PERIOD_MS = 1200, ARROW_LEN = 1.0;
 
   /** An interactive stage on `canvas`.
    *
@@ -897,13 +933,53 @@ var MOL = {};
      *  before it is pressed. @type {string} */
     let hotAxis = "";
 
+    /** A normal mode being shown (vibrate()): the geometry it belongs to, its
+     *  per-atom displacement scaled so the most-moved atom swings `amp` Å, and
+     *  whether it is moving. @type {any} */
+    let vib = null;
+    /** the coordinates on screen while a mode is shown, else null @type {any[]|null} */
+    let posed = null;
+    let raf = 0, t0 = 0, seen = true;
+    /** @type {IntersectionObserver|null} */
+    let io = null;
+
     const handle = { canvas: canvas, paint: paint };
     function paint() {
       _live.add(handle);
-      proj = render(canvas, atoms, sc, {
+      proj = render(canvas, posed || atoms, sc, {
         R: R, zoom: zoom, panX: panX, panY: panY, mark: mark, measure: measure,
         gizmo: true, hotAxis: hotAxis, gizmoBottom: opts.gizmoBottom,
-        labels: opts.labels !== false, chain: chain, hilite: hilite, picks: picks });
+        labels: opts.labels !== false, chain: chain, hilite: hilite, picks: picks,
+        arrows: vib && !vib.playing ? vib.arrows : null });
+    }
+
+    /** The mode's coordinates at phase `p` (-1 … 1) of its swing. @param {number} p */
+    function poseAt(p) {
+      return atoms.map((a, i) => ({ el: a.el,
+        x: vib.base[i][0] + p * vib.disp[i][0],
+        y: vib.base[i][1] + p * vib.disp[i][1],
+        z: vib.base[i][2] + p * vib.disp[i][2] }));
+    }
+    /** One frame of a playing mode. The centre and the scale stay the
+     *  structure's own (scene() is not re-run), so the molecule moves and the
+     *  view does not breathe with it (DESIGN.md §17.4e); a turn or a zoom made
+     *  while it plays is kept, since paint() reads the same R and zoom.
+     *  @param {number} ts */
+    function frame(ts) {
+      raf = 0;
+      if (!vib || !vib.playing) return;
+      // a report re-render replaces the canvas: the loop ends with it
+      if (!canvas.isConnected) { stopVib(); return; }
+      if (!seen) return;                      // scrolled away: resumed by io
+      if (!t0) t0 = ts;
+      posed = poseAt(Math.sin((2 * Math.PI * (ts - t0)) / VIB_PERIOD_MS));
+      paint();
+      raf = requestAnimationFrame(frame);
+    }
+    function stopVib() {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0; vib = null; posed = null;
+      if (io) { io.disconnect(); io = null; }
     }
 
     /** Tell the caller what is selected now. @param {number[]} s */
@@ -1238,6 +1314,7 @@ var MOL = {};
        *    structure the orders were computed FOR may carry them — a trajectory
        *    frame is a different geometry. */
       setAtoms(a, extra) {
+        stopVib();
         atoms = a || [];
         const o = extra && extra.orders && extra.orders.length ? extra.orders : null;
         sc = scene(atoms, o);
@@ -1286,7 +1363,50 @@ var MOL = {};
                  screen: proj.pts.map(p => [Math.round(p.X), Math.round(p.Y),
                                             Math.round(proj.radOf(p))]) };
       },
-      destroy() { if (ro) ro.disconnect(); _live.delete(handle); },
+      /** Show a normal mode on this structure, or (null) go back to the
+       *  structure itself. `base` is the geometry the mode belongs to and
+       *  `vec` its displacement, one [dx, dy, dz] per atom, in this stage's
+       *  atom order; `amp` is how far the MOST-moved atom swings either way,
+       *  in Å, because a normalized vector's own scale means nothing to the
+       *  eye. Playing, it oscillates; paused, it holds the base geometry and
+       *  draws each atom's arrow instead (the longest ARROW_LEN Å). Calling
+       *  it again with the same mode changes the amplitude or the play state
+       *  without restarting the swing.
+       *  @param {{base: number[][], vec: number[][], amp: number,
+       *           playing: boolean}|null} v
+       *  @returns {boolean} false when the mode does not fit this structure */
+      vibrate(v) {
+        if (!v) { const had = !!vib; stopVib(); if (had) paint(); return true; }
+        if (!v.base || !v.vec || v.base.length !== atoms.length
+            || v.vec.length !== atoms.length) return false;
+        let big = 0;
+        v.vec.forEach(d => { big = Math.max(big, Math.hypot(d[0], d[1], d[2])); });
+        const k = big > 0 ? Math.max(0, v.amp) / big : 0;
+        const ka = big > 0 ? ARROW_LEN / big : 0;
+        const same = vib && vib.vec === v.vec;
+        vib = { base: v.base, vec: v.vec, playing: !!v.playing,
+                disp: v.vec.map(d => [d[0] * k, d[1] * k, d[2] * k]),
+                arrows: v.vec.map(d => [d[0] * ka, d[1] * ka, d[2] * ka]) };
+        if (!same) t0 = 0;
+        if (!io && typeof IntersectionObserver === "function") {
+          io = new IntersectionObserver((es) => {
+            seen = es.some(e => e.isIntersecting);
+            if (seen && vib && vib.playing && !raf) raf = requestAnimationFrame(frame);
+          });
+          io.observe(canvas);
+        }
+        if (vib.playing) {
+          if (!raf) raf = requestAnimationFrame(frame);
+        } else {
+          if (raf) { cancelAnimationFrame(raf); raf = 0; }
+          posed = poseAt(0);
+          paint();
+        }
+        return true;
+      },
+      /** the mode on screen, if any: whether it is moving */
+      vibState() { return vib ? { playing: vib.playing } : null; },
+      destroy() { stopVib(); if (ro) ro.disconnect(); _live.delete(handle); },
     };
   };
 

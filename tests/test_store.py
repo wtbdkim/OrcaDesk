@@ -1022,3 +1022,26 @@ def test_the_add_time_check_applies_only_where_it_can_and_should():
     d = calc_to_session_dict(make_calc("s", kind="opt", xyz=_WATER))
     d["config"]["geom_constraints"] = bad["geom_constraints"]
     assert calc_from_session_dict(d).config.geom_constraints[0]["atoms"] == [0, 3]
+
+
+# ---- a relaxed surface scan at the choke point -----------------------------
+
+_SCAN = [{"kind": "B", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": 5}]
+
+
+def test_a_scan_round_trips_through_the_session_file_and_the_wire():
+    c = make_calc("w", kind="opt", xyz=_WATER, config={"kind": "opt", "geom_scan": _SCAN})
+    back = calc_from_session_dict(json.loads(json.dumps(calc_to_session_dict(c))))
+    assert back.config.geom_scan == _SCAN
+    # the full dict get_calc hands the builder for an edit IS this one
+    assert calc_to_session_dict(c)["config"]["geom_scan"] == _SCAN
+
+
+def test_a_scan_past_the_coordinates_is_refused_when_added():
+    with pytest.raises(ValueError, match="bond scan on atoms 1-4 names atom 4, "
+                                         "but the structure has 3"):
+        make_calc("w", kind="opt", xyz=_WATER, config={"kind": "opt", "geom_scan": [
+            dict(_SCAN[0], atoms=[0, 3])]})
+    # a kind that cannot scan never writes it, so it is not judged either
+    make_calc("f", kind="opt_freq", xyz=_WATER, config={"kind": "opt_freq", "geom_scan": [
+        dict(_SCAN[0], atoms=[0, 3])]})

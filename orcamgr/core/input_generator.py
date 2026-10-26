@@ -288,6 +288,10 @@ class StepConfig:
     # "value": float|None}. None = hold at the starting value. Normalized by
     # normalize_constraints() in from_dict.
     geom_constraints: list = field(default_factory=list)
+    # %geom Scan — a relaxed surface scan, emitted only for SCAN_KINDS:
+    # {"kind": "B"|"A"|"D", "atoms": [0-based ints], "start": float,
+    # "end": float, "steps": int}. Normalized by normalize_scan() in from_dict.
+    geom_scan: list = field(default_factory=list)
     solvation: Solvation = field(default_factory=Solvation)
 
     # per-element basis/ECP (%basis newgto/newecp), applies to any kind
@@ -412,6 +416,7 @@ class StepConfig:
         cfg.freq_temp_k = _clamp_float(cfg.freq_temp_k, 298.15, 0.0, 100_000.0)
         cfg.freq_pressure_atm = _clamp_float(cfg.freq_pressure_atm, 1.0, 0.0, 100_000.0)
         cfg.geom_constraints = normalize_constraints(cfg.geom_constraints)
+        cfg.geom_scan = normalize_scan(cfg.geom_scan)
         # ORCA has no "MediumSCF" convergence tier — it aborts with "UNRECOGNIZED
         # OR DUPLICATED KEYWORD(S) IN SIMPLE INPUT LINE". Older sessions/calcs may
         # still carry it (it used to be offered in the picker), so map it to the
@@ -558,9 +563,12 @@ def normalize_constraints(raw) -> list:
     return out
 
 
-def constraint_index_error(constraints: list, n_atoms: int) -> str:
+def constraint_index_error(constraints: list, n_atoms: int,
+                           what: str = "constraint") -> str:
     """The first constraint naming an atom the structure does not have, as a
     sentence in the 1-based numbering the builder shows, or "" when all fit.
+    ``what`` names the list in the sentence: a scan coordinate (``"scan"``)
+    is checked by the same rule.
 
     ORCA does not say this itself: an out-of-range index dies in the
     optimizer's setup with "Could not make G matrix" (measured, 6.1.1) — a
@@ -568,7 +576,7 @@ def constraint_index_error(constraints: list, n_atoms: int) -> str:
     for c in constraints or []:
         atoms = c.get("atoms") or []
         if atoms and max(atoms) >= n_atoms:
-            return (f"The {_CONSTRAINT_NOUN.get(c.get('kind'), '')} constraint on "
+            return (f"The {_CONSTRAINT_NOUN.get(c.get('kind'), '')} {what} on "
                     f"atom{'s' if len(atoms) > 1 else ''} "
                     f"{'-'.join(str(a + 1) for a in atoms)} names atom "
                     f"{max(atoms) + 1}, but the structure has {n_atoms} atoms.")
@@ -637,6 +645,112 @@ def _constraint_line(c: dict) -> str:
         return f"    {{ {c['kind']} {atoms} C }}"
     return f"    {{ {c['kind']} {atoms} {v:.4f} C }}" if c["kind"] == "B" \
         else f"    {{ {c['kind']} {atoms} {v:.2f} C }}"
+
+
+# ---- relaxed surface scan (%geom Scan) ------------------------------------
+# "B 0 1 = 0.90, 1.10, 5" inside %geom: ORCA runs one constrained optimization
+# per point, start and end included, the scanned coordinate held at each value
+# in turn. Measured on 6.1.1 (HF/def2-SVP, water / H2O2):
+#   - Only an optimization scans. With "! HF def2-SVP" (no Opt) the same block
+#     is read and ignored — one single point, no scan, normal termination. With
+#     "Opt Freq" the frequencies are computed once, after the FIRST point only,
+#     at a geometry held off its minimum by the scan — a number that answers no
+#     question. OptTS climbs a mode, which a held coordinate fights. So: opt.
+#   - Bond in Å, angle and dihedral in degrees. A dihedral range past 180 runs
+#     (120, 240, 360 gave 240 ≡ -120 to 1e-7 Eh), so a full turn is a range,
+#     and the value is clamped, never wrapped: wrapping 360 to 0 would make a
+#     full rotation a "scan" from 0 to 0. An angle scanned to 180 runs (unlike
+#     a valued angle CONSTRAINT, which ORCA stops on as a linear bend).
+#   - steps = 1 runs the start point only; steps is clamped to 2 or more.
+#   - Four coordinates stop in input parsing: "The maximum number of
+#     scan-parameters is 3!" (exit 55). Two ran as a 2x2 grid.
+#   - A Scan and Constraints coexist in one %geom: an angle scan with a bond
+#     constraint held the bond at 0.9578 Å through all three points. A
+#     constraint on the scanned coordinate itself is overridden by the scan.
+#   - A point whose optimization does not converge ends the whole run with an
+#     error termination; ORCA does not move on to the next point.
+SCAN_KINDS = ("opt",)
+SCAN_ATOMS = {"B": 2, "A": 3, "D": 4}
+_SCAN_RANGE = {"B": (0.1, 50.0), "A": (0.0, 180.0), "D": (-360.0, 360.0)}
+_SCAN_FORMAT = {"B": "{:.4f}", "A": "{:.2f}", "D": "{:.2f}"}
+_MAX_SCAN_COORDS = 3             # ORCA's own limit (measured, above)
+_MAX_SCAN_STEPS = 1000           # a point count past this is a payload, not a plan
+
+
+def normalize_scan(raw) -> list:
+    """The trust boundary for ``StepConfig.geom_scan``.
+
+    As for constraints, a malformed entry is DROPPED rather than repaired: an
+    unknown kind (a fixed position has nothing to scan), the wrong number of
+    atoms, an index that is not a distinct non-negative int, a start or end
+    that is not a finite number, or a range that starts where it ends (every
+    point would be the same optimization). An end out of range is clamped,
+    the step count is clamped to 2..1000, a repeat of a coordinate already
+    listed is dropped, and anything past ORCA's three coordinates is cut,
+    because ORCA would refuse the whole input over it.
+    """
+    if not isinstance(raw, list):
+        return []
+    out, seen = [], set()
+    for c in raw:
+        if len(out) >= _MAX_SCAN_COORDS:
+            break
+        if not isinstance(c, dict):
+            continue
+        kind = c.get("kind")
+        if not isinstance(kind, str):
+            continue
+        kind = kind.strip().upper()
+        n = SCAN_ATOMS.get(kind)
+        atoms = c.get("atoms")
+        if not n or not isinstance(atoms, list) or len(atoms) != n:
+            continue
+        if any(isinstance(a, bool) or not isinstance(a, int)
+               or a < 0 or a > _MAX_ATOM_INDEX for a in atoms):
+            continue
+        if len(set(atoms)) != n:
+            continue
+        key = (kind, min(tuple(atoms), tuple(reversed(atoms))))
+        if key in seen:
+            continue
+        ends = []
+        for k in ("start", "end"):
+            v = c.get(k)
+            if isinstance(v, bool) or v is None or v == "":
+                break
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                break
+            if not math.isfinite(v):
+                break
+            lo, hi = _SCAN_RANGE[kind]
+            ends.append(max(lo, min(v, hi)))
+        if len(ends) != 2:
+            continue
+        # compared as _scan_line will write them: two values that print the
+        # same are the same point to ORCA
+        fmt = _SCAN_FORMAT[kind]
+        if fmt.format(ends[0]) == fmt.format(ends[1]):
+            continue
+        steps = c.get("steps")
+        if isinstance(steps, bool):
+            continue
+        steps = _clamp_int(steps, 0, 2, _MAX_SCAN_STEPS)
+        if not steps:
+            continue
+        seen.add(key)
+        out.append({"kind": kind, "atoms": list(atoms), "start": ends[0],
+                    "end": ends[1], "steps": steps})
+    return out
+
+
+def _scan_line(c: dict) -> str:
+    """``B 0 1 = 0.9000, 1.1000, 5`` — the precision of _constraint_line."""
+    atoms = " ".join(str(a) for a in c["atoms"])
+    f = _SCAN_FORMAT[c["kind"]]
+    return (f"    {c['kind']} {atoms} = {f.format(c['start'])}, "
+            f"{f.format(c['end'])}, {c['steps']}")
 
 
 def _needs_auxj(ri: str) -> bool:
@@ -842,6 +956,11 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
             raise ValueError(err)
     # (a kind that does not optimize writes no %geom block, so its constraints
     # are simply not in the input; the builder sends none for those kinds)
+    scan = normalize_scan(cfg.geom_scan) if cfg.kind in SCAN_KINDS else []
+    if scan and GEOMETRY_PLACEHOLDER not in xyz:
+        err = constraint_index_error(scan, len(parse_block(xyz)), "scan")
+        if err:
+            raise ValueError(err)
 
     if cfg.kind in CONSTRAINED_KINDS:
         lines.append("%geom")
@@ -865,6 +984,10 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
             # block for ORCA to merge, and the generator never relies on that
             lines.append("  Constraints")
             lines.extend(_constraint_line(c) for c in constraints)
+            lines.append("  end")
+        if scan:
+            lines.append("  Scan")
+            lines.extend(_scan_line(c) for c in scan)
             lines.append("  end")
         lines.append("end")
 

@@ -46,6 +46,7 @@ from ..core.structure import (
     displace_along_mode,
 )
 from ..core.hessfile import HessError, read_hess
+from ..core.normalmodes import modes_for_report, place_on, read_out_modes
 from ..core.parser import parse_file
 from ..core.resources import ResourceBudget, auto_cores, auto_ram_mb
 from ..state.store import (
@@ -64,14 +65,15 @@ from ..state.schemas import (
     MlipStatusPayload, MlipInstallPayload, MlipInstallOptionsPayload,
     MutationResult, NboJobPayload, NboResultPayload, NmrPayload, OkResult,
     OrbitalPayload, SavedFileResult,
-    ParsePayload, QrResult, ServerStatusPayload, SettingsPayload,
+    ParsePayload, QrResult, ScanCoordPayload, ScanPointPayload,
+    ServerStatusPayload, SettingsPayload,
     StartServerResult, TextResult, TransitionPayload,
     CrestStatusPayload, ConformerPayload,
     WallpaperResult, ExportResult, FramesResult, FavoritesResult,
     StructureSetsResult, PickedResultPayload, PickedFilePayload,
     PlotOptionsResult, CubeJobPayload, CubeDataResult, WorkspaceResultsResult,
     AtomOrderPayload, StructureCheckPayload, ConstraintApplyPayload,
-    HessModesPayload, HessModePayload, ModeShiftPayload,
+    HessModesPayload, HessModePayload, ModeShiftPayload, VibModePayload,
 )
 
 # Ceiling on the workspace scan behind the Results picker. Generous next to any
@@ -1103,13 +1105,85 @@ class Bridge(QObject):
         return json.dumps(ModeShiftPayload(**displace_along_mode(
             xyz, h.symbols, h.coords, h.modes[index], amplitude)))
 
+    def _modes_file(self, path: Path, kind: str):
+        """A .hess (kind "hess") or an .out's NORMAL MODES table ("out"),
+        parsed once per file version: the report asks again for every band
+        picked, and the .out a .hess is missing from can be megabytes. Two
+        entries, so a result's .hess and its .out do not evict each other."""
+        key = (str(path), path.stat().st_mtime, kind)
+        cache = getattr(self, "_modes_cache", None)
+        if cache is None:
+            cache = self._modes_cache = {}
+        if key not in cache:
+            data = read_hess(path) if kind == "hess" else read_out_modes(path)
+            if len(cache) >= 2:
+                cache.pop(next(iter(cache)))
+            cache[key] = data
+        return cache[key]
+
+    @pyqtSlot(str, result=str)
+    def get_vibration_mode(self, payload_json: str) -> str:
+        """One vibration of a finished result, for the report to animate.
+
+        ``payload_json`` is ``{source, freqs, geometry, n}``: the result's
+        source string (``calc:<name>`` / ``file:<path>``, as every report slot
+        takes it), the wavenumbers the report LISTS, its geometry
+        (``[{el, x, y, z}]``) and the 1-based number of the mode wanted. The
+        vector comes from ``{base}.hess`` beside the output, else from the
+        output's own NORMAL MODES table, and either is accepted only when its
+        wavenumbers are the report's (core.normalmodes) - a .hess left by an
+        OptTS's first Hessian would otherwise animate another geometry's motion
+        under this label. VibModePayload; a refusal is a sentence."""
+        def fail(msg: str) -> str:
+            return json.dumps(VibModePayload(ok=False, error=msg))
+        try:
+            d = json.loads(payload_json or "{}")
+            source = str(d.get("source") or "")
+            freqs = [float(f) for f in d.get("freqs") or []]
+            geom = d.get("geometry") or []
+            symbols = [str(a["el"]) for a in geom]
+            coords = [(float(a["x"]), float(a["y"]), float(a["z"])) for a in geom]
+            n = int(d.get("n") or 0)
+        except (TypeError, ValueError, KeyError, AttributeError):
+            return fail("Unreadable mode request.")
+        if not freqs or not 1 <= n <= len(freqs):
+            return fail("No such mode in this result.")
+        name = source[5:] if source.startswith("calc:") else source
+        if not name:
+            return fail("No result selected.")
+        try:
+            out = self._result_file(name, ".out")
+            hess = self._result_file(name, ".hess")
+            modes, cols, origin = modes_for_report(hess, out, freqs, read=self._modes_file)
+        except HessError as e:
+            return fail(str(e))
+        except OSError as e:
+            return fail(f"Could not read the modes: {e.strerror or e}.")
+        try:
+            placed, dev = place_on(modes, symbols, coords)
+        except HessError as e:
+            return fail(f"The modes in {origin} do not fit this structure: {e}")
+        col = modes.modes[cols[n - 1]]
+        return json.dumps(VibModePayload(
+            ok=True, n=n, count=len(freqs), freq=freqs[n - 1], origin=origin,
+            coords=[list(c) for c in placed],
+            vec=[col[3 * i:3 * i + 3] for i in range(len(placed))],
+            max_dev=dev))
+
     @pyqtSlot(result=str)
     def get_step_defaults(self) -> str:
         """StepConfig's own defaults, so a builder seeds a new calculation from
         the one place they are defined (P4). The notebook builder kept its own
         literals and they drifted: MaxIter 0 (clamped to 1), IRC MaxIter 40
-        against 100, TD-DFT nroots 10 / maxdim 0 against 40 / 10."""
-        return json.dumps(StepConfig().to_dict())
+        against 100, TD-DFT nroots 10 / maxdim 0 against 40 / 10.
+
+        The one value filled in here is the MACE model: StepConfig keeps ""
+        ("whatever the runner defaults to", so an ORCA calc carries no model),
+        and a builder has to preselect the model that "" actually runs."""
+        from orcamgr.mlip.runner import DEFAULT_MACE_MODEL   # noqa: PLC0415
+        d = StepConfig().to_dict()
+        d["mlip_model"] = d.get("mlip_model") or DEFAULT_MACE_MODEL
+        return json.dumps(d)
 
     # --- option lists ---
     @pyqtSlot(str, result=str)
@@ -1306,6 +1380,8 @@ class Bridge(QObject):
                 ],
                 neb_path=r.neb_path,
                 neb_path_kind=r.neb_path_kind,
+                scan_coords=[ScanCoordPayload(**c) for c in r.scan_coords],
+                scan_points=[ScanPointPayload(**p) for p in r.scan_points],
                 geometry=[
                     GeomAtomPayload(el=a.symbol, x=a.x, y=a.y, z=a.z)
                     for a in r.geometry

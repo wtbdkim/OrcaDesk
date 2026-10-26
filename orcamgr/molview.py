@@ -29,16 +29,26 @@ def _natural_key(name: str) -> list:
             for t in re.split(r"(\d+)", name)]
 
 
+# ORCA's own comment line ends in the energy: "Coordinates from ORCA-job x E
+# -75.958580089801" in an optimization trajectory, "... Relaxed Surface Scan
+# Step 2 E -75.96131" in a scan's .allxyz (6.1.1).
+_ORCA_E = re.compile(r"\sE\s+(-?\d+\.\d+)\s*$")
+_SCAN_STEP = re.compile(r"Relaxed Surface Scan Step\s+(\d+)")
+
+
 def _parse_energy(comment: str):
-    """A CREST/xyz comment line that is a bare number is the absolute energy in
-    Hartree. Return it as a float, or None when the comment is anything else."""
+    """The absolute energy in Hartree a comment line carries: a CREST/xyz
+    comment that is a bare number, or ORCA's own trailing ``E <value>``.
+    None when the comment is anything else."""
     tok = comment.strip().split()
     if not tok:
         return None
     try:
         return float(tok[0])
     except ValueError:
-        return None
+        pass
+    m = _ORCA_E.search(comment)
+    return float(m.group(1)) if m else None
 
 
 def iter_xyz_frames(text: str):
@@ -50,7 +60,8 @@ def iter_xyz_frames(text: str):
     lines = text.splitlines()
     i, n = 0, len(lines)
     while i < n:
-        while i < n and not lines[i].strip():
+        # blank lines, and the ">" ORCA writes between the frames of an .allxyz
+        while i < n and lines[i].strip() in ("", ">"):
             i += 1
         if i >= n:
             break
@@ -86,6 +97,9 @@ def frames_from_file(path, label_prefix: str = "") -> list[dict]:
     for k, (comment, frame_text) in enumerate(frames, start=1):
         label = f"{base}#{k}" if (multi and label_prefix) else \
                 (f"{base} #{k}" if multi else base)
+        step = _SCAN_STEP.search(comment) if not label_prefix else None
+        if step:
+            label = f"Step {step.group(1)}"     # a scan point says which it is
         out.append({"label": label, "xyz": frame_text,
                     "energy": _parse_energy(comment)})
     return out
@@ -154,6 +168,16 @@ def count_xyz_frames(path) -> int:
     return sum(1 for _ in iter_xyz_frames(text))
 
 
+def _is_scan_file(path) -> bool:
+    """Whether an .allxyz is a relaxed scan's, from its first comment line."""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
+            f.readline()
+            return bool(_SCAN_STEP.search(f.readline()))
+    except OSError:
+        return False
+
+
 def _file_label(name: str, base: str) -> str:
     """What a ``.xyz`` in a run folder actually is, said in the row rather than
     left to the file name. The three ORCA/CREST ones a user opens are worth
@@ -201,6 +225,19 @@ def discover_structure_sets(folder, base: str = "") -> list[dict]:
                 files.append(p)
         except OSError:
             continue
+
+    # A relaxed scan's points. ORCA 6.1.1 writes each point's optimized
+    # structure twice: as {base}.001.xyz, .002.xyz, ... and all together, in
+    # order, as {base}.allxyz (frames separated by ">", each comment naming
+    # its step and energy). The .allxyz is the set — one row, stepped through
+    # in scan order — and the numbered files are the same structures again,
+    # so they are not listed beside it.
+    scan = folder / f"{base}.allxyz" if base else None
+    if scan is not None and scan.is_file() and _is_scan_file(scan):
+        step_file = re.compile(re.escape(base) + r"\.\d{3}\.xyz", re.I)
+        files = [f for f in files if not step_file.fullmatch(f.name)]
+        sets.append({"key": "file:" + str(scan), "kind": "file", "path": str(scan),
+                     "label": "Scan points", "count": count_xyz_frames(scan)})
 
     for d in dirs:
         try:

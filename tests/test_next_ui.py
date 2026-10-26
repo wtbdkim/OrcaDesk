@@ -178,16 +178,11 @@ def test_the_preview_uses_the_references_own_component_vocabulary():
     # The two assertions below are what make DROPPING an element a decision
     # somebody took instead of something that quietly happened. Adding a name
     # here is allowed; doing it without saying why in DESIGN.md is not.
-    OUTSTANDING = {
-        # .seg .sep is a divider BETWEEN TWO GROUPS inside one segmented
-        # control, and the reference uses it in exactly one place: the builder's
-        # backend picker, DFT | MLIP | CREST . Beginner | Expert. The preview
-        # has no MLIP or CREST builder (DESIGN.md B30), so it has no such
-        # control and nothing to divide. It briefly carried one between the two
-        # buttons of a two-button control, which is not what the divider is for
-        # and cost 11px of width on a control whose size the design fixes.
-        "sep",
-    }
+    # Empty, and kept that way. The last entry was .seg .sep, the divider
+    # between the backends and Guided | .inp text in the builder's backend
+    # control -- absent until the preview had MLIP and CREST builders to put
+    # on the other side of it (DESIGN.md §17.4s).
+    OUTSTANDING = set()
     unexpected = sorted(missing - OUTSTANDING)
     assert not unexpected, (
         "design elements dropped without a decision: " + ", ".join(unexpected))
@@ -348,3 +343,31 @@ def test_the_builder_seeds_a_new_calculation_from_stepconfig_alone():
     assert sorted(fallback) == ["0", "1"], f"literal fallbacks in build.js: {fallback}"
     from orcamgr.gui import bridge
     assert "def get_step_defaults" in Path(bridge.__file__).read_text(encoding="utf-8")
+
+
+def test_the_builder_offers_every_mlip_and_crest_kind_the_engine_runs():
+    """The notebook builder's MLIP Task field and CREST form are the only way
+    the preview makes those calculations (DESIGN.md §17.4s). A kind the engine
+    runs and the builder cannot pick would be reachable only from classic."""
+    from orcamgr.core.queue import KNOWN_KINDS
+    src = _read(NEXT / "build.js")
+    offered = set(re.findall(r'\["((?:mlip|crest)_\w+)", "', src))
+    wanted = {k for k in KNOWN_KINDS if k.startswith(("mlip", "crest"))}
+    assert offered == wanted, f"builder offers {sorted(offered)}, engine runs {sorted(wanted)}"
+
+
+def test_the_default_mace_model_is_one_the_picker_lists():
+    """StepConfig keeps mlip_model "" (an ORCA calc carries no model) and the
+    runner runs DEFAULT_MACE_MODEL for it; get_step_defaults hands the builder
+    that same name to preselect. A default the closed picker does not list
+    would open the builder on an option that is not there."""
+    from orcamgr.mlip.runner import DEFAULT_MACE_MODEL, parse_mace_model
+    from orcamgr.state.store import load_choice_groups
+    groups = load_choice_groups("mace_models")
+    listed = [m for k, g in groups.items() if not k.startswith("_")
+              for m in (g if isinstance(g, list) else g.get("keywords", []))]
+    assert DEFAULT_MACE_MODEL in listed
+    assert parse_mace_model("") == parse_mace_model(DEFAULT_MACE_MODEL)
+    src = Path(__import__("orcamgr.gui.bridge", fromlist=["x"]).__file__).read_text(encoding="utf-8")
+    body = src[src.index("def get_step_defaults"):src.index("def load_choices")]
+    assert "DEFAULT_MACE_MODEL" in body

@@ -217,6 +217,14 @@ class ParseResult:
     # (IRC PATH SUMMARY) — the Results tab titles/captions the profile per kind
     neb_path_kind: str = "neb"
 
+    # --- relaxed surface scan (%geom Scan) ---
+    # The scanned coordinates as ORCA's banner states them — {kind "B"|"A"|"D",
+    # atoms (0-based, in ORCA's printed order), start, end, steps} — and one
+    # point per finished constrained optimization: {values (one per
+    # coordinate), e_eh, de_kcal (against the lowest point)}.
+    scan_coords: list = field(default_factory=list)
+    scan_points: list = field(default_factory=list)
+
     @property
     def shows_electronic_props(self) -> bool:
         """Whether to surface general electronic-structure properties (orbitals /
@@ -305,6 +313,8 @@ class ParseResult:
                 add("Brightest", f"{bright.wavelength_nm:.1f} nm  (f={bright.fosc:.4f})")
         if self.has_nmr:
             add("NMR nuclei", str(len(self.nmr_shieldings)))
+        if self.scan_points:
+            add("Surface scan", f"{len(self.scan_points)} points")
         return rows
 
     def brightest_transition(self) -> Optional[Transition]:
@@ -504,6 +514,7 @@ class OrcaOutParser:
         self._parse_tddft_states(lines, r)
         self._parse_nmr(lines, r)
         self._parse_neb_path(lines, r)
+        self._parse_scan(lines, r)
 
         return r
 
@@ -977,6 +988,94 @@ class OrcaOutParser:
             r.has_neb_path = True
             r.neb_path = path
             r.neb_path_kind = path_kind
+
+    # A relaxed surface scan, as ORCA 6.1.1 prints it (measured on water /
+    # H2O2, HF/def2-SVP, 1-D and 2-D):
+    #
+    #                        *    Relaxed Surface Scan    *
+    #                       Bond (  1,   0):   range=   0.90000000 ..   1.10000000  steps =    5
+    #   ... per point, a box naming the values it holds:
+    #          *               RELAXED SURFACE SCAN STEP   1               *
+    #          *                 Bond (  1,   0)  :   0.90000000           *
+    #   ... and at the end, one row per point (one value column per coordinate):
+    #   RELAXED SURFACE SCAN RESULTS
+    #   The Calculated Surface using the 'Actual Energy'
+    #      0.90000000 -75.95882048
+    #
+    # ORCA prints the atoms in its own order ("B 0 1" comes back as (1, 0)), so
+    # they are kept as printed. The results table is the authority; a run that
+    # stopped before it (an error termination mid-scan, or one still running)
+    # falls back to the points whose optimization finished — the step box's
+    # values and that step's last FINAL SINGLE POINT ENERGY before its
+    # "OPTIMIZATION RUN DONE" — so the points it did reach are not lost.
+    _SCAN_COORD = re.compile(
+        r"^\s*(Bond|Angle|Dihedral)\s*\(([\d,\s]+)\)\s*:\s*range=\s*(-?\d+\.\d+)"
+        r"\s*\.\.\s*(-?\d+\.\d+)\s+steps\s*=\s*(\d+)")
+    _SCAN_STEP_VALUE = re.compile(
+        r"^\s*\*\s*(?:Bond|Angle|Dihedral)\s*\([\d,\s]+\)\s*:\s*(-?\d+\.\d+)\s*\*")
+    _SCAN_KIND = {"Bond": "B", "Angle": "A", "Dihedral": "D"}
+
+    def _parse_scan(self, lines, r):
+        coords = []
+        for i, ln in enumerate(lines):
+            if "Relaxed Surface Scan" not in ln or "*" not in ln:
+                continue
+            for c in lines[i + 1: i + 12]:
+                m = self._SCAN_COORD.match(c)
+                if m:
+                    coords.append({
+                        "kind": self._SCAN_KIND[m.group(1)],
+                        "atoms": [int(a) for a in m.group(2).split(",") if a.strip()],
+                        "start": float(m.group(3)), "end": float(m.group(4)),
+                        "steps": int(m.group(5))})
+                elif coords:
+                    break
+            break
+        if not coords:
+            return
+        n = len(coords)
+        points = []
+        starts = [i for i, ln in enumerate(lines) if "RELAXED SURFACE SCAN RESULTS" in ln]
+        if starts:
+            k = starts[-1]
+            at = next((j for j in range(k, min(k + 40 + n, len(lines)))
+                       if "Actual Energy" in lines[j]), None)
+            if at is not None:
+                for ln in lines[at + 1: at + 1 + 1_000_000]:
+                    toks = ln.split()
+                    if len(toks) != n + 1:
+                        break
+                    try:
+                        vals = [float(t) for t in toks]
+                    except ValueError:
+                        break
+                    points.append({"values": vals[:n], "e_eh": vals[n]})
+        if not points:
+            values, energy = None, None
+            for ln in lines:
+                if "RELAXED SURFACE SCAN STEP" in ln:
+                    values, energy = [], None
+                    continue
+                if values is not None and len(values) < n:
+                    m = self._SCAN_STEP_VALUE.match(ln)
+                    if m:
+                        values.append(float(m.group(1)))
+                        continue
+                if values is None:
+                    continue
+                m = re.search(r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)", ln)
+                if m:
+                    energy = float(m.group(1))
+                elif ("OPTIMIZATION RUN DONE" in ln and energy is not None
+                      and len(values) == n):
+                    points.append({"values": values, "e_eh": energy})
+                    values, energy = None, None
+        r.scan_coords = coords
+        if points:
+            low = min(p["e_eh"] for p in points)
+            for p in points:
+                p["de_kcal"] = (p["e_eh"] - low) * HARTREE_TO_KCAL
+        r.scan_points = points
 
 
 def parse_file(path: str) -> ParseResult:

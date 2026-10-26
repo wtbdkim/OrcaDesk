@@ -302,6 +302,24 @@ class NebPointPayload(TypedDict):
     is_ts: bool
 
 
+class ScanCoordPayload(TypedDict):
+    """One scanned coordinate of a relaxed surface scan, as ORCA's banner
+    states it (parser.py _parse_scan). `atoms` are 0-based in ORCA's printed
+    order, which is not always the input's ("B 0 1" prints as (1, 0))."""
+    kind: str                 # "B" (Å) | "A" | "D" (degrees)
+    atoms: "list[int]"
+    start: float
+    end: float
+    steps: int
+
+
+class ScanPointPayload(TypedDict):
+    """One finished point of a relaxed surface scan."""
+    values: "list[float]"     # one per ScanCoordPayload, in the same order
+    e_eh: float
+    de_kcal: float            # against the lowest point of the scan
+
+
 class GeomAtomPayload(TypedDict):
     """One atom of the final/optimized geometry (Angstrom)."""
     el: str
@@ -364,6 +382,8 @@ class ParsePayload(TypedDict, total=False):
     nmr: "list[NmrPayload]"
     neb_path: "list[NebPointPayload]"
     neb_path_kind: str                        # "neb" | "irc" — titles the path profile
+    scan_coords: "list[ScanCoordPayload]"     # relaxed surface scan: what was scanned
+    scan_points: "list[ScanPointPayload]"     # ...and each finished point
     geometry: "list[GeomAtomPayload]"         # final/optimized coordinates (A)
     orbitals: "list[OrbitalPayload]"          # orbital energies (eV) + occupations
     tddft_states: "list[TddftStatePayload]"   # excited-state composition
@@ -703,6 +723,27 @@ class ModeShiftPayload(TypedDict):
     moved: "list[int]"
     max_shift: float
     atom: str
+
+
+class VibModePayload(TypedDict, total=False):
+    """get_vibration_mode - one of a finished result's vibrations, for the
+    report to animate. "n" is the report's own 1-based mode number and "count"
+    how many it lists; "origin" names the file the vector came from (the
+    .hess, else the .out's NORMAL MODES table). "coords" is the geometry the
+    modes belong to, moved onto the report's structure (a .hess is written
+    about the centre of mass), and "max_dev" how far it then still is from it,
+    Angstrom - more than a rounding error means the Hessian was taken at
+    another geometry. "vec" is the mode's Cartesian displacement per atom,
+    ORCA's normalized vector."""
+    ok: bool
+    error: str
+    n: int
+    count: int
+    freq: float
+    origin: str
+    coords: "list[list[float]]"
+    vec: "list[list[float]]"
+    max_dev: float
 
 
 # ---- orbital / density cubes (Results tab 3D viewer) --------------------------

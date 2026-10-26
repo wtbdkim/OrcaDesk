@@ -52,6 +52,9 @@ interface OrcaBridge {
   apply_constraint_target(xyz: string, constraintJson: string): Promise<string>;      // ConstraintApply JSON
   read_hess_modes(path: string): Promise<string>;                                      // HessModes JSON
   displace_mode(xyz: string, path: string, index: number, amplitude: number): Promise<string>; // ModeShift JSON
+  // one vibration of a finished result, matched to the report's numbering by
+  // wavenumber: {source, freqs, geometry, n} -> VibMode JSON
+  get_vibration_mode(payloadJson: string): Promise<string>;
   // parsing
   // the Results tab's one file button: picks a result file and says how to read
   // it — {ok, path, route:"parse"|"structure"} | {ok:false, cancelled:true}

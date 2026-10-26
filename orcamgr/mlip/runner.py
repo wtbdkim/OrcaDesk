@@ -43,6 +43,10 @@ LogCallback = Callable[[str], None]
 DEFAULT_FMAX = 0.05
 DEFAULT_MAX_STEPS = 500
 DEFAULT_DEVICE = ""
+# What a calculation with no model named runs (StepConfig.mlip_model "" means
+# this), and so what a builder offers first. One place, because the worker's
+# fallback and the builder's preselection used to be two literals.
+DEFAULT_MACE_MODEL = "MACE-OFF medium"
 
 
 # The worker script, run by the USER's interpreter (so it may import torch/mace/
@@ -314,7 +318,7 @@ def write_mlip_run_files(calc_dir, name: str, model: str, xyz: str, result_json,
     if device not in ("cpu", "cuda"):
         device = DEFAULT_DEVICE   # "" = auto (resolved in the worker)
     cfg = {
-        "model": model or "MACE-OFF medium",
+        "model": model or DEFAULT_MACE_MODEL,
         "family": family, "model_arg": model_arg, "head": head, "device": device,
         "charge": int(charge), "multiplicity": int(multiplicity),
         "task": task,
