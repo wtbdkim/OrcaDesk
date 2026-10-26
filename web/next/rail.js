@@ -37,16 +37,57 @@
   }
 
   /** How far along a running calculation is, 0..1, or null when it has not
-   *  produced enough to say. Never a made-up bar: an optimization reports its
-   *  own gradient progress, an SCF its convergence, and anything else gets no
-   *  bar at all rather than a decorative one. @param {any} c */
+   *  produced enough to say. Never a made-up bar: every share is a tracker's
+   *  own reading of what ORCA printed, and anything else gets no bar at all
+   *  rather than a decorative one.
+   *
+   *  It is the WHOLE job, not the stage running now: a TS optimization is a
+   *  Hessian, then the optimization, then (ts_opt_freq) the frequencies, and
+   *  reading only the current stage filled the bar when the Hessian finished
+   *  and emptied it when the optimization began. Each phase the kind runs is
+   *  an equal share; how long each takes is not knowable in advance.
+   *  @param {any} c */
   function progressOf(c) {
     if (c.state !== "running" || !NB.hasGraph(c.name)) return null;
     const b = NB.trackers(c.name);
+    const ph = phasesOf(c.kind || "", b);
+    if (ph) return ph.reduce((a, p) => a + Math.max(0, Math.min(1, p())), 0) / ph.length;
     if (b.geo.hasData()) return b.geo.progress();
     if (b.crest.hasData() && typeof b.crest.progress === "function") return b.crest.progress();
     if (b.freq.hasData() && typeof b.freq.progress === "function") return b.freq.progress();
     if (b.scf.hasData()) return b.scf.progress(SCFGraph.targetFor(c.scf_convergence || "TightSCF"));
+    return null;
+  }
+
+  /** The phases a kind runs, each a 0..1 reading, or null for a kind that is
+   *  one stage (its tracker's own progress is then the whole job).
+   *  A leading Hessian counts when one ran, and is expected until the next
+   *  phase starts where the kind usually computes one (a TS optimization's
+   *  Calc_Hess, an IRC's initial Hessian); a run that skipped it simply drops
+   *  that share. @param {string} k @param {any} b */
+  function phasesOf(k, b) {
+    const f = b.freq, g = b.geo, ir = b.irc;
+    // done once the next phase has data, or once its chain was wiped by the
+    // next phase's banner (an IRC's first step comes a while after it)
+    const hess = () => g.hasData() || (ir && ir.hasData()) || (f.hadPre && !f.hasData())
+      ? 1 : f.hasData() ? f.progress() : 0;
+    if (k === "opt" || k === "ts_opt" || k === "opt_freq" || k === "ts_opt_freq") {
+      const ph = [];
+      if (f.preHessian() || (k.startsWith("ts_") && !g.hasData())) ph.push(hess);
+      // GeoTracker reads a cycle with every criterion YES as 1, and a TS
+      // search went on past three of them; only ORCA's own end is the end
+      ph.push(() => g.done ? 1 : g.hasData() ? Math.min(0.99, g.progress()) : 0);
+      // the frequencies after the optimization (not a Hessian inside it)
+      if (k.endsWith("_freq")) ph.push(() => g.done && f.hasData() && !f.prestep ? f.progress() : 0);
+      return ph;
+    }
+    if (k === "freq" || k === "ts_freq") return [() => f.hasData() ? f.progress() : 0];
+    if (k === "irc" && ir) {
+      const ph = [];
+      if (f.preHessian() || !ir.hasData()) ph.push(hess);
+      ph.push(() => ir.hasData() ? (ir.progress() || 0) : 0);
+      return ph;
+    }
     return null;
   }
 
@@ -123,7 +164,7 @@
         <span class="qinpslot">${isOrca
           ? `<button class="btn btn-xs btn-ghost qinp" type="button" title="Input (.inp)">.inp</button>` : ""}</span>
       </span>
-      ${frac != null ? `<span class="qbar"><span style="width:${Math.round(frac * 100)}%"></span></span>` : ""}`;
+      ${frac != null ? `<span class="qbar"><span style="width:${Math.floor(frac * 100)}%"></span></span>` : ""}`;
 
     el.querySelector(".qexp").addEventListener("click", () => toggleDetail(el, c));
     el.querySelector(".qmain").addEventListener("click", () => {

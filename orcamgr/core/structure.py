@@ -611,8 +611,17 @@ def set_internal(atoms, indices, value: float):
     start from. A coordinate reads the same in either direction (B i j = B j i,
     A i j k = A k j i, D i j k l = D l k j i), so the choice is free. The atom
     order is preserved by construction."""
+    idx, side = _hinge(_adjacency(len(atoms), bonds(atoms)), indices)
+    out = list(atoms)
+    _turn(out, idx, side, value)
+    return out, side
+
+
+def _hinge(adj, indices):
+    """(the atoms in the order that moves the smaller side, that side) for
+    set_internal. Depends only on the bonds, so it holds while the coordinate
+    is being moved. StructureError when no side can move rigidly."""
     n = len(indices)
-    adj = _adjacency(len(atoms), bonds(atoms))
     options = []
     for idx in (tuple(indices), tuple(reversed(indices))):
         side = _side_for(adj, idx)
@@ -629,7 +638,13 @@ def set_internal(atoms, indices, value: float):
     # fewest atoms first; a stable sort keeps the side of the last atom named
     # on a tie, which is what "select outwards along the chain" reads as
     options.sort(key=lambda o: o[0])
-    _, idx, side = options[0]
+    return options[0][1], options[0][2]
+
+
+def _turn(atoms, idx, side, value: float):
+    """Move `side` of the list `atoms` IN PLACE, rigidly, so the coordinate
+    `idx` (as _hinge ordered it) reads `value`."""
+    n = len(idx)
     p = [_pos(atoms[i]) for i in idx]
 
     if n == 2:
@@ -655,14 +670,9 @@ def set_internal(atoms, indices, value: float):
         def fn(q):
             return _add(origin, _rodrigues(_sub(q, origin), axis, delta))
 
-    out = []
-    for i, a in enumerate(atoms):
-        if i in side:
-            x, y, z = fn(_pos(a))
-            out.append(Atom(a.sym, x, y, z))
-        else:
-            out.append(a)
-    return out, side
+    for i in side:
+        x, y, z = fn(_pos(atoms[i]))
+        atoms[i] = Atom(atoms[i].sym, x, y, z)
 
 
 #: The coordinates a target can be applied to, by ORCA constraint letter. A
@@ -696,57 +706,37 @@ def _rewrite(text: str, rows, new_atoms, moved) -> str:
     return "\n".join(lines)
 
 
-def apply_constraint_target(text: str, kind: str, indices, value) -> dict:
-    """The coordinate block `text` with a constraint's atoms moved to its
-    target - the builder's *Apply* button.
-
-    Returns {ok, error, xyz, moved, before, after, warnings}. Only the lines of
-    atoms that moved are rewritten, at their own precision but never fewer than
-    6 decimals (at 5 a 100 degree target read back as 99.9998: the rounding is
-    a bend); every other line is the user's text, byte for byte. "after" is
-    measured on the text handed back, not on the unrounded motion, so it states
-    what the box now holds. A moved atom that lands on one that
-    stayed is reported, not refused (P26): it is the structure that was asked
-    for, and worth a look before it runs."""
-    out = {"ok": False, "error": "", "xyz": "", "moved": [],
-           "before": None, "after": None, "warnings": []}
+def _target_of(kind, indices, value, n_atoms):
+    """(indices, value) of one constraint's target, or the sentence saying
+    why it has none that can be applied."""
     n = _TARGET_ATOMS.get(str(kind or "").upper())
     if n is None:
-        out["error"] = "Only a bond, angle or dihedral has a target to move to."
-        return out
+        return "Only a bond, angle or dihedral has a target to move to."
     try:
         idx = [int(i) for i in indices]
         v = float(value)
     except (TypeError, ValueError):
-        out["error"] = "That constraint has no target value."
-        return out
+        return "That constraint has no target value."
     if len(idx) != n or len(set(idx)) != n:
-        out["error"] = f"That constraint needs {n} different atoms."
-        return out
+        return f"That constraint needs {n} different atoms."
     if not math.isfinite(v):
-        out["error"] = "That target is not a number."
-        return out
-    rows = _atom_lines(text)
-    atoms = [a for _, a in rows]
+        return "That target is not a number."
     for i in idx:
-        if not 0 <= i < len(atoms):
-            out["error"] = f"There is no atom {i + 1} — the structure has {len(atoms)}."
-            return out
+        if not 0 <= i < n_atoms:
+            return f"There is no atom {i + 1} — the structure has {n_atoms}."
     if n == 2 and not 0.1 <= v <= 50:
-        out["error"] = "A bond target must be between 0.1 and 50 Å."
-        return out
+        return "A bond target must be between 0.1 and 50 Å."
     if n == 3 and not 0 < v <= 180:
-        out["error"] = "An angle target must be above 0° and at most 180°."
-        return out
-    try:
-        before = measure(atoms, idx)
-        moved_atoms, side = set_internal(atoms, idx, v)
-    except StructureError as e:
-        out["error"] = str(e)
-        return out
+        return "An angle target must be above 0° and at most 180°."
+    return idx, v
 
-    # an atom ON the hinge axis (a dihedral's own k) belongs to the moving side
-    # but does not move, and its line stays the user's
+
+def _moved_text(text, rows, atoms, moved_atoms, side):
+    """(the text with the moved lines rewritten, the moved indices, clash
+    warnings). An atom ON a hinge axis (a dihedral's own k) belongs to the
+    moving side but does not move, and its line stays the user's. A moved
+    atom that lands on one that stayed is reported, not refused (P26): it is
+    the structure that was asked for, and worth a look before it runs."""
     side = {k for k in side
             if _norm(_sub(_pos(moved_atoms[k]), _pos(atoms[k]))) > 1e-9}
     xyz = _rewrite(text, rows, moved_atoms, side)
@@ -765,11 +755,126 @@ def apply_constraint_target(text: str, kind: str, indices, value) -> dict:
     def name(i):
         return f"{normalize_symbol(atoms[i].sym) or atoms[i].sym}{i + 1}"
 
-    out["warnings"] = [
-        f"{name(i)} is now {d:.2f} Å from {name(j)} — closer than a bond."
-        for d, i, j in clashes[:_MAX_LISTED_CLASHES]]
-    out.update(ok=True, xyz=xyz, moved=sorted(side), before=before,
+    warnings = [f"{name(i)} is now {d:.2f} Å from {name(j)} — closer than a bond."
+                for d, i, j in clashes[:_MAX_LISTED_CLASHES]]
+    return xyz, sorted(side), warnings
+
+
+def apply_constraint_target(text: str, kind: str, indices, value) -> dict:
+    """The coordinate block `text` with a constraint's atoms moved to its
+    target - the builder's *Apply* button.
+
+    Returns {ok, error, xyz, moved, before, after, warnings}. Only the lines of
+    atoms that moved are rewritten, at their own precision but never fewer than
+    6 decimals (at 5 a 100 degree target read back as 99.9998: the rounding is
+    a bend); every other line is the user's text, byte for byte. "after" is
+    measured on the text handed back, not on the unrounded motion, so it states
+    what the box now holds."""
+    out = {"ok": False, "error": "", "xyz": "", "moved": [],
+           "before": None, "after": None, "warnings": []}
+    rows = _atom_lines(text)
+    atoms = [a for _, a in rows]
+    t = _target_of(kind, indices, value, len(atoms))
+    if isinstance(t, str):
+        out["error"] = t
+        return out
+    idx, v = t
+    try:
+        before = measure(atoms, idx)
+        moved_atoms, side = set_internal(atoms, idx, v)
+    except StructureError as e:
+        out["error"] = str(e)
+        return out
+    xyz, moved, warnings = _moved_text(text, rows, atoms, moved_atoms, side)
+    out.update(ok=True, xyz=xyz, moved=moved, before=before, warnings=warnings,
                after=measure(parse_block(xyz), idx))
+    return out
+
+
+#: How close *Apply all* brings every target - finer than the builder prints
+#: (0.001 Å, 0.1°), and ORCA drives the last of it in the run anyway.
+_ALL_TOL = {2: 1e-4, 3: 0.01, 4: 0.01}
+#: Rounds of turns before a set of targets is called one that cannot hold
+#: together. Three angles about one atom set to 120° each (a planar centre,
+#: where the targets only just fit, so each round gains little) took about
+#: 2500 to reach 0.01° on a 16-atom TS guess; a set that fits with room to
+#: spare takes a handful.
+_ALL_ROUNDS = 8000
+
+
+def apply_constraint_targets(text: str, constraints) -> dict:
+    """The coordinate block `text` with EVERY constraint that has a target
+    moved to it at once - the builder's *Apply all*.
+
+    One Apply turns the smaller side of its own hinge, and that can undo
+    another's: three angles about one carbon, applied one by one, never read
+    120/120/120 together, since each turn opens one angle and closes its
+    neighbour. So the same rigid turns a single Apply makes are taken in
+    rounds until every target holds to _ALL_TOL - still no force field and
+    no free moves. A set that cannot hold together (three angles about one
+    atom summing past 360°) is refused with the coordinate furthest off, and
+    the box is left alone. Constraints without a target are skipped, as is a
+    fixed atom. Returns the apply_constraint_target dict with "before" /
+    "after" as lists, one per applied constraint, in order."""
+    out = {"ok": False, "error": "", "xyz": "", "moved": [],
+           "before": [], "after": [], "warnings": []}
+    rows = _atom_lines(text)
+    atoms = [a for _, a in rows]
+    targets = []
+    for c in constraints or []:
+        if not isinstance(c, dict) or c.get("value") is None \
+                or str(c.get("kind", "")).upper() not in _TARGET_ATOMS:
+            continue
+        t = _target_of(c.get("kind"), c.get("atoms") or [], c.get("value"), len(atoms))
+        if isinstance(t, str):
+            out["error"] = t
+            return out
+        targets.append(t)
+    if not targets:
+        out["error"] = "No constraint has a target to move to."
+        return out
+    adj = _adjacency(len(atoms), bonds(atoms))
+    try:
+        plan = [(*_hinge(adj, idx), v) for idx, v in targets]
+    except StructureError as e:
+        out["error"] = str(e)
+        return out
+
+    work = list(atoms)
+
+    def off(k):
+        idx, _, v = plan[k]
+        d = measure(work, idx) - v
+        if len(idx) == 4:
+            d = (d + 180.0) % 360.0 - 180.0
+        return abs(d)
+
+    try:
+        for _ in range(_ALL_ROUNDS):
+            for idx, side, v in plan:
+                _turn(work, idx, side, v)
+            if all(off(k) <= _ALL_TOL[len(plan[k][0])] for k in range(len(plan))):
+                break
+        else:
+            k = max(range(len(plan)), key=off)
+            idx, _, v = plan[k]
+            unit = "Å" if len(idx) == 2 else "°"
+            names = "-".join(f"{normalize_symbol(atoms[i].sym) or atoms[i].sym}{i + 1}"
+                             for i in idx)
+            out["error"] = (f"These targets cannot all hold at once: moving the others "
+                            f"keeps {names} at {measure(work, idx):.2f}{unit}, not "
+                            f"{v:g}{unit}. Change one of them, or apply them one by one.")
+            return out
+    except StructureError as e:
+        out["error"] = str(e)
+        return out
+
+    side = set().union(*(s for _, s, _ in plan))
+    xyz, moved, warnings = _moved_text(text, rows, atoms, work, side)
+    done = parse_block(xyz)
+    out.update(ok=True, xyz=xyz, moved=moved, warnings=warnings,
+               before=[measure(atoms, idx) for idx, _ in targets],
+               after=[measure(done, idx) for idx, _ in targets])
     return out
 
 

@@ -948,6 +948,29 @@ test("irc forward-only run is done when the forward walk converges", function ()
   assert.strictEqual(t.progress(), 0.99, "held under 1 until the summary");
 });
 
+test("a Hessian inside an IRC or an optimization is remembered after its chain resets", function () {
+  const irc = new SCFGraph.FreqTracker();
+  ["Intrinsic Reaction Coordinate Calculation",
+   "                 ORCA NUMERICAL FREQUENCIES",
+   "Number of displacements        ... 48 - 3",
+  ].forEach(l => irc.push(l));
+  assert.ok(irc.preHessian(), "the IRC's initial Hessian is a pre-step");
+  irc.push("         *                          FORWARD IRC                      *");
+  assert.ok(!irc.hasData(), "the chain itself is wiped");
+  assert.ok(irc.preHessian(), "but that it ran is not");
+
+  const ts = new SCFGraph.FreqTracker();
+  ts.push("*                GEOMETRY OPTIMIZATION CYCLE   1            *");
+  ts.push("GEOMETRIC PERTURBATIONS (16 nuclei)");
+  assert.ok(ts.preHessian());
+  ts.push("*                GEOMETRY OPTIMIZATION CYCLE   2            *");
+  assert.ok(ts.preHessian());
+
+  const plain = new SCFGraph.FreqTracker();
+  plain.push("                 ORCA NUMERICAL FREQUENCIES");
+  assert.ok(!plain.preHessian(), "a frequency job is not a pre-step");
+});
+
 // ---------- summary ----------
 console.log("");
 console.log(passed + " passed, " + failed + " failed");
