@@ -229,7 +229,9 @@ The rail holds three state groups, of which only **Finished** folds and carries
 its own *Clear* (queue-list only — no folder is touched), plus an **Opened
 files** group listing results read from outside the workspace this session,
 whose header is also the rail's *Open file…*; `results.js` hands each one over
-through `NB.rail.noteOpened`. A row expands (`.qdet`) into the design's own
+through `NB.rail.noteOpened`. A click on a row in Jobs expands it (in Results
+a finished row's click opens its report instead — the rail is the picker
+there); the row expands (`.qdet`) into the design's own
 controls, in its wording: **↑ earlier / ↓ later** (the keyboard path for a
 reorder the drag only adds to — they walk the row's own group and disable
 themselves at its ends), *results*, *duplicate* (the setup back as a new PENDING

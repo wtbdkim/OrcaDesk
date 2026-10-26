@@ -127,8 +127,14 @@
 
     el.querySelector(".qexp").addEventListener("click", () => toggleDetail(el, c));
     el.querySelector(".qmain").addEventListener("click", () => {
-      if (c.state === "done" || c.state === "failed") NB.results.open(c.name);
-      else toggleDetail(el, c);
+      // In Results the rail IS the result picker (DESIGN.md §17.0e), so a
+      // finished row opens its report there. In Jobs a click on any row shows
+      // its controls: a finished row used to jump to Results instead, and its
+      // duplicate / remove sat behind the small chevron alone, where nobody
+      // looked for them. Its report is the first of those controls.
+      if (NB.view === "results" && (c.state === "done" || c.state === "failed")) {
+        NB.results.open(c.name);
+      } else toggleDetail(el, c);
     });
     const ed = el.querySelector(".qedit");
     if (ed && editable) ed.addEventListener("click", e => { e.stopPropagation(); openEditor(c.name); });

@@ -169,6 +169,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   hit-target rule can save.
 
 ### Fixed
+- Clicking a finished calculation in the queue now shows its controls —
+  results, duplicate, folder, remove — like any other row. It used to jump
+  to the Results view, leaving those controls behind the small arrow alone.
+  In the Results view a click still opens that calculation's report.
 - Finished calculations can be removed from the queue while it is running —
   one at a time or with the Finished group's *Clear*. Removing one never
   touched its files, but the queue refused it until the whole run ended. A
