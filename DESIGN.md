@@ -1835,6 +1835,25 @@ each as a multiple of its own threshold, until it reads *converged*. Both,
 because ORCA ends a direction only when both are under: max|G| alone read
 "0.96× limit" on a direction that still had steps to walk.
 
+**17.4p A push is a distance the reader can picture.** Stepping off a
+saddle point - pushing the coordinates along an imaginary mode, then
+re-optimizing - is done by hand because ORCA has no option for it. The
+builder does it where the coordinates are made: **Load .hess…** beside *Load
+.xyz…* opens a panel under the stage with the mode (every vibration, the first
+imaginary one preselected, imaginary ones marked), a direction (+ / −) and a
+distance. The distance is what the **most-moved atom** travels, in Å, as a
+slider and a number side by side (the slider for feel, the number for an exact
+value) - a normal mode's vector is normalized over every atom, so its own
+scale means nothing to the hand moving it, while "H12 moves 0.20 Å" does. The
+stage previews the pushed structure as the controls move, and nothing touches
+the coordinates until *Apply*, which is an edit of the box (Ctrl+Z undoes it,
+as with a constraint's Apply) and resets the distance to 0 so a second push is
+from the new coordinates, not a double one. A small imaginary mode says, under
+the controls, that it is often noise a tighter optimization removes - the
+push is offered, not urged. It lives in the builder rather than the report
+because a push is the first step of a NEW calculation, and the builder is
+where one is made (a deliberate move from the report, at the user's call).
+
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
 **both** front-ends — the way out of a preview has to be inside it — and saving

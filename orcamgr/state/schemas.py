@@ -669,6 +669,42 @@ class ConstraintApplyPayload(TypedDict):
     warnings: "list[str]"
 
 
+class HessModePayload(TypedDict):
+    """One vibration of a .hess - 3 keys. "index" addresses it in the file
+    (translations and rotations included, so the first vibration is usually
+    6); "n" is its 1-based number among the vibrations, the way the report
+    numbers modes; "freq" in cm^-1, negative = imaginary."""
+    index: int
+    n: int
+    freq: float
+
+
+class HessModesPayload(TypedDict, total=False):
+    """read_hess_modes - the vibrations a .hess carries, and its geometry (the
+    one the modes were computed at) as a coordinate block in Angstrom."""
+    ok: bool
+    error: str
+    path: str
+    name: str
+    n_atoms: int
+    symbols: "list[str]"
+    xyz: str
+    modes: "list[HessModePayload]"
+
+
+class ModeShiftPayload(TypedDict):
+    """displace_mode - 6 keys, exactly core.structure.displace_along_mode's
+    dict. "xyz" is the whole coordinate text, only the moved lines rewritten
+    (or the Hessian's own geometry, pushed, for an empty box); "max_shift" the
+    most-moved atom's shift in Angstrom; "atom" that atom (C3)."""
+    ok: bool
+    error: str
+    xyz: str
+    moved: "list[int]"
+    max_shift: float
+    atom: str
+
+
 # ---- orbital / density cubes (Results tab 3D viewer) --------------------------
 
 class WorkspaceResultPayload(TypedDict):

@@ -676,6 +676,26 @@ def _decimals(tok: str) -> int:
     return len(tok.split(".", 1)[1]) if "." in tok else 0
 
 
+def _rewrite(text: str, rows, new_atoms, moved) -> str:
+    """`text` with the atoms in `moved` set to their `new_atoms` position. Only
+    those lines change, and only their three numbers: the symbol, the spacing
+    between fields and anything after them stay as the user wrote them, at the
+    line's own precision but never fewer than 6 decimals (at 5 a 100 degree
+    target read back as 99.9998: the rounding is a bend). `rows` is
+    _atom_lines(text)."""
+    lines = (text or "").split("\n")
+    for k in sorted(moved):
+        n_line = rows[k][0]
+        pieces = re.split(r"(\s+)", lines[n_line])
+        words = [n for n, t in enumerate(pieces) if t and not t.isspace()]
+        dec = min(10, max(6, *(_decimals(pieces[n]) for n in words[1:4])))
+        a = new_atoms[k]
+        for n, v in zip(words[1:4], (a.x, a.y, a.z)):
+            pieces[n] = f"{v:.{dec}f}"
+        lines[n_line] = "".join(pieces)
+    return "\n".join(lines)
+
+
 def apply_constraint_target(text: str, kind: str, indices, value) -> dict:
     """The coordinate block `text` with a constraint's atoms moved to its
     target - the builder's *Apply* button.
@@ -729,18 +749,7 @@ def apply_constraint_target(text: str, kind: str, indices, value) -> dict:
     # but does not move, and its line stays the user's
     side = {k for k in side
             if _norm(_sub(_pos(moved_atoms[k]), _pos(atoms[k]))) > 1e-9}
-    lines = (text or "").split("\n")
-    for k in sorted(side):
-        n_line = rows[k][0]
-        # the three numbers are swapped in place; the symbol, the whitespace
-        # between fields and anything after them stay as the user wrote them
-        pieces = re.split(r"(\s+)", lines[n_line])
-        words = [n for n, t in enumerate(pieces) if t and not t.isspace()]
-        dec = min(10, max(6, *(_decimals(pieces[n]) for n in words[1:4])))
-        a = moved_atoms[k]
-        for n, v in zip(words[1:4], (a.x, a.y, a.z)):
-            pieces[n] = f"{v:.{dec}f}"
-        lines[n_line] = "".join(pieces)
+    xyz = _rewrite(text, rows, moved_atoms, side)
 
     radii = [covalent_radius(a.sym) for a in moved_atoms]
     clashes = []
@@ -759,7 +768,94 @@ def apply_constraint_target(text: str, kind: str, indices, value) -> dict:
     out["warnings"] = [
         f"{name(i)} is now {d:.2f} Å from {name(j)} — closer than a bond."
         for d, i, j in clashes[:_MAX_LISTED_CLASHES]]
-    xyz = "\n".join(lines)
     out.update(ok=True, xyz=xyz, moved=sorted(side), before=before,
                after=measure(parse_block(xyz), idx))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# pushing a structure along a vibrational mode - the second place this WRITES
+# ---------------------------------------------------------------------------
+#
+# A frequency run's .hess holds every mode's direction. Moving the coordinates
+# a little along one - most often an imaginary mode, to step off a saddle
+# point before re-optimizing to a minimum - is the standard repair, done by
+# hand in a text editor because ORCA has no option for it. Like
+# apply_constraint_target this answers one narrow question - "these
+# coordinates, pushed this far along that mode" - and writes nothing else.
+
+#: The largest push offered, in Angstrom of the most-moved atom. Past this a
+#: mode is no longer a small displacement and the result is a new structure.
+MAX_MODE_SHIFT = 2.0
+
+
+def displace_along_mode(text: str, symbols, coords, vector, amplitude) -> dict:
+    """The coordinates pushed along one mode.
+
+    `symbols` / `coords` (Angstrom) are the geometry the mode was computed at
+    (the .hess's own) and `vector` its 3N Cartesian direction. `amplitude` is
+    how far the MOST-moved atom goes, in Angstrom, and its sign the direction
+    (+ along the vector, - against it): a mode's vector is normalized over all
+    atoms, so its own scale says nothing a reader can picture, while "the
+    furthest atom moves 0.2 A" does.
+
+    `text` is the coordinate box. When it holds atoms they must be the .hess's
+    atoms in the .hess's order - a mode is a list of per-atom arrows, and
+    applied to another ordering it pushes the wrong atoms - and only the moved
+    lines are rewritten (_rewrite). An empty box gets the .hess's own geometry,
+    pushed. Returns {ok, error, xyz, moved, max_shift, atom}."""
+    out = {"ok": False, "error": "", "xyz": "", "moved": [], "max_shift": 0.0, "atom": ""}
+    n = len(symbols)
+    if len(vector) != 3 * n or len(coords) != n:
+        out["error"] = "That mode does not belong to this Hessian's atoms."
+        return out
+    try:
+        amp = float(amplitude)
+    except (TypeError, ValueError):
+        out["error"] = "The push is not a number."
+        return out
+    if not math.isfinite(amp) or abs(amp) > MAX_MODE_SHIFT:
+        out["error"] = f"Push at most {MAX_MODE_SHIFT:g} Å."
+        return out
+    lens = [_norm(tuple(vector[3 * i:3 * i + 3])) for i in range(n)]
+    peak = max(lens) if lens else 0.0
+    if peak < 1e-12:
+        out["error"] = ("That mode moves nothing - it is a translation or a "
+                        "rotation, not a vibration.")
+        return out
+    scale = amp / peak
+
+    rows = _atom_lines(text)
+    if rows:
+        if len(rows) != n:
+            out["error"] = (f"The coordinates have {len(rows)} atoms and the Hessian "
+                            f"{n}. Load the structure the frequencies were computed "
+                            f"for, or clear the box to use the Hessian's own.")
+            return out
+        for i, (_, a) in enumerate(rows):
+            if normalize_symbol(a.sym) != normalize_symbol(symbols[i]):
+                out["error"] = (f"Atom {i + 1} is {a.sym} in the coordinates and "
+                                f"{symbols[i]} in the Hessian: the mode would push "
+                                f"the wrong atoms. The order has to match.")
+                return out
+        base = [_pos(a) for _, a in rows]
+        syms = [a.sym for _, a in rows]
+    else:
+        base = [tuple(c) for c in coords]
+        syms = list(symbols)
+
+    moved_atoms = []
+    for i in range(n):
+        v = vector[3 * i:3 * i + 3]
+        moved_atoms.append(Atom(syms[i], base[i][0] + scale * v[0],
+                                base[i][1] + scale * v[1], base[i][2] + scale * v[2]))
+    moved = {i for i in range(n) if lens[i] * abs(scale) > 1e-9}
+    if rows:
+        xyz = _rewrite(text, rows, moved_atoms, moved)
+    else:
+        xyz = "\n".join(f"{a.sym:<2s} {a.x:14.8f} {a.y:14.8f} {a.z:14.8f}"
+                        for a in moved_atoms)
+    top = max(range(n), key=lambda i: lens[i])
+    out.update(ok=True, xyz=xyz, moved=sorted(moved), max_shift=abs(amp),
+               atom=f"{normalize_symbol(syms[top]) or syms[top]}{top + 1}")
     return out

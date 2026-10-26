@@ -6,6 +6,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [0.10.1] — 2026-09-11
 
 ### Added
+- **Push a structure along a vibrational mode.** In the notebook builder,
+  *Load .hess…* beside *Load .xyz…* reads a frequency run's Hessian and lists
+  every mode, imaginary ones marked and the first preselected. Pick a
+  direction and how far the most-moved atom should go (Å, slider or number),
+  watch it on the stage, then *Apply* it to the coordinates — Ctrl+Z undoes
+  it. The standard way off a saddle point before re-optimizing; an empty box
+  takes the Hessian's own geometry, and coordinates for other atoms are
+  refused.
 - **Geometry constraints, picked on the structure.** The notebook builder
   draws the structure beside its coordinates as you type. For an optimization
   (Opt, Opt + Freq, TS Opt, TS Opt + Freq), drag across 2, 3 or 4 atoms — or

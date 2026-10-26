@@ -1270,3 +1270,14 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
    rows keep their labels for a screen reader (.vh), out of sight. */
 .vh{position:absolute; width:1px; height:1px; overflow:hidden;
   clip:rect(0 0 0 0); white-space:nowrap;}
+
+/* ---------------------------- push along a mode ----------------------------
+   An addition to the reference (DESIGN.md §17.4p): under the builder's
+   coordinates, once a .hess is loaded. The slider and its number are one
+   control - the slider for feel, the number for an exact distance. */
+.modepush{margin-top:12px;}
+.modepush .grouplabel .hint{margin:0 0 0 8px; font-weight:400;}
+.mprange{display:flex; align-items:center; gap:10px;}
+.mprange input[type="range"]{flex:1; min-width:0; accent-color:var(--foreground);}
+.mprange input[type="number"]{width:84px;}
+

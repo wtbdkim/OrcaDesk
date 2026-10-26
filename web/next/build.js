@@ -258,6 +258,8 @@
       <div data-g="direct"${src === "reference" ? " hidden" : ""}>
         <div class="btn-group" style="align-items:center;margin-bottom:10px">
           <button class="btn btn-sm" type="button" data-act="loadxyz">Load .xyz…</button>
+          <button class="btn btn-sm btn-ghost" type="button" data-act="loadhess"
+                  title="Push the coordinates along a vibrational mode of a frequency run">Load .hess…</button>
           <span class="hint" style="margin:0" data-x="status">${
             st.xyz ? st.xyz.trim().split("\n").length + " atoms" : ""}</span>
         </div>
@@ -276,6 +278,26 @@
               <button class="btn btn-sm" type="button" data-act="fixatom" disabled
                       title="Hold the selected atom's position">Fix atom</button></div>` : ""}
           </div>
+        </div>
+        <!-- push along a mode: a frequency run's .hess, a mode, how far. The
+             stage previews it; Apply puts it in the box (DESIGN.md §17.4p) -->
+        <div class="plate modepush" data-x="modepush" hidden>
+          <div class="grouplabel">Push along a mode <span class="hint" data-x="hessname"></span></div>
+          <div class="field-row">
+            <div class="field"><label for="mp-mode">Mode</label>
+              <select id="mp-mode" data-f="mode"></select></div>
+            <div class="field narrow"><label>Direction</label>
+              <div class="seg" role="group" aria-label="Direction">
+                <button type="button" data-dir="1" aria-pressed="true">+</button>
+                <button type="button" data-dir="-1" aria-pressed="false">−</button></div></div>
+            <div class="field"><label for="mp-amp">Push (Å, the atom that moves most)</label>
+              <div class="mprange">
+                <input id="mp-amp" type="range" min="0" max="1" step="0.01" value="0.2" data-f="amp">
+                <input class="mono" type="number" min="0" max="2" step="0.01" value="0.2"
+                       data-f="ampn" aria-label="Push, Å"></div></div>
+          </div>
+          <p class="hint" data-x="pushnote" style="margin:0 0 10px"></p>
+          <button class="btn btn-sm btn-primary" type="button" data-act="pushapply">Apply to coordinates</button>
         </div>
         <!-- what is wrong with this structure, said BEFORE it costs hours of
              compute rather than after: a multiplicity the electron count cannot
@@ -873,16 +895,7 @@
       const r = await NB.call("apply_constraint_target", ta.value,
         JSON.stringify({ kind: c.kind, atoms: c.atoms, value: c.value }));
       if (!r || !r.ok) { NB.fail((r && r.error) || "Could not move the coordinates."); return; }
-      const top = ta.scrollTop;
-      ta.focus({ preventScroll: true });
-      ta.select();
-      // insertText rather than .value: the box keeps its own undo history
-      if (!document.execCommand("insertText", false, r.xyz)) {
-        ta.value = r.xyz;
-      }
-      ta.scrollTop = top;
-      clearTimeout(timer);
-      showGeom();
+      putText(r.xyz);
       stage.setHighlight(c.atoms);
       const moved = (r.moved || []).map(atomName);
       NB.toast(moved.length
@@ -890,6 +903,117 @@
           + "Ctrl+Z in the coordinates puts them back."
         : "Already at the target.", "ok");
       (r.warnings || []).forEach(w => NB.fail(w));
+    }
+
+    /** Replace the box's text as an EDIT of it: insertText rather than
+     *  .value, so the box keeps its own undo history and Ctrl+Z there puts the
+     *  old coordinates back. @param {string} text */
+    function putText(text) {
+      const top = ta.scrollTop;
+      ta.focus({ preventScroll: true });
+      ta.select();
+      if (!document.execCommand("insertText", false, text)) ta.value = text;
+      ta.scrollTop = top;
+      clearTimeout(timer);
+      showGeom();
+    }
+
+    // ---- push along a mode (DESIGN.md §17.4p) ------------------------------
+    /* A frequency run's .hess holds every mode's direction. Picking one and a
+       distance previews the pushed structure on this stage; Apply puts it in
+       the box. The geometry is the backend's (structure.displace_along_mode,
+       P4): the distance is how far the MOST-moved atom goes, which is a number
+       a reader can picture, where a normalized vector's own scale is not. */
+    const mp = q('[data-x="modepush"]');
+    /** @type {{path: string, modes: any[]}|null} */
+    let hess = null;
+    let dir = 1;
+    /** @type {any} */
+    let ptimer = 0;
+    const ampOf = () => {
+      const v = parseFloat(q('[data-f="ampn"]').value);
+      return isFinite(v) && v >= 0 ? Math.min(v, 2) : 0;
+    };
+    const modeOf = () => hess && hess.modes[Number(q('[data-f="mode"]').value)];
+    const sayPush = (/** @type {string} */ t) => { q('[data-x="pushnote"]').textContent = t; };
+
+    /** Show the pushed structure on the stage, not yet in the box. */
+    async function preview() {
+      const m = modeOf();
+      if (!m) return;
+      const amp = ampOf();
+      const r = await NB.call("displace_mode", ta.value, hess.path, m.index, dir * amp);
+      if (!r || !r.ok) {
+        sayPush((r && r.error) || "Could not push along that mode.");
+        stage.setAtoms(atoms);
+        return;
+      }
+      stage.setAtoms(MOL.parseXyz(r.xyz));
+      // an empty box previews the Hessian's own geometry, so the stage is not
+      // empty whatever the box says
+      const empty = q('[data-x="geomempty"]');
+      if (empty) empty.hidden = true;
+      const small = m.freq < 0 && m.freq > -50
+        ? " A small imaginary mode is often numerical noise: a tighter optimization or a"
+          + " finer grid may remove it without a push." : "";
+      sayPush((amp ? `Preview: ${r.atom} moves ${amp.toFixed(2)} Å `
+                    + `${dir > 0 ? "along" : "against"} mode ${m.n}. `
+                    + "Apply puts it in the coordinates."
+                   : "A push of 0 is the coordinates as they are.") + small);
+    }
+    const later = () => { clearTimeout(ptimer); ptimer = setTimeout(preview, 60); };
+
+    const lh = q('[data-act="loadhess"]');
+    if (lh && mp) lh.addEventListener("click", async () => {
+      const pick = await NB.call("pick_hess_file");
+      if (!pick || !pick.ok) { if (pick && pick.error) NB.fail(pick.error); return; }
+      const r = await NB.call("read_hess_modes", pick.path);
+      if (!r || !r.ok) { NB.fail((r && r.error) || "Could not read that .hess."); return; }
+      if (!r.modes || !r.modes.length) { NB.fail(`${r.name} has no vibrations to push along.`); return; }
+      hess = { path: r.path, modes: r.modes };
+      q('[data-x="hessname"]').textContent = `${r.name} · ${r.n_atoms} atoms`;
+      // every mode, imaginary ones marked; the first imaginary is the one a
+      // push is usually for, else the softest
+      const first = Math.max(0, r.modes.findIndex(x => x.freq < 0));
+      q('[data-f="mode"]').innerHTML = r.modes.map((x, i) =>
+        `<option value="${i}"${i === first ? " selected" : ""}>Mode ${x.n} · ${
+          x.freq.toFixed(2)} cm⁻¹${x.freq < 0 ? " · imaginary" : ""}</option>`).join("");
+      mp.hidden = false;
+      later();
+    });
+    if (mp) {
+      q('[data-f="mode"]').addEventListener("change", later);
+      mp.querySelectorAll("[data-dir]").forEach(b => b.addEventListener("click", () => {
+        dir = Number(/** @type {HTMLElement} */ (b).dataset.dir);
+        mp.querySelectorAll("[data-dir]").forEach(o =>
+          o.setAttribute("aria-pressed", String(o === b)));
+        later();
+      }));
+      q('[data-f="amp"]').addEventListener("input", () => {
+        q('[data-f="ampn"]').value = q('[data-f="amp"]').value;
+        later();
+      });
+      q('[data-f="ampn"]').addEventListener("input", () => {
+        q('[data-f="amp"]').value = String(Math.min(1, ampOf()));
+        later();
+      });
+      q('[data-act="pushapply"]').addEventListener("click", async () => {
+        const m = modeOf();
+        if (!m) return;
+        const amp = ampOf();
+        if (!amp) { NB.toast("A push of 0 changes nothing."); return; }
+        const r = await NB.call("displace_mode", ta.value, hess.path, m.index, dir * amp);
+        if (!r || !r.ok) { NB.fail((r && r.error) || "Could not push along that mode."); return; }
+        putText(r.xyz);
+        // the box now IS the pushed structure, so the next preview starts from
+        // there: the distance goes back to 0 rather than pushing twice
+        q('[data-f="amp"]').value = "0";
+        q('[data-f="ampn"]').value = "0";
+        sayPush(`Applied: ${r.atom} moved ${amp.toFixed(2)} Å `
+                + `${dir > 0 ? "along" : "against"} mode ${m.n}. `
+                + "Ctrl+Z in the coordinates puts it back; a further push starts from here.");
+        NB.toast(`Pushed along mode ${m.n}.`, "ok");
+      });
     }
 
     /** What is in the box, drawn — and the list re-measured against it. */
