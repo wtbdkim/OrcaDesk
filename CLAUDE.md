@@ -48,8 +48,8 @@ python tools/uispec.py real spec_real.json
 python tools/uidiff.py spec_mock.json spec_real.json   # exit code = differences
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 1196 tests over the framework-free layers
-node tests/web/scf_graph.test.js       # 48 tracker/progress tests, no npm deps
+python -m pytest                       # 1199 tests over the framework-free layers
+node tests/web/scf_graph.test.js       # 49 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
 # Real-backend smoke matrix (opt-in): one answer-known input per calc kind,
@@ -1049,7 +1049,8 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 pure and Qt-free (it needs no numpy, though `orcamgr/nbo/` has since made numpy
 a core dependency — see P5), so it unit-tests directly (`tests/test_structure.py`); the front-end reaches it only
 through thin Bridge slots — `check_structure`, `compare_structures`,
-`apply_constraint_target` and `displace_mode` — and holds **no**
+`apply_constraint_target`, `apply_constraint_targets` and `displace_mode` — and
+holds **no**
 geometry logic of its own. That is deliberate (P4): the Build tab's NEB badge
 and `input_generator.check_neb_atom_order`'s gate are now the same judgment,
 where they used to be a Python implementation and a hand-mirrored JS copy that
@@ -1078,7 +1079,14 @@ the drag direction does not matter — refused for a ring bond, with no free
 moves, no force field and no relaxation. Only the moved atoms' three numbers
 are rewritten in the user's text (≥ 6 decimals; 5 rounded a 100° target to
 99.9998°), and the builder inserts the result with `insertText` so Ctrl+Z in
-the box undoes it. `measure`'s dihedral is **IUPAC-signed**, matching ORCA and
+the box undoes it. **Apply all** (`apply_constraint_targets`, slot of the
+same name) exists because targets sharing atoms undo each other one Apply at a
+time — three angles about one carbon at 120° never read 120/120/120. It takes
+the same turns (`_hinge` once per constraint, then `_turn` in place) in rounds
+until all hold to `_ALL_TOL` (0.01° / 0.0001 Å), and refuses a set that
+cannot hold together after `_ALL_ROUNDS`. A planar centre is the slow case:
+the targets only just fit, so it takes about 2500 rounds (0.03 s on 16
+atoms). `measure`'s dihedral is **IUPAC-signed**, matching ORCA and
 `MOL.dihedral`: the editor it was revived from had the sign reversed, and an
 Apply to +90 read back as −90 (pinned by
 `test_the_dihedral_sign_is_iupacs_like_orcas_and_the_stages`). If a future

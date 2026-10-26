@@ -50,6 +50,7 @@ interface OrcaBridge {
   check_structure(xyz: string, charge: number, multiplicity: number): Promise<string>;  // StructureCheck JSON
   compare_structures(reactantXyz: string, productXyz: string): Promise<string>;         // AtomOrder JSON
   apply_constraint_target(xyz: string, constraintJson: string): Promise<string>;      // ConstraintApply JSON
+  apply_constraint_targets(xyz: string, constraintsJson: string): Promise<string>;    // ConstraintApplyAll JSON
   read_hess_modes(path: string): Promise<string>;                                      // HessModes JSON
   displace_mode(xyz: string, path: string, index: number, amplitude: number): Promise<string>; // ModeShift JSON
   // one vibration of a finished result, matched to the report's numbering by

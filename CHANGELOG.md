@@ -3,6 +3,35 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.10.7] — 2026-10-26
+
+### Added
+- **Apply all constraint targets at once.** In the notebook builder, once two
+  constraints have targets an *Apply all* button sits beside *Add*. One
+  *Apply* at a time undid its neighbours where targets share atoms — three
+  angles about one carbon set to 120° never read 120/120/120 together — so
+  the same rigid turns are now taken in rounds until every target holds
+  (to 0.01°). A set that cannot hold together, such as three angles about
+  one atom adding up past 360°, is refused with the coordinate furthest off.
+  One Ctrl+Z undoes it.
+
+### Fixed
+- **A running IRC cell switches to its path once the walk begins.** The
+  initial Hessian an IRC computes first is a frequency run, and its
+  *Numerical frequencies* panel kept the cell for the rest of the job; the
+  panel now shows only until the first IRC step.
+- **A running row's bar in the queue rail is the whole job's progress.** It
+  read only the stage running now, so a TS optimization's bar filled when its
+  initial Hessian finished, emptied when the optimization began, and could
+  read full mid-search. The phases a kind runs (initial Hessian,
+  optimization or IRC walk, final frequencies) are now equal shares of one
+  bar, full only when ORCA reports the job finished.
+- **The builder's charge/multiplicity badge no longer calls a valid odd-charge
+  structure impossible.** It took the charge off an electron count that
+  already included it, so every structure with a charge of ±1, ±3, …
+  read *impossible* when it was consistent, and the reverse. The checks
+  listed above it were right all along.
+
 ## [0.10.6] — 2026-10-26
 
 ### Added

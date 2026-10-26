@@ -26,7 +26,7 @@ import pytest
 
 from orcamgr.core.input_generator import check_neb_atom_order
 from orcamgr.core.structure import (
-    apply_constraint_target, atomic_number, bonds, check_geometry,
+    apply_constraint_target, apply_constraint_targets, atomic_number, bonds, check_geometry,
     compare_atom_order, covalent_radius, electron_count, formula, fragments,
     measure, normalize_symbol, parse_block,
 )
@@ -401,6 +401,49 @@ def test_landing_on_another_atom_is_reported_not_refused():
 def test_a_target_it_cannot_reach_is_a_sentence(kind, atoms, value, says):
     r = apply_constraint_target(_phenol(), kind, atoms, value)
     assert not r["ok"] and says in r["error"]
+
+
+# pyramidal ammonia, H-N-H about 107 degrees
+NH3 = ("N  0.0000  0.0000  0.1170\n"
+       "H  0.0000  0.9377 -0.2730\n"
+       "H  0.8121 -0.4689 -0.2730\n"
+       "H -0.8121 -0.4689 -0.2730")
+FLAT = [{"kind": "A", "atoms": [1, 0, 2], "value": 120.0},
+        {"kind": "A", "atoms": [2, 0, 3], "value": 120.0},
+        {"kind": "A", "atoms": [1, 0, 3], "value": 120.0}]
+
+
+def test_targets_that_share_atoms_hold_together_only_with_apply_all():
+    """Three angles about one centre set to 120 make it planar. Applied one at
+    a time each turn opens one angle and closes its neighbour, so the last
+    Apply's is the only one at 120; Apply all takes the same rigid turns in
+    rounds until every one holds."""
+    text = NH3
+    for c in FLAT:
+        text = apply_constraint_target(text, c["kind"], c["atoms"], c["value"])["xyz"]
+    one_by_one = [measure(parse_block(text), c["atoms"]) for c in FLAT]
+    assert max(abs(v - 120.0) for v in one_by_one) > 1.0
+
+    r = apply_constraint_targets(NH3, FLAT)
+    assert r["ok"], r["error"]
+    # 0.01 deg in the motion, plus the 6-decimal text it is read back from
+    assert r["after"] == [pytest.approx(120.0, abs=0.02)] * 3
+    assert [round(v, 1) for v in r["before"]] == [round(measure(parse_block(NH3), c["atoms"]), 1) for c in FLAT]
+    assert 0 not in r["moved"]                     # the hinge atom never moves
+    lines = r["xyz"].split("\n")
+    assert lines[0] == NH3.split("\n")[0]          # an unmoved line is the user's
+
+
+def test_targets_that_cannot_hold_together_are_refused():
+    r = apply_constraint_targets(NH3, [dict(c, value=130.0) for c in FLAT])
+    assert not r["ok"] and "cannot all hold at once" in r["error"]
+    assert r["xyz"] == ""
+
+
+def test_apply_all_skips_what_has_no_target():
+    r = apply_constraint_targets(NH3, [{"kind": "C", "atoms": [0], "value": None},
+                                       {"kind": "A", "atoms": [1, 0, 2], "value": None}])
+    assert not r["ok"] and "No constraint has a target" in r["error"]
 
 
 def test_the_dihedral_sign_is_iupacs_like_orcas_and_the_stages():

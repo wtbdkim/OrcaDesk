@@ -349,6 +349,8 @@
               ? ` placeholder="atoms, e.g. 1 2" aria-label="Atoms to scan, numbered from 1"`
               : ` placeholder="atoms, e.g. 3 7" aria-label="Atoms to constrain, numbered from 1"`}>
           <button class="btn btn-sm" type="button" data-act="consadd">Add</button>
+          <button class="btn btn-sm btn-ghost" type="button" data-act="consall" hidden
+                  title="Move the coordinates to every target at once, so targets that share atoms stop undoing each other">Apply all</button>
         </div>
       </div>` : ""}
 
@@ -638,10 +640,12 @@
       const issues = (r.issues || []).map(i =>
         `<div class="finding ${i.level === "error" ? "err" : "warn"}">
            <span>${NB.esc(i.message)}</span></div>`).join("");
+      // r.electrons is already at this charge (structure.electron_count);
+      // taking the charge off again flipped the verdict for every odd charge
+      const fits = r.electrons != null && r.electrons % 2 === (mult - 1) % 2;
       const cm = r.electrons == null ? ""
-        : `<span>charge ${charge} / mult ${mult} <b class="${
-             (r.electrons - charge) % 2 === (mult - 1) % 2 ? "ok" : "err"}">${
-             (r.electrons - charge) % 2 === (mult - 1) % 2 ? "consistent" : "impossible"}</b></span>`;
+        : `<span>charge ${charge} / mult ${mult} <b class="${fits ? "ok" : "err"}">${
+             fits ? "consistent" : "impossible"}</b></span>`;
       box.innerHTML = issues + `<div class="factline" style="margin-top:10px">
         <span>formula <b>${NB.esc(r.formula || "—")}</b></span>
         ${r.electrons != null ? `<span>electrons <b>${r.electrons}</b></span>` : ""}
@@ -968,6 +972,7 @@
           c.value = isFinite(v) ? v : null;
           if (ap) ap.disabled = useRef() || c.value == null
             || c.atoms.some(i => i >= atoms.length);
+          allState();
         });
         if (ap) ap.addEventListener("click", () => applyTarget(c));
         /** @type {HTMLElement} */ (r.querySelector(".rm")).addEventListener("click", () => {
@@ -976,6 +981,38 @@
           list();
         });
       });
+      allState();
+    }
+
+    /** The constraints an *Apply all* would move: every bond, angle or
+     *  dihedral with a target whose atoms are in the box. */
+    const targeted = () => st.cons.filter(c => c.kind !== "C" && c.value != null
+      && !c.atoms.some(i => i >= atoms.length));
+    /** *Apply all* is there once two targets could disagree — one is its
+     *  row's own Apply. */
+    function allState() {
+      const b = /** @type {HTMLButtonElement|null} */ (q('[data-act="consall"]'));
+      if (b) b.hidden = useRef() || scanning() || targeted().length < 2;
+    }
+
+    /** Every target at once. One Apply turns the smaller side of its own
+     *  hinge and can undo another's — three angles about one carbon applied
+     *  in turn never read 120/120/120 — so the backend takes the same turns
+     *  in rounds until all of them hold (structure.apply_constraint_targets).
+     *  The text goes in as one edit, so one Ctrl+Z undoes the lot. */
+    async function applyAll() {
+      const cs = targeted();
+      if (cs.length < 2 || useRef()) return;
+      const r = await NB.call("apply_constraint_targets", ta.value,
+        JSON.stringify(cs.map(c => ({ kind: c.kind, atoms: c.atoms, value: c.value }))));
+      if (!r || !r.ok) { NB.fail((r && r.error) || "Could not move the coordinates."); return; }
+      putText(r.xyz);
+      const moved = (r.moved || []).map(atomName);
+      NB.toast(moved.length
+        ? `Moved ${moved.length > 4 ? moved.length + " atoms" : moved.join(", ")} to all ${cs.length} targets. `
+          + "Ctrl+Z in the coordinates puts them back."
+        : "Already at every target.", "ok");
+      (r.warnings || []).forEach(w => NB.fail(w));
     }
 
     /** The scan's row: the coordinate, what it measures now, where it starts
@@ -1222,6 +1259,8 @@
     }));
     const addBtn = q('[data-act="consadd"]');
     if (addBtn) addBtn.addEventListener("click", addTyped);
+    const allBtn = q('[data-act="consall"]');
+    if (allBtn) allBtn.addEventListener("click", applyAll);
     if (typed) typed.addEventListener("keydown", (/** @type {KeyboardEvent} */ e) => {
       if (e.key === "Enter") { e.preventDefault(); addTyped(); }
     });

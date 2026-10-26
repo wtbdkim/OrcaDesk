@@ -149,7 +149,13 @@
     this.optCycle = 0;     // optimization cycle in progress (0 = not inside one)
     this.irc = false;      // inside an IRC job (its Hessian precedes the walk)
     this.prestep = false;  // the chain is an optimization's Hessian, not a freq job
+    this.hadPre = false;   // such a Hessian has run (survives the chain's reset)
   }
+  // whether this job computed a Hessian inside an optimization or an IRC — the
+  // chain itself is wiped when the next cycle starts, this is not
+  FreqTracker.prototype.preHessian = function () {
+    return this.hadPre || (this.active && (this.prestep || this.optCycle > 0 || this.irc));
+  };
   // advance the analytical phase chain — monotonic, so a re-seen banner (or a
   // late "K/N done" line) can never move the chain backwards. Entering a new
   // stage stamps its wall clock and freezes the key result of the stage left.
@@ -195,6 +201,7 @@
   };
   // back to a clean slate (a pre-step Hessian's chain is over, see PHASE_RESET_RE)
   FreqTracker.prototype._resetChain = function () {
+    if (this.preHessian()) this.hadPre = true;
     this.mode = ""; this.total = 0; this.cur = 0; this.active = false;
     this.dispDone = false; this._times = [];
     this.perturbTotal = 0; this.perturbDone = 0; this.cpscfIter = 0;

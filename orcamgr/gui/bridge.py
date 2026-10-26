@@ -42,7 +42,7 @@ from ..textio import repair_ansi_line
 from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import CalcState, result_from_output
 from ..core.structure import (
-    apply_constraint_target, check_geometry, compare_atom_order,
+    apply_constraint_target, apply_constraint_targets, check_geometry, compare_atom_order,
     displace_along_mode,
 )
 from ..core.hessfile import HessError, read_hess
@@ -73,6 +73,7 @@ from ..state.schemas import (
     StructureSetsResult, PickedResultPayload, PickedFilePayload,
     PlotOptionsResult, CubeJobPayload, CubeDataResult, WorkspaceResultsResult,
     AtomOrderPayload, StructureCheckPayload, ConstraintApplyPayload,
+    ConstraintApplyAllPayload,
     HessModesPayload, HessModePayload, ModeShiftPayload, VibModePayload,
 )
 
@@ -1054,6 +1055,23 @@ class Bridge(QObject):
                 before=None, after=None, warnings=[]))
         return json.dumps(ConstraintApplyPayload(**apply_constraint_target(
             xyz, c.get("kind", ""), c.get("atoms") or [], c.get("value"))))
+
+    @pyqtSlot(str, str, result=str)
+    def apply_constraint_targets(self, xyz: str, payload: str) -> str:
+        """Every constraint's target at once — the builder's *Apply all*: the
+        same rigid turns as one Apply, taken in rounds until all of them hold,
+        so targets that share atoms (three angles about one centre) stop
+        undoing each other. The payload is the list of GeomConstraints; the
+        answer a ConstraintApplyAllPayload. Nothing is saved."""
+        try:
+            cs = json.loads(payload or "[]")
+            if not isinstance(cs, list):
+                raise ValueError
+        except ValueError:
+            return json.dumps(ConstraintApplyAllPayload(
+                ok=False, error="Unreadable constraints.", xyz="", moved=[],
+                before=[], after=[], warnings=[]))
+        return json.dumps(ConstraintApplyAllPayload(**apply_constraint_targets(xyz, cs)))
 
     def _hess(self, path: str):
         """The parsed .hess at `path`, cached for the last one read and

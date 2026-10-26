@@ -749,6 +749,20 @@
  */
 
 /**
+ * apply_constraint_targets(xyz, constraints) result. Mirror of the Python
+ * ConstraintApplyAllPayload (7 keys): ConstraintApply with "before"/"after"
+ * one value per constraint that had a target, in the order sent.
+ * @typedef {Object} ConstraintApplyAll
+ * @property {boolean} ok
+ * @property {string} error
+ * @property {string} xyz
+ * @property {number[]} moved
+ * @property {number[]} before
+ * @property {number[]} after
+ * @property {string[]} warnings
+ */
+
+/**
  * One vibration of a .hess. Mirror of the Python HessModePayload: "index"
  * addresses it in the file, "n" is its 1-based number among the vibrations,
  * "freq" in cm-1 (negative = imaginary).

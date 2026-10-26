@@ -689,6 +689,20 @@ class ConstraintApplyPayload(TypedDict):
     warnings: "list[str]"
 
 
+class ConstraintApplyAllPayload(TypedDict):
+    """apply_constraint_targets — 7 keys, exactly
+    core.structure.apply_constraint_targets's dict: ConstraintApplyPayload
+    with "before"/"after" one value per constraint that had a target, in the
+    order sent (empty on a refusal)."""
+    ok: bool
+    error: str
+    xyz: str
+    moved: "list[int]"
+    before: "list[float]"
+    after: "list[float]"
+    warnings: "list[str]"
+
+
 class HessModePayload(TypedDict):
     """One vibration of a .hess - 3 keys. "index" addresses it in the file
     (translations and rotations included, so the first vibration is usually

@@ -1337,7 +1337,14 @@ and a 600px rail that stays on screen in both:
   done), because that is the question being asked of the list. A row carries
   its own progress bar, and it is drawn **only when a real one can be computed**
   (an optimization's gradient progress, an SCF's convergence); a run with
-  nothing to report gets no bar rather than a decorative one.
+  nothing to report gets no bar rather than a decorative one. The bar is the
+  **whole job**, not the stage running now: an optimization, IRC or
+  frequency kind is the list of phases it runs (a TS search's or an IRC's
+  initial Hessian, the optimization or the walk, an `*_opt_freq`'s
+  frequencies), each an equal share read off its own tracker (`phasesOf` in
+  `rail.js`). Read stage by stage, the bar filled when a TS search's Hessian
+  finished and emptied when the optimization began. It is full only when ORCA
+  says the job is through. The cell's own bar under its chart stays the stage's.
 - **Builder** — the cell IS the form. A new calculation is the dashed stub at
   the end of the stream; editing a queued one turns that calculation's cell into
   the editor, with an `.editbar` naming what is being changed. It is not a place
@@ -1794,6 +1801,15 @@ is refused with a sentence saying so and that the optimization will still get
 there; an atom the motion lands on top of is reported, not refused. The
 result is an edit OF the coordinates box — only the moved atoms' numbers
 change, the user's spacing and comments stay — so Ctrl+Z there undoes it.
+
+Targets that share atoms undo each other one Apply at a time: three angles
+about one carbon set to 120° (making it planar) never read 120/120/120
+together, because each turn opens one angle and closes its neighbour. Once
+two rows have targets, **Apply all** sits beside *Add*. It takes the same
+rigid turns in rounds until every target holds to 0.01° / 0.0001 Å — still
+no free moves and no force field — and refuses, naming the coordinate
+furthest off, a set that cannot hold together (three angles about one atom
+past 360°). It is one edit of the box, so one Ctrl+Z undoes all of it.
 
 **17.4n A running output follows the reader, not the run.** A cell's Output
 pane is the last 260 lines of a running `.out`, re-read on every poll. It
