@@ -24,7 +24,7 @@ from ..core.queue import (
     KNOWN_KINDS, Calculation, CalcState, GeometrySource, QueueEngine,
     QueueCallbacks, result_from_output, validate_result,
 )
-from ..core.input_generator import (CONSTRAINED_KINDS, StepConfig,
+from ..core.input_generator import (CONSTRAINED_KINDS, SCAN_KINDS, StepConfig,
                                     constraint_index_error,
                                     constraint_linear_warning)
 from ..core.structure import parse_block
@@ -322,6 +322,13 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
             and cfg.geom_constraints and cfg.kind in CONSTRAINED_KINDS):
         n_atoms = len(parse_block(_s("xyz")))
         err = constraint_index_error(cfg.geom_constraints, n_atoms) if n_atoms else ""
+        if err:
+            raise ValueError(err)
+    # A scan coordinate is held to the same rule, for the same reason.
+    if (not restoring and not is_raw and src == "direct"
+            and cfg.geom_scan and cfg.kind in SCAN_KINDS):
+        n_atoms = len(parse_block(_s("xyz")))
+        err = constraint_index_error(cfg.geom_scan, n_atoms, "scan") if n_atoms else ""
         if err:
             raise ValueError(err)
 

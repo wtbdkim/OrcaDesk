@@ -215,9 +215,8 @@
           <div class="scard-title">Interface</div>
           <p class="scard-desc">Which window layout ORCAdesk opens with. Switching applies
             immediately — a running calculation keeps running. <b>Classic</b> is the finished
-            tabbed window, and still the only one that can BUILD an MLIP or CREST
-            calculation or draw the Liquid-Glass styles. <b>Notebook</b> is this one,
-            still in development.</p>
+            tabbed window, and still the only one that draws the Liquid-Glass styles.
+            <b>Notebook</b> is this one, still in development.</p>
           <div class="field-row" style="margin-bottom:0">
             <div class="field mid"><label for="s-ui">Layout</label>
               <select id="s-ui" data-s2="ui">

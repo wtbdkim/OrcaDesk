@@ -48,8 +48,8 @@ python tools/uispec.py real spec_real.json
 python tools/uidiff.py spec_mock.json spec_real.json   # exit code = differences
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 1086 tests over the framework-free layers
-node tests/web/scf_graph.test.js       # 44 tracker/progress tests, no npm deps
+python -m pytest                       # 1196 tests over the framework-free layers
+node tests/web/scf_graph.test.js       # 48 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
 # Real-backend smoke matrix (opt-in): one answer-known input per calc kind,
@@ -132,6 +132,30 @@ band instead (`chart(..., {hover: true})` labels each stick, `bindCharts` in
 the nearest band winning, because a band is 1.6px; ←/→/Home/End step the same
 cursor and the plate is a `role="status"`, so the numbers are never hover-only.
 DESIGN.md §17.4b.
+
+A band is also a control: a click, or Enter on the cursor (`chart(..., {pick:
+"mode"})`), and the per-imaginary-mode buttons under the spectrum (`modeJump`)
+call `NB.viewer.playMode(n)`, which **animates that normal mode on the
+Structure stage** (`viewer.js`; the `.modeplay` bar above the stage holds
+‹ ›, Play/Pause, the swing in Å and *Show structure*/Esc). The motion is
+`MOL` stage's `vibrate({base, vec, amp, playing})` in `mol.js`: a
+requestAnimationFrame loop that poses the coordinates without re-running
+`scene()` (centre, scale and bonds stay the structure's, so the view never
+refits), ends when the canvas leaves the document (a report re-render) or on
+`setAtoms`/`destroy`, idles while an IntersectionObserver says the stage is
+off screen, and, paused, draws per-atom arrows instead. A mode opens paused
+under `prefers-reduced-motion`. The vector comes from
+**`get_vibration_mode(payload)`** — `{source, freqs, geometry, n}` →
+`VibModePayload` — over Qt-free `core/normalmodes.py`: `{base}.hess` first,
+else the `.out`'s own last NORMAL MODES table (with the geometry printed last
+before it), each accepted only if its wavenumbers ARE the report's
+(`report_columns`; a uniformly scaled run passes), so a `.hess` left by an
+OptTS's first Hessian is never animated under this report's mode number.
+`place_on` moves the modes' geometry onto the report's (a `.hess` is written
+about the centre of mass — 17.9 Å away for phenol) and reports what
+difference is left. Pinned by `tests/test_normalmodes.py` (the water fixture
+plus a trimmed verbatim `h2o_freq.out`, and every freq run of the real corpus
+when present). DESIGN.md §17.4q.
 
 Its **Output pane is the whole `.out` from line one, virtualized**: a spacer as
 tall as the file holds only the lines on screen, fetched by number through
@@ -291,9 +315,40 @@ so **a top-level declaration in `web/next/` other than `NB` collides with
 `app.js`** — `tests/test_next_ui.py` fails the build if one appears, and also
 checks that every bridge slot the preview calls actually exists.
 
-Not in the preview yet: the MLIP/CREST builders and the Liquid-Glass variants
-(DESIGN.md B30). Its Interface card says so and switches back to classic. The
-backends themselves ARE set up from its Settings sheet: the MLIP environments
+Not in the preview yet: the Liquid-Glass variants (DESIGN.md B30). Its
+Interface card says so and switches back to classic.
+
+The builder builds **all three backends** (DESIGN.md §17.4s): the reference's
+backend control at the top of the form — `DFT | MLIP | CREST`, then `.seg .sep`
+and `Guided | .inp text` for DFT only — puts the backend's own block
+(`backendForm` in `build.js`) where the ORCA method form sits, under the shared
+name / charge / multiplicity row and the shared geometry block (coordinates +
+stage + structure check, or a reference). Nothing of the ORCA form is drawn or
+read for MLIP/CREST (no constraints, no push along a mode, no Preview .inp);
+`readForm` hands the config to `backendConfig`. MLIP: Task (the four `mlip_*`
+kinds), MACE model (grouped from `load_choices("mace_models")`), environment
+(`""` = first ready), device (GPU offered only when a READY env's probe reports
+CUDA; a stored `cuda` with none falls back to Auto), CPU threads with the
+classic per-device note, T/P for the freq tasks. CREST: method, search speed,
+ewin, threads, solvent model + solvent, NCI, a *Run in* target only where
+there is a choice (more than one WSL distro with CREST, or one stored), and a
+closed `<details class="advsec">` for the MD/MTD numbers and toggles, opened by
+itself when one is set. Hidden/locked from the polled `NB.backends` exactly as
+classic decides it (`backendState`): an unadopted backend has no button, only
+*+ More backends…* (opens Settings); adopted-but-not-ready opens LOCKED (`.bkform.locked`,
+every control and *Add* disabled, the reason in a `.finding` with *Open
+Settings*), and the save handler refuses on its own (P44). A backend stays
+visible while the form is on it or the queue holds one of its calcs, so an
+`mlip*`/`crest*` row's *edit* opens this builder on its own form. Each backend
+keeps its settings across a switch away and back (`st.cfgBy`). The MACE model
+default is `mlip/runner.py DEFAULT_MACE_MODEL`, which `get_step_defaults`
+fills in for StepConfig's `""` — the one non-StepConfig value it sends. In the
+report, an MLIP/CREST result has **no Input and no Natural-orbitals section**
+(`resultBackend()` in `results.js`): it was handed no `.inp` (the Input pane
+used to show a `build_inp_preview` of an ORCA job that never ran) and has no
+`.gbw`.
+
+The backends themselves are set up from its Settings sheet: the MLIP environments
 card, and a CREST card (`paintCrest` in `settings.js` — one `.envrow` per
 target, the WSL-distribution picker, *Install CREST* / *Re-check*) over the
 same four slots the classic card uses; while the sheet is open both poll, and
@@ -556,7 +611,11 @@ the parsed geometry (no backend call — P4), every `.xyz` set
 `conformers/` export sorts first — then the folder's own `.xyz`, each labelled
 by what it *is*; past `_MANY_XYZ` unnamed ones they collapse into a single
 whole-folder set, so a hundreds-strong export is one row and not a hundred file
-reads on a tab switch), and, when a `.gbw` sits there, the orbital browser and
+reads on a tab switch; a relaxed scan's `{base}.allxyz` is the *Scan points*
+set, read in step order and named `Step k`, and ORCA's numbered per-point
+copies `{base}.NNN.xyz` are then left out as duplicates. `iter_xyz_frames` skips
+the `>` lines between `.allxyz` frames, and `_parse_energy` reads ORCA's
+trailing `E <Eh>` comment), and, when a `.gbw` sits there, the orbital browser and
 the ESP map. Each row opens the same `#mol-viewer`; a set opens through
 `bridge.get_structure_frames(path)`, which takes a file or a folder. This
 replaced a *Browse .xyz…* folder picker (`browse_xyz_folder`) and the
@@ -618,6 +677,22 @@ The `core/` pipeline:
   toast (the target alone for a referenced geometry). The format and ORCA's IUPAC dihedral sign
   were verified on 6.1.1. The notebook builder picks them on its structure stage (DESIGN.md
   §17.4l); the classic UI has only the `.inp` snippet.
+  **`%geom Scan`** (`StepConfig.geom_scan`: a list of `{kind: B|A|D, atoms,
+  start, end, steps}`) is a relaxed surface scan, written in the same `%geom`
+  block after the `Constraints` (`    B 0 1 = 0.9000, 1.1000, 5`), and only
+  for **`SCAN_KINDS` = `("opt",)`**. Measured on 6.1.1: an SP reads the block
+  and ignores it, an `Opt Freq` computes the frequencies after the FIRST point
+  only, a Scan and Constraints coexist (both act), four coordinates stop in
+  input parsing (ORCA's limit is 3), a dihedral range past 180 runs, and a point
+  whose optimization does not converge error-terminates the whole run.
+  `normalize_scan` (from `from_dict`) drops a malformed entry (no `C`, wrong
+  atom count, bad index, non-finite start/end, start == end as written),
+  clamps the ends (bond 0.1–50 Å, angle 0–180°, dihedral −360…360°, never
+  wrapped, because a full turn is a range) and `steps` to 2–1000, dedups, and
+  cuts past three. An index past the last atom is refused by the same
+  `constraint_index_error(..., "scan")`, in `build_input` and at add time.
+  The builder offers one coordinate, as the *Scan* half of the constraint
+  panel's *Constrain | Scan* switch (DESIGN.md §17.4r).
 - `runner.py` — `OrcaRunner` launches ORCA **detached**, with ORCA writing its own
   stdout straight to the `.out` file (not via a Python pipe), so a run survives
   ORCAdesk closing. It is invoked with the input's **bare file name** and `cwd`
@@ -691,7 +766,13 @@ The `core/` pipeline:
   frequencies, full thermochemistry (U/H/G/ZPE/T·S/temp/pressure), TD-DFT
   transitions + excited-state composition, NMR, NEB/IRC path — both print a
   `PATH SUMMARY` table; `neb_path_kind` records which, so the Results tab titles
-  an IRC profile as an IRC). Marker-based,
+  an IRC profile as an IRC — and a relaxed surface scan: `scan_coords` from
+  the banner, in ORCA's printed atom order, and `scan_points`, one
+  `{values, e_eh, de_kcal}` per point, from the `RELAXED SURFACE SCAN
+  RESULTS` table's *Actual Energy* rows (any number of columns). If there is
+  no table (an error termination mid-scan, or a scan still running), the
+  points come from the step boxes whose optimization reached `OPTIMIZATION
+  RUN DONE`). Marker-based,
   tolerant of `\r\n`; when a value recurs (e.g. across opt steps) the **last**
   occurrence wins. `ParseResult.summary_rows()` returns `(label, value, category)`
   rows where `category="elec"` tags general electronic-structure rows; the
@@ -935,7 +1016,15 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   dropped while its thermochemistry is still there, `_has_vibrational_analysis`);
   `freq`/`opt_freq` must have zero imaginary frequencies; `ts_freq`/`ts_opt_freq` must have exactly one;
   `neb_ts` must have exactly one when frequencies were computed. A
-  validation failure marks the calc `FAILED`. Calc kinds: `opt`, `ts_opt`,
+  validation failure marks the calc `FAILED`. An `opt` carrying a
+  `geom_scan` (`_wants_scan`, the rule `build_input` writes it by) must also
+  have produced `scan_points`. Each point is an optimization, and an
+  unconverged one error-terminates the run, which the termination check
+  catches, so the normal end plus the table is the whole bar. The
+  keep-existing match tells a scan and a plain optimization apart in both
+  directions: a scan's geometry is its last point, held there, not a minimum.
+  A REFERENCE to a scan calc therefore receives that last point; nothing
+  refuses it. Calc kinds: `opt`, `ts_opt`,
   `freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `irc`, `tddft`, `sp`,
   `general` (free keyword combination; no per-kind validation), `nmr`,
   `neb_ts`, `mlip_opt`, `mlip_sp`, `mlip_freq`, `mlip_opt_freq`, `crest_conf`.

@@ -118,7 +118,9 @@
    *  become readable: each carries its `lab` and bindCharts wires the cursor.
    *  @param {{x: number, y: number, cls?: string, lab?: string}[]} pts
    *  @param {number} w @param {number} h
-   *  @param {{xlab: string, ylab: string, stick?: boolean, hover?: boolean}} o */
+   *  @param {{xlab: string, ylab: string, stick?: boolean, hover?: boolean,
+   *           pick?: string}} o pick names what a click on a band does
+   *    ("mode": shows that vibration moving on the Structure stage) */
   function chart(pts, w, h, o) {
     if (!pts.length) return `<p class="hint" style="margin:0">Nothing to plot.</p>`;
     const L = 64, R = 16, T = 12, B = 40;
@@ -168,9 +170,11 @@
     const hov = o.hover
       ? `<line class="chi" x1="${L}" y1="${T}" x2="${L}" y2="${T + ih}"/>` : "";
     return `<div class="chart"><svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img"${
-      o.hover ? ' data-hover="1" tabindex="0"' : ""}
+      o.hover ? ' data-hover="1" tabindex="0"' : ""}${
+      o.pick ? ` data-pick="${o.pick}"` : ""}
       aria-label="${NB.esc(o.ylab)} against ${NB.esc(o.xlab)}${
-        o.hover ? ". Hover a band for its value, or use the arrow keys" : ""}">
+        o.hover ? ". Hover a band for its value, or use the arrow keys" : ""}${
+        o.pick === "mode" ? "; click a band, or press Enter on it, to see it move" : ""}">
       ${grid}
       <line x1="${L}" y1="${T}" x2="${L}" y2="${T + ih}" stroke="var(--border)" stroke-width="1"/>
       <line x1="${L}" y1="${T + ih}" x2="${L + iw}" y2="${T + ih}" stroke="var(--border)" stroke-width="1"/>
@@ -187,6 +191,21 @@
     if (a === 0) return "0";
     if (a >= 1000 || a < 0.01) return v.toExponential(1);
     return String(Math.round(v * 100) / 100);
+  }
+
+  /** The imaginary modes, one button each, under the spectrum. They are the
+   *  modes a reader comes to a frequency result to look at -- is this the
+   *  reaction coordinate, or a methyl rotor? -- and a negative band sits on
+   *  the left edge of a crowded axis, so they get a way in that needs no aim.
+   *  @param {number[]} freqs */
+  function modeJump(freqs) {
+    const im = freqs.map((f, i) => ({ f: f, n: i + 1 })).filter(m => m.f < 0);
+    if (!im.length) return "";
+    return `<div class="modejump" role="group" aria-label="Imaginary modes">
+      <span class="hint">Imaginary:</span>${im.map(m =>
+        `<button class="btn btn-sm btn-ghost" type="button" data-mode="${m.n}"
+           aria-pressed="false">Mode ${m.n} · ${m.f.toFixed(2)} cm⁻¹</button>`).join("")}
+    </div>`;
   }
 
   // ---------------------------------------------------------------- summary
@@ -241,8 +260,12 @@
     const cw = px - 36;                       // inside a .plate (18px each side)
     const half = Math.round(px / 2) - 36;     // ...of a half-width section
 
-    // the input beside the output, first: every other section is read out of it
-    out.push(rawSections());
+    // the input beside the output, first: every other section is read out of it.
+    // An MLIP or CREST run was handed no .inp, and has no wavefunction for the
+    // natural-orbital analysis to read -- neither section is drawn for one
+    // (the reference's MLIP and CREST results carry neither, DESIGN.md §17.4s)
+    const orca = resultBackend() === "DFT";
+    out.push(rawSections(orca));
 
     if (d.frequencies && d.frequencies.length) {
       const imag = d.n_imaginary || d.frequencies.filter(f => f < 0).length;
@@ -257,10 +280,12 @@
         (imag ? "One imaginary mode is what makes a structure a transition state; more "
               + "than one means it is not a stationary point of either kind."
               : "No imaginary modes — this geometry is a minimum on the surface.")
-        + " Point at a band for its wavenumber; the arrow keys step through them.",
+        + " Point at a band for its wavenumber; the arrow keys step through them. Click"
+        + " one, or press Enter on it, to see that mode move on the structure.",
         plate(chart(pts, cw, Math.round(cw * 0.26),
                     { xlab: "wavenumber (cm⁻¹)", ylab: "modes",
-                      stick: true, hover: true })),
+                      stick: true, hover: true, pick: "mode" })
+              + modeJump(d.frequencies)),
         "wide"));
     }
 
@@ -341,14 +366,76 @@
         "wide"));
     }
 
-    _present.push({ id: "sec-nbo", title: "Natural orbitals" });
-    out.push(NB.viewer.nboSection());
+    if (d.scan_points && d.scan_points.length && d.scan_coords && d.scan_coords.length) {
+      out.push(scanSection(d, cw));
+    }
+
+    if (orca) {
+      _present.push({ id: "sec-nbo", title: "Natural orbitals" });
+      out.push(NB.viewer.nboSection());
+    }
 
     // Per-atom and per-bond numbers belong to the Structure viewer — click an
     // atom or a bond and they are right there. As TABLES they are for reading
     // without a mouse, so they live under Show all with everything else.
     if (_showAll) out.push(tables(d));
     return out.join("");
+  }
+
+  /** A relaxed surface scan: the energy along the coordinate it walked
+   *  (DESIGN.md §17.4r). Each point is a whole optimization with that
+   *  coordinate held, so a point is a STATE of the curve, not a sample along
+   *  a path — the line joins them only to be read. ΔE is against the lowest
+   *  point, as ORCA's own table has no reference of its own; the highest one
+   *  is marked, because a scan is most often run to find where that is. Its
+   *  structures are the "Scan points" set in Visual, step for step.
+   *  @param {any} d @param {number} cw */
+  function scanSection(d, cw) {
+    const coords = d.scan_coords, pts = d.scan_points;
+    const geo = d.geometry || [];
+    /** "Angle H2–O1–H3": ORCA's own order, numbered from 1 like every atom
+     *  on this screen (§17.4d) @param {any} c */
+    const name = (c) => ({ B: "Bond", A: "Angle", D: "Dihedral" }[c.kind] || "Coordinate")
+      + " " + c.atoms.map(i => (geo[i] ? geo[i].el : "") + (i + 1)).join("–");
+    /** @param {any} c */
+    const unit = (c) => c.kind === "B" ? "Å" : "°";
+    /** @param {any} c @param {number} v */
+    const val = (c, v) => v.toFixed(c.kind === "B" ? 3 : 1);
+    const planned = coords.reduce((n, c) => n * (c.steps || 1), 1);
+    const meta = (pts.length < planned ? `${pts.length} of ${planned}` : String(pts.length))
+      + " points";
+    const stopped = pts.length < planned
+      ? ` The run stopped before the other ${planned - pts.length}; these are the points it finished.`
+      : "";
+    const top = pts.reduce((a, b) => (b.de_kcal > a.de_kcal ? b : a));
+    const rows = pts.map((p, i) => [String(i + 1)]
+      .concat(coords.map((c, k) => val(c, p.values[k])))
+      .concat([p.de_kcal.toFixed(2), p.e_eh.toFixed(6)]));
+    const head = ["Point"].concat(coords.map(c => `${name(c)} (${unit(c)})`))
+      .concat(["ΔE (kcal/mol)", "Energy (Eh)"]);
+
+    if (coords.length > 1) {
+      // A grid is a surface, and one line through it would be a lie about
+      // which neighbours are neighbours. Listed, not drawn.
+      return sec("sec-scan", "Relaxed surface scan", meta,
+        `A ${coords.length}-dimensional scan over ${coords.map(name).map(NB.esc).join(" and ")}; `
+        + "each point is an optimization with those coordinates held. ΔE is against the "
+        + "lowest point. A surface is listed here, not drawn." + stopped,
+        tw(head, rows), "wide");
+    }
+    const c = coords[0];
+    return sec("sec-scan", "Relaxed surface scan", meta,
+      `${NB.esc(name(c))} from ${val(c, c.start)} to ${val(c, c.end)} ${unit(c)}; each point `
+      + "is an optimization with it held there, the rest of the structure relaxed. ΔE is "
+      + `against the lowest point; the highest, at ${val(c, top.values[0])} ${unit(c)}, `
+      + `is ${top.de_kcal.toFixed(2)} kcal/mol above it. Its structures are the scan points `
+      + "in <b>Visual</b>." + stopped,
+      plate(chart(pts.map(p => ({ x: p.values[0], y: p.de_kcal,
+                                  cls: p === top ? "var(--warn)" : undefined })),
+                  cw, Math.round(cw * 0.26),
+                  { xlab: `${name(c)} (${unit(c)})`, ylab: "ΔE (kcal/mol)" }))
+      + tw(head, rows),
+      "wide");
   }
 
   /** The per-atom and per-bond tables, under Show all. @param {any} d */
@@ -424,19 +511,21 @@
     return file.replace(/\.(out|mlip\.json|log)$/i, "");
   }
 
-  function rawSections() {
-    _present.push({ id: "sec-input", title: "Input" });
+  /** @param {boolean} orca an ORCA run, the only kind that was handed an .inp */
+  function rawSections(orca) {
+    if (orca) _present.push({ id: "sec-input", title: "Input" });
     _present.push({ id: "sec-output", title: "Output" });
-    return `<section class="secblock third" data-sec="sec-input" id="sec-input">
+    return (orca ? `<section class="secblock third" data-sec="sec-input" id="sec-input">
         <div class="sech"><h2>Input</h2></div>
         <p class="secdesc">The file handed to ORCA, exactly as it ran.</p>
         <div class="plate" style="padding:0;overflow:hidden">
           <div class="rawin" data-r="in"></div></div>
-      </section>
-      <section class="secblock twothirds" data-sec="sec-output" id="sec-output">
+      </section>` : "")
+      + `<section class="secblock ${orca ? "twothirds" : "wide"}" data-sec="sec-output" id="sec-output">
         <div class="sech"><h2>Output</h2><span class="sp"></span>
           <span class="meta" data-r="ometa"></span></div>
-        <p class="secdesc">Everything ORCA wrote. Every other section here is read out of it.</p>
+        <p class="secdesc">${orca ? "Everything ORCA wrote. Every other section here is read out of it."
+          : "Everything the run wrote to its log. The numbers above are read from its result files."}</p>
         <div class="plate" style="padding:0;overflow:hidden">
           <div class="outbar">
             <label class="lb" for="out-find">Find</label>
@@ -464,11 +553,12 @@
     const host = NB.$("reswin");
     const inEl = host.querySelector('[data-r="in"]');
     const outEl = host.querySelector('[data-r="out"]');
-    if (!inEl || !outEl) return;
-    if (!name) { inEl.textContent = "—"; outEl.textContent = "—"; return; }
+    if (!outEl) return;
+    if (!name) { if (inEl) inEl.textContent = "—"; outEl.textContent = "—"; return; }
     // first, not after the input's awaits: a report re-rendered meanwhile
     // must not have this (older) result's output mounted over its own
     mountOutput(host, name);
+    if (!inEl) return;      // an MLIP or CREST run: there is no input file to show
 
     // the .inp ORCA actually read, off disk — not a preview regenerated from
     // the form, which can differ from what ran
@@ -1314,6 +1404,8 @@
       () => jump(/** @type {HTMLElement} */ (b).dataset.jump)));
     spy(host);
     bindCharts(host);
+    host.querySelectorAll("[data-mode]").forEach(b => b.addEventListener("click",
+      () => showMode(Number(/** @type {HTMLElement} */ (b).dataset.mode))));
 
     if (_cur) {
       fillRaw(_curName || (_curPath ? "file:" + _curPath : ""), _cur);
@@ -1384,6 +1476,12 @@
         return best;
       };
 
+      // a band that does something when picked (chart's `pick`): the
+      // vibrational spectrum's shows that mode moving on the Structure stage
+      const pick = svg.dataset.pick === "mode"
+        ? (/** @type {number} */ i) => showMode(i + 1) : null;
+      if (pick) svg.addEventListener("click", (/** @type {any} */ e) => pick(nearest(e.clientX)));
+
       svg.addEventListener("pointermove", (/** @type {any} */ e) => show(nearest(e.clientX)));
       svg.addEventListener("pointerleave", hide);
       svg.addEventListener("blur", hide);
@@ -1394,11 +1492,30 @@
         else if (e.key === "Home") i = 0;
         else if (e.key === "End") i = sticks.length - 1;
         else if (e.key === "Escape") { hide(); return; }
+        else if ((e.key === "Enter" || e.key === " ") && pick && at >= 0) {
+          e.preventDefault(); pick(at); return;
+        }
         else return;
         e.preventDefault();
         show(i);
       });
     });
+  }
+
+  /** Show report mode `n` moving on the Structure stage, and mark it here.
+   *  @param {number} n */
+  function showMode(n) {
+    NB.viewer.playMode(n, markMode);
+  }
+  /** The band and the button of the mode on the Structure stage, marked so the
+   *  spectrum says which one is moving; 0 clears them. @param {number} n */
+  function markMode(n) {
+    const host = NB.$("reswin");
+    if (!host) return;
+    host.querySelectorAll('.chart svg[data-pick="mode"]').forEach(svg =>
+      svg.querySelectorAll(".stk").forEach((st, k) => st.classList.toggle("sel", k === n - 1)));
+    host.querySelectorAll("[data-mode]").forEach(b => b.setAttribute("aria-pressed",
+      String(Number(/** @type {HTMLElement} */ (b).dataset.mode) === n)));
   }
 
   /** Mark the chip for the section being read. An outline that does not say
@@ -1466,10 +1583,18 @@
       : d.nmr && d.nmr.length ? "NMR"
       : d.neb_path && d.neb_path.length ? (d.neb_path_kind === "irc" ? "IRC" : "NEB")
       : d.frequencies && d.frequencies.length ? (d.is_optimization ? "Opt + Freq" : "Frequencies")
+      : d.scan_points && d.scan_points.length ? "Relaxed scan"
       : d.is_optimization ? "Optimization"
       : "Single point";
     const n = (d.geometry || []).length;
     return n ? `${kind} · ${n} atom${n === 1 ? "" : "s"}` : kind;
+  }
+
+  /** The backend of the result on screen: a queued calculation's by its kind,
+   *  a file's by what is in it. @returns {string} "DFT" | "MLIP" | "CREST" */
+  function resultBackend() {
+    const c = _curName ? NB.queue.filter(x => x.name === _curName)[0] : null;
+    return c ? NB.rail.backendOf(c) : backendOfResult(_curPath, _cur);
   }
 
   /** The backend a file came out of, read from the file itself: an engine-

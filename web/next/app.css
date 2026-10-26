@@ -1281,3 +1281,64 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
 .mprange input[type="range"]{flex:1; min-width:0; accent-color:var(--foreground);}
 .mprange input[type="number"]{width:84px;}
 
+
+/* ---------------------------- a mode, moving ----------------------------
+   An addition to the reference (DESIGN.md §17.4q). A band picked on the
+   vibrational spectrum moves on the Structure stage, and the bar above that
+   stage is its whole control - which mode, play / pause, how far it swings,
+   and the way back to the still structure. It sits above the stage rather
+   than on it: the stage's corners already hold the atom readout, the Display
+   pills, the axis marker and the legend. The imaginary modes get buttons
+   under the spectrum, and the band that is moving stays marked. */
+.modejump{display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:12px;}
+.modejump .hint{margin:0 4px 0 0;}
+.modejump .btn{font-family:var(--font-mono); font-variant-numeric:tabular-nums;}
+.modejump .btn[aria-pressed="true"]{background:var(--secondary); color:var(--foreground);}
+.chart .stk.sel{stroke-width:2.6;}
+.modeplay{
+  margin:0 0 10px; padding:6px 8px 8px; background:var(--card);
+  border:1px solid var(--border); border-radius:var(--radius);
+}
+.modeplay[hidden]{display:none;}
+.modeplay .mprow{display:flex; align-items:center; gap:6px; flex-wrap:wrap;}
+.modeplay .mpt{font-family:var(--font-mono); font-size:12px; font-variant-numeric:tabular-nums;}
+.modeplay .imag{color:var(--err); font-weight:600;}
+.modeplay .sp{flex:1;}
+.mpamp{display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted-foreground);}
+.mpamp input{width:96px; accent-color:var(--foreground);}
+.mpamp output{min-width:44px; font-family:var(--font-mono); font-size:11px;
+  font-variant-numeric:tabular-nums; color:var(--foreground);}
+.modeplay .mpnote{margin:4px 2px 0; font-size:11px;}
+
+/* ---------------------------- the other backends' forms ----------------------------
+   An addition to the reference (DESIGN.md §17.4s). The reference draws an MLIP
+   and a CREST pane under its backend control but locks neither and has no
+   advanced section. A backend that is set up but not ready opens LOCKED -- at
+   the one opacity DESIGN.md gives a locked section, with the reason above it
+   in a .finding (D41); CREST's MD/MTD numbers and toggles fold into a closed
+   "Advanced", the classic card's .adv-section, because a conformer search
+   needs none of them to run and nine fields read as nine decisions. */
+.bkform.locked{opacity:.45; pointer-events:none;}
+.advsec > summary{cursor:pointer; width:max-content; margin-bottom:12px;
+  font-size:12px; font-weight:500; color:var(--muted-foreground);
+  border-radius:var(--radius-sm);}
+.advsec > summary:hover{color:var(--foreground);}
+
+/* ---------------------------- constrain | scan ----------------------------
+   An addition to the reference (DESIGN.md §17.4r): the constraint panel's
+   heading carries the switch for what a pick on the stage defines -- a held
+   coordinate, or the one a relaxed surface scan walks. Scan is greyed out,
+   with its reason in the title, on a kind ORCA does not scan in. The scan's
+   row is a constraint row with start / end / steps where the target and
+   Apply were, and the step those imply on a second line under them. */
+.conshead{display:flex; align-items:center; justify-content:space-between;
+  gap:16px; margin-bottom:10px;}
+.conshead .grouplabel{margin:0;}
+.conshead .seg button:disabled{opacity:.45; cursor:not-allowed;}
+.consrow.scanrow{grid-template-columns:96px minmax(0,1fr) 84px auto 34px; row-gap:2px;
+  padding-top:6px; padding-bottom:6px;}
+.scanrow .sr{display:flex; align-items:center; gap:12px;}
+.scanrow .sr .ct input{width:72px;}
+.scanrow .ss{grid-column:2 / -1; color:var(--muted-foreground); font-size:11.5px;
+  font-variant-numeric:tabular-nums;}
+

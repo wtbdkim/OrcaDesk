@@ -3,6 +3,65 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [0.10.6] — 2026-10-26
+
+### Added
+- **Watch a vibration.** In the notebook report, click a band on the
+  vibrational spectrum (or press Enter on the keyboard cursor) and that mode
+  moves on the Structure stage; each imaginary mode also gets a button under
+  the spectrum. A bar above the stage steps to the neighbouring modes, plays
+  and pauses, sets the swing (how far the most-moved atom travels, Å) and
+  goes back to the still structure (*Show structure*, or Esc). Paused, each
+  atom carries an arrow showing which way it moves; with the system's
+  reduced-motion setting on, a mode opens paused. The vectors come from the
+  `.hess` beside the result, or from the output's own NORMAL MODES table when
+  there is no `.hess` (or it belongs to another Hessian), and are matched to
+  the report's mode numbers by wavenumber, not by position. New bridge slot
+  `get_vibration_mode`; Qt-free `orcamgr/core/normalmodes.py`.
+- **MLIP and CREST calculations in the notebook builder.** The builder's
+  first control is now `DFT | MLIP | CREST`. MLIP builds any of the four
+  tasks (optimization, single point, frequencies, opt + frequencies) with the
+  MACE model, environment, device — GPU only when a ready environment sees
+  one, with a note on what *CPU threads* means on each device — threads,
+  charge/multiplicity and, for the frequency tasks, temperature and pressure.
+  CREST builds a conformer search with method, search speed, energy window,
+  threads, solvent model and solvent, NCI mode, a target distribution where
+  there is more than one, and the MD/MTD settings under *Advanced*. Both take
+  coordinates (drawn on the stage and checked as for ORCA) or another
+  calculation's geometry, and *edit* on an MLIP or CREST row now opens it on
+  its own form instead of as an ORCA "General" calculation. A backend never
+  set up has no button (*+ More backends…* opens Settings); one set up but not
+  ready opens locked, saying why.
+
+- **Relaxed surface scans, picked on the structure.** The notebook builder's
+  constraint panel has a *Constrain | Scan* switch. In *Scan*, a drag across
+  2, 3 or 4 atoms (or Ctrl+click and *Scan*, or typed atom numbers) picks the
+  bond, angle or dihedral to walk. It starts at the value the coordinates
+  have now; give it an end and a number of steps, and the row shows the step
+  size that implies. It is written as ORCA's `%geom Scan` beside any
+  constraints, which still hold. Only an *Optimization* scans: ORCA ignores
+  a scan in a single point and runs the frequencies of an Opt + Freq after
+  the first point only, so on other types *Scan* is greyed out and says why.
+  A scan naming an atom the structure does not have is refused when it is
+  added.
+- **A scan's result.** The report draws ΔE (kcal/mol, against the lowest
+  point) along the scanned coordinate, marks the highest point, and lists
+  every point. A scan that stopped part-way keeps the points it finished and
+  says how many are missing. A 2-D or 3-D scan (hand-written in the .inp) is
+  listed rather than drawn. In *Visual*, *Scan points* steps through each
+  point's optimized structure in order, with its energy. The numbered
+  per-point `.xyz` copies ORCA writes are no longer listed one by one.
+  Opening an optimization trajectory now shows each frame's energy too.
+
+### Fixed
+- **An MLIP or CREST result no longer shows an ORCA input.** The notebook
+  report's Input pane generated an ORCA `.inp` for a calculation that ORCA
+  never ran; it and the Natural-orbitals section (there is no wavefunction)
+  are now left out for those results.
+- A finished relaxed scan is no longer taken as a plain optimization's
+  result (or the reverse) when existing results are kept on Run: the scan's
+  geometry is its last point, held there, not a minimum.
+
 ## [0.10.5] — 2026-10-26
 
 ### Added

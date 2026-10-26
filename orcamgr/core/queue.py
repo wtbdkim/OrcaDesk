@@ -46,7 +46,7 @@ from typing import Callable, Optional
 
 from .input_generator import (
     StepConfig, build_input, render_raw_input, GEOMETRY_PLACEHOLDER, check_neb_atom_order,
-    _xyz_elements, irc_hess_input_name, irc_hess_is_path,
+    _xyz_elements, irc_hess_input_name, irc_hess_is_path, SCAN_KINDS, normalize_scan,
 )
 from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
                         numfreq_rank_cap, ram_headroom_mb, raw_nprocs, uses_gpu,
@@ -232,6 +232,14 @@ def _missing_section_for_kind(kind: str, result: ParseResult) -> str:
     return ""
 
 
+def _wants_scan(calc: Calculation) -> bool:
+    """Whether this calculation's generated input carries a %geom Scan — the
+    same rule build_input writes it by."""
+    cfg = calc.config
+    return (not calc.is_raw and cfg.kind in SCAN_KINDS
+            and bool(normalize_scan(cfg.geom_scan)))
+
+
 def _kept_result_matches(calc: Calculation, result: ParseResult) -> str:
     """'' when an on-disk result plausibly belongs to this calc, else a
     human-readable mismatch reason. Workspace folders are never deleted and
@@ -252,6 +260,16 @@ def _kept_result_matches(calc: Calculation, result: ParseResult) -> str:
     missing = _missing_section_for_kind(calc.kind, result)
     if missing:
         return f"existing result has no {missing}"
+    # A relaxed scan is an optimization too, and its folder holds an output
+    # that passes every opt check — but its geometry is the LAST scan point,
+    # held there by the scan, not a minimum. So a scan and a plain
+    # optimization are told apart in both directions. (A raw calc's scan is
+    # in its text, not in geom_scan, so only the scan-wanted half applies.)
+    if _wants_scan(calc) and not result.scan_points:
+        return "existing result has no relaxed surface scan"
+    if (not calc.is_raw and not _wants_scan(calc) and result.scan_points
+            and calc.kind in ("opt", "ts_opt", "opt_freq", "ts_opt_freq")):
+        return "existing result is a relaxed surface scan, not an optimization"
     expected = ""
     if calc.geometry_source == GeometrySource.DIRECT:
         if calc.is_raw and GEOMETRY_PLACEHOLDER not in calc.raw_text:
@@ -355,6 +373,15 @@ def validate_result(calc: Calculation, result: ParseResult) -> None:
         return
     if calc.kind in ("opt", "ts_opt", "opt_freq", "ts_opt_freq") and not result.opt_converged:
         raise OrcaRunError("Optimization did not converge.")
+    # A relaxed scan's own bar: the points it was run for. Every point is a
+    # constrained optimization, and one that does not converge ends the run in
+    # an error termination (measured, 6.1.1) — caught above — so a normal end
+    # with the results table is the whole scan. Without the table the run
+    # scanned nothing, whatever its last optimization says.
+    if _wants_scan(calc) and not result.scan_points:
+        raise OrcaRunError(
+            "No relaxed surface scan in the output — ORCA ran the optimization "
+            "without scanning. Check the %geom Scan block in the input.")
     # A frequency job that produced no frequency table at all is not a passing
     # frequency job: the imaginary-mode rule below is vacuously satisfied by an
     # empty table (n_imaginary == 0), so such a run was stamped DONE with no

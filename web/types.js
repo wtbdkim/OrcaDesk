@@ -93,11 +93,23 @@
  */
 
 /**
+ * One %geom Scan coordinate. Mirror of the dicts input_generator.normalize_scan
+ * keeps: kind B / A / D naming 2 / 3 / 4 atoms, 0-based; start and end in Å
+ * or °, both included; steps = the number of points (2 or more).
+ * @typedef {Object} GeomScanPayload
+ * @property {"B"|"A"|"D"} kind
+ * @property {number[]} atoms
+ * @property {number} start
+ * @property {number} end
+ * @property {number} steps
+ */
+
+/**
  * Method configuration. Mirror of StepConfig in input_generator.py
- * (to_dict()/from_dict are a plain asdict round-trip) — 49 fields.
+ * (to_dict()/from_dict are a plain asdict round-trip) — 50 fields.
  * The [optional] markers describe the JS→Python SEND direction (the build
  * forms omit keys that don't apply, e.g. crest_* on a DFT calc); in the
- * Python→JS direction to_dict() = asdict(), so all 49 keys always arrive.
+ * Python→JS direction to_dict() = asdict(), so all 50 keys always arrive.
  * @typedef {Object} StepConfigPayload
  * @property {string} kind
  * @property {string} functional
@@ -111,6 +123,8 @@
  * @property {number} max_iter
  * @property {GeomConstraintPayload[]} [geom_constraints]  %geom Constraints;
  *                                     sent only for the kinds that optimize
+ * @property {GeomScanPayload[]} [geom_scan]  %geom Scan (a relaxed surface
+ *                                     scan); sent only for the kinds that scan
  * @property {SolvationPayload} solvation
  * @property {BasisAssignmentPayload[]} basis_assignments
  * @property {number} freq_temp_k
@@ -408,6 +422,25 @@
  */
 
 /**
+ * A relaxed scan's coordinate as ORCA's banner states it (parser _parse_scan);
+ * atoms 0-based in ORCA's PRINTED order ("B 0 1" prints as (1, 0)).
+ * @typedef {Object} ScanCoordPayload
+ * @property {"B"|"A"|"D"} kind
+ * @property {number[]} atoms
+ * @property {number} start
+ * @property {number} end
+ * @property {number} steps
+ */
+
+/**
+ * One finished point of a relaxed scan.
+ * @typedef {Object} ScanPointPayload
+ * @property {number[]} values   one per ScanCoordPayload, same order
+ * @property {number} e_eh
+ * @property {number} de_kcal    against the lowest point
+ */
+
+/**
  * @typedef {Object} GeomAtomPayload
  * @property {string} el
  * @property {number} x
@@ -461,6 +494,8 @@
  * @property {NmrPayload[]} [nmr]
  * @property {NebPointPayload[]} [neb_path]
  * @property {string} [neb_path_kind]         "neb" | "irc" — titles the path profile
+ * @property {ScanCoordPayload[]} [scan_coords]  relaxed surface scan: what was scanned
+ * @property {ScanPointPayload[]} [scan_points]  ...and each finished point
  * @property {GeomAtomPayload[]} [geometry]
  * @property {OrbitalPayload[]} [orbitals]
  * @property {TddftStatePayload[]} [tddft_states]
@@ -746,6 +781,24 @@
  * @property {number[]} moved
  * @property {number} max_shift
  * @property {string} atom
+ */
+
+/**
+ * get_vibration_mode(payload) result: one vibration of a finished result, for
+ * the report to animate. Mirror of the Python VibModePayload. "n" is the
+ * report's own mode number, "origin" the file the vector came from, "coords"
+ * the modes' geometry moved onto the report's structure and "max_dev" how far
+ * it still is from it (Å); "vec" is the displacement per atom.
+ * @typedef {Object} VibMode
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {number} [n]
+ * @property {number} [count]
+ * @property {number} [freq]
+ * @property {string} [origin]
+ * @property {number[][]} [coords]
+ * @property {number[][]} [vec]
+ * @property {number} [max_dev]
  */
 
 /**

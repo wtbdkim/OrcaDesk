@@ -19,7 +19,7 @@
      generator's expectations: which calculation-type group to offer, the
      convergence default that kind deserves, and the extra block it needs. */
   const KINDS = {
-    opt:          { label: "Optimization",     group: "calculation_types_geometry",  calc: "TightOpt",      scf: "TightSCF",     maxiter: true, cons: true },
+    opt:          { label: "Optimization",     group: "calculation_types_geometry",  calc: "TightOpt",      scf: "TightSCF",     maxiter: true, cons: true, scan: true },
     opt_freq:     { label: "Opt + Freq",       group: null,                          calc: "TightOpt Freq", scf: "VeryTightSCF", maxiter: true, cons: true,  freq: true },
     ts_opt:       { label: "TS optimization",  group: "calculation_types_geometry",  calc: "OptTS",         scf: "TightSCF",     maxiter: true, cons: true },
     ts_opt_freq:  { label: "TS Opt + Freq",    group: null,                          calc: "OptTS Freq",    scf: "VeryTightSCF", maxiter: true, cons: true,  freq: true },
@@ -48,7 +48,7 @@
   async function loadChoices() {
     if (_loaded) return;
     const names = ["functionals", "basis_sets", "calculation_types",
-                   "scf_convergences", "ri_approximations", "solvents"];
+                   "scf_convergences", "ri_approximations", "solvents", "mace_models"];
     await Promise.all([...names.map(async n => {
       const g = await NB.call("load_choices", n);
       CHOICES[n] = (g && !g.error) ? g : {};
@@ -207,17 +207,35 @@
       // lose them — a switch to a kind that cannot use them only hides them
       cons: ((calc && calc.config && calc.config.geom_constraints) || [])
         .map(c => ({ kind: c.kind, atoms: c.atoms.slice(), value: c.value })),
+      // a relaxed surface scan's coordinate, kept the same way. The builder
+      // offers one (ORCA takes up to three; the report draws one)
+      scan: ((calc && calc.config && calc.config.geom_scan) || []).slice(0, 1)
+        .map(c => ({ kind: c.kind, atoms: c.atoms.slice(), start: c.start,
+                     end: c.end, steps: c.steps })),
+      /** what a pick on the stage defines: a constraint, or the scan */
+      pickMode: "cons",
       /** @type {any} the structure stage, destroyed on the next render */
       stage: null,
+      /** "dft" | "mlip" | "crest" — read off the kind, so an edit opens on its
+       *  own backend's form (§17.4s) */
+      backend: backendOfKind(calc ? calc.kind : "opt"),
+      /** each backend's own settings and kind, kept across a switch to another
+       *  backend and back @type {Record<string, any>} */
+      cfgBy: {},
+      /** @type {Record<string, string>} */
+      kindBy: {},
     };
-    if (!KINDS[st.kind]) st.kind = "general";
+    if (st.backend === "dft" && !KINDS[st.kind]) st.kind = "general";
+    if (st.backend === "dft" && st.scan.length && KINDS[st.kind].scan) st.pickMode = "scan";
     render(body, st, calc, close);
   }
 
   /** @param {HTMLElement} el @param {any} st @param {any} calc @param {() => void} close */
   function render(el, st, calc, close) {
     if (st.stage) { st.stage.destroy(); st.stage = null; }
-    const K = KINDS[st.kind];
+    // an MLIP or CREST kind has no ORCA form shape: {} offers none of its blocks
+    const K = KINDS[st.kind] || {};
+    const dft = st.backend === "dft";
     const cfg = (calc && calc.config) || {};
     const d = NB.settings || {};
     const refs = NB.queue
@@ -230,19 +248,14 @@
                      : [];
 
     el.innerHTML = `
-      <div class="backendrow">
-        <div class="seg" role="group" aria-label="Input mode">
-          <button type="button" data-mode="form" aria-pressed="${!st.raw}">Guided</button>
-          <button type="button" data-mode="raw" aria-pressed="${st.raw}">.inp text</button>
-        </div>
-      </div>
+      ${backendRow(st)}
 
       <div class="field-row">
         ${text("Name", calc ? calc.name : "", "")}
-        <div class="field mid"><label>Type</label><select data-f="kind">${
+        ${dft ? `<div class="field mid"><label>Type</label><select data-f="kind">${
           KIND_ORDER.map(k => `<option value="${k}"${
             k === st.kind ? " selected" : ""}>${KINDS[k].label}</option>`).join("")
-        }</select></div>
+        }</select></div>` : backendKindField(st)}
         ${text("Charge", calc ? calc.charge : 0, "narrow", "number")}
         ${text("Mult.", calc ? calc.multiplicity : 1, "narrow", "number")}
       </div>
@@ -258,8 +271,8 @@
       <div data-g="direct"${src === "reference" ? " hidden" : ""}>
         <div class="btn-group" style="align-items:center;margin-bottom:10px">
           <button class="btn btn-sm" type="button" data-act="loadxyz">Load .xyz…</button>
-          <button class="btn btn-sm btn-ghost" type="button" data-act="loadhess"
-                  title="Push the coordinates along a vibrational mode of a frequency run">Load .hess…</button>
+          ${dft ? `<button class="btn btn-sm btn-ghost" type="button" data-act="loadhess"
+                  title="Push the coordinates along a vibrational mode of a frequency run">Load .hess…</button>` : ""}
           <span class="hint" style="margin:0" data-x="status">${
             st.xyz ? st.xyz.trim().split("\n").length + " atoms" : ""}</span>
         </div>
@@ -313,19 +326,33 @@
 
       ${K.cons && !st.raw ? `<div data-cons>
         <div class="divider"></div>
-        <div class="grouplabel">Constraints</div>
+        <!-- what a pick on the stage defines: a coordinate held, or the one a
+             relaxed surface scan walks (DESIGN.md §17.4r). Only an
+             optimization scans, so the second half says so on other kinds -->
+        <div class="conshead">
+          <div class="grouplabel">Constraints</div>
+          <div class="seg" role="group" aria-label="What a pick on the structure defines">
+            <button type="button" data-pmode="cons"
+                    aria-pressed="${st.pickMode !== "scan" || !K.scan}">Constrain</button>
+            <button type="button" data-pmode="scan" aria-pressed="${st.pickMode === "scan" && !!K.scan}"${
+              K.scan ? "" : ` disabled title="A relaxed scan is an Optimization: ORCA scans in no other job type"`}>Scan</button>
+          </div>
+        </div>
         <p class="hint" style="margin:0 0 10px" data-x="conshint"></p>
         <div class="conslist" data-a="cons"></div>
+        ${K.scan ? `<div class="conslist" data-a="scan"></div>` : ""}
         <!-- the keyboard's way in, and the only one for a referenced geometry,
              which has no coordinates here to pick on -->
         <div class="consadd">
-          <input class="mono" data-f="consatoms" spellcheck="false"
-                 placeholder="atoms, e.g. 3 7" aria-label="Atoms to constrain, numbered from 1">
+          <input class="mono" data-f="consatoms" spellcheck="false"${
+            st.pickMode === "scan" && K.scan
+              ? ` placeholder="atoms, e.g. 1 2" aria-label="Atoms to scan, numbered from 1"`
+              : ` placeholder="atoms, e.g. 3 7" aria-label="Atoms to constrain, numbered from 1"`}>
           <button class="btn btn-sm" type="button" data-act="consadd">Add</button>
         </div>
       </div>` : ""}
 
-      <div data-form${st.raw ? " hidden" : ""}>
+      ${!dft ? backendForm(st, cfg) : `<div data-form${st.raw ? " hidden" : ""}>
         <div class="divider"></div>
         <div class="grouplabel">Method &amp; options</div>
         <div class="field-row">
@@ -460,11 +487,11 @@
         </div>
         <div class="field"><textarea class="raw-editor" data-f="rawtext" spellcheck="false"
           placeholder="! B3LYP def2-SVP Opt&#10;* xyz 0 1&#10;…&#10;*">${NB.esc(st.rawText)}</textarea></div>
-      </div>
+      </div>`}
 
       <div class="divider"></div>
       <div class="btn-group" style="align-items:center">
-        <button class="btn btn-sm btn-ghost" type="button" data-act="preview">Preview .inp</button>
+        ${dft ? `<button class="btn btn-sm btn-ghost" type="button" data-act="preview">Preview .inp</button>` : ""}
         <span class="sp" style="flex:1"></span>
         <button class="btn btn-sm btn-ghost" type="button" data-act="cancel">Cancel</button>
         <button class="btn btn-sm btn-primary" type="button" data-act="save">${
@@ -481,7 +508,9 @@
     /** @param {string} sel */
     const all = (sel) => [...el.querySelectorAll(sel)];
 
-    all(".backendrow .seg button").forEach(b => b.addEventListener("click", async () => {
+    wireBackends(el, st, calc, close);
+
+    all(".backendrow .seg button[data-mode]").forEach(b => b.addEventListener("click", async () => {
       const wantRaw = b.getAttribute("data-mode") === "raw";
       if (wantRaw === st.raw) return;
       // The two modes are not two views of one thing: the guided form GENERATES
@@ -515,7 +544,8 @@
       render(el, st, Object.assign({}, snap, { raw_text: text }), close);
     }));
 
-    q('[data-f="kind"]').addEventListener("change", e => {
+    // a CREST search has one kind and so no Type field at all
+    if (q('[data-f="kind"]')) q('[data-f="kind"]').addEventListener("change", e => {
       const snap = readForm(el, st, calc);
       const prev = KINDS[st.kind] || KINDS.general;
       st.kind = e.target.value;
@@ -720,6 +750,10 @@
     act("preview", async () => {
       const payload = readForm(el, st, calc);
       if (payload.is_raw) { NB.modalCode("Input preview", payload.raw_text); return; }
+      // an unfinished scan is left out of the input, so the preview says why
+      // its %geom has no Scan rather than looking like a plain optimization
+      const scanErr = scanProblem(payload);
+      if (scanErr) NB.toast(scanErr + " Until then the input has no scan.", "warn");
       const pv = await NB.call("build_inp_preview", JSON.stringify(payload));
       if (pv && pv.ok) NB.modalCode("Input preview", pv.text);
       else NB.modalRaw("Input preview",
@@ -729,6 +763,10 @@
     act("cancel", () => close());
 
     act("save", async () => {
+      // the locked form already says this; a disabled button is not the guard
+      // (D41, P44) — the queue would take the calc and the run would fail it
+      const bs = st.backend === "dft" ? null : backendState(st.backend);
+      if (bs && !bs.ready) { NB.fail(bs.reason); return; }
       const payload = readForm(el, st, calc);
       const err = validate(payload);
       if (err) { NB.fail(err); return; }
@@ -776,6 +814,8 @@
     const picking = !!K.cons && !st.raw;
     const fix = q('[data-act="fixatom"]');
     const useRef = () => q('input[name="gsrc"][value="reference"]').checked;
+    /** whether a pick defines the scan: the toggle says so, and the kind can */
+    const scanning = () => !!K.scan && st.pickMode === "scan";
     /** @type {any[]} */
     let atoms = [];
     /** the atom a click selected, for Fix @type {number|null} */
@@ -787,7 +827,7 @@
       gizmoBottom: 26,
       onPick: (/** @type {any} */ p) => { picked = p && p.kind === "atom" ? p.i : null; sayFix(); },
     }, picking ? {
-      onChain: (/** @type {number[]} */ idx) => add(idx),
+      onChain: (/** @type {number[]} */ idx) => pick(idx),
       onSelect: (/** @type {number[]} */ idx) => { sel = idx; sayFix(); },
     } : {}));
     st.stage = stage;
@@ -806,8 +846,15 @@
       if (!fix) return;
       if (sel.length >= 2) {
         fix.disabled = false;
-        fix.textContent = "Add " + CONS_NAME[CONS_BY_COUNT[sel.length]].toLowerCase()
+        fix.textContent = (scanning() ? "Scan " : "Add ")
+          + CONS_NAME[CONS_BY_COUNT[sel.length]].toLowerCase()
           + " " + sel.map(atomName).join("–");
+        return;
+      }
+      // one atom is a position, and a position has nothing to walk along
+      if (scanning()) {
+        fix.disabled = true;
+        fix.textContent = "Pick 2–4 atoms";
         return;
       }
       const one = sel.length === 1 ? sel[0] : picked;
@@ -828,14 +875,61 @@
       if (!useRef()) stage.setHighlight(c.atoms);
     }
 
+    /** What a pick of atoms becomes: a constraint, or the scan coordinate.
+     *  @param {number[]} idx 0-based */
+    function pick(idx) {
+      if (!scanning()) { add(idx); return; }
+      const kind = CONS_BY_COUNT[idx.length];
+      if (!kind || kind === "C") {
+        NB.toast("A scan walks a bond, an angle or a dihedral — pick 2, 3 or 4 atoms.");
+        return;
+      }
+      // it starts where the coordinates are, so the first point is the
+      // structure on the stage; a referenced geometry has nothing to measure
+      const mv = useRef() || idx.some(i => i >= atoms.length)
+        ? null : MOL.measureChain(atoms, idx);
+      const start = mv ? Number(mv.value.toFixed(kind === "B" ? 3 : 1)) : null;
+      const c = { kind: kind, atoms: idx.slice(), start: start, end: null, steps: null };
+      if (st.scan.length && sameCons(st.scan[0], c)) {
+        NB.toast(`${CONS_NAME[kind]} ${consLabel(c, useRef())} is already the scan.`);
+      } else {
+        // one coordinate: a new pick replaces the old one, and says so
+        if (st.scan.length) {
+          NB.toast(`The scan is now ${CONS_NAME[kind].toLowerCase()} ${consLabel(c, useRef())}.`);
+        }
+        st.scan = [c];
+        list();
+      }
+      if (!useRef()) stage.setHighlight(c.atoms);
+    }
+
+    /** "0.050 Å per step · 5 optimizations", or what is still missing.
+     *  @param {any} c */
+    function scanSteps(c) {
+      const unit = c.kind === "B" ? "Å" : "°";
+      if (c.start == null || c.end == null || !c.steps) {
+        return "Set where it starts and ends, and how many steps.";
+      }
+      if (c.steps < 2) return "A scan needs at least 2 steps — start and end.";
+      if (c.start === c.end) return "It starts where it ends — every step would be the same point.";
+      const d = (c.end - c.start) / (c.steps - 1);
+      return `${Math.abs(d).toFixed(c.kind === "B" ? 3 : 1)} ${unit} per step · `
+        + `${c.steps} constrained optimizations`;
+    }
+
     function list() {
       const box = q('[data-a="cons"]');
       if (!box) return;
       const ref = useRef();
       const hint = q('[data-x="conshint"]');
-      if (hint) hint.textContent = ref
+      if (hint) hint.textContent = scanning()
+        ? (ref
+          ? "Name the 2, 3 or 4 atoms of the bond, angle or dihedral to scan, numbered from 1. Each step is an optimization with that coordinate held; the constraints still apply."
+          : "Drag across 2, 3 or 4 atoms for the bond, angle or dihedral to scan — or Ctrl+click them in order and press Scan. Each step is an optimization with that coordinate held; the constraints still apply.")
+        : ref
         ? "Atoms are numbered from 1. They are checked against the referenced geometry when the run starts."
         : "Drag across 2, 3 or 4 atoms for a bond, angle or dihedral — or Ctrl+click them in order and press Add; select one atom to fix it. Leave a target empty to hold the current value.";
+      listScan(ref);
       box.innerHTML = st.cons.map((c, k) => {
         const lab = consLabel(c, ref);
         const miss = ref ? null : c.atoms.find(i => i >= atoms.length);
@@ -878,6 +972,62 @@
         if (ap) ap.addEventListener("click", () => applyTarget(c));
         /** @type {HTMLElement} */ (r.querySelector(".rm")).addEventListener("click", () => {
           st.cons.splice(st.cons.indexOf(c), 1);
+          stage.setHighlight([]);
+          list();
+        });
+      });
+    }
+
+    /** The scan's row: the coordinate, what it measures now, where it starts
+     *  and ends and in how many steps — and, under them, the step that
+     *  implies, because "0.9 to 1.6 in 15" is a spacing nobody sees at a
+     *  glance. No Apply here: the first point IS the start, and ORCA walks
+     *  the rest. @param {boolean} ref */
+    function listScan(ref) {
+      const box = q('[data-a="scan"]');
+      if (!box) return;
+      box.innerHTML = st.scan.map((c, k) => {
+        const lab = consLabel(c, ref);
+        const miss = ref ? null : c.atoms.find(i => i >= atoms.length);
+        const unit = c.kind === "B" ? "Å" : "°";
+        const mv = ref || miss != null ? null : MOL.measureChain(atoms, c.atoms);
+        const now = miss != null ? `no atom ${miss + 1}`
+          : mv ? mv.value.toFixed(c.kind === "B" ? 3 : 1) + " " + unit : "";
+        const v = (/** @type {any} */ x) => x == null ? "" : NB.esc(String(x));
+        const what = CONS_NAME[c.kind].toLowerCase() + " " + NB.esc(lab);
+        return `<div class="consrow scanrow${miss != null ? " bad" : ""}" data-k="${k}" tabindex="0">
+          <span class="ck">${CONS_NAME[c.kind]} scan</span>
+          <span class="ca">${NB.esc(lab)}</span>
+          <span class="cv" title="measured on the coordinates above">${NB.esc(now)}</span>
+          <span class="sr">
+            <label class="ct">from <input class="mono" type="number" step="any" data-s="start"
+              value="${v(c.start)}" aria-label="Scan of ${what} starts at, ${unit}"></label>
+            <label class="ct">to <input class="mono" type="number" step="any" data-s="end"
+              value="${v(c.end)}" aria-label="Scan of ${what} ends at, ${unit}"> ${unit}</label>
+            <label class="ct">in <input class="mono" type="number" min="2" step="1" data-s="steps"
+              value="${v(c.steps)}" aria-label="Number of steps, ends included"> steps</label>
+          </span>
+          <button class="rm" type="button" aria-label="Remove the scan of ${what}">×</button>
+          <span class="ss" data-x="scansteps" aria-live="polite">${NB.esc(scanSteps(c))}</span>
+        </div>`;
+      }).join("");
+      box.querySelectorAll(".consrow").forEach(r => {
+        const c = st.scan[Number(/** @type {HTMLElement} */ (r).dataset.k)];
+        const show = () => { if (!useRef()) stage.setHighlight(c.atoms); };
+        const hide = () => stage.setHighlight([]);
+        r.addEventListener("mouseenter", show); r.addEventListener("focusin", show);
+        r.addEventListener("mouseleave", hide); r.addEventListener("focusout", hide);
+        const say = /** @type {HTMLElement} */ (r.querySelector('[data-x="scansteps"]'));
+        // kept as typed, without a redraw, for the same reason as a target
+        r.querySelectorAll("[data-s]").forEach(i => i.addEventListener("input", () => {
+          const inp = /** @type {HTMLInputElement} */ (i);
+          const n = parseFloat(inp.value);
+          const key = /** @type {string} */ (inp.dataset.s);
+          c[key] = !isFinite(n) ? null : key === "steps" ? Math.round(n) : n;
+          say.textContent = scanSteps(c);
+        }));
+        /** @type {HTMLElement} */ (r.querySelector(".rm")).addEventListener("click", () => {
+          st.scan = [];
           stage.setHighlight([]);
           list();
         });
@@ -1032,7 +1182,7 @@
     ta.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(showGeom, 180); });
 
     if (fix) fix.addEventListener("click", () => {
-      if (sel.length) { add(stage.takePicks()); return; }
+      if (sel.length) { pick(stage.takePicks()); return; }
       if (picked == null) return;
       add([picked]);
       stage.clearPick();
@@ -1043,14 +1193,33 @@
     const addTyped = () => {
       const nums = String(typed.value || "").split(/[\s,;–-]+/).filter(Boolean).map(Number);
       const n = useRef() ? Infinity : atoms.length;
+      if (scanning() && (nums.length < 2 || nums.length > 4)) { NB.fail("Name 2 to 4 atoms: 2 scan a bond, 3 an angle, 4 a dihedral."); return; }
       if (!nums.length || nums.length > 4) { NB.fail("Name 1 to 4 atoms: 1 fixes a position, 2 a bond, 3 an angle, 4 a dihedral."); return; }
       if (nums.some(x => !Number.isInteger(x) || x < 1)) { NB.fail("Atoms are whole numbers, counted from 1."); return; }
       if (new Set(nums).size !== nums.length) { NB.fail("Name each atom once."); return; }
       const over = nums.find(x => x > n);
       if (over != null) { NB.fail(`There is no atom ${over} — the structure has ${n}.`); return; }
-      add(nums.map(x => x - 1));
+      pick(nums.map(x => x - 1));
       typed.value = "";
     };
+
+    // Constrain | Scan: what the next pick defines. Both lists stay on screen
+    // either way — a scan runs with the constraints, and both are written.
+    // A selection already made is kept; the stage's button renames itself.
+    el.querySelectorAll("[data-pmode]").forEach(b => b.addEventListener("click", () => {
+      const m = /** @type {HTMLElement} */ (b).dataset.pmode || "cons";
+      if (m === st.pickMode) return;
+      st.pickMode = m;
+      el.querySelectorAll("[data-pmode]").forEach(o =>
+        o.setAttribute("aria-pressed", String(o === b)));
+      if (typed) {
+        typed.setAttribute("aria-label", scanning()
+          ? "Atoms to scan, numbered from 1" : "Atoms to constrain, numbered from 1");
+        typed.placeholder = scanning() ? "atoms, e.g. 1 2" : "atoms, e.g. 3 7";
+      }
+      sayFix();
+      list();
+    }));
     const addBtn = q('[data-act="consadd"]');
     if (addBtn) addBtn.addEventListener("click", addTyped);
     if (typed) typed.addEventListener("keydown", (/** @type {KeyboardEvent} */ e) => {
@@ -1107,8 +1276,10 @@
     const num = (label, dflt) => { const e = byLabel(label); const n = e ? parseFloat(e.value) : NaN; return isFinite(n) ? n : dflt; };
     const chk = (name) => { const e = q(`[data-f="${name}"]`); return !!(e && e.checked); };
 
-    const kind = q('[data-f="kind"]').value;
+    const kindEl = q('[data-f="kind"]');
+    const kind = kindEl ? kindEl.value : st.kind;
     const K = KINDS[kind] || KINDS.general;
+    const dft = st.backend === "dft";
     const refSel = q('[data-g="reference"] select');
     const useRef = q('input[name="gsrc"][value="reference"]').checked;
     const xyzEl = q('[data-f="xyz"]');
@@ -1145,6 +1316,11 @@
       config.geom_constraints = (st.cons || []).map(c =>
         ({ kind: c.kind, atoms: c.atoms.slice(), value: c.value }));
     }
+    // ...and a scan only for the kind that scans (input_generator.SCAN_KINDS)
+    if (K.scan) {
+      config.geom_scan = (st.scan || []).map(c => ({ kind: c.kind, atoms: c.atoms.slice(),
+        start: c.start, end: c.end, steps: c.steps }));
+    }
     if (K.freq) {
       config.freq_temp_k = num("Temperature (K)", DEF.freq_temp_k);
       config.freq_pressure_atm = num("Pressure (atm)", DEF.freq_pressure_atm);
@@ -1178,9 +1354,11 @@
       geometry_source: useRef ? "reference" : "direct",
       xyz: useRef ? "" : (xyzEl ? xyzEl.value.trim() : ""),
       ref_name: useRef && refSel ? refSel.value : "",
-      is_raw: st.raw,
-      raw_text: st.raw && rawEl ? rawEl.value : "",
-      config: config,
+      // an MLIP or CREST calculation is never raw: the .inp text stays in st,
+      // for a switch back to DFT, but does not ride along with this one
+      is_raw: dft && st.raw,
+      raw_text: dft && st.raw && rawEl ? rawEl.value : "",
+      config: dft ? config : backendConfig(st, kind, val, num, chk),
       state: "pending",
       message: "",
     };
@@ -1206,9 +1384,33 @@
           Math.max(...bad.atoms) + 1}, but the structure has ${n} atoms.`;
       }
     }
+    const scanErr = scanProblem(p);
+    if (scanErr) return scanErr;
     if (!p.is_raw && p.kind === "irc" && p.config.irc_init_hess === "read"
         && !p.config.irc_hess_file) {
       return "Initial Hessian is read — load the .hess it starts from.";
+    }
+    return "";
+  }
+
+  /** What is wrong with the scan as it stands, or "". The backend drops an
+   *  incomplete one at the boundary (normalize_scan) — which, said nowhere,
+   *  would queue a plain optimization in its place. @param {any} p */
+  function scanProblem(p) {
+    const scan = (!p.is_raw && p.config && p.config.geom_scan) || [];
+    for (const c of scan) {
+      const what = CONS_NAME[c.kind].toLowerCase() + " scan";
+      if (c.start == null || c.end == null || c.steps == null) {
+        return `Give the ${what} a start, an end and a number of steps.`;
+      }
+      if (c.steps < 2) return `The ${what} needs at least 2 steps — its start and its end.`;
+      if (c.start === c.end) return `The ${what} starts where it ends.`;
+      if (p.geometry_source === "direct") {
+        const n = MOL.parseXyz(p.xyz).length;
+        if (Math.max(...c.atoms) >= n) {
+          return `The ${what} names atom ${Math.max(...c.atoms) + 1}, but the structure has ${n} atoms.`;
+        }
+      }
     }
     return "";
   }
@@ -1228,6 +1430,407 @@
          { label: "Overwrite", cls: "btn-danger", act: () => res(true) }]);
     });
   }
+
+  /* ============================================================
+     The other two backends (DESIGN.md §17.4s).
+
+     An MLIP calculation and a CREST conformer search are built in the same
+     cell as an ORCA one: the backend control at the top of the form decides
+     which form sits under the shared name / charge / multiplicity row and the
+     shared geometry block. They are not ORCA calculations — no method, no
+     basis, no .inp, no constraints — so nothing of the ORCA form is drawn for
+     them, and nothing of it is read back.
+
+     Hidden or locked the way the classic Build tab does it (D41 as amended):
+     a backend the user never set up has no button here, only "+ More
+     backends…" pointing at Settings; one set up but not ready (a registered
+     environment that fails to import, CREST missing from the distribution
+     picked) keeps its button and opens LOCKED, with the reason on top. A
+     calculation of that backend in the queue — the one being edited above all
+     — keeps the button visible, or the row could not be opened on its form.
+     ============================================================ */
+
+  /** The kinds each other backend builds, in the order the Task field offers
+   *  them (the classic card's #mlip-task order). @type {Record<string, [string, string][]>} */
+  const BACKEND_KINDS = {
+    mlip: [["mlip_opt", "Optimization"], ["mlip_sp", "Single point"],
+           ["mlip_freq", "Frequencies"], ["mlip_opt_freq", "Opt + Frequencies"]],
+    crest: [["crest_conf", "Conformer search"]],
+  };
+  /* CREST's own vocabulary, as the classic card offers it. The method maps
+     1:1 onto CREST's flag (build_crest_argv); the solvent is a suggestion
+     list, not a closed one — any ALPB/GBSA name CREST knows is taken (D63). */
+  /** @type {[string, string][]} */
+  const CREST_METHODS = [["gfn2", "GFN2-xTB"], ["gfn1", "GFN1-xTB"], ["gfnff", "GFN-FF (fast)"],
+                         ["gfn0", "GFN0-xTB"], ["gfn2//gfnff", "GFN2-xTB // GFN-FF"]];
+  /** @type {[string, string][]} */
+  const CREST_PRESETS = [["", "standard (thorough)"], ["quick", "quick"],
+                         ["squick", "super quick"], ["mquick", "micro quick"]];
+  const CREST_SOLVENTS = ["water", "acetonitrile", "chcl3", "dmso", "methanol", "thf",
+                          "toluene", "acetone", "ether", "hexane"];
+
+  /** @param {string} kind @returns {string} "dft" | "mlip" | "crest" */
+  function backendOfKind(kind) {
+    const k = String(kind || "");
+    return k.startsWith("mlip") ? "mlip" : k.startsWith("crest") ? "crest" : "dft";
+  }
+
+  /** Where a backend stands, read off the polled status (NB.backends):
+   *  adopted (the user set it up — decides whether its button shows), ready
+   *  (decides whether its form is locked) and, when not ready, why.
+   *  @param {string} b "mlip" | "crest"
+   *  @returns {{adopted: boolean, ready: boolean, checking: boolean, reason: string}} */
+  function backendState(b) {
+    const picked = !!(NB.settings && NB.settings.crest_distro);
+    if (b === "mlip") {
+      const m = NB.backends.mlip;
+      if (!m) return { adopted: false, ready: false, checking: true,
+                       reason: "Checking the MLIP environments…" };
+      const envs = m.envs || [];
+      const ready = m.state === "ready";
+      const bad = envs.filter(e => e.message)[0];
+      return { adopted: envs.length > 0, ready: ready, checking: m.state === "checking",
+               reason: ready ? ""
+                 : !envs.length ? "No MLIP environment is registered. Build or register one in Settings."
+                 : m.state === "checking" ? "Checking the MLIP environments — importing torch takes a few seconds."
+                 : "No MLIP environment is ready"
+                   + (bad ? ` (${bad.name}: ${String(bad.message).replace(/[.\s]+$/, "")})` : "")
+                   + ". Fix it in Settings." };
+    }
+    const c = NB.backends.crest;
+    if (!c) return { adopted: picked, ready: false, checking: true, reason: "Looking for CREST…" };
+    const ready = c.state === "ready";
+    const local = c.transport === "local";
+    return { adopted: ready || picked, ready: ready, checking: c.state === "checking",
+             reason: ready ? ""
+               : c.state === "checking" ? (local ? "Looking for CREST…" : "Checking WSL for CREST…")
+               : !c.wsl ? (local ? "No POSIX shell found — CREST needs bash on PATH."
+                                 : "WSL is not available, and CREST has no Windows build.")
+               : (local ? "CREST is not installed on this machine." : "No WSL distribution has CREST.")
+                 + " Install it in Settings." };
+  }
+  /** A backend's button shows when it was set up, when it is the one this
+   *  form is on, or when the queue still holds one of its calculations (which
+   *  must stay editable). @param {string} b @param {any} st */
+  function backendShown(b, st) {
+    return b === "dft" || st.backend === b || backendState(b).adopted
+      || NB.queue.some(c => backendOfKind(c.kind) === b);
+  }
+
+  /** The control at the top of the form — the reference's own: the backends,
+   *  then (for DFT only) the divider and Guided | .inp text. @param {any} st */
+  function backendRow(st) {
+    const dft = st.backend === "dft";
+    const btn = (b, label, title) => `<button type="button" data-backend="${b}" aria-pressed="${
+      st.backend === b}" title="${title}"${backendShown(b, st) ? "" : " hidden"}>${label}</button>`;
+    const hint = st.backend === "mlip"
+      ? "A machine-learned potential, run in its own Python environment — no .inp."
+      : st.backend === "crest" ? "A conformer search with xTB; a later calculation takes its best conformer." : "";
+    return `<div class="backendrow">
+        <div class="seg" role="group" aria-label="Backend and input">
+          ${btn("dft", "DFT", "An ORCA calculation")}
+          ${btn("mlip", "MLIP", "A machine-learned interatomic potential (MACE)")}
+          ${btn("crest", "CREST", "A CREST conformer search")}
+          ${dft ? `<span class="sep"></span>
+          <button type="button" data-mode="form" aria-pressed="${!st.raw}">Guided</button>
+          <button type="button" data-mode="raw" aria-pressed="${st.raw}">.inp text</button>` : ""}
+        </div>
+        <button class="btn btn-sm btn-ghost" type="button" data-act="morebk"${
+          ["mlip", "crest"].some(b => !backendShown(b, st)) ? "" : " hidden"}
+          title="Set up an MLIP environment or CREST to build with it here">+ More backends…</button>
+        ${hint ? `<span class="hint" style="margin:0">${hint}</span>` : ""}
+      </div>
+      <div data-x="bklock"></div>`;
+  }
+
+  /** The Type field's place in the first row: MLIP's four tasks, CREST's one
+   *  search needs none. @param {any} st */
+  function backendKindField(st) {
+    if (st.backend !== "mlip") return "";
+    return `<div class="field mid"><label>Task</label><select data-f="kind">${
+      BACKEND_KINDS.mlip.map(k => `<option value="${k[0]}"${k[0] === st.kind ? " selected" : ""}>${
+        k[1]}</option>`).join("")}</select></div>`;
+  }
+
+  /** A select whose values are not its labels.
+   *  @param {string} label @param {any[][]} opts [value, label, disabled?]
+   *  @param {string} value @param {string} [cls] */
+  function pick(label, opts, value, cls) {
+    return `<div class="field ${cls || ""}"><label>${NB.esc(label)}</label><select class="mono">${
+      opts.map(o => `<option value="${NB.esc(o[0])}"${o[0] === value ? " selected" : ""}${
+        o[2] ? " disabled" : ""}>${NB.esc(o[1])}</option>`).join("")}</select></div>`;
+  }
+  /** A number where empty means "CREST's own default", said in the placeholder.
+   *  @param {string} label @param {string|number} value @param {string} ph @param {string} [cls] */
+  function optNum(label, value, ph, cls) {
+    return `<div class="field ${cls || ""}"><label>${NB.esc(label)}</label>
+      <input type="number" class="mono" min="0" step="any" value="${NB.esc(String(value))}"
+             placeholder="${NB.esc(ph)}"></div>`;
+  }
+
+  /** Whether some READY environment's torch sees a CUDA device: the GPU is
+   *  offered only then, since the worker would die loading a device it lacks. */
+  function mlipCuda() {
+    const m = NB.backends.mlip;
+    return !!(m && (m.envs || []).some(e => e.state === "ready" && e.cuda === true));
+  }
+  /** What "CPU threads" does on the chosen device (D2) — the classic card's
+   *  #mlip-threads-note. It always caps the worker; the queue charges it only
+   *  off the GPU, where a job is charged one core and takes the GPU lane.
+   *  @param {string} dev "" | "cpu" | "cuda" */
+  function threadsNote(dev) {
+    return dev === "cuda"
+      ? "CPU threads still applies on the GPU: it caps the CPU-side work (neighbour lists, the optimizer, finite-difference steps). A GPU job is charged one core and takes the single GPU lane, so the number here is not what the queue reserves."
+      : dev === "cpu"
+        ? "CPU threads caps the worker and is what the queue reserves for this job."
+        : "CPU threads caps the worker and is what the queue reserves. Auto is charged as a CPU job — ORCAdesk cannot know what the worker will pick — so choose GPU explicitly to take the GPU lane.";
+  }
+
+  /** The backend's own block, where the ORCA method form sits for DFT.
+   *  @param {any} st @param {any} cfg the calculation's config, or {} */
+  function backendForm(st, cfg) {
+    const d = NB.settings || {};
+    if (st.backend === "mlip") {
+      const cuda = mlipCuda();
+      const freq = st.kind === "mlip_freq" || st.kind === "mlip_opt_freq";
+      const model = cfg.mlip_model || DEF.mlip_model;
+      const groups = CHOICES.mace_models || {};
+      const listed = items(groups);
+      const modelOpts = (listed.indexOf(model) < 0 && model
+        ? `<option value="${NB.esc(model)}" selected>${NB.esc(model)} (not in the list)</option>` : "")
+        + Object.keys(groups).filter(g => g.charAt(0) !== "_").map(g =>
+          `<optgroup label="${NB.esc(g)}">${items(groups, g).map(o => `<option value="${
+            NB.esc(o)}"${o === model ? " selected" : ""}>${NB.esc(o)}</option>`).join("")}</optgroup>`).join("");
+      const envs = (NB.backends.mlip && NB.backends.mlip.envs) || [];
+      const envId = cfg.mlip_env_id || "";
+      const envOpts = [["", "First ready"]].concat(envs.map(e =>
+        [e.id, e.name + (e.state === "ready" ? "" : e.state === "checking" ? " — checking" : " — not ready")]));
+      if (envId && !envs.some(e => e.id === envId)) envOpts.push([envId, envId + " — not registered"]);
+      // a stored "cuda" on a machine with no GPU the worker can see falls back
+      // to Auto: Chromium selects a disabled option from code, and Save would
+      // then charge the GPU lane to a job that dies loading the device
+      const dev = cfg.mlip_device === "cuda" && !cuda ? "" : (cfg.mlip_device || "");
+      return `<div class="bkform" data-bk="mlip">
+        <div class="divider"></div>
+        <div class="grouplabel">Model &amp; device</div>
+        <div class="field-row">
+          <div class="field"><label>MACE model</label><select class="mono">${modelOpts}</select></div>
+          ${pick("Environment", envOpts, envId, "mid")}
+          ${pick("Device", [["", "Auto (GPU if available)"], ["cpu", "CPU"],
+                            ["cuda", cuda ? "GPU (CUDA)" : "GPU (CUDA) — none detected", !cuda]], dev)}
+          ${text("CPU threads", cfg.nprocs || d.default_nprocs || DEF.nprocs, "narrow", "number")}
+        </div>
+        <p class="hint" data-x="threadsnote" style="margin:0 0 8px">${threadsNote(dev)}</p>
+        <p class="hint" style="margin:0">Charge and multiplicity are read by the OMol25 and
+          multi-head models (ions, radicals); MACE-OFF and MACE-MP ignore them.</p>
+        ${freq ? `<div class="divider"></div>
+        <div class="grouplabel">Thermochemistry</div>
+        <div class="field-row">
+          ${text("Temperature (K)", cfg.freq_temp_k || DEF.freq_temp_k, "mid", "number")}
+          ${text("Pressure (atm)", cfg.freq_pressure_atm || DEF.freq_pressure_atm, "mid", "number")}
+        </div>
+        <p class="hint" style="margin:0">Ideal-gas thermochemistry (ZPE, H, G, S) at a true
+          minimum; symmetry number 1 assumed.</p>` : ""}
+      </div>`;
+    }
+    // --- CREST
+    const c = NB.backends.crest;
+    const local = !!(c && c.transport === "local");
+    const readyTargets = ((c && c.distros) || []).filter(x => x.ready).map(x => x.distro);
+    const env = cfg.crest_env_id || "";
+    // which distribution runs it matters only where there is a choice: the
+    // engine otherwise takes Settings' pick, then the first that has CREST
+    const target = !local && (readyTargets.length > 1 || !!env)
+      ? pick("Run in", [["", "Default (" + ((NB.settings && NB.settings.crest_distro)
+                          || readyTargets[0] || "first with CREST") + ")"]]
+          .concat(readyTargets.map(t => [t, t]))
+          .concat(env && readyTargets.indexOf(env) < 0 ? [[env, env + " — CREST not found"]] : []),
+          env, "mid")
+      : "";
+    const solvent = cfg.crest_solvent || "";
+    const sid = "dl" + (++_uid);
+    // Advanced opens by itself when something in it is set, so a stored knob
+    // is never hidden behind a closed section
+    const adv = !!(cfg.crest_mdlen_mult || cfg.crest_tstep_fs || cfg.crest_tnmd_k
+      || cfg.crest_mddump_fs || cfg.crest_vbdump_ps || cfg.crest_norotmd || cfg.crest_cbonds
+      || cfg.crest_subrmsd || cfg.crest_cluster || cfg.crest_keepdir);
+    const tog = (f, label, flag) => `<label class="checkbox"><input type="checkbox" data-f="${f}"${
+      cfg["crest_" + f] ? " checked" : ""}> ${label} <span class="mono">${flag}</span></label>`;
+    return `<div class="bkform" data-bk="crest">
+      <div class="divider"></div>
+      <div class="grouplabel">Search</div>
+      <div class="field-row">
+        ${pick("Method", CREST_METHODS.concat(cfg.crest_method && !CREST_METHODS.some(m => m[0] === cfg.crest_method)
+            ? [[cfg.crest_method, cfg.crest_method]] : []), cfg.crest_method || DEF.crest_method, "mid")}
+        ${pick("Search speed", CREST_PRESETS, cfg.crest_preset || DEF.crest_preset, "mid")}
+        ${text("Energy window (kcal/mol)", cfg.crest_ewin || DEF.crest_ewin, "mid", "number")}
+        ${text("Threads", cfg.crest_threads || DEF.crest_threads, "narrow", "number")}
+      </div>
+      <div class="field-row">
+        ${pick("Solvent model", [["alpb", "ALPB"], ["gbsa", "GBSA"]],
+               cfg.crest_solvent_model || DEF.crest_solvent_model, "mid")}
+        <div class="field"><label>Solvent</label>
+          <input class="mono" list="${sid}" value="${NB.esc(solvent)}" placeholder="gas phase">
+          <datalist id="${sid}">${CREST_SOLVENTS.map(o => `<option value="${o}"></option>`).join("")}</datalist>
+        </div>
+        ${target}
+      </div>
+      <div class="field-row">
+        ${tog("nci", "NCI mode — a wall potential keeps a complex together", "--nci")}
+      </div>
+      <details class="advsec"${adv ? " open" : ""}>
+        <summary>Advanced</summary>
+        <div class="field-row">
+          ${optNum("MD length ×", cfg.crest_mdlen_mult || "", "1 = default", "mid")}
+          ${optNum("MD timestep (fs)", cfg.crest_tstep_fs || "", "default", "mid")}
+          ${optNum("Regular-MD temp (K)", cfg.crest_tnmd_k || "", "400", "mid")}
+          ${optNum("Trajectory dump (fs)", cfg.crest_mddump_fs || "", "100", "mid")}
+          ${optNum("Vbias dump (ps)", cfg.crest_vbdump_ps || "", "1.0", "mid")}
+        </div>
+        <div class="field-row" style="gap:8px 20px">
+          ${tog("cbonds", "Automatic bond constraints", "--cbonds")}
+          ${tog("subrmsd", "Constrained atoms out of the RMSD", "--subrmsd")}
+          ${tog("norotmd", "Skip the extra regular MDs", "--norotmd")}
+          ${tog("keepdir", "Keep the step folders", "--keepdir")}
+          ${tog("cluster", "Cluster the ensemble", "--cluster")}
+        </div>
+        <p class="hint" style="margin:0 0 12px"><span class="mono">--cluster</span> (PCA + k-means)
+          is documented as unsuitable for non-covalent complexes: use it on single molecules.</p>
+      </details>
+      <p class="hint" style="margin:0">CREST takes the charge as <span class="mono">--chrg</span>
+        and the multiplicity as unpaired electrons, <span class="mono">--uhf</span> = multiplicity − 1.</p>
+    </div>`;
+  }
+
+  /** Read the backend's own block back into a StepConfig payload. The field
+   *  readers are readForm's, so a label means the same thing here as there.
+   *  @param {any} st @param {string} kind
+   *  @param {(l: string, d: any) => any} val @param {(l: string, d: any) => number} num
+   *  @param {(n: string) => boolean} chk @returns {any} */
+  function backendConfig(st, kind, val, num, chk) {
+    const d = NB.settings || {};
+    if (st.backend === "mlip") {
+      /** @type {any} */
+      const c = {
+        kind: kind,
+        mlip_model: val("MACE model", DEF.mlip_model),
+        mlip_env_id: val("Environment", DEF.mlip_env_id),
+        mlip_device: val("Device", DEF.mlip_device),
+        // the worker's thread cap AND, off the GPU, what the queue charges
+        nprocs: Math.max(1, Math.round(num("CPU threads", d.default_nprocs || DEF.nprocs))),
+      };
+      if (kind === "mlip_freq" || kind === "mlip_opt_freq") {
+        c.freq_temp_k = num("Temperature (K)", DEF.freq_temp_k);
+        c.freq_pressure_atm = num("Pressure (atm)", DEF.freq_pressure_atm);
+      }
+      return c;
+    }
+    return {
+      kind: "crest_conf",
+      crest_method: val("Method", DEF.crest_method),
+      crest_preset: val("Search speed", DEF.crest_preset),
+      crest_ewin: num("Energy window (kcal/mol)", DEF.crest_ewin),
+      crest_threads: Math.max(1, Math.round(num("Threads", DEF.crest_threads))),
+      crest_solvent_model: val("Solvent model", DEF.crest_solvent_model),
+      crest_solvent: String(val("Solvent", DEF.crest_solvent)).trim(),
+      crest_env_id: val("Run in", DEF.crest_env_id),
+      crest_nci: chk("nci"),
+      // empty is CREST's own default, which StepConfig spells 0
+      crest_mdlen_mult: num("MD length ×", DEF.crest_mdlen_mult),
+      crest_tstep_fs: num("MD timestep (fs)", DEF.crest_tstep_fs),
+      crest_tnmd_k: num("Regular-MD temp (K)", DEF.crest_tnmd_k),
+      crest_mddump_fs: Math.round(num("Trajectory dump (fs)", DEF.crest_mddump_fs)),
+      crest_vbdump_ps: num("Vbias dump (ps)", DEF.crest_vbdump_ps),
+      crest_cbonds: chk("cbonds"),
+      crest_subrmsd: chk("subrmsd"),
+      crest_norotmd: chk("norotmd"),
+      crest_keepdir: chk("keepdir"),
+      crest_cluster: chk("cluster"),
+    };
+  }
+
+  /** The open builder's repaint against the polled backend status, or null.
+   *  One builder is open at a time, so one is enough. @type {null|(() => void)} */
+  let _syncBackends = null;
+
+  /** @param {HTMLElement} el @param {any} st @param {any} calc @param {() => void} close */
+  function wireBackends(el, st, calc, close) {
+    /** @param {string} sel */
+    const q = (sel) => /** @type {any} */ (el.querySelector(sel));
+
+    el.querySelectorAll(".backendrow [data-backend]").forEach(b => b.addEventListener("click", () => {
+      const want = /** @type {HTMLElement} */ (b).dataset.backend;
+      if (want === st.backend) return;
+      // Each backend keeps its own settings for the length of the form: DFT ->
+      // MLIP -> DFT comes back to the method it left. What they share (name,
+      // charge, multiplicity, the geometry) goes along.
+      const snap = readForm(el, st, calc);
+      st.cfgBy[st.backend] = snap.config;
+      st.kindBy[st.backend] = snap.kind;
+      if (st.backend === "dft" && st.raw) st.rawText = snap.raw_text;
+      st.xyz = snap.xyz;
+      st.backend = want;
+      st.kind = st.kindBy[want] || (want === "dft" ? "opt" : BACKEND_KINDS[want][0][0]);
+      render(el, st, Object.assign({}, snap, { kind: st.kind, config: st.cfgBy[want] || {} }), close);
+    }));
+    const more = q('[data-act="morebk"]');
+    if (more) more.addEventListener("click", () => NB.settingsView.open());
+
+    const devSel = /** @type {any} */ (
+      [...el.querySelectorAll('[data-bk="mlip"] .field')].filter(f => {
+        const l = f.querySelector("label");
+        return l && l.textContent.trim() === "Device";
+      }).map(f => f.querySelector("select"))[0] || null);
+    const sayDevice = () => {
+      const n = q('[data-x="threadsnote"]');
+      if (n && devSel) n.textContent = threadsNote(devSel.value);
+    };
+    if (devSel) devSel.addEventListener("change", sayDevice);
+
+    /** Show, lock or unlock against what the poll last said. Called now and
+     *  after every poll; it writes only what changed, so a field being typed
+     *  in is never touched. */
+    let lockKey = null;
+    function sync() {
+      if (!el.isConnected) { if (_syncBackends === sync) _syncBackends = null; return; }
+      el.querySelectorAll(".backendrow [data-backend]").forEach(b => {
+        const h = /** @type {HTMLElement} */ (b);
+        h.hidden = !backendShown(h.dataset.backend, st);
+      });
+      if (more) more.hidden = !["mlip", "crest"].some(b => !backendShown(b, st));
+      // the GPU appears once a probe reports one (and goes with it)
+      if (devSel) {
+        const cuda = mlipCuda();
+        const o = /** @type {any} */ (devSel.querySelector('option[value="cuda"]'));
+        if (o && o.disabled === cuda) {
+          o.disabled = !cuda;
+          o.textContent = cuda ? "GPU (CUDA)" : "GPU (CUDA) — none detected";
+          if (!cuda && devSel.value === "cuda") { devSel.value = ""; sayDevice(); }
+        }
+      }
+      const pane = q("[data-bk]");
+      const box = q('[data-x="bklock"]');
+      if (!pane || !box) return;
+      const s = backendState(st.backend);
+      const key = s.ready ? "" : s.reason;
+      if (key === lockKey) return;
+      lockKey = key;
+      box.innerHTML = s.ready ? "" : `<div class="finding warn" style="margin-bottom:16px;align-items:center">
+          <span style="flex:1">${NB.esc(s.reason)}</span>${s.checking ? ""
+          : `<button class="btn btn-sm" type="button" data-act="bksettings">Open Settings</button>`}</div>`;
+      const go = box.querySelector('[data-act="bksettings"]');
+      if (go) go.addEventListener("click", () => NB.settingsView.open());
+      pane.classList.toggle("locked", !s.ready);
+      pane.querySelectorAll("input, select, textarea, button").forEach(x => {
+        /** @type {any} */ (x).disabled = !s.ready;
+      });
+      const save = q('[data-act="save"]');
+      if (save) save.disabled = !s.ready;
+    }
+    _syncBackends = sync;
+    sync();
+  }
+  NB.watch(() => { if (_syncBackends) _syncBackends(); });
 
   NB.build = { open: open, target: target, cellFor: cellFor, KINDS: KINDS };
 })();
