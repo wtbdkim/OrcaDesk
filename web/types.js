@@ -714,6 +714,41 @@
  */
 
 /**
+ * One vibration of a .hess. Mirror of the Python HessModePayload: "index"
+ * addresses it in the file, "n" is its 1-based number among the vibrations,
+ * "freq" in cm-1 (negative = imaginary).
+ * @typedef {Object} HessMode
+ * @property {number} index
+ * @property {number} n
+ * @property {number} freq
+ */
+
+/**
+ * read_hess_modes(path) result. Mirror of the Python HessModesPayload.
+ * @typedef {Object} HessModes
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {string} [path]
+ * @property {string} [name]
+ * @property {number} [n_atoms]
+ * @property {string[]} [symbols]
+ * @property {string} [xyz]
+ * @property {HessMode[]} [modes]
+ */
+
+/**
+ * displace_mode(xyz, path, index, amplitude) result. Mirror of the Python
+ * ModeShiftPayload.
+ * @typedef {Object} ModeShift
+ * @property {boolean} ok
+ * @property {string} error
+ * @property {string} xyz
+ * @property {number[]} moved
+ * @property {number} max_shift
+ * @property {string} atom
+ */
+
+/**
  * One result found in the workspace. Mirror of the Python
  * WorkspaceResultPayload. "path" is the artifact to parse ({name}.mlip.json for
  * an MLIP run, else {name}.out); "queued" marks the ones the queue also holds —

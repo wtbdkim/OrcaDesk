@@ -959,8 +959,8 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 `orcamgr/core/structure.py` is the one place geometry is reasoned about. It is
 pure and Qt-free (it needs no numpy, though `orcamgr/nbo/` has since made numpy
 a core dependency — see P5), so it unit-tests directly (`tests/test_structure.py`); the front-end reaches it only
-through three thin Bridge slots — `check_structure`, `compare_structures`
-and `apply_constraint_target` — and holds **no**
+through thin Bridge slots — `check_structure`, `compare_structures`,
+`apply_constraint_target` and `displace_mode` — and holds **no**
 geometry logic of its own. That is deliberate (P4): the Build tab's NEB badge
 and `input_generator.check_neb_atom_order`'s gate are now the same judgment,
 where they used to be a Python implementation and a hand-mirrored JS copy that
@@ -994,6 +994,26 @@ the box undoes it. `measure`'s dihedral is **IUPAC-signed**, matching ORCA and
 Apply to +90 read back as −90 (pinned by
 `test_the_dihedral_sign_is_iupacs_like_orcas_and_the_stages`). If a future
 change needs to write a structure in any other way, weigh that first.
+
+The **second** write is `displace_along_mode`, the builder's *push along a
+mode*: **Load .hess…** beside *Load .xyz…* reads a frequency run's `.hess`
+(`core/hessfile.py`, Qt-free: `$atoms` in Bohr, `$vibrational_frequencies`,
+`$normal_modes` - a 3N x 3N table printed in blocks of five COLUMNS, one per
+mode; ORCA's Cartesian displacement vectors, normalized), and a panel under
+the stage picks a mode (every vibration; the first imaginary preselected), a
+direction and a distance. The distance is how far the **most-moved atom**
+goes, in Å (up to `MAX_MODE_SHIFT`, 2 Å), because a normalized vector's own
+scale is not a number anyone pictures. The stage previews it; *Apply* writes
+it through the same `_rewrite` the constraint Apply uses (only the moved
+lines' numbers, Ctrl+Z undoes it) and the distance goes back to 0, so a
+second push starts from the pushed box rather than pushing twice. An empty box
+takes the `.hess`'s own geometry; a box with other atoms or another order is
+refused, since a mode is a list of per-atom arrows. A small imaginary mode
+(> −50 cm⁻¹) gets a note that it is often noise a tighter optimization or a
+finer grid removes. Bridge slots `read_hess_modes(path)` /
+`displace_mode(xyz, path, index, amplitude)` (the parsed `.hess` cached by
+path + mtime, since the slider asks on every move); `tests/test_hessfile.py`
+on a real ORCA 6.1.1 water `.hess` (`tests/hess/fixtures/`).
 
 One implementation note worth keeping: **bond perception is a uniform grid, not
 an all-pairs sweep.** `check_structure` runs on the Qt UI thread on every charge

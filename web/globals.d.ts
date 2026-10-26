@@ -50,6 +50,8 @@ interface OrcaBridge {
   check_structure(xyz: string, charge: number, multiplicity: number): Promise<string>;  // StructureCheck JSON
   compare_structures(reactantXyz: string, productXyz: string): Promise<string>;         // AtomOrder JSON
   apply_constraint_target(xyz: string, constraintJson: string): Promise<string>;      // ConstraintApply JSON
+  read_hess_modes(path: string): Promise<string>;                                      // HessModes JSON
+  displace_mode(xyz: string, path: string, index: number, amplitude: number): Promise<string>; // ModeShift JSON
   // parsing
   // the Results tab's one file button: picks a result file and says how to read
   // it — {ok, path, route:"parse"|"structure"} | {ok:false, cancelled:true}

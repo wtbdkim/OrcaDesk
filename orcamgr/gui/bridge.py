@@ -43,7 +43,9 @@ from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import CalcState, result_from_output
 from ..core.structure import (
     apply_constraint_target, check_geometry, compare_atom_order,
+    displace_along_mode,
 )
+from ..core.hessfile import HessError, read_hess
 from ..core.parser import parse_file
 from ..core.resources import ResourceBudget, auto_cores, auto_ram_mb
 from ..state.store import (
@@ -69,6 +71,7 @@ from ..state.schemas import (
     StructureSetsResult, PickedResultPayload, PickedFilePayload,
     PlotOptionsResult, CubeJobPayload, CubeDataResult, WorkspaceResultsResult,
     AtomOrderPayload, StructureCheckPayload, ConstraintApplyPayload,
+    HessModesPayload, HessModePayload, ModeShiftPayload,
 )
 
 # Ceiling on the workspace scan behind the Results picker. Generous next to any
@@ -1049,6 +1052,56 @@ class Bridge(QObject):
                 before=None, after=None, warnings=[]))
         return json.dumps(ConstraintApplyPayload(**apply_constraint_target(
             xyz, c.get("kind", ""), c.get("atoms") or [], c.get("value"))))
+
+    def _hess(self, path: str):
+        """The parsed .hess at `path`, cached for the last one read and
+        re-read when the file changes: the builder asks for a displaced
+        structure on every move of the amplitude slider, and a 300-atom
+        Hessian is a 900x900 table to parse."""
+        p = Path(path)
+        key = (str(p), p.stat().st_mtime)
+        if getattr(self, "_hess_cache", None) and self._hess_cache[0] == key:
+            return self._hess_cache[1]
+        data = read_hess(p)
+        self._hess_cache = (key, data)
+        return data
+
+    @pyqtSlot(str, result=str)
+    def read_hess_modes(self, path: str) -> str:
+        """The vibrations an ORCA .hess carries, for the builder's "push along
+        a mode": each one's wavenumber, and the geometry they were computed at
+        (an empty coordinate box takes that one). HessModesPayload; a file that
+        cannot be read is an error sentence, never an exception."""
+        try:
+            h = self._hess(path)
+        except (OSError, HessError) as e:
+            return json.dumps(HessModesPayload(ok=False, error=str(e)))
+        vib = h.vibrations()
+        return json.dumps(HessModesPayload(
+            ok=True, path=str(path), name=Path(path).name, n_atoms=len(h.symbols),
+            symbols=h.symbols,
+            xyz="\n".join(f"{s:<2s} {x:14.8f} {y:14.8f} {z:14.8f}"
+                          for s, (x, y, z) in zip(h.symbols, h.coords)),
+            modes=[HessModePayload(index=k, n=i + 1, freq=h.freqs[k])
+                   for i, k in enumerate(vib)]))
+
+    @pyqtSlot(str, str, int, float, result=str)
+    def displace_mode(self, xyz: str, path: str, index: int, amplitude: float) -> str:
+        """The coordinate box pushed along one mode of the .hess at `path`: the
+        most-moved atom goes `amplitude` Angstrom, its sign the direction
+        (core.structure.displace_along_mode). Nothing is saved - the builder
+        shows it on its stage, and puts it in the box on Apply, where Ctrl+Z
+        undoes it. ModeShiftPayload."""
+        try:
+            h = self._hess(path)
+        except (OSError, HessError) as e:
+            return json.dumps(ModeShiftPayload(ok=False, error=str(e), xyz="", moved=[],
+                                               max_shift=0.0, atom=""))
+        if not 0 <= index < len(h.modes):
+            return json.dumps(ModeShiftPayload(ok=False, error="No such mode in that file.",
+                                               xyz="", moved=[], max_shift=0.0, atom=""))
+        return json.dumps(ModeShiftPayload(**displace_along_mode(
+            xyz, h.symbols, h.coords, h.modes[index], amplitude)))
 
     @pyqtSlot(result=str)
     def get_step_defaults(self) -> str:
