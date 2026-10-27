@@ -32,6 +32,7 @@ from orcamgr.state.store import (
     QueueStore,
     calc_from_dict,
     constraint_warning,
+    raw_geometry_warning,
     calc_from_session_dict,
     calc_to_dict,
     calc_to_session_dict,
@@ -1006,6 +1007,18 @@ def test_a_linear_bend_with_a_value_is_added_with_a_warning():
                   config={"kind": "opt", "geom_constraints": [
                       {"kind": "A", "atoms": [1, 0, 2], "value": 180.0}]})
     assert "target of 180.00" in constraint_warning(r)
+
+
+def test_a_raw_calc_whose_text_is_not_its_coordinates_is_added_with_a_warning():
+    # a copied raw OptTS with an IRC endpoint pasted into the box: the box's
+    # coordinates were stored and the text's ran
+    text = "! HF def2-SVP Opt\n* xyz 0 1\nH 0 0 0\nH 0 0 0.74\n*\n"
+    c = make_calc("c", kind="opt", is_raw=True, raw_text=text, xyz="H 0 0 0\nH 0 0 0.9")
+    assert "atom 2" in raw_geometry_warning(c)
+    same = make_calc("s", kind="opt", is_raw=True, raw_text=text, xyz="H 0 0 0\nH 0 0 0.74")
+    assert raw_geometry_warning(same) == ""
+    # a guided calc builds its input from xyz, so there is nothing to disagree
+    assert raw_geometry_warning(make_calc("g", kind="opt", xyz="H 0 0 0.9")) == ""
 
 
 def test_the_add_time_check_applies_only_where_it_can_and_should():

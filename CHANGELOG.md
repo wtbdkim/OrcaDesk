@@ -16,6 +16,18 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   One Ctrl+Z undoes it.
 
 ### Fixed
+- **Coordinates pasted into a copied `.inp text` calculation now run.** A
+  hand-written `.inp` runs as written, so when its text carried its own
+  `* xyz` block, coordinates put in the builder's box beside it were saved
+  and never used: an OptTS copied into two optimizations with the IRC
+  endpoints pasted in ran the TS guess twice, and nothing said so. While the
+  text carries a block, the box now *is* that block — it opens on the
+  coordinates that will run, an edit or *Load .xyz* in the box rewrites the
+  block, and an edit in the text redraws the box — and a line under the box
+  says which of the two ways the text takes its geometry. A calculation whose
+  stored coordinates still differ from its text's (one added from the phone,
+  or saved before this fix) is warned about when it is added and again in
+  the log just before ORCA starts.
 - **A running IRC cell switches to its path once the walk begins.** The
   initial Hessian an IRC computes first is a frequency run, and its
   *Numerical frequencies* panel kept the cell for the rest of the job; the

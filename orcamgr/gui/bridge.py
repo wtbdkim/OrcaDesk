@@ -52,7 +52,7 @@ from ..core.resources import ResourceBudget, auto_cores, auto_ram_mb
 from ..state.store import (
     QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory,
     load_choice_groups, queue_needs_orca, find_dangling_reference,
-    constraint_warning,
+    constraint_warning, raw_geometry_warning,
 )
 # Response payloads are CONSTRUCTED through these TypedDicts (plain dicts at
 # runtime, so the JSON wire format is unchanged) — schemas.py is the single
@@ -1497,7 +1497,8 @@ class Bridge(QObject):
         """The success answer for add/update, carrying anything the queue
         accepted the calculation DESPITE, for the builder to show."""
         out = MutationResult(ok=True, snapshot=self.store.snapshot())
-        warning = constraint_warning(calc)
+        warning = " ".join(w for w in (constraint_warning(calc),
+                                       raw_geometry_warning(calc)) if w)
         if warning:
             out["warning"] = warning
         return out

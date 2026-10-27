@@ -1079,6 +1079,30 @@ def test_raw_input_with_its_own_coordinates_still_needs_no_xyz(tmp_path):
     assert harness.engine._resolve_geometry(calc) == ""
 
 
+def test_raw_input_whose_own_block_is_not_its_stored_geometry_is_warned_before_launch(tmp_path):
+    """A copied raw calc with new coordinates pasted into the box: the text's
+    own * xyz block runs verbatim and the box's never do. It launches (the
+    text is the user's input) but the log says which structure runs."""
+    logs = []
+    engine = QueueEngine(orca_path="orca-not-needed-in-tests",
+                         workspace_root=str(tmp_path),
+                         callbacks=QueueCallbacks(
+                             log=lambda msg, level, calc="": logs.append((msg, level)),
+                             calc_update=lambda index, calc: None))
+    engine._orca_runner_factory = _SentinelRunner
+    calc = make_calc("copied")
+    calc.is_raw = True
+    calc.raw_text = "! HF def2-SVP Opt\n* xyz 0 1\nH 0 0 0\nH 0 0 0.74\n*\n"
+    calc.xyz = "H 0 0 0\nH 0 0 0.90"
+
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+
+    warned = [m for m, lv in logs if lv == "warn" and "* xyz block" in m]
+    assert warned and "atom 2" in warned[0]
+    assert (tmp_path / "copied" / "copied.inp").read_text() == calc.raw_text
+
+
 # ---- a DONE parent ends the dependency chain --------------------------------
 
 def test_a_dependent_of_a_done_parent_runs_even_when_its_grandparent_failed(tmp_path):

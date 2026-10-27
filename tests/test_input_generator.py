@@ -37,6 +37,8 @@ from orcamgr.core.input_generator import (
     normalize_functional,
     smd_supports,
     render_raw_input,
+    raw_coordinate_block,
+    raw_geometry_mismatch,
 )
 
 
@@ -352,6 +354,40 @@ def test_render_raw_input_substitutes_geometry_placeholder():
 def test_render_raw_input_without_placeholder_is_verbatim():
     raw = "! B3LYP def2-SVP\n* xyz 0 1\nO 0.0 0.0 0.0\n*\n"
     assert render_raw_input(raw, WATER_XYZ) == raw
+
+
+# A raw .inp without the placeholder runs verbatim, so coordinates stored
+# beside it are never read. A copied OptTS with IRC endpoints pasted into the
+# box ran the TS guess twice, and both "endpoint" optimizations found the
+# product.
+COPIED_RAW = ("! wB97X-D4 def2-TZVPD TightSCF\r\n! TightOpt\r\n* xyz -1 1\r\n"
+              "C   -1.98813587   0.60625775  -0.05575346\r\n"
+              "  O  -3.32185239   1.29118693   0.10000000\r\n*\r\n")
+
+
+def test_the_raw_coordinate_block_is_the_star_xyz_body():
+    assert raw_coordinate_block(COPIED_RAW).split() == [
+        "C", "-1.98813587", "0.60625775", "-0.05575346",
+        "O", "-3.32185239", "1.29118693", "0.10000000"]
+    assert raw_coordinate_block("! SP\n* xyzfile 0 1 a.xyz\n") == ""
+
+
+def test_a_raw_block_that_is_not_the_given_geometry_is_named():
+    given = "C -1.94876904 0.67578152 0.28832747\nO -3.32185239 1.29118693 0.1"
+    msg = raw_geometry_mismatch(COPIED_RAW, given)
+    assert "atom 1" in msg and "-1.9881" in msg and "-1.9488" in msg
+    assert GEOMETRY_PLACEHOLDER in msg            # says how to run the given one
+    assert "2 atoms in the text, 3 given" in raw_geometry_mismatch(
+        COPIED_RAW, given + "\nH 0 0 0")
+
+
+def test_a_raw_block_that_is_the_given_geometry_says_nothing():
+    same = "C -1.98813587 0.60625775 -0.05575346\nO -3.32185239 1.29118693 0.1"
+    assert raw_geometry_mismatch(COPIED_RAW, same) == ""
+    # nothing given, or the box fills the text: nothing to compare
+    assert raw_geometry_mismatch(COPIED_RAW, "") == ""
+    tmpl = f"! SP\n* xyz 0 1\n{GEOMETRY_PLACEHOLDER}\n*\n"
+    assert raw_geometry_mismatch(tmpl, "H 9 9 9") == ""
 
 
 def test_build_input_template_embeds_placeholder_for_references():
