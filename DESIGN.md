@@ -1973,6 +1973,20 @@ MLIP or CREST result has no Input section and no Natural orbitals — it was
 handed no `.inp` and left no wavefunction; the Input pane used to show an ORCA
 input generated for a job ORCA never ran.
 
+**17.4t In `.inp text` mode the box shows the geometry that runs.** A
+hand-written input runs verbatim, so the coordinates box beside it is one of
+three things, and the line under the box (`data-x="rawgeom"`) says which:
+the text's own `* xyz` block (then the box IS that block: an edit, a paste, a
+*Load .xyz* or a pushed mode in the box rewrites the block's lines, an edit in
+the text redraws the box, and the box opens on the block rather than on the
+calculation's stored coordinates), what fills `{{GEOMETRY}}`, or — with
+neither, an `* xyzfile` input — unused, said as a `.finding warn`. It used to
+be the third silently whenever the text had a block: a copied OptTS with IRC
+endpoints pasted into the box ran its own TS guess, twice, and both
+"endpoint" optimizations reached the same product. The backend says the same
+thing where the builder is not the author (`raw_geometry_mismatch`): on add or
+edit as the result's `warning`, and in the log before launch.
+
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
 **both** front-ends — the way out of a preview has to be inside it — and saving

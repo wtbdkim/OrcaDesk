@@ -48,7 +48,7 @@ python tools/uispec.py real spec_real.json
 python tools/uidiff.py spec_mock.json spec_real.json   # exit code = differences
 
 # Run the automated test suite (pip install -r requirements-dev.txt once)
-python -m pytest                       # 1199 tests over the framework-free layers
+python -m pytest                       # 1204 tests over the framework-free layers
 node tests/web/scf_graph.test.js       # 49 tracker/progress tests, no npm deps
                                        # (covers progress_panels.js too)
 
@@ -1256,7 +1256,18 @@ excursion and is cleared only by an explicit discard, edit, or reset. Raw-mode
 geometry can't desync from the text: loading a `.xyz` in raw mode is refused
 unless the text has a `{{GEOMETRY}}` placeholder (embedded coords run
 verbatim), and a raw calc's stored charge/multiplicity mirror its own
-`* xyz C M` line, not the hidden form fields.
+`* xyz C M` line, not the hidden form fields. The notebook builder keeps the
+same rule the other way round (DESIGN.md §17.4t): there the coordinates box
+stays usable in `.inp text` mode, and while the text carries its own
+`* xyz` block the box IS that block (`rawCoords` in `build.js` finds it; an
+edit on either side writes the other) — it used to be saved and never read,
+and a copied OptTS ran its own TS guess with IRC endpoints pasted beside it.
+`input_generator.raw_geometry_mismatch` (over `raw_coordinate_block`, moved
+there from `queue.py`) is the backend's half: a raw DIRECT calc whose stored
+`xyz` differs from its text's block is warned about on add/edit
+(`store.raw_geometry_warning`, joined into `MutationResult.warning` beside
+the constraint warning) and in the log before launch. Never refused — the
+text is what the user wrote (P26).
 
 **Creating an MLIP environment (one click).** `orcamgr/mlip/installer.py` is
 Qt-free and builds an env the user does not have: `find_base_pythons()` detects

@@ -26,7 +26,8 @@ from ..core.queue import (
 )
 from ..core.input_generator import (CONSTRAINED_KINDS, SCAN_KINDS, StepConfig,
                                     constraint_index_error,
-                                    constraint_linear_warning)
+                                    constraint_linear_warning,
+                                    raw_geometry_mismatch)
 from ..core.structure import parse_block
 from ..core.runner import OrcaRunError
 from ..core.procutil import process_matches
@@ -269,6 +270,16 @@ def constraint_warning(calc) -> str:
         if atoms:
             return constraint_linear_warning(cfg.geom_constraints, atoms)
     return constraint_linear_warning(cfg.geom_constraints)
+
+
+def raw_geometry_warning(calc) -> str:
+    """What the queue says, without refusing, when a hand-written input's own
+    * xyz block is not the geometry stored with it — the coordinates that
+    were given will not be the ones that run
+    (input_generator.raw_geometry_mismatch). "" when there is nothing to say."""
+    if not calc.is_raw or calc.geometry_source != GeometrySource.DIRECT:
+        return ""
+    return raw_geometry_mismatch(calc.raw_text or "", calc.xyz or "")
 
 
 def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:

@@ -233,6 +233,10 @@
   /** @param {HTMLElement} el @param {any} st @param {any} calc @param {() => void} close */
   function render(el, st, calc, close) {
     if (st.stage) { st.stage.destroy(); st.stage = null; }
+    // a hand-written .inp with its own * xyz block runs THAT block, so the box
+    // opens on it — a copy's stored coordinates may be anything (§17.4t)
+    const own = st.raw ? rawCoords(st.rawText) : null;
+    if (own) st.xyz = own.body;
     // an MLIP or CREST kind has no ORCA form shape: {} offers none of its blocks
     const K = KINDS[st.kind] || {};
     const dft = st.backend === "dft";
@@ -282,7 +286,8 @@
         <div class="geomsplit">
           <div class="field"><textarea rows="7" data-f="xyz" spellcheck="false"
             aria-label="Coordinates"
-            placeholder="C   0.000   0.000   0.000">${NB.esc(st.xyz)}</textarea></div>
+            placeholder="C   0.000   0.000   0.000">${NB.esc(st.xyz)}</textarea>
+            <div data-x="rawgeom"${st.raw ? "" : " hidden"}></div></div>
           <div class="geomstage">
             <canvas class="molcv" data-v="geomcv"
                     aria-label="The structure in the coordinates box"></canvas>
@@ -661,6 +666,49 @@
     });
     recheck();
 
+    // --- the .inp text and the box: one geometry (§17.4t) -------------------
+    /* A hand-written .inp runs as written (render_raw_input). With its own
+       * xyz block the box was never read: coordinates pasted there into a
+       copied calculation were saved and not run, and the run started from the
+       copy's structure with nothing on screen saying so. So while the text
+       carries a block the box IS that block — an edit on either side writes
+       the other — and with {{GEOMETRY}} the box is what fills it. */
+    const rawEl0 = q('[data-f="rawtext"]');
+    if (rawEl0 && xyzEl0) {
+      let echo = false;
+      const sayRaw = () => {
+        const n = q('[data-x="rawgeom"]');
+        if (!n) return;
+        const t = rawEl0.value;
+        /** @param {string} s */
+        const hint = (s) => `<p class="hint" style="margin:6px 0 0">${NB.esc(s)}</p>`;
+        n.innerHTML = !t.trim() ? "" : rawCoords(t)
+          ? hint("These are the * xyz block of the .inp text below — editing either one changes the other.")
+          : t.indexOf("{{GEOMETRY}}") >= 0
+            ? hint("These fill {{GEOMETRY}} in the .inp text below when it runs.")
+            : `<div class="finding warn" style="margin-top:6px"><span>The .inp text below has no
+                 * xyz block and no {{GEOMETRY}}, so these coordinates are not used.</span></div>`;
+      };
+      xyzEl0.addEventListener("input", () => {
+        if (echo || !st.raw) return;
+        const b = rawCoords(rawEl0.value);
+        if (b) rawEl0.value = b.head + stripXyzHeader(xyzEl0.value) + b.tail;
+      });
+      rawEl0.addEventListener("input", () => {
+        sayRaw();
+        const b = st.raw ? rawCoords(rawEl0.value) : null;
+        if (!b || b.body === xyzEl0.value.replace(/\s+$/, "")) return;
+        echo = true;
+        xyzEl0.value = b.body;
+        q('[data-x="status"]').textContent = b.body.trim()
+          ? b.body.trim().split("\n").length + " atoms" : "";
+        xyzEl0.dispatchEvent(new Event("input"));   // the stage redraws on it
+        echo = false;
+        recheck();
+      });
+      sayRaw();
+    }
+
     // --- NEB endpoints --------------------------------------------------------
     /** @param {string} cls @param {string} msg */
     const verdict = (cls, msg) => {
@@ -742,6 +790,7 @@
       ta.value = before + text + ta.value.slice(to);
       ta.focus();
       ta.selectionStart = ta.selectionEnd = at + text.length;
+      ta.dispatchEvent(new Event("input"));   // {{GEOMETRY}} changes what the box is
     }));
 
     act("loadinp", async () => {
@@ -749,6 +798,7 @@
       if (!r || r.cancelled) return;
       if (!r.ok) { NB.fail("Could not read that .inp."); return; }
       q('[data-f="rawtext"]').value = r.text || "";
+      q('[data-f="rawtext"]').dispatchEvent(new Event("input"));
     });
 
     act("preview", async () => {
@@ -1295,6 +1345,29 @@
     const lines = String(t || "").replace(/\r/g, "").split("\n");
     if (lines.length > 2 && /^\s*\d+\s*$/.test(lines[0])) return lines.slice(2).join("\n").trim();
     return lines.join("\n").trim();
+  }
+
+  /** Where a hand-written .inp keeps its own coordinates: the lines of its
+   *  first `* xyz charge mult` block (the block input_generator.
+   *  raw_coordinate_block reads), with the text before and after them. null
+   *  when the text has {{GEOMETRY}} (the box fills that) or no such block
+   *  (`* xyzfile`, or nothing typed yet).
+   *  @param {string} text @returns {{head: string, body: string, tail: string}|null} */
+  function rawCoords(text) {
+    if (text.indexOf("{{GEOMETRY}}") >= 0) return null;
+    const lines = text.split("\n");
+    const i = lines.findIndex(ln => {
+      const s = ln.trim().toLowerCase();
+      return s.startsWith("*") && s.slice(1).trim().startsWith("xyz") && s.indexOf("xyzfile") < 0;
+    });
+    if (i < 0) return null;
+    let j = i + 1;
+    while (j < lines.length && !lines[j].trim().startsWith("*")) j++;
+    return {
+      head: lines.slice(0, i + 1).join("\n") + "\n",
+      body: lines.slice(i + 1, j).join("\n").replace(/\s+$/, ""),
+      tail: j < lines.length ? "\n" + lines.slice(j).join("\n") : "",
+    };
   }
 
   /** Read the form into the payload add_calc/update_calc take.

@@ -45,7 +45,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .input_generator import (
-    StepConfig, build_input, render_raw_input, GEOMETRY_PLACEHOLDER, check_neb_atom_order,
+    StepConfig, build_input, render_raw_input, raw_coordinate_block,
+    raw_geometry_mismatch, GEOMETRY_PLACEHOLDER, check_neb_atom_order,
     _xyz_elements, irc_hess_input_name, irc_hess_is_path, SCAN_KINDS, normalize_scan,
 )
 from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
@@ -156,24 +157,6 @@ def _xyz_from_geometry(result: ParseResult) -> str:
     )
 
 
-def _raw_coordinate_block(inp_text: str) -> str:
-    """Coordinate lines of the first ``* xyz charge mult ... *`` block in an
-    .inp text ('' when there is none, e.g. an ``* xyzfile`` reference). For a
-    raw calculation this is the reactant that actually runs — ``calc.xyz`` may
-    be absent (hand-pasted input) or stale against the edited text."""
-    lines = inp_text.splitlines()
-    for i, ln in enumerate(lines):
-        s = ln.strip().lower()
-        if s.startswith("*") and s[1:].strip().startswith("xyz") and "xyzfile" not in s:
-            block = []
-            for follow in lines[i + 1:]:
-                if follow.strip().startswith("*"):
-                    break
-                block.append(follow)
-            return "\n".join(block)
-    return ""
-
-
 # ORCA 6 restart files it will pick up on its own (AutoStart): a {base}.gbw
 # left beside {base}.inp becomes the SCF's initial guess with nothing in the
 # input asking for it.
@@ -192,7 +175,7 @@ def _guess_signature(inp_text: str) -> str:
         if low.startswith("*") and low[1:].strip().startswith("xyz") and "xyzfile" not in low:
             header = " ".join(low[1:].split()[1:3])   # charge, multiplicity
             break
-    els = [e.capitalize() for e in _xyz_elements(_raw_coordinate_block(inp_text))]
+    els = [e.capitalize() for e in _xyz_elements(raw_coordinate_block(inp_text))]
     return f"{header}|{','.join(els)}" if els else ""
 
 
@@ -281,7 +264,7 @@ def _kept_result_matches(calc: Calculation, result: ParseResult) -> str:
             # "different structure" about a result that matched perfectly: the
             # run the user asked to KEEP was recomputed over it. Unknowable is
             # the same case as a reference calc, which is skipped.
-            expected = _raw_coordinate_block(calc.raw_text)
+            expected = raw_coordinate_block(calc.raw_text)
             if not expected.strip():
                 return ""
         else:
@@ -755,6 +738,9 @@ class QueueEngine:
                     f"Raw input references another calculation but has no "
                     f"{GEOMETRY_PLACEHOLDER} placeholder for the geometry."
                 )
+            mismatch = raw_geometry_mismatch(calc.raw_text, xyz)
+            if mismatch:
+                self.cb.log(f"[{calc.name}] {mismatch}", "warn", calc.name)
             text = render_raw_input(calc.raw_text, xyz)
         else:
             try:
@@ -803,7 +789,7 @@ class QueueEngine:
         and the ceiling here is measured on one ORCA build rather than
         documented by ORCA.
         """
-        cap = numfreq_rank_cap(text, len(_xyz_elements(_raw_coordinate_block(text))),
+        cap = numfreq_rank_cap(text, len(_xyz_elements(raw_coordinate_block(text))),
                                raw_nprocs(text))
         if not cap:
             return
@@ -908,7 +894,7 @@ class QueueEngine:
                 # coordinate block inside the rendered text (calc.xyz may be
                 # absent or stale); skip the check only when no coordinate
                 # block is visible at all (e.g. an xyzfile reference).
-                reactant = xyz if not calc.is_raw else _raw_coordinate_block(text)
+                reactant = xyz if not calc.is_raw else raw_coordinate_block(text)
                 if _xyz_elements(reactant):
                     chk = check_neb_atom_order(reactant, prod)
                     if not chk.get("ok"):

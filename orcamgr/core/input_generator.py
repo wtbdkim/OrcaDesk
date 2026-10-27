@@ -1097,6 +1097,60 @@ def render_raw_input(raw_text: str, xyz: str) -> str:
     return raw_text
 
 
+def raw_coordinate_block(inp_text: str) -> str:
+    """Coordinate lines of the first ``* xyz charge mult ... *`` block in an
+    .inp text ('' when there is none, e.g. an ``* xyzfile`` reference). For a
+    raw calculation this is the reactant that actually runs — ``calc.xyz`` may
+    be absent (hand-pasted input) or stale against the edited text."""
+    lines = inp_text.splitlines()
+    for i, ln in enumerate(lines):
+        s = ln.strip().lower()
+        if s.startswith("*") and s[1:].strip().startswith("xyz") and "xyzfile" not in s:
+            block = []
+            for follow in lines[i + 1:]:
+                if follow.strip().startswith("*"):
+                    break
+                block.append(follow)
+            return "\n".join(block)
+    return ""
+
+
+# how far two coordinates may differ and still be the same structure, in Å
+_SAME_COORD_TOL = 1e-4
+
+
+def raw_geometry_mismatch(raw_text: str, xyz: str) -> str:
+    """The sentence that says a hand-written input's own coordinates are not
+    the ones given beside it, or "".
+
+    A raw .inp without the placeholder runs verbatim (render_raw_input), so
+    coordinates handed over with it are never read. Copying a calculation and
+    pasting new coordinates into the box kept the copied text's block, and
+    the run started from the original structure with nothing saying so. A
+    WARNING: the text is the user's own input (P26) and is what runs."""
+    if GEOMETRY_PLACEHOLDER in raw_text or not (xyz or "").strip():
+        return ""
+    runs, given = parse_block(raw_coordinate_block(raw_text)), parse_block(xyz)
+    if not runs or not given:
+        return ""
+    if len(runs) != len(given):
+        detail = f"{len(runs)} atoms in the text, {len(given)} given"
+    else:
+        diff = next((k for k, (a, b) in enumerate(zip(runs, given))
+                     if a.sym.lower() != b.sym.lower()
+                     or max(abs(a.x - b.x), abs(a.y - b.y), abs(a.z - b.z)) > _SAME_COORD_TOL),
+                    None)
+        if diff is None:
+            return ""
+        a, b = runs[diff], given[diff]
+        detail = (f"atom {diff + 1} is {a.sym} {a.x:.4f} {a.y:.4f} {a.z:.4f} in the text, "
+                  f"{b.sym} {b.x:.4f} {b.y:.4f} {b.z:.4f} given")
+    return (f"The .inp text carries its own * xyz block, and it is not the "
+            f"geometry given with it ({detail}). A hand-written input runs as "
+            f"written, so ORCA starts from the text's coordinates. Replace the "
+            f"block's lines with {GEOMETRY_PLACEHOLDER} to run the given ones.")
+
+
 # ---- convenient step presets (seed values for the GUI) ------------------
 def preset_opt() -> StepConfig:
     return StepConfig(
