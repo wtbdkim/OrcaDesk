@@ -711,7 +711,22 @@ The `core/` pipeline:
   RESULTS` table's *Actual Energy* rows (any number of columns). If there is
   no table (an error termination mid-scan, or a scan still running), the
   points come from the step boxes whose optimization reached `OPTIMIZATION
-  RUN DONE`). Marker-based,
+  RUN DONE`), and the **NBO program's printout** (`nbo_program`, from a
+  `! NBO` run: NPA summary + configurations, the Lewis accounting, the NBO
+  summary list and the E(2) table; formats measured on NBO 7.0.10 closed
+  shell, `tests/test_nbo_program_output.py`; an open-shell run keeps only the
+  first NPA summary, its per-spin tables unread until there is a sample).
+  These are NBO's numbers, never mixed with ORCAdesk's own `orcamgr/nbo/`
+  analysis: the notebook report draws them as three `NBO · …` sections
+  (`nboProgram` in `web/next/results.js`) above the *Natural orbitals* one;
+  the classic UI does not show them yet. ORCA's own **orbital localization**
+  printout (`localization`, `%loc` — method, MO range, thresholds, the
+  one-/two-centre counts and each LMO's atom shares; measured on IAO-IBO,
+  `tests/test_localization_output.py`) is read the same way and drawn as the
+  *Localized orbitals* section (`localized` in `results.js`); its delocalized
+  LMOs are counted but not listed, and the IAO partial charges are skipped
+  (ORCA's own warning: meaningless unless every occupied MO was localized).
+  Marker-based,
   tolerant of `\r\n`; when a value recurs (e.g. across opt steps) the **last**
   occurrence wins. `ParseResult.summary_rows()` returns `(label, value, category)`
   rows where `category="elec"` tags general electronic-structure rows; the
