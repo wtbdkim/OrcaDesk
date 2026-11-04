@@ -123,8 +123,11 @@ RSEL = [
     "secblock_viewer", ".secblock.viewer",
     "secblock_vizhalf", ".secblock.vizhalf",
     "viewstage", ".viewstage",
-    "viewlegend", ".viewstage .viewlegend",
-    "stage_act", ".viewstage .act",
+    # the Structure section's stage is the Visual panel's first tile now
+    # (DESIGN.md §17.4c), so its legend and buttons are measured there -- the
+    # reference's Visual stage carries the same two
+    "viewlegend", ".vizstage .viewlegend",
+    "stage_act", ".vizstage .act",
     "vizpanel", ".vizpanel",
     "vizlist", ".vizlist",
     "vizstage", ".vizstage",

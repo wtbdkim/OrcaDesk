@@ -82,7 +82,9 @@ DESIGN.md §17.4b.
 A band is also a control: a click, or Enter on the cursor (`chart(..., {pick:
 "mode"})`), and the per-imaginary-mode buttons under the spectrum (`modeJump`)
 call `NB.viewer.playMode(n)`, which **animates that normal mode on the
-Structure stage** (`viewer.js`; the `.modeplay` bar above the stage holds
+Visual panel's Structure tile** (`viewer.js`; switching to that tile first if
+another is on the stage — the report has one stage now, the parsed structure
+being the strip's first tile; the `.modeplay` bar above the panel holds
 ‹ ›, Play/Pause, the swing in Å and *Show structure*/Esc). The motion is
 `MOL` stage's `vibrate({base, vec, amp, playing})` in `mol.js`: a
 requestAnimationFrame loop that poses the coordinates without re-running
@@ -395,6 +397,12 @@ unused by `web/next/` (the classic UI still uses it). A finished cell also
 carries **New from this**, which opens the builder on a NEW calculation already
 referencing that run (`NB.build.open("", seed)`); the geometry is a reference,
 resolved at run time by the same `_resolve_geometry` path as opt→freq.
+
+**Hidden for now, in both front-ends:** the reaction profile below and
+ORCAdesk's own natural-orbital section (`SHOW_PROFILE` / `SHOW_OWN_NBO` at the
+top of `web/next/results.js`; `RESULTS_SHOW_PROFILE` / `RESULTS_SHOW_OWN_NBO`
+in classic `web/results_render.js`). Their backends (`get_free_energy_profile`,
+`run_nbo_analysis` and the rest) and their drawing code stay.
 
 The **reaction profile** (`results.js`, the `#fep` section — it was the
 free-energy profile, and the slot keeps that name) is built by the
@@ -1599,6 +1607,18 @@ Two things about that shell-out are load-bearing:
   it was computed from, so the file is `{name}.scfp.esp.cube`, not
   `{name}.esp.cube` — get it wrong and every ESP looks like a failed plot,
   because the path the code looks for is never there.
+- **The NBO program's orbitals are a fifth orca_plot kind, `pnbo`.** A
+  `! NBO` run leaves `{base}.nbo`, a .gbw-format file whose orbital k-1 is
+  NBO k of the program's summary (measured on ORCA 6.1.1 + NBO 7.0.10: the
+  orbital energies are the summary's to the last digit, and NBO 11 =
+  BD(1) C1–C2 peaks between C1 and C2). orca_plot is handed that file
+  (`wavefunction_file`) and driven through the MO menu; it writes the cube
+  under the MO name, so it is kept as `{base}.pnbo{N}a.g60.cube`
+  (`cube_filename`), and its currency is judged against the `.nbo`.
+  `get_plot_options` offers it (`has_nbo`) for a closed shell only — an
+  open-shell `.nbo` has not been measured. The list it is picked from is the
+  parse's `nbo_program.orbitals` (the notebook's **NBOs** tile, `picksFor` in
+  `mvwin.js`); ORCAdesk's own in-process `nbo` kind is unrelated and hidden.
 
 **The ESP map is built from two cubes, and has its own entry point.** A
 potential is not an isosurface of itself; the figure everyone means is the

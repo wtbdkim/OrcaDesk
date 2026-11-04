@@ -39,11 +39,11 @@ from .state.schemas import CubeDataResult
 # psi-squared when the data has nothing up here, and never raises it above the
 # convention. Fitting needs the values; this file only reads the header.
 DEFAULT_ISOVALUES = {"mo": 0.05, "eldens": 0.02, "spindens": 0.005, "esp": 0.05,
-                     "nbo": 0.05}
+                     "nbo": 0.05, "pnbo": 0.05}
 
 # Which kinds have meaningful negative lobes and are drawn as a ± pair. A total
 # electron density is positive everywhere, so a second surface would be noise.
-SIGNED_KINDS = {"mo", "spindens", "nbo"}
+SIGNED_KINDS = {"mo", "spindens", "nbo", "pnbo"}
 
 # ---- the ESP map --------------------------------------------------------
 # An ESP map is not an isosurface of the potential; it is the potential painted
