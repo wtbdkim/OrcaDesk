@@ -3,6 +3,31 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **The NBO program's results now show in the notebook report.** An ORCA
+  run with `! NBO` prints NBO 7's analysis into its `.out`, and the report
+  showed none of it — only ORCAdesk's own *Compute natural orbitals* button.
+  Three sections now read it from the output: **natural populations** (the
+  Lewis/non-Lewis electron accounting, then each atom's natural charge,
+  core/valence/Rydberg split and electron configuration), **donor → acceptor**
+  (the second-order E(2) table, largest first, the top 20 with the rest under
+  *Show all*) and **bond orbitals** (the Lewis structure NBO found and its
+  antibonds; Rydberg orbitals under *Show all*). They are titled as the NBO
+  program's numbers and kept apart from ORCAdesk's own analysis. Read from
+  closed-shell NBO 7.0 output; an open-shell run shows its total-density
+  populations only, and points to the Output pane for each spin's tables.
+- **Localized orbitals (IAO-IBO and the rest of `%loc`) in the notebook
+  report.** A run that localizes its orbitals prints what each one sits on,
+  and the report now shows it as a *Localized orbitals* section: the method
+  and MO range, how many came out one-centre (lone pair / core) and
+  two-centre (bond), and every orbital with its atoms' shares. Opened step by
+  step along a reaction path, the share moving between two atoms is where the
+  electrons go. ORCA's *IAO partial charges* are left out on purpose — ORCA
+  warns they mean nothing unless every occupied orbital was localized, which
+  the default range is not.
+
 ## [0.10.7] — 2026-10-26
 
 ### Added

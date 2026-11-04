@@ -1,0 +1,129 @@
+                                       INPUT FILE
+================================================================================
+NAME = 019A_SN2_step01_IBO.inp
+|  1> ! M062X 6-311++G**
+|  2> ! TightSCF
+|  3> %scf
+|  4> MaxIter 500
+|  5> end
+|  6> %loc
+|  7> LocMet IAOIBO
+|  8> Random 0
+|  9> end
+| 10> ! PAL4
+| 11> 
+| 12> * xyz -1 1
+| 13>   C      -2.591083      0.226264      0.020564
+| 14>   C      -1.337245     -0.635080      0.109926
+| 15>   H      -2.514909      0.812549     -0.898885
+| 16>   H      -3.493188     -0.391071     -0.026902
+| 17>   H      -2.679297      0.893619      0.883493
+| 18>   C      -0.077196      0.186890      0.286414
+| 19>   H      -1.405295     -1.384339      0.906617
+| 20>   H      -1.200807     -1.130098     -0.857279
+| 21>   C       1.196819     -0.557480     -0.028704
+| 22>   H      -0.142922      1.110828     -0.277448
+| 23>   H       1.305355     -1.444895      0.601359
+| 24>   H       1.098999     -0.821057     -1.087599
+| 25>   H       2.072146      0.082171      0.098073
+| 26>   Br      0.022849      0.819274      2.243229
+| 27>   O      -0.426391      0.316905     -2.384742
+| 28>   H      -0.069626      0.907939     -3.052622
+| 29> *
+| 30> 
+| 31>                          ****END OF INPUT****
+
+------------------------------------------------------------------------------
+                           ORCA ORBITAL LOCALIZATION
+------------------------------------------------------------------------------
+
+Input orbitals are from                  ... 019A_SN2_step01_IBO.gbw
+Output orbitals are to                   ... 019A_SN2_step01_IBO.loc
+Max. number of iterations                ... 128
+Localizations seeded randomly            ... off
+Convergence tolerance                    ... 1.000e-06
+Threshold for strong local MOs           ... 9.500e-01
+Threshold for bond MOs                   ... 8.500e-01
+Operator                                 ... 0
+Orbital range for localization           ... 14 to 38
+Localization criterion                   ... IAO-IBO
+Entering Jacobi type localization:
+Using Cholesky decomposition as initial guess.
+Your calculation utilizes the IAOIBO localization method
+Cite in your paper:
+G. KNIZIA, INTRISIC ATOMIC ORBITALS: AN UNBIASED BRIDGE BETWEEN
+QUANTUM THEORY AND CHEMICAL CONCEPTS 
+J. CHEM. THEOTY COMPUT. 2013, 9, 4834~4843.
+
+-------------------
+IAO PARTIAL CHARGES 
+-------------------
+Warning!!! IAOs HAVE MEANING, only when all occupied MOs are involved.
+   0 C :    1.437782
+   1 C :    1.656640
+   2 H :    0.208082
+   3 H :    0.161557
+   4 H :    0.162808
+   5 C :    1.914804
+   6 H :    0.156498
+   7 H :    0.222130
+   8 C :    1.436632
+   9 H :    0.239343
+  10 H :    0.162094
+  11 H :    0.227436
+  12 H :    0.176227
+  13 Br:   17.702099
+  14 O :    0.807256
+  15 H :    0.328612
+Sum of atomic charges:   27.0000000
+
+Initial value of the localization sum :    10.697814
+ITERATION   0 : L=   12.8129733458 DL=  2.12e+00 (MAX-T)=  44.286 
+ITERATION   1 : L=   12.8314421749 DL=  1.85e-02 (MAX-T)=  41.412 
+ITERATION   2 : L=   12.8314447801 DL=  2.61e-06 (MAX-T)=   0.219 
+ITERATION   3 : L=   12.8314447803 DL=  2.02e-10 (MAX-T)=   0.010 
+LOCALIZATION SUM CONVERGED
+
+
+--------------------------------------------------------------------------------
+                    LOCALIZED MOLECULAR ORBITAL COMPOSITIONS
+--------------------------------------------------------------------------------
+
+The Mulliken populations for each LMO on each atom are computed
+The LMO`s will be ordered according to atom index and type
+  (A) Strongly localized MO`s have populations of >=0.950 on one atom
+  (B) Two center bond orbitals have populations of >=0.850 on two atoms
+  (C) Other MO`s are considered to be `delocalized`
+
+FOUND  -  11 strongly local MO`s
+       -  14 two center bond MO`s
+       -   0 significantly delocalized MO`s
+
+Rather strongly localized orbitals:
+MO  24:  14O  -   0.986817
+MO  23:  14O  -   0.975922
+MO  22:  14O  -   1.005700
+MO  21:  13Br -   1.003541
+MO  20:  13Br -   1.001070
+MO  19:  13Br -   1.000719
+MO  18:  13Br -   1.000022
+MO  17:  13Br -   1.000026
+MO  16:  13Br -   1.000074
+MO  15:  13Br -   1.000113
+MO  14:  13Br -   1.000063
+Bond-like localized orbitals:
+MO  38:  15H  -   0.423609  and  14O  -   0.572641
+MO  37:  13Br -   0.705144  and   5C  -   0.298393
+MO  36:  12H  -   0.467925  and   8C  -   0.558062
+MO  35:  11H  -   0.387647  and   8C  -   0.680326
+MO  34:  10H  -   0.478015  and   8C  -   0.543964
+MO  33:   9H  -   0.365692  and   5C  -   0.729621
+MO  32:   8C  -   0.569096  and   5C  -   0.408783
+MO  31:   7H  -   0.400521  and   1C  -   0.687287
+MO  30:   6H  -   0.465809  and   1C  -   0.566217
+MO  29:   5C  -   0.539943  and   1C  -   0.487064
+MO  28:   4H  -   0.478773  and   0C  -   0.556389
+MO  27:   3H  -   0.479892  and   0C  -   0.556394
+MO  26:   2H  -   0.406877  and   0C  -   0.671217
+MO  25:   1C  -   0.409610  and   0C  -   0.592055
+Localized MO's were stored in: 019A_SN2_step01_IBO.loc

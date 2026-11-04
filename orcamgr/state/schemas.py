@@ -23,7 +23,7 @@ supports 3.10.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Optional, TypedDict
 
 
 # ---- calculations as serialized by store.py --------------------------------
@@ -320,6 +320,88 @@ class ScanPointPayload(TypedDict):
     de_kcal: float            # against the lowest point of the scan
 
 
+class NboAtomPopPayload(TypedDict):
+    """One atom of the NBO program's natural population summary."""
+    index: int                # 0-based
+    el: str
+    charge: float
+    core: float
+    valence: float
+    rydberg: float
+    total: float
+    config: str               # "[core]2s( 1.06)2p( 2.89)...", as NBO prints it
+
+
+class NboLewisShare(TypedDict):
+    """One line of NBO's Lewis/non-Lewis electron accounting."""
+    e: float                  # electrons
+    pct: float                # percent of `of`, as NBO prints it
+    of: int
+
+
+class NboProgramOrbitalPayload(TypedDict):
+    """One NBO from the program's NATURAL BOND ORBITALS (Summary)."""
+    index: int                # NBO's own 1-based number (the E(2) table uses it)
+    type: str                 # CR | LP | BD | BD* | RY | LP* | 3C | ...
+    label: str                # "BD*(1) C1–C2"
+    atoms: "list[int]"        # its centres, 0-based
+    occ: float
+    energy_eh: float
+    lewis: bool
+
+
+class NboProgramE2Payload(TypedDict):
+    """One donor -> acceptor row of the second-order perturbation table."""
+    donor: int
+    donor_label: str
+    acceptor: int
+    acceptor_label: str
+    e2_kcal: float
+    de_au: float              # E(NL) - E(L)
+    f_au: float               # F(L,NL)
+
+
+class NboProgramPayload(TypedDict):
+    """What the NBO program (`! NBO` -> gennbo) printed into the .out
+    (parser.py _parse_nbo_program). Not ORCAdesk's own analysis
+    (NboResultPayload); the two are never mixed. An open-shell run carries
+    only `atoms` (the total density's NPA)."""
+    version: str              # "7.0.10", "" when not printed
+    open_shell: bool
+    atoms: "list[NboAtomPopPayload]"
+    lewis: "dict[str, NboLewisShare]"   # core, valence_lewis, total_lewis, ...
+    accepted: str             # NBO's "Structure accepted: ..." line
+    orbitals: "list[NboProgramOrbitalPayload]"
+    interactions: "list[NboProgramE2Payload]"
+
+
+class LmoPartPayload(TypedDict):
+    """One atom's Mulliken population in a localized orbital."""
+    atom: int                 # 0-based, as ORCA prints it
+    el: str
+    pop: float
+
+
+class LmoPayload(TypedDict):
+    """One localized MO as ORCA's %loc printout describes it."""
+    mo: int                   # ORCA's MO number (0-based, as in the .loc file)
+    kind: str                 # "one" (lone pair / core) | "two" (two-centre bond)
+    parts: "list[LmoPartPayload]"
+
+
+class LocalizationPayload(TypedDict):
+    """ORCA's orbital localization (%loc) printout (parser.py
+    _parse_localization). Delocalized LMOs are counted, not listed."""
+    method: str               # "IAO-IBO", as ORCA names the criterion
+    range: "list[int]"        # [first, last] MO localized
+    strong_threshold: Optional[float]
+    bond_threshold: Optional[float]
+    n_strong: int
+    n_bond: int
+    n_deloc: int
+    orbitals: "list[LmoPayload]"
+
+
 class GeomAtomPayload(TypedDict):
     """One atom of the final/optimized geometry (Angstrom)."""
     el: str
@@ -384,6 +466,8 @@ class ParsePayload(TypedDict, total=False):
     neb_path_kind: str                        # "neb" | "irc" — titles the path profile
     scan_coords: "list[ScanCoordPayload]"     # relaxed surface scan: what was scanned
     scan_points: "list[ScanPointPayload]"     # ...and each finished point
+    nbo_program: "Optional[NboProgramPayload]"   # the NBO program's printout, if any
+    localization: "Optional[LocalizationPayload]"  # ORCA's %loc printout, if any
     geometry: "list[GeomAtomPayload]"         # final/optimized coordinates (A)
     orbitals: "list[OrbitalPayload]"          # orbital energies (eV) + occupations
     tddft_states: "list[TddftStatePayload]"   # excited-state composition

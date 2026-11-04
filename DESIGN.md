@@ -1987,6 +1987,23 @@ endpoints pasted into the box ran its own TS guess, twice, and both
 thing where the builder is not the author (`raw_geometry_mismatch`): on add or
 edit as the result's `warning`, and in the log before launch.
 
+**17.4u Another program's numbers are labelled as its own.** A `! NBO` run
+leaves the NBO program's analysis in the `.out`; the report reads it into three
+sections whose titles begin `NBO ·` and whose meta names the version and says
+*from the output* — natural populations (the Lewis/non-Lewis accounting as
+`.kvline`s over the per-atom table), donor → acceptor, bond orbitals — placed
+above ORCAdesk's own *Natural orbitals*, whose numbers are a different
+implementation and must never be read as these (P5, A25). Both stay: one is
+what the run printed, the other works on any `.gbw`. Long lists open on what a
+reader came for — the 20 largest E(2) rows, the Lewis orbitals and antibonds —
+and the rest wait under *Show all*, with a `.hint` saying how many. An NBO is
+named once, `BD*(1) C1–C2`, in both tables, with NBO's own number in front so
+a donor in one table is found in the other. ORCA's own `%loc` printout follows
+the same rule as *Localized orbitals* (meta: method, MO range, *from the
+output*): the counts as `.kvline`s, then one row per localized orbital with
+each atom's share muted beside it, so the numbers that move along a reaction
+path sit where the eye compares them.
+
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in
 **both** front-ends — the way out of a preview has to be inside it — and saving

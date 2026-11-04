@@ -225,6 +225,16 @@ class ParseResult:
     scan_coords: list = field(default_factory=list)
     scan_points: list = field(default_factory=list)
 
+    # --- the NBO program's own printout (`! NBO` runs gennbo inside ORCA) ---
+    # None when the run printed none. Otherwise a dict built by
+    # _parse_nbo_program; these numbers are the NBO program's, not ORCAdesk's
+    # own analysis (orcamgr/nbo/), and the two are never mixed.
+    nbo_program: Optional[dict] = None
+
+    # --- ORCA's orbital localization printout (%loc, e.g. IAO-IBO) ---
+    # None when the run localized nothing; otherwise _parse_localization's dict.
+    localization: Optional[dict] = None
+
     @property
     def shows_electronic_props(self) -> bool:
         """Whether to surface general electronic-structure properties (orbitals /
@@ -515,6 +525,8 @@ class OrcaOutParser:
         self._parse_nmr(lines, r)
         self._parse_neb_path(lines, r)
         self._parse_scan(lines, r)
+        self._parse_nbo_program(lines, r)
+        self._parse_localization(lines, r)
 
         return r
 
@@ -1076,6 +1088,213 @@ class OrcaOutParser:
             for p in points:
                 p["de_kcal"] = (p["e_eh"] - low) * HARTREE_TO_KCAL
         r.scan_points = points
+
+    # ---- the NBO program's printout -------------------------------------
+    # Formats measured on NBO 7.0.10 as ORCA 6.1.1 runs it (`! NBO`, closed
+    # shell, default keylist — tests/nbo/fixtures/fch2ch2f_anti_nbo7.out).
+    # An open-shell run prints its Lewis structure, E(2) table and NBO list
+    # once per spin; without a measured sample those are NOT read (P3), only
+    # the first NPA summary, which is the total density's.
+    _NBO_START = "N A T U R A L   A T O M I C   O R B I T A L"
+    _NBO_END = "returned from  NBO  program"
+    _NBO_VERSION = re.compile(r"\[NBO\s+([\d.]+)")
+    # "    C  1    0.02947      1.99999     3.94861    0.02193     5.97053"
+    _NBO_NPA = re.compile(r"^\s*([A-Z][a-z]?)\s*(\d+)\s+(-?\d+\.\d+)\s+(\d+\.\d+)"
+                          r"\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)\s*$")
+    # "      C  1      [core]2s( 1.06)2p( 2.89)3d( 0.01)4p( 0.01)"
+    _NBO_CONFIG = re.compile(r"^\s*([A-Z][a-z]?)\s*(\d+)\s+(\S.*\(.*)$")
+    # "   Total Lewis              33.82726 ( 99.492% of  34)"
+    _NBO_LEWIS = re.compile(r"^\s*(Core|Valence Lewis|Total Lewis|Valence non-Lewis|"
+                            r"Rydberg non-Lewis|Total non-Lewis)\s+(\d+\.\d+)\s*"
+                            r"\(\s*(\d+\.\d+)%\s+of\s+(\d+)\)")
+    # "   13. BD ( 1) C  1- H  4       1.99209    -0.62961  23(v),24(v)" — the
+    # label keeps NBO's own spacing ("C  1"), so it ends at the first run of
+    # spaces followed by a DECIMAL; an atom number never has a point.
+    _NBO_ORB = re.compile(r"^\s*(\d+)\.\s+([A-Za-z0-9]+\*?)\s*\(\s*(\d+)\)\s*(.+?)\s{2,}"
+                          r"(-?\d+\.\d+)\s+(-?\d+\.\d+)(?:\s+(\S.*))?$")
+    # "    7. LP ( 3) F  3            18. BD*( 1) C  1- C  2      8.33    0.94   0.079"
+    _NBO_E2 = re.compile(r"^\s*(\d+)\.\s+(.+?)\s+(\d+)\.\s+(.+?)\s+(-?\d+\.\d+)"
+                         r"\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s*$")
+    _NBO_ATOM = re.compile(r"([A-Z][a-z]?)\s*(\d+)")
+    _NBO_LABEL = re.compile(r"^([A-Za-z0-9]+\*?)\s*\(\s*(\d+)\)\s*(.*)$")
+
+    @classmethod
+    def _nbo_label(cls, kind: str, n: str, centres: str) -> tuple[str, list[int]]:
+        """NBO's "BD*( 1) C  1- C  2" as "BD*(1) C1–C2", and its centres
+        0-based. One spelling for the E(2) table and the NBO list, so a donor
+        reads the same in both."""
+        atoms = cls._NBO_ATOM.findall(centres)
+        return (f"{kind}({int(n)}) " + "–".join(el + num for el, num in atoms),
+                [int(num) - 1 for _, num in atoms])
+
+    @classmethod
+    def _nbo_label_text(cls, text: str) -> str:
+        m = cls._NBO_LABEL.match(text.strip())
+        return cls._nbo_label(*m.groups())[0] if m else " ".join(text.split())
+
+    def _parse_nbo_program(self, lines, r):
+        starts = _find_all(lines, self._NBO_START)
+        if not starts:
+            return
+        lo = starts[-1]
+        hi = next((i for i in range(lo, len(lines)) if self._NBO_END in lines[i]),
+                  len(lines))
+        block = lines[lo:hi]
+        nbo: dict = {"version": "", "open_shell": False, "atoms": [],
+                     "lewis": {}, "accepted": "", "orbitals": [], "interactions": []}
+        for ln in block[:60]:
+            m = self._NBO_VERSION.search(ln)
+            if m:
+                nbo["version"] = m.group(1)
+                break
+        nbo["open_shell"] = any("Alpha spin orbitals" in ln or "alpha spin orbitals" in ln
+                                for ln in block)
+
+        # NPA summary: the first one is the total density's in either case
+        s = next((i for i, ln in enumerate(block)
+                  if "Summary of Natural Population Analysis" in ln), None)
+        if s is not None:
+            for ln in block[s + 1:]:
+                if ln.strip().startswith("="):
+                    break
+                m = self._NBO_NPA.match(ln)
+                if m:
+                    nbo["atoms"].append({
+                        "index": int(m.group(2)) - 1, "el": m.group(1),
+                        "charge": float(m.group(3)), "core": float(m.group(4)),
+                        "valence": float(m.group(5)), "rydberg": float(m.group(6)),
+                        "total": float(m.group(7)), "config": ""})
+            c = next((i for i in range(s, len(block))
+                      if "Natural Electron Configuration" in block[i]), None)
+            if c is not None:
+                by_index = {a["index"]: a for a in nbo["atoms"]}
+                for ln in block[c + 2:]:
+                    if not ln.strip():
+                        break
+                    m = self._NBO_CONFIG.match(ln)
+                    if m and (int(m.group(2)) - 1) in by_index:
+                        by_index[int(m.group(2)) - 1]["config"] = " ".join(m.group(3).split())
+
+        if nbo["open_shell"]:
+            r.nbo_program = nbo
+            return
+
+        a = next((i for i, ln in enumerate(block)
+                  if "NATURAL BOND ORBITAL ANALYSIS:" in ln), None)
+        if a is not None:
+            for ln in block[a: a + 40]:
+                if ln.strip().startswith("Structure accepted"):
+                    nbo["accepted"] = ln.strip()
+                m = self._NBO_LEWIS.match(ln)
+                if m:
+                    key = m.group(1).lower().replace(" ", "_").replace("-", "")
+                    nbo["lewis"][key] = {"e": float(m.group(2)), "pct": float(m.group(3)),
+                                         "of": int(m.group(4))}
+                if ln.strip().startswith("(Occupancy)"):
+                    break
+
+        e2 = next((i for i, ln in enumerate(block)
+                   if "SECOND ORDER PERTURBATION THEORY ANALYSIS" in ln), None)
+        summ = next((i for i, ln in enumerate(block)
+                     if "NATURAL BOND ORBITALS (Summary)" in ln), None)
+        if e2 is not None:
+            for ln in block[e2 + 1: summ if summ is not None and summ > e2 else len(block)]:
+                m = self._NBO_E2.match(ln)
+                if m:
+                    nbo["interactions"].append({
+                        "donor": int(m.group(1)),
+                        "donor_label": self._nbo_label_text(m.group(2)),
+                        "acceptor": int(m.group(3)),
+                        "acceptor_label": self._nbo_label_text(m.group(4)),
+                        "e2_kcal": float(m.group(5)), "de_au": float(m.group(6)),
+                        "f_au": float(m.group(7))})
+
+        if summ is not None:
+            lewis = True
+            for ln in block[summ + 1:]:
+                t = ln.strip()
+                if t.startswith("------ Lewis"):
+                    lewis = True
+                    continue
+                if t.startswith("------ non-Lewis"):
+                    lewis = False
+                    continue
+                if t.startswith("$CHOOSE") or t.startswith("Total Lewis"):
+                    break
+                m = self._NBO_ORB.match(ln)
+                if not m:
+                    continue
+                label, atoms = self._nbo_label(m.group(2), m.group(3), m.group(4))
+                nbo["orbitals"].append({
+                    "index": int(m.group(1)), "type": m.group(2), "label": label,
+                    "atoms": atoms,
+                    "occ": float(m.group(5)), "energy_eh": float(m.group(6)),
+                    "lewis": lewis})
+
+        r.nbo_program = nbo
+
+    # ---- ORCA's orbital localization (%loc) ------------------------------
+    # Measured on ORCA 6.1.1 IAO-IBO runs (an SN2 reaction path, 7 points,
+    # tests/test_localization_output.py). Each LMO is printed as its Mulliken
+    # population on one atom (>= the strong threshold) or on two (>= the bond
+    # threshold); a "delocalized" one is counted on the FOUND line, but no run
+    # here had one, so its own lines are not read (P3). The "IAO PARTIAL
+    # CHARGES" block is skipped on purpose: ORCA itself warns they mean nothing
+    # unless every occupied MO was localized, and the default range leaves the
+    # cores out (bromine reads 17.7).
+    _LOC_START = "ORCA ORBITAL LOCALIZATION"
+    _LOC_FIELD = re.compile(r"^(.+?)\s*\.\.\.\s*(.+?)\s*$")
+    _LOC_FOUND = re.compile(r"^\s*(?:FOUND)?\s*-\s*(\d+)\s+(strongly local|two center bond|"
+                            r"significantly delocalized)")
+    _LOC_MO = re.compile(r"^\s*MO\s+(\d+):\s+(.*)$")
+    _LOC_PART = re.compile(r"(\d+)\s*([A-Z][a-z]?)\s*-\s*(-?\d+\.\d+)")
+
+    def _parse_localization(self, lines, r):
+        starts = _find_all(lines, self._LOC_START)
+        if not starts:
+            return
+        lo = starts[-1]
+        loc: dict = {"method": "", "range": [], "strong_threshold": None,
+                     "bond_threshold": None, "n_strong": 0, "n_bond": 0, "n_deloc": 0,
+                     "orbitals": []}
+        kind = ""
+        for ln in lines[lo + 1:]:
+            if "were stored in" in ln or "FINAL SINGLE POINT ENERGY" in ln:
+                break
+            m = self._LOC_FIELD.match(ln.strip())
+            if m:
+                key, val = m.group(1).strip(), m.group(2)
+                if key == "Localization criterion":
+                    loc["method"] = val
+                elif key == "Orbital range for localization":
+                    loc["range"] = [int(x) for x in re.findall(r"\d+", val)][:2]
+                elif key == "Threshold for strong local MOs":
+                    loc["strong_threshold"] = float(val)
+                elif key == "Threshold for bond MOs":
+                    loc["bond_threshold"] = float(val)
+                continue
+            m = self._LOC_FOUND.match(ln)
+            if m:
+                loc[{"strongly local": "n_strong", "two center bond": "n_bond",
+                     "significantly delocalized": "n_deloc"}[m.group(2)]] = int(m.group(1))
+                continue
+            s = ln.strip()
+            if s.startswith("Rather strongly localized"):
+                kind = "one"
+            elif s.startswith("Bond-like localized"):
+                kind = "two"
+            elif s.endswith(":") and not s.startswith("MO"):
+                kind = ""          # a heading this parser has no sample of
+            m = self._LOC_MO.match(ln)
+            if m and kind:
+                parts = [{"atom": int(a), "el": el, "pop": float(pop)}
+                         for a, el, pop in self._LOC_PART.findall(m.group(2))]
+                if parts:
+                    loc["orbitals"].append({"mo": int(m.group(1)), "kind": kind,
+                                            "parts": parts})
+        if loc["method"] or loc["orbitals"]:
+            loc["orbitals"].sort(key=lambda o: o["mo"])
+            r.localization = loc
 
 
 def parse_file(path: str) -> ParseResult:

@@ -370,6 +370,9 @@
       out.push(scanSection(d, cw));
     }
 
+    if (d.nbo_program) out.push(nboProgram(d.nbo_program));
+    if (d.localization && d.localization.orbitals.length) out.push(localized(d.localization));
+
     if (orca) {
       _present.push({ id: "sec-nbo", title: "Natural orbitals" });
       out.push(NB.viewer.nboSection());
@@ -435,6 +438,114 @@
                   cw, Math.round(cw * 0.26),
                   { xlab: `${name(c)} (${unit(c)})`, ylab: "ΔE (kcal/mol)" }))
       + tw(head, rows),
+      "wide");
+  }
+
+  /** What the NBO program printed into the .out (`! NBO`), read by the parser.
+   *  These are the NBO program's numbers, so they are titled as such and kept
+   *  apart from ORCAdesk's own analysis in "Natural orbitals" below (P5, A25).
+   *  A long donor -> acceptor table and the Rydberg orbitals wait for Show all:
+   *  the first rows are the ones a reader came for.
+   *  @param {NboProgramPayload} n */
+  function nboProgram(n) {
+    const out = [];
+    const who = n.version ? "NBO " + n.version : "NBO program";
+    const E2_SHOWN = 20;
+
+    const L = n.lewis || {};
+    const share = (k, label) => L[k]
+      ? [label, `${L[k].e.toFixed(5)} e · ${L[k].pct.toFixed(3)}%`] : null;
+    const acct = [share("total_lewis", "Lewis"), share("valence_nonlewis", "Valence non-Lewis"),
+                  share("rydberg_nonlewis", "Rydberg non-Lewis")].filter(Boolean);
+    const head = L.total_lewis
+      ? `${L.total_lewis.pct.toFixed(2)}% of the electrons fit one Lewis structure` : "";
+
+    if (n.atoms.length) {
+      out.push(sec("sec-nbop-npa", "NBO · natural populations", who + " · from the output",
+        "Printed by the NBO program this run called (<code>! NBO</code>) and read from its "
+        + "output — not ORCAdesk's own analysis under <b>Natural orbitals</b>. Natural charges "
+        + "hold their pattern across basis sets where Mulliken's do not."
+        + (n.open_shell ? " This run is open-shell: only the total-density populations are "
+             + "read here; each spin's Lewis structure and E(2) table are in the Output pane." : ""),
+        (acct.length || n.accepted
+          ? plate((head ? `<p class="hint" style="margin:0 0 8px">${NB.esc(head)}${
+                n.accepted ? " · " + NB.esc(n.accepted.replace(/^Structure accepted:\s*/, "")) : ""}</p>` : "")
+              + kvlines(acct.map(p => [p[0], NB.esc(p[1])])))
+          : "")
+        + tw(["Atom", "Charge (e)", "Core", "Valence", "Rydberg", "Configuration"],
+             n.atoms.map(a => [atomLabel(a.index, a.el), a.charge.toFixed(5), a.core.toFixed(5),
+                               a.valence.toFixed(5), a.rydberg.toFixed(5), NB.esc(a.config)]),
+             [false, true, true, true, true, false]),
+        "wide"));
+    }
+
+    if (n.interactions.length) {
+      const rows = n.interactions.slice().sort((a, b) => b.e2_kcal - a.e2_kcal);
+      const shown = _showAll ? rows : rows.slice(0, E2_SHOWN);
+      out.push(sec("sec-nbop-e2", "NBO · donor → acceptor",
+        rows.length + " interactions · largest " + rows[0].e2_kcal.toFixed(2) + " kcal/mol",
+        "Second-order perturbation energy E(2) of each delocalization from a filled Lewis "
+        + "orbital into an empty non-Lewis one — the hyperconjugation and resonance a single "
+        + "Lewis structure leaves out. Largest first; NBO prints only those above its threshold.",
+        tw(["Donor", "Acceptor", "E(2) (kcal/mol)", "ΔE (a.u.)", "F (a.u.)"],
+           shown.map(x => [`${x.donor}. ${NB.esc(x.donor_label)}`,
+                           `${x.acceptor}. ${NB.esc(x.acceptor_label)}`,
+                           x.e2_kcal.toFixed(2), x.de_au.toFixed(2), x.f_au.toFixed(3)]),
+           [false, false, true, true, true])
+        + (shown.length < rows.length
+          ? `<p class="hint">${rows.length - shown.length} smaller interactions under <b>Show all</b>.</p>`
+          : ""),
+        "wide"));
+    }
+
+    if (n.orbitals.length) {
+      const ryd = n.orbitals.filter(o => !o.lewis && /^RY/.test(o.type));
+      const shown = n.orbitals.filter(o => _showAll || o.lewis || !/^RY/.test(o.type));
+      const nl = n.orbitals.filter(o => o.lewis).length;
+      out.push(sec("sec-nbop-orb", "NBO · bond orbitals",
+        nl + " Lewis · " + (n.orbitals.length - nl) + " non-Lewis",
+        "The Lewis structure NBO found — cores, lone pairs, bonds — and the empty orbitals "
+        + "the E(2) table donates into. Numbers match the table above."
+        + (ryd.length && !_showAll ? ` The ${ryd.length} Rydberg orbitals are under <b>Show all</b>.` : ""),
+        tw(["NBO", "Occupancy", "Energy (Eh)"],
+           shown.map(o => [
+             `${o.index}. ${NB.esc(o.label)}${o.lewis ? "" : ' <span class="badge">non-Lewis</span>'}`,
+             o.occ.toFixed(5), o.energy_eh.toFixed(5)]),
+           [false, true, true]),
+        "wide"));
+    }
+    return out.join("");
+  }
+
+  /** ORCA's own orbital localization (`%loc`, IAO-IBO and the rest), as it
+   *  printed it: each localized orbital and the atoms it sits on. Read along a
+   *  reaction path, the share moving between two atoms is the curly arrow.
+   *  @param {LocalizationPayload} L */
+  function localized(L) {
+    const one = L.orbitals.filter(o => o.kind === "one").length;
+    const two = L.orbitals.filter(o => o.kind === "two").length;
+    const pct = (x) => x == null ? "" : Math.round(x * 100) + "%";
+    const range = L.range.length === 2 ? ` · MOs ${L.range[0]}–${L.range[1]}` : "";
+    return sec("sec-lmo", "Localized orbitals",
+      (L.method || "localized") + range + " · from the output",
+      "ORCA's localization of the occupied orbitals (<code>%loc</code>), as it printed "
+      + "them. An orbital with at least " + pct(L.strong_threshold || 0.95) + " of its "
+      + "population on one atom is a lone pair or a core; at least "
+      + pct(L.bond_threshold || 0.85) + " on two, a bond. The shares are each orbital's "
+      + "Mulliken populations — followed along a reaction path, the share moving from one "
+      + "atom to another is where the electrons go."
+      + (L.n_deloc ? ` ${L.n_deloc} delocalized orbital${L.n_deloc > 1 ? "s" : ""} `
+           + "were found; their compositions are in the Output pane." : ""),
+      plate(kvlines(/** @type {[string, string][]} */ ([
+              ["One-centre (lone pair / core)", String(one)],
+              ["Two-centre (bond)", String(two)]]
+              .concat(L.n_deloc ? [["Delocalized", String(L.n_deloc)]] : []))))
+      + tw(["MO", "Kind", "On"],
+           L.orbitals.map(o => [String(o.mo),
+             o.kind === "two" ? "bond" : "lone pair / core",
+             o.parts.map(q => `${atomLabel(q.atom, q.el)} <span class="hint">${q.pop.toFixed(3)}</span>`)
+               .join(" · ")]),
+           [true, false, false]),
       "wide");
   }
 
