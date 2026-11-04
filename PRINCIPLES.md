@@ -8,7 +8,8 @@ justified in the commit body and, if it sticks, recorded here.
 
 Companion document: [`DESIGN.md`](DESIGN.md) (visual/UX principles).
 [`CLAUDE.md`](CLAUDE.md) remains the operational guide (architecture map,
-commands, workflow mechanics); this file is the *why* behind it. Where the two
+commands, workflow mechanics), with the per-subsystem detail in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); this file is the *why* behind it. Where the two
 overlap, this file is the norm and CLAUDE.md is the summary.
 
 **How to amend.** The same way this project has always grown its rules
@@ -662,7 +663,7 @@ roughly 200–300 accumulated lines or a natural boundary.
 
 If a change touches anything a document describes, that document is updated
 in the **same commit** — `CHANGELOG.md` (any user-visible change),
-`CLAUDE.md` (architecture/invariants/conventions), `README.md`
+`CLAUDE.md` / `docs/ARCHITECTURE.md` (architecture/invariants/conventions), `README.md`
 (commands/features), the `*_KR.md` procedure docs, and now `PRINCIPLES.md` /
 `DESIGN.md` (when a principle is added, amended, or deliberately deviated
 from). The pre-commit documentation check is mandatory every time, even when
