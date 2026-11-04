@@ -475,6 +475,41 @@
  */
 
 /**
+ * The NBO program's printout (`! NBO`), read from the .out
+ * (orcamgr/core/parser.py _parse_nbo_program, schemas.NboProgramPayload).
+ * Not ORCAdesk's own analysis (NboResultPayload); an open-shell run carries
+ * only `atoms`.
+ * @typedef {Object} NboProgramPayload
+ * @property {string} version
+ * @property {boolean} open_shell
+ * @property {{index: number, el: string, charge: number, core: number,
+ *   valence: number, rydberg: number, total: number, config: string}[]} atoms
+ * @property {Object<string, {e: number, pct: number, of: number}>} lewis
+ *   core / valence_lewis / total_lewis / valence_nonlewis / rydberg_nonlewis / total_nonlewis
+ * @property {string} accepted
+ * @property {{index: number, type: string, label: string, atoms: number[],
+ *   occ: number, energy_eh: number, lewis: boolean}[]} orbitals
+ * @property {{donor: number, donor_label: string, acceptor: number,
+ *   acceptor_label: string, e2_kcal: number, de_au: number, f_au: number}[]} interactions
+ */
+
+/**
+ * ORCA's orbital localization (%loc, e.g. IAO-IBO) printout
+ * (parser.py _parse_localization, schemas.LocalizationPayload). Delocalized
+ * LMOs are counted (`n_deloc`), not listed.
+ * @typedef {Object} LocalizationPayload
+ * @property {string} method
+ * @property {number[]} range               [first, last] MO localized
+ * @property {number|null} strong_threshold
+ * @property {number|null} bond_threshold
+ * @property {number} n_strong
+ * @property {number} n_bond
+ * @property {number} n_deloc
+ * @property {{mo: number, kind: string,
+ *   parts: {atom: number, el: string, pop: number}[]}[]} orbitals
+ */
+
+/**
  * Parsed .out payload (parse_out_path / parse_calc_output). On failure only
  * {error} is present, so every field is optional.
  * @typedef {Object} ParsePayload
@@ -496,6 +531,8 @@
  * @property {string} [neb_path_kind]         "neb" | "irc" — titles the path profile
  * @property {ScanCoordPayload[]} [scan_coords]  relaxed surface scan: what was scanned
  * @property {ScanPointPayload[]} [scan_points]  ...and each finished point
+ * @property {NboProgramPayload|null} [nbo_program]  the NBO program's own printout
+ * @property {LocalizationPayload|null} [localization]  ORCA's %loc printout
  * @property {GeomAtomPayload[]} [geometry]
  * @property {OrbitalPayload[]} [orbitals]
  * @property {TddftStatePayload[]} [tddft_states]

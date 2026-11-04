@@ -1400,6 +1400,8 @@ class Bridge(QObject):
                 neb_path_kind=r.neb_path_kind,
                 scan_coords=[ScanCoordPayload(**c) for c in r.scan_coords],
                 scan_points=[ScanPointPayload(**p) for p in r.scan_points],
+                nbo_program=r.nbo_program,
+                localization=r.localization,
                 geometry=[
                     GeomAtomPayload(el=a.symbol, x=a.x, y=a.y, z=a.z)
                     for a in r.geometry
