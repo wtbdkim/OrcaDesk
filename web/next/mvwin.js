@@ -58,6 +58,8 @@
    *  Surface picker say HOMO and mean the orbital the PARSER called the HOMO
    *  @type {any[]} */
   let _orbitals = [];
+  /** the NBO program's orbitals for the Surface picker @type {any[]} */
+  let _nbos = [];
 
   const q = (id) => /** @type {any} */ (NB.$(id));
 
@@ -230,6 +232,8 @@
   const COST = {
     mo: "about a second", eldens: "a few seconds",
     spindens: "a few seconds", esp: "a few minutes",
+    // an NBO is plotted exactly like an MO, from the .nbo file
+    pnbo: "about a second",
   };
   /** What else is worth knowing before spending it, for the question that asks.
    *  Only the ESP has anything to add, and it is the one that costs enough to
@@ -240,7 +244,12 @@
          + "over every nucleus at every point",
   };
 
-  function picksFor(orbitals, opts) {
+  /** @param {any[]} orbitals the parse's MO list
+   *  @param {any} opts PlotOptionsResult
+   *  @param {any[]} [nbos] the NBO program's orbitals, from the parse
+   *    (ParsePayload.nbo_program.orbitals) -- the .nbo file holds them in the
+   *    same order, so NBO k is the file's orbital k-1 */
+  function picksFor(orbitals, opts, nbos) {
     const kinds = opts.kinds || [];
     const out = [];
     if (kinds.indexOf("mo") >= 0 && orbitals && orbitals.length) {
@@ -292,6 +301,15 @@
     if (kinds.indexOf("esp") >= 0)
       out.push({ kind: "esp", index: 0, operator: 0,
                  label: "Electrostatic potential", short: "ESP map" });
+    // Every NBO the program listed, in its own order and under its own name.
+    // The column beside a name is the occupancy rather than an energy: it is
+    // what says a Lewis orbital from an antibond at a glance.
+    if (kinds.indexOf("pnbo") >= 0 && nbos && nbos.length) {
+      nbos.forEach(o => out.push({
+        kind: "pnbo", index: o.index - 1, operator: 0,
+        short: `${o.index}. ${o.label}`, v: o.occ.toFixed(3),
+        label: `NBO ${o.index} · ${o.label} (${o.occ.toFixed(3)} e)` }));
+    }
     return out;
   }
 
@@ -302,7 +320,7 @@
    *  called (P4) — a second copy of the naming rule is how a plot and its
    *  "already generated" mark come to disagree.
    *  @param {string} source @param {any[]} orbitals */
-  async function surfaces(source, orbitals) {
+  async function surfaces(source, orbitals, nbos) {
     const o = await NB.call("get_plot_options", source);
     if (!o || !o.ok || !o.has_gbw) {
       return { ok: false, picks: [],
@@ -313,7 +331,7 @@
     // and plotting one needs the same options this call already fetched. A
     // second get_plot_options would be a second answer to one question (P4).
     return { ok: true, opts: o,
-      picks: picksFor(orbitals || [], o).map(p => Object.assign({},
+      picks: picksFor(orbitals || [], o, nbos || []).map(p => Object.assign({},
         p, { ready: cached(o, p), grid: gridFor(o, p.kind),
              cost: COST[p.kind] || "a moment", why: COST_WHY[p.kind] || "" })) };
   }
@@ -335,7 +353,7 @@
         q("mv-plot").disabled = true;
         return;
       }
-      _picks = picksFor(_orbitals, _opts);
+      _picks = picksFor(_orbitals, _opts, _nbos);
       if (!_picks.length) {
         sel.innerHTML = `<option value="">nothing to plot</option>`;
         q("mv-plot").disabled = true;
@@ -360,8 +378,10 @@
     const g = grid || gridFor(opts, p.kind);
     const b = opts.base;
     // an ESP is named after the DENSITY it came from: water.scfp.esp.cube
+    // an NBO is kept apart from the MO orca_plot names it as (core/plot.py)
     const stem = p.kind === "mo"
       ? `${b}.mo${p.index}${p.operator ? "b" : "a"}`
+      : p.kind === "pnbo" ? `${b}.pnbo${p.index}${p.operator ? "b" : "a"}`
       : (p.kind === "esp" ? `${b}.scfp.esp` : `${b}.${p.kind}`);
     return `${stem}.g${g}.cube`;
   }
@@ -624,7 +644,7 @@
   // ---------------------------------------------------------------- opening
 
   /** Open the viewer.
-   *  @param {{source: string, title?: string, path?: string, orbitals?: any[],
+   *  @param {{source: string, title?: string, path?: string, orbitals?: any[], nbos?: any[],
    *           mode?: string, pick?: any}} o
    *    source  how the backend addresses this result: "calc:<name>" or "file:<path>"
    *    path    one structure set to open on; otherwise the first one found
@@ -641,6 +661,7 @@
     _volReady = null;
     _picks = [];
     _orbitals = o.orbitals || [];
+    _nbos = o.nbos || [];
     q("mv-title").textContent = o.title || "Structure viewer";
     q("mv-scrim").hidden = false;
     q("mvwin").hidden = false;

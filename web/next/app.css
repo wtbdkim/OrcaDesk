@@ -1310,6 +1310,15 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
   font-variant-numeric:tabular-nums; color:var(--foreground);}
 .modeplay .mpnote{margin:4px 2px 0; font-size:11px;}
 
+/* ---------------------------- one stage, not two ----------------------------
+   A departure from the reference (DESIGN.md §17.4c). The reference sets a
+   Structure section (.secblock.viewer, 5 columns) beside the Visual one
+   (.vizhalf, 7), each with its own stage -- two pictures of one molecule side
+   by side. The parsed structure is the Visual panel's first tile instead, so
+   the panel is alone on its row and takes all of it. tools/uidiff.py lists the
+   two landmarks this removes under REMOVED. */
+.secblock.vizhalf.solo{grid-column:span 12;}
+
 /* ---------------------------- the other backends' forms ----------------------------
    An addition to the reference (DESIGN.md §17.4s). The reference draws an MLIP
    and a CREST pane under its backend control but locks neither and has no

@@ -38,6 +38,15 @@
   /** @type {{id: string, title: string}[]} rebuilt as the sections render */
   let _present = [];
 
+  /* Two sections are built but not shown for now (2026-11-04): ORCAdesk's own
+     natural-orbital analysis and the reaction profile. Their backends stay
+     (run_nbo_analysis / get_nbo_status / get_nbo_result,
+     get_free_energy_profile) and so does the code that draws them -- turning
+     one back on is flipping its switch. The NBO program's own printout
+     (`nboProgram`) is not this and is always shown. */
+  const SHOW_OWN_NBO = false;
+  const SHOW_PROFILE = false;
+
   const HA_KCAL = 627.5094740631;
   const HA_KJ = 2625.499639;
 
@@ -289,9 +298,8 @@
         "wide"));
     }
 
-    // the structure, and everything else in its folder that can be drawn
-    const struct = NB.viewer.structureSection(d);
-    if (struct) { _present.push({ id: "sec-structure", title: "Structure" }); out.push(struct); }
+    // the structure, and everything else in its folder that can be drawn: one
+    // section, whose first tile is the structure (viewer.js)
     _present.push({ id: "sec-visual", title: "Visual" });
     out.push(NB.viewer.visualSection());
 
@@ -373,7 +381,7 @@
     if (d.nbo_program) out.push(nboProgram(d.nbo_program));
     if (d.localization && d.localization.orbitals.length) out.push(localized(d.localization));
 
-    if (orca) {
+    if (orca && SHOW_OWN_NBO) {
       _present.push({ id: "sec-nbo", title: "Natural orbitals" });
       out.push(NB.viewer.nboSection());
     }
@@ -463,7 +471,7 @@
     if (n.atoms.length) {
       out.push(sec("sec-nbop-npa", "NBO · natural populations", who + " · from the output",
         "Printed by the NBO program this run called (<code>! NBO</code>) and read from its "
-        + "output — not ORCAdesk's own analysis under <b>Natural orbitals</b>. Natural charges "
+        + "output — not ORCAdesk's own analysis. Natural charges "
         + "hold their pattern across basis sets where Mulliken's do not."
         + (n.open_shell ? " This run is open-shell: only the total-density populations are "
              + "read here; each spin's Lewis structure and E(2) table are in the Output pane." : ""),
@@ -1483,12 +1491,12 @@
     // .rescontent has 24px side padding; a wide section is what is left of it
     const px = Math.max(host.clientWidth - 48, 360);
     _present = [];
+    const fep = SHOW_PROFILE ? `<section class="secblock wide" id="fep"></section>` : "";
     const body = _cur
-      ? sections(_cur, px) + `<section class="secblock wide" id="fep"></section>`
+      ? sections(_cur, px) + fep
       : `<section class="secblock wide">${plate(
-          `<p class="hint" style="margin:0">No result open.</p>`)}</section>
-         <section class="secblock wide" id="fep"></section>`;
-    _present.push({ id: "fep", title: "Reaction profile" });
+          `<p class="hint" style="margin:0">No result open.</p>`)}</section>` + fep;
+    if (SHOW_PROFILE) _present.push({ id: "fep", title: "Reaction profile" });
 
     host.innerHTML = toolbar()
       + `<div class="resmain"><div class="rescontent">
@@ -1524,11 +1532,10 @@
       // by kind, a file on disk by its folder — the prefix keeps the two routes
       // apart, and an MLIP or CREST run read the wrong way is a bogus result.
       const source = _curName ? "calc:" + _curName : "file:" + _curPath;
-      NB.viewer.mountStructure(_cur, source);
       NB.viewer.mountVisual(source, _cur);
       NB.viewer.mountNbo(source);
     }
-    profile(px);
+    if (SHOW_PROFILE) profile(px);
     if (NB.rail) NB.rail.render();
   }
 
@@ -1613,12 +1620,13 @@
     });
   }
 
-  /** Show report mode `n` moving on the Structure stage, and mark it here.
+  /** Show report mode `n` moving on the Visual panel's Structure tile, and
+   *  mark it here.
    *  @param {number} n */
   function showMode(n) {
     NB.viewer.playMode(n, markMode);
   }
-  /** The band and the button of the mode on the Structure stage, marked so the
+  /** The band and the button of the mode on the Structure tile, marked so the
    *  spectrum says which one is moving; 0 clears them. @param {number} n */
   function markMode(n) {
     const host = NB.$("reswin");

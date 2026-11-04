@@ -283,3 +283,43 @@ def test_orca_plot_refuses_an_nbo_request(tmp_path):
         _menu_sequence(CubeRequest(kind="nbo", index=0))
     res = generate_cube("C:/nowhere/orca.exe", tmp_path, "water", CubeRequest(kind="nbo"))
     assert not res["ok"] and "ORCAdesk itself" in res["error"]
+
+
+# --- the NBO program's orbitals, from {base}.nbo (kind "pnbo") ------------------
+# Measured on ORCA 6.1.1 + NBO 7.0.10 (FCH2CH2F): the .nbo is a .gbw-format file
+# whose orbital k-1 is NBO k (energies identical to the NBO summary), orca_plot
+# takes it with the MO menu and writes it under the MO name.
+
+def test_an_nbo_is_plotted_from_the_nbo_file_through_the_mo_menu():
+    from orcamgr.core.plot import PNBO_KIND, wavefunction_file
+    req = CubeRequest(kind=PNBO_KIND, index=10, grid=60)
+    assert _menu_sequence(req) == _menu_sequence(CubeRequest(kind="mo", index=10, grid=60))
+    assert wavefunction_file("w", PNBO_KIND) == "w.nbo"
+    assert wavefunction_file("w", "mo") == "w.gbw"
+    # orca_plot names it like an MO; it is KEPT under a name of its own, or
+    # it would be served as the canonical MO 10
+    assert plot_output_name("w", req) == "w.mo10a.cube"
+    assert cube_filename("w", req) == "w.pnbo10a.g60.cube"
+    assert cube_filename("w", req) != cube_filename("w", CubeRequest(kind="mo", index=10))
+
+
+def test_an_nbo_without_its_nbo_file_is_refused_with_the_reason(tmp_path):
+    from orcamgr.core.plot import PNBO_KIND
+    (tmp_path / "w.gbw").write_text("")          # a .gbw alone is not enough
+    r = generate_cube(tmp_path / "orca.exe", tmp_path, "w", CubeRequest(kind=PNBO_KIND))
+    assert r["ok"] is False and "w.nbo" in r["error"] and "! NBO" in r["error"]
+
+
+def test_an_nbo_cube_is_dated_against_the_nbo_file(tmp_path):
+    import os
+    from orcamgr.core.plot import PNBO_KIND
+    cubes = tmp_path / "cubes"
+    cubes.mkdir()
+    cube = cubes / "w.pnbo3a.g60.cube"
+    cube.write_text("cached")
+    nbo = tmp_path / "w.nbo"
+    nbo.write_text("")
+    os.utime(nbo, (cube.stat().st_mtime + 10,) * 2)  # a re-run rewrote the .nbo
+    r = generate_cube(tmp_path / "no-orca.exe", tmp_path, "w",
+                      CubeRequest(kind=PNBO_KIND, index=3, grid=60))
+    assert not (r["ok"] and r.get("cached"))

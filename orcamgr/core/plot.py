@@ -99,7 +99,15 @@ _DESYNC = "Invalid input. Please try again"
 _BAD_DENSITY = "Wrong Density Name selected"
 _BAD_MO = "Invalid MO requested for plot"
 
-PLOT_KINDS = ("mo", "eldens", "spindens", "esp")
+#: An NBO from the NBO PROGRAM (a `! NBO` run). ORCA stores those orbitals in
+#: ``{base}.nbo``, a file in .gbw format whose k-th orbital is NBO k of the
+#: program's summary (measured on ORCA 6.1.1 + NBO 7.0.10: orbital energies
+#: identical to the summary's, and NBO 11 = BD(1) C1-C2 peaks between C1 and
+#: C2). orca_plot draws it with the MO menu, given that file instead of the
+#: .gbw. Not to be confused with NBO_KIND below, ORCAdesk's own analysis.
+PNBO_KIND = "pnbo"
+
+PLOT_KINDS = ("mo", "eldens", "spindens", "esp", PNBO_KIND)
 
 #: A natural bond orbital. NOT an orca_plot kind -- orca_plot draws only what
 #: the .gbw holds, and an NBO is ORCAdesk's own vector -- so it is written in
@@ -114,7 +122,8 @@ KIND_LABELS = {"mo": "Molecular orbital",
                "eldens": "Electron density",
                "spindens": "Spin density",
                "esp": "Electrostatic potential",
-               NBO_KIND: "Natural bond orbital"}
+               NBO_KIND: "Natural bond orbital",
+               PNBO_KIND: "NBO"}
 
 #: The SCF density orca_plot's ESP prompt is answered with. It is the density
 #: the menu itself lists as available for "(scf) electron density" (``scfp``),
@@ -122,10 +131,18 @@ KIND_LABELS = {"mo": "Molecular orbital",
 _SCF_DENSITY_SUFFIX = ".scfp"
 
 
+def wavefunction_file(base: str, kind: str) -> str:
+    """The file orca_plot is handed for this kind, in the run folder: the
+    ``.nbo`` for the NBO program's orbitals, the ``.gbw`` for everything else.
+    It is also what a stored cube of this kind is dated against."""
+    return f"{base}.nbo" if kind == PNBO_KIND else f"{base}.gbw"
+
+
 @dataclass
 class CubeRequest:
-    """What to plot. ``index``/``operator`` apply to ``kind == "mo"`` and
-    ``"nbo"`` only (operator 0 = alpha or closed-shell, 1 = beta)."""
+    """What to plot. ``index``/``operator`` apply to ``kind`` "mo", "nbo" and
+    "pnbo" only (operator 0 = alpha or closed-shell, 1 = beta). For "pnbo" the
+    index is the orbital's position in the ``.nbo`` file, i.e. NBO number - 1."""
     kind: str = "mo"
     index: int = 0
     operator: int = 0
@@ -154,7 +171,9 @@ def plot_output_name(base: str, req: CubeRequest) -> str:
     ESP is the odd one out: orca_plot names it after the DENSITY it was computed
     from, not after the plot type, so the file is ``water.scfp.esp.cube`` rather
     than ``water.esp.cube``. Verified against ORCA 6.1.1."""
-    if req.kind == "mo":
+    if req.kind in ("mo", PNBO_KIND):
+        # an orbital of the .nbo file is plotted through the MO menu, and
+        # orca_plot names it like one (measured: FH2CH2F_Anti_NBO.mo10a.cube)
         return f"{base}.mo{req.index}{'b' if req.operator else 'a'}.cube"
     if req.kind == NBO_KIND:
         # ORCAdesk's own, shaped like the MO name so the viewer's list treats
@@ -172,8 +191,15 @@ def cube_filename(base: str, req: CubeRequest) -> str:
     whole request. orca_plot's own name is not: ask for the same orbital at 80³
     after viewing it at 60³ and the reuse check would hand back the coarse file
     while the UI labelled it 80³ — a caption that quietly lies about what is on
-    screen. Observed before this split existed."""
-    stem = plot_output_name(base, req)[:-len(".cube")]
+    screen. Observed before this split existed.
+
+    An NBO from the ``.nbo`` file is kept as ``{base}.pnbo{N}a``: orca_plot
+    writes it under the MO name, and kept under that it would be served as the
+    canonical MO of the same index."""
+    if req.kind == PNBO_KIND:
+        stem = f"{base}.pnbo{req.index}{'b' if req.operator else 'a'}"
+    else:
+        stem = plot_output_name(base, req)[:-len(".cube")]
     return f"{stem}.g{req.grid}.cube"
 
 
@@ -225,7 +251,7 @@ def _menu_sequence(req: CubeRequest, base: str = "") -> str:
         raise ValueError("a natural bond orbital is not an orca_plot kind")
 
     head = f"5\n7\n4\n{req.grid}\n"
-    if req.kind == "mo":
+    if req.kind in ("mo", PNBO_KIND):
         body = f"1\n1\n3\n{req.operator}\n2\n{req.index}\n"
     elif req.kind == "esp":
         body = f"1\n43\n{base}{_SCF_DENSITY_SUFFIX}\n"
@@ -336,13 +362,16 @@ def generate_cube(orca_path: str | Path, run_dir: str | Path, base: str,
     produced_name = plot_output_name(base, req)   # what orca_plot writes
     final = dest / cube_filename(base, req)       # what we keep it as
 
-    gbw = run_dir / f"{base}.gbw"
+    gbw = run_dir / wavefunction_file(base, req.kind)
     if reuse and cube_is_current(final, gbw):
         # Cubes are deterministic in their inputs, and a regenerated one would be
         # byte-identical; reopening a previously viewed orbital should be instant.
         return {"ok": True, "path": str(final), "cached": True, "seconds": 0.0}
 
     if not gbw.exists():
+        if req.kind == PNBO_KIND:
+            return {"ok": False, "error": f"No NBO file ({base}.nbo) in the run folder "
+                                          f"— ORCA writes it when a job runs with ! NBO."}
         return {"ok": False, "error": f"No wavefunction file ({base}.gbw) in the "
                                       f"run folder — orbitals need a finished ORCA job."}
     exe = orca_plot_exe(orca_path)
@@ -351,7 +380,8 @@ def generate_cube(orca_path: str | Path, run_dir: str | Path, base: str,
                                       "ORCA executable. Check the ORCA path in Settings."}
 
     label = KIND_LABELS.get(req.kind, req.kind)
-    what = f"{label} {req.index}{'β' if req.operator else 'α'}" if req.kind == "mo" else label
+    what = (f"{label} {req.index}{'β' if req.operator else 'α'}" if req.kind == "mo"
+            else f"NBO {req.index + 1}" if req.kind == PNBO_KIND else label)
     if on_log:
         on_log(f"orca_plot: {what} at grid {req.grid}³ …")
 

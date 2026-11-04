@@ -58,6 +58,16 @@ PER_LANDMARK_SKIP = {
     # lists what is actually in its folder. Same rule, different content.
     "viztypes": {"gridTemplateColumns"},
 }
+# Landmarks web/next/ no longer has ON PURPOSE, each with its reason. Listed
+# and not counted: a deliberate removal is not a difference to chase.
+REMOVED = {
+    # The Structure section (.secblock.viewer) and its stage (.viewstage) are
+    # gone: the parsed structure is the Visual panel's first tile, so one stage
+    # draws the molecule instead of two side by side (DESIGN.md §17.4c,
+    # app.css "one stage, not two").
+    "secblock_viewer": "Structure is the Visual panel's first tile",
+    "viewstage": "Structure is the Visual panel's first tile",
+}
 # Sizes within this many px read as the same to the eye and are not worth
 # chasing; anything above it is a real difference in proportion.
 TOL = 1.0
@@ -107,6 +117,8 @@ for role in [k for k in A if not k.startswith("__")]:
         print(f"\n{role}: absent on BOTH sides"); continue
     if a is None:
         print(f"\n{role}: !! not in the mockup"); continue
+    if b is None and role in REMOVED:
+        print(f"\n{role}: removed on purpose -- {REMOVED[role]}"); continue
     if b is None:
         print(f"\n{role}: !! MISSING in web/next/"); n += 1; continue
     diffs = []

@@ -880,7 +880,8 @@
 /**
  * get_plot_options(source) result. Mirror of the Python PlotOptionsResult —
  * what a finished calculation can be visualized as. "kinds" is a subset of
- * ["mo","eldens","esp","spindens"] (spin density only for an open-shell calc);
+ * ["mo","eldens","esp","spindens","pnbo"] (spin density only for an open-shell
+ * calc; "pnbo" only when a closed-shell `! NBO` run left its {base}.nbo);
  * "cached" names the cube files already on disk, which open instantly.
  * The orbital list is NOT here — the Results tab already holds it.
  * The esp_* fields are the ESP map's own conventions: it costs minutes rather
@@ -891,6 +892,7 @@
  * @property {string} [base]         filename stem the cubes are named from
  * @property {string} [folder]       the run folder these files live in
  * @property {boolean} [has_gbw]
+ * @property {boolean} [has_nbo]   {base}.nbo from a `! NBO` run (kind "pnbo")
  * @property {boolean} [open_shell]
  * @property {string[]} [kinds]
  * @property {number[]} [grids]

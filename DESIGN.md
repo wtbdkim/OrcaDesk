@@ -1588,6 +1588,18 @@ at four orbitals and cannot survive ten, which is the tell that they were never
 tiles. Selecting a surface kind fills the list rather than drawing: this stage
 paints atoms, an isosurface needs the pop-out viewer's renderer, so a **row**
 opens that window and the structure on the stage is left where it was.
+**The structure is the strip's first tile, not a section of its own.** The
+reference sets a Structure section beside Visual, each with a stage, and in a
+real report the two drew the same molecule side by side at 5 + 7 columns. The
+parsed geometry is the *Structure* tile instead, and the report opens on it:
+it is the picture the result is OF, before anything found beside it. Its list
+column holds no rows (one structure is nothing to step through) and says what
+the stage answers — click an atom or a bond for its numbers, right-drag to
+measure — and those picks are read only on this tile, because a trajectory
+frame's atom 3 is not the parse's once anything has moved. The panel is alone
+on its row and spans it (`.vizhalf.solo`); `.secblock.viewer` and `.viewstage`
+are gone, listed as deliberate in `tools/uidiff.py` `REMOVED` and in
+`test_next_ui.py`'s `OUTSTANDING`.
 
 **17.4f A marker that states the orientation is the control for it.** The axis
 gizmo in the corner is drawn from the same rotation as the molecule, so it
@@ -1878,14 +1890,12 @@ a mode is, not what it does, and the question a frequency result is opened
 for — is this imaginary mode the reaction coordinate, or a methyl rotor that
 a tighter optimization would remove? — is answered by seeing the atoms move.
 So a band on the vibrational spectrum is also a control: **clicking it, or
-Enter on the keyboard cursor, shows that mode moving on the Structure
-stage**, and the imaginary modes — the ones people come for, on the crowded
-left edge of the axis — get a button each under the spectrum. The Structure
-stage rather than the Visual one, because it already draws the geometry the
-frequencies were computed at, it sits directly under the spectrum, and it
-holds nothing else; the Visual stage is the folder's sets and the app's one
-surface renderer, and a mode there would evict whichever was on screen. A bar
-above the stage (not on it — its corners already hold the atom readout, the
+Enter on the keyboard cursor, shows that mode moving on the Visual panel's
+Structure tile**, and the imaginary modes — the ones people come for, on the
+crowded left edge of the axis — get a button each under the spectrum. That
+tile because it draws the geometry the frequencies were computed at; a mode
+picked while a trajectory or a surface is on the stage switches back to it,
+and leaving the tile stops the mode. A bar above the panel (not on it — its corners already hold the atom readout, the
 Display pills, the axis marker and the legend) is the whole control: the
 mode, ‹ › to the neighbouring ones, Play / Pause, the **swing** (how far the
 most-moved atom travels either way, in Å — the push panel's rule, §17.4p, for
@@ -1991,14 +2001,20 @@ edit as the result's `warning`, and in the log before launch.
 leaves the NBO program's analysis in the `.out`; the report reads it into three
 sections whose titles begin `NBO ·` and whose meta names the version and says
 *from the output* — natural populations (the Lewis/non-Lewis accounting as
-`.kvline`s over the per-atom table), donor → acceptor, bond orbitals — placed
-above ORCAdesk's own *Natural orbitals*, whose numbers are a different
-implementation and must never be read as these (P5, A25). Both stay: one is
-what the run printed, the other works on any `.gbw`. Long lists open on what a
+`.kvline`s over the per-atom table), donor → acceptor, bond orbitals — kept
+apart from ORCAdesk's own *Natural orbitals*, whose numbers are a different
+implementation and must never be read as these (P5, A25). That section and the
+*Reaction profile* are hidden for now (`SHOW_OWN_NBO` / `SHOW_PROFILE` in
+`results.js`, 2026-11-04): their code and backend slots stay, and turning one
+back on is flipping its switch. When the own analysis returns it goes below
+these. Long lists open on what a
 reader came for — the 20 largest E(2) rows, the Lewis orbitals and antibonds —
 and the rest wait under *Show all*, with a `.hint` saying how many. An NBO is
 named once, `BD*(1) C1–C2`, in both tables, with NBO's own number in front so
-a donor in one table is found in the other. ORCA's own `%loc` printout follows
+a donor in one table is found in the other — and in the Visual panel's **NBOs**
+tile, whose list is the same orbitals under the same names, the occupancy in
+the column where an MO shows its energy (the number that tells a Lewis orbital
+from an antibond). ORCA's own `%loc` printout follows
 the same rule as *Localized orbitals* (meta: method, MO range, *from the
 output*): the counts as `.kvline`s, then one row per localized orbital with
 each atom's share muted beside it, so the numbers that move along a reaction

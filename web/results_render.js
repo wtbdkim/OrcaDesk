@@ -198,7 +198,8 @@ function renderResultSections(d) {
   // parse payload: it is computed from the .gbw on demand (nbo_render.js), so
   // the card opens as a button. Gated like the other electronic-structure
   // sections; a result with no wavefunction file says so when clicked.
-  if (elec && !d.is_conformer_search) renderNboCard();
+  // Hidden for now (RESULTS_SHOW_OWN_NBO) -- the backend stays.
+  if (RESULTS_SHOW_OWN_NBO && elec && !d.is_conformer_search) renderNboCard();
   if (d.frequencies && d.frequencies.length) renderFreqSpectrum(d.frequencies, d.n_imaginary);
   if (d.transitions && d.transitions.length) renderSpectrum(d.transitions);
   if (d.tddft_states && d.tddft_states.length) renderTddftStates(d.tddft_states);
@@ -243,7 +244,7 @@ function setResultsMode(mode) {
   const showall = document.getElementById("btn-showall");
   if (showall) showall.style.display = vis ? "none" : "";
   const fep = document.getElementById("card-fep");
-  if (fep) fep.style.display = vis ? "none" : "";
+  if (fep) fep.style.display = (vis || !RESULTS_SHOW_PROFILE) ? "none" : "";
   if (vis) renderVisual();
 }
 
@@ -1024,10 +1025,18 @@ function renderNebPath(path, kind) {
 }
 
 // ---- free energy profile (Results tab) ----
+/* Two Results sections are hidden for now (2026-11-04), in both front-ends:
+   ORCAdesk's own natural-orbital analysis and the free-energy profile. Their
+   backends and this code stay; turning one back on is flipping its switch.
+   The notebook's twins are SHOW_OWN_NBO / SHOW_PROFILE in web/next/results.js. */
+const RESULTS_SHOW_OWN_NBO = false;
+const RESULTS_SHOW_PROFILE = false;
+
 /** @type {FepPoint[]} */
 let _fepPoints = [];   // cached [{name, gibbs_eh, ...}] in queue order
 
 async function loadFreeEnergyProfile() {
+  if (!RESULTS_SHOW_PROFILE) return;
   try {
     const res = /** @type {FepResult} */ (JSON.parse(await bridge.get_free_energy_profile()));
     _fepPoints = (res.ok && res.points) ? res.points : [];

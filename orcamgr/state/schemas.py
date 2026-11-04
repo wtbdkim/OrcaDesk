@@ -882,6 +882,7 @@ class PlotOptionsResult(_Ok, total=False):
     # written" — and must never assemble a workspace path itself (P4).
     folder: str
     has_gbw: bool
+    has_nbo: bool             # {base}.nbo from a `! NBO` run, closed shell (kind "pnbo")
     open_shell: bool
     kinds: "list[str]"
     grids: "list[int]"
