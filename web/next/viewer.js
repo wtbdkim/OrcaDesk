@@ -3,29 +3,38 @@
 /* ============================================================
    ORCAdesk notebook front-end — Structure and Visual.
 
-   Two sections of the report that are pictures rather than tables.
+   The report's one picture: the Visual section, a single stage under a strip
+   of tiles. It used to be two sections side by side -- Structure and Visual,
+   each with its own stage drawing the same molecule -- and they are one now:
+   the parsed geometry is the strip's FIRST tile, beside the folder's .xyz sets
+   and the wavefunction's surfaces (DESIGN.md §17.4c).
 
-   Structure is the geometry the run ended on, and it is where the per-atom and
-   per-bond numbers live: click an atom for its charges and valence, click a
-   bond for its length and Mayer order, right-drag between two atoms to measure.
-   That is why the report has no Mulliken/Löwdin/Mayer tables of its own — a
-   charge belongs to an atom you can point at, not to row 27 of a list. (They
-   are still reachable as tables under "Show all", for reading without a mouse.)
+   The Structure tile is where the per-atom and per-bond numbers live: click an
+   atom for its charges and valence, click a bond for its length and Mayer
+   order, right-drag between two atoms to measure. That is why the report has
+   no Mulliken/Löwdin/Mayer tables of its own -- a charge belongs to an atom
+   you can point at, not to row 27 of a list. (They are still reachable as
+   tables under "Show all", for reading without a mouse.) A normal mode picked
+   on the spectrum moves on this tile too.
 
-   Visual lists everything in the result's FOLDER that can be drawn — the
-   trajectory, a CREST ensemble, exported conformers — and steps through it.
-   What is on disk is discovered, never asked for.
+   The other tiles list everything in the result's FOLDER that can be drawn --
+   the trajectory, a CREST ensemble, exported conformers -- and the surfaces of
+   its wavefunction. What is on disk is discovered, never asked for.
    ============================================================ */
 
 (function () {
 
-  /** the interactive stage in the Structure section @type {any} */
-  let _stage = null;
-  /** The result the Structure stage draws, and how the backend addresses it:
-   *  what a normal mode is fetched against. @type {any} */
+  /** The result on screen, and how the backend addresses it: what the
+   *  Structure tile draws and a normal mode is fetched against. @type {any} */
   let _sd = null;
   let _ssrc = "";
-  /** The normal mode on the Structure stage: its number in the report (0 =
+  /** whether the Structure tile is the one on the stage -- an atom pick means
+   *  something only against the parsed geometry, not a trajectory frame */
+  let _onStructure = false;
+  /** picks the tile at this index, as a press on it would; set per mount
+   *  @type {((i: number) => void)|null} */
+  let _selectTile = null;
+  /** The normal mode on the Structure tile: its number in the report (0 =
    *  none), the swing in Å and whether it is moving. The swing outlives the
    *  mode, so stepping to the next one keeps the reader's choice.
    *  @type {{n: number, amp: number, playing: boolean, m: any}} */
@@ -33,7 +42,7 @@
   /** told the mode on screen (0 = none), so the spectrum can mark its band
    *  @type {((n: number) => void)|null} */
   let _onMode = null;
-  /** the interactive stage in the Visual panel @type {any} */
+  /** the one interactive stage @type {any} */
   let _viz = null;
   /** the Visual stage's Display menu, closed when a surface takes the stage
    *  @type {any} */
@@ -69,29 +78,6 @@
   }
 
   // ---------------------------------------------------------------- structure
-
-  /** @param {any} d the ParsePayload */
-  function structureSection(d) {
-    const atoms = (d.geometry || []).map(a => ({ el: a.el, x: a.x, y: a.y, z: a.z }));
-    if (!atoms.length) return "";
-    return `<section class="secblock viewer" data-sec="sec-structure" id="sec-structure">
-      <div class="sech"><h2>Structure</h2><span class="sp"></span>
-        <span class="meta">${atoms.length} atoms</span></div>
-      <div class="modeplay" data-v="mode" role="group" aria-label="Normal mode" hidden></div>
-      <div class="viewstage" data-v="stage">
-        <canvas class="molcv" data-v="canvas"
-          aria-label="Final geometry. Drag to turn, Shift+drag to move, Ctrl+scroll to zoom,
-            right-drag between two atoms to measure, click an atom or a bond for its numbers;
-            the arrow keys turn it too, x, y or z looks straight down that axis, 1 to 4
-            change the display type, H hides hydrogens, L labels the atoms."></canvas>
-        ${legend(atoms)}
-        <div class="stageacts">
-          <button class="act" type="button" data-v="open">Open in viewer</button>
-          <button class="act" type="button" data-v="disp">Display</button>
-        </div>
-      </div>
-    </section>`;
-  }
 
   /** Everything known about one atom, from the parse. @param {any} d @param {number} i */
   function atomFacts(d, i) {
@@ -156,35 +142,59 @@
       rows.map(r => `<div class="pr"><span>${NB.esc(r[0])}</span><b>${NB.esc(r[1])}</b></div>`).join("")}`;
     box.querySelector(".pclose").addEventListener("click", () => {
       box.remove();
-      if (_stage) _stage.clearPick();
+      if (_viz) _viz.clearPick();
     });
     stage.appendChild(box);
   }
 
-  /** @param {any} d
-   *  @param {string} source how the backend addresses this result:
-   *    "calc:<name>" for a queued calculation, "file:<path>" for one on disk.
-   *    The two are parsed by different routes, so the prefix is not decoration. */
-  function mountStructure(d, source) {
-    const sec = NB.$("sec-structure");
-    if (!sec) return;
-    const stage = /** @type {HTMLElement} */ (sec.querySelector('[data-v="stage"]'));
-    const canvas = /** @type {any} */ (sec.querySelector('[data-v="canvas"]'));
+  /** The Structure tile: the geometry the run ended on, with the run's own
+   *  Mayer orders drawing its multiple bonds (this IS the geometry they were
+   *  computed for). One structure is nothing to step through, so the column
+   *  beside it says what the stage answers instead.
+   *  @param {HTMLElement} sec */
+  function loadStructure(sec) {
+    const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
+    const d = _sd;
+    if (_surfPick) hideSurface(sec);
+    _kind = null;
+    _setKey = "";
+    _onStructure = true;
+    const ctl = q("vctl");
+    if (ctl) ctl.hidden = true;
     const atoms = (d.geometry || []).map(a => ({ el: a.el, x: a.x, y: a.y, z: a.z }));
-    if (_stage) _stage.destroy();
-    _sd = d; _ssrc = source;
-    _mode.n = 0; _mode.m = null;
-    _stage = MOL.mount(canvas, { onPick: (p) => showPick(stage, p, d) });
-    // the run's own Mayer orders draw the double bonds: this IS the geometry
-    // they were computed for
-    _stage.setAtoms(atoms, { orders: mayerOrders(d) });
-    MOL.displayMenu(sec.querySelector('[data-v="disp"]'),
-                    sec.querySelector(".stageacts"), _stage);
-
-    sec.querySelector('[data-v="open"]').addEventListener("click", () => NB.mv.open({
-      source: source, title: title(source) + " \u2014 structure",
-      orbitals: d.orbitals || [] }));
+    _viz.setAtoms(atoms, { orders: mayerOrders(d) });
+    q("vmeta").textContent = atoms.length + " atoms";
+    q("vcap").textContent = "final geometry · " + atoms.length + " atoms";
+    const list = q("vlist");
+    list.onclick = null;
+    list.innerHTML = `<div class="vizempty">The geometry the run ended on. Click an
+      atom for its charges and valence, a bond for its length and bond order;
+      right-drag between two atoms to measure.${
+      d.frequencies && d.frequencies.length
+        ? " A band on the spectrum, clicked, moves its mode here." : ""}</div>`;
+    const old = q("vstage").querySelector(".viewlegend");
+    if (old) old.remove();
+    q("vstage").insertAdjacentHTML("beforeend", legend(atoms));
   }
+
+  /** The NBO program's orbitals the parse read, for the NBOs tile: none for
+   *  an open-shell run, whose .nbo has not been measured (core/plot.py).
+   *  @param {any} d @returns {any[]} */
+  function nboOrbitals(d) {
+    const n = d && d.nbo_program;
+    return (n && !n.open_shell && n.orbitals) || [];
+  }
+
+  /** Leave the Structure tile: its atom readout and any mode moving on it
+   *  belong to it, not to whatever takes the stage next. @param {HTMLElement} sec */
+  function leaveStructure(sec) {
+    _onStructure = false;
+    const info = sec.querySelector(".pickinfo");
+    if (info) info.remove();
+    if (_viz) _viz.clearPick();
+    if (_mode.n) stopMode(true);
+  }
+
   /** What to call this result in a window title. The source is how the backend
    *  addresses it, which is not a name anyone reads. @param {string} source */
   function title(source) {
@@ -195,14 +205,12 @@
 
   // ---------------------------------------------------------------- normal modes
 
-  /* A vibration picked on the spectrum moves on the Structure stage (DESIGN.md
-     §17.4q). That stage and not the Visual one: it already draws the geometry
-     the frequencies were computed at, it sits directly under the spectrum, and
-     it holds nothing else -- the Visual stage is the folder's sets and the
-     app's one surface renderer, and a mode there would have to evict whichever
-     of them was on screen. The bar above the stage is the whole control: which
-     mode, play/pause, how far it swings, and the way back to the still
-     structure. */
+  /* A vibration picked on the spectrum moves on the Structure tile (DESIGN.md
+     §17.4q): it draws the geometry the frequencies were computed at. Picking a
+     mode while another tile -- a trajectory, a surface -- is on the stage
+     switches to it, because the mode is a motion OF that geometry. The bar
+     above the panel is the whole control: which mode, play/pause, how far it
+     swings, and the way back to the still structure. */
 
   /** Whether the reader has asked the system for less motion. A mode then
    *  opens held still, with arrows; Play is still there, because pressing it
@@ -213,28 +221,30 @@
   }
 
   /** Show report mode `n` (1-based, the spectrum's own numbering) on the
-   *  Structure stage. The vector is the backend's: the .hess beside the result,
+   *  Structure tile. The vector is the backend's: the .hess beside the result,
    *  else the .out's own table, matched to this report by wavenumber.
    *  @param {number} n @param {(k: number) => void} [onMode] told the mode on
    *    screen, 0 once it stops @returns {Promise<boolean>} */
   async function playMode(n, onMode) {
     if (onMode) _onMode = onMode;
-    const sec = NB.$("sec-structure");
+    const sec = NB.$("sec-visual");
     const d = _sd;
-    if (!sec || !_stage || !d || !d.frequencies || !d.frequencies.length) {
+    if (!sec || !_viz || !d || !d.frequencies || !d.frequencies.length
+        || !(d.geometry || []).length || !_selectTile) {
       NB.fail("There is no structure in this result to show the mode on.");
       return false;
     }
+    if (!_onStructure) _selectTile(0);
     const r = await NB.call("get_vibration_mode", JSON.stringify({
       source: _ssrc, freqs: d.frequencies, n: n,
       geometry: (d.geometry || []).map(a => ({ el: a.el, x: a.x, y: a.y, z: a.z })) }));
     // the report may have been re-rendered while the backend read the file
-    if (_sd !== d || !_stage) return false;
+    if (_sd !== d || !_viz || !_onStructure) return false;
     if (!r || !r.ok) { NB.fail((r && r.error) || "Could not read that mode."); return false; }
     // the first mode opens moving, unless the system asks for less motion;
     // stepping to another keeps whatever the reader chose
     const playing = _mode.n ? _mode.playing : !stillFirst();
-    if (!_stage.vibrate({ base: r.coords, vec: r.vec, amp: _mode.amp, playing: playing })) {
+    if (!_viz.vibrate({ base: r.coords, vec: r.vec, amp: _mode.amp, playing: playing })) {
       NB.fail("That mode does not fit the structure on screen.");
       return false;
     }
@@ -243,7 +253,7 @@
     if (_onMode) _onMode(n);
     // From the spectrum the stage may be below the fold. Bring it up only as
     // far as it takes, so the spectrum stays in view as much as it can.
-    const st = sec.querySelector('[data-v="stage"]');
+    const st = sec.querySelector('[data-v="vstage"]');
     if (st) {
       const b = st.getBoundingClientRect();
       const seen = Math.min(b.bottom, window.innerHeight) - Math.max(b.top, 0);
@@ -252,16 +262,18 @@
     return true;
   }
 
-  /** Back to the structure itself. */
-  function stopMode() {
-    const sec = NB.$("sec-structure");
-    if (_stage) _stage.vibrate(null);
+  /** Back to the structure itself. `quiet` when another tile is taking the
+   *  stage: the focus then stays where the reader put it.
+   *  @param {boolean} [quiet] */
+  function stopMode(quiet) {
+    const sec = NB.$("sec-visual");
+    if (_viz) _viz.vibrate(null);
     _mode.n = 0; _mode.m = null;
     if (sec) {
       const bar = /** @type {HTMLElement} */ (sec.querySelector('[data-v="mode"]'));
       if (bar) { bar.hidden = true; bar.innerHTML = ""; }
-      const cv = /** @type {HTMLElement} */ (sec.querySelector('[data-v="canvas"]'));
-      if (cv) cv.focus({ preventScroll: true });
+      const cv = /** @type {HTMLElement} */ (sec.querySelector('[data-v="vcanvas"]'));
+      if (cv && quiet !== true) cv.focus({ preventScroll: true });
     }
     if (_onMode) _onMode(0);
   }
@@ -312,10 +324,10 @@
     });
     q("prev").addEventListener("click", () => go(-1));
     q("next").addEventListener("click", () => go(1));
-    q("stop").addEventListener("click", stopMode);
+    q("stop").addEventListener("click", () => stopMode());
     q("play").addEventListener("click", () => {
       _mode.playing = !_mode.playing;
-      _stage.vibrate({ base: r.coords, vec: r.vec, amp: _mode.amp, playing: _mode.playing });
+      _viz.vibrate({ base: r.coords, vec: r.vec, amp: _mode.amp, playing: _mode.playing });
       paintModeBar(sec);
       // the bar was redrawn under the hand: keep the focus on the same button
       q("play").focus();
@@ -325,7 +337,7 @@
       if (!isFinite(v)) return;
       _mode.amp = v;
       q("ampv").textContent = v.toFixed(2) + " Å";
-      _stage.vibrate({ base: r.coords, vec: r.vec, amp: v, playing: _mode.playing });
+      _viz.vibrate({ base: r.coords, vec: r.vec, amp: v, playing: _mode.playing });
     });
     bar.onkeydown = (e) => {
       if (e.key === "Escape") { e.preventDefault(); stopMode(); }
@@ -335,9 +347,10 @@
   // ---------------------------------------------------------------- visual
 
   function visualSection() {
-    return `<section class="secblock vizhalf" data-sec="sec-visual" id="sec-visual">
+    return `<section class="secblock vizhalf solo" data-sec="sec-visual" id="sec-visual">
       <div class="sech"><h2>Visual</h2><span class="sp"></span>
         <span class="meta" data-v="vmeta"></span></div>
+      <div class="modeplay" data-v="mode" role="group" aria-label="Normal mode" hidden></div>
       <div class="vizpanel">
         <div class="vizside">
           <div class="vizlist" data-v="vlist" role="listbox" aria-label="Frames"></div>
@@ -346,8 +359,10 @@
         <div class="vizstage" data-v="vstage">
           <canvas class="molcv" data-v="vcanvas"
             aria-label="Structure viewer. Drag to turn, Shift+drag to move, Ctrl+scroll to
-              zoom; the arrow keys turn it too, x, y or z looks straight down that axis,
-              1 to 4 change the display type, H hides hydrogens, L labels the atoms."></canvas>
+              zoom, right-drag between two atoms to measure, click an atom or a bond for
+              its numbers; the arrow keys turn it too, x, y or z looks straight down that
+              axis, 1 to 4 change the display type, H hides hydrogens, L labels the
+              atoms."></canvas>
           <div class="stageacts">
             <button class="act" type="button" data-v="vopen">Open in viewer</button>
             <button class="act" type="button" data-v="vdisp">Display</button>
@@ -367,9 +382,16 @@
     if (!sec) return;
     const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
     if (_viz) _viz.destroy();
+    _sd = d || {}; _ssrc = source;
+    _mode.n = 0; _mode.m = null;
+    _onStructure = false;
+    _selectTile = null;
     // .vizcap writes the frame's name in this stage's bottom-left corner, which
-    // is where the axis marker goes — so the marker sits above it
-    _viz = MOL.mount(q("vcanvas"), { gizmoBottom: 60 });
+    // is where the axis marker goes — so the marker sits above it. A pick is
+    // read only on the Structure tile: a trajectory frame's atom 3 is not the
+    // parse's atom 3 once anything has moved.
+    _viz = MOL.mount(q("vcanvas"), { gizmoBottom: 60,
+      onPick: (/** @type {any} */ p) => { if (_onStructure) showPick(q("vstage"), p, _sd); } });
     _vizMenu = MOL.displayMenu(q("vdisp"), q("vdisp").parentElement, _viz);
 
     // The two halves of "what can be drawn" are found in different ways — the
@@ -378,14 +400,15 @@
     // either, both or neither.
     const [r, surf] = await Promise.all([
       NB.call("list_structure_sets", source),
-      NB.mv.surfaces(source, (d && d.orbitals) || []),
+      NB.mv.surfaces(source, (d && d.orbitals) || [], nboOrbitals(d)),
     ]);
     const sets = (r && r.ok && r.sets) ? r.sets : [];
     const picks = (surf && surf.ok && surf.picks) ? surf.picks : [];
     _opts = (surf && surf.opts) || null;
     _source = source;
     _surfPick = null;
-    if (!sets.length && !picks.length) {
+    const geom = (d && d.geometry) || [];
+    if (!geom.length && !sets.length && !picks.length) {
       q("vtypes").innerHTML =
         `<p class="hint" style="margin:0;grid-column:1/-1">Nothing in this result's folder
           can be drawn yet. A trajectory, a CREST ensemble or exported conformers appear
@@ -397,7 +420,12 @@
     // enumerates the things inside it. Ten frontier orbitals or forty
     // conformers are list rows, not forty tiles — the strip is one line of the
     // panel, and putting instances in it is what made four orbitals fill it.
-    const tiles = sets.map(s => ({
+    /** @type {any[]} */
+    const tiles = geom.length
+      ? [{ n: "Structure", d: `${geom.length} ${geom.length === 1 ? "atom" : "atoms"}`,
+           structure: true }]
+      : [];
+    sets.forEach(s => tiles.push({
       n: s.label, d: `${s.count} ${s.count === 1 ? "frame" : "frames"}`, set: s }));
     const mos = picks.filter(p => p.kind === "mo");
     if (mos.length) {
@@ -407,7 +435,14 @@
                    d: `${mos.length} ${mos.length === 1 ? "orbital" : "orbitals"}`,
                    picks: mos, cap: "molecular orbital" });
     }
-    picks.filter(p => p.kind !== "mo").forEach(p => tiles.push({
+    // the NBO program's orbitals, from the .nbo a `! NBO` run leaves: a
+    // manifold like the MOs, so one tile and a list
+    const nbos = picks.filter(p => p.kind === "pnbo");
+    if (nbos.length) {
+      tiles.push({ n: "NBOs", d: `${nbos.length} orbitals`, picks: nbos,
+                   cap: "natural bond orbital", unit: ", occupancies in e" });
+    }
+    picks.filter(p => p.kind !== "mo" && p.kind !== "pnbo").forEach(p => tiles.push({
       n: p.short || p.label, d: p.ready ? "ready" : p.cost,
       picks: [p], cap: p.label.toLowerCase() }));
 
@@ -416,12 +451,17 @@
          <span class="n">${NB.esc(t.n)}</span>
          <span class="d">${NB.esc(t.d)}</span>
        </button>`).join("");
-    sec.querySelectorAll("[data-tile]").forEach(b => b.addEventListener("click", () => {
-      const t = tiles[Number(/** @type {HTMLElement} */ (b).dataset.tile)];
+    _selectTile = (i) => {
+      const t = tiles[i];
       if (!t) return;
       sec.querySelectorAll("[data-tile]").forEach(o => o.setAttribute(
-        "aria-pressed", String(o === b)));
+        "aria-pressed", String(Number(/** @type {HTMLElement} */ (o).dataset.tile) === i)));
+      if (t.structure) { loadStructure(sec); return; }
+      leaveStructure(sec);
       if (t.set) loadSet(sec, t.set); else loadPicks(sec, source, d, t);
+    };
+    sec.querySelectorAll("[data-tile]").forEach(b => b.addEventListener("click", () => {
+      if (_selectTile) _selectTile(Number(/** @type {HTMLElement} */ (b).dataset.tile));
     }));
     // the viewer opens on the set that is on screen, not on the first one:
     // "Open in viewer" means this, not something else in the same folder. The
@@ -432,8 +472,13 @@
       // structure set on that set. "Open in viewer" means this one.
       if (_surfPick) {
         NB.mv.open({ source: source, orbitals: (d && d.orbitals) || [],
-                     pick: _surfPick,
+                     nbos: nboOrbitals(d), pick: _surfPick,
                      title: title(source) + " — " + _surfPick.label });
+        return;
+      }
+      if (_onStructure) {
+        NB.mv.open({ source: source, title: title(source) + " — structure",
+                     orbitals: (d && d.orbitals) || [] });
         return;
       }
       const set = sets.filter(s => s.key === _setKey)[0] || sets[0];
@@ -441,22 +486,9 @@
                    orbitals: (d && d.orbitals) || [],
                    title: title(source) + (set ? " — " + set.label : "") });
     });
-    // A single-point run has a wavefunction to plot and no .xyz beside it. The
-    // strip is not empty, so it opens on the first surface rather than the
-    // section claiming there is nothing here — and the stage draws the geometry
-    // the parse already holds, because a surface belongs to a structure and an
-    // empty box beside an orbital list says the panel has lost its place.
-    if (!sets.length) {
-      const g = (d && d.geometry) || [];
-      if (g.length) {
-        const atoms = g.map(a => ({ el: a.el, x: a.x, y: a.y, z: a.z }));
-        _viz.setAtoms(atoms, { orders: mayerOrders(d) });
-        q("vstage").insertAdjacentHTML("beforeend", legend(atoms));
-      }
-      loadPicks(sec, source, d, tiles[0]);
-      return;
-    }
-    loadSet(sec, sets[0]);
+    // It opens on the first tile, which is the run's own structure whenever the
+    // parse has one -- the picture the result is OF, before anything beside it.
+    _selectTile(0);
   }
 
   /** The surfaces of one kind, on the left. The stage draws them in place now,
@@ -507,7 +539,7 @@
          data-pick="${i}" title="${NB.esc(isReady(p)
            ? "Already plotted — draws at once" : "Not plotted yet — " + p.cost)}">
          <span>${NB.esc(p.short || p.label)}</span>
-         <span class="v">${NB.esc(p.ev != null ? p.ev.toFixed(2)
+         <span class="v">${NB.esc(p.v != null ? p.v : p.ev != null ? p.ev.toFixed(2)
                                   : (isReady(p) ? "ready" : p.cost))}</span>
        </button>`).join("");
     // one handler on the list, not one per row: a whole orbital manifold is
@@ -524,7 +556,8 @@
     // the unit is said once, not on all of a few hundred rows: a core orbital
     // reads -520.12, and three characters of " eV" repeated per row is what
     // pushed the name that identifies it out of the column
-    const unit = t.picks.some(p => p.ev != null) ? ", energies in eV" : "";
+    const unit = t.unit != null ? t.unit
+      : (t.picks.some(p => p.ev != null) ? ", energies in eV" : "");
     q("vcap").textContent = `${t.cap}${unit} — pick one on the left`;
     buildControls(sec, source);
   }
@@ -597,7 +630,7 @@
       b.setAttribute("title", ok ? "Already plotted — draws at once"
                                  : "Not plotted yet — " + p.cost);
       const v = b.querySelector(".v");
-      if (v && p.ev == null) v.textContent = ok ? "ready" : p.cost;
+      if (v && p.ev == null && p.v == null) v.textContent = ok ? "ready" : p.cost;
     });
   }
 
@@ -815,10 +848,9 @@
   }
 
   NB.viewer = {
-    /** the Structure section's stage, for anything that needs to drive it */
-    stage: () => _stage,
+    /** the Visual section's stage, for anything that needs to drive it */
+    stage: () => _viz,
     reclaimSurface: reclaimSurface,
-    structureSection: structureSection, mountStructure: mountStructure,
     playMode: playMode, stopMode: stopMode,
     /** the report mode on the Structure stage, 0 for none */
     modeShown: () => _mode.n,

@@ -1908,7 +1908,8 @@ class Bridge(QObject):
         The ESP map rides the same availability as the electron density: both are
         computed from the SCF density orca_plot lists as ``<base>.scfp``, so a run
         that can plot one can plot the other."""
-        from ..core.plot import GRID_CHOICES, DEFAULT_GRID, default_grid_for, cube_is_current
+        from ..core.plot import (GRID_CHOICES, DEFAULT_GRID, PNBO_KIND, default_grid_for,
+                                 cube_is_current)
         from ..cube import ESP_SURFACE_ISOVALUE, ESP_DEFAULT_RANGE
         try:
             run_dir, base, open_shell, err = self._plot_source(source)
@@ -1916,17 +1917,28 @@ class Bridge(QObject):
                 return json.dumps(PlotOptionsResult(ok=False, error=err))
             gbw = run_dir / f"{base}.gbw"
             has_gbw = gbw.exists()
+            # the NBO program's orbitals (`! NBO`), in .gbw format beside it;
+            # offered for a closed shell only -- an open-shell .nbo has not
+            # been measured, so which orbital is which is not known (P3)
+            nbo_file = run_dir / f"{base}.nbo"
+            has_nbo = nbo_file.exists() and not open_shell
             cubes = run_dir / "cubes"
             # only cubes of THIS wavefunction: a re-run under the same name
-            # leaves the previous molecule's cubes behind
-            cached = sorted(p.name for p in cubes.glob("*.cube")
-                            if cube_is_current(p, gbw)) if cubes.is_dir() else []
+            # leaves the previous molecule's cubes behind. An NBO cube is dated
+            # against the .nbo it was plotted from.
+            pnbo_prefix = f"{base}.{PNBO_KIND}"
+            cached = sorted(
+                p.name for p in cubes.glob("*.cube")
+                if cube_is_current(p, nbo_file if p.name.startswith(pnbo_prefix) else gbw)
+            ) if cubes.is_dir() else []
         except OSError as e:
             return json.dumps(PlotOptionsResult(ok=False, error=str(e)))
         return json.dumps(PlotOptionsResult(
             ok=True, base=base, folder=str(run_dir), has_gbw=has_gbw,
             open_shell=open_shell,
-            kinds=["mo", "eldens", "esp"] + (["spindens"] if open_shell else []),
+            kinds=(["mo", "eldens", "esp"] + (["spindens"] if open_shell else [])
+                   + ([PNBO_KIND] if has_nbo else [])),
+            has_nbo=has_nbo,
             grids=list(GRID_CHOICES), default_grid=DEFAULT_GRID, cached=cached,
             esp_grid=default_grid_for("esp"),
             esp_surface_iso=ESP_SURFACE_ISOVALUE, esp_range=ESP_DEFAULT_RANGE))
@@ -1941,7 +1953,7 @@ class Bridge(QObject):
         Refuses while another cube is in flight: orca_plot writes a *fixed*
         filename beside the ``.gbw``, so two runs in one folder would race for the
         same path and the loser would be served the winner's data."""
-        from ..core.plot import CubeRequest, DEFAULT_GRID, KIND_LABELS, NBO_KIND
+        from ..core.plot import CubeRequest, DEFAULT_GRID, KIND_LABELS, NBO_KIND, PNBO_KIND
         from ..core.plot import generate_cube as _generate
         from ..nbo.cubes import generate_nbo_cube
         from ..nbo.wavefunction import WavefunctionError
@@ -1956,7 +1968,8 @@ class Bridge(QObject):
                           index=int(d.get("index") or 0),
                           operator=int(d.get("operator") or 0),
                           grid=int(d.get("grid") or DEFAULT_GRID)).normalized()
-        label = (f"{KIND_LABELS[req.kind]} {req.index}{'β' if req.operator else 'α'}"
+        label = (f"NBO {req.index + 1}" if req.kind == PNBO_KIND
+                 else f"{KIND_LABELS[req.kind]} {req.index}{'β' if req.operator else 'α'}"
                  if req.kind in ("mo", NBO_KIND) else KIND_LABELS.get(req.kind, req.kind))
 
         with self._cube_lock:

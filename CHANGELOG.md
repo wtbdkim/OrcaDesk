@@ -5,7 +5,26 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **One molecule picture in the notebook report, not two.** The Structure
+  section and the Visual panel drew the same molecule side by side; the
+  structure is now the Visual panel's first tile, *Structure*, ahead of the
+  trajectory and the Orbitals / Electron density / ESP map tiles, and the
+  report opens on it. Clicking an atom or a bond still gives its numbers there,
+  and a mode picked on the spectrum moves on that tile. The panel now spans
+  the full width of the report.
+- **ORCAdesk's own natural-orbital analysis and the reaction profile are
+  hidden for now, in both the notebook report and the classic Results tab.**
+  Their backends are unchanged; the NBO program's results from a `! NBO` run
+  are not affected.
+
 ### Added
+- **NBOs drawn in 3D.** A `! NBO` run leaves its natural bond orbitals in a
+  `.nbo` file beside the output, and the notebook's Visual panel now has an
+  **NBOs** tile listing them by the program's own names (`BD(1) C1–C2`,
+  `LP(3) F3`, `BD*(1) C1–C2`, … with their occupancies). Picking one plots it
+  with orca_plot — about a second — and draws its lobes on the stage, with the
+  same isovalue and grid controls as a molecular orbital.
 - **The NBO program's results now show in the notebook report.** An ORCA
   run with `! NBO` prints NBO 7's analysis into its `.out`, and the report
   showed none of it — only ORCAdesk's own *Compute natural orbitals* button.

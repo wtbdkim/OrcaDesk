@@ -178,11 +178,12 @@ def test_the_preview_uses_the_references_own_component_vocabulary():
     # The two assertions below are what make DROPPING an element a decision
     # somebody took instead of something that quietly happened. Adding a name
     # here is allowed; doing it without saying why in DESIGN.md is not.
-    # Empty, and kept that way. The last entry was .seg .sep, the divider
-    # between the backends and Guided | .inp text in the builder's backend
-    # control -- absent until the preview had MLIP and CREST builders to put
-    # on the other side of it (DESIGN.md §17.4s).
-    OUTSTANDING = set()
+    # .seg .sep left this list when the preview had MLIP and CREST builders to
+    # put on the other side of it (DESIGN.md §17.4s).
+    # .viewstage is the Structure section's stage, which is gone on purpose:
+    # the parsed structure is the Visual panel's first tile, so one stage draws
+    # the molecule instead of two side by side (DESIGN.md §17.4c).
+    OUTSTANDING = {"viewstage"}
     unexpected = sorted(missing - OUTSTANDING)
     assert not unexpected, (
         "design elements dropped without a decision: " + ", ".join(unexpected))
