@@ -1765,10 +1765,12 @@ reference's *↓ Latest*: a finished file has an end, not a latest.
 
 **17.4l The builder draws what it is given, and constraints are picked on
 the drawing.** The reference's builder puts a still thumbnail of the loaded
-file beside the structure check. The preview puts a live stage beside the
-**coordinates box** instead (`.geomsplit` / `.geomstage`, an addition in the
-last named block of `app.css`), redrawn as the text is typed, because that box
-is what it draws. For a kind that optimizes (opt, opt_freq, ts_opt,
+file beside the structure check. The preview gives the structure **a row of its
+own** under the coordinates box instead (`.geomtext` / `.geomstage`, a named
+block of `app.css`), the form's full width and directly above Constraints,
+redrawn as the box is typed in, because that box is what it draws. A drawing is
+fitted to the stage's shorter side, so the row's height (60% of the window, within
+416–676px) is what sets the molecule's size. For a kind that optimizes (opt, opt_freq, ts_opt,
 ts_opt_freq, the kinds the generator writes a `%geom` block for) the stage is
 also where `%geom Constraints` are picked. A left drag that **starts on an
 atom** collects the atoms it passes over (2 = bond, 3 = angle with the middle
