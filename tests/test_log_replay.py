@@ -209,3 +209,57 @@ def test_the_replay_filter_keeps_an_ircs_path(line):
 def test_the_replay_filter_leaves_look_alikes_out(line):
     from orcamgr.gui.bridge import _IRC_GRAPH, _IRC_ROW
     assert not (_IRC_GRAPH.search(line) or _IRC_ROW.match(line)), line
+
+
+# ---------------------------------------------------------------------------
+# A relaxed surface scan: one optimization per point, each point's cycles
+# counted from 1 again. The tracker tells the points apart by ORCA's banners
+# and learns how many there are from the header at the top of the file, so
+# both have to survive a replay whose curve window the last points' SCF rows
+# have long since filled (a real 10-point scan: 459 cycles, 23 MB).
+# ---------------------------------------------------------------------------
+
+def _scan_out(tmp_path, points=4, cycles=3, scf_rows=400):
+    from orcamgr.gui.bridge import graph_lines_of  # noqa: F401  (import check)
+    out = ["There is 1 parameter to be scanned.",
+           "There will be   %d constrained geometry optimizations." % points]
+    for p in range(1, points + 1):
+        out.append("         *               RELAXED SURFACE SCAN STEP  %2d               *" % p)
+        for c in range(1, cycles + 1):
+            out.append("        *                GEOMETRY OPTIMIZATION CYCLE   %d            *" % c)
+            out += ["  %d   -2095.%09d   -1.0e-05  4.97e-03  2.50e-02" % (k, k)
+                    for k in range(1, scf_rows + 1)]
+            out.append("Time for complete geometry iter:     12.500 sec")
+        out.append("                                *** OPTIMIZATION RUN DONE ***")
+    return _write(tmp_path, "\n".join(out) + "\n")
+
+
+def test_a_scans_header_and_point_banners_survive_the_replay(tmp_path):
+    from orcamgr.gui.bridge import graph_lines_of
+    lines = graph_lines_of(_scan_out(tmp_path))
+    assert any("There will be   4 constrained" in ln for ln in lines)
+    assert sum("RELAXED SURFACE SCAN STEP" in ln for ln in lines) == 4
+    # every cycle of every point, with its wall time, so the cycle count and
+    # the per-point time cover the whole run and not only the last points
+    assert sum("GEOMETRY OPTIMIZATION CYCLE" in ln for ln in lines) == 12
+    assert sum("Time for complete geometry iter" in ln for ln in lines) == 12
+    # and in file order: the header first, point 1's banner before point 2's
+    head = next(i for i, ln in enumerate(lines) if "There will be" in ln)
+    b1 = next(i for i, ln in enumerate(lines) if "SCAN STEP   1" in ln)
+    b2 = next(i for i, ln in enumerate(lines) if "SCAN STEP   2" in ln)
+    assert head < b1 < b2
+
+
+def test_an_ordinary_optimization_replays_as_before(tmp_path):
+    from orcamgr.gui.bridge import graph_lines_of, _GRAPH_LINES_MAX
+    out = []
+    for c in range(1, 4):
+        out.append("        *                GEOMETRY OPTIMIZATION CYCLE   %d            *" % c)
+        out += ["  %d   -2095.%09d   -1.0e-05  4.97e-03  2.50e-02" % (k, k) for k in range(1, 1200)]
+        out.append("Time for complete geometry iter:     %d.000 sec" % (10 + c))
+    lines = graph_lines_of(_write(tmp_path, "\n".join(out) + "\n"))
+    # no scan header, so no scan window: cycle 1's wall time is older than the
+    # curve's window and stays out, as it always did
+    assert len(lines) <= 2 * _GRAPH_LINES_MAX
+    assert not any("iter:     11.000" in ln for ln in lines)
+    assert any("iter:     13.000" in ln for ln in lines)

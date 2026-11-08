@@ -193,7 +193,9 @@ var CHARTS = {};
       return {
         has: has, kind: "geo",
         title: "Geometry convergence",
-        meta: b.geo.steps.length + (b.geo.steps.length === 1 ? " cycle" : " cycles")
+        meta: (b.geo.scanTotal > 0 && b.geo.scanStep > 0
+                 ? `point ${b.geo.scanStep}/${b.geo.scanTotal} · ` : "")
+          + b.geo.steps.length + (b.geo.steps.length === 1 ? " cycle" : " cycles")
           + (s && s.total ? ` · ${s.met}/${s.total} met` : ""),
         html: trace(series, w, h, { xlab: "optimization cycle", goal: 0,
                                     goalLabel: "limit", done: b.geo.done })

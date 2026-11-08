@@ -447,6 +447,19 @@ single SCF had run last. `get_graph_lines` keeps the same lines
 (`_IRC_GRAPH` / `_IRC_ROW` in `bridge.py`, pinned in `test_log_replay.py`) so
 a reopened IRC rebuilds its path from the `.out`.
 
+A **relaxed surface scan** is one optimization per point in one `.out`, each
+point's cycles numbered from 1 again, so `GeoTracker` (keyed by cycle number)
+starts a fresh chart on each `RELAXED SURFACE SCAN STEP N` banner and reads the
+point count from `There will be N constrained geometry optimizations`. A point's
+`OPTIMIZATION RUN DONE` is not the run's: `done` waits for the last point,
+`progress()` is over the points, and `estimateETA()` is the points left at the
+mean finished point's own ORCA seconds (none until one has finished). The cell
+shows the current point's chart, *scan point k/N* and `totalCycles()`.
+`graph_lines_of` (the filter behind `get_graph_lines`, module level so it is
+tested without a Bridge) keeps a third window once it has seen the scan header:
+the header, the banners, and every cycle's banner and wall time — the last
+points' SCF rows fill the curve's window long before the top of the file.
+
 A cell's **Output pane** (the `.logbox` beside the chart, the last 260 lines
 of the `.out`, re-read every poll while the job runs) follows the end **only
 while the reader is at the end** — per box in `stream.js` `_logs`, read off

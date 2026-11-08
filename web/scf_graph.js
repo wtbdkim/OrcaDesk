@@ -145,6 +145,14 @@
   // job end: the post-opt stage (and the whole run) is over — a graph re-seeded
   // from a finished .out must not label a DONE calc "running frequencies / …"
   const OPT_TERM_RE = /ORCA TERMINATED NORMALLY/;
+  // A relaxed surface scan (%geom Scan) is one constrained optimization per
+  // point, run back to back in one .out, and every point's cycles count from 1
+  // again. Keyed by cycle number alone, point 2's cycle 1 overwrote point 1's,
+  // so ten points drew as one chart of the longest point's length with values
+  // from all ten, and the first point's "OPTIMIZATION RUN DONE" read 100% with
+  // nine points to go. The banner starts a point; the header says how many.
+  const SCAN_STEP_RE = /RELAXED SURFACE SCAN STEP\s+(\d+)/;
+  const SCAN_TOTAL_RE = /There will be\s+(\d+)\s+constrained geometry optimizations/;
 
   // the (up to) five geometry-convergence criteria ORCA prints each step. Colors
   // come from CSS vars (--crit-*) so they adapt to the theme — dark keeps the
@@ -182,16 +190,69 @@
     this.done = false;        // geometry optimization has finished (converged / RUN DONE)
     this.postStage = "";      // post-opt stage now running (e.g. "frequencies"), for the label
     this.postDone = false;    // ORCA TERMINATED NORMALLY seen — the post-opt stage completed
+    // relaxed surface scan: the point being optimized (1-based) and how many
+    // there are; 0/0 for an ordinary optimization. Everything above describes
+    // the CURRENT point; a finished point leaves its cycle count and its real
+    // wall seconds behind, keyed by point so a replay overwrites them.
+    this.scanStep = 0;
+    this.scanTotal = 0;
+    this._pointDone = false;  // the current point's optimization finished
+    /** @type {Object<string, number>} point -> its cycle count */
+    this._pointCycles = {};
+    /** @type {Object<string, number>} point -> its summed "Time for complete geometry iter" */
+    this._pointSecs = {};
   }
+  /** Start scan point n: file the one before it, and begin an empty chart.
+   *  @param {number} n */
+  GeoTracker.prototype._startPoint = function (n) {
+    if (this.scanStep > 0) {
+      // the last cycle banner counts too: a replay from disk keeps every
+      // cycle's banner but only the recent points' tables
+      this._pointCycles[this.scanStep] = Math.max(this.steps.length, this.curCycle);
+      const secs = this._pointElapsedSec();
+      if (secs > 0) this._pointSecs[this.scanStep] = secs;
+    }
+    this.scanStep = n;
+    this.steps = []; this._byCycle = {};
+    this.worst = []; this.stepTimes = []; this._worstByCycle = {}; this._secByCycle = {};
+    this.startGrad = null; this._criteria = {}; this._pendingCriteria = {}; this._pendingVals = {};
+    this._inTable = false; this._etaPred = null; this.curCycle = 0;
+    this._pointDone = false;
+  };
+  /** ORCA's own seconds spent on the current point so far. */
+  GeoTracker.prototype._pointElapsedSec = function () {
+    let t = 0;
+    for (const k in this._secByCycle) t += this._secByCycle[k];
+    return t;
+  };
+  /** Cycles over the whole run: every finished scan point's, plus this one's. */
+  GeoTracker.prototype.totalCycles = function () {
+    let n = this.steps.length;
+    for (const k in this._pointCycles) if (+k < this.scanStep) n += this._pointCycles[k];
+    return n;
+  };
   GeoTracker.prototype.push = function (line) {
     // Track the real ORCA optimization cycle number. Steps are keyed by this
     // number so the same cycle's table being seen (or fed) more than once can
     // never inflate the step count — it overwrites instead of appending.
     const gc = line.match(GEO_RE);
     if (gc) { this.curCycle = parseInt(gc[1], 10); return false; }
+    const sp = line.match(SCAN_STEP_RE);
+    if (sp) {
+      // the same banner seen again (an overlapping tail) is not a new point
+      const n = parseInt(sp[1], 10);
+      if (n !== this.scanStep) this._startPoint(n);
+      return true;
+    }
+    const sn = line.match(SCAN_TOTAL_RE);
+    if (sn) { this.scanTotal = parseInt(sn[1], 10); return false; }
     const ts = line.match(GEO_ITERTIME_RE);
     if (ts) { if (this.curCycle > 0) this._secByCycle[this.curCycle] = parseFloat(ts[1]); return false; }
-    if (OPT_DONE_RE.test(line)) { this.done = true; return true; }   // -> 100%, stop the ETA
+    if (OPT_DONE_RE.test(line)) {
+      // a scan point finishing is not the run finishing
+      if (this.scanTotal > 0 && this.scanStep < this.scanTotal) { this._pointDone = true; return true; }
+      this.done = true; return true;   // -> 100%, stop the ETA
+    }
     if (this.done && !this.postStage && POST_OPT_RE.test(line)) { this.postStage = "frequencies / properties"; return false; }
     if (this.done && OPT_TERM_RE.test(line)) { this.postDone = true; return false; }
     if (GEO_TABLE_RE.test(line)) {
@@ -265,6 +326,15 @@
   };
   GeoTracker.prototype.progress = function () {
     if (this.done) return 1;            // ORCA reported the optimization finished
+    if (this.scanTotal > 0 && this.scanStep > 0) {
+      // the run is the points: those finished, plus how far this one is
+      const p = this._pointDone ? 1 : this._pointProgress();
+      return Math.max(0, Math.min(0.99, (this.scanStep - 1 + p) / this.scanTotal));
+    }
+    return this._pointProgress();
+  };
+  /** How far the current optimization is, 0..1, by its MAX gradient. */
+  GeoTracker.prototype._pointProgress = function () {
     if (this.startGrad === null || !this.steps.length) return 0;
     // 100% only when the optimizer has actually met all convergence criteria;
     // otherwise cap at 99% even if MAX gradient alone reached the tolerance
@@ -394,6 +464,34 @@
     return null;
   };
   GeoTracker.prototype.estimateETA = function () {
+    if (this.scanTotal > 0 && this.scanStep > 0 && !this.done) return this._scanEta();
+    return this._optEta();
+  };
+  /** A scan's time left: the points still to run at the mean of those already
+   *  run (ORCA's own seconds, so a replay estimates the same as a live run),
+   *  plus what this point still needs — its own estimate once it has one, else
+   *  the mean less what it has spent. Nothing until a point has finished: one
+   *  optimization's length says nothing about the next one's yet. */
+  GeoTracker.prototype._scanEta = function () {
+    /** @type {number[]} */
+    const done = [];
+    for (const k in this._pointSecs) if (+k < this.scanStep) done.push(this._pointSecs[k]);
+    if (!done.length) return null;
+    const meanMs = 1000 * done.reduce(function (a, b) { return a + b; }, 0) / done.length;
+    const later = Math.max(this.scanTotal - this.scanStep, 0) * meanMs;
+    let here = 0;
+    if (!this._pointDone) {
+      const own = this._optEta();
+      here = own && own.etaMs != null && own.conf !== "stale"
+        ? own.etaMs : Math.max(meanMs - 1000 * this._pointElapsedSec(), 0);
+    }
+    const etaMs = later + here;
+    // remainingSteps is an optimization's cycle count; a scan counts points
+    return { remainingSteps: null,
+             remainingPoints: this.scanTotal - this.scanStep + (this._pointDone ? 0 : 1),
+             etaMs: etaMs, etaLowMs: etaMs * 0.5, etaHighMs: etaMs * 2.0, conf: "med" };
+  };
+  GeoTracker.prototype._optEta = function () {
     const raw = this._rawEta();
     const at = this.worst.length;
     const minStep = _etaMode === "eager" ? 6 : 8;
@@ -621,14 +719,16 @@
     const eta = geo.estimateETA ? geo.estimateETA() : null;
     if (eta && eta.conf !== "stale") {
       const bucket = _etaBucket(eta.etaMs);
-      const rem = Math.round(eta.remainingSteps);
-      const more = `~${rem} more step${rem === 1 ? "" : "s"}`;
+      const pts = eta.remainingSteps == null;
+      const rem = Math.round(pts ? eta.remainingPoints : eta.remainingSteps);
+      const more = `~${rem} more ${pts ? "scan point" : "step"}${rem === 1 ? "" : "s"}`;
       etaLine = `<div class="scf-prog-eta">${bucket ? "roughly " + bucket + " left · " : ""}${more}</div>`;
     } else if (nPts >= 4) {
       etaLine = `<div class="scf-prog-eta">estimating time…</div>`;
     }
     return (
-      `<div class="scf-prog-label">Optimization ${pct}% · step ${stepN}</div>` +
+      `<div class="scf-prog-label">${geo.scanTotal > 0 && geo.scanStep > 0
+        ? `Scan point ${geo.scanStep}/${geo.scanTotal} · ` : ""}Optimization ${pct}% · step ${stepN}</div>` +
       `<div class="scf-prog-bar"><span style="width:${pct}%"></span></div>` +
       factLine +
       etaLine

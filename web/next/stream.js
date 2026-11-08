@@ -432,7 +432,9 @@
       const b = NB.trackers(c.name);
       if (b.geo.hasData()) {
         const s = b.geo.criteriaSummary();
-        bits.push(`<span>cycles <b>${b.geo.steps.length}</b></span>`);
+        if (b.geo.scanTotal > 0 && b.geo.scanStep > 0)
+          bits.push(`<span>scan point <b>${b.geo.scanStep}/${b.geo.scanTotal}</b></span>`);
+        bits.push(`<span>cycles <b>${b.geo.totalCycles()}</b></span>`);
         if (s && s.total) bits.push(`<span>criteria met <b>${s.met}/${s.total}</b></span>`);
       } else if (b.scf.hasData()) {
         bits.push(`<span>SCF iterations <b>${b.scf.points.length}</b></span>`);
