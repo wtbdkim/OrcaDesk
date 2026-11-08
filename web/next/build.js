@@ -280,22 +280,20 @@
           <span class="hint" style="margin:0" data-x="status">${
             st.xyz ? st.xyz.trim().split("\n").length + " atoms" : ""}</span>
         </div>
-        <!-- the coordinates and the structure they describe, side by side: the
-             stage redraws as the text changes, and is where constraints are
-             picked (DESIGN.md §17.4l) -->
-        <div class="geomsplit">
-          <div class="field"><textarea rows="7" data-f="xyz" spellcheck="false"
-            aria-label="Coordinates"
-            placeholder="C   0.000   0.000   0.000">${NB.esc(st.xyz)}</textarea>
-            <div data-x="rawgeom"${st.raw ? "" : " hidden"}></div></div>
-          <div class="geomstage">
-            <canvas class="molcv" data-v="geomcv"
-                    aria-label="The structure in the coordinates box"></canvas>
-            <p class="geomempty" data-x="geomempty">No coordinates yet</p>
-            ${K.cons && !st.raw ? `<div class="stageacts">
-              <button class="btn btn-sm" type="button" data-act="fixatom" disabled
-                      title="Hold the selected atom's position">Fix atom</button></div>` : ""}
-          </div>
+        <div class="field geomtext"><textarea rows="7" data-f="xyz" spellcheck="false"
+          aria-label="Coordinates"
+          placeholder="C   0.000   0.000   0.000">${NB.esc(st.xyz)}</textarea>
+          <div data-x="rawgeom"${st.raw ? "" : " hidden"}></div></div>
+        <!-- the structure the box describes, on a row of its own: the stage
+             redraws as the text changes, and is where constraints are picked
+             (DESIGN.md §17.4l) -->
+        <div class="geomstage">
+          <canvas class="molcv" data-v="geomcv"
+                  aria-label="The structure in the coordinates box"></canvas>
+          <p class="geomempty" data-x="geomempty">No coordinates yet</p>
+          ${K.cons && !st.raw ? `<div class="stageacts">
+            <button class="btn btn-sm" type="button" data-act="fixatom" disabled
+                    title="Hold the selected atom's position">Fix atom</button></div>` : ""}
         </div>
         <!-- push along a mode: a frequency run's .hess, a mode, how far. The
              stage previews it; Apply puts it in the box (DESIGN.md §17.4p) -->
