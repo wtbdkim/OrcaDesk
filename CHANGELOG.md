@@ -52,6 +52,17 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   warns they mean nothing unless every occupied orbital was localized, which
   the default range is not.
 
+### Fixed
+- **A relaxed surface scan's progress now reads as a scan in the Jobs view.**
+  Each scan point is its own optimization, and its cycles count from 1
+  again, so the convergence chart drew every point on top of the last one
+  (ten points as one 41-cycle curve) and the first point to converge read
+  100% with the rest still to run. The chart now shows the point being
+  optimized, the cell says *scan point 3/10* and counts the cycles of the
+  whole run, progress and the time left are over all the points, and a
+  finished scan reopened later rebuilds the same way. The classic Graph tab
+  gets the same tracker.
+
 ## [0.10.7] — 2026-10-26
 
 ### Added
