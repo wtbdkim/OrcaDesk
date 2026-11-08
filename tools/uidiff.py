@@ -35,6 +35,9 @@ SKIP = {"fontFamily", "box", "gridTemplateRows"}
 # design. (.plate:last-child{margin-bottom:0} is the rule doing it, and it is
 # the same rule on both sides.)
 PER_LANDMARK_SKIP = {
+    # The reference caps the pop-out at 1040 x 760; here it fills the window
+    # (app.css "the pop-out fills the window"). Its one column is its width.
+    "mvwin": {"gridTemplateColumns"},
     # The mockup's first MLIP environment is ready (green). A seeded one
     # cannot be: readiness means an interpreter that actually imports a
     # backend, and nothing here installs one. The row itself is compared;

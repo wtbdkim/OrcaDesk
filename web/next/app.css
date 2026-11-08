@@ -1209,20 +1209,21 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
 /* ---------------------------- the builder's structure stage ----------------------------
    An addition to the reference (DESIGN.md §17.4l). The reference's builder
    puts a still thumbnail of the loaded file beside the structure check; this
-   one puts a live stage beside the COORDINATES, because that is the text it
+   one puts a live stage under the COORDINATES, because that is the text it
    draws, redrawn as it is typed -- and because it is where geometry
    constraints are picked: a drag across atoms names a bond, an angle or a
-   dihedral, which four 0-based indices typed from memory get wrong. auto-fit
-   stacks the two columns once they would be narrower than 260px rather than
-   squeezing either. The canvas is out of flow, as on every stage (§17.4f) --
+   dihedral, which four 0-based indices typed from memory get wrong. The canvas is out of flow, as on every stage (§17.4f) --
    and sized 100% as well, because inset:0 alone does not stretch a canvas:
    an absolutely placed REPLACED element keeps its intrinsic 300x150. */
-.geomsplit{display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));
-  gap:12px; margin-bottom:10px;}
-.geomsplit .field textarea{flex:1 1 auto; min-height:260px; resize:vertical;
+.geomtext{margin-bottom:10px;}
+.geomtext textarea{min-height:200px; resize:vertical;
   font-family:var(--font-mono); font-size:12px; line-height:1.6;}
-.geomstage{position:relative; min-height:260px; overflow:hidden;
+/* A row of its own, the form's full width, directly above Constraints. The
+   scale of a drawing is fitted to the stage's SHORTER side (mol.js), so the
+   height is what sets the molecule's size: 60% of the window, within 416-676. */
+.geomstage{position:relative; height:clamp(416px, 60vh, 676px); margin-bottom:10px; overflow:hidden;
   background:var(--stage); border:1px solid var(--border); border-radius:var(--radius-sm);}
+.cell.editing .editbar{border-radius:var(--radius) var(--radius) 0 0;}
 .geomstage canvas.molcv{position:absolute; inset:0; display:block; width:100%; height:100%;}
 .geomempty{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   margin:0; font-size:12px; color:var(--muted-foreground); pointer-events:none;}
@@ -1351,3 +1352,8 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
 .scanrow .ss{grid-column:2 / -1; color:var(--muted-foreground); font-size:11.5px;
   font-variant-numeric:tabular-nums;}
 
+/* ---------------------------- the pop-out fills the window ----------------------------
+   The reference caps it at 1040 x 760, drawn for a laptop. On a large monitor
+   that left a third of the window as scrim around the one view whose whole job
+   is to be big. (uidiff.py PER_LANDMARK_SKIP.) */
+.mvwin{width:calc(100% - 48px); height:calc(100% - 48px);}

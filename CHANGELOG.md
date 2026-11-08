@@ -6,6 +6,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **A larger structure viewer in the notebook builder.** The stage shared a
+  260px-tall row with the coordinates box; it now has a row of its own under
+  the box, the form's full width and up to 676px tall, directly above
+  Constraints.
+  The pop-out viewer now fills the window rather than stopping at 1040 x 760.
 - **One molecule picture in the notebook report, not two.** The Structure
   section and the Visual panel drew the same molecule side by side; the
   structure is now the Visual panel's first tile, *Structure*, ahead of the
