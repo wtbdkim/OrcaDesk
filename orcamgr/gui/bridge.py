@@ -133,6 +133,10 @@ _CREST_GRAPH = re.compile(
 # other tracker regex but not this one, so a graph re-seeded from disk after a
 # restart came back without the timing it had before the restart.
 _G_ITERTIME = re.compile(r"Time for complete geometry iter\s*:\s*[\d.]+\s*s", re.I)
+# A relaxed surface scan's point count and point banners (mirror of
+# SCAN_TOTAL_RE / SCAN_STEP_RE in web/scf_graph.js).
+_G_SCAN = re.compile(r"RELAXED SURFACE SCAN STEP\s+\d+|"
+                     r"There will be\s+\d+\s+constrained geometry optimizations")
 # An IRC's path, mirror of web/progress_panels.js IrcTracker: the settings echo
 # (MaxIter, which directions), each direction's banner and thresholds, its
 # per-step rows (exactly five numbers - an SCF row has seven or more) and the
@@ -205,6 +209,82 @@ def tail_lines(path, max_lines: int) -> "tuple[list[str], bool]":
     if start > 0 and lines:
         lines = lines[1:]
     return lines[-n:], (start > 0 or len(lines) > n)
+
+
+def graph_lines_of(out_path) -> "list[str]":
+    """The lines of an ORCA .out the progress trackers are built from, in
+    file order: what Bridge.get_graph_lines replays (see there). Module
+    level so the filter can be tested without a Bridge."""
+    conv: deque[tuple[int, str]] = deque(maxlen=_GRAPH_LINES_MAX)   # SCF/geo/CREST curve
+    phase: deque[tuple[int, str]] = deque(maxlen=_GRAPH_LINES_MAX)  # freq/TD-DFT step chain
+    # a relaxed surface scan's skeleton: the point count, each point's
+    # banner, and every cycle's banner and wall time. Its own window,
+    # because the SCF rows of the last few points fill the curve's 2000
+    # lines long before the header at the top of the file: without the
+    # header and the banners the tracker cannot tell the points apart,
+    # and each point's cycle 1 overwrote the one before. Only once the
+    # header has been seen, so an ordinary optimization reads as it did.
+    scan: deque[tuple[int, str]] = deque(maxlen=_GRAPH_LINES_MAX)
+    scanning = False
+    in_table = False
+    saw_item = False
+    with open(out_path, "r", encoding="utf-8",
+              errors="surrogateescape") as f:
+        for i, raw in enumerate(f):
+            ln = repair_ansi_line(raw.rstrip("\r\n"))
+            if _G_SCAN.search(ln):
+                scanning = True
+                scan.append((i, ln))
+                continue
+            if scanning and (_G_CYCLE.search(ln) or _G_ITERTIME.search(ln)):
+                scan.append((i, ln))
+            if _G_CYCLE.search(ln):
+                # also the phase chain's reset marker (a pre-step
+                # Hessian belongs to the cycle it ran in), so it goes
+                # in both windows
+                conv.append((i, ln))
+                phase.append((i, ln))
+            elif _G_TABLE.search(ln):
+                in_table = True
+                saw_item = False
+                conv.append((i, ln))
+            elif in_table and _G_ITEM.search(ln):
+                saw_item = True
+                conv.append((i, ln))
+            elif in_table and saw_item and (
+                    ln.strip() == "" or _G_DASHES.search(ln) or _G_DOTS.search(ln)):
+                # table terminator — kept so GeoTracker commits the step
+                conv.append((i, ln))
+                in_table = False
+                saw_item = False
+            elif _G_DONE.search(ln):
+                # opt-finished marker — a seeded graph flips to 100%
+                conv.append((i, ln))
+            elif _G_POST.search(ln):
+                # post-opt-stage banners do double duty: they flip a
+                # seeded opt graph to "running frequencies…" AND boot
+                # the freq step chain, so they go in both windows
+                conv.append((i, ln))
+                phase.append((i, ln))
+            elif _G_ITER.match(ln):
+                conv.append((i, ln))
+            elif _IRC_GRAPH.search(ln) or _IRC_ROW.match(ln):
+                # an IRC's path: settings, banners, step rows, markers
+                conv.append((i, ln))
+            elif _G_ITERTIME.search(ln):
+                # ORCA's own per-cycle wall time — GeoTracker's PRIMARY
+                # source for "~N s/step" and the ETA, so a graph seeded
+                # from disk kept its curve but lost its timing
+                conv.append((i, ln))
+            elif _CREST_GRAPH.search(ln):
+                # CREST phase/energy markers (a CREST .out has no ORCA
+                # SCF/geo lines, so this branch is reached cleanly)
+                conv.append((i, ln))
+            elif _PHASE_GRAPH.search(ln) or _G_META.match(ln):
+                # freq / TD-DFT stage counters + the echoed method/cores
+                phase.append((i, ln))
+    merged = sorted(set(conv) | set(phase) | set(scan))   # a shared line lands once
+    return [ln for _, ln in merged]
 
 
 
@@ -1589,61 +1669,8 @@ class Bridge(QObject):
             out_path = self._calc_run_dir(name) / f"{name}.out"
             if not out_path.exists():
                 return json.dumps(GraphLinesResult(ok=False, error="no output", lines=[]))
-            conv: deque[tuple[int, str]] = deque(maxlen=_GRAPH_LINES_MAX)   # SCF/geo/CREST curve
-            phase: deque[tuple[int, str]] = deque(maxlen=_GRAPH_LINES_MAX)  # freq/TD-DFT step chain
-            in_table = False
-            saw_item = False
-            with open(out_path, "r", encoding="utf-8",
-                      errors="surrogateescape") as f:
-                for i, raw in enumerate(f):
-                    ln = repair_ansi_line(raw.rstrip("\r\n"))
-                    if _G_CYCLE.search(ln):
-                        # also the phase chain's reset marker (a pre-step
-                        # Hessian belongs to the cycle it ran in), so it goes
-                        # in both windows
-                        conv.append((i, ln))
-                        phase.append((i, ln))
-                    elif _G_TABLE.search(ln):
-                        in_table = True
-                        saw_item = False
-                        conv.append((i, ln))
-                    elif in_table and _G_ITEM.search(ln):
-                        saw_item = True
-                        conv.append((i, ln))
-                    elif in_table and saw_item and (
-                            ln.strip() == "" or _G_DASHES.search(ln) or _G_DOTS.search(ln)):
-                        # table terminator — kept so GeoTracker commits the step
-                        conv.append((i, ln))
-                        in_table = False
-                        saw_item = False
-                    elif _G_DONE.search(ln):
-                        # opt-finished marker — a seeded graph flips to 100%
-                        conv.append((i, ln))
-                    elif _G_POST.search(ln):
-                        # post-opt-stage banners do double duty: they flip a
-                        # seeded opt graph to "running frequencies…" AND boot
-                        # the freq step chain, so they go in both windows
-                        conv.append((i, ln))
-                        phase.append((i, ln))
-                    elif _G_ITER.match(ln):
-                        conv.append((i, ln))
-                    elif _IRC_GRAPH.search(ln) or _IRC_ROW.match(ln):
-                        # an IRC's path: settings, banners, step rows, markers
-                        conv.append((i, ln))
-                    elif _G_ITERTIME.search(ln):
-                        # ORCA's own per-cycle wall time — GeoTracker's PRIMARY
-                        # source for "~N s/step" and the ETA, so a graph seeded
-                        # from disk kept its curve but lost its timing
-                        conv.append((i, ln))
-                    elif _CREST_GRAPH.search(ln):
-                        # CREST phase/energy markers (a CREST .out has no ORCA
-                        # SCF/geo lines, so this branch is reached cleanly)
-                        conv.append((i, ln))
-                    elif _PHASE_GRAPH.search(ln) or _G_META.match(ln):
-                        # freq / TD-DFT stage counters + the echoed method/cores
-                        phase.append((i, ln))
-            merged = sorted(set(conv) | set(phase))   # a shared line lands once
-            return json.dumps(GraphLinesResult(ok=True, lines=[ln for _, ln in merged]))
+            lines = graph_lines_of(out_path)
+            return json.dumps(GraphLinesResult(ok=True, lines=lines))
         except Exception as e:
             return json.dumps(GraphLinesResult(ok=False, error=str(e), lines=[]))
 

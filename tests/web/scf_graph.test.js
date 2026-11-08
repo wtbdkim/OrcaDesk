@@ -971,6 +971,92 @@ test("a Hessian inside an IRC or an optimization is remembered after its chain r
   assert.ok(!plain.preHessian(), "a frequency job is not a pre-step");
 });
 
+// ---------------------------------------------------------------------------
+// GeoTracker over a relaxed surface scan: one optimization per point, every
+// point's cycles numbered from 1 again (lines as ORCA 6.1.1 prints them)
+// ---------------------------------------------------------------------------
+
+const SCAN_HEAD = [
+  "There is 1 parameter to be scanned.",
+  "There will be   3 constrained geometry optimizations.",
+];
+/** @param {number} n */
+function scanBanner(n) {
+  return ["         *               RELAXED SURFACE SCAN STEP   " + n + "               *"];
+}
+const OPT_DONE = ["                                *** OPTIMIZATION RUN DONE ***"];
+
+test("a scan point's cycles do not overwrite the previous point's chart", function () {
+  const g = new SCFGraph.GeoTracker();
+  feed(g, SCAN_HEAD);
+  feed(g, scanBanner(1));
+  feed(g, geoCycleBlock(1, fiveRows("0.0140000000"), 10));
+  feed(g, geoCycleBlock(2, fiveRows("0.0100000000"), 10));
+  feed(g, geoCycleBlock(3, fiveRows("0.0050000000"), 10));
+  feed(g, OPT_DONE);
+  feed(g, scanBanner(2));
+  feed(g, geoCycleBlock(1, fiveRows("0.0200000000"), 20));
+  assert.strictEqual(g.scanStep, 2);
+  assert.strictEqual(g.scanTotal, 3);
+  assert.strictEqual(g.steps.length, 1, "the chart is the current point's");
+  assert.strictEqual(g.steps[0].maxGrad, 0.02, "point 2's cycle 1, not point 1's");
+  assert.strictEqual(g.totalCycles(), 4, "three cycles of point 1 plus one of point 2");
+});
+
+test("a finished scan point is not the finished run", function () {
+  const g = new SCFGraph.GeoTracker();
+  feed(g, SCAN_HEAD);
+  feed(g, scanBanner(1));
+  feed(g, geoCycleBlock(1, fiveRows("0.0140000000"), 10));
+  feed(g, OPT_DONE);
+  assert.strictEqual(g.done, false);
+  const p1 = g.progress();
+  assert.ok(Math.abs(p1 - 1 / 3) < 1e-9, "one point of three, got " + p1);
+  feed(g, scanBanner(2)); feed(g, geoCycleBlock(1, fiveRows("0.0140000000"), 10)); feed(g, OPT_DONE);
+  feed(g, scanBanner(3)); feed(g, geoCycleBlock(1, fiveRows("0.0140000000"), 10));
+  assert.ok(g.progress() < 1);
+  feed(g, OPT_DONE);
+  assert.strictEqual(g.done, true, "the last point finishing is the run finishing");
+  assert.strictEqual(g.progress(), 1);
+});
+
+test("the same scan banner seen twice is not a new point", function () {
+  const g = new SCFGraph.GeoTracker();
+  feed(g, SCAN_HEAD);
+  feed(g, scanBanner(1));
+  feed(g, geoCycleBlock(1, fiveRows("0.0140000000")));
+  feed(g, scanBanner(1));
+  assert.strictEqual(g.steps.length, 1);
+});
+
+test("a scan's ETA is the points left at the mean point time, once one has finished", function () {
+  const g = new SCFGraph.GeoTracker();
+  feed(g, SCAN_HEAD);
+  feed(g, scanBanner(1));
+  feed(g, geoCycleBlock(1, fiveRows("0.0140000000"), 30));
+  assert.strictEqual(g.estimateETA(), null, "no point finished yet: nothing to go on");
+  feed(g, geoCycleBlock(2, fiveRows("0.0100000000"), 30));
+  feed(g, OPT_DONE);
+  feed(g, scanBanner(2));
+  feed(g, geoCycleBlock(1, fiveRows("0.0140000000"), 20));
+  const eta = g.estimateETA();
+  assert.ok(eta, "an estimate once point 1 has finished");
+  // point 1 took 60 s: point 3 is 60 s, point 2 has spent 20 of its 60
+  assert.strictEqual(Math.round(eta.etaMs / 1000), 100);
+  assert.strictEqual(eta.remainingSteps, null);
+  assert.strictEqual(eta.remainingPoints, 2);
+});
+
+test("an ordinary optimization is untouched by the scan bookkeeping", function () {
+  const g = new SCFGraph.GeoTracker();
+  feed(g, geoCycleBlock(1, fiveRows("0.0140000000")));
+  feed(g, geoCycleBlock(2, fiveRows("0.0100000000")));
+  assert.strictEqual(g.scanTotal, 0);
+  assert.strictEqual(g.totalCycles(), 2);
+  feed(g, OPT_DONE);
+  assert.strictEqual(g.done, true);
+});
+
 // ---------- summary ----------
 console.log("");
 console.log(passed + " passed, " + failed + " failed");
