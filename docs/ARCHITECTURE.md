@@ -236,7 +236,19 @@ fallbacks, which is the thing to keep straight: the covalent table (Cordero
 GENEROUSLY — a missed bond draws a molecule as dust), and the van der Waals
 table (Bondi/Mantina for the main group; covalent + 0.4 Å as a stated
 convention for the d/f blocks) decides how big to draw an atom (an unknown
-element looks ORDINARY — carbon). The ball's one floor is `stickPx * 0.62`,
+element looks ORDINARY — carbon). The covalent rule reads only a structure
+that stands on its own (the builder's box): anything a run produced is drawn
+with the bonds of the structure it started from. `setAtoms(atoms,
+{bondsFrom: [...]})` takes reference structures in order of preference, and the
+first that is the same molecule (same elements, same order) decides what is
+bonded — the calculation's input (`NB.inputAtoms`), else the set's first
+frame. Drawn by distance, a relaxed scan pulling two atoms to 1.5 Å closed a
+ring the run never made, and a bond stretched past 1.25 × the radii vanished;
+with a reference neither happens, at the price that a bond a run really breaks
+stays drawn. The builder keeps its box's bonds across the moves it makes
+itself (Apply, Apply all, a push — `showGeom(true)`) and across a re-render
+(the reference is `st.bondRef`, not the stage's), and reads what the user
+types or pastes by distance again. The ball's one floor is `stickPx * 0.62`,
 stated against the stick width rather than as a pixel count: a flat 2.5px
 minimum clamps the SMALL atoms first, so it erased the H-vs-C distinction
 exactly where the molecule is large against its box — every cell thumbnail of a
@@ -1061,7 +1073,13 @@ the same turns (`_hinge` once per constraint, then `_turn` in place) in rounds
 until all hold to `_ALL_TOL` (0.01° / 0.0001 Å), and refuses a set that
 cannot hold together after `_ALL_ROUNDS`. A planar centre is the slow case:
 the targets only just fit, so it takes about 2500 rounds (0.03 s on 16
-atoms). `measure`'s dihedral is **IUPAC-signed**, matching ORCA and
+atoms). The hinge is found on the bonds the builder's stage **draws** (the
+slots' third argument, `bonds_json`; `_bond_list_of`), not on the Applied
+coordinates' distances: an Apply that brings two atoms close made the distance
+rule see a bond and a ring, and every later Apply on that centre was refused as
+"in a ring". A straight angle (180°) Applied to its own value is a no-op, and
+bent elsewhere turns in the plane of the nearest atom off the line
+(`_bend_plane`). `measure`'s dihedral is **IUPAC-signed**, matching ORCA and
 `MOL.dihedral`: the editor it was revived from had the sign reversed, and an
 Apply to +90 read back as −90 (pinned by
 `test_the_dihedral_sign_is_iupacs_like_orcas_and_the_stages`). If a future

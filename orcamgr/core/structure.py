@@ -602,7 +602,26 @@ def _side_for(adj, idx):
     return side
 
 
-def set_internal(atoms, indices, value: float):
+def _bond_list_of(atoms, bond_list):
+    """The bonds an edit hinges on: the caller's (index pairs; malformed or
+    out-of-range ones dropped), else perceived from `atoms` by distance. The
+    builder sends the bonds its stage draws, because two atoms an earlier Apply
+    brought close read as a bond by distance, closing a ring the molecule does
+    not have ("cannot open the angle without bending the ring")."""
+    if bond_list is None:
+        return bonds(atoms)
+    out = set()
+    for b in bond_list:
+        try:
+            i, j = sorted((int(b[0]), int(b[1])))
+        except (TypeError, ValueError, IndexError):
+            continue
+        if 0 <= i < j < len(atoms):
+            out.add((i, j))
+    return sorted(out)
+
+
+def set_internal(atoms, indices, value: float, bond_list=None):
     """Move atoms rigidly so the coordinate `indices` names reads `value`.
     Returns (new atom list, set of moved indices).
 
@@ -610,8 +629,8 @@ def set_internal(atoms, indices, value: float):
     a ring moves O and H, not the ring - whichever end the drag happened to
     start from. A coordinate reads the same in either direction (B i j = B j i,
     A i j k = A k j i, D i j k l = D l k j i), so the choice is free. The atom
-    order is preserved by construction."""
-    idx, side = _hinge(_adjacency(len(atoms), bonds(atoms)), indices)
+    order is preserved by construction. `bond_list`: see _bond_list_of."""
+    idx, side = _hinge(_adjacency(len(atoms), _bond_list_of(atoms, bond_list)), indices)
     out = list(atoms)
     _turn(out, idx, side, value)
     return out, side
@@ -641,6 +660,23 @@ def _hinge(adj, indices):
     return options[0][1], options[0][2]
 
 
+def _bend_plane(atoms, idx):
+    """The axis a straight angle (i-j-k at 180°) bends about. Every plane holds
+    the line, so take the one through the nearest atom off it (the molecule's
+    own plane, where it has one), else any."""
+    p1 = _pos(atoms[idx[1]])
+    line = _unit(_sub(_pos(atoms[idx[0]]), p1))
+    off = []
+    for k, a in enumerate(atoms):
+        v = _sub(_pos(a), p1)
+        c = _cross(line, v)
+        if k not in idx and _norm(c) > 1e-3:
+            off.append((_norm(v), c))
+    if off:
+        return min(off, key=lambda o: o[0])[1]
+    return _cross(line, (1.0, 0.0, 0.0) if abs(line[0]) < 0.9 else (0.0, 1.0, 0.0))
+
+
 def _turn(atoms, idx, side, value: float):
     """Move `side` of the list `atoms` IN PLACE, rigidly, so the coordinate
     `idx` (as _hinge ordered it) reads `value`."""
@@ -654,12 +690,13 @@ def _turn(atoms, idx, side, value: float):
             return _add(q, shift)
     else:
         if n == 3:
+            delta = math.radians(value - measure(atoms, idx))
+            if abs(delta) < 1e-9:
+                return      # already there (a 180° angle has no plane to turn in)
             axis_raw = _cross(_sub(p[0], p[1]), _sub(p[2], p[1]))
             if _norm(axis_raw) < 1e-8:
-                raise StructureError("Those three atoms are in a straight line, "
-                                     "so the angle has no plane to open in.")
+                axis_raw = _bend_plane(atoms, idx)
             axis = _unit(axis_raw)
-            delta = math.radians(value - measure(atoms, idx))
         else:
             # Seen from j looking at k, a right-handed turn about j->k moves
             # the back bond clockwise, so it INCREASES the IUPAC dihedral.
@@ -760,7 +797,7 @@ def _moved_text(text, rows, atoms, moved_atoms, side):
     return xyz, sorted(side), warnings
 
 
-def apply_constraint_target(text: str, kind: str, indices, value) -> dict:
+def apply_constraint_target(text: str, kind: str, indices, value, bond_list=None) -> dict:
     """The coordinate block `text` with a constraint's atoms moved to its
     target - the builder's *Apply* button.
 
@@ -781,7 +818,7 @@ def apply_constraint_target(text: str, kind: str, indices, value) -> dict:
     idx, v = t
     try:
         before = measure(atoms, idx)
-        moved_atoms, side = set_internal(atoms, idx, v)
+        moved_atoms, side = set_internal(atoms, idx, v, bond_list)
     except StructureError as e:
         out["error"] = str(e)
         return out
@@ -802,7 +839,7 @@ _ALL_TOL = {2: 1e-4, 3: 0.01, 4: 0.01}
 _ALL_ROUNDS = 8000
 
 
-def apply_constraint_targets(text: str, constraints) -> dict:
+def apply_constraint_targets(text: str, constraints, bond_list=None) -> dict:
     """The coordinate block `text` with EVERY constraint that has a target
     moved to it at once - the builder's *Apply all*.
 
@@ -833,7 +870,7 @@ def apply_constraint_targets(text: str, constraints) -> dict:
     if not targets:
         out["error"] = "No constraint has a target to move to."
         return out
-    adj = _adjacency(len(atoms), bonds(atoms))
+    adj = _adjacency(len(atoms), _bond_list_of(atoms, bond_list))
     try:
         plan = [(*_hinge(adj, idx), v) for idx, v in targets]
     except StructureError as e:

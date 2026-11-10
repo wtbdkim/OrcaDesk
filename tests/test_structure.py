@@ -446,6 +446,59 @@ def test_apply_all_skips_what_has_no_target():
     assert not r["ok"] and "No constraint has a target" in r["error"]
 
 
+# H-C#N, straight (H1-C0-N2 at 180), with a Cl off the line to set a plane
+HCN = ("C  0.0000  0.0000  0.0000\n"
+       "H -1.0650  0.0000  0.0000\n"
+       "N  1.1560  0.0000  0.0000\n"
+       "Cl 0.0000  3.0000  0.0000")
+
+
+def test_a_straight_angle_already_at_its_target_is_left_alone():
+    """An angle Applied to 180 lies on a line, which has no plane to turn in;
+    the check for that ran before asking whether anything had to turn, so the
+    same target applied again — and every later Apply all holding it — failed
+    with "no plane to open in" though no atom needed to move."""
+    r = apply_constraint_target(HCN, "A", [1, 0, 2], 180.0)
+    assert r["ok"], r["error"]
+    assert r["moved"] == [] and r["xyz"] == HCN
+    r = apply_constraint_targets(HCN, [{"kind": "A", "atoms": [1, 0, 2], "value": 180.0},
+                                      {"kind": "B", "atoms": [0, 2], "value": 1.20}])
+    assert r["ok"], r["error"]
+    assert r["after"] == [pytest.approx(180.0, abs=0.02), pytest.approx(1.20, abs=1e-4)]
+
+
+def test_a_straight_angle_bends_in_the_plane_of_the_nearest_atom_off_it():
+    r = apply_constraint_target(HCN, "A", [1, 0, 2], 150.0)
+    assert r["ok"], r["error"]
+    assert r["after"] == pytest.approx(150.0, abs=1e-3)
+    moved = parse_block(r["xyz"])
+    # the Cl beside the line set the plane: everything stays at z = 0
+    assert all(abs(a.z) < 1e-6 for a in moved)
+
+
+# C0-C1-C2-O3, a chain whose O an earlier Apply left 1.4 A from C0: by
+# distance that is a C-O bond, and C0..O3 a four-membered ring
+CLOSED = ("C  0.0000  0.0000  0.0000\n"
+          "C  1.5400  0.0000  0.0000\n"
+          "C  1.5400  1.5400  0.0000\n"
+          "O  0.1000  1.4000  0.0000")
+
+
+def test_an_apply_hinges_on_the_bonds_it_is_given_not_on_new_contacts():
+    """The builder sends the bonds its stage draws (those of the structure
+    before its Applies). Perceived again from the Applied coordinates, a
+    contact an Apply made reads as a bond, and the next Apply on that angle was
+    refused as one "in a ring" the molecule does not have."""
+    r = apply_constraint_target(CLOSED, "A", [0, 1, 2], 100.0)
+    assert not r["ok"] and "in a ring" in r["error"]
+    chain = [[0, 1], [1, 2], [2, 3]]
+    r = apply_constraint_target(CLOSED, "A", [0, 1, 2], 100.0, chain)
+    assert r["ok"], r["error"]
+    assert r["after"] == pytest.approx(100.0, abs=1e-3)
+    r = apply_constraint_targets(CLOSED, [{"kind": "A", "atoms": [0, 1, 2], "value": 100.0}], chain)
+    assert r["ok"], r["error"]
+
+
 def test_the_dihedral_sign_is_iupacs_like_orcas_and_the_stages():
     """Looking from C1 down to O, C2 points up and H points left: the front
     bond turns ANTI-clockwise onto the back one, which IUPAC (and ORCA, and

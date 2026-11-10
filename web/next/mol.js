@@ -167,6 +167,29 @@ var MOL = {};
   }
   MOL.bonds = bonds;
 
+  /** Whether two atom lists are the same molecule — the same elements in the
+   *  same order — so that one's bonds can stand for the other's.
+   *  @param {any[]|null} a @param {any[]|null} b */
+  function sameMolecule(a, b) {
+    return !!a && !!b && a.length > 0 && a.length === b.length
+      && a.every((x, i) => cap(x.el) === cap(b[i].el));
+  }
+  MOL.sameMolecule = sameMolecule;
+
+  /** @type {WeakMap<any[], [number, number][]>} each reference's bonds, once */
+  const _refBonds = new WeakMap();
+  /** The bonds of the first reference that is the same molecule as `atoms`,
+   *  or null to read them off `atoms` itself. A frame, a scan point or a final
+   *  geometry is the molecule the run started from, moved: by distance, a scan
+   *  pulling two atoms together closed a ring the run never made, and a
+   *  stretched bond vanished. @param {any[]} atoms @param {(any[]|null)[]} refs */
+  function refBonds(atoms, refs) {
+    const r = refs.find(x => x && x !== atoms && sameMolecule(atoms, x));
+    if (!r) return null;
+    if (!_refBonds.has(r)) _refBonds.set(r, bonds(r));
+    return _refBonds.get(r) || null;
+  }
+
   /** Straight-line distance between two atoms, Å. @param {any} a @param {any} b */
   MOL.distance = function (a, b) {
     return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2);
@@ -370,10 +393,13 @@ var MOL = {};
    *  Cached per atom list, so a frame of a drag is projection and painting
    *  only. @type {WeakMap<any[], any>} */
   const _scenes = new WeakMap();
-  /** @param {any[]} atoms @param {any[]|null} [orders] [i, j, order] triples */
-  function scene(atoms, orders) {
-    if (!orders) { const hit = _scenes.get(atoms); if (hit) return hit; }
-    const bs = bonds(atoms);
+  /** @param {any[]} atoms @param {any[]|null} [orders] [i, j, order] triples
+   *  @param {[number, number][]|null} [given] the bonds to draw (refBonds);
+   *    null reads them off the distances */
+  function scene(atoms, orders, given) {
+    const cache = !orders && !given;
+    if (cache) { const hit = _scenes.get(atoms); if (hit) return hit; }
+    const bs = given || bonds(atoms);
     let cx = 0, cy = 0, cz = 0;
     atoms.forEach(a => { cx += a.x; cy += a.y; cz += a.z; });
     const n = atoms.length || 1;
@@ -393,7 +419,7 @@ var MOL = {};
       return { i: i, j: j, n: order, off: order > 1 ? planeDir(atoms, nb, i, j) : null };
     });
     const sc = { bonds: info, cx: cx, cy: cy, cz: cz, span: span, hasOrders: ord.size > 0 };
-    if (!orders) _scenes.set(atoms, sc);
+    if (cache) _scenes.set(atoms, sc);
     return sc;
   }
 
@@ -1309,15 +1335,18 @@ var MOL = {};
     // stale one clearing the pick the live one just made.
     return {
       /** @param {any[]} a
-       *  @param {{orders?: any[]}} [extra] orders: [i, j, Mayer order] for the
-       *    bonds the run itself analysed, drawn as multiple bonds. Only a
-       *    structure the orders were computed FOR may carry them — a trajectory
-       *    frame is a different geometry. */
+       *  @param {{orders?: any[], bondsFrom?: (any[]|null)[]}} [extra]
+       *    orders: [i, j, Mayer order] for the bonds the run itself analysed,
+       *    drawn as multiple bonds. Only a structure the orders were computed
+       *    FOR may carry them — a trajectory frame is a different geometry.
+       *    bondsFrom: structures to take the bonds from, in order of
+       *    preference — the first that is the same molecule (refBonds) — so a
+       *    moved structure keeps the bonds it started with. */
       setAtoms(a, extra) {
         stopVib();
         atoms = a || [];
         const o = extra && extra.orders && extra.orders.length ? extra.orders : null;
-        sc = scene(atoms, o);
+        sc = scene(atoms, o, refBonds(atoms, (extra && extra.bondsFrom) || []));
         const had = picks.length > 0;
         mark = []; measure = null; chain = null; hilite = []; picks = []; ctrlTap = null; paint();
         // the indices were about the old atoms; the caller's button says so
@@ -1361,7 +1390,9 @@ var MOL = {};
         if (!proj) return null;
         return { atoms: atoms.length,
                  screen: proj.pts.map(p => [Math.round(p.X), Math.round(p.Y),
-                                            Math.round(proj.radOf(p))]) };
+                                            Math.round(proj.radOf(p))]),
+                 // as atom pairs: a picture cannot say which stick is which
+                 bonds: proj.bonds.map(b => [b[0], b[1]]) };
       },
       /** Show a normal mode on this structure, or (null) go back to the
        *  structure itself. `base` is the geometry the mode belongs to and
