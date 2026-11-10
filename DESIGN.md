@@ -2027,6 +2027,9 @@ path sit where the eye compares them.
 
 **17.4v Closing does not throw work away.** A list a window builds up (the
 rail's *Opened files*) is kept across launches until the user closes a row.
+A new calculation's form is a draft: closing it keeps it, the editbar says so
+(*draft · kept when you close it*), and *Start over* (§13.1 confirm) is the
+one way to throw it away.
 
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in

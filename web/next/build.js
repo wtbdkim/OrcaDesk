@@ -122,11 +122,91 @@
    *  so the next new calculation is a blank one. @type {any} */
   let _seed = null;
 
+  /* ---- the new calculation's draft ---------------------------------------
+     A new calculation half typed is kept: closing the builder (×, Cancel,
+     opening another row) does not throw it away, and the next "New
+     calculation" opens where it was left — after a restart too, through the
+     backend's ui_state.json (get_ui_state / set_ui_state; the WebEngine
+     profile is off-the-record, so localStorage would not outlive the app).
+     The draft is what the builder itself works from: readForm's payload
+     (which render() takes as its `calc`) plus the st fields the payload does
+     not carry. Editing a queued calculation never reads or writes it, Add
+     to queue forgets it, and "Start over" forgets it on purpose. */
+  const DRAFT_KEY = "build.draft";
+  const DRAFT_V = 1;
+  /** the draft: undefined until read from disk, null when there is none @type {any} */
+  let _draft;
+  /** what was last sent to disk, so a write that changes nothing is skipped */
+  let _draftJson = "";
+  let _draftWarned = false;
+  /** The open new-calculation builder's autosave, or null: one builder is open
+   *  at a time. `save` writes now, `later` after a pause in the typing, `end`
+   *  stops it for good; `st` is the builder state it saves.
+   *  @type {null|{st: any, save: () => void, later: () => void, end: () => void}} */
+  let _session = null;
+
+  /** @returns {Promise<any>} the stored draft, or null */
+  async function loadDraft() {
+    if (_draft !== undefined) return _draft;
+    const r = await NB.call("get_ui_state", DRAFT_KEY);
+    const v = r && r.ok ? r.value : null;
+    const d = v && typeof v === "object" && v.v === DRAFT_V && v.payload ? v : null;
+    if (_draft === undefined) { _draft = d; _draftJson = d ? JSON.stringify(d) : ""; }
+    return _draft;
+  }
+  /** Keep a draft (null forgets it). The copy in memory serves the session
+   *  whatever the disk says; a write that did not land is said once.
+   *  @param {any} d */
+  function putDraft(d) {
+    _draft = d;
+    const json = d ? JSON.stringify(d) : "";
+    if (json === _draftJson) return;
+    _draftJson = json;
+    NB.call("set_ui_state", DRAFT_KEY, json || "null").then(r => {
+      if (r && r.ok) return;
+      if (!_draftWarned) {
+        _draftWarned = true;
+        NB.toast("The draft could not be saved to disk; it is kept until ORCAdesk closes"
+                 + (r && r.error ? ` (${r.error})` : "") + ".", "warn");
+      }
+    });
+  }
+  /** Forget the draft and stop the open builder from writing it back. */
+  function forgetDraft() {
+    if (_session) _session.end();
+    _session = null;
+    putDraft(null);
+  }
+  /** The builder's draft as it stands: the payload it would add, and what of
+   *  st the payload leaves out — the coordinates even under "From another
+   *  calculation", the .inp text while another backend is shown, the
+   *  constraints and scan as picked, and each backend's own settings.
+   *  @param {HTMLElement} body @param {any} st */
+  function draftOf(body, st) {
+    const p = readForm(body, st, null);
+    const xyzEl = /** @type {any} */ (body.querySelector('[data-f="xyz"]'));
+    const rawEl = /** @type {any} */ (body.querySelector('[data-f="rawtext"]'));
+    return {
+      v: DRAFT_V,
+      payload: p,
+      raw: !!st.raw,
+      rawText: st.raw && rawEl ? rawEl.value : st.rawText,
+      xyz: xyzEl ? xyzEl.value : st.xyz,
+      cons: st.cons,
+      scan: st.scan,
+      pickMode: st.pickMode,
+      cfgBy: Object.assign({}, st.cfgBy, { [st.backend]: p.config }),
+      kindBy: Object.assign({}, st.kindBy, { [st.backend]: p.kind }),
+    };
+  }
+
   /** Open the builder on a calculation, or on a new one with "". Closing is
    *  open(null).
    *  @param {string|null} target
    *  @param {any} [seed] for a new one: fields it opens already carrying */
   function open(target, seed) {
+    // leaving the new calculation, however it is left: keep what it holds
+    if (_target === "" && _session) _session.save();
     // a seeded open is never a toggle -- clicking "New from this" on a second
     // calculation while the builder is open must move it, not close it
     _target = (_target === target && !seed) ? null : target;
@@ -165,15 +245,48 @@
     el.innerHTML = `
       <div class="editbar">
         <b>${calc ? "Editing " + NB.esc(calc.name) : "New calculation"}</b>
-        ${calc ? "<span>changes apply to the queued calculation</span>" : ""}
+        ${calc ? "<span>changes apply to the queued calculation</span>"
+               : `<span data-x="draftnote" hidden>draft · kept when you close it</span>`}
         <span class="sp"></span>
+        ${calc ? "" : `<button class="btn btn-sm btn-ghost" type="button" data-act="startover" hidden
+                title="Clear the form and forget the draft">Start over</button>`}
         <button class="iconbtn ebclose" type="button" data-act="cancel"
                 aria-label="Close the builder" title="Close">×</button>
       </div>
       <div class="stubbody"><p class="hint" style="margin:0">Loading options…</p></div>`;
     el.querySelector('[data-act="cancel"]').addEventListener("click", () => open(null));
-    mount(el, calc, () => open(null));
+    const close = () => open(null);
+    if (!calc) {
+      // every edit of the form passes through one of these on its way: typing,
+      // a picker, a button, a pick on the stage. The save itself waits for a
+      // pause and skips a draft that did not change.
+      const body = /** @type {HTMLElement} */ (el.querySelector(".stubbody"));
+      ["input", "change", "click", "pointerup", "keyup"].forEach(t =>
+        body.addEventListener(t, () => { if (_session) _session.later(); }));
+      el.querySelector('[data-act="startover"]').addEventListener("click", () => {
+        NB.confirm("Start over",
+          "The form is cleared and the draft forgotten. This cannot be undone.",
+          "Clear", () => {
+            const old = _session && _session.st;
+            if (old && old.stage) { old.stage.destroy(); old.stage = null; }
+            forgetDraft();
+            _seed = null;
+            mount(el, null, close);
+          });
+      });
+    }
+    mount(el, calc, close);
     return el;
+  }
+
+  /** The editbar's word on the draft: this form is one, it outlives a close,
+   *  and Start over is how to drop it.
+   *  @param {HTMLElement} el the builder cell @param {boolean} has */
+  function sayDraft(el, has) {
+    const n = /** @type {HTMLElement|null} */ (el.querySelector('[data-x="draftnote"]'));
+    const b = /** @type {HTMLElement|null} */ (el.querySelector('[data-act="startover"]'));
+    if (n) n.hidden = !has;
+    if (b) b.hidden = !has;
   }
 
   /** @param {HTMLElement} el @param {any} summary @param {() => void} close */
@@ -195,8 +308,93 @@
     // name as its geometry source -- the same reference an opt->freq handoff
     // uses, resolved to the optimized geometry at run time. It is a seed, not
     // an edit: nothing is saved until Add.
-    if (!calc && _seed) { calc = _seed; _seed = null; }
-    const st = {
+    const seeded = !calc && !!_seed;
+    if (seeded) { calc = _seed; _seed = null; }
+    // A new calculation that is not seeded opens on the draft, if there is
+    // one. A seed is a new calculation asked for from a row, so it wins; it
+    // replaces the draft only once something in it is changed.
+    /** @type {any} */
+    let dr = null;
+    if (!summary && !seeded) {
+      dr = await loadDraft();
+      if (dr) calc = dr.payload;
+    }
+    if (!el.isConnected) return;   // closed while the draft was read
+    const st = buildState(summary, calc, dr);
+    if (!st) {
+      // a draft this version cannot read is not worth a broken form
+      forgetDraft();
+      mount(el, summary, close);
+      return;
+    }
+    if (st.backend === "dft" && !KINDS[st.kind]) st.kind = "general";
+    if (st.backend === "dft" && st.scan.length && KINDS[st.kind].scan && !dr) st.pickMode = "scan";
+    if (_session) _session.end();
+    _session = null;
+    render(body, st, calc, close);
+    if (!st.editing) autosave(el, body, st, !!dr);
+  }
+
+  /** Save the new calculation as it is typed (debounced) and when it is left
+   *  (open() calls save). The form as it opened is the baseline: a blank or
+   *  seeded form left untouched writes nothing — so a "New from this" that is
+   *  never changed does not cost the draft — and one typed into and then
+   *  emptied again forgets what it wrote.
+   *  @param {HTMLElement} el the cell @param {HTMLElement} body
+   *  @param {any} st @param {boolean} restored */
+  function autosave(el, body, st, restored) {
+    const base = JSON.stringify(draftOf(body, st));
+    /** whether the draft on disk is this form (restored, or written by it) */
+    let mine = restored;
+    let dead = false;
+    /** @type {any} */
+    let timer = 0;
+    const save = () => {
+      clearTimeout(timer);
+      if (dead || !body.isConnected) return;
+      const d = draftOf(body, st);
+      if (!restored && JSON.stringify(d) === base) { if (mine) putDraft(null); mine = false; }
+      else { putDraft(d); mine = true; }
+      sayDraft(el, mine);
+    };
+    _session = {
+      st: st,
+      save: save,
+      later: () => { if (dead) return; clearTimeout(timer); timer = setTimeout(save, 400); },
+      end: () => { dead = true; clearTimeout(timer); },
+    };
+    st.autosave = _session.later;
+    sayDraft(el, mine);
+  }
+
+  /** The builder's working state for a calculation being edited, a seed, a
+   *  restored draft or nothing. null when a draft does not hold together.
+   *  @param {any} summary @param {any} calc @param {any} dr the draft, or null */
+  function buildState(summary, calc, dr) {
+    try {
+      const st = newState(summary, calc);
+      if (dr) {
+        st.raw = !!dr.raw;
+        st.rawText = String(dr.rawText || "");
+        st.xyz = String(dr.xyz || "");
+        st.cons = (dr.cons || []).map(c => ({ kind: String(c.kind), atoms: c.atoms.map(Number),
+                                             value: c.value == null ? null : Number(c.value) }));
+        st.scan = (dr.scan || []).slice(0, 1).map(c => ({ kind: String(c.kind), atoms: c.atoms.map(Number),
+          start: c.start == null ? null : Number(c.start), end: c.end == null ? null : Number(c.end),
+          steps: c.steps == null ? null : Number(c.steps) }));
+        st.pickMode = dr.pickMode === "scan" ? "scan" : "cons";
+        st.cfgBy = dr.cfgBy && typeof dr.cfgBy === "object" ? dr.cfgBy : {};
+        st.kindBy = dr.kindBy && typeof dr.kindBy === "object" ? dr.kindBy : {};
+      }
+      return st;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** @param {any} summary @param {any} calc */
+  function newState(summary, calc) {
+    return {
       editing: summary ? summary.name : "",
       raw: calc ? !!calc.is_raw : false,
       kind: calc ? calc.kind : "opt",
@@ -227,10 +425,10 @@
       cfgBy: {},
       /** @type {Record<string, string>} */
       kindBy: {},
+      /** a new calculation's draft save, after a re-render (autosave)
+       *  @type {null|(() => void)} */
+      autosave: null,
     };
-    if (st.backend === "dft" && !KINDS[st.kind]) st.kind = "general";
-    if (st.backend === "dft" && st.scan.length && KINDS[st.kind].scan) st.pickMode = "scan";
-    render(body, st, calc, close);
   }
 
   /** @param {HTMLElement} el @param {any} st @param {any} calc @param {() => void} close */
@@ -507,6 +705,9 @@
       </div>`;
 
     wire(el, st, calc, close);
+    // a switch (backend, kind, Guided <-> .inp) can end in an await, past the
+    // click's own save, so the form it lands on is saved from here
+    if (st.autosave) st.autosave();
   }
 
   /** @param {HTMLElement} el @param {any} st @param {any} calc @param {() => void} close */
@@ -832,6 +1033,8 @@
         : await NB.call("add_calc", JSON.stringify(payload));
       if (r && r.error) { NB.fail(r.error); return; }
       if (r && r.ok === false) { NB.fail(r.error || "The queue refused that calculation."); return; }
+      // the draft has become a calculation: the next new one starts blank
+      if (!st.editing) forgetDraft();
       NB.toast(st.editing ? `"${payload.name}" saved.`
                           : `"${payload.name}" added to the queue.`, "ok");
       // accepted DESPITE this - said, not refused (store.constraint_warning)
