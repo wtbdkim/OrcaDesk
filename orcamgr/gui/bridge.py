@@ -17,8 +17,9 @@ import json
 import re
 import sys
 import threading
+from collections import OrderedDict
+from types import SimpleNamespace
 import time
-from collections import deque
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSlot
@@ -49,6 +50,11 @@ from ..core.structure import (
 from ..core.hessfile import HessError, read_hess
 from ..core.normalmodes import modes_for_report, place_on, read_out_modes
 from ..core.parser import parse_file
+from ..core.replay import (  # noqa: F401  (the patterns: tests read them here)
+    ReplayCache, graph_lines_of, _GRAPH_LINES_MAX, _G_CYCLE, _G_ITER, _G_TABLE, _G_ITEM,
+    _G_DASHES, _G_DOTS, _G_DONE, _G_POST, _CREST_GRAPH, _G_ITERTIME, _G_SCAN,
+    _IRC_GRAPH, _IRC_ROW, _PHASE_GRAPH, _G_META,
+)
 from ..core.resources import ResourceBudget, auto_cores, auto_ram_mb
 from ..state.store import (
     QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory,
@@ -89,95 +95,6 @@ _WORKSPACE_SCAN_MAX = 500
 _CREST_ENSEMBLE = {"crest_conformers.xyz", "crest_best.xyz"}
 
 
-# Line patterns the SCF/geo graph trackers care about (mirror of web/scf_graph.js
-# ITER_RE / GEO_RE / GEO_TABLE_RE / GEO_ITEM_RE). get_graph_lines() filters the
-# .out to just these so the UI can rebuild the FULL graph history on reattach,
-# without re-streaming the whole file through the capped log buffer.
-_G_CYCLE = re.compile(r"GEOMETRY OPTIMIZATION CYCLE\s+\d+", re.I)
-_G_ITER = re.compile(r"^\s*\d+\s+-?\d+\.\d+\s+-?\d+\.\d+[eE][+-]?\d+")
-_G_TABLE = re.compile(r"\|Geometry convergence\|", re.I)
-_G_ITEM = re.compile(
-    r"(Energy change|RMS gradient|MAX gradient|RMS step|MAX step)\s+-?[\d.]+\s+[\d.]+\s+(YES|NO)", re.I)
-_G_DASHES = re.compile(r"-{5,}")
-_G_DOTS = re.compile(r"\.{5,}")
-# optimization-finished + post-opt-stage markers, so a reattach-seeded graph also
-# flips to 100% / "running frequencies…" (mirror of scf_graph.js OPT_DONE_RE / POST_OPT_RE).
-# _G_POST is case-SENSITIVE like its JS mirror: the real markers are ORCA's
-# UPPERCASE section banners, while every output (opt-only included) carries
-# mixed-case look-alikes that must not match (header credits "pre 5.0 version
-# of the SCF Hessian"; property echo "Properties with geometric perturbations:",
-# "SCF Hessian ... NO").
-_G_DONE = re.compile(r"\*\*\*\s*OPTIMIZATION RUN DONE\s*\*\*\*|THE OPTIMIZATION HAS CONVERGED|HURRAY", re.I)
-_G_POST = re.compile(
-    r"VIBRATIONAL FREQUENCIES|ORCA SCF RESPONSE|GEOMETRIC PERTURBATIONS|CP-?SCF DRIVER|SCF HESSIAN|ANALYTICAL FREQUENCIES|NUMERICAL FREQUENCIES")
-# CREST iMTD-GC progress markers (mirror of web/scf_graph.js CrestTracker regexes)
-# so get_graph_lines can reseed a reattached CREST run's phase/energy graph. These
-# never appear in an ORCA .out (and vice versa), so matching them is additive/safe.
-_CREST_GRAPH = re.compile(
-    r"CREGEN>\s*E lowest|structures?\s+remain within|Meta-Dynamics Iteration|"
-    r"\(\d+\s*MTDs\)|\*MTD\s+\d+\s+completed successfully|CREST terminated normally|"
-    r"Change in topology detected|safety termination of CREST|"
-    r"number of unique conformers for further calc|Initial Geometry Optimization|"
-    r"iMTD-GC SAMPLING|Additional regular MDs|Final Geometry Optimization")
-# Frequency (numerical + analytical CP-SCF) and TD-DFT phase-chain markers —
-# the mirror of web/progress_panels.js (A_STAGES / TD_STAGES and their
-# counters), so a reattached run rebuilds its STEP PANEL too, not just the
-# SCF/geometry curve: without these a restart mid-Hessian showed an empty
-# Graph tab until the next stage banner happened to stream by (hours, on a
-# large molecule). The stage banners are matched case-SENSITIVELY for the
-# same reason as _G_POST (ORCA prints them uppercase, and mixed-case
-# look-alikes appear in every output); the counter lines accept ORCA's own
-# capitalization, mirroring the /i on their JS regexes.
-# ORCA's own per-cycle wall time. GeoTracker reads it as the PRIMARY source for
-# the "~N s/step" figure and the ETA (its Date.now fallback drops gaps under
-# 500 ms, so a burst replay yields nothing) — and this filter mirrored every
-# other tracker regex but not this one, so a graph re-seeded from disk after a
-# restart came back without the timing it had before the restart.
-_G_ITERTIME = re.compile(r"Time for complete geometry iter\s*:\s*[\d.]+\s*s", re.I)
-# A relaxed surface scan's point count and point banners (mirror of
-# SCAN_TOTAL_RE / SCAN_STEP_RE in web/scf_graph.js).
-_G_SCAN = re.compile(r"RELAXED SURFACE SCAN STEP\s+\d+|"
-                     r"There will be\s+\d+\s+constrained geometry optimizations")
-# An IRC's path, mirror of web/progress_panels.js IrcTracker: the settings echo
-# (MaxIter, which directions), each direction's banner and thresholds, its
-# per-step rows (exactly five numbers - an SCF row has seven or more) and the
-# convergence / summary markers. Without these a reopened IRC cell drew the
-# last single SCF instead of the path walked so far.
-_IRC_GRAPH = re.compile(
-    r"Intrinsic Reaction Coordinate Calculation|Max\.\s*no of cycles\s+MaxIter|"
-    r"^Direction\s+\.+|\*\s+(?:FORWARD|BACKWARD) IRC\s+\*|^Convergence thresholds\s|"
-    r"THE IRC HAS CONVERGED|IRC PATH SUMMARY")
-_IRC_ROW = re.compile(
-    r"^\s*\d+\s+-?\d+\.\d+\s+-?\d+\.\d+\s+\d+\.\d+\s+\d+\.\d+\s*$")
-
-_PHASE_GRAPH = re.compile(
-    # "displaced geometry K (of N)" is what ORCA 6.1.1 prints; the old
-    # "displacement K / N" matched nothing, so a graph rebuilt after a restart
-    # was as blank as the live one. Mirrors DISP_RE in web/progress_panels.js.
-    r"ORCA NUMERICAL FREQUENCIES|[Nn]umber of displacements|"
-    r"displaced geometry\s+\d+\s*\(\s*of\s+\d+\s*\)|"
-    r"\bNORMAL MODES\b|\bIR SPECTRUM\b|THERMOCHEMISTRY AT\s+[\d.]+|"
-    r"Analytic(?:al)? Hessian|[Nn]umber of perturbations|\d+\s*/\s*\d+\s+done|"
-    r"\bBATCH\s+\d+\s*:\s*Atoms\s+\d+\s*-\s*\d+|"
-    r"TD-DFT XC SETUP|RPA-DIAGONALIZATION|DAVIDSON-DIAGONALIZATION|"
-    r"TD-DFT(?:/TDA)? EXCITED STATES|ABSORPTION SPECTRUM VIA TRANSITION|"
-    r"CIS/TD-DFT TOTAL ENERGY|Number of roots to be determined|"
-    r"\*{4}\s*Iteration\s+\d+\s*\*{4}|ORCA TERMINATED NORMALLY|"
-    # what tells a pre-step Hessian (OptTS Calc_Hess, IRC InitHess) from a
-    # frequency job, and what clears it: mirrors OPT_DONE_RE / IRC_START_RE /
-    # PHASE_RESET_RE in progress_panels.js
-    r"FINAL ENERGY EVALUATION AT THE STATIONARY POINT|"
-    r"Intrinsic Reaction Coordinate Calculation|FORWARD IRC|BACKWARD IRC")
-# The job meta the step panel's header line shows (method · cores): ORCA's own
-# echo of the input file (mirror of progress_panels.js _grabOrcaMeta).
-_G_META = re.compile(r"^\|\s*\d+>\s*(?:!|%pal\s+nprocs\b)")
-# get_graph_lines keeps only this many most-recent relevant lines, per KIND of
-# history (~130 full opt cycles' worth), so a pathological many-thousand-cycle
-# .out can't balloon the payload/JSON string. The two kinds are counted apart
-# so neither can evict the other: an opt_freq's per-nucleus Hessian batches
-# must not push the optimization's cycles out of the window, and the freq
-# chain must keep the boot banner that activates it.
-_GRAPH_LINES_MAX = 2000
 # get_output_tail bounds: at most this many lines, read as one block sized by
 # a deliberately generous bytes-per-line estimate — a real 78,846-line ORCA
 # opt+freq output averages 61 bytes/line, so 400 leaves room for the widest
@@ -222,83 +139,6 @@ def tail_lines(path, max_lines: int) -> "tuple[list[str], bool]":
     return lines[-n:], (start > 0 or len(lines) > n)
 
 
-def graph_lines_of(out_path) -> "list[str]":
-    """The lines of an ORCA .out the progress trackers are built from, in
-    file order: what Bridge.get_graph_lines replays (see there). Module
-    level so the filter can be tested without a Bridge."""
-    conv: deque[tuple[int, str]] = deque(maxlen=_GRAPH_LINES_MAX)   # SCF/geo/CREST curve
-    phase: deque[tuple[int, str]] = deque(maxlen=_GRAPH_LINES_MAX)  # freq/TD-DFT step chain
-    # a relaxed surface scan's skeleton: the point count, each point's
-    # banner, and every cycle's banner and wall time. Its own window,
-    # because the SCF rows of the last few points fill the curve's 2000
-    # lines long before the header at the top of the file: without the
-    # header and the banners the tracker cannot tell the points apart,
-    # and each point's cycle 1 overwrote the one before. Only once the
-    # header has been seen, so an ordinary optimization reads as it did.
-    scan: deque[tuple[int, str]] = deque(maxlen=_GRAPH_LINES_MAX)
-    scanning = False
-    in_table = False
-    saw_item = False
-    with open(out_path, "r", encoding="utf-8",
-              errors="surrogateescape") as f:
-        for i, raw in enumerate(f):
-            ln = repair_ansi_line(raw.rstrip("\r\n"))
-            if _G_SCAN.search(ln):
-                scanning = True
-                scan.append((i, ln))
-                continue
-            if scanning and (_G_CYCLE.search(ln) or _G_ITERTIME.search(ln)):
-                scan.append((i, ln))
-            if _G_CYCLE.search(ln):
-                # also the phase chain's reset marker (a pre-step
-                # Hessian belongs to the cycle it ran in), so it goes
-                # in both windows
-                conv.append((i, ln))
-                phase.append((i, ln))
-            elif _G_TABLE.search(ln):
-                in_table = True
-                saw_item = False
-                conv.append((i, ln))
-            elif in_table and _G_ITEM.search(ln):
-                saw_item = True
-                conv.append((i, ln))
-            elif in_table and saw_item and (
-                    ln.strip() == "" or _G_DASHES.search(ln) or _G_DOTS.search(ln)):
-                # table terminator — kept so GeoTracker commits the step
-                conv.append((i, ln))
-                in_table = False
-                saw_item = False
-            elif _G_DONE.search(ln):
-                # opt-finished marker — a seeded graph flips to 100%
-                conv.append((i, ln))
-            elif _G_POST.search(ln):
-                # post-opt-stage banners do double duty: they flip a
-                # seeded opt graph to "running frequencies…" AND boot
-                # the freq step chain, so they go in both windows
-                conv.append((i, ln))
-                phase.append((i, ln))
-            elif _G_ITER.match(ln):
-                conv.append((i, ln))
-            elif _IRC_GRAPH.search(ln) or _IRC_ROW.match(ln):
-                # an IRC's path: settings, banners, step rows, markers
-                conv.append((i, ln))
-            elif _G_ITERTIME.search(ln):
-                # ORCA's own per-cycle wall time — GeoTracker's PRIMARY
-                # source for "~N s/step" and the ETA, so a graph seeded
-                # from disk kept its curve but lost its timing
-                conv.append((i, ln))
-            elif _CREST_GRAPH.search(ln):
-                # CREST phase/energy markers (a CREST .out has no ORCA
-                # SCF/geo lines, so this branch is reached cleanly)
-                conv.append((i, ln))
-            elif _PHASE_GRAPH.search(ln) or _G_META.match(ln):
-                # freq / TD-DFT stage counters + the echoed method/cores
-                phase.append((i, ln))
-    merged = sorted(set(conv) | set(phase) | set(scan))   # a shared line lands once
-    return [ln for _, ln in merged]
-
-
-
 # Windows refuses these as file or directory names whatever the extension, and
 # "nul" is worse than refused: it is a path that always exists and cannot be
 # listed. Mirrors _RESERVED_NAMES in state/store.py, which guards calc names for
@@ -314,6 +154,14 @@ class Bridge(QObject):
         self.window = parent_window
         self.settings = Settings.load()
         self.store = store            # shared with the HTTP server
+        # each .out's replay digest and how far it was read (core/replay.py)
+        self._replay = ReplayCache()
+        # a queued calc's parsed report, keyed by (output path, kind) and
+        # stamped with the file's (size, mtime_ns); see parse_calc_output_async
+        self._parse_lock = threading.Lock()
+        self._parse_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
+        self._parse_busy: set = set()
+        self._parse_failed: dict = {}
         self.server_ctl = server_ctl  # ServerController (may be None)
         # Live MLIP probe results, keyed by env id (each value an MlipEnvPayload
         # dict). Probes import torch (slow), so they run in background threads and
@@ -1443,15 +1291,103 @@ class Bridge(QObject):
         _parse_path, which can mis-fire for a calc reusing a removed calc's
         name (workspace folders survive removal, so e.g. a leftover
         crest_conformers.xyz would route a new ORCA .out to the CREST parser)."""
+        calc, err = self._parse_target(name)
+        if err:
+            return err
+        try:
+            key, stamp = self._parse_stamp(calc)
+        except OSError as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+        with self._parse_lock:
+            hit = self._parse_hit(key, stamp)
+        if hit is not None:
+            return hit
+        return self._parse_now(calc, key, stamp)[0]
+
+    # A finished 2D scan's .out is 150 MB and more, and parsing it took 20 s.
+    # parse_calc_output ran that on the Qt main thread every time the Jobs
+    # thumbnail or the report asked, freezing the window. The async slot below
+    # answers from a cache stamped with the file's size and mtime, parses a
+    # small output at once, and hands a large one to a worker thread, answering
+    # {ok, pending} until it is done. The classic front-end keeps the
+    # synchronous slot above, which reads and fills the same cache.
+    _PARSE_SYNC_BYTES = 8 << 20
+    _PARSE_CACHE_MAX = 8
+
+    def _parse_target(self, name: str):
+        """(a snapshot of the queued calc, None) or (None, an error payload)."""
         calc = next((c for c in self.store.list() if c.name == name), None)
         if calc is None:
-            return json.dumps(ErrorPayload(error=f"'{name}' is not in the queue."))
+            return None, json.dumps(ErrorPayload(error=f"'{name}' is not in the queue."))
         if not calc.output_path or not Path(calc.output_path).exists():
-            return json.dumps(ErrorPayload(error="no output file on disk"))
+            return None, json.dumps(ErrorPayload(error="no output file on disk"))
+        # the worker must not hold the store's own object
+        return SimpleNamespace(kind=calc.kind, output_path=calc.output_path), None
+
+    @staticmethod
+    def _parse_stamp(calc):
+        st = Path(calc.output_path).stat()
+        return (str(calc.output_path), calc.kind), (st.st_size, st.st_mtime_ns)
+
+    def _parse_hit(self, key, stamp):
+        """The cached payload for this file as it is now, or None. Under _parse_lock."""
+        hit = self._parse_cache.get(key)
+        if hit is None or hit[0] != stamp:
+            return None
+        self._parse_cache.move_to_end(key)
+        return hit[1]
+
+    def _parse_now(self, calc, key, stamp) -> "tuple[str, bool]":
+        """Parse and cache a success; (the payload or the error, ok)."""
         try:
-            return self._payload_json(result_from_output(calc))
+            out = self._payload_json(result_from_output(calc))
         except Exception as e:
+            return json.dumps(ErrorPayload(error=str(e))), False
+        with self._parse_lock:
+            self._parse_cache[key] = (stamp, out)
+            self._parse_cache.move_to_end(key)
+            while len(self._parse_cache) > self._PARSE_CACHE_MAX:
+                self._parse_cache.popitem(last=False)
+        return out, True
+
+    def _parse_worker(self, calc, key, stamp) -> None:
+        out, ok = self._parse_now(calc, key, stamp)
+        with self._parse_lock:
+            self._parse_busy.discard(key)
+            if not ok:
+                self._parse_failed[key] = out   # said once, to the next ask
+
+    @pyqtSlot(str, result=str)
+    def parse_calc_output_async(self, name: str) -> str:
+        """parse_calc_output, never blocking on a large output: the payload,
+        or {"ok": true, "pending": true} while a worker parses it (ask again).
+        CREST and MLIP results are small files and are parsed at once."""
+        calc, err = self._parse_target(name)
+        if err:
+            return err
+        if calc.kind.startswith(("mlip", "crest")):
+            return self.parse_calc_output(name)
+        try:
+            key, stamp = self._parse_stamp(calc)
+        except OSError as e:
             return json.dumps(ErrorPayload(error=str(e)))
+        with self._parse_lock:
+            hit = self._parse_hit(key, stamp)
+            if hit is not None:
+                return hit
+            failed = self._parse_failed.pop(key, None)
+            if failed is not None:
+                return failed
+            if key in self._parse_busy:
+                return json.dumps({"ok": True, "pending": True})
+            background = stamp[0] > self._PARSE_SYNC_BYTES
+            if background:
+                self._parse_busy.add(key)
+        if not background:
+            return self._parse_now(calc, key, stamp)[0]
+        threading.Thread(target=self._parse_worker, args=(calc, key, stamp),
+                         name="orcadesk-parse", daemon=True).start()
+        return json.dumps({"ok": True, "pending": True})
 
     def _parse_path(self, path: str) -> str:
         try:
@@ -1683,26 +1619,22 @@ class Bridge(QObject):
 
     @pyqtSlot(str, result=str)
     def get_graph_lines(self, name: str) -> str:
-        """Return ONLY the lines of a calculation's .out that the Graph tab is
-        built from — SCF iterations, geometry convergence, and the frequency /
-        TD-DFT / CREST phase chains — in file order, so the UI can rebuild the
-        full graph history independent of the capped log buffer.
+        """The lines of a calculation's .out the Jobs view's trackers are
+        rebuilt from, in file order (core/replay.py says which and why).
 
         Takes the calc NAME and resolves the run folder server-side via
-        _calc_run_dir (state-independent — works mid-run and for restored
-        sessions alike, even from an old workspace). Reads line-by-line and
-        keeps only the most recent _GRAPH_LINES_MAX relevant lines, so even a
-        many-thousand-cycle .out yields a bounded payload (the trackers only
-        need the recent history; dropped oldest cycles just shorten the
-        seeded graph's tail). Convergence history and phase-chain history get
-        a window EACH, merged back into file order, so a Hessian's hundreds of
-        per-nucleus batch lines cannot evict the optimization cycles that ran
-        before them — and a line both windows keep is emitted once."""
+        _calc_run_dir (works mid-run and for restored sessions alike, even
+        from an old workspace). Answers at once when little of the file is
+        unread; a large first read runs on a worker thread and this returns
+        ``pending`` until it is done, so a 150 MB output never holds the Qt
+        main thread. A later call reads only what was appended since."""
         try:
             out_path = self._calc_run_dir(name) / f"{name}.out"
             if not out_path.exists():
                 return json.dumps(GraphLinesResult(ok=False, error="no output", lines=[]))
-            lines = graph_lines_of(out_path)
+            lines = self._replay.lines(out_path)
+            if lines is None:
+                return json.dumps(GraphLinesResult(ok=True, pending=True, lines=[]))
             return json.dumps(GraphLinesResult(ok=True, lines=lines))
         except Exception as e:
             return json.dumps(GraphLinesResult(ok=False, error=str(e), lines=[]))

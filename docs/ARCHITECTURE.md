@@ -501,8 +501,8 @@ steps / ΔE / max|G| and RMS(G) against their thresholds in the key (ORCA
 needs both under to end a direction), and progress from
 MaxIter and the directions asked for. Before it the cell showed whichever
 single SCF had run last. `get_graph_lines` keeps the same lines
-(`_IRC_GRAPH` / `_IRC_ROW` in `bridge.py`, pinned in `test_log_replay.py`) so
-a reopened IRC rebuilds its path from the `.out`.
+(`_IRC_GRAPH` / `_IRC_ROW` in `core/replay.py`, pinned in `test_log_replay.py`)
+so a reopened IRC rebuilds its path from the `.out`.
 
 A **relaxed surface scan** is one optimization per point in one `.out`, each
 point's cycles numbered from 1 again, so `GeoTracker` (keyed by cycle number)
@@ -512,10 +512,59 @@ point count from `There will be N constrained geometry optimizations`. A point's
 `progress()` is over the points, and `estimateETA()` is the points left at the
 mean finished point's own ORCA seconds (none until one has finished). The cell
 shows the current point's chart, *scan point k/N* and `totalCycles()`.
-`graph_lines_of` (the filter behind `get_graph_lines`, module level so it is
-tested without a Bridge) keeps a third window once it has seen the scan header:
-the header, the banners, and every cycle's banner and wall time — the last
-points' SCF rows fill the curve's window long before the top of the file.
+
+**What a reopened cell replays** (`orcamgr/core/replay.py`, Qt-free, behind
+`get_graph_lines`). The history used to be "the last 2000 relevant lines" per
+kind. On a long run that cut off exactly the lines that say what the run is:
+a 61-point, 2809-cycle 2D scan lost its `There will be 100 ...` header and
+points 1–35, so the reopened cell had no *scan point k/N*, a cycle count of
+the points it still saw, and the ETA of one point. `GraphDigest` now keeps
+lines by class:
+- **skeleton, whole:** cycle banners and wall times, scan header and point
+  banners, done / post-stage markers, an IRC's settings, banners and step
+  rows, CREST's markers, freq / TD-DFT stage banners. It grows about
+  100 bytes per optimization cycle;
+- **the echoed input** (`|  1> ! ...`, `%pal`), the first 200 lines;
+- **the current optimization's convergence tables** (a scan's current point;
+  a finished point is filed by its cycle count and seconds, both in the
+  skeleton);
+- **windowed to the recent 2000:** SCF iteration rows and the freq / TD-DFT
+  progress counters (`_PHASE_COUNTER`), where the latest is what counts.
+
+Reading is byte-level: `candidate_starts` finds the lines holding one of the
+patterns' fixed words (`_WORDS`, `bytes.find` per word) or starting like a
+numeric row or an echoed input line, and only those are decoded and
+classified. A table's closing rule is not decoded; a blank line stands in for
+it, so the tracker still commits the step. On a 157 MB scan output this is
+3.6 s against 33 s for line-by-line regexes, with identical output (checked
+on real scan, IRC, CREST and freq outputs; `test_replay.py` pins the
+equivalence, and `test_log_replay.py` runs every sample line through the
+prefilter, so a pattern added without its word fails a test).
+
+`ReplayCache` (one per Bridge, LRU of 16 files) keeps each digest with the
+byte offset it reached, plus the 64 bytes before it. A later call reads only
+what was appended, and only whole lines, so a line ORCA is still writing is
+read once, when complete. A file that shrank, or whose bytes before the
+offset changed (a re-run), is read from the start. With more than 4 MB unread
+the read runs on a worker thread and the slot answers `{ok, pending: true}`:
+`boot.js` `seed()` asks again on the next poll, and the cell's fact line says
+*reading the output…* until it lands (`NB.seedPending`). The classic
+`maybeSeedGraph` retries the same way.
+
+**A queued calc's report off the UI thread** (`parse_calc_output_async`). A
+finished 157 MB scan output took 20 s to parse, and `parse_calc_output` did it
+on the Qt main thread whenever the Jobs thumbnail (a DONE calc's final
+geometry) or the report asked, so a finished long run froze the window at
+every launch. The payload is now cached per `(output path, kind)`, stamped
+with the file's `(size, mtime_ns)` (LRU of 8). The async slot answers from the
+cache, parses an output of 8 MB or less at once, and hands a larger one to a
+worker thread, answering `{ok, pending: true}` until it is done; a failure is
+returned once, to the next ask. `NB.parseCalc(name, onWait)` polls it every
+500 ms (`stream.js` thumbnail, `results.js` `open`, which shows *Reading the
+output of …* and drops a late answer if another result was opened since).
+CREST and MLIP results are small and parse at once. The classic front-end
+keeps the synchronous `parse_calc_output`, which reads and fills the same
+cache.
 
 A cell's **Output pane** (the `.logbox` beside the chart, the last 260 lines
 of the `.out`, re-read every poll while the job runs) follows the end **only

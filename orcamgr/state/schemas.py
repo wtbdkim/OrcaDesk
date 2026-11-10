@@ -511,9 +511,11 @@ class TextResult(_Ok, total=False):
 
 
 class GraphLinesResult(_Ok, total=False):
-    """get_graph_lines — "lines" is present on every branch."""
+    """get_graph_lines — "lines" is present on every branch. "pending": the
+    file is still being read on a worker thread; ask again."""
     error: str
     lines: "list[str]"
+    pending: bool
 
 
 class LogTailResult(_Ok, total=False):

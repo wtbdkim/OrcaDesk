@@ -430,6 +430,9 @@
     bits.push(`<span>${NB.esc(c.kind)}</span>`);
     bits.push(`<span>charge <b>${c.charge}</b></span>`);
     bits.push(`<span>mult <b>${c.multiplicity}</b></span>`);
+    // a long output's history is read on a worker thread; until it lands the
+    // numbers below are only what streamed since the app opened
+    if (NB.seedPending(c.name)) bits.push(`<span>reading the output…</span>`);
     if (NB.hasGraph(c.name)) {
       const b = NB.trackers(c.name);
       if (b.geo.hasData()) {
@@ -504,7 +507,7 @@
         // wanted either way: a final geometry is drawn with the input's bonds
         const input = await NB.inputAtoms("calc:" + c.name);
         if (c.state === "done") {
-          const d = await NB.call("parse_calc_output", c.name);
+          const d = await NB.parseCalc(c.name);
           if (d && d.geometry && d.geometry.length) { atoms = d.geometry; final = true; }
         }
         if (!atoms) atoms = input;
