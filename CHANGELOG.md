@@ -37,6 +37,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   report, hovering the *Reaction path* chart shows the nearest point's step (or
   image) number, its ΔE in kcal/mol and its energy in Eh; ←/→/Home/End step
   through the points from the keyboard.
+- **The rail's Opened files list survives a restart.** Results opened with
+  *Open file…* / *Open folder…* used to vanish when ORCAdesk closed; they now
+  stay in the list until you close them there (up to 50). Only the list is
+  kept: a file is read again when you click it.
 - **NBOs drawn in 3D.** A `! NBO` run leaves its natural bond orbitals in a
   `.nbo` file beside the output, and the notebook's Visual panel now has an
   **NBOs** tile listing them by the program's own names (`BD(1) C1–C2`,

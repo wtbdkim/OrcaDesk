@@ -39,6 +39,7 @@ from ..crest.shell import (
 from ..paths import (APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL,
                      config_file, user_data_root)
 from ..textio import repair_ansi_line
+from .. import uistate
 from ..core.input_generator import StepConfig, build_input_template
 from ..core.queue import CalcState, result_from_output
 from ..core.structure import (
@@ -382,6 +383,23 @@ class Bridge(QObject):
             org=APP_ORG,
             email=APP_EMAIL,
         ))
+
+    # --- front-end state kept across launches (uistate.py) ---
+    @pyqtSlot(str, result=str)
+    def get_ui_state(self, key: str) -> str:
+        try:
+            return json.dumps({"ok": True, "value": uistate.get(key)})
+        except ValueError as e:
+            return json.dumps({"ok": False, "error": str(e)})
+
+    @pyqtSlot(str, str, result=str)
+    def set_ui_state(self, key: str, value_json: str) -> str:
+        """value_json "null" removes the key."""
+        try:
+            uistate.put(key, json.loads(value_json or "null"))
+        except (ValueError, OSError) as e:
+            return json.dumps({"ok": False, "error": str(e)})
+        return json.dumps({"ok": True})
 
     # --- settings ---
     @pyqtSlot(result=str)
