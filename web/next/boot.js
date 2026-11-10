@@ -85,26 +85,39 @@ var NB = {};
    *  @param {string} msg */
   NB.fail = function (msg) { NB.toast(msg, "err"); };
 
-  /** Open the shared modal.
+  /** Where focus was before a modal took it, handed back when it closes. Only
+   *  set by a modal that moved focus, so the others behave as they always did.
+   *  @type {any} */
+  let _modalReturn = null;
+
+  /** Open the shared modal. A button with `focus` takes the keyboard focus, so
+   *  Enter answers the question and Escape (the document handler) dismisses it.
    *  @param {string} title
    *  @param {string} bodyHtml
-   *  @param {{label: string, cls?: string, act?: () => void}[]} [buttons]
+   *  @param {{label: string, cls?: string, act?: () => void, focus?: boolean}[]} [buttons]
    *  @param {boolean} [wide] */
   NB.modalRaw = function (title, bodyHtml, buttons, wide) {
     NB.$("modal-title").textContent = title;
     NB.$("modal-body").innerHTML = bodyHtml;
     const foot = NB.$("modal-foot");
     foot.innerHTML = "";
+    /** @type {any} */ let focusBtn = null;
     (buttons && buttons.length ? buttons : [{ label: "Close" }]).forEach(b => {
       const btn = NB.el("button", "btn " + (b.cls || ""));
       btn.type = "button";
       btn.textContent = b.label;
       btn.onclick = () => { NB.closeModal(); if (b.act) b.act(); };
       foot.appendChild(btn);
+      if (/** @type {any} */ (b).focus) focusBtn = btn;
     });
     NB.$("modal").classList.toggle("wide", !!wide);
     NB.$("modal-scrim").hidden = false;
     NB.$("modal").hidden = false;
+    _modalReturn = null;
+    if (focusBtn) {
+      _modalReturn = document.activeElement;
+      focusBtn.focus();
+    }
   };
   /** A wall of text ORCA wrote — an .inp, a generated preview — in its own
    *  code block. @param {string} title @param {string} text */
@@ -114,6 +127,9 @@ var NB = {};
   NB.closeModal = function () {
     NB.$("modal").hidden = true;
     NB.$("modal-scrim").hidden = true;
+    const back = _modalReturn;
+    _modalReturn = null;
+    if (back && back.isConnected && back.focus) back.focus({ preventScroll: true });
   };
   /** @param {string} title @param {string} text @param {string} okLabel @param {() => void} act */
   NB.confirm = function (title, text, okLabel, act) {
@@ -391,19 +407,23 @@ var NB = {};
     NB.$("theme-toggle").addEventListener("click", () => NB.toggleTheme());
     NB.$("open-settings").addEventListener("click", () => NB.settingsView.open());
     NB.$("modal-scrim").addEventListener("click", () => NB.closeModal());
-    NB.$("scrim").addEventListener("click", () => NB.settingsView.close());
+    // every way out of Settings asks first when something in it is unsaved
+    NB.$("scrim").addEventListener("click", () => NB.settingsView.requestClose());
     document.addEventListener("keydown", e => {
       // Reload the front-end. Nothing is lost by it — the queue, the running
       // calculation and every watcher are Python-side — and it turns editing
       // web/next/app.css into save-and-press-a-key instead of restart the app.
+      // The one exception is an unsaved Settings sheet, which is asked about.
       if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r")) {
         e.preventDefault();
-        location.reload();
+        if (NB.$("settings").hidden) location.reload();
+        // over the sheet a modal is a question already being asked: answer it first
+        else if (NB.$("modal").hidden) NB.settingsView.requestClose(() => location.reload());
         return;
       }
       if (e.key !== "Escape") return;
       if (!NB.$("modal").hidden) NB.closeModal();
-      else if (!NB.$("settings").hidden) NB.settingsView.close();
+      else if (!NB.$("settings").hidden) NB.settingsView.requestClose();
     });
     NB.$("ws-pick").addEventListener("click", async () => {
       const p = await NB.bridge.pick_workspace();

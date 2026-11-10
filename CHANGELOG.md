@@ -44,6 +44,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   constraint and scan rows. Adding the calculation to the queue clears the
   draft. The new *Start over* button in the builder's bar clears it on purpose.
   Editing a queued calculation never touches the draft.
+- **Settings asks before dropping unsaved changes (notebook UI).** Closing
+  the sheet with edits not yet saved (×, Escape, clicking outside, or
+  reloading with F5) asks once: *Save*, *Discard* or *Cancel*. Only real
+  differences from the saved settings count, so changing a field and changing
+  it back does not ask. A failed save keeps the sheet open with its error.
 - **The rail's Opened files list survives a restart.** Results opened with
   *Open file…* / *Open folder…* used to vanish when ORCAdesk closed; they now
   stay in the list until you close them there (up to 50). Only the list is
