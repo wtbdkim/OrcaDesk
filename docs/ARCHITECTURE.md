@@ -424,7 +424,26 @@ must find again on the next launch goes to `ui_state.json` under
 reads as empty and a failed write is returned as data. It holds conveniences
 only, never queue state. Keys: `rail.opened` (the Opened files rows, newest
 first, ≤ 50; the file is re-read on click, so a moved file reports itself
-then).
+then) and `build.draft` (below).
+
+**New-calculation draft.** `build.js` keeps the new calculation being built
+under `build.draft`. The draft is `readForm()`'s payload (what `render()` takes
+as its `calc`) plus what that payload leaves out:
+- the Guided/.inp mode and text;
+- the coordinates box, even under a referenced geometry;
+- the constraint and scan rows, and `pickMode`;
+- each backend's `cfgBy` / `kindBy`.
+
+It carries a version, `v: 1`; an unreadable draft is dropped.
+
+It is written 400 ms after the last edit, and at once when `open()` leaves the
+new calculation. It is compared against the form as it opened: an untouched
+blank or seeded form writes nothing, and a form emptied back to that baseline
+removes the draft it wrote. A fresh unseeded *New calculation* opens on the
+draft. A *New from this* seed wins, and replaces the draft only once edited.
+*Add to queue* and the editbar's *Start over* forget the draft. The
+edit-in-place builder never reads or writes it. An in-memory copy serves the
+session, and a failed write is toasted once (P32).
 
 **Hidden for now, in both front-ends:** the reaction profile below and
 ORCAdesk's own natural-orbital section (`SHOW_PROFILE` / `SHOW_OWN_NBO` at the

@@ -37,6 +37,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   report, hovering the *Reaction path* chart shows the nearest point's step (or
   image) number, its ΔE in kcal/mol and its energy in Eh; ←/→/Home/End step
   through the points from the keyboard.
+- **A half-typed new calculation is no longer lost when the builder closes
+  (notebook UI).** Everything in the form is kept as a draft and restored the
+  next time *New calculation* opens, including after a restart: every field of
+  the DFT, MLIP and CREST forms, Guided or .inp text, the coordinates, and the
+  constraint and scan rows. Adding the calculation to the queue clears the
+  draft. The new *Start over* button in the builder's bar clears it on purpose.
+  Editing a queued calculation never touches the draft.
 - **The rail's Opened files list survives a restart.** Results opened with
   *Open file…* / *Open folder…* used to vanish when ORCAdesk closed; they now
   stay in the list until you close them there (up to 50). Only the list is
