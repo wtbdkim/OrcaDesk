@@ -13,6 +13,8 @@
 interface OrcaBridge {
   // about / settings
   get_about(): Promise<string>;
+  get_ui_state(key: string): Promise<string>;                  // {ok, value}: what a window kept across launches (uistate.py); value null = nothing kept
+  set_ui_state(key: string, valueJson: string): Promise<string>; // {ok} | {ok:false, error}; valueJson "null" removes the key
   get_settings(): Promise<string>;
   save_settings(payloadJson: string): Promise<string>;
   reload_ui(): Promise<void>;

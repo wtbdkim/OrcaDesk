@@ -1448,7 +1448,8 @@ swap could do is flash the substitution this exists to remove.
 **17.0e The rail is the picker; the toolbar is not a second one.** A result is
 chosen by clicking its row — in either view — and a result that is not in the
 rail is opened with *Open file…* / *Open folder…*, which is also what puts it
-there, under **Opened files**, with the folder it came from. The preview had
+there, under **Opened files**, with the folder it came from; the group is kept
+across launches until a row is closed. The preview had
 grown a `<select>` in the Results toolbar listing the queue *and* a scan of the
 workspace: a second picker for the same job, the one that could not say where an
 entry came from, and a disk walk on every entry to the tab. *Output / Visual*
@@ -2023,6 +2024,9 @@ the same rule as *Localized orbitals* (meta: method, MO range, *from the
 output*): the counts as `.kvline`s, then one row per localized orbital with
 each atom's share muted beside it, so the numbers that move along a reaction
 path sit where the eye compares them.
+
+**17.4v Closing does not throw work away.** A list a window builds up (the
+rail's *Opened files*) is kept across launches until the user closes a row.
 
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in

@@ -432,15 +432,37 @@
 
   // ------------------------------------------------------- opened from disk
 
-  /** Results read from outside the workspace, this sitting. They are not queue
-   *  rows -- no state, nothing to run, nothing to edit -- but they are the
-   *  other half of "what can I look at", and the design lists them in the rail
-   *  rather than leaving the Results window as the only way back to a file
-   *  already read once. Session-lived on purpose: it is a record of what THIS
-   *  sitting opened, and the workspace scan already offers everything that
-   *  lives in the workspace.
+  /** Results read from outside the workspace. They are not queue rows -- no
+   *  state, nothing to run, nothing to edit -- but they are the other half of
+   *  "what can I look at", and the design lists them in the rail rather than
+   *  leaving the Results window as the only way back to a file already read
+   *  once. The list outlives the app (uistate.py, key "rail.opened"): a file
+   *  opened yesterday is still one click away until it is closed here. Only
+   *  the row is kept; the file is read again when it is clicked, and one that
+   *  has moved says so then.
    *  @type {{path:string,name:string,backend:string,meta:string,folder:string}[]} */
   const _opened = [];
+  const OPENED_KEY = "rail.opened";
+  const OPENED_MAX = 50;
+
+  /** Write the list back. A failed write costs only the next launch's list. */
+  function keepOpened() {
+    NB.call("set_ui_state", OPENED_KEY, JSON.stringify(_opened.slice(0, OPENED_MAX)));
+  }
+
+  /** The list the last launch left, read once at start. Rows opened before it
+   *  arrives stay on top. */
+  async function restoreOpened() {
+    const r = await NB.call("get_ui_state", OPENED_KEY);
+    const kept = r && r.ok && Array.isArray(r.value) ? r.value : [];
+    const str = (/** @type {any} */ v) => (typeof v === "string" ? v : "");
+    kept.forEach((/** @type {any} */ o) => {
+      if (!o || !str(o.path) || _opened.some(x => x.path === o.path)) return;
+      _opened.push({ path: o.path, name: str(o.name) || o.path, backend: str(o.backend) || "DFT",
+                     meta: str(o.meta), folder: str(o.folder) });
+    });
+    if (kept.length) render();
+  }
 
   /** Remember a result opened from disk, newest first, no duplicates.
    *  @param {{path:string,name:string,backend:string,meta:string,folder:string}} o */
@@ -448,6 +470,8 @@
     const at = _opened.findIndex(x => x.path === o.path);
     if (at >= 0) _opened.splice(at, 1);
     _opened.unshift(o);
+    if (_opened.length > OPENED_MAX) _opened.length = OPENED_MAX;
+    keepOpened();
     render();
   }
 
@@ -528,6 +552,7 @@
       const at = _opened.findIndex(x => x.path === o.path);
       if (at >= 0) _opened.splice(at, 1);
       _expanded.delete("file:" + o.path);
+      keepOpened();
       render();
     });
     el.appendChild(det);
@@ -620,6 +645,7 @@
         });
     });
     NB.watch(() => render());
+    restoreOpened();
   }
 
   NB.rail = { init: init, render: render, progressOf: progressOf, backendOf: backendOf,
