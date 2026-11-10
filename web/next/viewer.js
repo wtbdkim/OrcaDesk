@@ -49,6 +49,12 @@
   let _vizMenu = null;
   /** @type {any[]} frames of the selected set */
   let _frames = [];
+  /** the input of the calculation on show (NB.inputAtoms), whose bonds its
+   *  structures are drawn with @type {any[]|null} */
+  let _input = null;
+  /** the same for the open set's frames: the input, else its first frame
+   *  @type {(any[]|null)[]} */
+  let _bondRefs = [];
   let _frameIdx = 0;
   let _setKey = "";
   /** The Visual panel's own plot state: the options for the result on screen,
@@ -162,7 +168,7 @@
     const ctl = q("vctl");
     if (ctl) ctl.hidden = true;
     const atoms = (d.geometry || []).map(a => ({ el: a.el, x: a.x, y: a.y, z: a.z }));
-    _viz.setAtoms(atoms, { orders: mayerOrders(d) });
+    _viz.setAtoms(atoms, { orders: mayerOrders(d), bondsFrom: [_input] });
     q("vmeta").textContent = atoms.length + " atoms";
     q("vcap").textContent = "final geometry · " + atoms.length + " atoms";
     const list = q("vlist");
@@ -398,10 +404,12 @@
     // .xyz sets by listing the folder, the surfaces by asking the wavefunction —
     // so they are fetched together and land in one strip. A result can have
     // either, both or neither.
-    const [r, surf] = await Promise.all([
+    const [r, surf, input] = await Promise.all([
       NB.call("list_structure_sets", source),
       NB.mv.surfaces(source, (d && d.orbitals) || [], nboOrbitals(d)),
+      NB.inputAtoms(source),
     ]);
+    _input = input;
     const sets = (r && r.ok && r.sets) ? r.sets : [];
     const picks = (surf && surf.ok && surf.picks) ? surf.picks : [];
     _opts = (surf && surf.opts) || null;
@@ -736,6 +744,7 @@
     q("vlist").innerHTML = `<div class="vizempty">reading…</div>`;
     const r = await NB.call("get_structure_frames", set.path);
     _frames = (r && r.ok && r.frames) ? r.frames : [];
+    _bondRefs = [_input, _frames.length ? MOL.parseXyz(_frames[0].xyz) : null];
     q("vmeta").textContent = (r && r.title) ? r.title : set.label;
     if (!_frames.length) {
       q("vlist").innerHTML = `<div class="vizempty">No frames in this file.</div>`;
@@ -764,7 +773,7 @@
     sec.querySelectorAll("[data-frame]").forEach(b => b.setAttribute("aria-selected",
       String(Number(/** @type {HTMLElement} */ (b).dataset.frame) === i)));
     const atoms = MOL.parseXyz(f.xyz);
-    _viz.setAtoms(atoms);
+    _viz.setAtoms(atoms, { bondsFrom: _bondRefs });
     q("vcap").textContent = f.label + " · " + atoms.length + " atoms";
     const old = q("vstage").querySelector(".viewlegend");
     if (old) old.remove();

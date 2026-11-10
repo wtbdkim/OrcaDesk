@@ -39,6 +39,9 @@
   let _menu = null;
   /** @type {any[]} frames of the open set */
   let _frames = [];
+  /** what every frame's bonds are drawn from: the calculation's input, else
+   *  the set's first frame @type {(any[]|null)[]} */
+  let _bondRefs = [];
   let _idx = 0;
   /** starred labels for _source @type {Set<string>} */
   let _favs = new Set();
@@ -160,7 +163,7 @@
     if (!f || !_stage) return;
     _idx = i;
     const atoms = MOL.parseXyz(f.xyz);
-    _stage.setAtoms(atoms);
+    _stage.setAtoms(atoms, { bondsFrom: _bondRefs });
     legend(atoms);
     const vis = visible();
     const at = vis.indexOf(i);
@@ -699,7 +702,9 @@
     _favs = new Set();
     _favOnly = false;
 
-    const r = await NB.call("list_structure_sets", src);
+    _bondRefs = [];
+    const [r, input] = await Promise.all([
+      NB.call("list_structure_sets", src), NB.inputAtoms(src)]);
     const sets = (r && r.ok && r.sets) ? r.sets : [];
     const set = (o.path && sets.filter(s => s.path === o.path)[0]) || sets[0];
     if (!set) {
@@ -715,6 +720,7 @@
     }
     const fr = await NB.call("get_structure_frames", set.path);
     _frames = (fr && fr.ok && fr.frames) ? fr.frames : [];
+    _bondRefs = [input, _frames.length ? MOL.parseXyz(_frames[0].xyz) : null];
     if (_dest[0] === "folder") _dest[1] = (fr && fr.folder) || set.path;
     if (!_frames.length) {
       q("mv-count").textContent = "no frames";
