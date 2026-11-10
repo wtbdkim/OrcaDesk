@@ -1054,8 +1054,9 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
 .chart svg[data-hover]{cursor:crosshair; touch-action:none;}
 .chart svg[data-hover]:focus-visible{outline:2px solid var(--ring); outline-offset:2px;}
 /* the bands are drawn through: the plot takes the pointer, not 150 lines */
-.chart .stk{pointer-events:none;}
+.chart .stk, .chart .pt{pointer-events:none;}
 .chart .stk.on{stroke-width:2.6;}
+.chart .pt.on{r:5;}
 .chart .chi{stroke:var(--muted-foreground); stroke-width:1; opacity:0; pointer-events:none;}
 .chtip{
   position:absolute; z-index:2; pointer-events:none;

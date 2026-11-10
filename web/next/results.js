@@ -124,7 +124,8 @@
   // ---------------------------------------------------------------- drawing
 
   /** A line or stick chart in SVG at a real pixel size. With `hover` the sticks
-   *  become readable: each carries its `lab` and bindCharts wires the cursor.
+   *  (or a line's points) become readable: each carries its `lab` and
+   *  bindCharts wires the cursor.
    *  @param {{x: number, y: number, cls?: string, lab?: string}[]} pts
    *  @param {number} w @param {number} h
    *  @param {{xlab: string, ylab: string, stick?: boolean, hover?: boolean,
@@ -163,7 +164,9 @@
       const d = pts.map((p, i) => `${i ? "L" : "M"}${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join(" ");
       body = `<path d="${d}" fill="none" stroke="var(--crit-de)" stroke-width="1.8"
                 stroke-linejoin="round" stroke-linecap="round"/>`
-           + pts.map(p => `<circle cx="${px(p.x).toFixed(1)}" cy="${py(p.y).toFixed(1)}" r="3"
+           + pts.map(p => `<circle class="pt" data-px="${px(p.x).toFixed(1)}"${
+                o.hover ? ` data-lab="${NB.esc(p.lab || fmt(p.y))}"` : ""}
+                cx="${px(p.x).toFixed(1)}" cy="${py(p.y).toFixed(1)}" r="3"
                 fill="${p.cls || "var(--crit-de)"}"/>`).join("");
     }
     // the outermost ticks anchor to their own edge, or a wide label hangs past
@@ -182,7 +185,8 @@
       o.hover ? ' data-hover="1" tabindex="0"' : ""}${
       o.pick ? ` data-pick="${o.pick}"` : ""}
       aria-label="${NB.esc(o.ylab)} against ${NB.esc(o.xlab)}${
-        o.hover ? ". Hover a band for its value, or use the arrow keys" : ""}${
+        o.hover ? `. Hover a ${o.stick ? "band" : "point"} for its value, or use the arrow keys`
+                : ""}${
         o.pick === "mode" ? "; click a band, or press Enter on it, to see it move" : ""}">
       ${grid}
       <line x1="${L}" y1="${T}" x2="${L}" y2="${T + ih}" stroke="var(--border)" stroke-width="1"/>
@@ -364,9 +368,12 @@
               + (ts ? ` Its barrier is ${ts.de_kcal.toFixed(2)} kcal/mol.` : ""),
         plate(chart(d.neb_path.map((p, i) => ({
                       x: i, y: p.de_kcal,
-                      cls: p.is_ts ? "var(--warn)" : "var(--crit-de)" })),
+                      cls: p.is_ts ? "var(--warn)" : "var(--crit-de)",
+                      lab: (p.is_ts && p.label.toUpperCase() === "TS" ? "TS"
+                            : (irc ? "Step " : "Image ") + p.label + (p.is_ts ? " (TS)" : ""))
+                        + ` · ΔE ${p.de_kcal.toFixed(2)} kcal/mol · ${p.e_eh.toFixed(6)} Eh` })),
                     cw, Math.round(cw * 0.26),
-                    { xlab: "image", ylab: "ΔE (kcal/mol)" }))
+                    { xlab: "image", ylab: "ΔE (kcal/mol)", hover: true }))
         + tw(["Image", "ΔE (kcal/mol)", ""], d.neb_path.map(p => [
             NB.esc(p.label), p.de_kcal.toFixed(2),
             p.is_ts ? '<span class="badge running">TS</span>' : ""]),
@@ -1539,7 +1546,7 @@
     if (NB.rail) NB.rail.render();
   }
 
-  /** Give every stick chart that asked for it a value readout.
+  /** Give every stick or point chart that asked for it a value readout.
    *
    *  The hit target is the WHOLE plot and the nearest band wins: a band is
    *  1.6px wide and there can be 150 of them overlapping, so a per-band hit
@@ -1551,7 +1558,7 @@
   function bindCharts(host) {
     host.querySelectorAll(".chart svg[data-hover]").forEach((n) => {
       const svg = /** @type {any} */ (n);
-      const sticks = /** @type {any[]} */ ([...svg.querySelectorAll(".stk")]);
+      const sticks = /** @type {any[]} */ ([...svg.querySelectorAll(".stk,.pt")]);
       const box = svg.parentElement, tip = box && box.querySelector(".chtip");
       const cur = svg.querySelector(".chi");
       if (!sticks.length || !tip || !cur) return;
