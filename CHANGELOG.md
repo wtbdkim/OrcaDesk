@@ -82,6 +82,21 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   the default range is not.
 
 ### Fixed
+- **A long run's Jobs cell no longer forgets what it is after a restart.**
+  Reopening ORCAdesk rebuilt a running or finished cell from only the last
+  part of its output. A 2D scan 61 points in came back without *scan point
+  61/100*, with a cycle count of the recent points only, and with the time
+  left for one point instead of the whole scan. A long IRC could lose the
+  start of its path the same way. The whole run outline (every point, cycle,
+  wall time and stage) is now kept, and only the bulky SCF rows are trimmed.
+- **A large output no longer freezes the window (notebook UI).** Rebuilding a
+  cell's history from a 157 MB output took 33 s on the UI thread. It now takes
+  about 4 s, in the background, while the cell says *reading the output…*; a
+  second read takes in only what was appended. Parsing a finished output that
+  size for the Jobs thumbnail or the report took another 20 s on the UI
+  thread, at every launch; it now runs in the background too (the report says
+  *Reading the output of …* meanwhile), and its result is reused until the
+  file changes.
 - **Applying an angle that is already at 180° no longer fails.** An angle
   Applied to 180° lies on a straight line, and applying that target again (or
   *Apply all* with it among the targets) stopped with "no plane to open in"
