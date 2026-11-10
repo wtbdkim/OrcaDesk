@@ -1567,7 +1567,9 @@ the whole plot area and the **nearest band wins**. It is not hover-only: the
 svg is focusable and ←/→/Home/End step the same cursor, Escape puts it away,
 and the plate is a `role="status"` so what the cursor lands on is announced.
 The cursor line is a CSS rule rather than a presentation attribute, because
-`var()` does not resolve in one (§11.16).
+`var()` does not resolve in one (§11.16). A path chart (an IRC or NEB-TS
+*Reaction path*) reads the same way, point by point: the nearest point grows
+and the plate names its step and energy.
 
 **17.4c What can be drawn is one strip, and the expensive half asks.** The
 `.xyz` sets are found by listing the folder and the surfaces by asking the

@@ -77,7 +77,10 @@ band instead (`chart(..., {hover: true})` labels each stick, `bindCharts` in
 `web/next/results.js` drives the cursor). The hit target is the whole plot with
 the nearest band winning, because a band is 1.6px; ←/→/Home/End step the same
 cursor and the plate is a `role="status"`, so the numbers are never hover-only.
-DESIGN.md §17.4b.
+DESIGN.md §17.4b. A line chart takes the same `hover` option: its points carry
+the label (`.pt` beside `.stk`, one `bindCharts` for both). The IRC / NEB-TS
+*Reaction path* uses it for "Step n · ΔE · E(Eh)"; its table stays, because a
+path is tens of points, not a hundred overlapping bands.
 
 A band is also a control: a click, or Enter on the cursor (`chart(..., {pick:
 "mode"})`), and the per-imaginary-mode buttons under the spectrum (`modeJump`)
