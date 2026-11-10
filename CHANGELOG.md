@@ -33,6 +33,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   are not affected.
 
 ### Added
+- **An IRC or NEB-TS energy profile reads point by point.** In the notebook
+  report, hovering the *Reaction path* chart shows the nearest point's step (or
+  image) number, its ΔE in kcal/mol and its energy in Eh; ←/→/Home/End step
+  through the points from the keyboard.
 - **NBOs drawn in 3D.** A `! NBO` run leaves its natural bond orbitals in a
   `.nbo` file beside the output, and the notebook's Visual panel now has an
   **NBOs** tile listing them by the program's own names (`BD(1) C1–C2`,
