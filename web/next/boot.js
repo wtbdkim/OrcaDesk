@@ -178,6 +178,9 @@ var NB = {};
   const _seeded = new Set();
   /** seeds in flight, so a slow read is not re-issued every poll @type {Set<string>} */
   const _seeding = new Set();
+  /** calcs whose .out the backend is still reading on a worker thread
+   *  @type {Set<string>} */
+  const _reading = new Set();
 
   function newBundle() {
     return {
@@ -225,16 +228,23 @@ var NB = {};
    *  The live stream only carries what ORCA writes from the moment the app is
    *  watching — so a run finished in an earlier session, or reattached
    *  mid-flight, has no curve at all until its file is read back. The backend
-   *  returns only the lines the trackers care about, windowed, so this costs
-   *  the same on a 400 MB output as on a small one.
+   *  returns only the lines the trackers care about, the bulky ones windowed, so this costs
+   *  the same on a 400 MB output as on a small one. A large first read runs
+   *  on a worker thread and answers `pending`; the next poll asks again.
    *  @param {string} name */
   async function seed(name) {
     if (_seeded.has(name) || _seeding.has(name)) return false;
     _seeding.add(name);
     const r = await NB.call("get_graph_lines", name);
     _seeding.delete(name);
+    if (r && r.ok && r.pending) {
+      const fresh = !_reading.has(name);
+      _reading.add(name);
+      return fresh;                          // repaint once, for "reading the output"
+    }
+    const was = _reading.delete(name);       // its "reading" note has to go
     _seeded.add(name);                       // a file that isn't there won't appear later
-    if (!r || !r.ok || !r.lines || !r.lines.length) return false;
+    if (!r || !r.ok || !r.lines || !r.lines.length) return was;
     const b = NB.trackers(name);
     r.lines.forEach(ln => {
       b.scf.push(ln); b.geo.push(ln); b.freq.push(ln);
@@ -244,13 +254,32 @@ var NB = {};
   }
   NB.seed = seed;
 
+  /** A queued calculation's parsed report, without holding the window: a
+   *  large output is parsed on the backend's worker thread, which answers
+   *  `pending` until it is done, so this asks again every half second.
+   *  `onWait` runs once, the first time it has to wait.
+   *  @param {string} name @param {() => void} [onWait] @returns {Promise<any>} */
+  NB.parseCalc = async function (name, onWait) {
+    const until = Date.now() + 15 * 60 * 1000;
+    for (let first = true; ; first = false) {
+      const d = await NB.call("parse_calc_output_async", name);
+      if (!(d && d.ok && d.pending)) return d;
+      if (Date.now() > until) return { error: "Reading the output took too long." };
+      if (first && onWait) onWait();
+      await new Promise(r => setTimeout(r, 500));
+    }
+  };
+  /** Whether a calculation's history is still being read from its .out.
+   *  @param {string} name */
+  NB.seedPending = function (name) { return _reading.has(name); };
+
   /** Forget calculations that have left the queue: five trackers and their
    *  point arrays each, otherwise kept for the whole session.
    *  @param {Set<string>} live */
   function pruneTrackers(live) {
     [..._jobs.keys()].forEach(n => {
       if (live.has(n)) return;
-      _jobs.delete(n); _seeded.delete(n);
+      _jobs.delete(n); _seeded.delete(n); _reading.delete(n);
     });
   }
 

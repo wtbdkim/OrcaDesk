@@ -66,6 +66,7 @@ interface OrcaBridge {
   pick_result_folder(): Promise<string>;                      // PickedResultPayload JSON (route "parse")
   parse_out_path(path: string): Promise<string>;
   parse_calc_output(name: string): Promise<string>;
+  parse_calc_output_async(name: string): Promise<string>;     // ParsePayload | {ok:true, pending:true} while a worker parses a large output (ask again)
   build_inp_preview(calcJson: string): Promise<string>;
   // queue
   add_calc(calcJson: string): Promise<string>;

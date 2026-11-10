@@ -250,7 +250,7 @@ def test_a_scans_header_and_point_banners_survive_the_replay(tmp_path):
     assert head < b1 < b2
 
 
-def test_an_ordinary_optimization_replays_as_before(tmp_path):
+def test_a_long_optimization_keeps_every_cycle_but_only_recent_scf_rows(tmp_path):
     from orcamgr.gui.bridge import graph_lines_of, _GRAPH_LINES_MAX
     out = []
     for c in range(1, 4):
@@ -258,8 +258,79 @@ def test_an_ordinary_optimization_replays_as_before(tmp_path):
         out += ["  %d   -2095.%09d   -1.0e-05  4.97e-03  2.50e-02" % (k, k) for k in range(1, 1200)]
         out.append("Time for complete geometry iter:     %d.000 sec" % (10 + c))
     lines = graph_lines_of(_write(tmp_path, "\n".join(out) + "\n"))
-    # no scan header, so no scan window: cycle 1's wall time is older than the
-    # curve's window and stays out, as it always did
-    assert len(lines) <= 2 * _GRAPH_LINES_MAX
-    assert not any("iter:     11.000" in ln for ln in lines)
-    assert any("iter:     13.000" in ln for ln in lines)
+    # the skeleton is whole: every cycle and its wall time, cycle 1's included
+    # (the old last-2000-lines window dropped it, and the step timing with it)
+    assert sum("GEOMETRY OPTIMIZATION CYCLE" in ln for ln in lines) == 3
+    assert any("iter:     11.000" in ln for ln in lines)
+    # the bulk is windowed: SCF rows only from the recent end
+    rows = [ln for ln in lines if ln.lstrip()[:1].isdigit()]
+    assert len(rows) == _GRAPH_LINES_MAX
+    assert rows[-1].lstrip().startswith("1199 ")
+
+
+def test_a_long_scan_keeps_its_header_and_every_point(tmp_path):
+    # the real failure: a 2D scan 61 points and 2809 cycles in. Each cycle is
+    # two skeleton lines, so the old 2000-line window had dropped the header
+    # and points 1-35, and the cell forgot it was a scan
+    from orcamgr.gui.bridge import graph_lines_of
+    lines = graph_lines_of(_scan_out(tmp_path, points=61, cycles=46, scf_rows=3))
+    assert any("There will be   61 constrained" in ln for ln in lines)
+    assert sum("RELAXED SURFACE SCAN STEP" in ln for ln in lines) == 61
+    assert sum("GEOMETRY OPTIMIZATION CYCLE" in ln for ln in lines) == 61 * 46
+    assert sum("Time for complete geometry iter" in ln for ln in lines) == 61 * 46
+
+
+# Every line a tracker reads has to get past the byte-level prefilter in
+# core/replay.py, which decodes only the lines holding one of its fixed words.
+# A pattern whose word is missing there drops its lines silently.
+GEO_TABLE_LINES = [
+    # verbatim from a real ORCA 6.1.1 relaxed scan
+    "          ----------------------|Geometry convergence|-------------------------",
+    "          Energy change      -0.0011239464            0.0000010000      NO",
+    "          RMS gradient        0.0067227982            0.0000300000      NO",
+    "          MAX gradient        0.0558546848            0.0001000000      NO",
+    "          RMS step            0.0143673943            0.0006000000      NO",
+    "          MAX step            0.0642281876            0.0010000000      NO",
+    "                                *** OPTIMIZATION RUN DONE ***",
+    "                     ***               HURRAY                   ***",
+    "                    ***        THE OPTIMIZATION HAS CONVERGED     ***",
+    "        *                GEOMETRY OPTIMIZATION CYCLE   7            *",
+    "Time for complete geometry iter:     12.500 sec",
+    "         *               RELAXED SURFACE SCAN STEP  61               *",
+    "There will be  100 constrained geometry optimizations.",
+    "  1  -2807.79123456789   0.000000000000  0.00133  0.00004  0.1000  0.7000",
+]
+CREST_LINES = [
+    " CREGEN> E lowest :   -45.12345",
+    "    123 structures remain within     6.00 kcal/mol window",
+    " ---------------------",
+    " Meta-Dynamics Iteration 1",
+    " Starting meta-MD   1 (14 MTDs)",
+    "*MTD   3 completed successfully ...        1 min, 22.931 sec",
+    " CREST terminated normally.",
+    " Change in topology detected!",
+    " safety termination of CREST",
+    " number of unique conformers for further calc          52",
+    " Initial Geometry Optimization",
+    "|                 iMTD-GC SAMPLING                 |",
+    " Additional regular MDs on lowest 4 conformer(s)",
+    " Final Geometry Optimization",
+]
+
+
+@pytest.mark.parametrize("line", ANALYTICAL_FREQ_LINES + PHASE_LINES + META_LINES
+                         + IRC_KEEP + GEO_TABLE_LINES + [
+    "                   Intrinsic Reaction Coordinate Calculation",
+    "                 *** FINAL ENERGY EVALUATION AT THE STATIONARY POINT ***",
+])
+def test_every_tracker_line_passes_the_byte_prefilter(line):
+    from orcamgr.core.replay import candidate_starts
+    assert candidate_starts(line.encode("utf-8")) == [0], line
+
+
+@pytest.mark.parametrize("line", [ln for ln in CREST_LINES if ln.strip(" -")])
+def test_crest_markers_pass_the_byte_prefilter(line):
+    from orcamgr.core.replay import candidate_starts
+    from orcamgr.gui.bridge import _CREST_GRAPH
+    if _CREST_GRAPH.search(line):
+        assert candidate_starts(line.encode("utf-8")) == [0], line

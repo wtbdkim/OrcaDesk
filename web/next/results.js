@@ -30,6 +30,10 @@
   /** what identifies it: a queued calculation's name, or a path on disk */
   let _curName = "";
   let _curPath = "";
+  /** the calculation whose output a worker is still parsing ("" = none), and
+   *  a count that makes a slow open lose to whatever was opened after it */
+  let _loading = "";
+  let _openSeq = 0;
   /** @type {any[]} */
   /** Which of the two the Output/Visual pair last jumped to. It is a cursor on
    *  one scrolling report, not a mode: both halves are always rendered. */
@@ -1502,7 +1506,8 @@
     const body = _cur
       ? sections(_cur, px) + fep
       : `<section class="secblock wide">${plate(
-          `<p class="hint" style="margin:0">No result open.</p>`)}</section>` + fep;
+          `<p class="hint" style="margin:0">${_loading
+            ? `Reading the output of ${NB.esc(_loading)}…` : "No result open."}</p>`)}</section>` + fep;
     if (SHOW_PROFILE) _present.push({ id: "fep", title: "Reaction profile" });
 
     host.innerHTML = toolbar()
@@ -1673,6 +1678,7 @@
   /** Put a parsed result on screen. The one way in, so what "showing a result"
    *  means is defined once. @param {any} d @param {string} name @param {string} path */
   function show(d, name, path) {
+    ++_openSeq; _loading = "";               // whatever was still loading is not this
     _cur = d; _curName = name || ""; _curPath = path || "";
     paint();
   }
@@ -1682,8 +1688,21 @@
    *  run as an ORCA output. @param {string} name */
   async function open(name) {
     NB.go("results");
-    const d = await NB.call("parse_calc_output", name);
-    if (!d || !d.summary) { NB.fail((d && d.error) || `No readable output for "${name}" yet.`); return; }
+    const ticket = ++_openSeq;
+    // a large output is parsed on a worker thread: say so in the pane rather
+    // than leave the last report up as if it were this one
+    const d = await NB.parseCalc(name, () => {
+      if (ticket !== _openSeq) return;
+      _loading = name; _cur = null; _curName = name; _curPath = "";
+      paint();
+    });
+    if (ticket !== _openSeq) return;          // another result was opened meanwhile
+    _loading = "";
+    if (!d || !d.summary) {
+      if (!_cur) paint();
+      NB.fail((d && d.error) || `No readable output for "${name}" yet.`);
+      return;
+    }
     show(d, name, d.path || "");
   }
   /** @param {string} path @returns {Promise<any>} the payload, or null */

@@ -373,6 +373,8 @@ async function maybeSeedGraph() {
   _seededGraph.add(target.name);   // guard before the await: no double-seed across overlapping ticks
   try {
     const r = /** @type {GraphLinesResult} */ (JSON.parse(await bridge.get_graph_lines(target.name)));
+    // still being read on the backend's worker thread: a later tick asks again
+    if (r && r.ok && r.pending) { _seededGraph.delete(target.name); return; }
     if (r && r.ok && r.lines && r.lines.length) {
       const t = new SCFGraph.SCFTracker();
       const g = new SCFGraph.GeoTracker();
@@ -414,6 +416,8 @@ async function maybeSeedCrestGraph() {
   _seededGraph.add(target.name);
   try {
     const r = /** @type {GraphLinesResult} */ (JSON.parse(await bridge.get_graph_lines(target.name)));
+    // still being read on the backend's worker thread: a later tick asks again
+    if (r && r.ok && r.pending) { _seededGraph.delete(target.name); return; }
     if (r && r.ok && r.lines && r.lines.length) {
       const c = new SCFGraph.CrestTracker();
       for (const ln of r.lines) c.push(ln);   // offline: never via appendLog

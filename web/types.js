@@ -585,6 +585,7 @@
  * @property {boolean} ok
  * @property {string} [error]
  * @property {string[]} lines
+ * @property {boolean} [pending] the file is still being read; ask again
  */
 
 /**
