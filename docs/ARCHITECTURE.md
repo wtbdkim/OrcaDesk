@@ -200,6 +200,16 @@ run controls) → `build.js` (the builder — a cell becomes the form) →
 `stream.js` (one cell per calculation) → `results.js` (the report) →
 `settings.js` (a slide-over), in that load order, all hanging off one global
 `NB` (and `MOL`).
+The Settings sheet has a close guard. Every way out (×, Escape, the scrim, and
+F5/Ctrl+R) goes through `NB.settingsView.requestClose(after?)`. "Unsaved"
+means `collect(host)`, the same reader the save uses, differs from
+`_baseline`. `_baseline` is read from the freshly rendered form, and read again
+after a clean save once the backend's clamped values are written back into the
+fields. The MLIP and CREST controls apply immediately, so they are left out.
+`save()` resolves true only on a clean save: `{error}` and `save_error` both
+count as failure, and the sheet stays open. The shared `NB.modalRaw` accepts
+`focus: true` on one button; that button takes focus, and `closeModal` gives
+focus back to where it was.
 The rail holds three state groups, of which only **Finished** folds and carries
 its own *Clear* (queue-list only — no folder is touched), plus an **Opened
 files** group listing results read from outside the workspace (kept across
