@@ -6,6 +6,15 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **The notebook's structure viewers keep the bonds the run started with.**
+  Every structure a calculation produced (trajectory frames, scan points, the
+  final geometry, the Jobs thumbnail) is drawn with its input's bonds, so a
+  scan that pulls two atoms together no longer closes a ring on screen and a
+  stretched bond no longer disappears. Without an input (a result folder, or a
+  geometry taken from another calculation) a set's first frame gives the bonds.
+  The builder's stage does the same across its own moves (a constraint's
+  *Apply*, *Apply all*, a push along a mode); coordinates you type or paste
+  are bonded by distance as before.
 - **A larger structure viewer in the notebook builder.** The stage shared a
   260px-tall row with the coordinates box; it now has a row of its own under
   the box, the form's full width and up to 676px tall, directly above
@@ -53,6 +62,16 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   the default range is not.
 
 ### Fixed
+- **Applying an angle that is already at 180° no longer fails.** An angle
+  Applied to 180° lies on a straight line, and applying that target again (or
+  *Apply all* with it among the targets) stopped with "no plane to open in"
+  though nothing had to move. A straight angle bent to another value now turns
+  in the plane of the nearest atom off the line.
+- **A constraint's Apply no longer refuses an angle as "in a ring" after an
+  earlier Apply.** Which side of the molecule turns was decided from the
+  coordinates' distances, so two atoms an Apply brought close read as a bond
+  and closed a ring the molecule does not have. It is now decided from the
+  bonds the builder's stage draws.
 - **A relaxed surface scan's progress now reads as a scan in the Jobs view.**
   Each scan point is its own optimization, and its cycles count from 1
   again, so the convergence chart drew every point on top of the last one

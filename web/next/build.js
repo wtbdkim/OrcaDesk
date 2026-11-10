@@ -214,6 +214,9 @@
                      end: c.end, steps: c.steps })),
       /** what a pick on the stage defines: a constraint, or the scan */
       pickMode: "cons",
+      /** the structure whose bonds the stage draws (showGeom). Kept here so
+       *  a re-render, which mounts a new stage, keeps them too @type {any[]|null} */
+      bondRef: null,
       /** @type {any} the structure stage, destroyed on the next render */
       stage: null,
       /** "dft" | "mlip" | "crest" — read off the kind, so an edit opens on its
@@ -1052,7 +1055,8 @@
       const cs = targeted();
       if (cs.length < 2 || useRef()) return;
       const r = await NB.call("apply_constraint_targets", ta.value,
-        JSON.stringify(cs.map(c => ({ kind: c.kind, atoms: c.atoms, value: c.value }))));
+        JSON.stringify(cs.map(c => ({ kind: c.kind, atoms: c.atoms, value: c.value }))),
+        drawnBonds());
       if (!r || !r.ok) { NB.fail((r && r.error) || "Could not move the coordinates."); return; }
       putText(r.xyz);
       const moved = (r.moved || []).map(atomName);
@@ -1128,7 +1132,7 @@
     async function applyTarget(c) {
       if (c.value == null || useRef()) return;
       const r = await NB.call("apply_constraint_target", ta.value,
-        JSON.stringify({ kind: c.kind, atoms: c.atoms, value: c.value }));
+        JSON.stringify({ kind: c.kind, atoms: c.atoms, value: c.value }), drawnBonds());
       if (!r || !r.ok) { NB.fail((r && r.error) || "Could not move the coordinates."); return; }
       putText(r.xyz);
       stage.setHighlight(c.atoms);
@@ -1138,6 +1142,14 @@
           + "Ctrl+Z in the coordinates puts them back."
         : "Already at the target.", "ok");
       (r.warnings || []).forEach(w => NB.fail(w));
+    }
+
+    /** The bonds the stage draws, for an Apply to hinge on (the backend's
+     *  own reading of the Applied coordinates would see a contact as a bond);
+     *  "" to let it read them, when the box is not st.bondRef's molecule. */
+    function drawnBonds() {
+      return MOL.sameMolecule(MOL.parseXyz(ta.value), st.bondRef)
+        ? JSON.stringify(MOL.bonds(/** @type {any[]} */ (st.bondRef))) : "";
     }
 
     /** Replace the box's text as an EDIT of it: insertText rather than
@@ -1150,7 +1162,7 @@
       if (!document.execCommand("insertText", false, text)) ta.value = text;
       ta.scrollTop = top;
       clearTimeout(timer);
-      showGeom();
+      showGeom(true);
     }
 
     // ---- push along a mode (DESIGN.md §17.4p) ------------------------------
@@ -1183,7 +1195,8 @@
         stage.setAtoms(atoms);
         return;
       }
-      stage.setAtoms(MOL.parseXyz(r.xyz));
+      // a push along a mode is the same molecule moved
+      stage.setAtoms(MOL.parseXyz(r.xyz), { bondsFrom: [st.bondRef, atoms] });
       // an empty box previews the Hessian's own geometry, so the stage is not
       // empty whatever the box says
       const empty = q('[data-x="geomempty"]');
@@ -1251,10 +1264,16 @@
       });
     }
 
-    /** What is in the box, drawn — and the list re-measured against it. */
-    function showGeom() {
+    /** What is in the box, drawn — and the list re-measured against it.
+     *  `keep` when the box holds the molecule the stage drew, only moved (an
+     *  Apply, a push, a re-render): it keeps st.bondRef's bonds, where by
+     *  distance an angle opened to 180° drew an O–O bond. What the user types
+     *  or pastes (Ctrl+Z included) is bonded by distance again.
+     *  @param {boolean} [keep] */
+    function showGeom(keep) {
       atoms = MOL.parseXyz(ta.value);
-      stage.setAtoms(atoms);
+      if (!keep || !MOL.sameMolecule(atoms, st.bondRef)) st.bondRef = atoms;
+      stage.setAtoms(atoms, { bondsFrom: [st.bondRef] });
       picked = null; sayFix();
       const empty = q('[data-x="geomempty"]');
       if (empty) empty.hidden = atoms.length > 0;
@@ -1321,7 +1340,7 @@
       if (!useRef()) stage.repaint();
     }));
 
-    showGeom();
+    showGeom(true);   // a re-render: the box the last stage drew
   }
 
   /** The control under a labelled field, by the label's text. Shared by the

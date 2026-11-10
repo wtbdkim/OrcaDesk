@@ -186,6 +186,16 @@ _LOG_TAIL_BYTES_PER_LINE = 400
 _LOG_TAIL_MAX_BYTES = 4 << 20
 
 
+def _bond_pairs(bonds_json: str):
+    """A slot's `bonds_json` as a list, or None (empty or unreadable): perceive
+    the bonds from the coordinates instead."""
+    try:
+        v = json.loads(bonds_json) if bonds_json else None
+    except ValueError:
+        return None
+    return v if isinstance(v, list) else None
+
+
 def tail_lines(path, max_lines: int) -> "tuple[list[str], bool]":
     """The last `max_lines` lines of a text file, plus whether more precede
     them. Reads one bounded block from the END (never a full scan), so a
@@ -1117,14 +1127,16 @@ class Bridge(QObject):
         return json.dumps(AtomOrderPayload(
             **compare_atom_order(reactant_xyz, product_xyz)))
 
-    @pyqtSlot(str, str, result=str)
-    def apply_constraint_target(self, xyz: str, payload: str) -> str:
+    @pyqtSlot(str, str, str, result=str)
+    def apply_constraint_target(self, xyz: str, payload: str, bonds_json: str = "") -> str:
         """Move a constraint's atoms to its target value — one rigid motion of
         the smaller side of the hinge bond, so a group turns as a group. The
         payload is one GeomConstraint ({kind, atoms (0-based), value}); the
         answer is the coordinate text back with only the moved lines rewritten
         (ConstraintApplyPayload). Nothing is saved: the builder puts the text
-        in its own box, where the user can undo it."""
+        in its own box, where the user can undo it. `bonds_json` is the bonds
+        the stage draws, [[i, j], ...], which decide the hinge ("" = by
+        distance; structure._bond_list_of)."""
         try:
             c = json.loads(payload or "{}")
             if not isinstance(c, dict):
@@ -1134,15 +1146,17 @@ class Bridge(QObject):
                 ok=False, error="Unreadable constraint.", xyz="", moved=[],
                 before=None, after=None, warnings=[]))
         return json.dumps(ConstraintApplyPayload(**apply_constraint_target(
-            xyz, c.get("kind", ""), c.get("atoms") or [], c.get("value"))))
+            xyz, c.get("kind", ""), c.get("atoms") or [], c.get("value"),
+            _bond_pairs(bonds_json))))
 
-    @pyqtSlot(str, str, result=str)
-    def apply_constraint_targets(self, xyz: str, payload: str) -> str:
+    @pyqtSlot(str, str, str, result=str)
+    def apply_constraint_targets(self, xyz: str, payload: str, bonds_json: str = "") -> str:
         """Every constraint's target at once — the builder's *Apply all*: the
         same rigid turns as one Apply, taken in rounds until all of them hold,
         so targets that share atoms (three angles about one centre) stop
         undoing each other. The payload is the list of GeomConstraints; the
-        answer a ConstraintApplyAllPayload. Nothing is saved."""
+        answer a ConstraintApplyAllPayload. Nothing is saved. `bonds_json` as
+        for apply_constraint_target."""
         try:
             cs = json.loads(payload or "[]")
             if not isinstance(cs, list):
@@ -1151,7 +1165,8 @@ class Bridge(QObject):
             return json.dumps(ConstraintApplyAllPayload(
                 ok=False, error="Unreadable constraints.", xyz="", moved=[],
                 before=[], after=[], warnings=[]))
-        return json.dumps(ConstraintApplyAllPayload(**apply_constraint_targets(xyz, cs)))
+        return json.dumps(ConstraintApplyAllPayload(**apply_constraint_targets(
+            xyz, cs, _bond_pairs(bonds_json))))
 
     def _hess(self, path: str):
         """The parsed .hess at `path`, cached for the last one read and

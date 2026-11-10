@@ -35,7 +35,9 @@
    *  `at` is the state it was read at, which is what stops the re-read from
    *  becoming a loop: a DONE run whose output holds no geometry is asked once,
    *  not once per poll.
-   *  @type {Map<string, {final: boolean, at: string, atoms: any[]}>} */
+   *  `input` is the calculation's own coordinates, whose bonds `atoms` is
+   *  drawn with.
+   *  @type {Map<string, {final: boolean, at: string, atoms: any[], input: any[]|null}>} */
   const _geom = new Map();
   /** @type {Set<string>} */
   const _geomBusy = new Set();
@@ -393,7 +395,7 @@
       const cv = q(".thumb canvas");
       let st = _thumbs.get(cv);
       if (!st) { st = MOL.mount(cv, { gizmoBottom: 26, labels: false }); _thumbs.set(cv, st); }
-      if (st.__atoms !== geom) { st.setAtoms(geom); st.__atoms = geom; }
+      if (st.__atoms !== geom) { st.setAtoms(geom, { bondsFrom: [got.input] }); st.__atoms = geom; }
       // the trajectory, not this one frame: the thumbnail is the door to every
       // structure the run has written, which is what the big window is for
       q('.thumb [data-open="viewer"]').onclick = () => NB.mv.open({
@@ -499,20 +501,19 @@
       _geomBusy.add(c.name);
       (async () => {
         let atoms = null, final = false;
+        // wanted either way: a final geometry is drawn with the input's bonds
+        const input = await NB.inputAtoms("calc:" + c.name);
         if (c.state === "done") {
           const d = await NB.call("parse_calc_output", c.name);
           if (d && d.geometry && d.geometry.length) { atoms = d.geometry; final = true; }
         }
-        if (!atoms) {
-          const g = await NB.call("get_calc", c.name);
-          if (g && g.ok && g.calc && g.calc.xyz) atoms = MOL.parseXyz(g.calc.xyz);
-        }
+        if (!atoms) atoms = input;
         _geomBusy.delete(c.name);
         if (!atoms || !atoms.length) {
-          _geom.set(c.name, { final: false, at: c.state, atoms: [] });
+          _geom.set(c.name, { final: false, at: c.state, atoms: [], input: null });
           return;
         }
-        _geom.set(c.name, { final: final, at: c.state, atoms: atoms });
+        _geom.set(c.name, { final: final, at: c.state, atoms: atoms, input: input });
         repaintOne(c.name);
       })();
     });

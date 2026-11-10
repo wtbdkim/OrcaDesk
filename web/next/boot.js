@@ -137,6 +137,18 @@ var NB = {};
     }
   };
 
+  /** A queued calculation's input coordinates, parsed — whose bonds every
+   *  structure of that run is drawn with (setAtoms' bondsFrom). null for a
+   *  result folder, or a calculation whose geometry comes from another.
+   *  @param {string} source "calc:<name>", or a result folder
+   *  @returns {Promise<any[]|null>} */
+  NB.inputAtoms = async function (source) {
+    if (String(source || "").indexOf("calc:") !== 0) return null;
+    const g = await NB.call("get_calc", String(source).slice(5));
+    const atoms = g && g.ok && g.calc && g.calc.xyz ? MOL.parseXyz(g.calc.xyz) : [];
+    return atoms.length ? atoms : null;
+  };
+
   // ---------------------------------------------------------------- trackers
   /* The five convergence trackers are per CALCULATION: several can run at once
      and their tailed output arrives interleaved in one buffer, tagged with the

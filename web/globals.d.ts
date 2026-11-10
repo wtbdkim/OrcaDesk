@@ -49,8 +49,9 @@ interface OrcaBridge {
   // structure screening (Build tab; both over core/structure.py — read-only)
   check_structure(xyz: string, charge: number, multiplicity: number): Promise<string>;  // StructureCheck JSON
   compare_structures(reactantXyz: string, productXyz: string): Promise<string>;         // AtomOrder JSON
-  apply_constraint_target(xyz: string, constraintJson: string): Promise<string>;      // ConstraintApply JSON
-  apply_constraint_targets(xyz: string, constraintsJson: string): Promise<string>;    // ConstraintApplyAll JSON
+  // bondsJson: the drawn bonds, [[i, j], ...]; "" = perceived from the coordinates
+  apply_constraint_target(xyz: string, constraintJson: string, bondsJson: string): Promise<string>;      // ConstraintApply JSON
+  apply_constraint_targets(xyz: string, constraintsJson: string, bondsJson: string): Promise<string>;    // ConstraintApplyAll JSON
   read_hess_modes(path: string): Promise<string>;                                      // HessModes JSON
   displace_mode(xyz: string, path: string, index: number, amplitude: number): Promise<string>; // ModeShift JSON
   // one vibration of a finished result, matched to the report's numbering by
