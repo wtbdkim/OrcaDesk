@@ -2030,6 +2030,10 @@ rail's *Opened files*) is kept across launches until the user closes a row.
 A new calculation's form is a draft: closing it keeps it, the editbar says so
 (*draft · kept when you close it*), and *Start over* (§13.1 confirm) is the
 one way to throw it away.
+The Settings sheet, closed with unsaved edits, asks once (§13.1, three-way):
+*Save changes to settings?*, with [Cancel] [Discard] (danger) [Save] (primary,
+focused). Escape or a click outside the prompt is Cancel and never Discard
+(D61). Changing a field and changing it back is not "unsaved".
 
 **17.5 It is a preview, and it says what it is missing.** Classic stays the
 default; upgrading moves nobody. The switch is at the bottom of Settings in

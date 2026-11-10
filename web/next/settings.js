@@ -15,7 +15,14 @@
 
 (function () {
 
-  let _saving = false;
+  /** the save in flight, so a second click (or the close prompt's Save) waits
+   *  on it instead of sending another @type {Promise<boolean>|null} */
+  let _saving = null;
+  /** The form as it stood when it last matched what is saved -- read back out
+   *  of the sheet by collect(), so the comparison is like for like: a field
+   *  changed and changed back is not unsaved. null while the sheet is closed.
+   *  @type {Record<string, any>|null} */
+  let _baseline = null;
   /** the MLIP poll while the sheet is open, so a probe that finishes is seen
    *  without the user re-opening Settings @type {any} */
   let _mlipTimer = null;
@@ -37,6 +44,8 @@
   }
 
   function open() {
+    // already open: a re-render would throw away what is typed in it
+    if (!NB.$("settings").hidden) return;
     render();
     NB.$("scrim").hidden = false;
     NB.$("settings").hidden = false;
@@ -44,6 +53,7 @@
   function close() {
     NB.$("settings").hidden = true;
     NB.$("scrim").hidden = true;
+    _baseline = null;
     // the MLIP poll belongs to the open sheet, not to the session
     clearInterval(_mlipTimer);
     _mlipTimer = null;
@@ -231,7 +241,7 @@
     q('[data-a="orca-state"]').textContent = s.orca_valid
       ? "ORCA is set." : "Not set — an ORCA calculation will refuse to start.";
 
-    q('[data-a="close"]').addEventListener("click", close);
+    q('[data-a="close"]').addEventListener("click", () => requestClose());
     q('[data-a="pick-orca"]').addEventListener("click", async () => {
       const p = await NB.bridge.pick_orca_executable();
       if (p) q('[data-s="orca_path"]').value = p;
@@ -249,7 +259,7 @@
       const p = await NB.bridge.pick_workspace();
       if (p) q('[data-s="workspace_root"]').value = p;
     });
-    q('[data-a="save"]').addEventListener("click", () => save(host));
+    q('[data-a="save"]').addEventListener("click", () => { save(host); });
 
     // --- appearance: the slider only means something in the glass style
     const style = q('[data-s2="style"]');
@@ -301,6 +311,10 @@
       paintCrest(host, await NB.call("set_crest_distro", v));
     });
     loadCrest(host);
+
+    // what "unsaved" is measured against: the form exactly as it was drawn
+    // from the saved settings
+    _baseline = collect(host);
   }
 
   // ---------------------------------------------------------------- CREST
@@ -498,14 +512,14 @@
     }
   }
 
-  /** @param {HTMLElement} host */
-  async function save(host) {
-    if (_saving) return;
-    _saving = true;
+  /** The settings the sheet would save, read out of its fields -- one reader
+   *  for both the save and the unsaved-changes check, so the two cannot
+   *  disagree about what a field means.
+   *  @param {HTMLElement} host @returns {Record<string, any>} */
+  function collect(host) {
     const q = (sel) => /** @type {any} */ (host.querySelector(sel));
     const num = (k, d) => { const n = parseInt(q(`[data-s="${k}"]`).value, 10); return isFinite(n) ? n : d; };
-    const prevUi = (NB.settings && NB.settings.ui_variant) || "classic";
-    const payload = {
+    return {
       orca_path: q('[data-s="orca_path"]').value.trim(),
       workspace_root: q('[data-s="workspace_root"]').value.trim(),
       default_nprocs: num("default_nprocs", 6),
@@ -521,16 +535,78 @@
       theme_variant: q('[data-s2="style"]').value,
       glass_level: GLASS[Number(q('[data-s2="glass"]').value)] || "moderate",
     };
+  }
+
+  /** What each collected key is called on the sheet, for the close prompt. */
+  const LABELS = {
+    orca_path: "Path to orca", workspace_root: "Workspace folder",
+    default_nprocs: "Default nprocs", default_maxcore_mb: "Default maxcore",
+    max_concurrent_jobs: "Calculations at once", max_total_cores: "Total cores",
+    max_total_ram_mb: "Total memory", geo_graph_mode: "Optimization graph",
+    eta_mode: "Time remaining", ui_variant: "Layout", theme_variant: "Style",
+    glass_level: "Glass intensity",
+  };
+
+  /** The fields that differ from what is saved -- empty when closing loses
+   *  nothing. The MLIP and CREST cards act at once and are not part of it.
+   *  @param {HTMLElement} host @returns {string[]} */
+  function unsaved(host) {
+    if (!_baseline || !host || host.hidden || !host.querySelector('[data-s="orca_path"]')) return [];
+    const now = collect(host);
+    return Object.keys(now).filter(k => now[k] !== _baseline[k]);
+  }
+
+  /** Close the sheet -- after asking, when something on it is unsaved. Every
+   *  way out (the ×, Escape, the backdrop, a reload) comes through here.
+   *  Dismissing the question (Escape, its backdrop) is Cancel: the sheet stays.
+   *  @param {() => void} [after] run once the sheet has actually closed */
+  function requestClose(after) {
+    const host = NB.$("settings");
+    const done = () => { close(); if (after) after(); };
+    const keys = unsaved(host);
+    if (!keys.length) { done(); return; }
+    const one = keys.length === 1;
+    NB.modalRaw("Save changes to settings?",
+      `<p>${one ? "This setting is" : "These settings are"} changed but not saved:
+        ${keys.map(k => NB.esc(LABELS[k] || k)).join(", ")}.
+        <b>Closing without saving discards ${one ? "the change" : "them"}.</b></p>`,
+      [{ label: "Cancel", cls: "btn-ghost" },
+       { label: "Discard", cls: "btn-danger", act: done },
+       { label: "Save", cls: "btn-primary", focus: true,
+         act: async () => { if (await save(host)) done(); } }]);
+  }
+
+  /** Save the sheet. Resolves true only on a clean save -- a refused one, or
+   *  one the backend applied but could not write to disk, leaves the sheet
+   *  open with its error toasted and its changes still counted as unsaved.
+   *  @param {HTMLElement} host @returns {Promise<boolean>} */
+  function save(host) {
+    if (!_saving) _saving = doSave(host).finally(() => { _saving = null; });
+    return _saving;
+  }
+
+  /** @param {HTMLElement} host @returns {Promise<boolean>} */
+  async function doSave(host) {
+    const q = (sel) => /** @type {any} */ (host.querySelector(sel));
+    const prevUi = (NB.settings && NB.settings.ui_variant) || "classic";
+    const payload = collect(host);
     const res = await NB.call("save_settings", JSON.stringify(payload));
-    _saving = false;
-    if (!res || res.error) { NB.fail("Could not save settings: " + ((res && res.error) || "unknown")); return; }
+    if (!res || res.error) { NB.fail("Could not save settings: " + ((res && res.error) || "unknown")); return false; }
     NB.settings = res;
     NB.$("ws-path").title = res.workspace_root;
     NB.$("ws-path").textContent = NB.shortPath(res.workspace_root);
     NB.renderPills();
     if (SCFGraph.setEtaMode) SCFGraph.setEtaMode(res.eta_mode);
     if (SCFGraph.setGeoMode) SCFGraph.setGeoMode(res.geo_graph_mode);
-    if (res.save_error) { NB.fail(res.save_error); return; }
+    if (res.save_error) { NB.fail(res.save_error); return false; }
+    // The backend clamps the numbers (nprocs 0 is saved as 1): show what was
+    // saved, then measure "unsaved" from it, so closing now asks nothing.
+    host.querySelectorAll("[data-s]").forEach(el => {
+      const inp = /** @type {any} */ (el);
+      const v = res[inp.dataset.s || ""];
+      if (v != null) inp.value = String(v);
+    });
+    _baseline = collect(host);
     const saved = q('[data-a="saved"]');
     saved.textContent = "Saved.";
     setTimeout(() => { const e = q('[data-a="saved"]'); if (e) e.textContent = ""; }, 2000);
@@ -538,6 +614,7 @@
     // it would run. The setting is already on disk, so the incoming front-end
     // reads the choice that brought it up.
     if (res.ui_variant !== prevUi) NB.bridge.reload_ui();
+    return true;
   }
 
   function init() {
@@ -548,5 +625,5 @@
     }
   }
 
-  NB.settingsView = { init: init, open: open, close: close, render: render };
+  NB.settingsView = { init: init, open: open, close: close, requestClose: requestClose, render: render };
 })();
