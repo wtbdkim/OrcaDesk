@@ -202,8 +202,8 @@ run controls) → `build.js` (the builder — a cell becomes the form) →
 `NB` (and `MOL`).
 The rail holds three state groups, of which only **Finished** folds and carries
 its own *Clear* (queue-list only — no folder is touched), plus an **Opened
-files** group listing results read from outside the workspace this session,
-whose header is also the rail's *Open file…*; `results.js` hands each one over
+files** group listing results read from outside the workspace (kept across
+launches in `ui_state.json`, see *Front-end state across launches*), whose header is also the rail's *Open file…*; `results.js` hands each one over
 through `NB.rail.noteOpened`. A click on a row in Jobs expands it (in Results
 a finished row's click opens its report instead — the rail is the picker
 there); the row expands (`.qdet`) into the design's own
@@ -405,13 +405,26 @@ endpoints keep `-> dict` and only *construct* through the schema types.
 
 In the **notebook preview** the Results window has no result picker of its own:
 the rail is the picker (DESIGN.md §17.0e), *Open file… / Open folder…* bring in
-anything else and put it in the rail's **Opened files** group, and the toolbar's
+anything else and put it in the rail's **Opened files** group (kept across
+launches, see below), and the toolbar's
 `Output | Visual` pair jumps to a section rather than switching a mode — Visual
 is one of the report's sections there. `list_workspace_results` is therefore
 unused by `web/next/` (the classic UI still uses it). A finished cell also
 carries **New from this**, which opens the builder on a NEW calculation already
 referencing that run (`NB.build.open("", seed)`); the geometry is a reference,
 resolved at run time by the same `_resolve_geometry` path as opt→freq.
+
+**Front-end state across launches** (`orcamgr/uistate.py`, slots
+`get_ui_state(key)` / `set_ui_state(key, valueJson)`). The Qt 6 default
+WebEngine profile is off-the-record, so `localStorage` only lasts one sitting
+(the display style in `mol.js` is per-sitting for that reason). What a window
+must find again on the next launch goes to `ui_state.json` under
+`user_data_root()`: a flat `{key: JSON}` map written tmp + `os.replace`, keys
+≤ 64 chars, values ≤ 1 MB, `"null"` removes a key. A missing or corrupt file
+reads as empty and a failed write is returned as data. It holds conveniences
+only, never queue state. Keys: `rail.opened` (the Opened files rows, newest
+first, ≤ 50; the file is re-read on click, so a moved file reports itself
+then).
 
 **Hidden for now, in both front-ends:** the reaction profile below and
 ORCAdesk's own natural-orbital section (`SHOW_PROFILE` / `SHOW_OWN_NBO` at the
