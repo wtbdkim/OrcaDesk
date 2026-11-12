@@ -1956,8 +1956,17 @@ the coordinate**, in the coordinate's own unit (Å or °). The highest point is
 marked and named in the section's sentence, since a scan is most often run to
 find it. The table under the chart lists every point. A scan that stopped
 part-way says *3 of 5 points* and that the rest are missing, never presenting
-the finished part as the whole. A 2-D or 3-D scan is listed, not drawn: one
-line through a grid would invent neighbours. Each point's optimized structure
+the finished part as the whole. A 2-D scan is drawn as its grid, never as a
+line, because one line through a grid would invent neighbours. The first
+coordinate runs across and the second up. Each point is a mark joined to
+nothing, and its **area** is its ΔE, so energies are compared by size. The
+highest point is red (`--surf-hi`) and the lowest blue (`--surf-lo`, ringed,
+since it is also the smallest mark). The key under the plot names both with
+their ΔE and coordinates, so colour is never the only cue. A planned point the
+run never reached is a small ring, so a stopped scan shows its hole instead of
+passing for a smaller grid. The point is read on hover, and the arrow keys step
+along a row or column. A 3-D or larger scan is listed, not drawn: the page has
+two axes. Each point's optimized structure
 is the *Scan points* set in Visual, `Step 1 … Step n` in scan order, each
 frame carrying its energy.
 

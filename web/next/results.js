@@ -436,13 +436,31 @@
     const head = ["Point"].concat(coords.map(c => `${name(c)} (${unit(c)})`))
       .concat(["ΔE (kcal/mol)", "Energy (Eh)"]);
 
-    if (coords.length > 1) {
+    if (coords.length === 2) {
       // A grid is a surface, and one line through it would be a lie about
-      // which neighbours are neighbours. Listed, not drawn.
+      // which neighbours are neighbours: each point is drawn where it sits,
+      // joined to nothing, its size its energy.
+      const low = pts.reduce((a, b) => (b.de_kcal < a.de_kcal ? b : a));
+      /** "N18–S2 1.800 Å, O4–S2 2.700 Å" @param {any} p */
+      const at = (p) => coords.map((c, k) => name(c).replace(/^\S+ /, "")
+        + ` ${val(c, p.values[k])} ${unit(c)}`).join(", ");
+      return sec("sec-scan", "Relaxed surface scan", meta,
+        `A 2-dimensional scan over ${coords.map(name).map(NB.esc).join(" and ")}; each point `
+        + "is an optimization with both held, the rest of the structure relaxed. A larger point "
+        + "is higher in energy. ΔE is against the lowest point, "
+        + `<b>${NB.esc(at(low))}</b>; the highest, `
+        + `<b>${NB.esc(at(top))}</b>, is ${top.de_kcal.toFixed(2)} kcal/mol `
+        + "above it. Its structures are the scan points in <b>Visual</b>." + stopped,
+        plate(surface(coords, pts, top, low, cw, name, unit, val)) + tw(head, rows),
+        "wide");
+    }
+    if (coords.length > 2) {
+      // Three coordinates are a volume; the page has two axes. Listed.
       return sec("sec-scan", "Relaxed surface scan", meta,
         `A ${coords.length}-dimensional scan over ${coords.map(name).map(NB.esc).join(" and ")}; `
         + "each point is an optimization with those coordinates held. ΔE is against the "
-        + "lowest point. A surface is listed here, not drawn." + stopped,
+        + "lowest point. A scan over more than two coordinates is listed here, not drawn."
+        + stopped,
         tw(head, rows), "wide");
     }
     const c = coords[0];
@@ -458,6 +476,121 @@
                   { xlab: `${name(c)} (${unit(c)})`, ylab: "ΔE (kcal/mol)" }))
       + tw(head, rows),
       "wide");
+  }
+
+  /** A 2-D relaxed surface scan as its grid (DESIGN.md §17.4r): the first
+   *  coordinate across, the second up, one point per finished optimization
+   *  where its two values put it. The point's AREA is its ΔE, so the eye
+   *  compares energies by size; the highest is red and the lowest blue, and
+   *  both are named under the plot, so colour is never the only cue. A
+   *  planned point the run did not reach is a small ring, so a stopped scan
+   *  shows its hole instead of looking like a smaller grid.
+   *  @param {any[]} coords @param {any[]} pts @param {any} top @param {any} low
+   *  @param {number} w @param {(c: any) => string} name
+   *  @param {(c: any) => string} unit @param {(c: any, v: number) => string} val */
+  function surface(coords, pts, top, low, w, name, unit, val) {
+    const [cx, cy] = coords;
+    /** The values ORCA was asked to visit: start to end in `steps`.
+     *  @param {any} c @returns {number[]} */
+    const planned = (c) => {
+      const n = Math.max(1, c.steps | 0);
+      return n === 1 ? [c.start]
+        : Array.from({ length: n }, (_, i) => c.start + ((c.end - c.start) * i) / (n - 1));
+    };
+    const gx = planned(cx), gy = planned(cy);
+    /** half a grid step, so the outermost points sit inside the frame
+     *  @param {number[]} g */
+    const half = (g) => (g.length > 1 ? Math.abs(g[1] - g[0]) / 2 : 0.5);
+    const xv = gx.concat(pts.map(p => p.values[0]));
+    const yv = gy.concat(pts.map(p => p.values[1]));
+    const x0 = Math.min(...xv) - half(gx), x1 = Math.max(...xv) + half(gx);
+    const y0 = Math.min(...yv) - half(gy), y1 = Math.max(...yv) + half(gy);
+
+    const L = 64, R = 16, T = 12, B = 44;
+    const iw = Math.max(w - L - R, 120);
+    // cells as near square as the width allows, the plot never taller than a screenful
+    const ih = Math.round(Math.max(160, Math.min(440, (iw * gy.length) / gx.length)));
+    const h = T + ih + B;
+    const px = (v) => L + ((v - x0) / (x1 - x0)) * iw;
+    const py = (v) => T + ih - ((v - y0) / (y1 - y0)) * ih;
+    const cell = Math.min(iw / gx.length, ih / gy.length);
+    // a 2px gap between the two largest neighbours; the smallest still a target
+    const rMax = Math.max(4, cell / 2 - 2), rMin = Math.min(3, rMax * 0.5);
+    const span = top.de_kcal - low.de_kcal;
+    /** area, not radius, in proportion to ΔE @param {number} de */
+    const rad = (de) => Math.sqrt(rMin * rMin
+      + (span > 0 ? (de - low.de_kcal) / span : 0) * (rMax * rMax - rMin * rMin));
+
+    // recessive grid: one line per planned value, labelled when there is room
+    const every = (n, room) => Math.max(1, Math.ceil(n / Math.max(1, Math.floor(room))));
+    const sx = every(gx.length, iw / 44), sy = every(gy.length, ih / 18);
+    let grid = "";
+    gx.forEach((v, i) => {
+      const x = px(v).toFixed(1);
+      grid += `<line x1="${x}" y1="${T}" x2="${x}" y2="${T + ih}" stroke="var(--grid)" stroke-width="1"/>`;
+      if (i % sx === 0) grid += `<text x="${x}" y="${T + ih + 16}" text-anchor="middle" font-size="10"
+        fill="var(--muted-foreground)">${val(cx, v)}</text>`;
+    });
+    gy.forEach((v, i) => {
+      const y = py(v).toFixed(1);
+      grid += `<line x1="${L}" y1="${y}" x2="${L + iw}" y2="${y}" stroke="var(--grid)" stroke-width="1"/>`;
+      if (i % sy === 0) grid += `<text x="${L - 8}" y="${(py(v) + 3.5).toFixed(1)}" text-anchor="end"
+        font-size="10" fill="var(--muted-foreground)">${val(cy, v)}</text>`;
+    });
+
+    // where the run never got to: a planned value pair with no point near it
+    const near = (a, b, g) => Math.abs(a - b) < half(g) / 2;
+    let holes = "";
+    gx.forEach(x => gy.forEach(y => {
+      if (!pts.some(p => near(p.values[0], x, gx) && near(p.values[1], y, gy))) {
+        holes += `<circle cx="${px(x).toFixed(1)}" cy="${py(y).toFixed(1)}" r="2.5"
+          fill="none" stroke="var(--muted-foreground)" stroke-width="1" opacity=".6"/>`;
+      }
+    }));
+
+    // the big ones first, so a small neighbour is never hidden under one
+    const order = pts.map((p, i) => i).sort((a, b) => pts[b].de_kcal - pts[a].de_kcal);
+    const dots = order.map(i => {
+      const p = pts[i];
+      const tone = p === top ? "hi" : p === low ? "lo" : "";
+      const x = px(p.values[0]).toFixed(1), y = py(p.values[1]).toFixed(1);
+      // the lowest is also the SMALLEST mark: a ring makes it findable
+      const ring = p === low ? `<circle class="spring" cx="${x}" cy="${y}"
+        r="${(rad(p.de_kcal) + 4).toFixed(1)}"/>` : "";
+      return ring + `<circle class="sp${tone ? " " + tone : ""}" data-px="${x}" data-py="${y}"
+        data-lab="${NB.esc(`Point ${i + 1} · ${val(cx, p.values[0])}, ${val(cy, p.values[1])} · `
+          + `ΔE ${p.de_kcal.toFixed(2)} kcal/mol · ${p.e_eh.toFixed(6)} Eh`)}"
+        cx="${x}" cy="${y}" r="${rad(p.de_kcal).toFixed(1)}"/>`;
+    }).join("");
+
+    const xl = `${name(cx)} (${unit(cx)})`, yl = `${name(cy)} (${unit(cy)})`;
+    const svg = `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img"
+        data-hover="1" data-grid="1" tabindex="0"
+        aria-label="ΔE over ${NB.esc(xl)} and ${NB.esc(yl)}, one point per optimization, larger is higher. Hover a point for its value, or use the arrow keys">
+      ${grid}
+      <rect x="${L}" y="${T}" width="${iw}" height="${ih}" fill="none" stroke="var(--border)"/>
+      ${holes}${dots}
+      <text x="${L + iw / 2}" y="${h - 6}" text-anchor="middle" font-size="10.5"
+        fill="var(--muted-foreground)">${NB.esc(xl)}</text>
+      <text x="17" y="${T + ih / 2}" text-anchor="middle" font-size="10.5"
+        fill="var(--muted-foreground)" transform="rotate(-90 17 ${T + ih / 2})">${NB.esc(yl)}</text>
+    </svg>`;
+
+    // the key: what red, blue and size mean, in words and numbers
+    const at = (p) => `${val(cx, p.values[0])}, ${val(cy, p.values[1])}`;
+    const swatch = (cls, r) =>
+      `<svg width="${2 * r + 2}" height="${2 * r + 2}" aria-hidden="true"><circle class="sp ${cls}"
+        cx="${r + 1}" cy="${r + 1}" r="${r}"/></svg>`;
+    const key = `<div class="surfkey">
+      <span>${swatch("hi", 5)}Highest <b>${top.de_kcal.toFixed(2)}</b> kcal/mol · ${NB.esc(at(top))}</span>
+      <span><svg width="16" height="16" aria-hidden="true"><circle class="spring" cx="8" cy="8"
+        r="7"/><circle class="sp lo" cx="8" cy="8" r="3"/></svg>Lowest <b>0.00</b> kcal/mol · ${
+        NB.esc(at(low))}</span>
+      <span>${swatch("", 3)}${swatch("", 6)}Area ∝ ΔE</span>
+      ${holes ? `<span><svg width="8" height="8" aria-hidden="true"><circle cx="4" cy="4" r="2.5"
+        fill="none" stroke="var(--muted-foreground)" stroke-width="1"/></svg>Not reached</span>` : ""}
+    </div>`;
+    return `<div class="chart">${svg}<div class="chtip" role="status" hidden></div></div>${key}`;
   }
 
   /** What the NBO program printed into the .out (`! NBO`), read by the parser.
@@ -1563,20 +1696,26 @@
   function bindCharts(host) {
     host.querySelectorAll(".chart svg[data-hover]").forEach((n) => {
       const svg = /** @type {any} */ (n);
-      const sticks = /** @type {any[]} */ ([...svg.querySelectorAll(".stk,.pt")]);
+      const sticks = /** @type {any[]} */ ([...svg.querySelectorAll(".stk,.pt,.sp")]);
       const box = svg.parentElement, tip = box && box.querySelector(".chtip");
+      // a surface (`data-grid`) is read in two dimensions: the nearest point in
+      // the plane, no cursor line, and the arrows step across AND up
+      const grid = svg.dataset.grid === "1";
       const cur = svg.querySelector(".chi");
-      if (!sticks.length || !tip || !cur) return;
+      if (!sticks.length || !tip || (!cur && !grid)) return;
       const xs = sticks.map(s => parseFloat(s.getAttribute("data-px")));
+      const ys = sticks.map(s => parseFloat(s.getAttribute("data-py") || "0"));
       let at = -1;
 
       /** @param {number} i */
       const show = (i) => {
         if (i < 0 || i >= sticks.length) return;
         at = i;
-        cur.setAttribute("x1", String(xs[i]));
-        cur.setAttribute("x2", String(xs[i]));
-        cur.style.opacity = "1";
+        if (cur) {
+          cur.setAttribute("x1", String(xs[i]));
+          cur.setAttribute("x2", String(xs[i]));
+          cur.style.opacity = "1";
+        }
         sticks.forEach((s, k) => s.classList.toggle("on", k === i));
         tip.textContent = sticks[i].getAttribute("data-lab");
         tip.hidden = false;
@@ -1592,16 +1731,36 @@
       const hide = () => {
         at = -1;
         tip.hidden = true;
-        cur.style.opacity = "0";
+        if (cur) cur.style.opacity = "0";
         sticks.forEach(s => s.classList.remove("on"));
       };
-      /** @param {number} clientX */
-      const nearest = (clientX) => {
+      /** @param {number} clientX @param {number} [clientY] */
+      const nearest = (clientX, clientY) => {
         const b = svg.getBoundingClientRect();
-        const ux = (clientX - b.left) * (svg.viewBox.baseVal.width / b.width);
+        const k = svg.viewBox.baseVal.width / b.width;
+        const ux = (clientX - b.left) * k;
+        const uy = grid && clientY != null ? (clientY - b.top) * k : 0;
+        const d = (/** @type {number} */ i) => grid
+          ? Math.hypot(xs[i] - ux, ys[i] - uy) : Math.abs(xs[i] - ux);
         let best = 0;
         for (let i = 1; i < xs.length; i++) {
-          if (Math.abs(xs[i] - ux) < Math.abs(xs[best] - ux)) best = i;
+          if (d(i) < d(best)) best = i;
+        }
+        return best;
+      };
+      /** The next point on a surface in one direction: the closest one that
+       *  lies that way, a step off the row or column counting four times its
+       *  length, so → stays on its row while the row has more.
+       *  @param {number} dx @param {number} dy @returns {number} */
+      const step = (dx, dy) => {
+        if (at < 0) return 0;
+        let best = at, cost = Infinity;
+        for (let i = 0; i < xs.length; i++) {
+          const along = (xs[i] - xs[at]) * dx + (ys[i] - ys[at]) * dy;
+          if (along <= 0.5) continue;
+          const off = Math.abs((xs[i] - xs[at]) * dy) + Math.abs((ys[i] - ys[at]) * dx);
+          const c = along + 4 * off;
+          if (c < cost) { cost = c; best = i; }
         }
         return best;
       };
@@ -1612,12 +1771,17 @@
         ? (/** @type {number} */ i) => showMode(i + 1) : null;
       if (pick) svg.addEventListener("click", (/** @type {any} */ e) => pick(nearest(e.clientX)));
 
-      svg.addEventListener("pointermove", (/** @type {any} */ e) => show(nearest(e.clientX)));
+      svg.addEventListener("pointermove",
+        (/** @type {any} */ e) => show(nearest(e.clientX, e.clientY)));
       svg.addEventListener("pointerleave", hide);
       svg.addEventListener("blur", hide);
       svg.addEventListener("keydown", (/** @type {any} */ e) => {
         let i = at;
-        if (e.key === "ArrowRight") i = at < 0 ? 0 : Math.min(sticks.length - 1, at + 1);
+        if (grid && /^Arrow/.test(e.key)) {
+          i = step(e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0,
+                   e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0);
+        }
+        else if (e.key === "ArrowRight") i = at < 0 ? 0 : Math.min(sticks.length - 1, at + 1);
         else if (e.key === "ArrowLeft") i = at < 0 ? sticks.length - 1 : Math.max(0, at - 1);
         else if (e.key === "Home") i = 0;
         else if (e.key === "End") i = sticks.length - 1;

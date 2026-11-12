@@ -1358,3 +1358,30 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
    that left a third of the window as scrim around the one view whose whole job
    is to be big. (uidiff.py PER_LANDMARK_SKIP.) */
 .mvwin{width:calc(100% - 48px); height:calc(100% - 48px);}
+
+/* ---------------------------- the scan surface ----------------------------
+   An addition to the reference (DESIGN.md §17.4r): a 2-D relaxed surface scan
+   is drawn as its grid, each point's AREA its energy. The highest point is red
+   and the lowest blue -- named in the key under the plot as well, and the
+   largest and smallest mark besides, so the colour is never the only cue.
+   Their own tokens, not --err/--ok: those are states, and a scan's highest
+   point is not an error. The rest are the neutral ink, half strength, so
+   the two ends are what stands out. */
+:root{ --surf-hi:#f2555a; --surf-lo:#4f86f7; }
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){ --surf-hi:#dc2626; --surf-lo:#2563eb; }
+}
+:root[data-theme="light"]{ --surf-hi:#dc2626; --surf-lo:#2563eb; }
+.chart svg[data-grid]{cursor:default;}
+.sp{fill:var(--muted-foreground); fill-opacity:.55;
+  stroke:var(--card); stroke-width:1.5; paint-order:stroke;}
+.sp.hi{fill:var(--surf-hi); fill-opacity:1;}
+.sp.lo{fill:var(--surf-lo); fill-opacity:1;}
+.spring{fill:none; stroke:var(--surf-lo); stroke-width:1.5; pointer-events:none;}
+.chart .sp{pointer-events:none;}
+.chart .sp.on{stroke:var(--foreground); stroke-width:2;}
+.surfkey{display:flex; flex-wrap:wrap; gap:6px 18px; margin-top:10px;
+  font-size:12px; color:var(--muted-foreground); font-variant-numeric:tabular-nums;}
+.surfkey span{display:inline-flex; align-items:center; gap:6px;}
+.surfkey b{color:var(--foreground); font-weight:600;}
+.surfkey svg{display:block; flex:none;}

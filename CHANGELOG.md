@@ -33,6 +33,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   are not affected.
 
 ### Added
+- **A 2-D relaxed surface scan is drawn as its grid in the notebook report.**
+  Each point sits where its two coordinates put it, and its size is its energy
+  (area in proportion to ΔE). The highest point is red and the lowest blue, and
+  the key under the plot names both with their ΔE and coordinates. Hovering a
+  point shows its number, coordinates, ΔE and energy; the arrow keys move along
+  the grid. Points a stopped scan never reached show as small rings. The table
+  of every point stays under the plot. A scan over three or more coordinates is
+  still listed only.
 - **An IRC or NEB-TS energy profile reads point by point.** In the notebook
   report, hovering the *Reaction path* chart shows the nearest point's step (or
   image) number, its ΔE in kcal/mol and its energy in Eh; ←/→/Home/End step
