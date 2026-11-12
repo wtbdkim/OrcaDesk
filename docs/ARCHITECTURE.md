@@ -80,7 +80,14 @@ cursor and the plate is a `role="status"`, so the numbers are never hover-only.
 DESIGN.md §17.4b. A line chart takes the same `hover` option: its points carry
 the label (`.pt` beside `.stk`, one `bindCharts` for both). The IRC / NEB-TS
 *Reaction path* uses it for "Step n · ΔE · E(Eh)"; its table stays, because a
-path is tens of points, not a hundred overlapping bands.
+path is tens of points, not a hundred overlapping bands. A 2-D relaxed surface
+scan is a third shape, `surface()`: a grid with each point's area its ΔE, the
+highest `.sp.hi` (red, `--surf-hi`) and the lowest `.sp.lo` (blue, `--surf-lo`,
+ringed because it is also the smallest mark). Its svg carries `data-grid`, and
+`bindCharts` then reads it in two dimensions: the nearest point in the plane
+wins, there is no cursor line, and ←/→/↑/↓ step along the row or column
+(`step`). Planned points the run never reached are rings, so a stopped scan
+shows its hole. A scan over three or more coordinates stays a table.
 
 A band is also a control: a click, or Enter on the cursor (`chart(..., {pick:
 "mode"})`), and the per-imaginary-mode buttons under the spectrum (`modeJump`)
