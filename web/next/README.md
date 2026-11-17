@@ -1,6 +1,9 @@
 # Editing the notebook front-end
 
-This folder is the **notebook UI**, the desktop window's only front-end.
+This folder is the **notebook UI**, the desktop's only front-end. It serves
+**two windows**: the main window (Jobs + Results + the queue rail) and the
+queue window (the queue editor). Both load `index.html`; the URL says which
+one the page is (see *Two windows, one page* below).
 It is a plain HTML/CSS/JS page — no build step, no bundler, no framework — so
 changing how it looks is: edit a file, save, press a key.
 
@@ -36,11 +39,12 @@ launching. Any port above 1024 works. It is off unless you set it.)
 
 | file | what it draws |
 |------|---------------|
-| `index.html` | the shell: top bar, rail, stream, results window, overlays |
+| `index.html` | the shell: top bar, rail, stream, results window, the queue editor's root (`#qed`), overlays |
 | `app.css` | **everything visual.** One file, sectioned by region |
-| `boot.js` | channel, polled queue/log, per-calculation trackers, routing, toast/modal |
-| `rail.js` | the queue rail — groups, rows, drag reorder, run controls |
-| `build.js` | the builder (a cell becomes the form) |
+| `boot.js` | channel, polled queue/log, per-calculation trackers, routing (`?win=`, dropped files, the hand-over to the queue window), toast/modal |
+| `rail.js` | the main window's queue rail — the queue's status, run controls, *Open queue* |
+| `build.js` | the builder (a cell becomes the form); hosted in the queue editor's inspector |
+| `qed.js` | the queue window: inp-set library, lanes of nodes and edges, inspector, undo |
 | `stream.js` | one cell per calculation: thumbnail, chart, output, facts |
 | `results.js` | the report — sections, charts, input/output, reaction profile |
 | `settings.js` | the settings slide-over |
@@ -53,6 +57,27 @@ Colours, radii, fonts and the rail width are **tokens** at the top of `app.css`
 (`:root` for dark, `html[data-theme="light"]` for light). Changing a token
 changes everywhere it is used, in both themes — that is almost always the edit
 you want, rather than a rule further down.
+
+## Two windows, one page
+
+`window.py` loads `index.html?win=main` in the main window and
+`index.html?win=queue` in the queue window, each with its own QWebChannel to
+the same Bridge. `boot.js` reads the query into `NB.win` and
+`<html data-win>`; anything but `queue` (no query included) is the main
+window. In the queue window `.app` is not drawn, `rail.js` / `stream.js` /
+`results.js` stay idle, and the poll skips the log and the output replay;
+`qed.js` draws `#qed`. The settings sheet, modal, toasts and the builder work
+in both.
+
+The two pages share no JS. What the main window asks of the queue window (open
+the builder with a seed, load a dropped `.inp`, show a calculation) is written
+to the UI-state key `queue.handoff` by `NB.handOff()`, which then calls
+`open_queue_window`; the queue window takes it on its next poll while on
+screen. The editor holds no queue state: every change is an
+`apply_queue_ops` batch, and Ctrl+Z sends the inverse batch. DESIGN.md §17.6.
+
+To work on the queue window, open it (*Open queue*) and press F5 in it: it
+reloads on its own, like the main window.
 
 ## Keeping it honest
 

@@ -23,7 +23,7 @@
 
 /**
  * One calculation as it appears in the polled queue snapshot.
- * Mirror of calc_to_dict() in orcamgr/state/store.py — 14 keys, all
+ * Mirror of calc_to_dict() in orcamgr/state/store.py — 26 keys, all
  * always present.
  * @typedef {Object} CalcSummary
  * @property {string} name              unique; doubles as the on-disk folder name
@@ -42,6 +42,21 @@
  * @property {string} crest_method      crest* kinds: tight-binding method; "" otherwise
  * @property {boolean} faulted          running only: ORCA reported a fatal error
  *                                      but its process is still alive
+ * @property {string} system            queue editor lane (system id); "" = standalone
+ * @property {string} node              node id within the lane; stack members share it
+ * @property {number} col               grid column of the node
+ * @property {number} row               grid row of the node
+ * @property {string} after             calc this one runs after (edge source); "" = root
+ * @property {"auto"|"approval"} gate   the edge's gate
+ * @property {boolean} auto_pass        approval gate after a Freq passes by itself
+ *                                      on the expected imaginary-mode count
+ * @property {boolean} approved         the user approved the gate
+ * @property {""|"irc_f"|"irc_b"} ref_point  which geometry of ref_name: final,
+ *                                      or the IRC's forward / backward end
+ * @property {string} set_name          display only: the inp set it came from
+ * @property {boolean} waiting          derived: its `after` is DONE but the
+ *                                      approval gate is closed — the run skips
+ *                                      it and leaves it pending
  */
 
 /**
@@ -65,6 +80,51 @@
  *                                      the budgets live on the engine, so an
  *                                      idle client shows the limits from
  *                                      SettingsPayload instead
+ * @property {SystemSummary[]} systems  the queue editor's lanes, in order
+ *                                      (inputs by label; get_system has the xyz)
+ */
+
+/**
+ * @typedef {Object} SystemInputSummary
+ * @property {string} label
+ */
+
+/**
+ * A lane as the poll carries it. Mirror of store.system_summary.
+ * @typedef {Object} SystemSummary
+ * @property {string} id
+ * @property {string} name              prefix of every calc name in the lane
+ * @property {number} charge
+ * @property {number} multiplicity
+ * @property {SystemInputSummary[]} inputs
+ */
+
+/**
+ * @typedef {Object} SystemInput
+ * @property {string} label
+ * @property {string} xyz               coordinate block (no .xyz header)
+ */
+
+/**
+ * A lane in full (get_system; the add_system / update_system payloads).
+ * Mirror of store.system_from_dict.
+ * @typedef {Object} SystemFull
+ * @property {string} id
+ * @property {string} name
+ * @property {number} charge
+ * @property {number} multiplicity
+ * @property {SystemInput[]} inputs
+ */
+
+/**
+ * A saved input template. Mirror of InpSet in schemas.py (state/inpsets.py).
+ * @typedef {Object} InpSet
+ * @property {string} id
+ * @property {string} name
+ * @property {"MLIP"|"Opt"|"OptTS"|"Freq"|"IRC"|"SP"} kind
+ * @property {string} text   raw ORCA input with {{GEOMETRY}} {{CHARGE}} {{MULT}}
+ *                           {{HESS}}; MLIP: "key value" lines (model, device,
+ *                           nprocs, env)
  */
 
 /**
@@ -167,7 +227,7 @@
 
 /**
  * Full-fidelity calculation, as returned by get_calc() ("calc" key).
- * Mirror of calc_to_session_dict() in orcamgr/state/store.py — 15 keys.
+ * Mirror of calc_to_session_dict() in orcamgr/state/store.py — 25 keys.
  * @typedef {Object} CalcFull
  * @property {string} name
  * @property {string} kind
@@ -184,6 +244,16 @@
  * @property {string} output_path
  * @property {number|null} pid              detached ORCA pid while RUNNING
  * @property {number|null} create_time      process create time (pid-reuse guard)
+ * @property {string} system
+ * @property {string} node
+ * @property {number} col
+ * @property {number} row
+ * @property {string} after
+ * @property {"auto"|"approval"} gate
+ * @property {boolean} auto_pass
+ * @property {boolean} approved
+ * @property {""|"irc_f"|"irc_b"} ref_point
+ * @property {string} set_name
  */
 
 /**
@@ -204,6 +274,29 @@
  * @property {string} [raw_text]
  * @property {string} [state]    sent by the UI, ignored by calc_from_dict
  * @property {string} [message]  sent by the UI, ignored by calc_from_dict
+ * @property {string} [system]
+ * @property {string} [node]
+ * @property {number} [col]
+ * @property {number} [row]
+ * @property {string} [after]
+ * @property {"auto"|"approval"} [gate]
+ * @property {boolean} [auto_pass]
+ * @property {boolean} [approved]
+ * @property {""|"irc_f"|"irc_b"} [ref_point]
+ * @property {string} [set_name]
+ */
+
+/**
+ * One queue-editor operation for apply_queue_ops (QueueStore.apply_ops).
+ * update_calc's `calc` is a PATCH: keys it leaves out keep their value.
+ * remove_system also removes the lane's (unstarted) calcs.
+ * @typedef {{op: "add_system", system: Partial<SystemFull> & {name: string}}
+ *   | {op: "update_system", id: string, patch: {name?: string, charge?: number, multiplicity?: number, inputs?: SystemInput[]}}
+ *   | {op: "remove_system", id: string}
+ *   | {op: "add_calc", calc: CalcInput}
+ *   | {op: "update_calc", name: string, calc: Partial<CalcInput>}
+ *   | {op: "remove_calc", name: string}
+ *   | {op: "order", names: string[]}} QueueOp
  */
 
 /* ---------- log (orcamgr/state/store.py log_since) ---------- */
@@ -564,6 +657,59 @@
  * @property {boolean} ok
  * @property {string} [error]
  * @property {CalcFull} [calc]
+ */
+
+/**
+ * get_inp_sets() result.
+ * @typedef {Object} InpSetsResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {InpSet[]} [sets]
+ */
+
+/**
+ * save_inp_set(json) / delete_inp_set(id) result; `set` (save only) is the
+ * set as stored, with its id.
+ * @typedef {Object} InpSetResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {InpSet} [set]
+ */
+
+/**
+ * get_system(id) result.
+ * @typedef {Object} SystemResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {SystemFull} [system]
+ */
+
+/**
+ * apply_queue_ops(json) result: everything applied (with a fresh snapshot),
+ * or nothing. op_index = the 0-based operation refused (-1 = the batch as a
+ * whole, e.g. it would leave a reference dangling while the queue runs).
+ * @typedef {Object} QueueOpsResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {number} [op_index]
+ * @property {QueueSnapshot} [snapshot]
+ */
+
+/**
+ * @typedef {Object} XyzRefusal
+ * @property {string} file    the label / path as given
+ * @property {string} reason
+ */
+
+/**
+ * add_xyz_systems(json) result: per file a system + one calc, or a refusal.
+ * @typedef {Object} XyzSystemsResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {string[]} [added]     names of the calcs added
+ * @property {string[]} [systems]   ids of the systems added (same order)
+ * @property {XyzRefusal[]} [refused]
+ * @property {QueueSnapshot} [snapshot]
  */
 
 /**

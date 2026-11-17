@@ -315,11 +315,15 @@
     // the geometry is taken by REFERENCE, not copied: the engine resolves it to
     // this calculation's optimized structure when the new one actually runs, so
     // it is the geometry as it finally was and not as it was when the button
-    // was pressed. The same handoff opt -> freq uses.
-    el.querySelector('[data-act="newfrom"]').addEventListener("click", () => NB.build.open("", {
-      name: "", kind: "opt", is_raw: false, raw_text: "", xyz: "",
-      geometry_source: "reference", ref_name: c.name,
-      charge: c.charge, multiplicity: c.multiplicity, config: {},
+    // was pressed. The same handoff opt -> freq uses. The builder is the queue
+    // window's, so the seed is handed over and that window opens on it.
+    el.querySelector('[data-act="newfrom"]').addEventListener("click", () => NB.handOff({
+      type: "build",
+      seed: {
+        name: "", kind: "opt", is_raw: false, raw_text: "", xyz: "",
+        geometry_source: "reference", ref_name: c.name,
+        charge: c.charge, multiplicity: c.multiplicity, config: {},
+      },
     }));
     return el;
   }
@@ -541,7 +545,8 @@
         <span class="idx">[+]</span>
         <span class="nmwrap"><span class="nm">New calculation</span></span>
       </button>`;
-    el.querySelector(".stubhead").addEventListener("click", () => NB.build.open(""));
+    // the builder lives in the queue window: the stub opens it there
+    el.querySelector(".stubhead").addEventListener("click", () => NB.handOff({ type: "build" }));
     return el;
   }
 
@@ -582,8 +587,11 @@
       update(cell, c, i);
     });
     // The last cell in the stream is always the next calculation: a dashed
-    // stub that becomes the form when it is clicked. A queue is a thing you add
-    // to, so the place to add is at the end of what is already there.
+    // stub. A queue is a thing you add to, so the place to add is at the end
+    // of what is already there. Clicking it opens the builder in the queue
+    // window (DESIGN.md §17.6); the form can still be hosted here when
+    // NB.build.open is called in this window, which only the design check
+    // (tools/uispec.py's overlay pass) does.
     const stub = host.querySelector(".cell.stub");
     if (editing === "") {
       if (!stub || !stub.classList.contains("editing")) {

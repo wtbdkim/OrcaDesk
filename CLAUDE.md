@@ -150,7 +150,9 @@ Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
   rows and reference integrity stay protected.
 - **References** (`REFERENCE` geometry) resolve to the parent's final geometry
   at run time via `_resolve_geometry`; failure blocks dependents (BLOCKED, read
-  from the live queue each time), never the whole queue.
+  from the live queue each time), never the whole queue. `after` (the queue
+  editor's edge) is a dependency the same way; a row held at its approval gate
+  is *waiting* — left PENDING, never BLOCKED, and never keeps a run alive.
 - **Closing the app never kills an ORCA/CREST job** (detach + reattach on next
   launch); MLIP is the exception (stamped CANCELLED on shutdown).
 - Keep-existing ("skip") adopts an old output only if it validates, matches the

@@ -1990,5 +1990,6 @@
 
   NB.results = { enter: enter, open: open, openPath: openPath, show: show,
                  showInp: showInp, paint: paint, openFileDialog: openFileDialog,
+                 noteOpened: noteOpened,
                  currentName: () => _curName, currentPath: () => _curPath };
 })();

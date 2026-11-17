@@ -75,6 +75,14 @@ interface OrcaBridge {
   update_calc(oldName: string, calcJson: string): Promise<string>;
   get_queue(): Promise<string>;
   get_calc(name: string): Promise<string>;
+  // the queue editor (queue window): inp sets, lanes, batched edits
+  get_inp_sets(): Promise<string>;                       // InpSetsResult JSON
+  save_inp_set(setJson: string): Promise<string>;        // InpSetResult JSON (the set as stored, with its id); add or replace by id
+  delete_inp_set(id: string): Promise<string>;           // InpSetResult JSON ({ok} | {ok:false, error})
+  get_system(id: string): Promise<string>;               // SystemResult JSON (inputs with their xyz)
+  apply_queue_ops(opsJson: string): Promise<string>;     // QueueOp[] -> QueueOpsResult JSON: all applied or none
+  add_xyz_systems(payloadJson: string): Promise<string>; // {files:[{label,xyz}] | paths:[], set_id, suffix} -> XyzSystemsResult JSON
+  open_queue_window(): Promise<string>;                  // OkResult JSON: show/raise the queue window
   get_log(since: number): Promise<string>;
   get_inp(name: string): Promise<string>;
   get_graph_lines(name: string): Promise<string>;
@@ -184,6 +192,8 @@ interface Window {
   onInpDropped?: (path: string) => void;
   onXyzDropped?: (path: string) => void;
   onOutDropped?: (path: string) => void;
+  /* queue window only: every dropped .xyz at once (one call per drop) */
+  onXyzFilesDropped?: (paths: string[]) => void;
 }
 
 /* ---------- pragmatic DOM loosening ----------

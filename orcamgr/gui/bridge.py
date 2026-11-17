@@ -57,10 +57,12 @@ from ..core.replay import (  # noqa: F401  (the patterns: tests read them here)
 )
 from ..core.resources import ResourceBudget, auto_cores, auto_ram_mb
 from ..state.store import (
-    QueueStore, calc_from_dict, calc_to_session_dict, make_engine_factory,
-    load_choice_groups, queue_needs_orca, find_dangling_reference,
-    constraint_warning, raw_geometry_warning,
+    QueueStore, QueueOpError, calc_from_dict, calc_to_session_dict,
+    make_engine_factory, load_choice_groups, queue_needs_orca,
+    find_dangling_reference, constraint_warning, raw_geometry_warning,
+    keep_graph_fields,
 )
+from ..state import inpsets
 # Response payloads are CONSTRUCTED through these TypedDicts (plain dicts at
 # runtime, so the JSON wire format is unchanged) — schemas.py is the single
 # source of truth, mirrored for the front-end by web/types.js.
@@ -82,6 +84,8 @@ from ..state.schemas import (
     AtomOrderPayload, StructureCheckPayload, ConstraintApplyPayload,
     ConstraintApplyAllPayload,
     HessModesPayload, HessModePayload, ModeShiftPayload, VibModePayload,
+    InpSetsResult, InpSetResult, SystemResult, QueueOpsResult,
+    XyzSystemsResult, XyzRefusal,
 )
 
 # Ceiling on the workspace scan behind the Results picker. Generous next to any
@@ -1499,10 +1503,13 @@ class Bridge(QObject):
 
     @pyqtSlot(str, str, result=str)
     def update_calc(self, old_name: str, calc_json: str) -> str:
-        """Edit a pending calc in place (preserves its queue position)."""
+        """Edit a pending calc in place (preserves its queue position). The
+        queue editor's fields the payload leaves out are kept
+        (keep_graph_fields): the guided builder edits a lane's calc without
+        knowing about lanes."""
         try:
             d = json.loads(calc_json)
-            calc = calc_from_dict(d)
+            calc = calc_from_dict(keep_graph_fields(d, self.store.get(old_name)))
         except (json.JSONDecodeError, KeyError, ValueError, TypeError,
                 AttributeError, OverflowError) as e:   # a slot may not raise
             return json.dumps(MutationResult(ok=False, error=f"Invalid calculation data: {e}"))
@@ -1525,6 +1532,133 @@ class Bridge(QObject):
     @pyqtSlot(result=str)
     def get_queue(self) -> str:
         return json.dumps(self.store.snapshot())
+
+    # --- the queue editor (the queue window) ---
+    # Inp sets are saved templates (state/inpsets.py); systems are the lanes,
+    # kept in the store beside the calculations; apply_queue_ops is the one
+    # write path the editor needs — a batch, all or nothing.
+
+    def _inpset_defaults(self) -> dict:
+        """What a seeded inp set writes for %pal / %maxcore: the user's own
+        defaults, the ones every new calculation starts from."""
+        return dict(nprocs=self.settings.default_nprocs,
+                    maxcore_mb=self.settings.default_maxcore_mb)
+
+    @pyqtSlot(result=str)
+    def get_inp_sets(self) -> str:
+        """Every saved inp set (seeded from ORCAdesk's defaults on first use)."""
+        try:
+            sets = inpsets.load_sets(**self._inpset_defaults())
+        except Exception as e:   # a slot may not raise
+            return json.dumps(InpSetsResult(ok=False, error=str(e), sets=[]))
+        return json.dumps(InpSetsResult(ok=True, sets=sets))
+
+    @pyqtSlot(str, result=str)
+    def save_inp_set(self, set_json: str) -> str:
+        """Add a set, or replace the one with the same id. Returns the set as
+        stored (with its id — minted when the payload had none)."""
+        try:
+            saved = inpsets.save_set(json.loads(set_json or "null"),
+                                     **self._inpset_defaults())
+        except (ValueError, OSError, TypeError) as e:
+            return json.dumps(InpSetResult(ok=False, error=str(e)))
+        return json.dumps(InpSetResult(ok=True, set=saved))
+
+    @pyqtSlot(str, result=str)
+    def delete_inp_set(self, set_id: str) -> str:
+        try:
+            ok = inpsets.delete_set(str(set_id), **self._inpset_defaults())
+        except (ValueError, OSError) as e:
+            return json.dumps(InpSetResult(ok=False, error=str(e)))
+        if not ok:
+            return json.dumps(InpSetResult(ok=False, error=f"No inp set with id '{set_id}'."))
+        return json.dumps(InpSetResult(ok=True))
+
+    @pyqtSlot(str, result=str)
+    def get_system(self, system_id: str) -> str:
+        """One lane in full — its inputs' coordinates included (the polled
+        snapshot carries their labels only)."""
+        s = self.store.get_system(str(system_id))
+        if s is None:
+            return json.dumps(SystemResult(ok=False, error=f"No system with id '{system_id}'."))
+        return json.dumps(SystemResult(ok=True, system=s))
+
+    @pyqtSlot(str, result=str)
+    def apply_queue_ops(self, ops_json: str) -> str:
+        """Apply a list of queue-editor operations atomically (see
+        QueueStore.apply_ops for the operations and their rules). All applied
+        -> {ok, snapshot}; any refused -> {ok:false, error, op_index} and the
+        queue is exactly as it was."""
+        try:
+            ops = json.loads(ops_json or "null")
+        except ValueError as e:
+            return json.dumps(QueueOpsResult(ok=False, error=f"Invalid operations: {e}",
+                                             op_index=-1))
+        try:
+            self.store.apply_ops(ops)
+        except QueueOpError as e:
+            return json.dumps(QueueOpsResult(
+                ok=False, error=str(e), op_index=-1 if e.index is None else e.index))
+        except (ValueError, TypeError) as e:
+            return json.dumps(QueueOpsResult(ok=False, error=str(e), op_index=-1))
+        return json.dumps(QueueOpsResult(ok=True, snapshot=self.store.snapshot()))
+
+    @pyqtSlot(str, result=str)
+    def add_xyz_systems(self, payload_json: str) -> str:
+        """The "drop .xyz" recipe: {files:[{label, xyz}] | paths:[...],
+        set_id, suffix} -> one system per file named after its stem, and one
+        calculation `stem + suffix` from that inp set (set_id "" = the first
+        SP set). Refusals are per file, with the reason."""
+        try:
+            d = json.loads(payload_json or "null")
+            if not isinstance(d, dict):
+                raise ValueError("expected an object")
+            suffix = d.get("suffix", "") or ""
+            if not isinstance(suffix, str):
+                raise ValueError("suffix must be a string")
+            set_id = d.get("set_id", "") or ""
+            sets = inpsets.load_sets(**self._inpset_defaults())
+            inp_set = next((s for s in sets if s["id"] == set_id), None) if set_id \
+                else next((s for s in sets if s["kind"] == "SP"), None)
+            if inp_set is None:
+                raise ValueError(f"No inp set with id '{set_id}'." if set_id
+                                 else "There is no SP inp set to build from.")
+        except (ValueError, TypeError) as e:
+            return json.dumps(XyzSystemsResult(ok=False, error=str(e), added=[],
+                                               systems=[], refused=[]))
+        files: list = []
+        refused: list = []
+        for f in d.get("files") or []:
+            if isinstance(f, dict):
+                files.append((str(f.get("label", "") or ""), f.get("xyz", "")))
+        for p in d.get("paths") or []:
+            try:
+                # utf-8-sig: see _load_result (a BOM ORCA would refuse)
+                files.append((str(p), Path(str(p)).read_text(
+                    encoding="utf-8-sig", errors="replace")))
+            except OSError as e:
+                refused.append(XyzRefusal(file=str(p), reason=e.strerror or str(e)))
+        try:
+            out = self.store.add_xyz_systems(files, inp_set, suffix)
+        except ValueError as e:
+            return json.dumps(XyzSystemsResult(ok=False, error=str(e), added=[],
+                                               systems=[], refused=refused))
+        return json.dumps(XyzSystemsResult(
+            ok=True, added=out["added"], systems=out["systems"],
+            refused=refused + [XyzRefusal(**r) for r in out["refused"]],
+            snapshot=self.store.snapshot()))
+
+    @pyqtSlot(result=str)
+    def open_queue_window(self) -> str:
+        """Show (or raise) the queue editor's own window."""
+        show = getattr(self.window, "show_queue_window", None)
+        if show is None:
+            return json.dumps(OkResult(ok=False, error="The queue window is not available."))
+        try:
+            show()
+        except Exception as e:
+            return json.dumps(OkResult(ok=False, error=str(e)))
+        return json.dumps(OkResult(ok=True))
 
     @pyqtSlot(str, result=str)
     def get_calc(self, name: str) -> str:

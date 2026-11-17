@@ -309,3 +309,40 @@ def test_the_default_mace_model_is_one_the_picker_lists():
     src = Path(__import__("orcamgr.gui.bridge", fromlist=["x"]).__file__).read_text(encoding="utf-8")
     body = src[src.index("def get_step_defaults"):src.index("def load_choices")]
     assert "DEFAULT_MACE_MODEL" in body
+
+
+# ---------------------------------------------------------------- two windows
+
+def test_the_page_lays_itself_out_by_its_window():
+    """Both windows load index.html; ?win=queue is the queue editor and
+    anything else the main window (DESIGN.md §17.6). The query is the page's
+    only way to know, so the read of it, the queue editor's root and its
+    script have to be there."""
+    boot = _read(NEXT / "boot.js")
+    assert 'get("win") === "queue"' in boot, "boot.js no longer reads ?win="
+    assert 'setAttribute("data-win"' in boot
+    html = _read(NEXT / "index.html")
+    assert 'id="qed"' in html and 'src="qed.js"' in html
+    assert re.search(r'html\[data-win="queue"\] \.app\{display:none;\}', _read(NEXT / "app.css")),         "the queue window must not draw the main layout"
+
+
+def test_the_queue_editor_writes_through_the_batched_ops_alone():
+    """The editor holds no queue state (CLAUDE.md): every change it makes is
+    one apply_queue_ops batch, validated and applied as a whole, and Ctrl+Z
+    sends the inverse the same way. A single-row slot called from it would be
+    a second write path the undo stack cannot see."""
+    src = _read(NEXT / "qed.js")
+    assert 'NB.call("apply_queue_ops"' in src
+    for slot in ("add_calc", "update_calc", "remove_calc", "reorder_calc"):
+        assert f'NB.call("{slot}"' not in src, f"qed.js calls {slot} directly"
+
+
+def test_the_main_rail_is_status_only():
+    """The main window's rail reports and navigates; reordering, duplicating
+    and editing are the queue window's (DESIGN.md §17.2). The one removal it
+    keeps is the Finished group's own Clear, which tidies, not edits."""
+    src = _read(NEXT / "rail.js")
+    for slot in ("reorder_calc", "add_calc", "update_calc"):
+        assert f'NB.call("{slot}"' not in src, f"the rail still calls {slot}"
+    assert "draggable" not in src, "rail rows are not dragged any more"
+    assert "open-queue" in src, "the rail lost its way to the queue window"
