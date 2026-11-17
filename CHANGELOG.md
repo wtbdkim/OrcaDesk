@@ -83,10 +83,19 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   copy it; Delete removes a block and the steps after it; Ctrl+Z undoes.
   Dropped `.xyz` files become molecules with a single point from the set and
   name suffix chosen under the library. The main window's queue rail is now
-  its status: rows take you to the calculation's output or report, and *edit*,
-  *New calculation* and *New from this* open the queue window. Dropping an
-  `.out` on the main window opens it in Results again, an `.xyz` queues it,
-  an `.inp` opens it in the builder.
+  its status: rows take you to the calculation's output or report, and *New
+  from this* opens the queue window's builder. Dropping an `.out` on the main
+  window opens it in Results again, an `.xyz` queues it, an `.inp` opens it in
+  the builder.
+- **The main window's queue rail is a narrow status strip.** About 256px wide
+  instead of 600, so Jobs and Results get the room: each calculation is its
+  state dot and name (hover for its kind, state and last message), a running
+  one with a thin progress bar, and a click shows its output or report.
+  Running / Queued / Finished keep their counts and Finished still folds. The
+  run controls are Run queue, Stop after current and Cancel in one row; *Clear
+  all*, the Finished group's *Clear* and the *New calculation* stub at the end
+  of Jobs are gone from the main window (building and clearing are the queue
+  window's). Opened files keep their place, with an × to take one off the list.
 - **A 2-D relaxed surface scan is drawn as its grid in the notebook report.**
   Each point sits where its two coordinates put it, and its size is its energy
   (area in proportion to ΔE). The highest point is red and the lowest blue, and
