@@ -21,11 +21,30 @@ from .resources import numfreq_rank_cap
 from .structure import compare_atom_order, measure, parse_block
 
 
-# ---- defaults (match the user's established workflow) -------------------
+# ---- defaults -----------------------------------------------------------
+# A method and a basis have to be named (ORCA has no default of either). Every
+# other setting defaults to ORCA's own, and a setting at ORCA's default is not
+# written: the .inp says only what differs from what ORCA would do anyway.
+# Measured on ORCA 6.1.1 (H2O, def2-SVP), what an empty setting gets:
+#   RI        a hybrid runs RIJCOSX with def2/J chosen by ORCA ("Auxiliary
+#             Coulomb fitting basis ... AVAILABLE", COSX grid); HF and MP2 run
+#             without RI. "! ... RIJCOSX" alone gets def2/J the same way.
+#   SCF       Opt raises it to TightSCF itself (TolE 1e-8); SP and Freq stay at
+#             NormalSCF (TolE 1e-6).
+#   %tddft    TDA on, triplets off, 3 roots.
+#   %irc      both directions (InitHess: a numerical Hessian).
+#   %neb      8 intermediate images.
+# Kept as ORCAdesk's own on purpose (the user's call): an optimization is
+# TightOpt, and %geom / %irc MaxIter are always written (200 / 100) -- ORCA's
+# 50 / 20 run out on a floppy molecule or a long path.
 DEFAULT_FUNCTIONAL = "wB97X-D4"
 DEFAULT_BASIS_SET = "def2-TZVP"
-DEFAULT_RI = "RIJCOSX"
-DEFAULT_AUX = "def2/J"
+DEFAULT_RI = ""                 # ORCA's choice (RIJCOSX for a hybrid)
+DEFAULT_GEOM_MAXITER = 200
+DEFAULT_IRC_MAXITER = 100
+ORCA_NEB_IMAGES = 8
+ORCA_TDDFT_NROOTS = 3
+DEFAULT_AUX = "def2/J"          # written only beside an aux of the user's that is not /J
 
 
 # ORCA's simple-input parser is strict about a few functional names: it spells
@@ -146,6 +165,12 @@ def _needs_auxc(functional: str) -> bool:
         return True
     if any(m in norm for m in _CORRELATED_MARKERS):
         return True
+    return _is_double_hybrid(functional)
+
+
+def _is_double_hybrid(functional: str) -> bool:
+    """True for a double hybrid (a DFT method with an MP2 part)."""
+    norm = normalize_functional(functional).lower()
     base = norm.split()[0] if norm.strip() else ""   # strip a trailing " d3bj"
     return base in _DOUBLE_HYBRIDS
 
@@ -277,12 +302,12 @@ class StepConfig:
     functional: str = DEFAULT_FUNCTIONAL
     basis_set: str = DEFAULT_BASIS_SET
     ri_approximation: str = DEFAULT_RI
-    scf_convergence: str = "TightSCF"
+    scf_convergence: str = ""            # "" = ORCA's (Tight for Opt, Normal otherwise)
     calculation_type: str = "TightOpt"   # e.g. TightOpt / OptTS / Freq / "" for SP
     options: str = ""                    # extra simple-input keywords (user-supplied)
     maxcore_mb: int = 2400
     nprocs: int = 6
-    max_iter: int = 200                  # geometry optimiser cap
+    max_iter: int = DEFAULT_GEOM_MAXITER  # geometry optimiser cap
     # %geom Constraints, emitted only for the kinds that optimize
     # (CONSTRAINED_KINDS): {"kind": "C"|"B"|"A"|"D", "atoms": [0-based ints],
     # "value": float|None}. None = hold at the starting value. Normalized by
@@ -305,13 +330,13 @@ class StepConfig:
     nmr_jcoupling: bool = False          # add %eprnmr SSALL for J-couplings
 
     # TD-DFT block (only emitted when kind == 'tddft')
-    tddft_nroots: int = 40
-    tddft_maxdim: int = 10
-    tddft_tda: bool = False
-    tddft_triplets: bool = False
+    tddft_nroots: int = ORCA_TDDFT_NROOTS   # always written: it is what the block asks for
+    tddft_maxdim: int = 0                # 0 = ORCA's own; written only when set
+    tddft_tda: bool = True               # ORCA's default; "tda false" written when off
+    tddft_triplets: bool = False         # written only when on
     # IRC (intrinsic reaction coordinate) — starts from a TS structure and
     # follows the path downhill both ways to verify which minima it connects.
-    irc_maxiter: int = 100               # max IRC steps
+    irc_maxiter: int = DEFAULT_IRC_MAXITER  # max IRC steps
     irc_direction: str = "both"          # both | forward | backward
     irc_init_hess: str = "calc_anfreq"   # calc_anfreq | calc_numfreq | read
     irc_hess_file: str = ""              # .hess to read when init_hess == "read": a picked
@@ -320,7 +345,7 @@ class StepConfig:
     # usual coordinate block; the PRODUCT geometry is written to a side .xyz file
     # that the %neb block points at. neb_product_xyz holds that product geometry.
     neb_product_xyz: str = ""            # product coordinates (atom order MUST match reactant)
-    neb_nimages: int = 8                 # number of images along the band
+    neb_nimages: int = ORCA_NEB_IMAGES   # images along the band (written when not 8)
     neb_preopt_ends: bool = False        # re-optimize endpoints before the band
     neb_ts_guess_xyz: str = ""           # optional TS guess geometry
 
@@ -408,11 +433,11 @@ class StepConfig:
         # value (resource exhaustion) must not pass through.
         cfg.nprocs = _clamp_int(cfg.nprocs, 6, 1, 1024)
         cfg.maxcore_mb = _clamp_int(cfg.maxcore_mb, 2400, 64, 1_000_000)
-        cfg.max_iter = _clamp_int(cfg.max_iter, 200, 1, 100_000)
-        cfg.neb_nimages = _clamp_int(cfg.neb_nimages, 8, 2, 200)
-        cfg.irc_maxiter = _clamp_int(cfg.irc_maxiter, 100, 1, 100_000)
-        cfg.tddft_nroots = _clamp_int(cfg.tddft_nroots, 40, 1, 10_000)
-        cfg.tddft_maxdim = _clamp_int(cfg.tddft_maxdim, 10, 1, 100_000)
+        cfg.max_iter = _clamp_int(cfg.max_iter, DEFAULT_GEOM_MAXITER, 1, 100_000)
+        cfg.neb_nimages = _clamp_int(cfg.neb_nimages, ORCA_NEB_IMAGES, 2, 200)
+        cfg.irc_maxiter = _clamp_int(cfg.irc_maxiter, DEFAULT_IRC_MAXITER, 1, 100_000)
+        cfg.tddft_nroots = _clamp_int(cfg.tddft_nroots, ORCA_TDDFT_NROOTS, 1, 10_000)
+        cfg.tddft_maxdim = _clamp_int(cfg.tddft_maxdim, 0, 0, 100_000)
         cfg.freq_temp_k = _clamp_float(cfg.freq_temp_k, 298.15, 0.0, 100_000.0)
         cfg.freq_pressure_atm = _clamp_float(cfg.freq_pressure_atm, 1.0, 0.0, 100_000.0)
         cfg.geom_constraints = normalize_constraints(cfg.geom_constraints)
@@ -753,14 +778,6 @@ def _scan_line(c: dict) -> str:
             f"{f.format(c['end'])}, {c['steps']}")
 
 
-def _needs_auxj(ri: str) -> bool:
-    """True if the RI approximation needs a Coulomb-fitting (/J) aux basis."""
-    r = (ri or "").upper().replace("-", "").replace("_", "")
-    # RIJCOSX, RIJDX, RIJONX, RIJ, SPLITRIJ all fit Coulomb with /J.
-    # (RIJK needs /JK, NoRI/NORI need nothing.)
-    return any(tag in r for tag in ("RIJCOSX", "RIJDX", "RIJONX")) or r == "RIJ" or r == "SPLITRIJ"
-
-
 def _ri_is_off(ri: str) -> bool:
     """True if the user turned RI off (no RI keyword / NoRI)."""
     r = (ri or "").strip().upper()
@@ -771,12 +788,21 @@ def _auto_aux(cfg: "StepConfig") -> str:
     """Pick an auxiliary basis if the method needs one and the user didn't put
     an aux in extra options.
 
-    - Double hybrids / MP2 need a correlation-fitting (/C) aux as well as the
-      Coulomb (/J) one, so we add AutoAux (it generates both). The user can opt
-      out by setting the RI approximation to NoRI, in which case ORCA runs the
-      conventional (non-RI) path and we add nothing.
-    - Plain hybrids/GGAs with an RI-J method just need /J; for def2 orbital
-      bases that is the universal def2/J. Other bases are left to the user."""
+    - A double hybrid runs its MP2 part as RI-MP2 unless told NoRI, and ORCA
+      6.1.1 does not pick the /C set itself: "! B2PLYP def2-SVP" aborts with
+      "RI-MP2 needs an AuxC basis but none was defined!". So it gets AutoAux
+      (which generates /J and /C) unless RI is NoRI.
+    - MP2 and the coupled-cluster family get AutoAux only when the user turned
+      an RI on: with no RI keyword ORCA runs them conventionally (measured:
+      "! MP2 def2-SVP" runs with no aux at all).
+    - A DLPNO method always gets it (there is no conventional DLPNO).
+    - RIJK fits exchange too and ORCA picks no /JK itself ("no AuxJK basis set
+      in ORCA_GTOInt!"), so it gets def2/JK (AutoAux off def2).
+    - The RI-J family (RIJCOSX, RI, ...) gets nothing: ORCA chooses def2/J for
+      a def2 basis itself, the same set this used to write. Except beside an
+      aux the user typed that is not a /J one (def2/JK, a /C): ORCA then picks
+      no /J and aborts "RIJ is chosen with no AuxJ basis set!" (6.1.1, "! HF
+      def2-SVP RIJCOSX def2/JK"), so def2/J goes with it."""
     opts = (cfg.options or "").upper()
     ri_raw = (cfg.ri_approximation or "").upper()
     # "/JK" is an exchange+Coulomb set for RIJK; it is NOT an AuxJ, and ORCA
@@ -809,7 +835,10 @@ def _auto_aux(cfg: "StepConfig") -> str:
         # stays for everything else.
         if _is_dlpno(cfg.functional):
             return "AutoAux"
-        # double hybrid / MP2: /C (and /J) needed unless RI is off
+        if _is_double_hybrid(cfg.functional):
+            # RI-MP2 is a double hybrid's default; only NoRI takes it off
+            return "" if ri_raw.strip() == "NORI" else "AutoAux"
+        # MP2 / CC: conventional unless the user asked for an RI
         return "" if _ri_is_off(cfg.ri_approximation) else "AutoAux"
 
     basis = (cfg.basis_set or "").lower()
@@ -817,11 +846,9 @@ def _auto_aux(cfg: "StepConfig") -> str:
     if ri == "RIJK":
         # RIJK fits BOTH Coulomb and exchange, so it needs a /JK aux (not /J).
         return "def2/JK" if "def2" in basis else "AutoAux"
-    if not _needs_auxj(cfg.ri_approximation):
-        return ""
-    if "def2" in basis:
-        return DEFAULT_AUX  # def2/J
-    return ""  # unknown orbital basis: don't guess, let the user decide
+    if ri != "NORI" and "def2" in basis and any("/" in t for t in opts.split()):
+        return DEFAULT_AUX
+    return ""  # RI-J family: ORCA picks the /J set itself
 
 
 def _keyword_line(cfg: StepConfig) -> str:
@@ -922,7 +949,9 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
     cap = numfreq_rank_cap(lines[0], len(parse_block(xyz)), nprocs)
     if cap:
         nprocs = cap
-    lines.append(f"%pal nprocs {nprocs} end")
+    if nprocs > 1:
+        # serial is ORCA's default; "%pal nprocs 1" asks for nothing
+        lines.append(f"%pal nprocs {nprocs} end")
 
     solv_block = cfg.solvation.block()
     if solv_block:
@@ -962,9 +991,9 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         if err:
             raise ValueError(err)
 
+    geom = []
     if cfg.kind in CONSTRAINED_KINDS:
-        lines.append("%geom")
-        lines.append(f"  MaxIter {cfg.max_iter}")
+        geom.append(f"  MaxIter {cfg.max_iter}")
         if cfg.kind in ("ts_opt", "ts_opt_freq"):
             # OptTS follows the LOWEST mode of its initial Hessian, and the
             # default (Almloef's model) has no negative curvature at all, so
@@ -978,17 +1007,20 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
             # proton transfer 7 vs 27 (203 s vs 355 s, ~68 s of it the
             # Hessian). Both reached the same 1-imaginary saddle — the exact
             # Hessian buys the start, not a different answer.
-            lines.append("  Calc_Hess true")
+            geom.append("  Calc_Hess true")
         if constraints:
             # inside the ONE %geom block: a second %geom would be a second
             # block for ORCA to merge, and the generator never relies on that
-            lines.append("  Constraints")
-            lines.extend(_constraint_line(c) for c in constraints)
-            lines.append("  end")
+            geom.append("  Constraints")
+            geom.extend(_constraint_line(c) for c in constraints)
+            geom.append("  end")
         if scan:
-            lines.append("  Scan")
-            lines.extend(_scan_line(c) for c in scan)
-            lines.append("  end")
+            geom.append("  Scan")
+            geom.extend(_scan_line(c) for c in scan)
+            geom.append("  end")
+    if geom:
+        lines.append("%geom")
+        lines.extend(geom)
         lines.append("end")
 
     if cfg.kind in ("freq", "ts_freq", "opt_freq", "ts_opt_freq"):
@@ -1001,11 +1033,16 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
             lines.append("end")
 
     if cfg.kind == "tddft":
+        # nroots always: the block is what turns TD-DFT on, and the count is
+        # its one question. The rest only when it differs from ORCA's.
         lines.append("%tddft")
         lines.append(f"  nroots {cfg.tddft_nroots}")
-        lines.append(f"  maxdim {cfg.tddft_maxdim}")
-        lines.append(f"  tda {'true' if cfg.tddft_tda else 'false'}")
-        lines.append(f"  triplets {'true' if cfg.tddft_triplets else 'false'}")
+        if cfg.tddft_maxdim > 0:
+            lines.append(f"  maxdim {cfg.tddft_maxdim}")
+        if not cfg.tddft_tda:
+            lines.append("  tda false")
+        if cfg.tddft_triplets:
+            lines.append("  triplets true")
         lines.append("end")
 
     if cfg.kind == "irc":
@@ -1047,7 +1084,8 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         # guess, if provided, goes in "ts_guess.xyz".
         lines.append("%neb")
         lines.append('  NEB_End_XYZFile "product.xyz"')
-        lines.append(f"  Nimages {cfg.neb_nimages}")
+        if cfg.neb_nimages != ORCA_NEB_IMAGES:
+            lines.append(f"  Nimages {cfg.neb_nimages}")
         if cfg.neb_preopt_ends:
             lines.append("  PreOpt_Ends true")
         if cfg.neb_ts_guess_xyz.strip():
@@ -1154,35 +1192,35 @@ def raw_geometry_mismatch(raw_text: str, xyz: str) -> str:
 # ---- convenient step presets (seed values for the GUI) ------------------
 def preset_opt() -> StepConfig:
     return StepConfig(
-        kind="opt", calculation_type="TightOpt", scf_convergence="TightSCF",
+        kind="opt", calculation_type="TightOpt",
         maxcore_mb=2400, nprocs=6,
     )
 
 
 def preset_freq() -> StepConfig:
     return StepConfig(
-        kind="freq", calculation_type="Freq", scf_convergence="VeryTightSCF",
+        kind="freq", calculation_type="Freq",
         maxcore_mb=4000, nprocs=6,
     )
 
 
 def preset_ts_opt() -> StepConfig:
     return StepConfig(
-        kind="ts_opt", calculation_type="OptTS", scf_convergence="TightSCF",
+        kind="ts_opt", calculation_type="OptTS",
         maxcore_mb=2400, nprocs=6,
     )
 
 
 def preset_ts_freq() -> StepConfig:
     return StepConfig(
-        kind="ts_freq", calculation_type="Freq", scf_convergence="VeryTightSCF",
+        kind="ts_freq", calculation_type="Freq",
         maxcore_mb=4000, nprocs=6,
     )
 
 
 def preset_irc() -> StepConfig:
     return StepConfig(
-        kind="irc", calculation_type="IRC", scf_convergence="TightSCF",
+        kind="irc", calculation_type="IRC",
         maxcore_mb=2400, nprocs=6,
     )
 
@@ -1191,34 +1229,34 @@ def preset_neb_ts() -> StepConfig:
     # FREQ is appended so the converged TS is verified (exactly one imaginary
     # mode). NEB-TS itself only needs gradients.
     return StepConfig(
-        kind="neb_ts", calculation_type="NEB-TS", scf_convergence="TightSCF",
+        kind="neb_ts", calculation_type="NEB-TS",
         options="FREQ", maxcore_mb=2400, nprocs=6,
     )
 
 
 def preset_tddft() -> StepConfig:
     return StepConfig(
-        kind="tddft", calculation_type="", scf_convergence="TightSCF",
+        kind="tddft", calculation_type="",
         maxcore_mb=2400, nprocs=6,
     )
 
 
 def preset_nmr() -> StepConfig:
     return StepConfig(
-        kind="nmr", calculation_type="NMR", scf_convergence="TightSCF",
+        kind="nmr", calculation_type="NMR",
         maxcore_mb=2400, nprocs=6,
     )
 
 
 def preset_general() -> StepConfig:
     return StepConfig(
-        kind="general", calculation_type="", scf_convergence="TightSCF",
+        kind="general", calculation_type="",
         maxcore_mb=2400, nprocs=6,
     )
 
 
 def preset_sp() -> StepConfig:
     return StepConfig(
-        kind="sp", calculation_type="SP", scf_convergence="TightSCF",
+        kind="sp", calculation_type="SP",
         maxcore_mb=2400, nprocs=6,
     )
