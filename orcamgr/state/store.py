@@ -1206,9 +1206,12 @@ class QueueStore:
             calcs = list(self._calcs)
             systems = copy.deepcopy(self._systems)
             removed: set[str] = set()
+            # place_calc works on a batch-private copy: id(copy) -> (copy, the
+            # live row). The copy is held here so its id cannot be reused.
+            placed: dict[int, tuple] = {}
             for k, op in enumerate(ops):
                 try:
-                    self._apply_op(calcs, systems, op, removed)
+                    self._apply_op(calcs, systems, op, removed, placed)
                 except QueueOpError:
                     raise
                 except (ValueError, TypeError, KeyError, AttributeError,
@@ -1222,6 +1225,16 @@ class QueueStore:
                     problem = self._missing_dependency(c, names)
                     if problem:
                         raise QueueOpError(problem, None)
+            # A placed row goes back into the list as the SAME object, with
+            # only its placement written onto it: the engine tracks rows by
+            # identity and may hold this one (a running or finished row).
+            for i, c in enumerate(calcs):
+                entry = placed.get(id(c))
+                if entry is not None and entry[0] is c:
+                    live = entry[1]
+                    for f in self._PLACE_KEYS:
+                        setattr(live, f, getattr(c, f))
+                    calcs[i] = live
             self._calcs[:] = calcs
             self._systems[:] = systems
             self._bump_and_save()
@@ -1276,9 +1289,51 @@ class QueueStore:
 
     _SYSTEM_PATCH_KEYS = {"name", "charge", "multiplicity", "inputs"}
     _STARTED = (CalcState.RUNNING, CalcState.DONE, CalcState.FAILED)
+    #: what place_calc may change: where a row is DRAWN, never what it runs
+    _PLACE_KEYS = ("system", "node", "col", "row")
+
+    def _place_calc(self, calcs: "list[Calculation]", systems: "list[dict]",
+                    op: dict, placed: "dict[int, tuple]") -> None:
+        """place_calc: move a calculation in the editor's layout — its lane
+        (`system`), its node id, its grid cell — and nothing else.
+
+        Unlike update_calc this is allowed in EVERY state. A finished
+        calculation is frozen (P24) in what it ran and what it produced; where
+        the editor draws it is not part of that. It is what lets a finished
+        standalone calc become the first node of a new lane, so a follow-up
+        (a Freq after a done OptTS, an SP after a done IRC) can hang off it.
+        The state, message, result, name, `after` and every input field are
+        untouched, and the row is not reset to PENDING. The live object is
+        kept (apply_ops writes the placement back onto it at commit)."""
+        name = op.get("name")
+        idx = next((i for i, c in enumerate(calcs) if c.name == name), None)
+        if idx is None:
+            raise ValueError(f"No calculation named '{name}'.")
+        place = op.get("place")
+        if not isinstance(place, dict) or not place:
+            raise ValueError("place_calc needs a 'place' object.")
+        unknown = set(place) - set(self._PLACE_KEYS)
+        if unknown:
+            raise ValueError("place_calc can change only system, node, col and "
+                             "row, not: " + ", ".join(sorted(map(str, unknown))))
+        checked = _graph_fields(place, restoring=False)
+        if "system" in place and checked["system"] and \
+                checked["system"] not in {s["id"] for s in systems}:
+            raise ValueError(f"'{name}' cannot go into a system that does not exist.")
+        current = calcs[idx]
+        entry = placed.get(id(current))
+        if entry is not None and entry[0] is current:
+            moved = current                      # already this batch's copy
+        else:
+            moved = copy.copy(current)
+            placed[id(moved)] = (moved, current)
+        for k in place:
+            setattr(moved, k, checked[k])
+        calcs[idx] = moved
 
     def _apply_op(self, calcs: "list[Calculation]", systems: "list[dict]",
-                  op, removed: "set[str]") -> None:
+                  op, removed: "set[str]",
+                  placed: "dict[int, tuple] | None" = None) -> None:
         if not isinstance(op, dict):
             raise ValueError("Each operation must be an object.")
         kind = op.get("op")
@@ -1332,6 +1387,8 @@ class QueueStore:
                 merged["is_raw"] = True
             self._replace_in(calcs, systems, name, calc_from_dict(merged),
                              check_refs=False)
+        elif kind == "place_calc":
+            self._place_calc(calcs, systems, op, {} if placed is None else placed)
         elif kind == "remove_calc":
             name = op.get("name")
             if not self._remove_from(calcs, name, check_refs=False):

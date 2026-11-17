@@ -1546,12 +1546,14 @@ class Bridge(QObject):
 
     @pyqtSlot(result=str)
     def get_inp_sets(self) -> str:
-        """Every saved inp set (seeded from ORCAdesk's defaults on first use)."""
+        """Every saved inp set (seeded from ORCAdesk's defaults on first use),
+        and each kind's seeded text (`defaults`, what "+ New" starts from)."""
         try:
             sets = inpsets.load_sets(**self._inpset_defaults())
+            defaults = inpsets.seed_texts(**self._inpset_defaults())
         except Exception as e:   # a slot may not raise
             return json.dumps(InpSetsResult(ok=False, error=str(e), sets=[]))
-        return json.dumps(InpSetsResult(ok=True, sets=sets))
+        return json.dumps(InpSetsResult(ok=True, sets=sets, defaults=defaults))
 
     @pyqtSlot(str, result=str)
     def save_inp_set(self, set_json: str) -> str:

@@ -475,7 +475,8 @@ The poll carries them as `QueueSnapshot.systems` with inputs **by label only**;
 
 **`apply_queue_ops(ops_json)`** is the editor's one write path: a list of
 `add_system` / `update_system {id, patch}` / `remove_system` / `add_calc` /
-`update_calc {name, calc}` / `remove_calc` / `order {names}` applied by
+`update_calc {name, calc}` / `place_calc {name, place}` / `remove_calc` /
+`order {names}` applied by
 `QueueStore.apply_ops` **atomically**: every op runs against a working copy
 through the single mutations' own rules (`_add_into` / `_replace_in` /
 `_remove_from` — the bodies `add` / `replace` / `remove` now call: name rules,
@@ -487,6 +488,16 @@ adds a child before its parent, or removes a node with its descendants, is
 consistent as a whole. A refusal is `{ok:false, error, op_index}` (`-1` = the
 batch as a whole) and changes nothing. `update_calc`'s `calc` is a **patch**
 (omitted keys keep their value, so `{"approved": true}` approves a gate).
+`place_calc`'s `place` holds only `system` / `node` / `col` / `row` (anything
+else is refused) and is allowed in **every** state: where the editor draws a
+calc is not what it ran (P24 freezes the latter). It is how a finished
+standalone calc becomes the first node of a new system so a follow-up can hang
+off it — `update_calc` stays refused for DONE/FAILED, and would re-queue the
+row. The state, message, result, `after` and inputs are untouched and the row
+is not reset to PENDING. The op works on a batch-private copy (so a refused
+batch leaves the row where it was); at commit the placement is written back
+onto the **same** row object, because the engine tracks rows by identity and
+may hold this one (running, or finished and already seen).
 `update_system` with a new name renames every calc of the lane whose name
 starts with the old one (`new + rest`) and re-points every editable calc's
 `ref_name` / `after` at the new names — refused once any calc of the lane is
@@ -516,7 +527,14 @@ from `StepConfig` + `build_input` with placeholders, at the user's
 admitted by what it asks — `core/resources.py` reads a raw input's own `%pal` /
 `%maxcore`); a file emptied by the user stays empty, an unreadable one reads as
 the seeds and is replaced only on the next save. A non-MLIP set must contain
-`{{GEOMETRY}}`; an MLIP set is `model` / `device` / `nprocs` / `env` lines.
+`{{GEOMETRY}}`; an MLIP set is `model` / `device` / `nprocs` / `env` lines. A
+name is unique within its kind (case-insensitive; other kinds may share it —
+the seeds all describe one level): a block names its set by (kind, name).
+`get_inp_sets` also returns `defaults` — each kind's seeded text
+(`seed_texts`), what the editor's *+ New* starts from. The queue window's set
+editor (DESIGN.md §17.6) writes through `save_inp_set` / `delete_inp_set`
+only; pushing a saved set's text onto the pending blocks made from it is an
+ordinary `update_calc` batch the user is offered, never automatic.
 `calc_kind_for_set` maps a set to the kind a node runs (Freq after a `ts_opt`
 is `ts_freq`).
 

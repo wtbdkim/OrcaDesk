@@ -289,12 +289,15 @@
 /**
  * One queue-editor operation for apply_queue_ops (QueueStore.apply_ops).
  * update_calc's `calc` is a PATCH: keys it leaves out keep their value.
+ * place_calc moves a row in the editor's layout only (lane, node, cell) and is
+ * allowed in every state -- how a finished calc becomes a lane's first node.
  * remove_system also removes the lane's (unstarted) calcs.
  * @typedef {{op: "add_system", system: Partial<SystemFull> & {name: string}}
  *   | {op: "update_system", id: string, patch: {name?: string, charge?: number, multiplicity?: number, inputs?: SystemInput[]}}
  *   | {op: "remove_system", id: string}
  *   | {op: "add_calc", calc: CalcInput}
  *   | {op: "update_calc", name: string, calc: Partial<CalcInput>}
+ *   | {op: "place_calc", name: string, place: {system?: string, node?: string, col?: number, row?: number}}
  *   | {op: "remove_calc", name: string}
  *   | {op: "order", names: string[]}} QueueOp
  */
@@ -665,6 +668,7 @@
  * @property {boolean} ok
  * @property {string} [error]
  * @property {InpSet[]} [sets]
+ * @property {Object<string, string>} [defaults]  set kind -> its seeded text ("+ New")
  */
 
 /**
