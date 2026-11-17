@@ -18,6 +18,12 @@ geometry at run time — and a row whose reference may still become DONE is
 deferred rather than dispatched, which is what sequential order used to
 guarantee for free.
 
+Independently of its geometry, a calculation may run `after` another one (the
+queue editor's edge). That is a dependency exactly like a reference, and the
+edge may carry an approval gate: a row whose `after` is DONE but whose gate is
+closed is *waiting* — skipped, left PENDING, never BLOCKED — and a run with
+only waiting rows left ends normally (gate_waiting).
+
 Failure propagation: if a calculation fails, any calculation that depends on it
 (directly or transitively) is marked BLOCKED and skipped. Unrelated calculations
 continue. This is dependency-scoped, not whole-queue.
@@ -46,7 +52,8 @@ from typing import Callable, Optional
 
 from .input_generator import (
     StepConfig, build_input, render_raw_input, raw_coordinate_block,
-    raw_geometry_mismatch, GEOMETRY_PLACEHOLDER, check_neb_atom_order,
+    raw_geometry_mismatch, GEOMETRY_PLACEHOLDER, HESS_PLACEHOLDER,
+    render_template_values, check_neb_atom_order,
     _xyz_elements, irc_hess_input_name, irc_hess_is_path, SCAN_KINDS, normalize_scan,
 )
 from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
@@ -121,6 +128,31 @@ class Calculation:
     # and Stop still applies — and reads as failed. Not persisted: a reattach
     # finds the marker in the .out again.
     faulted: bool = False
+
+    # ---- the queue editor's graph (all default to "standalone, as today") ----
+    # system: the lane (one molecule) this calc belongs to, a QueueStore system
+    # id; "" = a standalone calc. node: the block within the lane — the members
+    # of a stack share it. col/row: the block's grid position. Layout only:
+    # none of the four changes what runs or when.
+    system: str = ""
+    node: str = ""
+    col: int = 0
+    row: int = 0
+    # after: the calc this one runs after (the edge into it), "" = a root. A
+    # dependency exactly like a geometry reference (see _deps_ready /
+    # _blocked_by) but independent of where the geometry comes from.
+    after: str = ""
+    # gate on that edge: "auto" runs as soon as `after` is DONE; "approval"
+    # waits for `approved` — unless `auto_pass` and `after` is a frequency
+    # calc whose imaginary-mode count is the expected one (gate_auto_passes).
+    gate: str = "auto"
+    auto_pass: bool = True
+    approved: bool = False
+    # which geometry of ref_name: "" its final one, "irc_f"/"irc_b" the end
+    # points ORCA writes for an IRC ({ref}_IRC_F.xyz / {ref}_IRC_B.xyz)
+    ref_point: str = ""
+    # display only: the inp set (state/inpsets.py) the input came from
+    set_name: str = ""
 
 
 # ---- callbacks ----------------------------------------------------------
@@ -319,6 +351,76 @@ KNOWN_KINDS = frozenset({
 # its FREQ step is optional (the check below is gated on frequencies existing).
 _FREQ_KINDS = ("freq", "ts_freq", "opt_freq", "ts_opt_freq")
 
+# The edge gate (Calculation.gate) and the geometry points of a reference
+# (Calculation.ref_point) are closed sets: each value selects engine behaviour.
+GATES = ("auto", "approval")
+REF_POINTS = ("", "irc_f", "irc_b")
+# ref_point -> the file ORCA writes for that IRC end, beside {ref}.out
+_IRC_END_FILES = {"irc_f": "_IRC_F.xyz", "irc_b": "_IRC_B.xyz"}
+
+# The kinds an approval gate may pass by itself after (Calculation.auto_pass):
+# every kind whose result carries a frequency table, and the imaginary-mode
+# count each one is supposed to have.
+_GATE_FREQ_KINDS = _FREQ_KINDS + ("mlip_freq", "mlip_opt_freq")
+
+
+def _expected_imaginary(kind: str) -> int:
+    return 1 if kind in ("ts_freq", "ts_opt_freq") else 0
+
+
+def gate_auto_passes(calc: "Calculation", parent: "Calculation",
+                     parse: bool = False) -> bool:
+    """Whether `calc`'s approval gate passes by itself: auto_pass is on, the
+    parent is a frequency calculation, and its imaginary-mode count is the one
+    its kind expects (1 for a TS frequency, else 0).
+
+    The count is read from the parent's result. With ``parse`` (the engine) a
+    DONE parent restored without one is parsed on a miss, like
+    _resolve_geometry does, and the result is kept on the parent. Without a
+    result to read (the snapshot never parses; an output that cannot be read)
+    the answer falls back to what DONE already says: a frequency calc reaches
+    DONE only through validate_result, and for every kind in _GATE_FREQ_KINDS
+    that rule IS the expected count — so the two cannot disagree."""
+    if not calc.auto_pass or parent.kind not in _GATE_FREQ_KINDS:
+        return False
+    result = parent.result
+    if result is None and parse and parent.output_path:
+        try:
+            if Path(parent.output_path).is_file():
+                result = parent.result = result_from_output(parent)
+        except Exception:
+            result = None
+    if result is None:
+        return parent.state == CalcState.DONE
+    return int(getattr(result, "n_imaginary", 0) or 0) == _expected_imaginary(parent.kind)
+
+
+def _parent_names(calc: "Calculation") -> "list[str]":
+    """The calcs this one depends on: its geometry reference (when it has one)
+    and the calc it runs `after`. Either may be "" / absent."""
+    out = []
+    if calc.geometry_source == GeometrySource.REFERENCE and calc.ref_name:
+        out.append(calc.ref_name)
+    if calc.after and calc.after not in out:
+        out.append(calc.after)
+    return out
+
+
+def gate_waiting(calc: "Calculation", parent: "Optional[Calculation]",
+                 parse: bool = False) -> bool:
+    """True when `calc` is held at its approval gate: it would run (PENDING or
+    CANCELLED), the calc it runs after is DONE, its gate is "approval", it is
+    not approved and the gate does not pass by itself. Such a row is skipped
+    by the run — never BLOCKED — and a run left with only those ends
+    normally. One rule for the engine and the snapshot's `waiting` flag."""
+    if calc.gate != "approval" or calc.approved or parent is None:
+        return False
+    if calc.state not in (CalcState.PENDING, CalcState.CANCELLED):
+        return False
+    if parent.state != CalcState.DONE:
+        return False
+    return not gate_auto_passes(calc, parent, parse=parse)
+
 
 def validate_result(calc: Calculation, result: ParseResult) -> None:
     """Per-kind result validation, raising OrcaRunError on a bad result. Module-
@@ -493,6 +595,9 @@ class QueueEngine:
         self._slot_cv = threading.Condition(self._queue_lock)
         # Per-job state for the thread running it (see _job).
         self._job_local = threading.local()
+        # Gate parents whose result _gate_holds already tried to parse (id ->
+        # the object, pinned so the id cannot be recycled onto another row).
+        self._gate_parse_tried: "dict[int, Calculation]" = {}
 
     # -- per-job state ----------------------------------------------------
     @property
@@ -600,6 +705,8 @@ class QueueEngine:
         ref = self._by_name.get(calc.ref_name)
         if ref is None:
             raise OrcaRunError(f"Referenced calculation '{calc.ref_name}' not found in queue.")
+        if calc.ref_point in _IRC_END_FILES:
+            return self._irc_end_geometry(calc, ref)
         # Parse-on-miss: a DONE ref restored from a previous session has no
         # in-memory ParseResult (we don't eagerly re-parse on load), so read its
         # output now. Dispatch on kind: an MLIP ref's output is the worker's JSON
@@ -638,6 +745,38 @@ class QueueEngine:
                 "(was it an optimization?)."
             )
         raise OrcaRunError(f"Referenced calculation '{calc.ref_name}' has no usable geometry yet.")
+
+    def _irc_end_geometry(self, calc: Calculation, ref: Calculation) -> str:
+        """The forward or backward end point of an IRC (ref_point irc_f /
+        irc_b): the {ref}_IRC_F.xyz / {ref}_IRC_B.xyz ORCA writes beside the
+        IRC's .out. Read from the IRC's own run folder (its output_path, which
+        a session restored from another workspace keeps), else
+        {workspace}/{ref}. A missing file is a precise error, not "no
+        geometry": the IRC finished, it just did not run in that direction."""
+        if ref.state in (CalcState.FAILED, CalcState.BLOCKED, CalcState.CANCELLED):
+            raise OrcaRunError(f"Referenced calculation '{calc.ref_name}' did not succeed.")
+        if ref.state != CalcState.DONE:
+            raise OrcaRunError(
+                f"Referenced calculation '{calc.ref_name}' has no usable geometry yet.")
+        folder = (Path(ref.output_path).parent if ref.output_path
+                  else self.workspace_root / ref.name)
+        side = "forward" if calc.ref_point == "irc_f" else "backward"
+        path = folder / f"{ref.name}{_IRC_END_FILES[calc.ref_point]}"
+        if not path.is_file():
+            raise OrcaRunError(
+                f"'{calc.ref_name}' has no {side} IRC end point: {path.name} is "
+                f"not in {folder}. ORCA writes it only when the IRC runs in that "
+                "direction (check its %irc Direction).")
+        try:
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError as e:
+            raise OrcaRunError(f"Could not read {path}: {e}")
+        from ..molview import iter_xyz_frames
+        frames = list(iter_xyz_frames(text))
+        coords = frames[-1][1].splitlines()[2:] if frames else []
+        if not any(ln.strip() for ln in coords):
+            raise OrcaRunError(f"{path.name} in {folder} holds no coordinates.")
+        return "\n".join(coords)
 
     def _judge_dead_running(self, calc: Calculation, index: int, out_path) -> None:
         """A calc restored as RUNNING whose detached ORCA is no longer alive:
@@ -742,6 +881,7 @@ class QueueEngine:
             if mismatch:
                 self.cb.log(f"[{calc.name}] {mismatch}", "warn", calc.name)
             text = render_raw_input(calc.raw_text, xyz)
+            text = self._render_template_values(calc, text, calc_dir)
         else:
             try:
                 text = build_input(calc.config, xyz, calc.charge, calc.multiplicity)
@@ -757,7 +897,7 @@ class QueueEngine:
         inp_path.write_text(text, encoding="utf-8")
 
         self._prepare_neb_side_files(calc, calc_dir, xyz, text)
-        self._stage_irc_hessian(calc, calc_dir)
+        self._stage_irc_hessian(calc, calc_dir, text)
 
         self.cb.log(f"[{calc.name}] ({calc.kind}) running ORCA...", "info", calc.name)
         runner = self._use_runner(self._orca_runner_factory())
@@ -919,7 +1059,57 @@ class QueueEngine:
         m = re.search(r'^\s*hess_filename\s+"([^"]+)"', text, re.M | re.I)
         return m.group(1).strip() if m else ""
 
-    def _stage_irc_hessian(self, calc: Calculation, calc_dir: Path) -> None:
+    def _render_template_values(self, calc: Calculation, text: str,
+                                calc_dir: Path) -> str:
+        """Fill an inp-set template's own placeholders (the geometry one is
+        render_raw_input's): {{CHARGE}} / {{MULT}} with the calculation's
+        charge and multiplicity, and {{HESS}} with the bare file name of a
+        Hessian staged into the run folder (_stage_template_hessian). A text
+        without them is returned unchanged."""
+        text = render_template_values(text, calc.charge, calc.multiplicity)
+        if HESS_PLACEHOLDER in text:
+            text = text.replace(HESS_PLACEHOLDER,
+                                self._stage_template_hessian(calc, calc_dir))
+        return text
+
+    def _stage_template_hessian(self, calc: Calculation, calc_dir: Path) -> str:
+        """Copy the Hessian a {{HESS}} template asks for into the run folder and
+        return its bare file name: the ``{after}.hess`` of the calc this one
+        runs after, else the ``{ref}.hess`` of its geometry source. Each
+        parent's folder is its output_path's (a restored session may live in
+        another workspace), else {workspace}/{name}. None there is an
+        OrcaRunError before anything launches — ORCA would otherwise die inside
+        on a file it cannot open."""
+        parents = [calc.after]
+        if calc.geometry_source == GeometrySource.REFERENCE:
+            parents.append(calc.ref_name)
+        looked: list[str] = []
+        for pname in dict.fromkeys(p for p in parents if p and p != calc.name):
+            parent = self._by_name.get(pname)
+            folder = (Path(parent.output_path).parent
+                      if parent is not None and parent.output_path
+                      else self.workspace_root / pname)
+            src = folder / f"{pname}.hess"
+            looked.append(str(src))
+            if not src.is_file():
+                continue
+            dest = calc_dir / src.name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if src.resolve() != dest.resolve():
+                shutil.copyfile(src, dest)
+                self.cb.log(f"[{calc.name}] copied {src.name} from {pname}'s "
+                            "folder.", "info", calc.name)
+            return src.name
+        where = "; ".join(looked) if looked else (
+            "this calculation runs after nothing and references no calculation")
+        raise OrcaRunError(
+            f"The input asks for a Hessian ({HESS_PLACEHOLDER}), but none was "
+            f"found (looked in: {where}). It is the .hess of the calculation this "
+            "one runs after, or of its geometry source — run a frequency "
+            "calculation there first.")
+
+    def _stage_irc_hessian(self, calc: Calculation, calc_dir: Path,
+                           text: str = "") -> None:
         """IRC pre-launch guard for a read-in Hessian: the input references the
         file relative to the run folder, but nothing guarantees it is there (the
         folder may not even exist before the first run). Stage it from the
@@ -932,12 +1122,16 @@ class QueueEngine:
         raw text asks for is read from the text (`_raw_irc_hess_file`), the way
         the raw NEB-TS guard reads its own side-file reference.
 
+        ``text`` is the rendered input when the caller has it: a template's
+        ``Hess_Filename "{{HESS}}"`` names the real file only after
+        _render_template_values, which has already staged it.
+
         No-op for every other kind.
         """
         if calc.kind != "irc":
             return
         if calc.is_raw:
-            hess_name = self._raw_irc_hess_file(calc.raw_text)
+            hess_name = self._raw_irc_hess_file(text or calc.raw_text)
         elif (calc.config.irc_init_hess or "").strip().lower() == "read":
             hess_name = (calc.config.irc_hess_file or "").strip()
         else:
@@ -1265,24 +1459,32 @@ class QueueEngine:
         A dangling or self-reference is NOT blocked here — _resolve_geometry
         reports those precisely, and a vague "a dependency failed" would be a
         worse message.
+
+        A row has two parents: its geometry reference and the calc it runs
+        `after` (the queue editor's edge). Both are dependencies, so the walk
+        follows both — a FAILED/BLOCKED ancestor on either chain blocks.
         """
-        cur, walked = calc, set()
-        while (cur.geometry_source == GeometrySource.REFERENCE and cur.ref_name
-               and cur.ref_name not in walked):
-            walked.add(cur.ref_name)
-            parent = self._by_name.get(cur.ref_name)
-            if parent is None or parent is cur:
-                return None
-            if parent.state in (CalcState.FAILED, CalcState.BLOCKED):
-                return parent
-            if parent.state == CalcState.DONE:
-                # The chain ENDS at a finished parent. Its geometry is on disk
-                # and frozen (P24), so it is self-sufficient — whatever failed
-                # further up the chain was needed to PRODUCE it, and that
-                # already happened. Walking past it blocked a row whose direct
-                # parent was DONE and perfectly usable.
-                return None
-            cur = parent
+        stack, walked = [calc], {calc.name}
+        while stack:
+            cur = stack.pop()
+            for pname in _parent_names(cur):
+                if pname in walked:
+                    continue
+                walked.add(pname)
+                parent = self._by_name.get(pname)
+                if parent is None or parent is cur:
+                    continue
+                if parent.state in (CalcState.FAILED, CalcState.BLOCKED):
+                    return parent
+                if parent.state == CalcState.DONE:
+                    # The chain ENDS at a finished parent. Its geometry is on
+                    # disk and frozen (P24), so it is self-sufficient —
+                    # whatever failed further up the chain was needed to
+                    # PRODUCE it, and that already happened. Walking past it
+                    # blocked a row whose direct parent was DONE and
+                    # perfectly usable.
+                    continue
+                stack.append(parent)
         return None
 
     def _failure_reason(self, calc: Calculation, runner_msg: str) -> str:
@@ -1492,16 +1694,39 @@ class QueueEngine:
         _resolve_geometry with a precise message, and deferring it forever would
         turn a clear error into a hang. A FAILED/BLOCKED parent is ready too —
         _precheck blocks the child, as before.
+
+        The calc this one runs `after` is waited for by the same rule, and
+        once it is DONE the edge's approval gate is asked too: a row held at
+        its gate (gate_waiting) is not ready — it stays PENDING and unseen, and
+        a run left with nothing but such rows ends (_block_unreachable leaves
+        them alone).
         """
-        if (calc.geometry_source != GeometrySource.REFERENCE) or not calc.ref_name:
-            return True
-        parent = self._by_name.get(calc.ref_name)
-        if parent is None or parent is calc:
-            return True
-        if parent.state == CalcState.RUNNING or parent.name in self._active_names:
+        for pname in _parent_names(calc):
+            parent = self._by_name.get(pname)
+            if parent is None or parent is calc:
+                continue
+            if parent.state == CalcState.RUNNING or parent.name in self._active_names:
+                return False
+            if (parent.state in (CalcState.PENDING, CalcState.CANCELLED)
+                    and id(parent) not in seen):
+                return False
+        return not self._gate_holds(calc)
+
+    def _gate_holds(self, calc: Calculation) -> bool:
+        """True when `calc` waits at its approval gate (gate_waiting), with the
+        `after` parent's result parsed on a miss. A parent whose output could
+        not be parsed is remembered, so the dispatcher's re-scan does not
+        re-read it every quarter second; it then falls back to DONE's own
+        guarantee (see gate_auto_passes)."""
+        if calc.gate != "approval" or calc.approved or not calc.after:
             return False
-        return not (parent.state in (CalcState.PENDING, CalcState.CANCELLED)
-                    and id(parent) not in seen)
+        parent = self._by_name.get(calc.after)
+        if parent is None or parent is calc:
+            return False
+        parse = id(parent) not in self._gate_parse_tried
+        if parse and parent.result is None:
+            self._gate_parse_tried[id(parent)] = parent
+        return gate_waiting(calc, parent, parse=parse)
 
     def _handled_without_running(self, calc: Calculation) -> bool:
         """True when _precheck will dispose of this row without launching
@@ -1562,9 +1787,22 @@ class QueueEngine:
     def _block_unreachable(self, calcs: list[Calculation], seen: dict) -> None:
         """Nothing is running and every remaining row is waiting on a geometry
         reference that can never complete — i.e. the references form a cycle.
-        Stamp them BLOCKED instead of spinning forever."""
+        Stamp them BLOCKED instead of spinning forever.
+
+        Except the rows held at an approval gate, and every row downstream of
+        one: those are not unreachable, they are waiting for the user. They are
+        left exactly as they are (PENDING, not seen) and the run ends normally
+        — approving later and pressing Run picks them up."""
+        held = self._held_at_gates(calcs, seen)
+        if held:
+            n_gate = sum(1 for c in held.values() if self._gate_holds(c))
+            self.cb.log(
+                f"{n_gate} calculation(s) waiting for approval"
+                + (f" ({len(held) - n_gate} more after them)"
+                   if len(held) > n_gate else "")
+                + "; approve to continue.", "info")
         for j, c in enumerate(calcs):
-            if id(c) in seen:
+            if id(c) in seen or id(c) in held:
                 continue
             seen[id(c)] = c
             # Only a row that was actually going to run can be blocked. A DONE
@@ -1580,6 +1818,30 @@ class QueueEngine:
             self.cb.log(f"[{c.name}] blocked (circular geometry reference).",
                         "warn", c.name)
             self.cb.calc_update(j, c)
+
+    def _held_at_gates(self, calcs: list[Calculation],
+                       seen: dict) -> "dict[int, Calculation]":
+        """Unhandled rows waiting at an approval gate, plus every unhandled row
+        whose dependencies (geometry reference or `after`) reach one of them —
+        id -> row. Caller holds the lock."""
+        held: "dict[int, Calculation]" = {
+            id(c): c for c in calcs if id(c) not in seen and self._gate_holds(c)}
+        if not held:
+            return held
+        held_names = {c.name for c in held.values()}
+        grew = True
+        while grew:
+            grew = False
+            for c in calcs:
+                if id(c) in seen or id(c) in held:
+                    continue
+                if c.state not in (CalcState.PENDING, CalcState.CANCELLED):
+                    continue
+                if any(p in held_names for p in _parent_names(c)):
+                    held[id(c)] = c
+                    held_names.add(c.name)
+                    grew = True
+        return held
 
     def _start_job(self, calc: Calculation, i: int, calcs: list[Calculation],
                    threads: list):
@@ -1734,6 +1996,22 @@ class QueueEngine:
                             f"'{calc.ref_name}' is not in the queue.")
             self.cb.log(f"[{calc.name}] blocked (referenced calculation "
                         f"'{calc.ref_name}' is not in the queue).", "warn", calc.name)
+            self.cb.calc_update(i, calc)
+            return False
+
+        # The same two refusals for the calc this one runs `after`: gone from
+        # the queue, or itself. BLOCKED (editable), never FAILED (locked).
+        if calc.after and (calc.after == calc.name
+                           or self._by_name.get(calc.after) is None):
+            calc.state = CalcState.BLOCKED
+            if calc.after == calc.name:
+                calc.message = "Skipped: a calculation cannot run after itself."
+                why = "it runs after itself"
+            else:
+                calc.message = (f"Skipped: '{calc.after}', the calculation this "
+                                "one runs after, is not in the queue.")
+                why = f"'{calc.after}', which it runs after, is not in the queue"
+            self.cb.log(f"[{calc.name}] blocked ({why}).", "warn", calc.name)
             self.cb.calc_update(i, calc)
             return False
 

@@ -1250,7 +1250,8 @@ scope, so the notebook keeps everything on a single `NB` namespace (plus `MOL`
 and `CHARTS`) — any other top-level name is refused by `tests/test_next_ui.py`.
 
 **17.2 The window is the queue plus one thing.** Two places (Jobs and Results)
-and a 600px rail that stays on screen in both:
+and a 600px rail that stays on screen in both. Building and editing the queue
+is the queue window's (§17.6); this window reads it:
 
 - **Rail** — the queue, grouped by what a row is doing (running / queued /
   done), because that is the question being asked of the list. A row carries
@@ -1264,10 +1265,18 @@ and a 600px rail that stays on screen in both:
   `rail.js`). Read stage by stage, the bar filled when a TS search's Hessian
   finished and emptied when the optimization began. It is full only when ORCA
   says the job is through. The cell's own bar under its chart stays the stage's.
-- **Builder** — the cell IS the form. A new calculation is the dashed stub at
-  the end of the stream; editing a queued one turns that calculation's cell into
-  the editor, with an `.editbar` naming what is being changed. It is not a place
-  you go to and come back from.
+  The rail is the queue's **status**, not its editor: rows are not dragged (the
+  grip column stays, empty, so a calculation lines up with an opened file), a
+  row click brings that calculation's cell into view in Jobs or opens its
+  report in Results, and a row's controls only read (*results*, *folder*,
+  *in the queue*). *edit* and the header's **Open queue** open the queue window
+  — on that calculation, for *edit*. Reordering, duplicating and removing are
+  the editor's; the Finished group's *Clear* stays, as tidying rather than
+  editing.
+- **Builder** — the cell IS the form, and it lives in the queue window now
+  (§17.6): its inspector column hosts the same `.cell.editing`. The stream's
+  dashed stub and a cell's *New from this* open it there, handing the seed over
+  (below). It is not a place you go to and come back from.
 - **Stream** — one **cell** per calculation: its chart, its output tail and its
   facts, together. A tabbed layout asks you to pick a job and then pick a view
   of it (Raw or Graph, one at a time, one job at a time); here you read down
@@ -1971,6 +1980,77 @@ still draws the Appearance card; its `.slider` is a listed, deliberate absence
 (`OUTSTANDING` in `tests/test_next_ui.py`, `REMOVED` in `tools/uidiff.py`).
 Light/dark stays the top bar's toggle. A missing `web/next/index.html` is
 reported by `_check_ui_loaded` rather than left as a blank window.
+
+**17.6 The queue is a window of its own, drawn as a graph.** The user asked for
+the queue and Jobs/Results to be two windows. Both load `web/next/index.html`
+over one Bridge and one store; the URL says which page it is — `?win=queue` is
+the queue editor (`qed.js`, `#qed`), anything else the main window
+(`html[data-win]`; a missing query is the main window, never an empty page).
+The queue window draws no stream, report or rail and reads no log or output
+files; the sheet, modal, toasts and the builder are shared.
+
+The layout and interactions are the approved design canvas's (the "ORCAdesk
+Queue" prototype); its sample data and template texts are not the spec. Three
+columns:
+
+- **Library** (left) — the inp sets, grouped by kind (MLIP, Opt, OptTS, Freq,
+  IRC, SP). A set is dragged onto a block of its kind to replace that block's
+  template, or onto the ghost slot to add the next step; a click applies it to
+  the selected block when the kinds match. The first replacement is confirmed
+  (§13.1) and said to be asked once; later ones apply at once. Delete on a
+  focused set removes it from the library (confirmed). Under the library, the
+  **drop recipe**: the SP set and the name suffix a dropped `.xyz` runs with,
+  kept in the UI state.
+- **Lanes** (middle) — one per system, top to bottom in run order; a standalone
+  calculation is a one-node lane. A block (140 x 64, 176px a column, 104px a
+  row) carries its state dot (§12 colours; *waiting* is an amber ring), its run
+  order, and `kind / set` (amber with `*` once its template differs from the
+  set). A **stack** (several calculations sharing a node, e.g. an SP after an
+  IRC is `-F` and `-B`) shows its count and unfolds a member list. **Edges**
+  are solid when the next step runs by itself and dashed amber when it waits
+  for approval. The **ghost +** after the selected block takes a dropped set,
+  or opens **Manual build**: the Guided builder in the inspector, seeded for
+  that place, whose calculation lands in that lane, column and row. An empty
+  system shows its first slot. The **grip** moves a lane (drag), copies it
+  (Ctrl-drop, or a click: copy below) and answers Alt+↑/↓; *+ system* starts a
+  lane from an `.xyz`. Top bar: Clear all, Cancel, Stop after current, Run
+  queue (the main window's four), and one line of the worst warning (duplicate
+  or empty names, a Freq at another level than its Opt, a lane with no
+  structure, a template without `{{GEOMETRY}}`; the rest in its tooltip).
+- **Inspector** (right) — for a block: the system name (renames the lane, and
+  every calculation name follows; read-only once the lane has started), charge
+  and multiplicity, the geometry (the system's structures, or any ancestor's
+  output along the `after` chain, an IRC's two ends included), the template,
+  and *Save as* a new set of the kind its job line says. A block the Guided
+  builder made shows its generated input read-only and *Edit in the builder*.
+  For an edge: *Auto* / *After approval*, the auto-pass box after a Freq
+  (`ts_freq`: one imaginary mode expected, otherwise none), and *Approve* while
+  the next step waits.
+
+It holds **no queue state of its own**. Every change is one `apply_queue_ops`
+batch (all or nothing) and the editor redraws from the next poll; what it keeps
+is the selection, a popover, a drag, and an **undo stack of inverse batches**
+(Ctrl+Z). A removal that takes a finished calculation with it is not offered as
+undoable — the store would take it back as PENDING, which is queueing it to run
+again, not undoing. Delete removes a block and everything after it (confirmed;
+a running one is refused: cancel it first).
+
+Files dropped on the queue window: every `.xyz` at once becomes a system with
+the drop recipe's single point (`add_xyz_systems`); a refused file is listed
+with its reason, never renamed to fit; an `.inp` opens in the builder as pasted
+input. On the main window an `.out` opens in Results, an `.xyz` goes through
+the same recipe and the queue window opens, an `.inp` opens there in the
+builder. What the main window hands the queue window (the builder with a seed,
+an `.inp`, a calculation to show) goes through a one-slot mailbox in the UI
+state (`queue.handoff`, stamped, read while the window is on screen) — the two
+pages share the Bridge, not a line of JS.
+
+Visual language: the notebook's own tokens, light and dark. The prototype is
+dark-only with literal zinc hexes; each is mapped onto a token (`app.css`,
+*the queue window*, has the table), with three derived greys (`--qe-dim`,
+`--qe-faint`, `--qe-ghost`) mixed from `--muted-foreground` into the
+background so they follow the theme. None of it is a uispec landmark: the
+reference has no queue window, and the main page's landmarks are unchanged.
 
 ---
 

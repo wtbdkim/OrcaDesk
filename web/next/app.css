@@ -1385,3 +1385,218 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
 .surfkey span{display:inline-flex; align-items:center; gap:6px;}
 .surfkey b{color:var(--foreground); font-weight:600;}
 .surfkey svg{display:block; flex:none;}
+
+/* ---------------------------- the queue window ----------------------------
+   The queue editor (qed.js, DESIGN.md §17.6) -- a second native window over
+   the same page, opened with ?win=queue. Its layout and interactions are the
+   approved design canvas's ("ORCAdesk Queue"); that prototype is dark-only
+   and hard-codes zinc hexes, which are mapped here onto this sheet's tokens so
+   the window follows the light theme too:
+     #09090b page            --background     #18181b block    --card
+     #0e0e10 canvas, fields  --stage / --input-bg
+     #27272a hairline        --border         #a1a1aa label    --muted-foreground
+     #71717a dim text        --qe-dim         #52525b faint    --qe-faint
+     #3f3f46 ghost dash      --qe-ghost       #fafafa ink      --foreground
+     amber / green / red     --warn / --ok / --err
+   Not in the reference's main window, so none of this is a uispec landmark. */
+:root{
+  --qe-dim:color-mix(in srgb, var(--muted-foreground) 72%, var(--background));
+  --qe-faint:color-mix(in srgb, var(--muted-foreground) 48%, var(--background));
+  --qe-ghost:color-mix(in srgb, var(--muted-foreground) 34%, var(--background));
+  --qe-tint:color-mix(in srgb, var(--foreground) 5%, transparent);
+}
+html[data-win="queue"] .app{display:none;}
+.qed{height:100vh; height:100dvh;}
+.qe-app{
+  display:grid; height:100%; overflow:hidden;
+  grid-template-columns:220px minmax(0,1fr) 360px;
+}
+/* the Guided builder is hosted in the inspector, and its rows need the room */
+.qe-app[data-building]{grid-template-columns:220px minmax(0,1fr) min(680px, 50vw);}
+.qe-app > *{min-height:0; overflow-y:auto;}
+@keyframes qe-breathe{0%,100%{border-color:var(--qe-faint)}50%{border-color:var(--ring)}}
+@keyframes qe-pop{from{opacity:0; transform:scale(.92)} to{opacity:1; transform:none}}
+
+/* left: the inp-set library, by kind */
+.qe-lib{padding:24px 16px; display:flex; flex-direction:column; gap:18px;}
+.qe-libh{font-size:12px; color:var(--muted-foreground); padding:0 10px;}
+.qe-sets{display:flex; flex-direction:column; gap:18px;}
+.qe-group{display:flex; flex-direction:column; gap:1px;}
+.qe-kind{font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
+  color:var(--qe-dim); padding:0 10px 4px;}
+.qe-kind[data-on]{color:var(--foreground);}
+.qe-set{
+  display:block; width:100%; min-height:32px; padding:5px 10px; background:none; border:none;
+  border-radius:8px; cursor:grab; text-align:left; font-size:13px; color:var(--qe-dim);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; transition:opacity .15s;
+}
+.qe-set[data-match]{color:color-mix(in srgb, var(--foreground) 85%, var(--background));}
+.qe-set[data-cur]{background:var(--card); color:var(--foreground);}
+.qe-set:hover{background:var(--accent);}
+.qe-set[data-dragging]{opacity:.4;}
+.qe-pad{padding:0 10px; margin:0;}
+.qe-recipe{display:flex; flex-direction:column; gap:6px; padding:12px 0 0;
+  border-top:1px solid var(--border);}
+.qe-rlab{display:flex; align-items:center; gap:8px; padding:0 10px;
+  font-size:12px; color:var(--muted-foreground);}
+.qe-rlab .qe-select,.qe-rlab .qe-input{flex:1 1 auto; min-width:0; min-height:30px; padding:4px 8px; font-size:12px;}
+.qe-dragimgs{position:fixed; left:-9999px; top:0; pointer-events:none;}
+.qe-dragimg{width:140px; height:64px; padding:12px; display:flex; flex-direction:column; gap:2px;
+  background:var(--card); border:1px solid var(--muted-foreground); border-radius:10px;}
+.qe-dragimg .qe-nm{font-size:13px; font-weight:500;}
+
+/* middle: the run controls and the lanes */
+.qe-main{min-width:0; padding:24px 8px; display:flex; flex-direction:column; gap:16px; overflow:hidden;}
+.qe-bar{display:flex; align-items:center; gap:4px; flex-wrap:wrap; padding:0 8px; min-height:32px;}
+.qe-barsp{flex:1 1 auto;}
+.qe-tbtn{color:var(--muted-foreground); padding:6px 10px;}
+.qe-tbtn:hover{background:none; color:var(--foreground);}
+.qe-warn{font-size:12px; color:var(--warn); padding:0 20px; margin:-8px 0 0;}
+.qe-canvas{flex:1 1 auto; min-height:0; overflow:auto; margin:0 8px;
+  border-radius:var(--radius); background:var(--stage);}
+.qe-graph{position:relative; min-width:100%; min-height:100%;}
+.qe-bg{position:absolute; left:0; top:0; width:100%; height:100%; padding:0;
+  background:none; border:none; cursor:default;}
+.qe-rule{position:absolute; left:0; right:0; height:1px;
+  background:color-mix(in srgb, var(--border) 75%, transparent);}
+.qe-grip{position:absolute; left:2px; width:18px; height:32px; padding:0; background:none; border:none;
+  border-radius:6px; color:var(--qe-faint); font-size:15px; line-height:32px; cursor:grab;}
+.qe-grip:hover{color:var(--muted-foreground); background:var(--card);}
+.qe-grip:active{cursor:grabbing;}
+.qe-slot{position:absolute; left:16px; right:16px; height:28px; z-index:5;
+  border:1px dashed var(--qe-faint); border-radius:8px;
+  background:color-mix(in srgb, var(--background) 85%, transparent);
+  display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--muted-foreground);}
+.qe-slot[data-on]{border-color:var(--foreground); background:var(--qe-tint); color:var(--foreground);}
+.qe-addsys{position:absolute; left:20px; padding:4px; background:none; border:none;
+  color:var(--qe-dim); font-size:12px; cursor:pointer;}
+.qe-addsys:hover{color:var(--foreground);}
+.qe-cap{position:absolute; padding:2px 4px; background:none; border:none; border-radius:6px;
+  font-size:12px; color:var(--muted-foreground); cursor:pointer; white-space:nowrap;}
+.qe-cap:hover,.qe-cap[aria-current="true"]{color:var(--foreground);}
+
+/* edges: solid when the next one runs by itself, dashed amber when it waits */
+.qe-edge{position:absolute; padding:0; background:none; border:none; cursor:pointer;}
+.qe-eline,.qe-ehead{--qe-c:var(--qe-faint); position:absolute;}
+.qe-eline[data-gate="approval"],.qe-ehead[data-gate="approval"]{--qe-c:var(--warn);}
+.qe-eline[data-sel],.qe-ehead[data-sel]{--qe-c:var(--foreground);}
+.qe-eline[data-dir="h"]{left:0; right:6px; top:11px; border-top:1.5px solid var(--qe-c);}
+.qe-eline[data-dir="v"]{top:0; bottom:0; left:11px; border-left:1.5px solid var(--qe-c);}
+.qe-eline[data-gate="approval"]{border-style:dashed;}
+.qe-ehead{right:0; top:8px; width:0; height:0;
+  border-top:4px solid transparent; border-bottom:4px solid transparent; border-left:6px solid var(--qe-c);}
+
+/* nodes: a block, or a stack of them */
+.qe-node{position:absolute; width:140px;}
+.qe-node[data-pop]{animation:qe-pop .24s cubic-bezier(.32,.72,0,1);}
+.qe-back{position:absolute; width:140px; height:100%; border:1px solid var(--border); border-radius:10px;}
+.qe-back[data-depth="2"]{left:10px; top:10px; background:color-mix(in srgb, var(--card) 40%, var(--stage));}
+.qe-back[data-depth="1"]{left:5px; top:5px; background:color-mix(in srgb, var(--card) 70%, var(--stage));}
+.qe-card{position:relative; width:140px; height:64px; padding:12px 12px 10px;
+  background:var(--card); border:1px solid var(--border); border-radius:10px;
+  transition:border-color .18s, transform .18s cubic-bezier(.32,.72,0,1), box-shadow .18s;}
+.qe-card[data-sel]{border-color:var(--muted-foreground);}
+.qe-card[data-st="blocked"]{opacity:.45;}
+.qe-node[data-drop] .qe-card{border-style:dashed; border-color:var(--foreground);
+  transform:translateY(-2px); box-shadow:var(--shadow-md);}
+.qe-pick{display:flex; flex-direction:column; gap:2px; width:100%; padding:0; background:none;
+  border:none; text-align:left; cursor:pointer; border-radius:6px;}
+.qe-line{display:flex; align-items:center; gap:8px; width:100%;}
+.qe-dot{width:7px; height:7px; border-radius:50%; flex:0 0 auto; border:1.5px solid var(--qe-dim);}
+.qe-dot[data-st="done"]{background:var(--ok); border-color:var(--ok);}
+.qe-dot[data-st="running"]{background:var(--warn); border-color:var(--warn);}
+.qe-dot[data-st="failed"]{background:var(--err); border-color:var(--err);}
+.qe-dot[data-st="waiting"]{border-color:var(--warn);}
+.qe-dot[data-st="blocked"],.qe-dot[data-st="cancelled"]{border-color:var(--qe-faint);}
+.qe-nm{flex:1 1 auto; min-width:0; font-size:13px; font-weight:500;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.qe-ord{flex:0 0 auto; font-size:11px; font-variant-numeric:tabular-nums; color:var(--qe-dim);}
+.qe-ord[data-stack]{min-width:18px; height:18px; line-height:18px; text-align:center;
+  border-radius:var(--radius-pill); background:var(--accent);
+  color:color-mix(in srgb, var(--foreground) 85%, var(--background));}
+.qe-sub{display:block; padding-left:15px; font-size:11.5px; color:var(--qe-dim);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.qe-sub[data-mod]{color:var(--warn);}
+.qe-pop{position:absolute; left:0; right:0; top:calc(100% + 6px); z-index:10;
+  display:flex; flex-direction:column; padding:6px 0;
+  background:var(--popover); border:1px solid var(--secondary-hover); border-radius:10px; box-shadow:var(--shadow-md);}
+.qe-prow{display:flex; gap:8px; align-items:baseline; width:100%; padding:5px 12px;
+  background:none; border:none; cursor:pointer; text-align:left; color:var(--muted-foreground);}
+.qe-prow[data-on]{color:var(--foreground);}
+.qe-prow .qe-nm{font-size:12px; font-weight:400;}
+.qe-prow .qe-ord{padding-right:2px;}
+
+/* the ghost: where the next step goes */
+.qe-gline{position:absolute; height:0; pointer-events:none; border-top:1.5px dashed var(--qe-ghost);}
+.qe-gline[data-dir="v"]{width:0; border-top:none; border-left:1.5px dashed var(--qe-ghost);}
+.qe-ghost{position:absolute; width:140px; height:64px; z-index:15;
+  border:1px dashed var(--qe-ghost); border-radius:10px; background:none;
+  transition:transform .18s cubic-bezier(.32,.72,0,1), background .18s;}
+.qe-ghost[data-drop]{border-color:var(--muted-foreground); animation:qe-breathe 1.2s ease-in-out infinite;}
+.qe-ghost[data-hot]{border-color:var(--foreground); background:var(--qe-tint); transform:scale(1.04); animation:none;}
+.qe-ghost[data-picking]{border-color:var(--muted-foreground);
+  background:color-mix(in srgb, var(--card) 50%, var(--stage));}
+.qe-gbtn{width:100%; height:100%; padding:0; background:none; border:none; border-radius:10px;
+  color:var(--qe-dim); font-size:20px; font-weight:300; cursor:pointer;}
+.qe-gbtn:hover{color:var(--foreground); background:var(--qe-tint);}
+.qe-gtext{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+  height:100%; font-size:12px; color:var(--muted-foreground);}
+.qe-gsub{font-size:10.5px; color:var(--qe-faint);}
+@media (prefers-reduced-motion: reduce){
+  .qe-node[data-pop],.qe-ghost[data-drop]{animation:none;}
+  .qe-card,.qe-ghost{transition:none;}
+}
+
+/* right: the inspector */
+.qe-insp{min-width:0; padding:24px 24px 32px; display:flex; flex-direction:column; gap:16px;
+  border-left:1px solid color-mix(in srgb, var(--border) 75%, transparent);}
+.qe-ititle{display:flex; align-items:baseline; min-width:0; font-size:16px; font-weight:600;}
+.qe-sysname{flex:0 1 auto; min-width:2ch; max-width:100%; padding:0; font:inherit; color:inherit;
+  background:transparent; border:none; border-bottom:1px dashed transparent; border-radius:0;}
+input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
+  border-bottom-color:var(--qe-faint); box-shadow:none;}
+.qe-sfx{flex:0 0 auto; color:var(--qe-dim);}
+.qe-cm{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-top:-8px;
+  font-size:12px; color:var(--qe-dim);}
+.qe-cm label{display:inline-flex; align-items:baseline; gap:5px;}
+.qe-num{width:3ch; padding:0; font:inherit; text-align:center;
+  color:color-mix(in srgb, var(--foreground) 85%, var(--background));
+  background:transparent; border:none; border-bottom:1px dashed transparent; border-radius:0;}
+.qe-num:not([readonly]):hover,.qe-num:not([readonly]):focus{border-bottom-color:var(--qe-faint); box-shadow:none;}
+.qe-note{font-size:12px; color:var(--qe-dim); margin:0;}
+.qe-note[data-tone="err"]{color:var(--err);}
+.qe-note[data-tone="warn"]{color:var(--warn);}
+.qe-select,.qe-input{min-height:34px; padding:6px 10px; font-size:13px;
+  background:var(--input-bg); border:1px solid var(--border); border-radius:8px;}
+.qe-select{width:100%;}
+.qe-input{flex:1 1 auto; min-width:0;}
+.qe-tpl{width:100%; resize:vertical; padding:12px 14px; background:var(--input-bg);
+  border:1px solid var(--border); border-radius:8px;
+  font-family:var(--font-mono); font-size:12px; line-height:1.65;
+  color:color-mix(in srgb, var(--foreground) 90%, var(--background));}
+.qe-saveas{display:flex; align-items:center; gap:8px;}
+.qe-saveas .qe-note{flex:1 1 auto;}
+.qe-insp .seg{align-self:flex-start;}
+/* the hosted builder is as tall as its form; the column scrolls, the cell is not squeezed */
+.qe-insp > .cell{flex:0 0 auto;}
+.qe-check{display:flex; align-items:flex-start; gap:8px; font-size:12.5px; line-height:1.5;
+  color:color-mix(in srgb, var(--foreground) 85%, var(--background));}
+.qe-check input{width:15px; height:15px; margin:2px 0 0; accent-color:var(--foreground);}
+.qe-wait{display:flex; flex-direction:column; gap:12px; font-size:13px;}
+.qe-wait .btn{align-self:flex-start;}
+.qe-ok{font-size:13px; color:var(--ok);}
+.qe-inputs{display:flex; flex-direction:column; gap:4px;}
+@media (max-width:900px){
+  html[data-win="queue"] body{overflow:auto;}
+  .qe-app,.qe-app[data-building]{grid-template-columns:minmax(0,1fr); height:auto; overflow:visible;}
+  .qe-app > *{overflow:visible;}
+  .qe-canvas{min-height:60vh;}
+  .qe-insp{border-left:none; border-top:1px solid var(--border);}
+}
+
+/* ---------------------------- the compact rail ----------------------------
+   With the queue editor in its own window the rail is the queue's status
+   (DESIGN.md §17.2): rows are not dragged, the row controls only read, and
+   the header carries the way to the editor. The button sits in the
+   uppercase 10px header and keeps the button's own type. */
+.rail-h .btn{text-transform:none; letter-spacing:-.01em; font-weight:500; margin:-4px -6px -4px 4px;}

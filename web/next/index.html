@@ -75,6 +75,11 @@
   <div class="reswin" id="reswin" aria-label="Results"></div>
 </div>
 
+<!-- The queue window (?win=queue) draws this instead of .app: the queue
+     editor, filled by qed.js. The sheet, modal, viewer and toasts below are
+     shared by both windows. See DESIGN.md §17.6. -->
+<div class="qed" id="qed" hidden></div>
+
 <div class="scrim" id="scrim" hidden></div>
 <aside class="sheet" id="settings" role="dialog" aria-modal="true" aria-label="Settings" hidden></aside>
 
@@ -151,5 +156,6 @@
 <script src="mvwin.js"></script>
 <script src="results.js"></script>
 <script src="settings.js"></script>
+<script src="qed.js"></script>
 </body>
 </html>

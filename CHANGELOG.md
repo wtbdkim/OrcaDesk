@@ -49,6 +49,44 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   are not affected.
 
 ### Added
+- **Queue editor backend: steps that run after one another, approval gates
+  and saved input sets.** A calculation can now run *after* another one,
+  independently of where its geometry comes from; if that one fails it is
+  skipped (blocked), as with a geometry reference. The link can wait for your
+  approval: the calculation then waits once its predecessor is done, the rest
+  of the queue keeps running, and a run with only waiting steps left simply
+  ends. After a frequency calculation the wait can pass by itself when the
+  number of imaginary modes is the expected one (one for a TS, none
+  otherwise). A step can start from either end of an IRC (its forward or
+  backward end point). Saved input sets, one per step type and seeded from
+  ORCAdesk's defaults at your default cores and memory, fill in the charge,
+  multiplicity and the Hessian of the step before (copied into the run folder;
+  a missing one stops the step before ORCA starts). Molecules (lanes) are kept
+  with the queue across restarts. The queue window opens as a window of its
+  own; dropping several `.xyz` files on it adds one molecule and one
+  calculation per file, and refuses a clashing name, a name ORCA cannot run
+  or a multi-structure file with the reason, file by file.
+- **The queue gets a window of its own: a graph you build the queue in.**
+  *Open queue* (the queue rail's header) opens it. Each molecule is a row of
+  steps left to right; a step is a block with its state, its run order and the
+  input set it came from, and a stack of blocks where one step becomes several
+  (an SP after an IRC runs from both ends). Drag an input set from the library
+  on the left onto the + after a block to add the next step, or onto a block to
+  swap its template (asked the first time); click the + for the Guided builder,
+  which now lives in this window. Click a connection to make the next step wait
+  for your approval, let it pass by itself after a frequency calculation with
+  the expected number of imaginary modes, or approve it. The inspector on the
+  right renames a molecule (every calculation name follows), sets charge and
+  multiplicity, picks the geometry (the structure, or any earlier step's
+  result, an IRC's forward or backward end included), edits the template and
+  saves it as a new set. Drag a row's grip to move it, Ctrl-drop or click to
+  copy it; Delete removes a block and the steps after it; Ctrl+Z undoes.
+  Dropped `.xyz` files become molecules with a single point from the set and
+  name suffix chosen under the library. The main window's queue rail is now
+  its status: rows take you to the calculation's output or report, and *edit*,
+  *New calculation* and *New from this* open the queue window. Dropping an
+  `.out` on the main window opens it in Results again, an `.xyz` queues it,
+  an `.inp` opens it in the builder.
 - **A 2-D relaxed surface scan is drawn as its grid in the notebook report.**
   Each point sits where its two coordinates put it, and its size is its energy
   (area in proportion to ΔE). The highest point is red and the lowest blue, and

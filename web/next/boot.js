@@ -27,6 +27,19 @@ var NB = {};
   NB.running = false;
   NB.view = "jobs";
   NB.about = null;
+  /** @type {any[]} SystemSummary[] — the queue editor's lanes (get_queue's
+   *  `systems`; [] from a backend that has none) */
+  NB.systems = [];
+  /** Which of the two windows this page is. Both load this one page over one
+   *  Bridge: the main window (Jobs + Results + the compact rail) asks for
+   *  `?win=main`, the queue window for `?win=queue`. Anything else, or no
+   *  query at all, is the main window -- the page never comes up empty.
+   *  @type {"main"|"queue"} */
+  NB.win = (function () {
+    try { return new URLSearchParams(location.search).get("win") === "queue" ? "queue" : "main"; }
+    catch (e) { return "main"; }
+  })();
+  document.documentElement.setAttribute("data-win", NB.win);
 
   let _qversion = -1;          // last queue snapshot version rendered
   let _logSeq = 0;             // last log line consumed
@@ -302,10 +315,15 @@ var NB = {};
         changed = snap.version !== _qversion;
         _qversion = snap.version;
         NB.queue = snap.calculations;
+        NB.systems = Array.isArray(snap.systems) ? snap.systems : [];
         NB.running = !!snap.running;
         NB.resources = snap.resources;
-        if (changed) pruneTrackers(new Set(NB.queue.map(c => c.name)));
+        if (changed && NB.win === "main") pruneTrackers(new Set(NB.queue.map(c => c.name)));
       }
+      // The queue window draws no chart and no output: the log, the trackers
+      // and the history replay are the main window's alone, so this one does
+      // not read the log or the .out files a second time.
+      if (NB.win === "queue") { publish(changed); return; }
       const log = await NB.call("get_log", _logSeq);
       let fed = false;
       if (log && log.lines && log.lines.length) {
@@ -465,8 +483,22 @@ var NB = {};
       NB.toast("Workspace changed.", "ok");
     });
 
-    if (NB.rail) NB.rail.init();
     if (NB.settingsView) NB.settingsView.init();
+    installDrops();
+
+    if (NB.win === "queue") {
+      // the queue editor and nothing else: no Jobs, no Results, no rail. The
+      // builder it hosts still reads the backend pills (MLIP / CREST ready).
+      NB.view = "queue";
+      document.title = "ORCAdesk — Queue";
+      if (NB.qed) NB.qed.init();
+      await poll();
+      setInterval(poll, POLL_MS);
+      pollBackends();
+      return;
+    }
+
+    if (NB.rail) NB.rail.init();
     if (NB.mv) NB.mv.init();
 
     await poll();
@@ -474,6 +506,72 @@ var NB = {};
     setInterval(poll, POLL_MS);
     pollBackends();
   };
+
+  // ---------------------------------------------------------------- windows
+
+  /** Show (or raise) the queue window. @returns {Promise<boolean>} */
+  NB.openQueueWindow = async function () {
+    const r = await NB.call("open_queue_window");
+    if (r && r.ok) return true;
+    NB.fail("Could not open the queue window" + (r && r.error ? ": " + r.error : "."));
+    return false;
+  };
+
+  /* The two windows are two pages: they share the Bridge and the queue, not a
+     line of JS. Something the main window wants the queue window to DO (open
+     the builder on a seed, load a dropped .inp) is left in a one-slot mailbox
+     in the UI state (uistate.py) and taken by the queue window the next time
+     it looks -- every poll while it is on screen. It is stamped, so one left
+     behind by a crash is not acted on at the next launch. */
+  const HANDOFF_KEY = "queue.handoff";
+  const HANDOFF_TTL_MS = 120000;
+  /** @param {{type: string, seed?: any, path?: string}} msg */
+  NB.handOff = async function (msg) {
+    const r = await NB.call("set_ui_state", HANDOFF_KEY,
+                            JSON.stringify(Object.assign({ t: Date.now() }, msg)));
+    if (!r || !r.ok) { NB.fail("Could not reach the queue window" + (r && r.error ? ": " + r.error : ".")); return; }
+    await NB.openQueueWindow();
+  };
+  /** The waiting message, taken out of the mailbox, or null. */
+  NB.takeHandOff = async function () {
+    const r = await NB.call("get_ui_state", HANDOFF_KEY);
+    const v = r && r.ok ? r.value : null;
+    if (!v || typeof v !== "object") return null;
+    await NB.call("set_ui_state", HANDOFF_KEY, "null");
+    return (Date.now() - Number(v.t || 0) < HANDOFF_TTL_MS) ? v : null;
+  };
+
+  /* Files dropped on a window. The Qt side routes a drop to one of these by
+     extension (window.py _dispatch_drop); the queue window also hands over a
+     batch of .xyz at once. What a drop does depends on the window it lands
+     in: an output is something to READ (Results, main window), a structure
+     or an input is something to RUN (the queue window). */
+  function installDrops() {
+    const w = /** @type {any} */ (window);
+    if (NB.win === "queue") {
+      w.onXyzFilesDropped = (/** @type {string[]} */ paths) => NB.qed && NB.qed.dropXyz(paths);
+      w.onXyzDropped = (/** @type {string} */ p) => NB.qed && NB.qed.dropXyz([p]);
+      w.onInpDropped = (/** @type {string} */ p) => NB.qed && NB.qed.dropInp(p);
+      w.onOutDropped = () => NB.toast("Outputs open in the main window's Results.");
+      return;
+    }
+    w.onOutDropped = async (/** @type {string} */ p) => {
+      const d = await NB.results.openPath(p);
+      if (d) NB.results.noteOpened(p, d);
+    };
+    // a structure becomes a system with the drop recipe's single point,
+    // exactly as if it had been dropped on the queue window, which then opens
+    // to show where it went
+    w.onXyzDropped = async (/** @type {string} */ p) => {
+      if (NB.qed && await NB.qed.dropXyz([p])) NB.openQueueWindow();
+    };
+    w.onXyzFilesDropped = async (/** @type {string[]} */ paths) => {
+      if (NB.qed && await NB.qed.dropXyz(paths)) NB.openQueueWindow();
+    };
+    // an input is opened in the queue window's builder, to be looked at
+    // before it is queued
+    w.onInpDropped = (/** @type {string} */ p) => NB.handOff({ type: "inp", path: p });
+  }
 
 })();
 

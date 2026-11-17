@@ -33,8 +33,10 @@ shipped that way and the Run-click overwrite screen never appeared.
 The one exception to "framework-free" is `test_log_replay.py`, which imports
 `gui/bridge.py` for its module-level `.out`-filter patterns and tail reader
 only (no Bridge instance) to pin the filter against the tracker regexes it
-mirrors; it skips without PyQt6. The Qt bridge/window layers
-are thin adapters and are exercised manually. Tests that read the real ORCA output
+mirrors; it skips without PyQt6. `test_queue_slots.py` imports it too and
+calls the queue editor's slots **unbound on a stub `self`** (no Qt application,
+no probes) to pin their JSON envelopes. The Qt bridge/window layers
+are otherwise thin adapters and are exercised manually. Tests that read the real ORCA output
 corpus auto-skip when the corpus directory is absent, so the suite is green on any
 machine. There is no linter configured. Parser/input-generator *evidence* still
 comes from manual validation against real ORCA 6.1.1 output (P3); the
@@ -60,11 +62,30 @@ The entire UI lives in `web/next/` (HTML/CSS/JS), plus what it borrows from
 `web/`: `scf_graph.js`, `progress_panels.js`, `fonts/` and
 `vendor/3Dmol-min.js`. `main.py` opens `MainWindow`
 (`orcamgr/gui/window.py`), which hosts a `QWebEngineView` loading
-`MainWindow._index_file()` (always `web/next/index.html`) and registers a
+`web/next/index.html?win=main` (`page_url("main")`) and registers a
 single `Bridge` object on a `QWebChannel`.
 
-**One front-end ships**: the notebook layout, `web/next/index.html` — one
-window, the queue as a permanent rail (DESIGN.md §17). The classic tabbed
+**Two windows, one backend.** The queue editor has a native window of its own,
+`QueueWindow`, created on the first `open_queue_window()` (the main window's
+*Open queue*): a second `QWebEngineView` on the **same page** with
+`?win=queue` — the page reads its role from the URL, there is no
+`get_window_role` slot — and its own `QWebChannel` registering the **same
+`Bridge` object**, so both windows talk to one `QueueStore` and poll the same
+snapshot. The URL is built `QUrl.fromLocalFile(...)` + `setQuery("win=...")`,
+never by string concatenation. It is a top-level window with no Qt parent (its
+own taskbar entry, free to sit on another screen); closing it only **hides** it
+(page and editor state kept), while closing the main window closes it for real
+first (`MainWindow.shutdown` → `QueueWindow.close_for_real`) — left open it
+would keep the application alive with the store torn down behind it. Its
+geometry (`window.queue.geometry`, base64 of `saveGeometry`) and whether it was
+open (`window.queue.open`, reopened at the next launch) live in
+`ui_state.json`. Both pages use `_ConsoleCapturePage`; the queue window's lines
+read `[web] [queue] ...`. The shared plumbing (drops, freeze on minimize,
+raise) is `_WebWindowMixin`. File dialogs a slot opens are parented on the main
+window (`Bridge.window`), whichever window asked.
+
+**One front-end ships**: the notebook layout, `web/next/index.html`, in the
+two roles above (DESIGN.md §17). The classic tabbed
 front-end and the `Settings.ui_variant` switch were removed in the unreleased
 version; a `settings.json` still carrying a retired key (`ui_variant`,
 `theme_variant`, `glass_level`, `wallpaper`) loads, because `Settings.load`
@@ -382,9 +403,14 @@ page's lifecycle state to Frozen so Chromium releases memory while ORCAdesk sits
 in the taskbar — safe because the JS side polls and already skips hidden ticks,
 catching up on restore. (No profile/cache tuning: the Qt 6 default profile is
 already off-the-record.)
-Drag-and-drop entry went with the classic front-end: `window.py` still routes a
-dropped `.inp` / `.xyz` / `.out` to `window.onInpDropped` / `onXyzDropped` /
-`onOutDropped`, but no `web/next/` script defines them, so a drop does nothing.
+**Dropped files** are handed to the page by `runJavaScript`, guarded by
+`window.fn && ...`, so a page that defines no handler ignores the drop. The
+main window routes the first dropped `.inp` / `.xyz` / `.out` to
+`window.onInpDropped(path)` / `onXyzDropped(path)` / `onOutDropped(path)`. The
+queue window passes **every dropped `.xyz` at once** to
+`window.onXyzFilesDropped(paths)` (a JS array — one `add_xyz_systems` batch per
+drop, not N); a drop with no `.xyz` takes the single-file route above. All are
+declared on `Window` in `web/globals.d.ts`.
 
 `orcamgr/gui/bridge.py` is the **entire backend API surface for the desktop**: every
 `@pyqtSlot` is callable from JS (the full slot list, with signatures, is the `Bridge`
@@ -420,6 +446,85 @@ parse results, server status, the `{"ok": ...}`/`{"error": ...}` envelopes).
 the front-end. Don't annotate FastAPI endpoints with these TypedDicts as return types
 — FastAPI would infer a response_model and put pydantic between the dict and the wire;
 endpoints keep `-> dict` and only *construct* through the schema types.
+
+**The queue editor's model.** A `Calculation` carries the editor's graph:
+`system` (the lane, a system id; `""` = a standalone calc), `node` (stack
+members share one), `col` / `row` (grid position), `after` (the calc it runs
+after — the edge), `gate` (`"auto"` | `"approval"`), `auto_pass`, `approved`,
+`ref_point` (`""` | `"irc_f"` | `"irc_b"`) and `set_name` (display only). All
+default to "standalone, as today", ride `calc_from_dict` / `calc_to_dict` /
+`calc_to_session_dict`, and are checked at the trust boundary by
+`_graph_fields` (a closed-set or wrong-typed value is a `ValueError` for a new
+payload, degraded to the default on restore — evicting a run's record over a
+layout field is the thing `_validate_calc_name`'s `restoring` rule exists to
+avoid). `CalcSummary.waiting` is derived in `snapshot()` by
+`core.queue.gate_waiting` (Queue semantics). An MLIP template (`kind mlip*`
+sent with `is_raw` and `key value` text) is turned into the MLIP config by
+`calc_from_dict` (`inpsets.mlip_config_from_text`) and runs as an ordinary
+MLIP calc; the text stays in `raw_text` for the editor, `is_raw` false.
+
+**Systems** (the lanes) live in the store beside the calculations,
+`{id, name, charge, multiplicity, inputs: [{label, xyz}]}` (`system_from_dict`:
+the name obeys the calc-name rules because it is the prefix of every calc name
+in the lane; an input's `.xyz` header is stripped to a coordinate block), are
+persisted under `"systems"` in `session.json` and restored on load (each
+re-validated; a corrupt or duplicate one skipped alone; a calc whose lane did
+not come back becomes standalone; a session without the key loads as before).
+The poll carries them as `QueueSnapshot.systems` with inputs **by label only**;
+`get_system(id)` serves the coordinates. `clear()` removes them too.
+
+**`apply_queue_ops(ops_json)`** is the editor's one write path: a list of
+`add_system` / `update_system {id, patch}` / `remove_system` / `add_calc` /
+`update_calc {name, calc}` / `remove_calc` / `order {names}` applied by
+`QueueStore.apply_ops` **atomically**: every op runs against a working copy
+through the single mutations' own rules (`_add_into` / `_replace_in` /
+`_remove_from` — the bodies `add` / `replace` / `remove` now call: name rules,
+case-insensitive uniqueness, `EDITABLE_STATES`, the engine-active refusal), and
+only a fully successful batch is committed — **in place** (`self._calcs[:] =`),
+because a running engine walks that list object (P29). Reference integrity is
+judged once on the final state (only while running, like `add`): a batch that
+adds a child before its parent, or removes a node with its descendants, is
+consistent as a whole. A refusal is `{ok:false, error, op_index}` (`-1` = the
+batch as a whole) and changes nothing. `update_calc`'s `calc` is a **patch**
+(omitted keys keep their value, so `{"approved": true}` approves a gate).
+`update_system` with a new name renames every calc of the lane whose name
+starts with the old one (`new + rest`) and re-points every editable calc's
+`ref_name` / `after` at the new names — refused once any calc of the lane is
+RUNNING / DONE / FAILED (its name is its folder) or held by the engine; charge
+/ multiplicity propagate to the lane's editable calcs (each touched calc is an
+edit: a new object, PENDING again). `remove_system` takes the lane's calcs with
+it and is refused while the lane holds a started one (remove those rows first —
+queue-list only); a `remove_calc` naming a calc an earlier op of the same batch
+already removed is a no-op. `order` takes any full permutation: the editor's
+run order is lane by lane and a lane moves with its finished rows, which
+changes nothing for the engine (it walks rows by identity).
+
+**`add_xyz_systems(json)`** is the "drop `.xyz`" recipe:
+`{files: [{label, xyz}] | paths: [...], set_id, suffix}` (`set_id ""` = the
+first SP set) → per file one system named after the file's stem and one calc
+`stem + suffix` from that inp set, each file its own `apply_ops` batch, so a
+refusal (a clashing or ORCA-hostile name, a multi-frame file, no coordinates,
+an unreadable path) is reported per file — `{added, systems, refused: [{file,
+reason}]}` — and nothing is ever renamed to fit. Paths are read `utf-8-sig`.
+
+**Inp sets** (`orcamgr/state/inpsets.py`, slots `get_inp_sets`,
+`save_inp_set(json)` → the set with its id, `delete_inp_set(id)`) are saved
+templates `{id, name, kind, text}`, `kind` ∈ MLIP / Opt / OptTS / Freq / IRC /
+SP, in `user_data_root()/inp_sets.json`. A missing file seeds one set per kind
+from `StepConfig` + `build_input` with placeholders, at the user's
+`default_nprocs` / `default_maxcore_mb` written literally (so a template is
+admitted by what it asks — `core/resources.py` reads a raw input's own `%pal` /
+`%maxcore`); a file emptied by the user stays empty, an unreadable one reads as
+the seeds and is replaced only on the next save. A non-MLIP set must contain
+`{{GEOMETRY}}`; an MLIP set is `model` / `device` / `nprocs` / `env` lines.
+`calc_kind_for_set` maps a set to the kind a node runs (Freq after a `ts_opt`
+is `ts_freq`).
+
+The slot list is in `web/globals.d.ts`; the payloads are `InpSet`,
+`InpSetsResult`, `InpSetResult`, `SystemSummary` / `SystemFull`,
+`SystemResult`, `QueueOpsResult`, `XyzSystemsResult` (schemas.py ↔ types.js),
+plus the `QueueOp` union in `types.js`. `open_queue_window()` → `{ok}` shows /
+raises the queue window (`MainWindow.show_queue_window`).
 
 The Results window has no result picker of its own:
 the rail is the picker (DESIGN.md §17.0e), *Open file… / Open folder…* bring in
@@ -703,7 +808,14 @@ knowledge of Qt or HTTP. `make_engine_factory` wires those callbacks back to the
 The `core/` pipeline:
 - `input_generator.py` — `StepConfig` → ORCA `.inp` text (`build_input`). Handles
   solvation (CPCM/SMD), RI, per-element basis/ECP, charge/multiplicity, raw-input mode
-  (verbatim text with a `{{GEOMETRY}}` placeholder), NEB-TS side `.xyz` files,
+  (verbatim text with a `{{GEOMETRY}}` placeholder — and, for an inp-set
+  template, `{{CHARGE}}` / `{{MULT}}` / `{{HESS}}`, filled at launch by
+  `QueueEngine._render_template_values`: the calc's charge and multiplicity,
+  and the bare name of a `.hess` `_stage_template_hessian` copies into the run
+  folder from the `after` parent's folder (`{after}.hess`), else the geometry
+  reference's (`{ref}.hess`) — none there is an `OrcaRunError` before launch,
+  naming where it looked; the raw IRC Hessian guard then reads the RENDERED
+  text, so `Hess_Filename "{{HESS}}"` is already a real, staged file), NEB-TS side `.xyz` files,
   and **`%geom Constraints`** (below). **A setting at ORCA's own default is not
   written**: only the method and basis must be named, and the builders seed
   every other field with ORCA's default (`StepConfig`'s, via
@@ -1001,9 +1113,41 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
 - **Geometry source** is `DIRECT` (coords supplied, e.g. from `.xyz`) or `REFERENCE`
   (another queued calc by name). For a reference, the engine injects that calc's
   **optimized final geometry** at run time — so opt → freq reuses the optimized
-  structure automatically.
+  structure automatically. `ref_point` picks another geometry of the
+  reference: `irc_f` / `irc_b` read the `{ref}_IRC_F.xyz` / `{ref}_IRC_B.xyz`
+  ORCA writes beside an IRC's `.out` (the IRC's `output_path` folder, else
+  `{workspace}/{ref}`); a missing file is an `OrcaRunError` saying which end
+  point and which file — the IRC finished, it just did not run that way.
+- **`after` is a dependency like a reference, and its edge may be gated.** The
+  queue editor's edge (`Calculation.after`) is independent of the geometry, but
+  the engine treats it exactly like a reference: `_deps_ready` waits for it,
+  `_blocked_by` walks **both** chains (`_parent_names`: reference and `after`;
+  a FAILED/BLOCKED ancestor on either blocks, a DONE one ends that branch),
+  and a dangling or self `after` is refused by the pre-run screen
+  (`find_dangling_reference`), by a mid-run add/rename/remove at the store, and
+  — when it still reaches the engine — BLOCKED with a message by `_precheck`,
+  never FAILED. **Approval gate**: a row whose `after` is DONE, `gate ==
+  "approval"`, not `approved`, and not auto-passed is **waiting**
+  (`gate_waiting`, the one rule for the engine and the snapshot's `waiting`):
+  it is not dependency-ready, so it stays PENDING and unseen; rows downstream of
+  it wait behind it. When nothing is in flight and only waiting rows (and their
+  descendants) remain, `_block_unreachable` leaves them **untouched** —
+  `_held_at_gates` — logs "N calculation(s) waiting for approval", and the run
+  ends normally: never BLOCKED, never a hang. Approving mid-run (an
+  `update_calc` patch → a new row object) is picked up by the live walk (P29).
+  **Auto-pass**: with `auto_pass` on, a gate after a frequency kind
+  (`freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `mlip_freq`, `mlip_opt_freq`)
+  passes by itself when the parent's imaginary-mode count is the expected one
+  (1 for `ts_freq` / `ts_opt_freq`, else 0). The engine parses a restored
+  parent on a miss (once per parent — `_gate_parse_tried`), like
+  `_resolve_geometry`, under the dispatcher's lock; the snapshot never parses
+  and, with no result in memory, trusts what DONE already says — a frequency
+  calc reaches DONE only through `validate_result`, whose rule for every one of
+  those kinds IS the expected count, so the two cannot disagree. (The same fact
+  means a frequency parent with the wrong count is FAILED, and its gated child
+  BLOCKED, before any gate is asked.)
 - **Failure propagation is dependency-scoped, not whole-queue.** If a calc fails,
-  every calc that references it (transitively) is marked `BLOCKED` and skipped;
+  every calc that references it or runs `after` it (transitively) is marked `BLOCKED` and skipped;
   unrelated calcs continue. The chain STOPS at a `DONE` parent — its geometry is
   on disk and frozen (P24), so whatever failed further up was needed to produce
   it and already has. The verdict is read from the LIVE queue every time

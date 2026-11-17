@@ -876,6 +876,19 @@ def _keyword_line(cfg: StepConfig) -> str:
 # Placeholder used in raw .inp text where the geometry will be injected at run
 # time (for calculations whose coordinates come from a referenced calculation).
 GEOMETRY_PLACEHOLDER = "{{GEOMETRY}}"
+# An inp set's other placeholders (state/inpsets.py), filled at run time like
+# the geometry: the calculation's charge and multiplicity, and the bare file
+# name of the Hessian the engine stages into the run folder
+# (QueueEngine._stage_template_hessian).
+CHARGE_PLACEHOLDER = "{{CHARGE}}"
+MULT_PLACEHOLDER = "{{MULT}}"
+HESS_PLACEHOLDER = "{{HESS}}"
+
+
+def render_template_values(text: str, charge: int, multiplicity: int) -> str:
+    """``text`` with {{CHARGE}} / {{MULT}} replaced by the given values."""
+    return (text.replace(CHARGE_PLACEHOLDER, str(int(charge)))
+                .replace(MULT_PLACEHOLDER, str(int(multiplicity))))
 
 
 def irc_hess_is_path(hess: str) -> bool:

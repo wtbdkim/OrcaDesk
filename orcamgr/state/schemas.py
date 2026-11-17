@@ -31,7 +31,7 @@ from typing import Optional, TypedDict
 # these names exist so snapshot/envelope schemas can reference the shapes.)
 
 class CalcSummary(TypedDict):
-    """Compact queue-row form — mirror of store.calc_to_dict (15 keys)."""
+    """Compact queue-row form — mirror of store.calc_to_dict (26 keys)."""
     name: str
     kind: str
     charge: int
@@ -52,10 +52,26 @@ class CalcSummary(TypedDict):
     # RUNNING only: ORCA printed a fatal marker but its process is still alive
     # — the run is lost, the row stays among the running ones
     faulted: bool
+    # the queue editor's graph (core.queue.Calculation; all default to
+    # "standalone, as today")
+    system: str               # lane (system id); "" = a standalone calc
+    node: str                 # node id within the lane; stack members share it
+    col: int                  # grid column of the node
+    row: int                  # grid row of the node
+    after: str                # calc this one runs after (edge source); "" = root
+    gate: str                 # "auto" | "approval" — the edge's gate
+    auto_pass: bool           # approval gate after a Freq passes by itself on
+                              # the expected imaginary-mode count
+    approved: bool            # the user approved the gate
+    ref_point: str            # "" final geometry | "irc_f" | "irc_b" of ref_name
+    set_name: str             # display only: the inp set it came from
+    # derived (core.queue.gate_waiting): `after` is DONE but the approval gate
+    # is closed — the run skips this row and leaves it PENDING
+    waiting: bool
 
 
 class CalcFull(TypedDict):
-    """Full-fidelity form — mirror of store.calc_to_session_dict (15 keys)."""
+    """Full-fidelity form — mirror of store.calc_to_session_dict (25 keys)."""
     name: str
     kind: str
     config: dict              # StepConfig.to_dict(), {} when absent
@@ -71,6 +87,16 @@ class CalcFull(TypedDict):
     output_path: str
     pid: "int | None"
     create_time: "float | None"
+    system: str
+    node: str
+    col: int
+    row: int
+    after: str
+    gate: str
+    auto_pass: bool
+    approved: bool
+    ref_point: str
+    set_name: str
 
 
 # ---- queue snapshot / log ---------------------------------------------------
@@ -84,6 +110,45 @@ class QueueSnapshot(TypedDict):
     # budgets are only known to the engine, so an idle client shows the limits
     # from SettingsPayload instead.
     resources: "RunResources"
+    # the queue editor's lanes, in order — inputs by label only (get_system
+    # serves the coordinates)
+    systems: "list[SystemSummary]"
+
+
+class SystemInputSummary(TypedDict):
+    label: str
+
+
+class SystemSummary(TypedDict):
+    """store.system_summary — a lane as the poll carries it."""
+    id: str
+    name: str                 # prefix of every calc name in the lane
+    charge: int
+    multiplicity: int
+    inputs: "list[SystemInputSummary]"
+
+
+class SystemInput(TypedDict):
+    label: str
+    xyz: str                  # coordinate block (no .xyz header)
+
+
+class SystemFull(TypedDict):
+    """store.system_from_dict — a lane in full (get_system, session.json)."""
+    id: str
+    name: str
+    charge: int
+    multiplicity: int
+    inputs: "list[SystemInput]"
+
+
+class InpSet(TypedDict):
+    """state/inpsets.py — a saved input template."""
+    id: str
+    name: str
+    kind: str                 # "MLIP" | "Opt" | "OptTS" | "Freq" | "IRC" | "SP"
+    text: str                 # raw ORCA input with {{GEOMETRY}} {{CHARGE}}
+                              # {{MULT}} {{HESS}}; MLIP: "key value" lines
 
 
 class LogLine(TypedDict):
@@ -498,6 +563,47 @@ class MutationResult(_Ok, total=False):
 class GetCalcResult(_Ok, total=False):
     error: str
     calc: CalcFull
+
+
+class InpSetsResult(_Ok, total=False):
+    """get_inp_sets."""
+    error: str
+    sets: "list[InpSet]"
+
+
+class InpSetResult(_Ok, total=False):
+    """save_inp_set (the set as stored, with its id) / delete_inp_set."""
+    error: str
+    set: InpSet
+
+
+class SystemResult(_Ok, total=False):
+    """get_system."""
+    error: str
+    system: SystemFull
+
+
+class QueueOpsResult(_Ok, total=False):
+    """apply_queue_ops: all applied (with a fresh snapshot) or none.
+    op_index is the 0-based operation that was refused (-1 = the batch as a
+    whole, e.g. a reference it would leave dangling mid-run)."""
+    error: str
+    op_index: int
+    snapshot: QueueSnapshot
+
+
+class XyzRefusal(TypedDict):
+    file: str                 # the file's label / path as given
+    reason: str
+
+
+class XyzSystemsResult(_Ok, total=False):
+    """add_xyz_systems: per file, a system + one calc, or a refusal."""
+    error: str
+    added: "list[str]"        # names of the calcs added
+    systems: "list[str]"      # ids of the systems added (same order)
+    refused: "list[XyzRefusal]"
+    snapshot: QueueSnapshot
 
 
 class TextResult(_Ok, total=False):

@@ -129,6 +129,17 @@
    *  partial calc "New from this" hands over. Cleared as soon as it is used,
    *  so the next new calculation is a blank one. @type {any} */
   let _seed = null;
+  /** Where a NEW calculation goes in the queue editor (the queue window's
+   *  "Manual build" on a ghost slot): `fields` are merged into the payload
+   *  (system, node, col, row, after, gate), `done(name)` runs once it is
+   *  queued. null for a calculation that is simply appended.
+   *  @type {null|{fields: any, done?: (name: string) => void, label?: string}} */
+  let _place = null;
+  /** The queue fields a calculation keeps across an edit: the form does not
+   *  draw them, so update_calc would otherwise get a payload without them and
+   *  pull the calculation out of its lane. */
+  const PLACE_KEYS = ["system", "node", "col", "row", "after", "gate", "auto_pass",
+                      "approved", "ref_point", "set_name"];
 
   /* ---- the new calculation's draft ---------------------------------------
      A new calculation half typed is kept: closing the builder (×, Cancel,
@@ -211,21 +222,28 @@
   /** Open the builder on a calculation, or on a new one with "". Closing is
    *  open(null).
    *  @param {string|null} target
-   *  @param {any} [seed] for a new one: fields it opens already carrying */
-  function open(target, seed) {
+   *  @param {any} [seed] for a new one: fields it opens already carrying
+   *  @param {any} [place] for a new one: where the queue editor puts it */
+  function open(target, seed, place) {
     // leaving the new calculation, however it is left: keep what it holds
     if (_target === "" && _session) _session.save();
     // a seeded open is never a toggle -- clicking "New from this" on a second
     // calculation while the builder is open must move it, not close it
     _target = (_target === target && !seed) ? null : target;
     _seed = _target === null ? null : (seed || null);
-    NB.stream.render();
+    _place = _target === "" ? (place || null) : null;
+    // the main window hosts the form in the stream, the queue window in the
+    // editor's inspector column
+    if (NB.win === "queue") { if (NB.qed) NB.qed.render(); }
+    else NB.stream.render();
     if (_target !== null) {
       const cell = document.querySelector(".cell.editing, .cell.stub.editing");
       if (cell) cell.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
   }
   function target() { return _target; }
+  /** The open new calculation's place in the queue editor, or null. */
+  function place() { return _place; }
 
   /** One per-element override. Its labels are deliberately not the method
    *  block's ("Basis set"): readForm finds fields by label text, and two fields
@@ -252,7 +270,8 @@
     el.dataset.name = calc ? calc.name : "";
     el.innerHTML = `
       <div class="editbar">
-        <b>${calc ? "Editing " + NB.esc(calc.name) : "New calculation"}</b>
+        <b>${calc ? "Editing " + NB.esc(calc.name)
+                  : _place && _place.label ? NB.esc(_place.label) : "New calculation"}</b>
         ${calc ? "<span>changes apply to the queued calculation</span>"
                : `<span data-x="draftnote" hidden>draft · kept when you close it</span>`}
         <span class="sp"></span>
@@ -1036,6 +1055,13 @@
       const payload = readForm(el, st, calc);
       const err = validate(payload);
       if (err) { NB.fail(err); return; }
+      if (st.editing && calc) {
+        PLACE_KEYS.forEach(k => { if (k in calc) payload[k] = calc[k]; });
+        // a reference moved to another calculation is that one's final geometry
+        if (payload.ref_name !== calc.ref_name) payload.ref_point = "";
+      }
+      const placed = st.editing ? null : _place;
+      if (placed) Object.assign(payload, placed.fields);
       const proceed = await confirmOverwrite(payload.name, st.editing);
       if (!proceed) return;
       const r = st.editing
@@ -1045,6 +1071,7 @@
       if (r && r.ok === false) { NB.fail(r.error || "The queue refused that calculation."); return; }
       // the draft has become a calculation: the next new one starts blank
       if (!st.editing) forgetDraft();
+      if (placed && placed.done) placed.done(payload.name);
       NB.toast(st.editing ? `"${payload.name}" saved.`
                           : `"${payload.name}" added to the queue.`, "ok");
       // accepted DESPITE this - said, not refused (store.constraint_warning)
@@ -2174,5 +2201,5 @@
   }
   NB.watch(() => { if (_syncBackends) _syncBackends(); });
 
-  NB.build = { open: open, target: target, cellFor: cellFor, KINDS: KINDS };
+  NB.build = { open: open, target: target, place: place, cellFor: cellFor, KINDS: KINDS };
 })();

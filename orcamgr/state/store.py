@@ -13,16 +13,19 @@ via a lock, no SQLite.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
 import secrets
 import threading
+from pathlib import Path
 from typing import Optional
 
 from ..core.queue import (
-    KNOWN_KINDS, Calculation, CalcState, GeometrySource, QueueEngine,
-    QueueCallbacks, result_from_output, validate_result,
+    GATES, KNOWN_KINDS, REF_POINTS, Calculation, CalcState, GeometrySource,
+    QueueEngine, QueueCallbacks, gate_waiting, result_from_output,
+    validate_result,
 )
 from ..core.input_generator import (CONSTRAINED_KINDS, SCAN_KINDS, StepConfig,
                                     constraint_index_error,
@@ -35,7 +38,9 @@ from ..paths import data_dir, user_data_root
 # Wire-payload shapes (plain dicts at runtime; see schemas.py for the mirror
 # contract with web/types.js)
 from .schemas import (CalcFull, CalcSummary, LogLine, LogPayload,
-                      QueueSnapshot, RunResources)
+                      QueueSnapshot, RunResources, SystemInputSummary,
+                      SystemSummary)
+from .inpsets import mlip_config_from_text
 
 # States whose calculations the user may still edit / reorder.
 # PENDING: never run yet. CANCELLED: a deliberate user stop, not a failure, so
@@ -47,6 +52,16 @@ from .schemas import (CalcFull, CalcSummary, LogLine, LogPayload,
 # excluded too (a completed result is frozen — make a new calculation to
 # rerun), and RUNNING is in flight.
 EDITABLE_STATES = {CalcState.PENDING, CalcState.CANCELLED, CalcState.BLOCKED}
+
+
+class QueueOpError(ValueError):
+    """An apply_ops batch was refused. ``index`` is the 0-based position of the
+    operation that failed, or None when the batch as a whole was (a final
+    state with a dangling reference while the queue runs)."""
+
+    def __init__(self, message: str, index: "int | None"):
+        super().__init__(message)
+        self.index = index
 
 
 def _new_pin() -> str:
@@ -209,8 +224,10 @@ def load_choice_groups(name: str) -> dict:
     return groups
 
 
-def calc_to_dict(c: Calculation) -> CalcSummary:
-    """Serialize a Calculation to a plain dict for JSON responses."""
+def calc_to_dict(c: Calculation, waiting: bool = False) -> CalcSummary:
+    """Serialize a Calculation to a plain dict for JSON responses.
+    ``waiting`` is derived by the caller that sees the whole queue (snapshot:
+    core.queue.gate_waiting); a lone calc cannot know it."""
     return CalcSummary(
         name=c.name,
         kind=c.kind,
@@ -237,6 +254,18 @@ def calc_to_dict(c: Calculation) -> CalcSummary:
         # only while the process lives: once the calc leaves RUNNING its state
         # says everything, and the flag is not reset on the way out
         faulted=bool(c.faulted) and c.state == CalcState.RUNNING,
+        # the queue editor's graph (core.queue.Calculation)
+        system=c.system,
+        node=c.node,
+        col=c.col,
+        row=c.row,
+        after=c.after,
+        gate=c.gate,
+        auto_pass=c.auto_pass,
+        approved=c.approved,
+        ref_point=c.ref_point,
+        set_name=c.set_name,
+        waiting=bool(waiting),
     )
 
 
@@ -321,6 +350,22 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
         v = d.get(key, "")
         return v if isinstance(v, str) else ""
 
+    # A config sent without its own kind (an inp-set template carries none —
+    # its text is the input) describes this calc's kind, not StepConfig's
+    # default "opt".
+    if "kind" not in (d.get("config") or {}):
+        cfg.kind = kind
+    is_raw = bool(d.get("is_raw", False))
+    # An MLIP inp set is `key value` lines, not an ORCA input: the template
+    # sets the MLIP fields of the config (inpsets.mlip_config_from_text) and
+    # the calc runs as an ordinary MLIP calc. The text is kept as raw_text,
+    # where the queue editor shows it; is_raw is what says it is not used.
+    if is_raw and kind.startswith("mlip"):
+        for field, value in mlip_config_from_text(_s("raw_text")).items():
+            setattr(cfg, field, value)
+        is_raw = False
+    graph = _graph_fields(d, restoring)
+
     # A constraint naming an atom the coordinates do not have is refused when it
     # is ADDED, not at launch: build_input refuses it too, but by then the calc
     # is FAILED and locked (P24). Only for coordinates in hand — a reference's
@@ -328,7 +373,6 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
     # restore, which must not evict an entry for a rule a new run obeys.
     # (A valued angle ORCA will stop on as a linear bend is NOT refused: it is
     # a warning — constraint_warning below — and the user's call.)
-    is_raw = bool(d.get("is_raw", False))
     if (not restoring and not is_raw and src == "direct"
             and cfg.geom_constraints and cfg.kind in CONSTRAINED_KINDS):
         n_atoms = len(parse_block(_s("xyz")))
@@ -355,7 +399,214 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
         ref_name=_s("ref_name"),
         is_raw=is_raw,
         raw_text=_s("raw_text"),
+        **graph,
     )
+
+
+# Ids the queue editor mints for systems and nodes: short, printable, and
+# never a path (they are not folder names, but they ride session.json and the
+# wire, and a bounded alphabet keeps them from carrying anything else).
+_GRAPH_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{0,64}$")
+_GRID_MAX = 10_000
+
+
+#: the queue editor's Calculation fields (core.queue.Calculation)
+GRAPH_FIELDS = ("system", "node", "col", "row", "after", "gate", "auto_pass",
+                "approved", "ref_point", "set_name")
+
+
+def keep_graph_fields(d: dict, existing: "Optional[Calculation]") -> dict:
+    """``d`` with every graph field it does not mention taken from
+    ``existing``. A whole-calc edit from a client that knows nothing of the
+    queue editor (the guided builder's update_calc, sent without these keys)
+    must not pull the calc out of its lane or cut its edge."""
+    if existing is None or not isinstance(d, dict):
+        return d
+    out = dict(d)
+    for k in GRAPH_FIELDS:
+        if k not in out:
+            out[k] = getattr(existing, k)
+    return out
+
+
+def _graph_fields(d: dict, restoring: bool) -> dict:
+    """The queue editor's fields of a calc payload (core.queue.Calculation:
+    system, node, col, row, after, gate, auto_pass, approved, ref_point,
+    set_name), checked at the trust boundary. A missing key is "standalone, as
+    today". A wrong-typed or out-of-set value is a ValueError for a new
+    payload; on restore it degrades to the default instead, because evicting a
+    calculation from the queue over a layout field would cost the user the
+    record of a run (the rule _validate_calc_name's ``restoring`` follows)."""
+    def bad(msg: str):
+        if not restoring:
+            raise ValueError(msg)
+
+    def ident(key: str) -> str:
+        v = d.get(key, "")
+        if v is None or v == "":
+            return ""
+        if isinstance(v, str) and _GRAPH_ID_RE.match(v.strip()):
+            return v.strip()
+        bad(f"'{key}' must be up to 64 letters, digits or - _ . :")
+        return ""
+
+    def grid(key: str) -> int:
+        v = d.get(key, 0)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+            if v not in (None, 0):
+                bad(f"'{key}' must be a whole number.")
+            return 0
+        try:
+            return max(0, min(_GRID_MAX, int(v)))
+        except (OverflowError, ValueError):
+            bad(f"'{key}' must be a finite number.")
+            return 0
+
+    def flag(key: str, default: bool) -> bool:
+        v = d.get(key, default)
+        if isinstance(v, bool):
+            return v
+        if v is not None:
+            bad(f"'{key}' must be true or false.")
+        return default
+
+    def choice(key: str, allowed, default: str) -> str:
+        v = d.get(key, default)
+        if v is None:
+            return default
+        if isinstance(v, str) and v in allowed:
+            return v
+        bad(f"'{key}' must be one of: " + ", ".join(repr(a) for a in allowed) + ".")
+        return default
+
+    after = d.get("after", "")
+    if not isinstance(after, str):
+        if after is not None:
+            bad("'after' must be a calculation name.")
+        after = ""
+    set_name = d.get("set_name", "")
+    set_name = set_name.strip()[:200] if isinstance(set_name, str) else ""
+    return dict(
+        system=ident("system"), node=ident("node"),
+        col=grid("col"), row=grid("row"),
+        after=after.strip(),
+        gate=choice("gate", GATES, "auto"),
+        auto_pass=flag("auto_pass", True),
+        approved=flag("approved", False),
+        ref_point=choice("ref_point", REF_POINTS, ""),
+        set_name=set_name,
+    )
+
+
+# ---- systems (the queue editor's lanes) ------------------------------------
+# A system is one molecule: {id, name, charge, multiplicity, inputs: [{label,
+# xyz}]}. Its name is the prefix of every calculation name in its lane; its
+# inputs are the structures a lane's calcs may start from (a calc keeps its
+# own copy in xyz — the system is where the editor offers them).
+
+_MAX_SYSTEM_INPUTS = 50
+_MAX_LABEL = 120
+
+
+def strip_xyz_header(text: str) -> str:
+    """The coordinate block of an .xyz text: the two header lines (atom count,
+    comment) dropped when the first line is a bare count; anything else is
+    returned as given (already a block). Line endings normalized."""
+    lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    first = lines[0].strip().lstrip("﻿") if lines else ""
+    if len(lines) >= 2 and first.isdigit():
+        lines = lines[2:]
+    return "\n".join(lines).strip("\n")
+
+
+def new_system_id() -> str:
+    return "sys-" + secrets.token_hex(4)
+
+
+def system_from_dict(d, restoring: bool = False) -> dict:
+    """A validated system dict from a client payload (or the session file).
+    A missing id is minted. The name obeys the calc-name rules — it is the
+    prefix of the lane's calculation names, so a name a calculation could not
+    carry is refused here rather than at every add (ORCA's rule too, unless
+    restoring; see _validate_calc_name). Charge/multiplicity are clamped like a
+    calc's; an input's xyz is kept as a coordinate block."""
+    if not isinstance(d, dict):
+        raise ValueError("A system must be an object.")
+    sid = d.get("id") or new_system_id()
+    if not isinstance(sid, str) or not sid.strip() or not _GRAPH_ID_RE.match(sid.strip()):
+        raise ValueError("A system id is 1 to 64 letters, digits or - _ . :")
+    name = d.get("name", "")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("A system needs a name.")
+    name = name.strip()
+    _validate_calc_name(name, "", restoring=restoring)
+    try:
+        charge = max(-100, min(100, int(d.get("charge", 0))))
+        multiplicity = max(1, min(200, int(d.get("multiplicity", 1))))
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("A system's charge/multiplicity must be whole numbers.")
+    raw_inputs = d.get("inputs", [])
+    if raw_inputs is None:
+        raw_inputs = []
+    if not isinstance(raw_inputs, list):
+        raise ValueError("A system's inputs must be a list.")
+    if len(raw_inputs) > _MAX_SYSTEM_INPUTS:
+        raise ValueError(f"A system holds at most {_MAX_SYSTEM_INPUTS} inputs.")
+    inputs = []
+    for k, inp in enumerate(raw_inputs, start=1):
+        if not isinstance(inp, dict):
+            raise ValueError("Each system input must be an object {label, xyz}.")
+        label = inp.get("label", "")
+        label = label.strip()[:_MAX_LABEL] if isinstance(label, str) else ""
+        xyz = inp.get("xyz", "")
+        if not isinstance(xyz, str):
+            raise ValueError("A system input's xyz must be text.")
+        inputs.append({"label": label or f"input {k}", "xyz": strip_xyz_header(xyz)})
+    return {"id": sid.strip(), "name": name, "charge": charge,
+            "multiplicity": multiplicity, "inputs": inputs}
+
+
+def _xyz_stem(label: str) -> str:
+    """The system name a dropped file gives: its file name without .xyz."""
+    name = Path(str(label).replace("\\", "/")).name.strip()
+    if name.lower().endswith(".xyz"):
+        name = name[:-4].strip()
+    if not name:
+        raise ValueError("The file has no name to give the system.")
+    return name
+
+
+def _single_structure(text: str) -> str:
+    """The one structure of an .xyz text as a coordinate block. A multi-frame
+    file is refused — a system starts from one structure, and which frame was
+    meant is the user's choice, not ours. A text without the .xyz header is
+    taken as a bare block when it holds atoms."""
+    from ..molview import iter_xyz_frames
+    if not isinstance(text, str):
+        raise ValueError("The file's content must be text.")
+    text = text.lstrip("﻿")
+    frames = list(iter_xyz_frames(text))
+    if len(frames) > 1:
+        raise ValueError(f"It holds {len(frames)} structures; a system starts "
+                         "from one. Split the file, or open it in the viewer "
+                         "and save the frame you want.")
+    first = text.strip().split("\n", 1)[0].strip()
+    if not frames and first.isdigit():
+        raise ValueError(f"Its first line says {first} atoms, and the file does "
+                         "not hold them.")
+    coords = strip_xyz_header(frames[0][1]) if frames else strip_xyz_header(text)
+    if not parse_block(coords):
+        raise ValueError("No coordinates found in it.")
+    return coords
+
+
+def system_summary(s: dict) -> SystemSummary:
+    """The polled form of a system: its inputs' labels, not their coordinates
+    (get_system serves those)."""
+    return SystemSummary(
+        id=s["id"], name=s["name"], charge=s["charge"],
+        multiplicity=s["multiplicity"],
+        inputs=[SystemInputSummary(label=i["label"]) for i in s["inputs"]])
 
 
 # ---- session persistence (autosave / restore) --------------------------
@@ -388,6 +639,16 @@ def calc_to_session_dict(c: Calculation) -> CalcFull:
         output_path=c.output_path,
         pid=c.pid,
         create_time=c.create_time,
+        system=c.system,
+        node=c.node,
+        col=c.col,
+        row=c.row,
+        after=c.after,
+        gate=c.gate,
+        auto_pass=c.auto_pass,
+        approved=c.approved,
+        ref_point=c.ref_point,
+        set_name=c.set_name,
     )
 
 
@@ -421,6 +682,30 @@ def calc_from_session_dict(d: dict) -> Calculation:
     except (TypeError, ValueError):
         c.create_time = None
     return c
+
+
+def _restore_systems(entries) -> "list[dict]":
+    """The systems of a session file, each re-validated (restoring rules);
+    a corrupt entry or a duplicate id/name is skipped on its own, never the
+    whole list (P32). Anything but a list reads as none."""
+    if not isinstance(entries, list):
+        return []
+    out: list[dict] = []
+    ids: set[str] = set()
+    names: set[str] = set()
+    for d in entries:
+        try:
+            s = system_from_dict(d, restoring=True)
+        except Exception:
+            continue
+        if not (isinstance(d, dict) and d.get("id")):
+            continue     # an id is minted only for a NEW system
+        if s["id"] in ids or s["name"].casefold() in names:
+            continue
+        ids.add(s["id"])
+        names.add(s["name"].casefold())
+        out.append(s)
+    return out
 
 
 def _parse_if_exists(calc):
@@ -546,6 +831,9 @@ class QueueStore:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._calcs: list[Calculation] = []
+        # the queue editor's lanes (system_from_dict dicts), in lane order;
+        # persisted beside the calculations in session.json
+        self._systems: list[dict] = []
         self._running = False
         # monotonically increasing version, bumped on every mutation so clients
         # can cheaply poll "did anything change?"
@@ -617,12 +905,27 @@ class QueueStore:
         """Full state for a client (queue list + running flag + version +
         the run's live resource occupancy)."""
         with self._lock:
+            by_name = {c.name: c for c in self._calcs}
             return QueueSnapshot(
                 running=self._running,
                 version=self._version,
-                calculations=[calc_to_dict(c) for c in self._calcs],
+                calculations=[
+                    calc_to_dict(c, waiting=bool(c.after) and gate_waiting(
+                        c, by_name.get(c.after)))
+                    for c in self._calcs],
                 resources=self.run_resources(),
+                systems=[system_summary(s) for s in self._systems],
             )
+
+    def get_system(self, system_id: str) -> "Optional[dict]":
+        """One system in full (its inputs' coordinates included), or None."""
+        with self._lock:
+            s = next((s for s in self._systems if s["id"] == system_id), None)
+            return copy.deepcopy(s) if s is not None else None
+
+    def systems(self) -> "list[dict]":
+        with self._lock:
+            return copy.deepcopy(self._systems)
 
     def run_resources(self) -> RunResources:
         """Cores/memory the in-flight jobs reserved, against the run's budget.
@@ -689,64 +992,104 @@ class QueueStore:
         return src == GeometrySource.REFERENCE or str(
             getattr(src, "value", src)) == "reference"
 
+    @classmethod
+    def _depends_on(cls, calc: Calculation, name: str) -> str:
+        """How `calc` depends on the calc called `name`: "ref" (its geometry
+        reference), "after" (it runs after it), or ""."""
+        if cls._is_reference(calc) and calc.ref_name == name:
+            return "ref"
+        if calc.after == name:
+            return "after"
+        return ""
+
+    @classmethod
+    def _missing_dependency(cls, calc: Calculation, names) -> str:
+        """The refusal for a calc whose geometry reference or `after` names no
+        calc in `names`, or ""."""
+        if cls._is_reference(calc) and calc.ref_name not in names:
+            return (f"'{calc.name}' references '{calc.ref_name}', "
+                    "which is not in the queue.")
+        if calc.after and calc.after not in names:
+            return (f"'{calc.name}' runs after '{calc.after}', "
+                    "which is not in the queue.")
+        return ""
+
     def add(self, calc: Calculation) -> None:
         """Append a calculation. Raises ValueError on duplicate name (and, while
         the queue is running, on a reference that isn't in the queue)."""
         with self._lock:
-            # case-insensitive: calc.name is an on-disk folder name and Windows
-            # (the primary target) resolves "water" and "Water" to the SAME
-            # folder — accepting both would silently share one .out between two
-            # calculations.
-            if any(c.name.casefold() == calc.name.casefold() for c in self._calcs):
-                raise ValueError(f"A calculation named '{calc.name}' already exists.")
-            if self._running and self._is_reference(calc) and (
-                    calc.ref_name not in {c.name for c in self._calcs}):
-                # no pre-run screen will catch this one — it would run (and
-                # FAIL, locking) with an unresolvable reference
-                raise ValueError(
-                    f"'{calc.name}' references '{calc.ref_name}', "
-                    "which is not in the queue.")
-            self._calcs.append(calc)
+            self._add_into(self._calcs, self._systems, calc)
             self._bump_and_save()
+
+    def _add_into(self, calcs: "list[Calculation]", systems: "list[dict]",
+                  calc: Calculation, check_refs: bool = True) -> None:
+        """add()'s rules against a given list (the live one, or apply_ops'
+        working copy). Caller holds the lock."""
+        # case-insensitive: calc.name is an on-disk folder name and Windows
+        # (the primary target) resolves "water" and "Water" to the SAME
+        # folder — accepting both would silently share one .out between two
+        # calculations.
+        if any(c.name.casefold() == calc.name.casefold() for c in calcs):
+            raise ValueError(f"A calculation named '{calc.name}' already exists.")
+        if calc.system and calc.system not in {s["id"] for s in systems}:
+            raise ValueError(f"'{calc.name}' belongs to a system that does not "
+                             "exist.")
+        if check_refs and self._running:
+            # no pre-run screen will catch this one — it would run (and
+            # FAIL, locking) with an unresolvable reference
+            problem = self._missing_dependency(calc, {c.name for c in calcs})
+            if problem:
+                raise ValueError(problem)
+        calcs.append(calc)
 
     def remove(self, name: str) -> bool:
         with self._lock:
-            if self._running:
-                target = next((c for c in self._calcs if c.name == name), None)
-                if target is None:
-                    return False
-                # A finished row (DONE / FAILED) leaves the LIST mid-run too:
-                # removal touches no file, the engine walks rows by identity,
-                # and the reference check below still keeps a parent that a
-                # row yet to finish reads its geometry from. Only the in-flight
-                # one is held. (It used to be refused until the run ended, so a
-                # long run left its finished rows impossible to tidy.)
-                if (target.state not in EDITABLE_STATES
-                        and target.state not in (CalcState.DONE, CalcState.FAILED)):
-                    raise ValueError(
-                        "While the queue is running, a running calculation "
-                        "cannot be removed.")
-                if self._engine_active(name):
-                    raise ValueError(
-                        "Cannot remove: this calculation is about to run.")
-                dep = next(
-                    (c for c in self._calcs
-                     if c.name != name
-                     and c.state not in (CalcState.DONE, CalcState.FAILED)
-                     and self._is_reference(c) and c.ref_name == name),
-                    None)
-                if dep is not None:
-                    raise ValueError(
-                        f"Cannot remove '{name}' while the queue is running: "
-                        f"'{dep.name}' references its geometry.")
-            for i, c in enumerate(self._calcs):
-                if c.name == name:
-                    # belt-and-suspenders: never remove the in-flight calc
-                    if c.state == CalcState.RUNNING:
-                        raise ValueError("Cannot remove a running calculation.")
-                    del self._calcs[i]
-                    self._bump_and_save()
-                    return True
+            if self._remove_from(self._calcs, name):
+                self._bump_and_save()
+                return True
+        return False
+
+    def _remove_from(self, calcs: "list[Calculation]", name: str,
+                     check_refs: bool = True) -> bool:
+        """remove()'s rules against a given list. Caller holds the lock."""
+        if self._running:
+            target = next((c for c in calcs if c.name == name), None)
+            if target is None:
+                return False
+            # A finished row (DONE / FAILED) leaves the LIST mid-run too:
+            # removal touches no file, the engine walks rows by identity,
+            # and the reference check below still keeps a parent that a
+            # row yet to finish reads its geometry from. Only the in-flight
+            # one is held. (It used to be refused until the run ended, so a
+            # long run left its finished rows impossible to tidy.)
+            if (target.state not in EDITABLE_STATES
+                    and target.state not in (CalcState.DONE, CalcState.FAILED)):
+                raise ValueError(
+                    "While the queue is running, a running calculation "
+                    "cannot be removed.")
+            if self._engine_active(name):
+                raise ValueError(
+                    "Cannot remove: this calculation is about to run.")
+            dep = next(
+                (c for c in calcs
+                 if check_refs and c.name != name
+                 and c.state not in (CalcState.DONE, CalcState.FAILED)
+                 and self._depends_on(c, name)),
+                None)
+            if dep is not None:
+                how = ("references its geometry"
+                       if self._depends_on(dep, name) == "ref"
+                       else "runs after it")
+                raise ValueError(
+                    f"Cannot remove '{name}' while the queue is running: "
+                    f"'{dep.name}' {how}.")
+        for i, c in enumerate(calcs):
+            if c.name == name:
+                # belt-and-suspenders: never remove the in-flight calc
+                if c.state == CalcState.RUNNING:
+                    raise ValueError("Cannot remove a running calculation.")
+                del calcs[i]
+                return True
         return False
 
     def clear(self) -> None:
@@ -754,6 +1097,9 @@ class QueueStore:
             if self._running:
                 raise ValueError("Cannot clear the queue while it is running.")
             self._calcs.clear()
+            # the lanes are the queue editor's view of this list — an empty
+            # queue has none
+            self._systems.clear()
             self._bump_and_save()
 
     def replace(self, name: str, new_calc: Calculation) -> bool:
@@ -763,47 +1109,57 @@ class QueueStore:
         runs on the next Run.
         Raises ValueError if the target isn't editable, or on a name clash."""
         with self._lock:
-            idx = None
-            for i, c in enumerate(self._calcs):
-                if c.name == name:
-                    idx = i
-                    break
-            if idx is None:
-                raise ValueError(f"No calculation named '{name}'.")
-            if self._calcs[idx].state not in EDITABLE_STATES:
-                raise ValueError("Only pending, cancelled, or blocked calculations can be edited.")
-            if self._running:
-                if self._engine_active(name):
-                    raise ValueError(
-                        "Cannot edit: this calculation is about to run.")
-                if new_calc.name != name and any(
-                        c.name != name
-                        and c.state not in (CalcState.DONE, CalcState.FAILED)
-                        and self._is_reference(c) and c.ref_name == name
-                        for c in self._calcs):
-                    raise ValueError(
-                        f"Cannot rename '{name}' while the queue is running: "
-                        "another calculation references its geometry.")
-                if self._is_reference(new_calc) and new_calc.ref_name not in {
-                        c.name for c in self._calcs if c.name != name}:
-                    raise ValueError(
-                        f"'{new_calc.name}' references '{new_calc.ref_name}', "
-                        "which is not in the queue.")
-            # if renaming, the new name must not collide with a DIFFERENT entry
-            # (case-insensitive — names are Windows folder names, see add())
-            if new_calc.name != name and any(
-                c.name.casefold() == new_calc.name.casefold()
-                for j, c in enumerate(self._calcs) if j != idx
-            ):
-                raise ValueError(f"A calculation named '{new_calc.name}' already exists.")
-            # a freshly edited calc is always pending again, with no stale result
-            new_calc.state = CalcState.PENDING
-            new_calc.message = ""
-            new_calc.result = None
-            new_calc.output_path = ""
-            self._calcs[idx] = new_calc
+            self._replace_in(self._calcs, self._systems, name, new_calc)
             self._bump_and_save()
             return True
+
+    def _replace_in(self, calcs: "list[Calculation]", systems: "list[dict]",
+                    name: str, new_calc: Calculation,
+                    check_refs: bool = True) -> None:
+        """replace()'s rules against a given list. Caller holds the lock."""
+        idx = None
+        for i, c in enumerate(calcs):
+            if c.name == name:
+                idx = i
+                break
+        if idx is None:
+            raise ValueError(f"No calculation named '{name}'.")
+        if calcs[idx].state not in EDITABLE_STATES:
+            raise ValueError("Only pending, cancelled, or blocked calculations can be edited.")
+        if new_calc.system and new_calc.system not in {s["id"] for s in systems}:
+            raise ValueError(f"'{new_calc.name}' belongs to a system that does "
+                             "not exist.")
+        if self._running:
+            if self._engine_active(name):
+                raise ValueError(
+                    "Cannot edit: this calculation is about to run.")
+            if check_refs and new_calc.name != name and any(
+                    c.name != name
+                    and c.state not in (CalcState.DONE, CalcState.FAILED)
+                    and self._depends_on(c, name)
+                    for c in calcs):
+                raise ValueError(
+                    f"Cannot rename '{name}' while the queue is running: "
+                    "another calculation references its geometry or runs "
+                    "after it.")
+            if check_refs:
+                problem = self._missing_dependency(
+                    new_calc, {c.name for c in calcs if c.name != name})
+                if problem:
+                    raise ValueError(problem)
+        # if renaming, the new name must not collide with a DIFFERENT entry
+        # (case-insensitive — names are Windows folder names, see add())
+        if new_calc.name != name and any(
+            c.name.casefold() == new_calc.name.casefold()
+            for j, c in enumerate(calcs) if j != idx
+        ):
+            raise ValueError(f"A calculation named '{new_calc.name}' already exists.")
+        # a freshly edited calc is always pending again, with no stale result
+        new_calc.state = CalcState.PENDING
+        new_calc.message = ""
+        new_calc.result = None
+        new_calc.output_path = ""
+        calcs[idx] = new_calc
 
     def reorder(self, from_idx: int, to_idx: int) -> bool:
         """Move an editable calculation to a new position. Both endpoints must
@@ -825,6 +1181,259 @@ class QueueStore:
             self._calcs.insert(to_idx, item)
             self._bump_and_save()
             return True
+
+    # ---- the queue editor's batched edits ----
+    def apply_ops(self, ops) -> None:
+        """Apply a list of queue-editor operations atomically: validated as a
+        whole and applied under the store lock, all or nothing.
+
+        Every operation runs against a WORKING COPY of the calc list and the
+        systems, through the same rules the single mutations use (_add_into /
+        _replace_in / _remove_from: name rules and uniqueness, EDITABLE_STATES,
+        the engine-active refusal). Only when all of them succeed is the copy
+        committed — in place, because a running engine walks this very list
+        object (P29). Reference integrity is judged once, on the final state,
+        rather than op by op: a batch that adds a parent after its child, or
+        removes a node together with its descendants, is consistent as a whole
+        even though its intermediate states are not. (Idle, a dangling
+        reference is left to the pre-run screen, exactly as for add().)
+
+        Raises QueueOpError (a ValueError) naming the operation that failed.
+        """
+        if not isinstance(ops, list):
+            raise QueueOpError("Operations must be a list.", None)
+        with self._lock:
+            calcs = list(self._calcs)
+            systems = copy.deepcopy(self._systems)
+            removed: set[str] = set()
+            for k, op in enumerate(ops):
+                try:
+                    self._apply_op(calcs, systems, op, removed)
+                except QueueOpError:
+                    raise
+                except (ValueError, TypeError, KeyError, AttributeError,
+                        OverflowError) as e:
+                    raise QueueOpError(str(e), k) from e
+            if self._running:
+                names = {c.name for c in calcs}
+                for c in calcs:
+                    if c.state in (CalcState.DONE, CalcState.FAILED):
+                        continue
+                    problem = self._missing_dependency(c, names)
+                    if problem:
+                        raise QueueOpError(problem, None)
+            self._calcs[:] = calcs
+            self._systems[:] = systems
+            self._bump_and_save()
+
+    def add_xyz_systems(self, files, inp_set: dict, suffix: str = "") -> dict:
+        """The queue editor's "drop .xyz" recipe: per file, one system named
+        after the file's stem holding that structure as its input, and one
+        calculation ``stem + suffix`` built from ``inp_set`` (a template calc:
+        raw text, or an MLIP config) starting from it.
+
+        ``files`` is ``[(label, text)]`` — the label is what the refusal names
+        and what the stem is taken from (a path or a file name). Each file is
+        its own apply_ops batch, so one refusal never costs the others; a
+        refusal says why (a clash, an ORCA-hostile name, a multi-frame file,
+        no coordinates) and nothing is ever renamed to make it fit.
+        Returns {added: [calc names], systems: [ids], refused: [{file, reason}]}.
+        """
+        from .inpsets import calc_kind_for_set
+        kind = calc_kind_for_set(inp_set.get("kind", ""))
+        added: list[str] = []
+        ids: list[str] = []
+        refused: list[dict] = []
+        for label, text in files:
+            label = str(label)
+            try:
+                stem = _xyz_stem(label)
+                coords = _single_structure(text)
+                with self._lock:
+                    taken = {s["id"] for s in self._systems}
+                sid = new_system_id()
+                while sid in taken:
+                    sid = new_system_id()
+                name = stem + (suffix or "")
+                self.apply_ops([
+                    {"op": "add_system", "system": {
+                        "id": sid, "name": stem, "charge": 0, "multiplicity": 1,
+                        "inputs": [{"label": Path(label).name or stem, "xyz": coords}]}},
+                    {"op": "add_calc", "calc": {
+                        "name": name, "kind": kind, "charge": 0,
+                        "multiplicity": 1, "geometry_source": "direct",
+                        "xyz": coords, "is_raw": True,
+                        "raw_text": inp_set.get("text", ""),
+                        "set_name": inp_set.get("name", ""), "system": sid,
+                        "node": "n-" + secrets.token_hex(4), "col": 0, "row": 0}},
+                ])
+            except ValueError as e:
+                refused.append({"file": label, "reason": str(e)})
+                continue
+            added.append(name)
+            ids.append(sid)
+        return {"added": added, "systems": ids, "refused": refused}
+
+    _SYSTEM_PATCH_KEYS = {"name", "charge", "multiplicity", "inputs"}
+    _STARTED = (CalcState.RUNNING, CalcState.DONE, CalcState.FAILED)
+
+    def _apply_op(self, calcs: "list[Calculation]", systems: "list[dict]",
+                  op, removed: "set[str]") -> None:
+        if not isinstance(op, dict):
+            raise ValueError("Each operation must be an object.")
+        kind = op.get("op")
+        if kind == "add_system":
+            s = system_from_dict(op.get("system"))
+            if any(o["id"] == s["id"] for o in systems):
+                raise ValueError(f"A system with id '{s['id']}' already exists.")
+            self._check_system_name(systems, s["name"], s["id"])
+            systems.append(s)
+        elif kind == "update_system":
+            self._update_system(calcs, systems, op)
+        elif kind == "remove_system":
+            sid = op.get("id")
+            s = next((o for o in systems if o["id"] == sid), None)
+            if s is None:
+                raise ValueError(f"No system with id '{sid}'.")
+            lane = [c for c in calcs if c.system == sid]
+            started = next((c for c in lane if c.state in self._STARTED
+                            or self._engine_active(c.name)), None)
+            if started is not None:
+                raise ValueError(
+                    f"'{s['name']}' holds '{started.name}', which has already "
+                    "run (or is running); remove its finished calculations "
+                    "first.")
+            for c in lane:
+                self._remove_from(calcs, c.name, check_refs=False)
+                removed.add(c.name)
+            systems.remove(s)
+        elif kind == "add_calc":
+            self._add_into(calcs, systems, calc_from_dict(op.get("calc")),
+                           check_refs=False)
+        elif kind == "update_calc":
+            name = op.get("name")
+            current = next((c for c in calcs if c.name == name), None)
+            if current is None:
+                raise ValueError(f"No calculation named '{name}'.")
+            patch = op.get("calc")
+            if not isinstance(patch, dict):
+                raise ValueError("update_calc needs a 'calc' object.")
+            # a patch: what it leaves out keeps the calculation's current value
+            # (so {"approved": true} approves a gate without resending the rest)
+            merged = {k: v for k, v in calc_to_session_dict(current).items()
+                      if k not in ("state", "message", "output_path", "pid",
+                                   "create_time")}
+            merged.update(patch)
+            if ("raw_text" in patch and merged.get("set_name")
+                    and str(merged.get("kind", "")).startswith("mlip")):
+                # an MLIP template's text (a calc that came from an inp set)
+                # is applied to the config again by calc_from_dict — the
+                # stored calc reads is_raw false
+                merged["is_raw"] = True
+            self._replace_in(calcs, systems, name, calc_from_dict(merged),
+                             check_refs=False)
+        elif kind == "remove_calc":
+            name = op.get("name")
+            if not self._remove_from(calcs, name, check_refs=False):
+                if name not in removed:
+                    raise ValueError(f"No calculation named '{name}'.")
+            removed.add(name)
+        elif kind == "order":
+            names = op.get("names")
+            if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+                raise ValueError("order needs 'names', a list of calculation names.")
+            by_name = {c.name: c for c in calcs}
+            if len(names) != len(set(names)) or set(names) != set(by_name):
+                raise ValueError("order must name every calculation in the queue "
+                                 "exactly once.")
+            # Any permutation: the editor's run order is lane by lane, and a
+            # lane moves with its finished rows. The engine walks rows by
+            # identity and picks the first unhandled one, so where a finished
+            # or running row sits changes nothing it does.
+            calcs[:] = [by_name[n] for n in names]
+        else:
+            raise ValueError(f"Unknown operation '{kind}'.")
+
+    @staticmethod
+    def _check_system_name(systems: "list[dict]", name: str, sid: str) -> None:
+        if any(o["name"].casefold() == name.casefold() and o["id"] != sid
+               for o in systems):
+            raise ValueError(f"A system named '{name}' already exists.")
+
+    def _update_system(self, calcs: "list[Calculation]", systems: "list[dict]",
+                       op: dict) -> None:
+        """update_system: patch a lane's name / charge / multiplicity / inputs.
+
+        A rename renames every calc of the lane whose name starts with the old
+        name (new + the rest of the old name) and re-points every editable
+        calc's geometry reference and `after` at the new names. It is refused
+        once any calc of the lane has started — a started calc's name is its
+        folder on disk — and while the engine holds one. Charge and
+        multiplicity propagate to the lane's editable calcs. Every calc this
+        touches is an edit (a new object, PENDING again), like replace()."""
+        sid = op.get("id")
+        idx = next((i for i, o in enumerate(systems) if o["id"] == sid), None)
+        if idx is None:
+            raise ValueError(f"No system with id '{sid}'.")
+        old = systems[idx]
+        patch = op.get("patch")
+        if not isinstance(patch, dict):
+            raise ValueError("update_system needs a 'patch' object.")
+        unknown = set(patch) - self._SYSTEM_PATCH_KEYS
+        if unknown:
+            raise ValueError("update_system cannot change: " + ", ".join(sorted(unknown)))
+        new = system_from_dict({**old, **patch})
+        self._check_system_name(systems, new["name"], sid)
+        lane = [c for c in calcs if c.system == sid]
+
+        rename: dict[str, str] = {}
+        if new["name"] != old["name"]:
+            started = next((c for c in lane if c.state in self._STARTED
+                            or self._engine_active(c.name)), None)
+            if started is not None:
+                raise ValueError(
+                    f"'{old['name']}' cannot be renamed: '{started.name}' has "
+                    "already run (or is running), and its name is its folder.")
+            for c in lane:
+                if c.name.startswith(old["name"]):
+                    new_name = new["name"] + c.name[len(old["name"]):]
+                    _validate_calc_name(new_name, c.kind)
+                    rename[c.name] = new_name
+            keep = {c.name.casefold() for c in calcs if c.name not in rename}
+            seen_new: set[str] = set()
+            for new_name in rename.values():
+                key = new_name.casefold()
+                if key in keep or key in seen_new:
+                    raise ValueError(f"A calculation named '{new_name}' already exists.")
+                seen_new.add(key)
+        recharge = (new["charge"], new["multiplicity"]) != (old["charge"], old["multiplicity"])
+
+        for i, c in enumerate(calcs):
+            if c.state not in EDITABLE_STATES:
+                continue
+            changes: dict = {}
+            if c.name in rename:
+                changes["name"] = rename[c.name]
+            if self._is_reference(c) and c.ref_name in rename:
+                changes["ref_name"] = rename[c.ref_name]
+            if c.after in rename:
+                changes["after"] = rename[c.after]
+            if recharge and c.system == sid:
+                changes["charge"] = new["charge"]
+                changes["multiplicity"] = new["multiplicity"]
+            if not changes:
+                continue
+            if self._engine_active(c.name):
+                raise ValueError(f"Cannot edit '{c.name}': it is about to run.")
+            edited = copy.copy(c)
+            for field, value in changes.items():
+                setattr(edited, field, value)
+            edited.state = CalcState.PENDING
+            edited.message = ""
+            edited.result = None
+            edited.output_path = ""
+            calcs[i] = edited
+        systems[idx] = new
 
     def list(self) -> list[Calculation]:
         with self._lock:
@@ -1018,6 +1627,7 @@ class QueueStore:
             payload = {
                 "schema": 1,
                 "calculations": [calc_to_session_dict(c) for c in self._calcs],
+                "systems": copy.deepcopy(self._systems),
             }
         try:
             path = _session_file()
@@ -1075,11 +1685,20 @@ class QueueStore:
                 continue  # first occurrence wins, matching store.get()
             seen_names.add(key)
             restored.append(c)
-        if not restored:
+        systems = _restore_systems(data.get("systems"))
+        # A calc pointing at a lane that did not come back (a session written
+        # before systems existed has none; a hand-edited one may lose one) is
+        # shown as what it then is: a standalone calc.
+        ids = {s["id"] for s in systems}
+        for c in restored:
+            if c.system and c.system not in ids:
+                c.system = ""
+        if not restored and not systems:
             return
         reconcile_calcs(restored)
         with self._lock:
             self._calcs = restored
+            self._systems = systems
             self._version += 1
 
     def has_live_running(self) -> bool:
@@ -1137,6 +1756,12 @@ def find_dangling_reference(calcs: "list[Calculation]") -> "str | None":
                     "Pick another calculation, or load coordinates directly.")
         if is_ref and c.ref_name not in names:
             return (f"'{c.name}' references '{c.ref_name}', "
+                    "which is not in the queue.")
+        # the queue editor's edge is a dependency too, screened the same way
+        if c.after == c.name:
+            return f"'{c.name}' is set to run after itself."
+        if c.after and c.after not in names:
+            return (f"'{c.name}' runs after '{c.after}', "
                     "which is not in the queue.")
     return None
 

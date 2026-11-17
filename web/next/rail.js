@@ -8,10 +8,13 @@
    always visible while something else is being read.
 
    Rows are grouped by what they are doing (running / queued / done), because
-   that is the question being asked of the list, and a row expands in place
-   into the builder — the form is not a separate tab you go to and come back
-   from. Markup and class names are the approved design's, so app.css applies
-   to them verbatim.
+   that is the question being asked of the list. Markup and class names are
+   the approved design's, so app.css applies to them verbatim.
+
+   It is the queue's STATUS, not its editor: building, editing, reordering
+   and removing calculations happen in the queue window (qed.js), which
+   "Open queue" brings up. A row here says what a calculation is doing and
+   takes you to it -- its cell in Jobs, its report in Results.
    ============================================================ */
 
 (function () {
@@ -110,7 +113,9 @@
   /** @param {any} c @param {number} idx @returns {HTMLElement} */
   function row(c, idx) {
     const editable = EDITABLE.indexOf(c.state) >= 0;
-    const el = NB.el("div", "qrow" + (editable ? "" : " nogrip"));
+    // the grip column is kept, empty, so a calculation's name lines up with
+    // an opened file's: nothing here is dragged any more
+    const el = NB.el("div", "qrow nogrip");
     el.dataset.name = c.name;
     el.dataset.index = String(idx);
     // the group a row belongs to, on the row itself: what it is doing is the
@@ -155,7 +160,8 @@
           ? `<span class="badge failed" title="ORCA reported an error. Its process is still running.">failed</span>`
           : `<span class="badge ${c.state}">${c.state}</span>`}
         <span class="qeditslot">${editable
-          ? `<button class="btn btn-xs btn-ghost qedit" type="button">edit</button>`
+          ? `<button class="btn btn-xs btn-ghost qedit" type="button"
+               title="Edit it in the queue window">edit</button>`
           : `<button class="btn btn-xs btn-ghost qedit" type="button" disabled title="${
               c.state === "running"
                 ? "ORCA is reading this file. Stop the calculation first."
@@ -167,28 +173,39 @@
       ${frac != null ? `<span class="qbar"><span style="width:${Math.floor(frac * 100)}%"></span></span>` : ""}`;
 
     el.querySelector(".qexp").addEventListener("click", () => toggleDetail(el, c));
+    // A row takes you to the calculation. In Results the rail IS the result
+    // picker (DESIGN.md §17.0e), so a finished row opens its report there; a
+    // row with no report yet, and every row in Jobs, brings its cell into view.
     el.querySelector(".qmain").addEventListener("click", () => {
-      // In Results the rail IS the result picker (DESIGN.md §17.0e), so a
-      // finished row opens its report there. In Jobs a click on any row shows
-      // its controls: a finished row used to jump to Results instead, and its
-      // duplicate / remove sat behind the small chevron alone, where nobody
-      // looked for them. Its report is the first of those controls.
       if (NB.view === "results" && (c.state === "done" || c.state === "failed")) {
         NB.results.open(c.name);
-      } else toggleDetail(el, c);
+      } else showCell(c.name);
     });
     const ed = el.querySelector(".qedit");
     if (ed && editable) ed.addEventListener("click", e => { e.stopPropagation(); openEditor(c.name); });
     const inp = el.querySelector(".qinp");
     if (inp) inp.addEventListener("click", e => { e.stopPropagation(); NB.results.showInp(c.name); });
 
-    if (editable) attachDrag(el);
     if (_expanded.has(c.name)) toggleDetail(el, c);
     return el;
   }
 
+  /** Bring a calculation's cell into view in Jobs and mark it for a moment.
+   *  @param {string} name */
+  function showCell(name) {
+    if (NB.view !== "jobs") NB.go("jobs");
+    const cell = [...document.querySelectorAll("#streaminner > .cell")]
+      .find(e => /** @type {HTMLElement} */ (e).dataset.name === name);
+    if (!cell) return;
+    cell.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    cell.classList.add("sel");
+    setTimeout(() => cell.classList.remove("sel"), 1600);
+  }
+
   /** The per-row controls, under the row rather than to the right of it, so a
-   *  long calculation name never squeezes them out.
+   *  long calculation name never squeezes them out. What is here only READS:
+   *  reordering, duplicating and removing belong to the queue window, and the
+   *  last control opens it on this calculation.
    *  @param {HTMLElement} el @param {any} c */
   function toggleDetail(el, c) {
     const btn = /** @type {HTMLElement} */ (el.querySelector(".qexp"));
@@ -198,15 +215,11 @@
     btn.setAttribute("aria-expanded", String(!open));
     if (open) { _expanded.delete(c.name); return; }
     _expanded.add(c.name);
-    const queued = c.state === "pending" || c.state === "blocked";
     const readable = c.state === "done" || c.state === "failed";
     const det = NB.el("div", "qdet");
-    // The design's row controls, in its order and its wording. Edit is not
-    // among them: it is the .qedit button on the row itself, and the same
-    // action in two places is two things to keep in step.
-    //
-    // Two of the design's are deliberately absent, and both for a reason the
-    // mockup could not know. "requeue" on a failed row contradicts P24 -- a
+    // The design's ↑/↓, duplicate and remove are the queue window's now (the
+    // editor's lanes, grips and Delete). Two more were never here, for a
+    // reason the mockup could not know. "requeue" on a failed row contradicts P24 -- a
     // FAILED calculation is locked at the moment it failed and retrying means
     // building a new one. "stop" on a running row would have to call
     // cancel_queue, which stops the whole run: with several jobs in flight
@@ -214,68 +227,18 @@
     const b = (label, cls, act) =>
       `<button class="btn btn-xs${cls ? " " + cls : ""}" type="button" data-a="${act}">${label}</button>`;
     det.innerHTML =
-      // reordering needs a path that works from the keyboard; the drag is the
-      // addition, never the only way (reference §rail)
-      (queued ? b("↑ earlier", "btn-ghost qmove up", "up")
-              + b("↓ later", "btn-ghost qmove down", "down") : "")
-      + (readable ? b("results", "btn-ghost", "res") : "")
-      + b("duplicate", "btn-ghost", "dup")
+      (readable ? b("results", "btn-ghost", "res") : "")
       + b("folder", "btn-ghost", "folder")
-      + (c.state !== "running" ? b("remove", "btn-danger", "rm") : "");
+      + b("in the queue", "btn-ghost", "queue");
     const on = (a, fn) => { const x = det.querySelector(`[data-a="${a}"]`); if (x) x.addEventListener("click", fn); };
-    if (queued) {
-      const sibs = groupSiblings(c);
-      const at = sibs.indexOf(c.name);
-      const up = det.querySelector('[data-a="up"]');
-      const dn = det.querySelector('[data-a="down"]');
-      if (at <= 0) up.disabled = true; else on("up", () => moveTo(c, sibs[at - 1]));
-      if (at < 0 || at >= sibs.length - 1) dn.disabled = true;
-      else on("down", () => moveTo(c, sibs[at + 1]));
-    }
     on("res", () => NB.results.open(c.name));
-    on("dup", () => duplicateCalc(c));
     on("folder", () => NB.call("show_path_in_folder", c.output_path || c.name));
-    on("rm", () => removeCalc(c));
+    on("queue", () => NB.handOff({ type: "select", name: c.name }));
     el.appendChild(det);
   }
 
-  /** The names in this row's own group, in queue order -- what "earlier" and
-   *  "later" mean. Moving past a RUNNING row is not a reorder anybody asked
-   *  for, so the pair walks the group, not the whole queue.
-   *  @param {any} c @returns {string[]} */
-  function groupSiblings(c) {
-    const g = GROUPS.find(x => x.states.indexOf(c.state) >= 0);
-    return NB.queue.filter(x => g.states.indexOf(x.state) >= 0).map(x => x.name);
-  }
-
-  /** Swap a row with the named one, by their positions in the live queue.
-   *  @param {any} c @param {string} otherName */
-  async function moveTo(c, otherName) {
-    const from = NB.queue.findIndex(x => x.name === c.name);
-    const to = NB.queue.findIndex(x => x.name === otherName);
-    if (from < 0 || to < 0 || from === to) return;
-    const r = await NB.call("reorder_calc", from, to);
-    if (r && r.error) { NB.fail(r.error); return; }
-    await NB.poll();
-  }
-
-  /** Copy a calculation back into the queue under a free name. The copy is a
-   *  new PENDING row whatever the original became: what is being reused is the
-   *  setup, not the result. @param {any} c */
-  async function duplicateCalc(c) {
-    const g = await NB.call("get_calc", c.name);
-    if (!g || !g.ok || !g.calc) { NB.fail(`Could not read "${c.name}".`); return; }
-    const taken = NB.queue.map(x => String(x.name).toLowerCase());
-    let name = c.name + "-copy", k = 2;
-    while (taken.indexOf(name.toLowerCase()) >= 0) name = c.name + "-copy" + (k++);
-    const copy = Object.assign({}, g.calc, {name: name, state: "pending", message: ""});
-    const r = await NB.call("add_calc", JSON.stringify(copy));
-    if (r && r.error) { NB.fail(r.error); return; }
-    NB.toast(`Copied to "${name}".`);
-    await NB.poll();
-  }
-
-  /** @param {string} name */
+  /** Editing happens in the queue window: this opens it on the calculation.
+   *  @param {string} name */
   function openEditor(name) {
     const c = NB.queue.find(x => x.name === name);
     if (!c) return;
@@ -285,7 +248,7 @@
         : "A finished calculation cannot be edited — start a new one from it.");
       return;
     }
-    NB.build.open(name);
+    NB.handOff({ type: "edit", name: name });
   }
 
   /** Take the finished rows out of the queue -- the group's own Clear, which
@@ -307,62 +270,9 @@
       });
   }
 
-  /** @param {any} c */
-  function removeCalc(c) {
-    NB.confirm("Remove calculation",
-      `"${c.name}" leaves the queue. Files already written to disk stay where they are.`,
-      "Remove", async () => {
-        const r = await NB.call("remove_calc", c.name);
-        if (r && r.error) { NB.fail(r.error); return; }
-        if (NB.build.target() === c.name) NB.build.open(null);
-        await NB.poll();
-      });
-  }
-
-  // ---------------------------------------------------------------- drag
-
   /** groups the user has folded away, by label. A long Done list is the one
    *  that gets in the way, and it is the one worth folding. @type {string[]} */
   const _folded = [];
-
-  let _dragFrom = -1;
-  /** @param {HTMLElement} el */
-  function attachDrag(el) {
-    const grip = /** @type {HTMLElement} */ (el.querySelector(".grip"));
-    // draggable is set only while the pointer is down on the grip: a
-    // permanently draggable row swallows text selection, and calculation names
-    // are things people copy
-    grip.addEventListener("mousedown", () => el.setAttribute("draggable", "true"));
-    el.addEventListener("mouseup", () => el.removeAttribute("draggable"));
-    el.addEventListener("dragstart", () => {
-      _dragFrom = Number(el.dataset.index);
-      el.classList.add("dragging");
-    });
-    el.addEventListener("dragend", () => {
-      el.classList.remove("dragging");
-      el.removeAttribute("draggable");
-      document.querySelectorAll(".qrow.dropbefore, .qrow.dropafter")
-        .forEach(r => r.classList.remove("dropbefore", "dropafter"));
-    });
-    el.addEventListener("dragover", e => {
-      e.preventDefault();
-      if (_dragFrom < 0) return;
-      const after = Number(el.dataset.index) > _dragFrom;
-      el.classList.toggle("dropafter", after);
-      el.classList.toggle("dropbefore", !after);
-    });
-    el.addEventListener("dragleave", () => el.classList.remove("dropbefore", "dropafter"));
-    el.addEventListener("drop", async e => {
-      e.preventDefault();
-      el.classList.remove("dropbefore", "dropafter");
-      const to = Number(el.dataset.index);
-      if (_dragFrom < 0 || _dragFrom === to) return;
-      const r = await NB.call("reorder_calc", _dragFrom, to);
-      _dragFrom = -1;
-      if (r && r.error) { NB.fail(r.error); return; }
-      await NB.poll();
-    });
-  }
 
   // ---------------------------------------------------------------- render
 
@@ -375,12 +285,15 @@
     const head = NB.el("div", "rail-h");
     head.innerHTML = `Queue<span class="sp"></span><span class="n" id="q-total">${
       NB.queue.length ? NB.queue.length + (NB.queue.length === 1 ? " calculation" : " calculations")
-                      : "empty"}</span>`;
+                      : "empty"}</span>
+      <button class="btn btn-xs btn-ghost" type="button" id="open-queue"
+        title="Build and edit the queue in its own window">Open queue</button>`;
+    head.querySelector("#open-queue").addEventListener("click", () => NB.openQueueWindow());
     host.appendChild(head);
 
     if (!NB.queue.length) {
       host.appendChild(NB.el("div", "qgroup",
-        `<p class="hint" style="padding:0 6px">Nothing queued yet.</p>`));
+        `<p class="hint" style="padding:0 6px">Nothing queued yet. Open the queue to build one.</p>`));
     }
 
     GROUPS.forEach(g => {
@@ -625,29 +538,37 @@
 
   function init() {
     NB.$("btn-run").addEventListener("click", runQueue);
-    NB.$("btn-stop").addEventListener("click", async () => {
-      await NB.call("stop_after_current");
-      NB.toast("Stopping after the running calculation.");
-      await NB.poll();
-    });
-    NB.$("btn-cancel").addEventListener("click", () => {
-      NB.confirm("Cancel the run",
-        "The running calculation is stopped now. Its partial output stays on disk.",
-        "Cancel run", async () => { await NB.call("cancel_queue"); await NB.poll(); });
-    });
-    NB.$("btn-clear").addEventListener("click", () => {
-      NB.confirm("Clear the queue",
-        "Every calculation leaves the queue. Files already written stay on disk.",
-        "Clear all", async () => {
-          const r = await NB.call("clear_queue");
-          if (r && r.error) { NB.fail(r.error); return; }
-          NB.build.open(null); await NB.poll();
-        });
-    });
+    NB.$("btn-stop").addEventListener("click", stopAfterCurrent);
+    NB.$("btn-cancel").addEventListener("click", cancelRun);
+    NB.$("btn-clear").addEventListener("click", clearAll);
     NB.watch(() => render());
     restoreOpened();
   }
 
+  async function stopAfterCurrent() {
+    await NB.call("stop_after_current");
+    NB.toast("Stopping after the running calculation.");
+    await NB.poll();
+  }
+  function cancelRun() {
+    NB.confirm("Cancel the run",
+      "The running calculation is stopped now. Its partial output stays on disk.",
+      "Cancel run", async () => { await NB.call("cancel_queue"); await NB.poll(); });
+  }
+  function clearAll() {
+    NB.confirm("Clear the queue",
+      "Every calculation leaves the queue. Files already written stay on disk.",
+      "Clear all", async () => {
+        const r = await NB.call("clear_queue");
+        if (r && r.error) { NB.fail(r.error); return; }
+        NB.build.open(null); await NB.poll();
+      });
+  }
+
+  // the run controls are the same four in both windows: the queue window's
+  // top bar calls these too
   NB.rail = { init: init, render: render, progressOf: progressOf, backendOf: backendOf,
-              openEditor: openEditor, noteOpened: noteOpened };
+              openEditor: openEditor, noteOpened: noteOpened,
+              runQueue: runQueue, stopAfterCurrent: stopAfterCurrent,
+              cancelRun: cancelRun, clearAll: clearAll };
 })();
