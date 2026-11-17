@@ -533,23 +533,6 @@
     if (el && i >= 0) update(el, NB.queue[i], i);
   }
 
-  /** The invitation at the end of the stream. It is a cell because that is
-   *  what the next calculation will be. @returns {HTMLElement} */
-  function newStub() {
-    const el = NB.el("article", "cell stub");
-    // The whole head is the control. A row that says "New calculation" and then
-    // puts a button beside it asks twice for one thing — and the text is the
-    // bigger, more obvious target of the two.
-    el.innerHTML = `
-      <button class="cellhead stubhead" type="button">
-        <span class="idx">[+]</span>
-        <span class="nmwrap"><span class="nm">New calculation</span></span>
-      </button>`;
-    // the builder lives in the queue window: the stub opens it there
-    el.querySelector(".stubhead").addEventListener("click", () => NB.handOff({ type: "build" }));
-    return el;
-  }
-
   function render() {
     const host = NB.$("streaminner");
     if (!host || NB.view !== "jobs") return;
@@ -586,24 +569,24 @@
       if (host.children[i] !== cell) host.insertBefore(cell, host.children[i] || null);
       update(cell, c, i);
     });
-    // The last cell in the stream is always the next calculation: a dashed
-    // stub. A queue is a thing you add to, so the place to add is at the end
-    // of what is already there. Clicking it opens the builder in the queue
-    // window (DESIGN.md §17.6); the form can still be hosted here when
-    // NB.build.open is called in this window, which only the design check
-    // (tools/uispec.py's overlay pass) does.
+    // No "New calculation" stub at the end any more: calculations are made in
+    // the queue window (DESIGN.md §17.6). The new-calculation form can still
+    // be hosted here when NB.build.open("") is called in this window, which
+    // only the design check (tools/uispec.py's overlay pass) does.
     const stub = host.querySelector(".cell.stub");
     if (editing === "") {
-      if (!stub || !stub.classList.contains("editing")) {
-        if (stub) stub.remove();
-        host.appendChild(NB.build.cellFor(null));
+      if (!stub) host.appendChild(NB.build.cellFor(null));
+      else host.appendChild(stub);   // keep it last as cells are inserted above it
+    } else if (stub) stub.remove();
+    // an empty Jobs view says where calculations come from
+    let empty = NB.$("stream-empty");
+    if (!calcs.length && editing !== "") {
+      if (!empty) {
+        empty = NB.el("p", "hint", "Nothing queued yet. Calculations are built in the queue window (Open queue).");
+        empty.id = "stream-empty";
+        host.appendChild(empty);
       }
-    } else if (!stub || stub.classList.contains("editing")) {
-      if (stub) stub.remove();
-      host.appendChild(newStub());
-    } else {
-      host.appendChild(stub);   // keep it last as cells are inserted above it
-    }
+    } else if (empty) empty.remove();
     if (editing !== "" && editing !== null) {
       // an editor for a calculation that has left the queue has nothing to edit
       if (!calcs.some(c => c.name === editing)) NB.build.open(null);

@@ -178,7 +178,15 @@ def test_the_preview_uses_the_references_own_component_vocabulary():
     # .slider is the Settings sheet's Liquid-Glass intensity control, which
     # only ever configured the classic front-end and went with it (DESIGN.md
     # §17.5).
-    OUTSTANDING = {"viewstage", "slider"}
+    # The rail row's anatomy beyond a dot and a name -- the grip and its
+    # .nogrip, the .qexp caret, .qtext/.qhead with the .qtag backend tag and the
+    # .qm meta line, and .qacts with its .qeditslot/.qedit and .qinpslot/.qinp
+    # -- is gone with the compact rail: the main window's rail is a narrow
+    # status strip and the queue is edited in the queue window (DESIGN.md
+    # §17.2, §17.6).
+    OUTSTANDING = {"viewstage", "slider",
+                   "nogrip", "qexp", "qtext", "qhead", "qtag", "qm",
+                   "qacts", "qeditslot", "qedit", "qinpslot", "qinp"}
     unexpected = sorted(missing - OUTSTANDING)
     assert not unexpected, (
         "design elements dropped without a decision: " + ", ".join(unexpected))

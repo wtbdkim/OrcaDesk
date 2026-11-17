@@ -60,6 +60,23 @@ PER_LANDMARK_SKIP = {
     # the children it has — the mockup lists six things to draw, a real result
     # lists what is actually in its folder. Same rule, different content.
     "viztypes": {"gridTemplateColumns"},
+    # The compact rail (DESIGN.md §17.2; app.css "the compact rail"). The
+    # queue is built and edited in the queue window now, so the main window's
+    # rail is a 256px status strip: a row is a dot and a name, a little denser
+    # than the reference's three-line row, and the footer holds three small
+    # run controls in one row instead of four full-size ones.
+    "rail_scroll": {"paddingTop", "paddingRight", "paddingBottom", "paddingLeft"},
+    "rail_foot": {"paddingTop", "paddingRight", "paddingBottom", "paddingLeft"},
+    "runrow": {"gap"},
+    "runrow_btn": {"fontSize", "minHeight", "paddingTop", "paddingRight",
+                   "paddingBottom", "paddingLeft"},
+    "q_row": {"gap", "gridTemplateColumns"},
+    "q_main": {"minHeight", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft"},
+    "q_name": {"fontWeight"},
+    # ...and the stream got the rail's other 344px. The cell's first column is
+    # still a fixed 220px, so the ratio of its split moved; the split of the
+    # rest (chart : output) is the same.
+    "cell_grid": {"gridTemplateColumns"},
 }
 # Landmarks web/next/ no longer has ON PURPOSE, each with its reason. Listed
 # and not counted: a deliberate removal is not a difference to chase.
@@ -75,6 +92,16 @@ REMOVED = {
     # removed; the notebook draws flat and its light/dark toggle is in the
     # top bar. The reference still draws the card.
     "slider": "the Liquid-Glass intensity slider went with the classic UI",
+    # The compact rail (DESIGN.md §17.2): a row is a state dot and a name, the
+    # rest in its tooltip; nothing in it is dragged, unfolded or edited -- that
+    # is the queue window's -- and clearing finished rows is too.
+    "grip": "the compact rail drags nothing (the queue window's lanes do)",
+    "q_exp": "the compact rail's rows have no controls to unfold",
+    "q_tag": "the compact rail's row is a dot and a name; the backend is in its tooltip",
+    "q_meta": "the compact rail's row is a dot and a name; kind and charge are in its tooltip",
+    "q_acts": "the compact rail's row has no badge, edit or .inp (the dot is the state)",
+    "q_badge": "the compact rail's row has no badge: the dot is the state",
+    "q_clear_fin": "clearing finished rows is the queue window's (Clear all / Delete)",
 }
 # Sizes within this many px read as the same to the eye and are not worth
 # chasing; anything above it is a real difference in proportion.
@@ -198,6 +225,12 @@ STYLE_SKIP = {
     # the sticky outline moved 20px from the scrollport onto the bar (app.css).
     ".resmain > .rescontent": {"paddingTop"},
     ".rescontent > .secchips": {"paddingTop"},
+    # the compact rail (PER_LANDMARK_SKIP above, DESIGN.md §17.2)
+    ".rail > .railscroll": {"paddingTop", "paddingRight", "paddingBottom", "paddingLeft"},
+    ".rail > .railfoot": {"paddingTop", "paddingRight", "paddingBottom", "paddingLeft"},
+    ".railfoot > .runrow": {"gap"},
+    ".qlist > .qrow": {"gap"},
+    ".qrow > .qmain": {"minHeight", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft"},
 }
 sa, sb = A.get("__styles", {}), B.get("__styles", {})
 if sa and sb:

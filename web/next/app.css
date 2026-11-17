@@ -1595,8 +1595,40 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 }
 
 /* ---------------------------- the compact rail ----------------------------
-   With the queue editor in its own window the rail is the queue's status
-   (DESIGN.md §17.2): rows are not dragged, the row controls only read, and
-   the header carries the way to the editor. The button sits in the
-   uppercase 10px header and keeps the button's own type. */
-.rail-h .btn{text-transform:none; letter-spacing:-.01em; font-weight:500; margin:-4px -6px -4px 4px;}
+   With the queue editor in its own window the main window's rail is the
+   queue's STATUS, a narrow strip (DESIGN.md §17.2): a row is a state dot and
+   a name (the rest in its tooltip / accessible name), a running row its thin
+   progress bar, and a click takes you to the calculation. Gone from the
+   reference's rail on purpose: the grip, the expand caret and the row
+   controls, the backend tag, the meta and message lines, the state badge and
+   the edit / .inp buttons, the Finished group's Clear and the footer's Clear
+   all (both the queue window's). The rail is 256px instead of 600px; below
+   760px the window still stacks it on top (the rule above, re-stated here
+   because this block comes later). Recorded in tools/uidiff.py
+   (PER_LANDMARK_SKIP / REMOVED / STYLE_SKIP), each with its reason. */
+.app{grid-template-columns:256px minmax(0,1fr);}
+@media (max-width:760px){
+  .app{grid-template-columns:minmax(0,1fr);}
+  .rail{max-height:30vh;}
+}
+.railscroll{padding:12px 10px 14px;}
+.rail-h .btn{text-transform:none; letter-spacing:-.01em; font-weight:500; margin:-4px -6px -4px 0;}
+.qrow{grid-template-columns:minmax(0,1fr) auto; gap:0;}
+.qrow .qmain{gap:8px; padding:4px 6px; min-height:28px;}
+.qrow .qmain .d{width:8px; height:8px; border-width:1.5px;}
+.qrow .qmain .d.running{box-shadow:0 0 0 2px var(--warn-tint);}
+.qrow .qn{font-size:12.5px; font-weight:500;}
+.qrow .qbar{height:2px; margin:0 6px 4px 22px;}
+.qclose{
+  width:22px; height:22px; margin-right:2px; padding:0; display:grid; place-items:center;
+  background:none; border:none; border-radius:var(--radius-pill);
+  color:var(--muted-foreground); font-size:14px; line-height:1; cursor:pointer; opacity:.6;
+}
+.qrow:hover .qclose,.qclose:focus-visible{opacity:1;}
+.qclose:hover{background:var(--err-tint-hover); color:var(--err);}
+.railres{grid-template-columns:minmax(0,1fr); gap:8px; padding:12px 4px 0;}
+/* one row of three: Run queue takes what is left over */
+.railfoot{padding:10px 8px;}
+.railfoot .runrow{gap:3px; flex-wrap:nowrap;}
+.railfoot .runrow .btn,.railfoot .runrow .btn-ghost{flex:0 0 auto; padding:4px 6px;}
+.railfoot .runrow .btn-primary{flex:1 1 auto; padding:4px 6px;}
