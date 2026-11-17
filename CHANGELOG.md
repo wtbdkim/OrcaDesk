@@ -5,6 +5,8 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-11-18
+
 ### Changed
 - **Generated inputs now leave ORCA's defaults to ORCA.** A new calculation's
   `.inp` names the method and basis and only what you change: no `RIJCOSX` or
