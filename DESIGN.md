@@ -17,6 +17,12 @@ from the principles; never invent a value that is not on a scale here.
 Where the spec legislates a canonical value that current code deviates
 from, the deviation is tracked in Appendix B.
 
+§8 and Part II were extracted from the classic front-end's `web/style.css`.
+That front-end is removed (unreleased); the desktop UI is the notebook (§17),
+whose exact values are its approved design's (`web/next/app.css`, §17.0), and
+re-mirroring §8/Part II against it is open (B33). The principles in Part I
+bind both the notebook and the phone PWA.
+
 ---
 
 ## 0. Design philosophy
@@ -60,7 +66,7 @@ by shrinking signal.
 Every color is consumed through the semantic custom properties defined on
 `:root`; the light theme is `html[data-theme="light"]` redefining **tokens
 only** — "every element reads these variables, so the whole UI flips with no
-per-element overrides" (`style.css`). JS applies a theme with one
+per-element overrides". JS applies a theme with one
 `setAttribute("data-theme", …)`. JS-generated SVG uses `var(--…)` too (via
 inline `style`, since presentation attributes don't resolve `var()`).
 No hardcoded hex/rgba in components (known gaps: Appendix B).
@@ -411,9 +417,11 @@ Korean). One language per surface; no mixed-language copy.
 
 ## 8. Token reference
 
-Source of truth: `web/style.css` `:root` and `html[data-theme="light"]`.
-This table is a mirror for convenience — when they disagree, the CSS wins
-and this file must be updated in the same commit (PRINCIPLES P52). Values
+Source of truth: was `web/style.css` `:root` and `html[data-theme="light"]`,
+removed with the classic front-end; the desktop's tokens now live in
+`web/next/app.css` (the approved design's stylesheet, §17.0) and this table is
+not yet re-mirrored against it (B33). When they disagree, the CSS wins and
+this file must be updated in the same commit (PRINCIPLES P52). Values
 are the desktop's; mobile drift is tracked in B6.
 
 ### Core palette
@@ -469,7 +477,7 @@ consume the tint token, never a hand-mixed rgba (D13).
   sans-serif`; `--font-mono: "JetBrains Mono", "Cascadia Code", Consolas,
   ui-monospace, monospace`. The notebook front-end names the reference's own
   two faces first (`Inter`, `JetBrains Mono`) and **ships them** rather than
-  naming and hoping — see §17.0c; the classic window keeps the stack above.
+  naming and hoping — see §17.0c.
 - Type: base 14px/1.5 (mobile 15px); labels 12px/500; card titles
   13px/600/−0.01em; badges 10–11px uppercase; HUD numeral 26px/700
   tabular-nums.
@@ -487,7 +495,7 @@ consume the tint token, never a hand-mixed rgba (D13).
 - **Isosurface colors** (`--orb-pos` `#4f86f7` · `--orb-neg` `#f2555a` ·
   `--orb-dens` `#5eead4`) are the one token group defined **once, outside every
   theme block**, and the one read from JS rather than applied as CSS —
-  `molviewer.js` hands them to 3Dmol as WebGL material colors. The blue/red
+  `web/next/mvwin.js` hands them to 3Dmol as WebGL material colors. The blue/red
   phase pair is a convention of the chemistry literature, not a UI accent: an
   orbital whose lobes changed color with the app theme would be a figure that
   means something different in each. Adding a surface color means adding it
@@ -496,7 +504,7 @@ consume the tint token, never a hand-mixed rgba (D13).
   `#4f86f7`) joins that group under the same rule and for the same reason: red =
   negative potential, white = neutral, blue = positive is how every ESP figure
   is read. The viewer hands the three to 3Dmol as a `Gradient.CustomLinear` and
-  the `.mv-legend-ramp` swatch is a CSS gradient over the same tokens, so the
+  the `.mvramp` swatch is a CSS gradient over the same tokens, so the
   key and the surface cannot drift apart.
 
 ---
@@ -1145,109 +1153,22 @@ Before committing any UI change, confirm:
 
 ---
 
-## 16. Liquid Glass theme variant
+## 16. Liquid Glass theme variant (retired)
 
-An optional second theme *variant* (Apple "Liquid Glass", WWDC25), orthogonal
-to light/dark: `html[data-theme-variant]` is `shadcn` (the flat default) or
-`liquidglass`; `theme`/`data-theme` stays the light/dark switch and both
-variants render in both. This is a **token swap that stays true to D10** — the
-Liquid-Glass layer in `style.css` keeps every shared token name and only adds a
-new `--lg-*` group (glass tint, edge, highlight, blur, saturation, lens,
-shadow), defined for both light and dark. The whole layer is gated on
-`[data-theme-variant="liquidglass"]`, so the shadcn look is byte-for-byte
-unchanged when the variant is off.
-
-**16.1 Glass is floating chrome; content stays opaque.** The governing rule
-(from the design research, and the reason iOS 26 walked its glass back): only
-the *chrome* — the top bar and the tab strip — refracts a wallpaper behind it;
-content surfaces (cards, forms, the queue list, the log terminal, parse tables,
-the plot canvas) stay opaque so a data-dense app stays legible. Refraction is a
-Chromium-only `backdrop-filter: url(#lgLens*) blur() saturate()` chain (the app
-is Qt WebEngine / Chromium); the wallpaper itself is a viewport-fixed
-`<canvas id="lgWall">` painted by `web/appearance.js` (six procedural presets +
-custom-image upload).
-
-**16.2 The intensity ladder.** `html[data-glass]` selects one of five levels
-(mapping to the design2..design6 previews) — rising blur, saturation, and
-refraction displacement, and progressively more glass surface:
-
-| level | blur | refraction | what glassifies |
-|-------|------|-----------|-----------------|
-| `restrained` | 13px | 6 | top bar only (tabs are a quiet frosted strip) |
-| `moderate` (default) | 18px | 11 | + tabs refract |
-| `bold` | 24px | 18 | + tabs become a floating rounded bar |
-| `vivid` | 30px | 24 | + top bar floats; **cards become glass** (native frost — see 16.5) |
-| `maximal` | 38px | 32 + chromatic | cards most transparent; RGB-dispersion lens on the chrome |
-
-`restrained`/`moderate`/`bold` honor 16.1 (content opaque) and are the
-recommended range for readability. `vivid`/`maximal` **deliberately cross the
-chrome-only line** by glassifying the card layer — an opt-in exploratory
-extreme, recorded as accepted deviation B25. Even there the *inner* data
-surfaces (`input`, `.log-box`, `.scf-panel`, `.queue-item`, `.raw-editor`,
-`.btn-primary`) stay opaque, so nothing becomes unreadable.
-
-**16.3 Accessibility.** `@media (prefers-reduced-transparency: reduce)` drops
-every backdrop blur to a near-solid tint (Chromium 118+ / Qt 6.7+; a harmless
-no-op below that). The light theme raises the glass tint per level so chrome
-stays legible over bright wallpapers.
-
-**16.4 Persistence & controls.** `Settings.theme_variant` / `glass_level` /
-`wallpaper` persist through the normal settings channel; the custom wallpaper
-image is kept out of `settings.json` (a file in `user_data_root`, via the
-`set/get_wallpaper_image` bridge slots) so the settings file stays small. The
-**Settings → Appearance** card holds the variant toggle, the intensity segmented
-control, and the wallpaper picker; the appearance controls persist on
-interaction (like the top-bar ☽ toggle), not through the "Save settings" button.
-
-**16.5 Compositor resilience (binding).** Qt WebEngine's Windows compositor
-drops whole promoted layers from the **on-screen** composite when too many
-`backdrop-filter` surfaces are live at once — reproduced deterministically
-(0.5.0-beta, Settings tab at `maximal`: 6 card lenses + ~15 frosted buttons +
-both chrome bars → the top bar and tab strip rendered fully invisible, tint,
-border and labels included, while offscreen captures stayed correct; a dropped
-bar never healed because nothing re-invalidated it). A repeated-run pixel
-benchmark pinned the budget, giving four rules any Liquid-Glass change must
-keep:
-
-1. **The SVG lens is chrome-only.** `url(#lgLens*)` may appear on exactly two
-   surfaces: the top bar and the tab strip. Cards frost with native
-   `blur()/saturate()` only (8 concurrent lens surfaces still dropped layers
-   in 3/6 runs; 2 is stable at 12/12).
-2. **Layer budget.** Only the top bar, the tab strip, and (at vivid/maximal)
-   cards carry any backdrop chain. Buttons and other small, numerous controls
-   get a translucent tint — never `backdrop-filter`.
-3. **Chains live on `::before` overlays,** never on the load-bearing element:
-   a failed filter pass then costs the frost/refraction, not the bar's
-   tint/border/text. (Corollary: the whole chain moves to the overlay — an
-   element with `backdrop-filter` is a backdrop root, so a lens left on its
-   child overlay would sample the element's flat tint and refract nothing.)
-4. **Self-heal heartbeat.** Rules 1–3 lower the odds but cannot prevent drops
-   caused by *external* GPU events (sleep/resume, driver reset, GPU memory
-   pressure — observed in the field at `vivid`: tab strip gone and the top
-   bar's text layer gone while its tint survived, proving any of a bar's
-   three composited pieces can drop independently). Because a static bar is
-   never invalidated, a drop would be permanent — so while Liquid Glass is
-   active, `appearance.js` flips `--lg-pulse` between `0` and `0.004` every 250 ms
-   (`LG_PULSE_MS` — the flip period is the heal-latency upper bound; going
-   much faster buys nothing and turns the bars into constant GPU work), and
-   `style.css` routes that imperceptible delta (≈1/255 alpha,
-   +0.4% saturation) through all three pieces of both bars: background alpha
-   (tint chunk), `saturate()` in the backdrop chain (frost pass), and an
-   inset outline (contents chunk, painted with the labels). A dropped layer
-   is re-rastered — healed — within ~0.25 s. The pulse must stay **paint-only**:
-   a `will-change`/`transform` nudge would make the bar a render surface and
-   break what its `backdrop-filter` samples. Measured cost: two small bars
-   re-raster at 4 Hz; measured visibility: ≤4/255 channel delta on <0.01% of
-   band pixels (the 1px outline ring).
+Retired with the classic front-end (unreleased): the Liquid-Glass variant, its
+intensity levels and wallpapers were drawn only by `web/style.css`, and the
+notebook (§17) draws flat. The settings (`theme_variant`, `glass_level`,
+`wallpaper`) are gone; an old `settings.json` carrying them still loads. The
+section number stays reserved; the text is in git history.
 
 ---
 
-## 17. Notebook front-end (preview)
+## 17. Notebook front-end
 
-A second **front-end**, not a second theme: `Settings.ui_variant` is `classic`
-(the tabbed UI in `web/`, the default) or `notebook` (`web/next/`), and
-`MainWindow._index_file()` loads one or the other. Where §16 is a token swap
-inside one document, this is a different application of the same backend.
+The desktop window's only front-end: `MainWindow._index_file()` loads
+`web/next/index.html`. It began as a preview beside the classic tabbed UI in
+`web/` (selected by a `Settings.ui_variant` switch); both the classic UI and
+the switch are removed (unreleased).
 
 **17.0 The design is a file, and the difference is a number.**
 `design/notebook-reference.html` is the approved design, kept in the repo, and
@@ -1299,7 +1220,7 @@ rather than the rule being re-argued. `web/next/README.md` is the hand-editing g
 
 **17.0a Borrowing a renderer means borrowing its stylesheet.**
 ../scf_graph.js and ../progress_panels.js are used as PARSERS only. Their own
-`render*` helpers emit the classic front-end's vocabulary (`.scf-line`,
+`render*` helpers emit a vocabulary of their own (`.scf-line`,
 `.vstep-*`, `.stepc-*`), for which `app.css` has **no rule at all** — a chart
 drawn through them had no stroke colour and a stage chain no dots. The trackers
 hand over their numbers and `web/next/charts.js` draws them in the design's
@@ -1316,19 +1237,17 @@ therefore built from the design's own components (`.plate`, `.secdesc`,
 `tests/test_next_ui.py` fails on any class the sheet does not style, apart from
 four behaviour hooks the design uses the same way.
 
-**17.1 It shares no markup with the classic UI.** `web/next/` has its own
-`index.html`, its own `app.css` and its own logic against the same `Bridge`.
+**17.1 It owns its markup.** `web/next/` has its own `index.html`, its own
+`app.css` and its own logic against the `Bridge`.
 The only files it borrows are `../scf_graph.js` and `../progress_panels.js` —
 convergence trackers and chart/step renderers that own no ids and no elements,
 so sharing them is reuse rather than coupling — plus its own `mol.js`, a 2D
 ball-and-stick renderer for the cell thumbnails (a still per cell, several on
 screen at once: a GL context each would cost more than the picture is worth).
-It deliberately does **not** load `web/style.css`: two stylesheets over two
-markup vocabularies is two cascades fighting.
 
-One tsc project checks both, and classic scripts share a global scope, so the
-preview keeps everything on a single `NB` namespace — a second top-level
-`bridge`/`queue`/`settings` would be a duplicate declaration of `app.js`'s.
+One tsc project checks every script under `web/`, and they share one global
+scope, so the notebook keeps everything on a single `NB` namespace (plus `MOL`
+and `CHARTS`) — any other top-level name is refused by `tests/test_next_ui.py`.
 
 **17.2 The window is the queue plus one thing.** Two places (Jobs and Results)
 and a 600px rail that stays on screen in both:
@@ -1350,7 +1269,7 @@ and a 600px rail that stays on screen in both:
   the editor, with an `.editbar` naming what is being changed. It is not a place
   you go to and come back from.
 - **Stream** — one **cell** per calculation: its chart, its output tail and its
-  facts, together. The classic UI asks you to pick a job and then pick a view
+  facts, together. A tabbed layout asks you to pick a job and then pick a view
   of it (Raw or Graph, one at a time, one job at a time); here you read down
   the run.
 - **Stream, first column** — the structure the calculation is working on:
@@ -1490,7 +1409,7 @@ the plot.
 for.** The pop-out viewer paints structures with `mol.js`, the same painter as
 every other stage here, so drag, click and right-drag-to-measure behave the same
 in the big window as in the small one. An isosurface is a volume, not a set of
-atoms, so that half uses the vendored 3Dmol the classic UI already ships — and
+atoms, so that half uses the vendored 3Dmol (`web/vendor/`) — and
 it is fetched on the first surface, never at boot. A machine with no WebGL
 context can still walk a trajectory, and the one thing it cannot do says so
 instead of failing silently.
@@ -2044,14 +1963,14 @@ The Settings sheet, closed with unsaved edits, asks once (§13.1, three-way):
 focused). Escape or a click outside the prompt is Cancel and never Discard
 (D61). Changing a field and changing it back is not "unsaved".
 
-**17.5 It is a preview, and it says what it is missing.** Classic stays the
-default; upgrading moves nobody. The switch is at the bottom of Settings in
-**both** front-ends — the way out of a preview has to be inside it — and saving
-it reloads the page in place, because the queue and any running calculation are
-Python-side. `_index_file()` falls back to classic when the selected file is
-absent, so a `settings.json` carried to a build without the preview cannot
-leave a blank window in front of a running backend. What the preview does not
-have yet is named on its Interface card, not silently absent (B30).
+**17.5 It is the only front-end.** The classic window and the switch between
+the two are removed (unreleased), and with them the Settings sheet's Interface
+card (the switch) and Appearance card (the Liquid-Glass style and its intensity
+slider, which only ever configured the classic window — §16). The reference
+still draws the Appearance card; its `.slider` is a listed, deliberate absence
+(`OUTSTANDING` in `tests/test_next_ui.py`, `REMOVED` in `tools/uidiff.py`).
+Light/dark stays the top bar's toggle. A missing `web/next/index.html` is
+reported by `_check_ui_loaded` rather than left as a blank window.
 
 ---
 
@@ -2086,11 +2005,12 @@ Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
 | B22 | `renderSummary`'s value-coloring used three sequential non-exclusive regex `if`s, so the later `/converged\|Normal/i` re-matched the substrings of `NOT converged` and `ABNORMAL / incomplete` — **both failure verdicts rendered green (.ok)** instead of red | D2, §12 | resolved (0.4.3-beta — exclusive else-if chain, failure patterns first) |
 | B23 | Feedback-channel conformance (§13.2): many failure call sites were single-channel — toast-only (`Couldn't read that .inp`, `Drop failed`, `Could not save settings/theme: …`, `Could not add environment: …`, reorder/remove constraints, `Copy failed`) or log-only (`Could not start: …`, `Could not generate .inp: …`); `clearQueue` failure logged at `warn` instead of `err` | §13.2, D65 | resolved (0.4.3-beta — failures route through the shared `failNotify` helper: toast + `err` log) |
 | B24 | Five 0.5.0-beta CREST/MLIP `.card-desc` strings drifted from the copy spec: the raw-`.inp` and Results descs used *job* for a queued **calculation** (§14.2 reserves *job* for the running process); the CREST-build, MLIP-environment, and CREST-settings descs were multi-sentence/imperative rather than a one-line noun-form fragment (§11.1/D70). The B20 sweep (0.4.3-beta) predates this copy. | §14, D70, §11.1 | resolved (0.5.0-beta — reworded to spec; found by a conformance review of the design previews, which confirmed the rest of the preview set is clean) |
-| B25 | The Liquid-Glass `vivid`/`maximal` intensity levels glassify the `.card` layer, crossing the "glass = chrome only; content opaque" rule (§16.1) | §16.1 | accepted (0.5.0-beta — opt-in exploratory extremes at the top of the intensity ladder; the recommended `restrained`/`moderate`/`bold` levels keep content opaque, and inner data surfaces stay opaque even at `maximal`) |
+| B25 | The Liquid-Glass `vivid`/`maximal` intensity levels glassify the `.card` layer, crossing the "glass = chrome only; content opaque" rule (§16.1) | §16.1 | accepted (0.5.0-beta — opt-in exploratory extremes at the top of the intensity ladder; the recommended `restrained`/`moderate`/`bold` levels keep content opaque, and inner data surfaces stay opaque even at `maximal`; moot since the classic front-end and §16 were retired, unreleased) |
 | B26 | Second 0.5.0-beta copy sweep (post-B24 strings, mostly the Appearance card): the free-energy-profile placeholder said *FREQ jobs* (§14.2 job/calculation + kind-label casing); the Appearance `.card-desc` and three hints were multi-sentence verb-form (§11.1/§14.1 noun-form one-liners); two glass-intensity tooltips were subject-verb clauses among noun-phrase siblings (§14.1); and the `#card-mlip` title "MLIP pre-optimization" misdescribed the card's `mlip_sp` single-point task (§14.1 accurate noun phrase / D2) | §11.1, §14.1, §14.2, D2 | resolved (0.5.0-beta — all eight strings rewritten to conform; card retitled "MLIP calculation") |
 | B27 | The MLIP/CREST card lock disabled only a hand-written list of field ids, so CREST's whole *Advanced settings* block (preset, NCI, solvent model, the MD/MTD numbers, the five toggles) and both cards' geometry-source radios stayed enabled under the grey — pretend-disabled chrome around live controls | D41 | resolved (0.6.1-beta — the lock disables every control the card's own DOM contains, so the list cannot drift from the markup again; the CUDA `<option>`'s separate disabled state is deliberately left to `refreshMlipDeviceOptions`) |
 | B28 | Settings → CREST's *Install CREST* button was pretend-enabled: it disabled only once CREST was already installed, never when there was **no WSL distro to install into** (the one prerequisite ORCAdesk cannot script). The click's only feedback was a Log-tab line, so a failed install read as a dead button — and the installer's actionable diagnostics never reached the card | D41, D2, §13.2 | resolved (0.7.0-beta — the button disables with the reason in its tooltip when WSL or a distro is absent, or while a probe is in flight; the install outcome is published on `CrestStatusPayload.install_error` and surfaced as the card's detail line + a toast) |
 | B29 | Two color literals had come back after B3/B5 removed the pattern: `renderInputEcho`'s `<pre>` used a raw `rgba(127,127,127,0.08)` (a theme-independent grey that is neither a token nor an alpha-ladder value), and the 3D viewer fell back to the literal `#18181b` — the DARK `--card` — when its token read came back empty, painting the stage near-black on a light theme | D10, D13, §15.1 | resolved (unreleased — the echo uses `--input-bg`; the viewer passes no background at all when the token is unreadable, rather than the wrong theme's value) |
 | B31 | The notebook front-end still lacks three of the reference's blocks: the MLIP environment rows and the glass-intensity slider in Settings (`.envrow`, `.slider`), the builder's NEB-endpoint / per-element-basis / structure-findings blocks (`.nebrow`, `.nebslot`, `.basis-row`, `.snips`, `.finding`), and the pop-out 3D viewer window with its frame walker and ESP ramp (`.mvwin` …) | §17 | resolved (0.10.1 — all ten landed; the `OUTSTANDING` set in `tests/test_next_ui.py::test_the_preview_uses_the_references_own_component_vocabulary` is now empty and is kept that way, so dropping an element is a decision somebody took rather than something that quietly happened) |
-| B30 | The notebook front-end (§17) draws flat — the Liquid-Glass appearance variants (§16) are set from its Settings but rendered only by the classic window | D2, §17.5 | accepted (0.10.1 — narrowed: the MLIP environment setup, the 3D viewer, the Visual panel and the natural-orbital analysis have landed; unreleased — narrowed again: the MLIP and CREST builders landed (§17.4s), and with them the backend picker's `.seg .sep`. It stays a preview, off by default, and its Interface card names what is left rather than letting it be found as a control that is not there) |
-| B32 | The notebook preview's top bar shows **all three backend pills** — ORCA, MLIP, CREST — whether or not MLIP/CREST were ever set up, where D41 hides an unadopted backend's pill. Asked for directly: the pills are how the user sees, at a glance and without opening Settings, what this machine can run. They follow D42's four states; CREST's probe `error` (a shell with no target carrying CREST, the never-installed case) reads *not set*, not *error*. Below 1320px the state word folds into the tooltip and the screen-reader text, the name and dot stay | D41 | accepted (0.10.1 — preview only; the classic window keeps D41's hide-until-adopted) |
+| B30 | The notebook front-end (§17) draws flat — the Liquid-Glass appearance variants (§16) are set from its Settings but rendered only by the classic window | D2, §17.5 | resolved (unreleased — the classic window and the Liquid-Glass variants are removed, so there is nothing left to render elsewhere; the notebook is the only front-end, draws flat, and no longer offers a style setting. History: accepted in 0.10.1 and narrowed as the MLIP/CREST builders, the 3D viewer, the Visual panel and the natural-orbital analysis landed) |
+| B32 | The notebook's top bar shows **all three backend pills** — ORCA, MLIP, CREST — whether or not MLIP/CREST were ever set up, where D41 hides an unadopted backend's pill. Asked for directly: the pills are how the user sees, at a glance and without opening Settings, what this machine can run. They follow D42's four states; CREST's probe `error` (a shell with no target carrying CREST, the never-installed case) reads *not set*, not *error*. Below 1320px the state word folds into the tooltip and the screen-reader text, the name and dot stay | D41 | accepted (0.10.1; unreleased — the classic window, which kept D41's hide-until-adopted, is removed, so this is now the desktop's only behaviour) |
+| B33 | §8 (tokens) and Part II (§9–§15) were extracted from the classic front-end's `web/style.css`, which is removed; they have not been re-mirrored against the notebook's `web/next/app.css`, so a value or a class name there may describe nothing that ships | P52, §8 | stale-doc (unreleased — Part I still binds; the notebook's exact values are its approved design's, §17.0) |

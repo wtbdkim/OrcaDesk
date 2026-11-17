@@ -413,7 +413,7 @@ def run_real():
     ws = tmp / "ws"; ws.mkdir(exist_ok=True)
     fake = tmp / "orca.exe"; fake.write_bytes(b"")
     (tmp / "ORCAdesk" / "settings.json").write_text(json.dumps({
-        "workspace_root": str(ws), "ui_variant": "notebook",
+        "workspace_root": str(ws),
         "orca_path": str(fake),
         # something for the settings sheet to draw an .envrow from. The
         # interpreter does not exist, so the probe comes back "unusable" - a

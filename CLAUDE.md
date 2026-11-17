@@ -83,7 +83,7 @@ Testing notes (full description: ARCHITECTURE.md *Test suite*):
 
 ```
 main.py ── single_instance (QLockFile + QLocalServer) ── MainWindow (gui/window.py)
-              QWebEngineView ── web/ (classic)  or  web/next/ (notebook preview)
+              QWebEngineView ── web/next/ (notebook UI; borrows web/scf_graph.js etc.)
                    │  QWebChannel, JSON strings, JS *polls* get_queue()/get_log()
               gui/bridge.py  (Bridge: the ENTIRE desktop backend API, @pyqtSlot only)
                    │
@@ -100,7 +100,7 @@ testable). Where to look, by area (each is a section of `docs/ARCHITECTURE.md`):
 
 | Area | Key files | One-line rule |
 |---|---|---|
-| Front-end shell | `gui/window.py`, `web/`, `web/next/` | Two separate front-ends over one Bridge; `Settings.ui_variant` picks. |
+| Front-end shell | `gui/window.py`, `web/next/` | One front-end (the notebook); `web/` holds only what it borrows. |
 | Bridge API | `gui/bridge.py`, `web/globals.d.ts` | New backend functionality = new `@pyqtSlot`; declare it in `globals.d.ts`. |
 | Wire payloads | `state/schemas.py` ↔ `web/types.js` | TypedDicts are the source of truth; mirror field by field. |
 | Queue store | `state/store.py` | Single source of truth, shared by desktop + phone; `calc_from_dict` is the trust boundary. |
@@ -111,7 +111,7 @@ testable). Where to look, by area (each is a section of `docs/ARCHITECTURE.md`):
 | Geometry | `core/structure.py`, `core/hessfile.py`, `core/normalmodes.py` | Reads only, except constraint-target Apply and push-along-mode. |
 | MLIP | `mlip/` | User's own env runs the worker; one env per MLIP; import-probe readiness. |
 | CREST | `crest/` (`shell.py` = transport) | WSL distro on Windows, `"local"` elsewhere; detected, never configured. |
-| Cubes / viewer | `core/plot.py`, `cube.py`, `molview.py`, `web/molviewer.js`, `web/next/mvwin.js` | orca_plot driven by verified menu sequences; grid-qualified cube names. |
+| Cubes / viewer | `core/plot.py`, `cube.py`, `molview.py`, `web/next/mvwin.js` | orca_plot driven by verified menu sequences; grid-qualified cube names. |
 | NBO | `nbo/` | ORCAdesk's own reimplementation — never presented as NBO-program-compatible (P5, A25). |
 | Text encoding | `textio.py` | ORCA `.out` on Windows is mixed UTF-8 / ANSI; decode process output via `decode_process_output`. |
 | Paths | `paths.py`, `config.py` | Never write under `resource_root()`; user data under `user_data_root()`. |
@@ -119,23 +119,19 @@ testable). Where to look, by area (each is a section of `docs/ARCHITECTURE.md`):
 
 ### Front-end essentials
 
-- **Classic** (`web/index.html`, default): plain scripts sharing one global
-  scope, loaded in order `scf_graph.js` → `progress_panels.js` (must follow it:
-  it `Object.assign`s onto `SCFGraph`) → `combo.js` → `appearance.js` →
-  `log_graph.js` → `results_render.js` → `nbo_render.js` → `molviewer.js` →
-  `structview.js` → `app.js`. Keep new top-level code declaration-only (TDZ).
-- **Notebook preview** (`web/next/`, DESIGN.md §17): its own markup/CSS/logic,
-  sharing no ids/classes with classic; borrows only `../scf_graph.js` and
-  `../progress_panels.js` as parsers. Everything hangs off one global `NB`
-  (plus `MOL` from `mol.js`, the one structure painter). **A top-level
-  declaration other than `NB` collides with `app.js`** (one tsc project) — a
-  test fails the build. `web/next/app.css` IS the approved design's stylesheet:
+- **The notebook** (`web/next/`, DESIGN.md §17) is the only UI (the classic
+  tabbed one and the `ui_variant` switch are gone). It borrows only
+  `../scf_graph.js` → `../progress_panels.js` (must follow it: it
+  `Object.assign`s onto `SCFGraph`) as parsers, plus `../fonts/` and
+  `../vendor/3Dmol-min.js`. Everything hangs off one global `NB` (plus `MOL`
+  from `mol.js`, the one structure painter). **No other top-level
+  declaration** (one tsc project over all of `web/`) — a test fails the build. `web/next/app.css` IS the approved design's stylesheet:
   a deliberate departure is two edits (named block at the bottom of `app.css`
   **and** `uidiff.py`'s `PER_LANDMARK_SKIP` with its reason). **Re-run
   `uispec`/`uidiff` after touching `web/next/`.** Editing guide:
   `web/next/README.md`.
-- The JS side holds no queue state; it polls. Front-end errors reach the Log tab
-  as `[web] ...` lines; `ORCADESK_REMOTE_DEBUG=9222` enables live DevTools.
+- The JS side holds no queue state; it polls. Front-end errors reach the shared
+  log (`get_log`) as `[web] ...` lines; `ORCADESK_REMOTE_DEBUG=9222` enables live DevTools.
 
 ### Queue invariants (don't break these)
 
@@ -175,12 +171,6 @@ Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
 - **`web/` is type-checked** (`// @ts-check` + JSDoc, `jsconfig.json`). When you
   add or change a payload or slot, update `state/schemas.py`, `web/types.js`
   and `web/globals.d.ts` together, and keep `tsc` at zero errors.
-- **Theme variants** (classic only): `html[data-theme-variant]` (`shadcn` |
-  `liquidglass`) + `html[data-glass]` intensity; the Liquid-Glass layer is gated
-  on those attributes. **Compositor resilience is binding** (DESIGN.md §16.5):
-  SVG lens on chrome only, no `backdrop-filter` on small/numerous controls,
-  backdrop chains on `::before` overlays, and the `--lg-pulse` must stay
-  paint-only (never `will-change`/`transform`).
 - **The `.inp` writes only what differs from ORCA's own default.** The default
   method/basis (`wB97X-D4`, `def2-TZVP`) live in `input_generator.py`; RI, SCF
   tier and block counts default to ORCA's and are left out — except `TightOpt`

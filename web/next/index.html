@@ -12,20 +12,17 @@
 </head>
 <body>
 <!--
-  ORCAdesk — notebook front-end (preview).
+  ORCAdesk — notebook front-end, the desktop window's only UI.
 
-  A SECOND front-end, written against the same Bridge as the classic UI in
-  web/ — not a re-arrangement of it. It shares no markup and no ids with
-  web/index.html; the only files it borrows are ../scf_graph.js and
-  ../progress_panels.js, which are pure trackers and renderers with no DOM of
-  their own.
+  Written against the Bridge (orcamgr/gui/bridge.py). The only files it
+  borrows from web/ are ../scf_graph.js and ../progress_panels.js, which are
+  pure trackers and renderers with no DOM of their own, and the bundled
+  ../fonts/ and ../vendor/ (3Dmol, loaded on first use by mvwin.js).
 
   Markup and stylesheet are the approved design, carried over as-is: the class
   vocabulary here IS the design's, so app.css applies to it verbatim and the
-  two can be diffed element for element (scratchpad uispec.py / uidiff.py).
-
-  Selected by Settings.ui_variant ("notebook"); the classic UI stays the
-  default. See DESIGN.md §17.
+  two can be diffed element for element (tools/uispec.py / uidiff.py).
+  See DESIGN.md §17.
 -->
 <div class="app" data-view="jobs">
 

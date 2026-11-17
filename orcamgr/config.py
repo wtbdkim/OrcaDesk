@@ -182,24 +182,6 @@ class Settings:
     # without this guard two of them can quietly push a 32 GB machine into swap.
     max_total_ram_mb: int = 0
     theme: str = "dark"
-    # Theme *variant*, orthogonal to `theme` (light/dark): "shadcn" is the flat
-    # default; "liquidglass" renders the Apple Liquid-Glass chrome (a refracting
-    # frosted top bar / tabs over a wallpaper). Each variant works in both light
-    # and dark. The whole Liquid-Glass CSS layer is gated on this — shadcn users
-    # are untouched. See web/style.css and DESIGN.md §16.
-    theme_variant: str = "shadcn"
-    # Liquid-Glass intensity, meaningful only when theme_variant=="liquidglass":
-    # restrained|moderate|bold|vivid|maximal — rising blur / refraction / glass
-    # surface count (maps to the design2..design6 previews). restrained/moderate/
-    # bold keep content opaque (glass = chrome only); vivid/maximal also glassify
-    # the card layer (the exploratory extreme).
-    glass_level: str = "moderate"
-    # Liquid-Glass wallpaper key: one of the built-in procedural presets
-    # (aurora|aqua|sunset|grape|graphite|ocean) or "custom". The custom image
-    # itself is NOT stored here (it would bloat settings.json, which is rewritten
-    # on every queue mutation) — it lives in a dedicated file in user_data_root,
-    # written/read via the Bridge's set/get_wallpaper_image slots.
-    wallpaper: str = "aurora"
     # opt ETA prediction mode: "conservative" (predict only when confident) or
     # "eager" (predict earlier / more often, may be less accurate)
     eta_mode: str = "conservative"
@@ -217,14 +199,6 @@ class Settings:
     # "system" never means generating less (P5). In-app stays the default: it
     # is the path that needs no second program at all.
     viewer_target: str = "in_app"
-    # Which bundled front-end the desktop window loads: "classic"
-    # (web/index.html, the shipping tabbed UI) or "notebook"
-    # (web/next/index.html, the in-development single-window layout —
-    # DESIGN.md §17). Classic stays the default and stays untouched — the new
-    # shell is opt-in from the bottom of Settings until it is finished, so an
-    # upgrade never moves anyone onto a preview UI. window.py falls back to
-    # classic when the selected front-end is missing.
-    ui_variant: str = "classic"
 
     @classmethod
     def load(cls) -> "Settings":
@@ -238,6 +212,10 @@ class Settings:
                 # (P32) — data.items() on a non-dict would crash startup.
                 if not isinstance(data, dict):
                     data = {}
+                # Keys this version does not know are dropped, not an error:
+                # a settings.json from an older build still carries retired
+                # ones (ui_variant, theme_variant, glass_level, wallpaper —
+                # the classic front-end's) and must load as it always did.
                 s = cls(**{k: v for k, v in data.items()
                            if k in cls.__dataclass_fields__})
             except (json.JSONDecodeError, TypeError, OSError):

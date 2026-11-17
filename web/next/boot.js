@@ -8,10 +8,10 @@
    per-calculation convergence trackers, and the small chrome (toast, modal,
    confirm) the rest of the UI builds on.
 
-   One global, `NB`. This file and web/app.js are checked by the same tsc
-   project and share one global scope, so a second top-level `bridge`/`queue`/
-   `settings` would collide with the classic front-end's. Every module here is
-   an IIFE that hangs its exports off NB instead.
+   One global, `NB`. Every file under web/ is checked by the same tsc project
+   and shares one global scope with ../scf_graph.js and ../progress_panels.js,
+   so module-level names would collide sooner or later. Every module here is an
+   IIFE that hangs its exports off NB instead.
    ============================================================ */
 
 /** @type {any} */

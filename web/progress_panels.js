@@ -11,7 +11,7 @@
    not just a line-count cut.
 
    Loading: this file EXTENDS the same SCFGraph namespace
-   scf_graph.js creates, so it must load AFTER it (index.html) or
+   scf_graph.js creates, so it must load AFTER it (web/next/index.html) or
    be required after it (node). Callers keep using SCFGraph.*
    exactly as before the split.
    ============================================================ */
@@ -19,7 +19,7 @@
   "use strict";
 
   // The namespace scf_graph.js already published: in node it is that module's
-  // exports (require caches it, so this is the same object app.js/the tests
+  // exports (require caches it, so this is the same object the tests
   // hold); in the browser it is the global it assigned.
   const SCFGraph = (typeof module !== "undefined" && module.exports)
     ? require("./scf_graph.js")
@@ -996,7 +996,7 @@
     FreqTracker: FreqTracker,
     TddftTracker: TddftTracker,
     CrestTracker: CrestTracker,
-    fmtClock: _fmtClock,   // m:ss / h:mm:ss — app.js re-stamps [data-clock] with it
+    fmtClock: _fmtClock,   // m:ss / h:mm:ss — the notebook's ETA line formats with it
     renderFreqProgress: renderFreqProgress,
     renderTddftProgress: renderTddftProgress,
     renderCrestProgress: renderCrestProgress,

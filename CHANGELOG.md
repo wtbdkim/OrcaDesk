@@ -105,6 +105,19 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   warns they mean nothing unless every occupied orbital was localized, which
   the default range is not.
 
+### Removed
+- **The classic front-end.** The tabbed window (Build / Queue / Log / Results)
+  is gone; the notebook layout is now the only UI and opens on every launch.
+  With it go the **Interface** switch in Settings (classic / notebook) and the
+  **Appearance** card's Liquid-Glass style, intensity and wallpapers, which only
+  the classic window drew. Light/dark stays the top bar's toggle. A settings
+  file from an earlier version still loads; the retired settings are ignored
+  and dropped at the next save. Not carried over from the classic window:
+  dropping a `.inp` / `.xyz` / `.out` onto the window (it does nothing now),
+  the *Opening structures and maps* setting that sent a Visual row to your own
+  program (use *Show in folder*), and the automatic lowering of the isovalue for a spread-out orbital (the
+  viewer opens at the cube's own isovalue; type another in its isovalue field).
+
 ### Fixed
 - **A long run's Jobs cell no longer forgets what it is after a restart.**
   Reopening ORCAdesk rebuilt a running or finished cell from only the last
