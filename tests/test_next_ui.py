@@ -345,6 +345,48 @@ def test_the_queue_editor_writes_through_the_batched_ops_alone():
         assert f'NB.call("{slot}"' not in src, f"qed.js calls {slot} directly"
 
 
+def _function_body(src: str, name: str) -> str:
+    """The text of `function name(...) { ... }` in src, braces balanced."""
+    m = re.search(r"function " + re.escape(name) + r"\s*\(", src)
+    assert m, f"qed.js lost {name}()"
+    i = src.index("{", m.end())
+    depth = 0
+    for j in range(i, len(src)):
+        depth += {"{": 1, "}": -1}.get(src[j], 0)
+        if depth == 0:
+            return src[i:j + 1]
+    raise AssertionError(f"unbalanced {name}()")
+
+
+def test_a_finished_block_takes_a_next_step_by_placement_alone():
+    """The ghost slot follows ANY selected block, finished or not (the
+    design's rule: a Freq after a done OptTS is how a follow-up is queued).
+    A standalone block becomes a lane's first node through place_calc --
+    layout only, allowed in every state -- never through update_calc, which
+    the store refuses for a finished calc and which would re-queue it (P24)."""
+    src = _read(NEXT / "qed.js")
+    slot = _function_body(src, "slotOf")
+    assert "editable" not in slot, "the + slot is withheld from a finished block again"
+    adopt = _function_body(src, "adopt")
+    assert 'op: "place_calc"' in adopt
+    assert 'op: "update_calc"' not in adopt, "adoption edits the calculation"
+
+
+def test_the_set_editor_writes_through_the_inp_set_slots_alone():
+    """With nothing selected the inspector is the inp-set editor (it replaced
+    the help text). A set is written by save_inp_set / delete_inp_set and
+    nothing else -- no browser storage standing in for the library -- and a
+    saved set reaches existing blocks only through the undoable ops batch."""
+    src = _read(NEXT / "qed.js")
+    assert 'NB.call("save_inp_set"' in src and 'NB.call("delete_inp_set"' in src
+    assert "localStorage" not in src and "sessionStorage" not in src
+    assert "Select a block to see its system" not in src, "the help text is back"
+    assert re.search(r"else inspectSets\(host\);", src), "nothing selected no longer shows the set editor"
+    offer = _function_body(src, "offerUpdate")
+    assert "EDITABLE" in offer, "the set update may reach blocks that have run"
+    assert "apply(" in offer
+
+
 def test_the_main_rail_is_status_only():
     """The main window's rail reports and navigates; reordering, duplicating
     and editing are the queue window's (DESIGN.md §17.2). The one removal it

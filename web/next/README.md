@@ -44,7 +44,7 @@ launching. Any port above 1024 works. It is off unless you set it.)
 | `boot.js` | channel, polled queue/log, per-calculation trackers, routing (`?win=`, dropped files, the hand-over to the queue window), toast/modal |
 | `rail.js` | the main window's queue rail — a 256px status strip (dot + name per row), run controls, *Open queue* |
 | `build.js` | the builder (a cell becomes the form); hosted in the queue editor's inspector |
-| `qed.js` | the queue window: inp-set library, lanes of nodes and edges, inspector, undo |
+| `qed.js` | the queue window: inp-set library, lanes of nodes and edges, inspector (a block, an edge, or -- nothing selected -- the inp-set editor), undo |
 | `stream.js` | one cell per calculation: thumbnail, chart, output, facts |
 | `results.js` | the report — sections, charts, input/output, reaction profile |
 | `settings.js` | the settings slide-over |

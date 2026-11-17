@@ -96,6 +96,32 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   all*, the Finished group's *Clear* and the *New calculation* stub at the end
   of Jobs are gone from the main window (building and clearing are the queue
   window's). Opened files keep their place, with an × to take one off the list.
+- **A finished calculation takes a next step in the queue window.** Selecting
+  any block, done or failed included, shows the + after it, so a Freq goes
+  after a finished OptTS and an SP after a finished IRC (as a forward/backward
+  pair). A calculation on its own row becomes the first block of a new
+  molecule row for that; only its place in the editor changes, never what it
+  ran or produced, and Ctrl+Z puts it back. The new block is selected once it
+  exists (it was sometimes left unselected), a block whose earlier step failed
+  shows as blocked straight away, a block that waits for a calculation in
+  another row says so and has its own *Approve*, the geometry list offers every
+  member of an earlier stack, the Freq-level warning also compares a step built
+  with the Guided builder, an MLIP or CREST block shows the settings it runs
+  instead of an ORCA input it never runs, removing the last block of a row
+  removes the row (undoable), and an empty queue says how to start one.
+- **The queue window edits the inp sets.** With nothing selected the inspector
+  is the set editor (it replaces the help text): a set is a whole ORCA input
+  with `{{GEOMETRY}}` where the coordinates go (and `{{CHARGE}}`, `{{MULT}}`,
+  `{{HESS}}`), an MLIP set its setting lines. Click a set in the library to
+  open it (a click still applies it to a selected block of its kind); *+ New*
+  beside each kind starts from ORCAdesk's default input for it. Save, Save as
+  new, Duplicate, Delete and *Import .inp…* (coordinates in the file are
+  replaced by the placeholders only if you say so); the kind is read from the
+  job line and a text that reads as another kind says it will move group. A
+  missing name or `{{GEOMETRY}}`, or a name another set of the kind has, is
+  refused in the editor with the reason. Blocks keep the text they were made
+  with: after a save, the blocks of that set that have not run are offered the
+  new text once (Ctrl+Z undoes). Switching away from unsaved edits asks first.
 - **A 2-D relaxed surface scan is drawn as its grid in the notebook report.**
   Each point sits where its two coordinates put it, and its size is its energy
   (area in proportion to ΔE). The highest point is red and the lowest blue, and

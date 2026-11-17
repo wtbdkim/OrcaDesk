@@ -47,6 +47,25 @@ def test_save_mints_an_id_and_replace_keeps_it(tmp_path):
     assert names == ["r2SCAN-3c tight"]
 
 
+def test_a_name_is_unique_within_its_kind_only(tmp_path):
+    """A block names its set by (kind, name), so a second Opt set of one name
+    would make that ambiguous; the same name in another kind is fine (the
+    seeds all describe one level of theory)."""
+    t = "! Opt\n* xyz 0 1\n{{GEOMETRY}}\n*\n"
+    a = save_set({"name": "mine", "kind": "Opt", "text": t}, tmp_path)
+    with pytest.raises(ValueError, match="already an Opt set named 'mine'"):
+        save_set({"name": "MINE", "kind": "Opt", "text": t}, tmp_path)
+    save_set({"name": "mine", "kind": "SP", "text": t}, tmp_path)
+    assert save_set({**a, "text": t + "\n"}, tmp_path)["id"] == a["id"]   # itself
+
+
+def test_seed_texts_are_the_seeds_by_kind(tmp_path):
+    texts = inpsets.seed_texts(nprocs=3, maxcore_mb=1000)
+    assert list(texts) == list(SET_KINDS)
+    assert "%pal nprocs 3 end" in texts["Opt"] and "{{GEOMETRY}}" in texts["SP"]
+    assert texts["MLIP"].startswith("model ")
+
+
 def test_delete_removes_and_an_emptied_list_stays_empty(tmp_path):
     for s in load_sets(tmp_path):
         assert delete_set(s["id"], tmp_path)
