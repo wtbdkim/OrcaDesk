@@ -181,9 +181,13 @@ Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
   SVG lens on chrome only, no `backdrop-filter` on small/numerous controls,
   backdrop chains on `::before` overlays, and the `--lg-pulse` must stay
   paint-only (never `will-change`/`transform`).
-- ORCA defaults (`wB97X-D4`, `def2-TZVP`, `RIJCOSX`, `def2/J`) live in
-  `input_generator.py`. Option lists in `data/*.json` come from the ORCA 6.1.1
-  manual and are **not closed enums** — unknown values pass through verbatim.
+- **The `.inp` writes only what differs from ORCA's own default.** The default
+  method/basis (`wB97X-D4`, `def2-TZVP`) live in `input_generator.py`; RI, SCF
+  tier and block counts default to ORCA's and are left out — except `TightOpt`
+  and the `%geom`/`%irc` MaxIter (200/100, always written), kept on purpose
+  (measured list and exceptions: ARCHITECTURE.md *Running the queue*).
+  Option lists in `data/*.json` come from the ORCA 6.1.1 manual and are **not
+  closed enums** — unknown values pass through verbatim.
 - **The generated `.inp` carries no comments of ORCAdesk's own** (pinned by
   `test_the_input_carries_no_comments_of_its_own`; PRINCIPLES.md A26).
   What the generator drops or changes is documented here and in

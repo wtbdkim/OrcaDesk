@@ -42,6 +42,15 @@
   function targetFor(scfConv) {
     return SCF_TARGETS[scfConv] || 1e-8; // default = TightSCF-ish
   }
+  // The tier a calculation actually runs at. An empty setting is ORCA's own,
+  // and ORCA 6.1.1 picks by job (measured, TolE): an optimization, a TS
+  // search, an IRC or a NEB raises it to TightSCF (1e-8); a single point,
+  // frequencies, TD-DFT and NMR stay at NormalSCF (1e-6).
+  const TIGHT_KINDS = ["opt", "opt_freq", "ts_opt", "ts_opt_freq", "irc", "neb_ts"];
+  function tierFor(scfConv, kind) {
+    if (scfConv) return scfConv;
+    return TIGHT_KINDS.indexOf(String(kind || "")) >= 0 ? "TightSCF" : "NormalSCF";
+  }
 
   // A single SCF iteration row in ORCA looks like:
   //   "    2    -232.1151660682643012    -8.23e-02  4.97e-03  2.50e-02 ..."
@@ -842,6 +851,7 @@
     GeoTracker: GeoTracker,
     isScfIter: function (line) { return ITER_RE.test(line); },   // is this an SCF iteration row?
     targetFor: targetFor,
+    tierFor: tierFor,
     renderSCFProgress: renderSCFProgress,
     renderSCFGraph: renderSCFGraph,
     renderGeoProgress: renderGeoProgress,

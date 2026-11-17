@@ -425,10 +425,13 @@ just the manual.
 
 Always emit `D3BJ` (or `D4`) as a separate keyword — never bare or combined
 `-D3` (ambiguous between damping schemes, and ORCA rejects combined tokens).
-`_auto_aux` adds an aux basis only in the verified cases (RI-J + def2 family
-→ `def2/J`; double hybrids/MP2 → `AutoAux`; RIJK → `def2/JK` for def2 bases,
-`AutoAux` otherwise); if the user set one, or RI is off, or an RI-J basis is
-unknown: add nothing — don't guess, let the user decide.
+`_auto_aux` adds an aux basis only where ORCA 6.1.1 aborts without one:
+double hybrids → `AutoAux` unless RI is NoRI (RI-MP2 is their default and ORCA
+picks no /C); DLPNO → `AutoAux`; MP2/CC → `AutoAux` only under an RI the user
+chose; RIJK → `def2/JK` for def2 bases, `AutoAux` otherwise; `def2/J` beside a
+non-/J aux the user typed. The RI-J family gets nothing, because ORCA picks
+def2/J itself. If the user set one, or nothing aborts without it: add nothing
+— don't guess, let the user decide.
 
 ---
 

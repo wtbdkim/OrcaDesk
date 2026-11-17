@@ -16,21 +16,23 @@
 (function () {
 
   /* Per-kind form shape, mirroring core/queue.py's KNOWN_KINDS and the
-     generator's expectations: which calculation-type group to offer, the
-     convergence default that kind deserves, and the extra block it needs. */
+     generator's expectations: which calculation-type group to offer, its
+     job line, and the extra block it needs. SCF convergence is ORCA's own
+     ("": Opt raises it to TightSCF itself, the rest run NormalSCF) unless the
+     user picks a tier. */
   const KINDS = {
-    opt:          { label: "Optimization",     group: "calculation_types_geometry",  calc: "TightOpt",      scf: "TightSCF",     maxiter: true, cons: true, scan: true },
-    opt_freq:     { label: "Opt + Freq",       group: null,                          calc: "TightOpt Freq", scf: "VeryTightSCF", maxiter: true, cons: true,  freq: true },
-    ts_opt:       { label: "TS optimization",  group: "calculation_types_geometry",  calc: "OptTS",         scf: "TightSCF",     maxiter: true, cons: true },
-    ts_opt_freq:  { label: "TS Opt + Freq",    group: null,                          calc: "OptTS Freq",    scf: "VeryTightSCF", maxiter: true, cons: true,  freq: true },
-    freq:         { label: "Frequencies",      group: "calculation_types_frequency", calc: "Freq",          scf: "VeryTightSCF", freq: true },
-    ts_freq:      { label: "TS frequencies",   group: "calculation_types_frequency", calc: "Freq",          scf: "VeryTightSCF", freq: true },
-    neb_ts:       { label: "NEB-TS",           group: null,                          calc: "NEB-TS",        scf: "TightSCF",     neb: true, options: "FREQ" },
-    irc:          { label: "IRC",              group: null,                          calc: "IRC",           scf: "TightSCF",     irc: true },
-    tddft:        { label: "TD-DFT",           group: null,                          calc: "",              scf: "TightSCF",     tddft: true },
-    nmr:          { label: "NMR",              group: null,                          calc: "NMR",           scf: "TightSCF",     nmr: true },
-    sp:           { label: "Single point",     group: "calculation_types_energy",    calc: "SP",            scf: "TightSCF" },
-    general:      { label: "General",          group: null,                          calc: "",              scf: "TightSCF",     allTypes: true },
+    opt:          { label: "Optimization",     group: "calculation_types_geometry",  calc: "TightOpt",      scf: "",             maxiter: true, cons: true, scan: true },
+    opt_freq:     { label: "Opt + Freq",       group: null,                          calc: "TightOpt Freq", scf: "",             maxiter: true, cons: true,  freq: true },
+    ts_opt:       { label: "TS optimization",  group: "calculation_types_geometry",  calc: "OptTS",         scf: "",             maxiter: true, cons: true },
+    ts_opt_freq:  { label: "TS Opt + Freq",    group: null,                          calc: "OptTS Freq",    scf: "",             maxiter: true, cons: true,  freq: true },
+    freq:         { label: "Frequencies",      group: "calculation_types_frequency", calc: "Freq",          scf: "",             freq: true },
+    ts_freq:      { label: "TS frequencies",   group: "calculation_types_frequency", calc: "Freq",          scf: "",             freq: true },
+    neb_ts:       { label: "NEB-TS",           group: null,                          calc: "NEB-TS",        scf: "",             neb: true, options: "FREQ" },
+    irc:          { label: "IRC",              group: null,                          calc: "IRC",           scf: "",             irc: true },
+    tddft:        { label: "TD-DFT",           group: null,                          calc: "",              scf: "",             tddft: true },
+    nmr:          { label: "NMR",              group: null,                          calc: "NMR",           scf: "",             nmr: true },
+    sp:           { label: "Single point",     group: "calculation_types_energy",    calc: "SP",            scf: "" },
+    general:      { label: "General",          group: null,                          calc: "",              scf: "",             allTypes: true },
   };
   const KIND_ORDER = ["opt", "opt_freq", "ts_opt", "ts_opt_freq", "freq", "ts_freq",
                       "neb_ts", "irc", "tddft", "nmr", "sp", "general"];
@@ -83,16 +85,22 @@
       <datalist id="${id}">${opts.map(o => `<option value="${NB.esc(o)}"></option>`).join("")}</datalist>
     </div>`;
   }
-  /** @param {string} label @param {string[]} opts @param {string} value @param {string} [cls] */
-  function select(label, opts, value, cls) {
+  /** @param {string} label @param {string[]} opts @param {string} value @param {string} [cls]
+   *  @param {string} [blank] */
+  function select(label, opts, value, cls, blank) {
+    // `blank` names a first choice whose value is "": the setting is left to
+    // ORCA, and the generator writes nothing for it
     return `<div class="field ${cls || ""}"><label>${NB.esc(label)}</label><select class="mono">${
+      blank != null ? `<option value=""${!value ? " selected" : ""}>${NB.esc(blank)}</option>` : ""}${
       opts.map(o => `<option value="${NB.esc(o)}"${o === value ? " selected" : ""}>${NB.esc(o)}</option>`).join("")
     }</select></div>`;
   }
-  /** @param {string} label @param {string|number} value @param {string} [cls] @param {string} [type] */
-  function text(label, value, cls, type) {
+  /** @param {string} label @param {string|number} value @param {string} [cls] @param {string} [type]
+   *  @param {string} [placeholder] */
+  function text(label, value, cls, type, placeholder) {
     return `<div class="field ${cls || ""}"><label>${NB.esc(label)}</label>
-      <input type="${type || "text"}" class="${type === "number" ? "mono" : ""}" value="${NB.esc(String(value))}"></div>`;
+      <input type="${type || "text"}" class="${type === "number" ? "mono" : ""}" value="${NB.esc(String(value))}"${
+        placeholder ? ` placeholder="${NB.esc(placeholder)}"` : ""}></div>`;
   }
 
   /* The blocks a hand-written .inp is actually built from. {{GEOMETRY}} is the
@@ -108,7 +116,7 @@
     ["%geom", "%geom\n  MaxIter 200\nend"],
     ["%plots", "%plots\n  dim1 60\n  dim2 60\n  dim3 60\nend"],
     ["%eprnmr", "%eprnmr\n  Nuclei = all H { shift }\n  Nuclei = all C { shift }\nend"],
-    ["%tddft", "%tddft\n  NRoots 10\n  TDA true\nend"],
+    ["%tddft", "%tddft\n  NRoots 10\nend"],
     ["%cpcm", "%cpcm\n  smd true\n  SMDsolvent \"water\"\nend"],
     ["%irc", "%irc\n  MaxIter 40\n  InitHess calc_anfreq\nend"],
   ];
@@ -566,8 +574,10 @@
           ${combo("Basis set", items(CHOICES.basis_sets), cfg.basis_set || DEF.basis_set)}
         </div>
         <div class="field-row">
-          ${select("RI", items(CHOICES.ri_approximations), cfg.ri_approximation || DEF.ri_approximation, "mid")}
-          ${select("SCF convergence", items(CHOICES.scf_convergences), cfg.scf_convergence || K.scf, "mid")}
+          ${select("RI", items(CHOICES.ri_approximations), cfg.ri_approximation || DEF.ri_approximation,
+                   "mid", "ORCA default")}
+          ${select("SCF convergence", items(CHOICES.scf_convergences), cfg.scf_convergence || K.scf,
+                   "mid", "ORCA default")}
           ${calcTypes.length
             ? select("Calculation type", calcTypes, cfg.calculation_type || K.calc)
             : text("Calculation type", cfg.calculation_type != null ? cfg.calculation_type : K.calc)}
@@ -602,7 +612,7 @@
         <div class="grouplabel">TD-DFT</div>
         <div class="field-row" style="align-items:center">
           ${text("Roots", cfg.tddft_nroots || DEF.tddft_nroots, "narrow", "number")}
-          ${text("MaxDim", cfg.tddft_maxdim || DEF.tddft_maxdim, "narrow", "number")}
+          ${text("MaxDim", cfg.tddft_maxdim || "", "narrow", "number", "ORCA")}
           <label class="checkbox"><input type="checkbox" data-f="tda"
             ${cfg.tddft_tda !== false ? "checked" : ""}> TDA</label>
           <label class="checkbox"><input type="checkbox" data-f="triplets"
@@ -1623,7 +1633,7 @@
       kind: kind,
       functional: val("Functional", "wB97X-D4"),
       basis_set: val("Basis set", "def2-TZVP"),
-      ri_approximation: val("RI", "RIJCOSX"),
+      ri_approximation: val("RI", ""),
       scf_convergence: val("SCF convergence", K.scf),
       calculation_type: val("Calculation type", K.calc),
       options: val("Extra keywords", K.options || ""),
@@ -1659,7 +1669,7 @@
     }
     if (K.tddft) {
       config.tddft_nroots = Math.round(num("Roots", DEF.tddft_nroots));
-      config.tddft_maxdim = Math.round(num("MaxDim", DEF.tddft_maxdim));
+      config.tddft_maxdim = Math.round(num("MaxDim", DEF.tddft_maxdim));   // empty = 0, ORCA's own
       config.tddft_tda = chk("tda");
       config.tddft_triplets = chk("triplets");
     }

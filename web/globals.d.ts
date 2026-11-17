@@ -159,6 +159,8 @@ interface SCFGraphAPI {
   isScfIter(line: string): boolean;
   fmtClock(sec: number): string;
   targetFor(scfConvergence: string): number;
+  /** the tier a calc runs at: its own, or ORCA's pick for its kind when "" */
+  tierFor(scfConvergence: string | undefined, kind: string): string;
   renderSCFProgress(...args: any[]): string;
   renderSCFGraph(...args: any[]): string;
   renderGeoProgress(...args: any[]): string;
