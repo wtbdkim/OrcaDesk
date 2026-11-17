@@ -1057,6 +1057,19 @@ test("an ordinary optimization is untouched by the scan bookkeeping", function (
   assert.strictEqual(g.done, true);
 });
 
+test("an empty SCF setting is the tier ORCA picks for the job", function () {
+  // measured on ORCA 6.1.1 (TolE): Opt / OptTS / IRC raise it to TightSCF,
+  // a single point, frequencies and TD-DFT stay at NormalSCF
+  assert.strictEqual(SCFGraph.tierFor("", "opt"), "TightSCF");
+  assert.strictEqual(SCFGraph.tierFor("", "irc"), "TightSCF");
+  assert.strictEqual(SCFGraph.tierFor("", "freq"), "NormalSCF");
+  assert.strictEqual(SCFGraph.tierFor("", "sp"), "NormalSCF");
+  assert.strictEqual(SCFGraph.tierFor(undefined, "tddft"), "NormalSCF");
+  // a tier the user picked is the tier
+  assert.strictEqual(SCFGraph.tierFor("VeryTightSCF", "freq"), "VeryTightSCF");
+  assert.strictEqual(SCFGraph.targetFor(SCFGraph.tierFor("", "freq")), 1e-6);
+});
+
 // ---------- summary ----------
 console.log("");
 console.log(passed + " passed, " + failed + " failed");

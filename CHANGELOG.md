@@ -6,6 +6,22 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **Generated inputs now leave ORCA's defaults to ORCA.** A new calculation's
+  `.inp` names the method and basis and only what you change: no `RIJCOSX` or
+  `def2/J` (ORCA 6.1.1 picks both itself for a hybrid), no SCF tier, and no
+  `%tddft maxdim/tda/triplets` or `%neb Nimages` at ORCA's own values. The
+  builders start from ORCA's defaults: RI and SCF convergence read *ORCA
+  default*, frequencies no longer switch to `VeryTightSCF` (also when
+  converting Guided to `.inp` text), TD-DFT 3 roots with TDA (was 40 roots,
+  full TD-DFT). An optimization stays `TightOpt`, and the optimizer and IRC
+  MaxIter (200 / 100) are still written. Note what ORCA's
+  own SCF default means: an optimization, TS search or IRC still runs
+  TightSCF, but a single point, frequencies and TD-DFT run NormalSCF; pick a
+  tier to change that. `%pal` is left out of a serial run. Kept on purpose:
+  `AutoAux` for double hybrids and DLPNO, `def2/JK` under RIJK, `Calc_Hess` for
+  TS optimizations, the analytic initial Hessian for IRC, and NEB-TS's `FREQ`
+  (in Extra keywords). Calculations already in the queue keep their settings.
+  The SCF progress bar now aims at the tier ORCA actually uses.
 - **The notebook's structure viewers keep the bonds the run started with.**
   Every structure a calculation produced (trajectory frames, scan points, the
   final geometry, the Jobs thumbnail) is drawn with its input's bonds, so a

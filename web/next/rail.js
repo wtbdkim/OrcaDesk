@@ -55,7 +55,7 @@
     if (b.geo.hasData()) return b.geo.progress();
     if (b.crest.hasData() && typeof b.crest.progress === "function") return b.crest.progress();
     if (b.freq.hasData() && typeof b.freq.progress === "function") return b.freq.progress();
-    if (b.scf.hasData()) return b.scf.progress(SCFGraph.targetFor(c.scf_convergence || "TightSCF"));
+    if (b.scf.hasData()) return b.scf.progress(SCFGraph.targetFor(SCFGraph.tierFor(c.scf_convergence, c.kind)));
     return null;
   }
 

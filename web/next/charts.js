@@ -208,7 +208,7 @@ var CHARTS = {};
       const pts = b.scf.points
         .filter(p => p.dE > 0)
         .map(p => ({ x: p.iter, y: Math.log10(p.dE) }));
-      const target = SCFGraph.targetFor(c.scf_convergence || "TightSCF");
+      const target = SCFGraph.targetFor(SCFGraph.tierFor(c.scf_convergence, c.kind));
       const cur = pts[pts.length - 1];
       const warn = token("--warn", "#fbbf24");
       return {

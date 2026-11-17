@@ -732,7 +732,30 @@ The `core/` pipeline:
 - `input_generator.py` — `StepConfig` → ORCA `.inp` text (`build_input`). Handles
   solvation (CPCM/SMD), RI, per-element basis/ECP, charge/multiplicity, raw-input mode
   (verbatim text with a `{{GEOMETRY}}` placeholder), NEB-TS side `.xyz` files,
-  and **`%geom Constraints`** (`StepConfig.geom_constraints`: a list of
+  and **`%geom Constraints`** (below). **A setting at ORCA's own default is not
+  written**: only the method and basis must be named, and the builders seed
+  every other field with ORCA's default (`StepConfig`'s, via
+  `get_step_defaults`; an empty RI / SCF select is "ORCA default"). Measured on
+  6.1.1 (H2O, def2-SVP) with the keyword left out: a hybrid runs RIJCOSX with
+  def2/J chosen by ORCA (also with a bare `RIJCOSX`); HF and MP2 run without
+  RI; Opt, OptTS and IRC raise the SCF to TightSCF themselves (TolE 1e-8) while
+  SP, Freq and TD-DFT stay at NormalSCF (1e-6) — `SCFGraph.tierFor` gives the
+  progress bar that same tier for an empty setting; `%tddft` TDA on, triplets
+  off, 3 roots; `%neb` 8 images. So `%tddft` is `nroots` plus whatever
+  differs; `%pal` only above one rank. **Kept as ORCAdesk's own by the user's
+  choice**: an optimization is `TightOpt` (`TightOpt Freq`), and `%geom
+  MaxIter` (default 200) and `%irc MaxIter` (default 100) are always written —
+  ORCA's 50 / 20 run out on a floppy molecule or a long path. What else is
+  still written although ORCA would default otherwise, each for a measured
+  reason: `AutoAux` for a double hybrid (ORCA aborts "RI-MP2 needs an
+  AuxC basis") unless RI is NoRI, and for DLPNO always; `def2/JK` under RIJK
+  ("no AuxJK basis set"); `def2/J` beside an aux the user typed that is not a
+  /J one (ORCA then picks none: "no AuxJ basis set"); `Calc_Hess true` for an
+  OptTS; `InitHess calc_anfreq` for an IRC (ORCA's own is a numerical Hessian).
+  The NEB-TS kind's `FREQ` is in its Extra keywords, where it can be removed.
+  Calculations stored under the older defaults (TightOpt, TightSCF /
+  VeryTightSCF, RIJCOSX, nroots 40) keep and write those values.
+  About **`%geom Constraints`** (`StepConfig.geom_constraints`: a list of
   `{kind: C|B|A|D, atoms: [0-based], value: float|None}` where None holds the
   starting value). They are written inside the ONE `%geom` block, and only for
   `CONSTRAINED_KINDS` (opt / opt_freq / ts_opt / ts_opt_freq); any other kind

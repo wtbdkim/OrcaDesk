@@ -72,18 +72,18 @@ function isEditableState(state) {
 
 // per-kind defaults for the config form
 const KIND_DEFS = {
-  opt:     { calcGroup: "calculation_types_geometry",  calcDefault: "TightOpt", scfDefault: "TightSCF",     showMaxIter: true,  showTddft: false, showFreq: false, showNmr: false, allTypes: false, options: "" },
-  opt_freq:    { calcGroup: null,                      calcDefault: "TightOpt Freq", scfDefault: "VeryTightSCF", showMaxIter: true, showTddft: false, showFreq: true,  showNmr: false, allTypes: false, options: "", showIrc: false, showNeb: false },
-  ts_opt:  { calcGroup: "calculation_types_geometry",  calcDefault: "OptTS",    scfDefault: "TightSCF",     showMaxIter: true,  showTddft: false, showFreq: false, showNmr: false, allTypes: false, options: "" },
-  ts_opt_freq: { calcGroup: null,                      calcDefault: "OptTS Freq",    scfDefault: "VeryTightSCF", showMaxIter: true, showTddft: false, showFreq: true,  showNmr: false, allTypes: false, options: "", showIrc: false, showNeb: false },
-  freq:    { calcGroup: "calculation_types_frequency", calcDefault: "Freq",     scfDefault: "VeryTightSCF", showMaxIter: false, showTddft: false, showFreq: true,  showNmr: false, allTypes: false, options: "" },
-  ts_freq: { calcGroup: "calculation_types_frequency", calcDefault: "Freq",     scfDefault: "VeryTightSCF", showMaxIter: false, showTddft: false, showFreq: true,  showNmr: false, allTypes: false, options: "" },
-  tddft:   { calcGroup: null,                          calcDefault: "",         scfDefault: "TightSCF",     showMaxIter: false, showTddft: true,  showFreq: false, showNmr: false, allTypes: false, options: "" },
-  nmr:     { calcGroup: null,                          calcDefault: "NMR",      scfDefault: "TightSCF",     showMaxIter: false, showTddft: false, showFreq: false, showNmr: true,  allTypes: false, options: "" },
-  sp:      { calcGroup: "calculation_types_energy",    calcDefault: "SP",       scfDefault: "TightSCF",     showMaxIter: false, showTddft: false, showFreq: false, showNmr: false, allTypes: false, options: "", showIrc: false, showNeb: false },
-  irc:     { calcGroup: null,                          calcDefault: "IRC",      scfDefault: "TightSCF",     showMaxIter: false, showTddft: false, showFreq: false, showNmr: false, allTypes: false, options: "", showIrc: true,  showNeb: false },
-  neb_ts:  { calcGroup: null,                          calcDefault: "NEB-TS",   scfDefault: "TightSCF",     showMaxIter: false, showTddft: false, showFreq: false, showNmr: false, allTypes: false, options: "FREQ", showIrc: false, showNeb: true },
-  general: { calcGroup: null,                          calcDefault: "",         scfDefault: "TightSCF",     showMaxIter: false, showTddft: false, showFreq: false, showNmr: false, allTypes: true,  options: "", showIrc: false, showNeb: false },
+  opt:     { calcGroup: "calculation_types_geometry",  calcDefault: "TightOpt", scfDefault: "",             showMaxIter: true,  showTddft: false, showFreq: false, showNmr: false, allTypes: false, options: "" },
+  opt_freq:    { calcGroup: null,                      calcDefault: "TightOpt Freq", scfDefault: "", showMaxIter: true, showTddft: false, showFreq: true,  showNmr: false, allTypes: false, options: "", showIrc: false, showNeb: false },
+  ts_opt:  { calcGroup: "calculation_types_geometry",  calcDefault: "OptTS",    scfDefault: "",             showMaxIter: true,  showTddft: false, showFreq: false, showNmr: false, allTypes: false, options: "" },
+  ts_opt_freq: { calcGroup: null,                      calcDefault: "OptTS Freq",    scfDefault: "", showMaxIter: true, showTddft: false, showFreq: true,  showNmr: false, allTypes: false, options: "", showIrc: false, showNeb: false },
+  freq:    { calcGroup: "calculation_types_frequency", calcDefault: "Freq",     scfDefault: "",             showMaxIter: false, showTddft: false, showFreq: true,  showNmr: false, allTypes: false, options: "" },
+  ts_freq: { calcGroup: "calculation_types_frequency", calcDefault: "Freq",     scfDefault: "",             showMaxIter: false, showTddft: false, showFreq: true,  showNmr: false, allTypes: false, options: "" },
+  tddft:   { calcGroup: null,                          calcDefault: "",         scfDefault: "",             showMaxIter: false, showTddft: true,  showFreq: false, showNmr: false, allTypes: false, options: "" },
+  nmr:     { calcGroup: null,                          calcDefault: "NMR",      scfDefault: "",             showMaxIter: false, showTddft: false, showFreq: false, showNmr: true,  allTypes: false, options: "" },
+  sp:      { calcGroup: "calculation_types_energy",    calcDefault: "SP",       scfDefault: "",             showMaxIter: false, showTddft: false, showFreq: false, showNmr: false, allTypes: false, options: "", showIrc: false, showNeb: false },
+  irc:     { calcGroup: null,                          calcDefault: "IRC",      scfDefault: "",             showMaxIter: false, showTddft: false, showFreq: false, showNmr: false, allTypes: false, options: "", showIrc: true,  showNeb: false },
+  neb_ts:  { calcGroup: null,                          calcDefault: "NEB-TS",   scfDefault: "",             showMaxIter: false, showTddft: false, showFreq: false, showNmr: false, allTypes: false, options: "FREQ", showIrc: false, showNeb: true },
+  general: { calcGroup: null,                          calcDefault: "",         scfDefault: "",             showMaxIter: false, showTddft: false, showFreq: false, showNmr: false, allTypes: true,  options: "", showIrc: false, showNeb: false },
 };
 
 let choicesCache = {};
@@ -437,7 +437,7 @@ function mirrorCalc(c) {
     is_raw: c.is_raw, charge: c.charge, multiplicity: c.multiplicity,
     geometry_source: c.geometry_source, ref_name: c.ref_name,
     output_path: c.output_path || "",
-    scf_convergence: c.scf_convergence || "TightSCF",
+    scf_convergence: SCFGraph.tierFor(c.scf_convergence, c.kind),
     mlip_model: c.mlip_model || "",
     crest_method: c.crest_method || "",
     faulted: !!c.faulted,
@@ -581,9 +581,15 @@ function fillGroupedSelect(sel, groups, def) {
     if (all.includes(def)) sel.value = def;
   }
 }
-function fillSelect(sel, items, def) {
+/** `blank` names a first choice whose value is "": left to ORCA, written as nothing.
+ *  @param {any} sel @param {string[]} items @param {string} def @param {string} [blank] */
+function fillSelect(sel, items, def, blank) {
   if (!sel) return;
   sel.innerHTML = "";
+  if (blank != null) {
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = blank; sel.appendChild(o);
+  }
   for (const it of items) {
     const o = document.createElement("option");
     o.value = it; o.textContent = it; sel.appendChild(o);
@@ -1479,7 +1485,7 @@ function fillBasisRows(list) {
 // shared by several kinds (MaxIter across the opt kinds, Temp/Pressure across
 // the freq kinds). options and SCF are kind-AWARE: an untouched kind default
 // must not shadow the NEW kind's default (switching to NEB-TS must regain its
-// FREQ option; opt→freq must still bump TightSCF→VeryTightSCF), while an
+// FREQ option), while an
 // explicit user override always survives.
 // Whether the user has actually SET these two fields, as opposed to looking at
 // the kind's default. Inferring it by comparing the value to the old kind's
@@ -1559,9 +1565,9 @@ function renderConfigForm(kind, preserve) {
     <div class="hint">NMR shielding always computed; checkbox adds spin-spin (J) couplings.</div>` : "";
   const tddftRows = def.showTddft ? `
     <div class="field-row">
-      <div class="field"><label>nroots</label><input id="cfg-nroots" type="number" value="40" min="1"></div>
-      <div class="field"><label>maxdim</label><input id="cfg-maxdim" type="number" value="10" min="1"></div>
-      <div class="field"><label class="checkbox" style="margin-top:24px"><input id="cfg-tda" type="checkbox"> TDA</label></div>
+      <div class="field"><label>nroots</label><input id="cfg-nroots" type="number" value="3" min="1"></div>
+      <div class="field"><label>maxdim</label><input id="cfg-maxdim" type="number" value="" min="1" placeholder="ORCA"></div>
+      <div class="field"><label class="checkbox" style="margin-top:24px"><input id="cfg-tda" type="checkbox" checked> TDA</label></div>
       <div class="field"><label class="checkbox" style="margin-top:24px"><input id="cfg-triplets" type="checkbox"> Triplets</label></div>
     </div>` : "";
   const freqRows = def.showFreq ? `
@@ -1647,7 +1653,7 @@ function renderConfigForm(kind, preserve) {
 
   setupCombo("combo-functional", choicesCache.functionals, (preserve && preserve.functional) || "wB97X-D4");
   setupCombo("combo-basis", choicesCache.basis_sets, (preserve && preserve.basis_set) || "def2-TZVP");
-  fillSelect(document.getElementById("cfg-scf"), flatItems(choicesCache.scf_convergences), (preserve && preserve.scf) || def.scfDefault);
+  fillSelect(document.getElementById("cfg-scf"), flatItems(choicesCache.scf_convergences), (preserve && preserve.scf) || def.scfDefault, "ORCA default");
   // A preserved value carries the override forward; a value that came from the
   // kind's default does not.
   _scfTouched = !!(preserve && preserve.scf);
@@ -1656,7 +1662,7 @@ function renderConfigForm(kind, preserve) {
   if (_scfEl) _scfEl.addEventListener("change", () => { _scfTouched = true; });
   const _optEl = document.getElementById("cfg-options");
   if (_optEl) _optEl.addEventListener("input", () => { _optionsTouched = true; });
-  fillSelect(document.getElementById("cfg-ri"), flatItems(choicesCache.ri_approximations), (preserve && preserve.ri) || "RIJCOSX");
+  fillSelect(document.getElementById("cfg-ri"), flatItems(choicesCache.ri_approximations), (preserve && preserve.ri) || "", "ORCA default");
   if (def.allTypes) {
     fillSelect(document.getElementById("cfg-calc"), flatItems(choicesCache.calculation_types), "SP");
   } else if (def.calcGroup) {
@@ -1784,9 +1790,9 @@ function collectConfig(kind) {
     freq_temp_k: def.showFreq ? fnum("cfg-temp", 298.15) : 298.15,
     freq_pressure_atm: def.showFreq ? fnum("cfg-pressure", 1.0) : 1.0,
     nmr_jcoupling: def.showNmr ? chk("cfg-jcoupling") : false,
-    tddft_nroots: def.showTddft ? num("cfg-nroots", 40) : 40,
-    tddft_maxdim: def.showTddft ? num("cfg-maxdim", 10) : 10,
-    tddft_tda: def.showTddft ? chk("cfg-tda") : false,
+    tddft_nroots: def.showTddft ? num("cfg-nroots", 3) : 3,
+    tddft_maxdim: def.showTddft ? num("cfg-maxdim", 0) : 0,     // empty = ORCA's own
+    tddft_tda: def.showTddft ? chk("cfg-tda") : true,
     tddft_triplets: def.showTddft ? chk("cfg-triplets") : false,
     irc_direction: def.showIrc ? v("cfg-irc-direction") : "both",
     irc_init_hess: def.showIrc ? v("cfg-irc-inithess") : "calc_anfreq",
@@ -2508,7 +2514,7 @@ function fillConfigForm(cfg) {
   set("cfg-temp", cfg.freq_temp_k);
   set("cfg-pressure", cfg.freq_pressure_atm);
   set("cfg-nroots", cfg.tddft_nroots);
-  set("cfg-maxdim", cfg.tddft_maxdim);
+  set("cfg-maxdim", cfg.tddft_maxdim || "");   // 0 = ORCA's own, shown empty
   const tda = document.getElementById("cfg-tda"); if (tda && cfg.tddft_tda != null) tda.checked = cfg.tddft_tda;
   const tri = document.getElementById("cfg-triplets"); if (tri && cfg.tddft_triplets != null) tri.checked = cfg.tddft_triplets;
   const jc = document.getElementById("cfg-jcoupling"); if (jc && cfg.nmr_jcoupling != null) jc.checked = cfg.nmr_jcoupling;

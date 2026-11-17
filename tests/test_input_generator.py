@@ -97,12 +97,15 @@ def test_the_input_carries_no_comments_of_its_own():
     assert not [ln for ln in text.splitlines() if ln.startswith("#")]
 
 
-def test_non_composite_functional_still_gets_its_basis_and_aux():
-    cfg = StepConfig(kind="sp", functional="B3LYP", basis_set="def2-TZVP")
+def test_non_composite_functional_gets_its_basis_and_orca_picks_the_aux():
+    # ORCA 6.1.1 runs a hybrid as RIJCOSX with def2/J chosen by itself
+    # ("Auxiliary Coulomb fitting basis ... AVAILABLE", with or without the
+    # RIJCOSX keyword), so neither is written
+    cfg = StepConfig(kind="sp", functional="B3LYP", basis_set="def2-TZVP",
+                     calculation_type="SP")
     text = build_input(cfg, WATER_XYZ)
 
-    assert "def2-TZVP" in _keyword_line(text)
-    assert DEFAULT_AUX in _keyword_line(text)
+    assert _keyword_line(text) == "! B3LYP def2-TZVP SP"
     assert not [ln for ln in text.splitlines() if ln.startswith("#")]
 
 
@@ -255,12 +258,34 @@ def test_build_input_never_emits_bare_dash_d3():
 # _auto_aux (P31)
 # ---------------------------------------------------------------------------
 
-def test_auto_aux_rij_with_def2_basis_gets_def2j():
+def test_auto_aux_leaves_the_coulomb_set_to_orca():
+    # an RIJCOSX the user picked gets def2/J from ORCA itself (measured)
     cfg = StepConfig(functional="wB97X-D4", basis_set="def2-TZVP",
                      ri_approximation="RIJCOSX")
-    assert _auto_aux(cfg) == DEFAULT_AUX == "def2/J"
-    # and it lands on the keyword line of the generated input
-    assert "def2/J" in _keyword_line(build_input(cfg, WATER_XYZ))
+    assert _auto_aux(cfg) == ""
+    assert "def2/J" not in _keyword_line(build_input(cfg, WATER_XYZ))
+
+
+def test_a_jk_aux_without_an_ri_keyword_still_gets_the_coulomb_aux():
+    # with an aux of its own ORCA picks no /J: "! wB97X-D4 def2-SVP def2/JK"
+    # aborts "no AuxJ basis set in ORCA_GTOInt!" (6.1.1), so def2/J goes along
+    cfg = StepConfig(kind="sp", functional="wB97X-D4", basis_set="def2-SVP",
+                     options="def2/JK")
+    line = _keyword_line(build_input(cfg, WATER_XYZ))
+    assert DEFAULT_AUX in line.split() and "def2/JK" in line.split()
+
+
+def test_a_double_hybrid_gets_its_correlation_aux_at_orca_default_ri():
+    # "! B2PLYP def2-SVP" aborts in 6.1.1: "RI-MP2 needs an AuxC basis but
+    # none was defined!" -- RI-MP2 is a double hybrid's default
+    assert _auto_aux(StepConfig(functional="B2PLYP", basis_set="def2-SVP")) == "AutoAux"
+    assert _auto_aux(StepConfig(functional="B2PLYP", basis_set="def2-SVP",
+                                ri_approximation="NoRI")) == ""
+
+
+def test_mp2_at_orca_default_ri_runs_conventionally_without_an_aux():
+    # "! MP2 def2-SVP" runs normally with no aux at all (6.1.1)
+    assert _auto_aux(StepConfig(functional="MP2", basis_set="def2-SVP")) == ""
 
 
 def test_auto_aux_double_hybrid_and_mp2_get_autoaux():
@@ -702,11 +727,17 @@ def test_numfreq_caps_the_ranks_at_the_displacement_count():
 
 
 def test_a_request_that_already_fits_is_left_exactly_as_asked():
-    for nprocs in (1, 6, 12):
+    for nprocs in (6, 12):
         cfg = StepConfig(kind="freq", calculation_type="NumFreq", nprocs=nprocs)
         text = build_input(cfg, WATER_XYZ)
         assert _pal_line(text) == f"%pal nprocs {nprocs} end"
         assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+
+
+def test_a_serial_run_writes_no_pal_block():
+    # serial is ORCA's default: "%pal nprocs 1" asks for nothing
+    text = build_input(StepConfig(kind="sp", nprocs=1), WATER_XYZ)
+    assert "%pal" not in text
 
 
 def test_an_analytic_freq_is_never_capped():
@@ -1076,3 +1107,72 @@ def test_a_scan_survives_the_config_round_trip():
     again = StepConfig.from_dict(cfg.to_dict())
     assert again.geom_scan == scan
     assert again.to_dict() == cfg.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# A setting at ORCA's own default is not written
+#
+# Measured on ORCA 6.1.1 (H2O, def2-SVP) with each keyword left out: a hybrid
+# runs RIJCOSX + def2/J; Opt raises the SCF to TightSCF (TolE 1e-8), SP and
+# Freq stay at NormalSCF; %tddft TDA on, triplets off, 3 roots; %neb 8
+# intermediate images. Kept as ORCAdesk's own on purpose: TightOpt, and the
+# %geom / %irc MaxIter (200 / 100, always written; ORCA's are 50 / 20).
+# ---------------------------------------------------------------------------
+
+def test_a_default_optimization_is_tightopt_with_its_maxiter():
+    text = build_input(StepConfig(kind="opt", nprocs=4, maxcore_mb=3000), WATER_XYZ)
+    assert text.splitlines()[:3] == [
+        "! wB97X-D4 def2-TZVP TightOpt", "%maxcore 3000", "%pal nprocs 4 end"]
+    assert _block(text, "%geom") == "%geom\n  MaxIter 200\nend"
+
+
+@pytest.mark.parametrize("kind,calc", [("freq", "Freq"), ("ts_freq", "Freq"),
+                                       ("sp", "SP"), ("opt_freq", "Opt Freq")])
+def test_no_scf_tier_or_ri_is_written_by_default(kind, calc):
+    line = _keyword_line(build_input(StepConfig(kind=kind, calculation_type=calc), WATER_XYZ))
+    assert line == f"! wB97X-D4 def2-TZVP {calc}"
+
+
+def test_a_geom_maxiter_is_always_written():
+    # also at ORCA's own 50: the cap is shown, not implied
+    assert "  MaxIter 50" in build_input(StepConfig(kind="opt", max_iter=50), WATER_XYZ)
+    assert "  MaxIter 120" in build_input(StepConfig(kind="opt", max_iter=120), WATER_XYZ)
+
+
+def test_the_tddft_block_asks_only_what_differs():
+    text = build_input(StepConfig(kind="tddft", calculation_type=""), WATER_XYZ)
+    assert _block(text, "%tddft") == "%tddft\n  nroots 3\nend"
+    full = build_input(StepConfig(kind="tddft", calculation_type="", tddft_nroots=20,
+                                  tddft_maxdim=8, tddft_tda=False,
+                                  tddft_triplets=True), WATER_XYZ)
+    assert _block(full, "%tddft") == (
+        "%tddft\n  nroots 20\n  maxdim 8\n  tda false\n  triplets true\nend")
+
+
+def test_irc_writes_its_maxiter_and_neb_its_images_only_off_orcas():
+    irc = build_input(StepConfig(kind="irc", calculation_type="IRC"), WATER_XYZ)
+    assert "  MaxIter 100" in _block(irc, "%irc")
+    assert "  MaxIter 60" in build_input(
+        StepConfig(kind="irc", calculation_type="IRC", irc_maxiter=60), WATER_XYZ)
+    neb = build_input(StepConfig(kind="neb_ts", calculation_type="NEB-TS",
+                                 neb_product_xyz=WATER_XYZ), WATER_XYZ)
+    assert "Nimages" not in _block(neb, "%neb")
+    assert "  Nimages 12" in build_input(
+        StepConfig(kind="neb_ts", calculation_type="NEB-TS", neb_nimages=12,
+                   neb_product_xyz=WATER_XYZ), WATER_XYZ)
+
+
+def test_stored_older_settings_still_write_what_they_asked_for():
+    # a calculation saved under the old defaults keeps its choices
+    cfg = StepConfig.from_dict({"kind": "freq", "calculation_type": "Freq",
+                                "scf_convergence": "VeryTightSCF",
+                                "ri_approximation": "RIJCOSX"})
+    assert _keyword_line(build_input(cfg, WATER_XYZ)) == (
+        "! wB97X-D4 def2-TZVP VeryTightSCF RIJCOSX Freq")
+
+
+def _block(text: str, head: str) -> str:
+    lines = text.splitlines()
+    start = lines.index(head)
+    end = start + lines[start:].index("end")
+    return "\n".join(lines[start:end + 1])
