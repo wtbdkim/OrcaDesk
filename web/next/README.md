@@ -42,7 +42,7 @@ launching. Any port above 1024 works. It is off unless you set it.)
 | `index.html` | the shell: top bar, rail, stream, results window, the queue editor's root (`#qed`), overlays |
 | `app.css` | **everything visual.** One file, sectioned by region |
 | `boot.js` | channel, polled queue/log, per-calculation trackers, routing (`?win=`, dropped files, the hand-over to the queue window), toast/modal |
-| `rail.js` | the main window's queue rail — the queue's status, run controls, *Open queue* |
+| `rail.js` | the main window's queue rail — a 256px status strip (dot + name per row), run controls, *Open queue* |
 | `build.js` | the builder (a cell becomes the form); hosted in the queue editor's inspector |
 | `qed.js` | the queue window: inp-set library, lanes of nodes and edges, inspector, undo |
 | `stream.js` | one cell per calculation: thumbnail, chart, output, facts |
@@ -78,6 +78,13 @@ screen. The editor holds no queue state: every change is an
 
 To work on the queue window, open it (*Open queue*) and press F5 in it: it
 reloads on its own, like the main window.
+
+The main window's rail is a **compact strip**, narrower and plainer than the
+reference's rail (DESIGN.md §17.2), and the stream has no *New calculation*
+stub. Those departures are recorded in `tools/uidiff.py` (`REMOVED`,
+`PER_LANDMARK_SKIP`, `STYLE_SKIP`) and in the `OUTSTANDING` set of
+`tests/test_next_ui.py`; its CSS is the "the compact rail" block at the bottom
+of `app.css`.
 
 ## Keeping it honest
 

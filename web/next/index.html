@@ -58,10 +58,11 @@
     <div class="railscroll" id="rail"></div>
     <div class="railfoot">
       <div class="runrow">
-        <button class="btn btn-primary" id="btn-run" type="button">Run queue</button>
-        <button class="btn btn-ghost" id="btn-stop" type="button" disabled>Stop after current</button>
-        <button class="btn btn-danger" id="btn-cancel" type="button" disabled>Cancel</button>
-        <button class="btn btn-ghost" id="btn-clear" type="button">Clear all</button>
+        <!-- three, small: the strip only runs the queue. Clear all is the
+             queue window's (DESIGN.md §17.2) -->
+        <button class="btn btn-xs btn-primary" id="btn-run" type="button">Run queue</button>
+        <button class="btn btn-xs btn-ghost" id="btn-stop" type="button" disabled>Stop after current</button>
+        <button class="btn btn-xs btn-danger" id="btn-cancel" type="button" disabled>Cancel</button>
       </div>
     </div>
   </aside>

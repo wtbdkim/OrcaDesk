@@ -11,10 +11,11 @@
    that is the question being asked of the list. Markup and class names are
    the approved design's, so app.css applies to them verbatim.
 
-   It is the queue's STATUS, not its editor: building, editing, reordering
-   and removing calculations happen in the queue window (qed.js), which
-   "Open queue" brings up. A row here says what a calculation is doing and
-   takes you to it -- its cell in Jobs, its report in Results.
+   It is the queue's STATUS, not its editor: a narrow strip (DESIGN.md §17.2)
+   of a state dot and a name per row, the rest in the row's tooltip. Building,
+   editing, reordering, removing and clearing happen in the queue window
+   (qed.js), which "Open queue" brings up. A row takes you to its calculation
+   -- its cell in Jobs, its report in Results.
    ============================================================ */
 
 (function () {
@@ -31,7 +32,6 @@
     { key: "queued", label: "Queued", states: ["pending", "blocked"], fold: false },
     { key: "done", label: "Finished", states: ["done", "failed", "cancelled"], fold: true },
   ];
-  const EDITABLE = ["pending", "blocked", "cancelled"];
 
   /** @param {any} c @returns {string} */
   function backendOf(c) {
@@ -103,21 +103,22 @@
     return c.is_raw ? "raw" : "";
   }
 
-  /** Rows whose controls are unfolded, by calc name -- or "file:<path>" for an
-   *  opened file; a calc name never holds a ":". The rail is rebuilt on every
-   *  poll, so without this an unfolded row folded itself again within a
-   *  second, taking the button the user was reaching for with it (an opened
-   *  file's "close" could not be clicked at all). @type {Set<string>} */
-  const _expanded = new Set();
+  /** What a row says about itself when it is pointed at or read out: the strip
+   *  shows a dot and a name, and everything else about the calculation lives
+   *  here -- what it is, what it is doing, and its last message.
+   *  @param {any} c @param {boolean} lost */
+  function describe(c, lost) {
+    const what = lost ? "failed (ORCA reported an error; its process is still running)"
+      : c.state === "pending" && c.waiting ? "waiting for approval" : c.state;
+    return [c.name, c.meta || c.kind, what, c.message].filter(Boolean).join(" · ");
+  }
 
-  /** @param {any} c @param {number} idx @returns {HTMLElement} */
-  function row(c, idx) {
-    const editable = EDITABLE.indexOf(c.state) >= 0;
-    // the grip column is kept, empty, so a calculation's name lines up with
-    // an opened file's: nothing here is dragged any more
-    const el = NB.el("div", "qrow nogrip");
+  /** One calculation: its state dot and its name, and while it runs the thin
+   *  progress bar under them. A click takes you to it.
+   *  @param {any} c @returns {HTMLElement} */
+  function row(c) {
+    const el = NB.el("div", "qrow");
     el.dataset.name = c.name;
-    el.dataset.index = String(idx);
     // the group a row belongs to, on the row itself: what it is doing is the
     // thing every rule and every reader keys off
     el.dataset.state = c.state === "running" ? "running"
@@ -130,49 +131,15 @@
     // stays in this group and reads as failed, with no progress to show.
     const lost = c.state === "running" && !!c.faulted;
     const frac = lost ? null : progressOf(c);
-    const isOrca = backendOf(c) === "DFT";
-    // Every row carries its message, finished ones included: the design reads
-    // a done row as the answer it found ("0 imaginary / G -1268.19844 Eh"),
-    // and the "Completed ..." line used to be filtered out as noise -- which
-    // left a finished row two lines tall and saying nothing.
-    const failedLike = c.state === "failed" || lost;
-    const msgCls = failedLike ? "err" : c.state === "blocked" ? "warn" : "";
-
+    const says = describe(c, lost);
+    el.title = says;
     el.innerHTML = `
-      <span class="grip" aria-hidden="true">⋮</span>
-      <button class="qexp" type="button" aria-expanded="false"
-              aria-label="Show controls for ${NB.esc(c.name)}"><span class="chev" aria-hidden="true">▸</span></button>
-      <button class="qmain" type="button">
+      <button class="qmain" type="button" aria-label="${NB.esc(says)}">
         <span class="d ${dotClass(c)}"></span>
-        <span class="qtext">
-          <span class="qhead">
-            <span class="qn">${NB.esc(c.name)}</span>
-            <span class="qtag">${backendOf(c)}</span>
-          </span>
-          <span class="qm">${NB.esc(c.meta || (c.kind + " · charge " + c.charge + " · mult " + c.multiplicity))}</span>
-          ${c.message
-            ? `<span class="qmsg ${msgCls}">${
-                failedLike ? "⚠ " : ""}${NB.esc(c.message)}</span>` : ""}
-        </span>
+        <span class="qn">${NB.esc(c.name)}</span>
       </button>
-      <span class="qacts">
-        ${lost
-          ? `<span class="badge failed" title="ORCA reported an error. Its process is still running.">failed</span>`
-          : `<span class="badge ${c.state}">${c.state}</span>`}
-        <span class="qeditslot">${editable
-          ? `<button class="btn btn-xs btn-ghost qedit" type="button"
-               title="Edit it in the queue window">edit</button>`
-          : `<button class="btn btn-xs btn-ghost qedit" type="button" disabled title="${
-              c.state === "running"
-                ? "ORCA is reading this file. Stop the calculation first."
-                : "A finished calculation cannot be edited — start a new one from it."
-            }">edit</button>`}</span>
-        <span class="qinpslot">${isOrca
-          ? `<button class="btn btn-xs btn-ghost qinp" type="button" title="Input (.inp)">.inp</button>` : ""}</span>
-      </span>
       ${frac != null ? `<span class="qbar"><span style="width:${Math.floor(frac * 100)}%"></span></span>` : ""}`;
 
-    el.querySelector(".qexp").addEventListener("click", () => toggleDetail(el, c));
     // A row takes you to the calculation. In Results the rail IS the result
     // picker (DESIGN.md §17.0e), so a finished row opens its report there; a
     // row with no report yet, and every row in Jobs, brings its cell into view.
@@ -181,12 +148,6 @@
         NB.results.open(c.name);
       } else showCell(c.name);
     });
-    const ed = el.querySelector(".qedit");
-    if (ed && editable) ed.addEventListener("click", e => { e.stopPropagation(); openEditor(c.name); });
-    const inp = el.querySelector(".qinp");
-    if (inp) inp.addEventListener("click", e => { e.stopPropagation(); NB.results.showInp(c.name); });
-
-    if (_expanded.has(c.name)) toggleDetail(el, c);
     return el;
   }
 
@@ -202,74 +163,6 @@
     setTimeout(() => cell.classList.remove("sel"), 1600);
   }
 
-  /** The per-row controls, under the row rather than to the right of it, so a
-   *  long calculation name never squeezes them out. What is here only READS:
-   *  reordering, duplicating and removing belong to the queue window, and the
-   *  last control opens it on this calculation.
-   *  @param {HTMLElement} el @param {any} c */
-  function toggleDetail(el, c) {
-    const btn = /** @type {HTMLElement} */ (el.querySelector(".qexp"));
-    const open = btn.getAttribute("aria-expanded") === "true";
-    const old = el.querySelector(".qdet");
-    if (old) old.remove();
-    btn.setAttribute("aria-expanded", String(!open));
-    if (open) { _expanded.delete(c.name); return; }
-    _expanded.add(c.name);
-    const readable = c.state === "done" || c.state === "failed";
-    const det = NB.el("div", "qdet");
-    // The design's ↑/↓, duplicate and remove are the queue window's now (the
-    // editor's lanes, grips and Delete). Two more were never here, for a
-    // reason the mockup could not know. "requeue" on a failed row contradicts P24 -- a
-    // FAILED calculation is locked at the moment it failed and retrying means
-    // building a new one. "stop" on a running row would have to call
-    // cancel_queue, which stops the whole run: with several jobs in flight
-    // (P57) a button on ONE row that kills the others is worse than no button.
-    const b = (label, cls, act) =>
-      `<button class="btn btn-xs${cls ? " " + cls : ""}" type="button" data-a="${act}">${label}</button>`;
-    det.innerHTML =
-      (readable ? b("results", "btn-ghost", "res") : "")
-      + b("folder", "btn-ghost", "folder")
-      + b("in the queue", "btn-ghost", "queue");
-    const on = (a, fn) => { const x = det.querySelector(`[data-a="${a}"]`); if (x) x.addEventListener("click", fn); };
-    on("res", () => NB.results.open(c.name));
-    on("folder", () => NB.call("show_path_in_folder", c.output_path || c.name));
-    on("queue", () => NB.handOff({ type: "select", name: c.name }));
-    el.appendChild(det);
-  }
-
-  /** Editing happens in the queue window: this opens it on the calculation.
-   *  @param {string} name */
-  function openEditor(name) {
-    const c = NB.queue.find(x => x.name === name);
-    if (!c) return;
-    if (EDITABLE.indexOf(c.state) < 0) {
-      NB.toast(c.state === "running"
-        ? "ORCA is reading this calculation. Stop it first to edit."
-        : "A finished calculation cannot be edited — start a new one from it.");
-      return;
-    }
-    NB.handOff({ type: "edit", name: name });
-  }
-
-  /** Take the finished rows out of the queue -- the group's own Clear, which
-   *  the footer's "Clear all" does not cover: the list that gets in the way is
-   *  the one that only grows. Queue-list only, like every removal here: a run
-   *  folder is never touched, so this drops the record and not the results.
-   *  @param {string[]} names */
-  function clearFinished(names) {
-    if (!names.length) return;
-    NB.confirm("Clear finished",
-      `${names.length} finished calculation${names.length === 1 ? "" : "s"} leave the
-       queue. Files already written to disk stay where they are.`,
-      "Clear", async () => {
-        for (const n of names) {
-          const r = await NB.call("remove_calc", n);
-          if (r && r.error) { NB.fail(r.error); break; }
-        }
-        await NB.poll();
-      });
-  }
-
   /** groups the user has folded away, by label. A long Done list is the one
    *  that gets in the way, and it is the one worth folding. @type {string[]} */
   const _folded = [];
@@ -283,42 +176,37 @@
     host.innerHTML = "";
 
     const head = NB.el("div", "rail-h");
-    head.innerHTML = `Queue<span class="sp"></span><span class="n" id="q-total">${
-      NB.queue.length ? NB.queue.length + (NB.queue.length === 1 ? " calculation" : " calculations")
-                      : "empty"}</span>
+    const n = NB.queue.length;
+    head.innerHTML = `Queue<span class="n" id="q-total" aria-label="${
+      n === 1 ? "1 calculation" : n + " calculations"}">${n}</span><span class="sp"></span>
       <button class="btn btn-xs btn-ghost" type="button" id="open-queue"
         title="Build and edit the queue in its own window">Open queue</button>`;
     head.querySelector("#open-queue").addEventListener("click", () => NB.openQueueWindow());
     host.appendChild(head);
 
-    if (!NB.queue.length) {
+    if (!n) {
       host.appendChild(NB.el("div", "qgroup",
-        `<p class="hint" style="padding:0 6px">Nothing queued yet. Open the queue to build one.</p>`));
+        `<p class="hint" style="padding:0 4px; margin:0">Nothing queued yet.</p>`));
     }
 
     GROUPS.forEach(g => {
-      const rows = NB.queue
-        .map((c, i) => ({ c: c, i: i }))
-        .filter(x => g.states.indexOf(x.c.state) >= 0);
+      const rows = NB.queue.filter(c => g.states.indexOf(c.state) >= 0);
       if (!rows.length) return;
       const box = NB.el("div", "qgroup");
       const open = _folded.indexOf(g.label) < 0;
       const head = NB.el("div", "qgh");
       if (g.fold) {
+        // emptying the Finished group is the queue window's (Clear all there,
+        // or Delete on a block): this strip only reads
         head.innerHTML = `<button class="qgtoggle" type="button" id="fin-toggle"
             aria-expanded="${open}" aria-controls="q-${g.key}">
             <span class="chev" aria-hidden="true">▸</span>${g.label}<span
-              class="c" id="c-${g.key}">${rows.length}</span></button>
-          <span class="sp"></span>
-          <button class="btn btn-xs btn-ghost" type="button" id="clear-finished"
-            data-a="clearfin">Clear</button>`;
+              class="c" id="c-${g.key}">${rows.length}</span></button>`;
         head.querySelector(".qgtoggle").addEventListener("click", () => {
           const k = _folded.indexOf(g.label);
           if (k < 0) _folded.push(g.label); else _folded.splice(k, 1);
           render();
         });
-        head.querySelector('[data-a="clearfin"]')
-            .addEventListener("click", () => clearFinished(rows.map(x => x.c.name)));
       } else {
         head.innerHTML = `${g.label}<span class="c" id="c-${g.key}">${rows.length}</span>`;
       }
@@ -326,17 +214,13 @@
       if (open) {
         const list = NB.el("div", "qlist");
         list.id = "q-" + g.key;
-        rows.forEach(x => list.appendChild(row(x.c, x.i)));
+        rows.forEach(c => list.appendChild(row(c)));
         box.appendChild(list);
       }
       host.appendChild(box);
     });
 
     host.appendChild(openedGroup());
-
-    // forget rows that are gone, so a name reused later does not open unfolded
-    const live = new Set(NB.queue.map(c => c.name).concat(_opened.map(o => "file:" + o.path)));
-    _expanded.forEach(k => { if (!live.has(k)) _expanded.delete(k); });
 
     if (NB.running && NB.resources) host.appendChild(occupancy(NB.resources));
     host.scrollTop = scroll;
@@ -411,64 +295,32 @@
     return box;
   }
 
-  /** @param {any} o @returns {HTMLElement} */
+  /** An opened file, in the same strip row as a calculation: a dot and its
+   *  name, the rest in the tooltip, and an × that takes it off this list --
+   *  closed, not removed: nothing of it was ever in the workspace, and the
+   *  file itself is not touched. Show-in-folder is Results' own button.
+   *  @param {any} o @returns {HTMLElement} */
   function openedRow(o) {
-    const el = NB.el("div", "qrow nogrip");
+    const el = NB.el("div", "qrow");
     el.dataset.state = "opened";
     if (NB.results.currentPath() === o.path) el.setAttribute("aria-current", "true");
+    const says = [o.name, o.backend, o.meta, o.folder].filter(Boolean).join(" · ");
+    el.title = says;
     el.innerHTML = `
-      <span class="grip" aria-hidden="true">⋮</span>
-      <button class="qexp" type="button" aria-expanded="false"
-              aria-label="Show controls for ${NB.esc(o.name)}"><span
-              class="chev" aria-hidden="true">▸</span></button>
-      <button class="qmain" type="button">
+      <button class="qmain" type="button" aria-label="${NB.esc("Open " + says)}">
         <span class="d ${o.backend === "MLIP" ? "raw" : "done"}"></span>
-        <span class="qtext">
-          <span class="qhead"><span class="qn">${NB.esc(o.name)}</span><span
-            class="qtag">${NB.esc(o.backend)}</span></span>
-          <span class="qm">${NB.esc(o.meta)}</span>
-          <span class="qmsg">${NB.esc(o.folder)}</span>
-        </span>
+        <span class="qn">${NB.esc(o.name)}</span>
       </button>
-      <span class="qacts">
-        <span class="badge done">done</span>
-        <span class="qeditslot"></span>
-        <span class="qinpslot"></span>
-      </span>`;
-    el.querySelector(".qexp").addEventListener("click", () => toggleOpenedDetail(el, o));
+      <button class="qclose" type="button" aria-label="Close ${NB.esc(o.name)}"
+        title="Take it off this list (the file stays where it is)">×</button>`;
     el.querySelector(".qmain").addEventListener("click", () => NB.results.openPath(o.path));
-    if (_expanded.has("file:" + o.path)) toggleOpenedDetail(el, o);
-    return el;
-  }
-
-  /** The opened row's controls. Fewer than a calculation's, because there is
-   *  less true of it: nothing to edit, nothing to run again. "Forget" drops the
-   *  row from this list and touches no file -- the same contract as Remove.
-   *  @param {HTMLElement} el @param {any} o */
-  function toggleOpenedDetail(el, o) {
-    const btn = /** @type {HTMLElement} */ (el.querySelector(".qexp"));
-    const open = btn.getAttribute("aria-expanded") === "true";
-    const old = el.querySelector(".qdet");
-    if (old) old.remove();
-    btn.setAttribute("aria-expanded", String(!open));
-    if (open) { _expanded.delete("file:" + o.path); return; }
-    _expanded.add("file:" + o.path);
-    const det = NB.el("div", "qdet");
-    // the design's wording for this row: it is closed, not removed -- nothing
-    // of it was ever in the workspace to take out
-    det.innerHTML =
-      `<button class="btn btn-xs btn-ghost" type="button" data-a="folder">show in folder</button>`
-      + `<button class="btn btn-xs btn-danger" type="button" data-a="rm">close</button>`;
-    const on = (a, fn) => det.querySelector(`[data-a="${a}"]`).addEventListener("click", fn);
-    on("folder", () => NB.call("show_path_in_folder", o.path));
-    on("rm", () => {
+    el.querySelector(".qclose").addEventListener("click", () => {
       const at = _opened.findIndex(x => x.path === o.path);
       if (at >= 0) _opened.splice(at, 1);
-      _expanded.delete("file:" + o.path);
       keepOpened();
       render();
     });
-    el.appendChild(det);
+    return el;
   }
 
   /** What the run is holding of this machine. Only while something is
@@ -497,7 +349,6 @@
     NB.$("btn-run").disabled = NB.running || !anyRunnable;
     NB.$("btn-stop").disabled = !NB.running;
     NB.$("btn-cancel").disabled = !NB.running;
-    NB.$("btn-clear").disabled = !NB.queue.length;
   }
 
   // ---------------------------------------------------------------- actions
@@ -540,7 +391,6 @@
     NB.$("btn-run").addEventListener("click", runQueue);
     NB.$("btn-stop").addEventListener("click", stopAfterCurrent);
     NB.$("btn-cancel").addEventListener("click", cancelRun);
-    NB.$("btn-clear").addEventListener("click", clearAll);
     NB.watch(() => render());
     restoreOpened();
   }
@@ -565,10 +415,10 @@
       });
   }
 
-  // the run controls are the same four in both windows: the queue window's
-  // top bar calls these too
+  // the run controls: the main window's strip has three of them, the queue
+  // window's top bar all four (Clear all lives only there)
   NB.rail = { init: init, render: render, progressOf: progressOf, backendOf: backendOf,
-              openEditor: openEditor, noteOpened: noteOpened,
+              noteOpened: noteOpened,
               runQueue: runQueue, stopAfterCurrent: stopAfterCurrent,
               cancelRun: cancelRun, clearAll: clearAll };
 })();

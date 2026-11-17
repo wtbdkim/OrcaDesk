@@ -1250,8 +1250,9 @@ scope, so the notebook keeps everything on a single `NB` namespace (plus `MOL`
 and `CHARTS`) — any other top-level name is refused by `tests/test_next_ui.py`.
 
 **17.2 The window is the queue plus one thing.** Two places (Jobs and Results)
-and a 600px rail that stays on screen in both. Building and editing the queue
-is the queue window's (§17.6); this window reads it:
+and a rail that stays on screen in both — 600px in the reference, a 256px
+status strip here since the queue got its own window. Building and editing the
+queue is the queue window's (§17.6); this window reads it:
 
 - **Rail** — the queue, grouped by what a row is doing (running / queued /
   done), because that is the question being asked of the list. A row carries
@@ -1265,18 +1266,28 @@ is the queue window's (§17.6); this window reads it:
   `rail.js`). Read stage by stage, the bar filled when a TS search's Hessian
   finished and emptied when the optimization began. It is full only when ORCA
   says the job is through. The cell's own bar under its chart stays the stage's.
-  The rail is the queue's **status**, not its editor: rows are not dragged (the
-  grip column stays, empty, so a calculation lines up with an opened file), a
-  row click brings that calculation's cell into view in Jobs or opens its
-  report in Results, and a row's controls only read (*results*, *folder*,
-  *in the queue*). *edit* and the header's **Open queue** open the queue window
-  — on that calculation, for *edit*. Reordering, duplicating and removing are
-  the editor's; the Finished group's *Clear* stays, as tidying rather than
-  editing.
+  The rail is the queue's **status**, not its editor — a **compact strip**,
+  256px wide (stacked on top below 760px as before). A row is the state dot
+  and the calculation's name, ellipsized; a running row adds its thin progress
+  bar. Everything else the reference's row carried — backend tag, meta line,
+  message line, state badge, *edit*, *.inp*, the grip and the expand caret —
+  is gone from the row and said in its tooltip and accessible name instead
+  (name · kind · state · last message). A click brings that calculation's cell
+  into view in Jobs, or opens its report in Results. Running / Queued /
+  Finished keep their small labels and counts, and Finished still folds; its
+  *Clear* is gone. The header is *Queue*, the count and **Open queue**; the
+  footer one row of three small buttons (Run queue, Stop after current,
+  Cancel) — *Clear all* is the queue window's. *Opened files* stays, in the
+  same row style, with an × that takes a file off the list. Each departure from
+  the reference is listed in `tools/uidiff.py` (`REMOVED`,
+  `PER_LANDMARK_SKIP`, `STYLE_SKIP`) and the dropped row classes in
+  `OUTSTANDING` (`tests/test_next_ui.py`), with this section as the reason.
 - **Builder** — the cell IS the form, and it lives in the queue window now
-  (§17.6): its inspector column hosts the same `.cell.editing`. The stream's
-  dashed stub and a cell's *New from this* open it there, handing the seed over
-  (below). It is not a place you go to and come back from.
+  (§17.6): its inspector column hosts the same `.cell.editing`. The stream has
+  no *New calculation* stub any more (an empty Jobs view says where
+  calculations come from); a cell's *New from this* opens the builder in the
+  queue window, handing the seed over (§17.6). It is not a place you go to and
+  come back from.
 - **Stream** — one **cell** per calculation: its chart, its output tail and its
   facts, together. A tabbed layout asks you to pick a job and then pick a view
   of it (Raw or Graph, one at a time, one job at a time); here you read down
@@ -2014,7 +2025,7 @@ columns:
   system shows its first slot. The **grip** moves a lane (drag), copies it
   (Ctrl-drop, or a click: copy below) and answers Alt+↑/↓; *+ system* starts a
   lane from an `.xyz`. Top bar: Clear all, Cancel, Stop after current, Run
-  queue (the main window's four), and one line of the worst warning (duplicate
+  queue (the main window's strip has the last three), and one line of the worst warning (duplicate
   or empty names, a Freq at another level than its Opt, a lane with no
   structure, a template without `{{GEOMETRY}}`; the rest in its tooltip).
 - **Inspector** (right) — for a block: the system name (renames the lane, and
