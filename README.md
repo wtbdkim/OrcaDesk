@@ -4,7 +4,7 @@ A desktop GUI for building, queuing, running, and parsing ORCA computational
 chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark **or light** UI),
 Python core.
 
-> **Status: 0.10.7** (`0.10.7`). Desktop app: build → queue → run →
+> **Status: 0.11.0** (`0.11.0`). Desktop app: build → queue → run →
 > parse, validated against real ORCA 6.1.1 output. A running calculation
 > **survives closing the app** and is reattached on the next launch; the UI ships
 > with both a **dark and a light theme**; and the convergence graph shows **live progress for optimizations and frequency runs**
@@ -16,7 +16,10 @@ Python core.
 > queue can **run several calculations at once**, admitted against a core and
 > memory budget you set — so the next one starts the moment one finishes. Run
 > from source, or build a
-> standalone Windows app with `build.bat`. (Phone-sync is in development and not
+> standalone Windows app with `build.bat`. Since 0.11.0 the queue has its own
+> window: a **queue editor** with one row per molecule, steps chained block by
+> block (Opt → Freq → IRC → SP, approval gates, saved inp sets), and `.xyz`
+> files dropped onto it queued in one go; the main window keeps Jobs and Results. (Phone-sync is in development and not
 > part of this build.) See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Requirements
