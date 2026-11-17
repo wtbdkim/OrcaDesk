@@ -216,6 +216,93 @@ def test_update_calc_on_a_finished_calc_is_refused(store):
         store.apply_ops([{"op": "update_calc", "name": "mol-opt", "calc": {"col": 2}}])
 
 
+# ---- place_calc: a finished calc becomes a lane's first node ------------------------
+
+def _done_standalone(store, name="1TS", kind="ts_opt"):
+    store.apply_ops([calc_op(name, system="", kind=kind, node="")])
+    c = store.get(name)
+    c.state = CalcState.DONE
+    c.message = "converged"
+    c.output_path = "C:/ws/" + name + "/" + name + ".out"
+    return c
+
+
+def test_a_finished_standalone_calc_is_placed_into_a_new_lane_untouched(store):
+    """The editor's way to hang a follow-up off a finished calc: a new system
+    and a placement-only patch. The finished row keeps everything it ran and
+    produced (P24) and stays the same object (the engine tracks rows by
+    identity)."""
+    live = _done_standalone(store)
+    before = {k: v for k, v in calc_to_session_dict(live).items()
+              if k not in ("system", "node", "col", "row")}
+    store.apply_ops([sys_op(sid="s9", name="1TS"),
+                     {"op": "place_calc", "name": "1TS",
+                      "place": {"system": "s9", "node": "n1", "col": 0, "row": 0}},
+                     calc_op("1TS-freq", system="s9", kind="ts_freq", after="1TS",
+                             geometry_source="reference", ref_name="1TS", xyz="",
+                             col=1, row=0)])
+    c = store.get("1TS")
+    assert c is live
+    assert (c.system, c.node, c.col, c.row) == ("s9", "n1", 0, 0)
+    assert c.state == CalcState.DONE and c.message == "converged"
+    assert {k: v for k, v in calc_to_session_dict(c).items()
+            if k not in ("system", "node", "col", "row")} == before
+    snap = store.snapshot()["calculations"]
+    assert [(x["name"], x["system"], x["state"]) for x in snap] == [
+        ("1TS", "s9", "done"), ("1TS-freq", "s9", "pending")]
+
+
+def test_placing_back_and_removing_the_lane_undoes_the_adoption(store):
+    _done_standalone(store)
+    store.apply_ops([sys_op(sid="s9", name="1TS"),
+                     {"op": "place_calc", "name": "1TS", "place": {"system": "s9", "node": "n1"}}])
+    store.apply_ops([{"op": "place_calc", "name": "1TS",
+                      "place": {"system": "", "node": "", "col": 0, "row": 0}},
+                     {"op": "remove_system", "id": "s9"}])
+    c = store.get("1TS")
+    assert (c.system, c.node, c.state) == ("", "", CalcState.DONE)
+    assert store.systems() == []
+
+
+@pytest.mark.parametrize("bad", [
+    {"after": "x"}, {"raw_text": "! HF"}, {"state": "pending"}, {"name": "y"},
+    {"kind": "sp"}, {"approved": True},
+])
+def test_place_calc_changes_placement_and_nothing_else(store, bad):
+    _done_standalone(store)
+    with pytest.raises(QueueOpError, match="only system, node, col and row"):
+        store.apply_ops([{"op": "place_calc", "name": "1TS", "place": bad}])
+
+
+def test_place_calc_refuses_an_unknown_system_or_a_bad_value(store):
+    _done_standalone(store)
+    with pytest.raises(QueueOpError, match="does not exist"):
+        store.apply_ops([{"op": "place_calc", "name": "1TS", "place": {"system": "nope"}}])
+    with pytest.raises(QueueOpError, match="whole number"):
+        store.apply_ops([{"op": "place_calc", "name": "1TS", "place": {"col": "2"}}])
+    with pytest.raises(QueueOpError, match="No calculation named"):
+        store.apply_ops([{"op": "place_calc", "name": "ghost", "place": {"col": 1}}])
+
+
+def test_a_refused_batch_leaves_a_placed_row_where_it_was(store):
+    live = _done_standalone(store)
+    with pytest.raises(QueueOpError):
+        store.apply_ops([sys_op(sid="s9", name="1TS"),
+                         {"op": "place_calc", "name": "1TS", "place": {"system": "s9"}},
+                         {"op": "explode"}])
+    assert store.get("1TS") is live and live.system == "" and store.systems() == []
+
+
+def test_a_running_row_is_placed_in_place(store):
+    store.apply_ops([sys_op(), calc_op("mol-opt")])
+    live = store.get("mol-opt")
+    live.state = CalcState.RUNNING
+    store.apply_ops([{"op": "place_calc", "name": "mol-opt", "place": {"col": 3, "row": 1}},
+                     {"op": "place_calc", "name": "mol-opt", "place": {"row": 2}}])
+    assert store.get("mol-opt") is live
+    assert (live.col, live.row, live.state) == (3, 2, CalcState.RUNNING)
+
+
 def test_remove_calc_of_an_unknown_name_is_refused_unless_removed_in_the_batch(store):
     store.apply_ops([sys_op(), calc_op("mol-sp")])
     with pytest.raises(QueueOpError, match="No calculation named 'ghost'"):

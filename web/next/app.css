@@ -1586,6 +1586,22 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 .qe-wait .btn{align-self:flex-start;}
 .qe-ok{font-size:13px; color:var(--ok);}
 .qe-inputs{display:flex; flex-direction:column; gap:4px;}
+
+/* the set editor: the inspector with nothing selected, and its marks in the
+   library (a kind's "+ New", the set open in it, a new one not saved yet) */
+.qe-ghead{display:flex; align-items:baseline; justify-content:space-between; gap:8px;}
+.qe-new{padding:0 10px 4px; background:none; border:none; border-radius:6px; cursor:pointer;
+  font-size:11px; color:var(--qe-faint);}
+.qe-new:hover,.qe-new:focus-visible{color:var(--foreground);}
+.qe-set[data-edit]{background:var(--card); color:var(--foreground);
+  box-shadow:inset 2px 0 0 var(--muted-foreground);}
+.qe-set[data-draft]{font-style:italic; cursor:default;}
+.qe-drophint{margin:2px 0 0;}
+.qe-ph{margin:-8px 0 0;}
+.qe-insp .qe-cm [data-f="dirty"]{color:var(--warn);}
+.qe-empty{position:absolute; left:28px; right:28px; max-width:520px;}
+.qe-empty p{margin:0;}
+.qe-empty p:first-child{font-size:14px; font-weight:500; color:var(--muted-foreground);}
 @media (max-width:900px){
   html[data-win="queue"] body{overflow:auto;}
   .qe-app,.qe-app[data-building]{grid-template-columns:minmax(0,1fr); height:auto; overflow:visible;}

@@ -63,12 +63,27 @@
   /** the inp-set library (get_inp_sets) @type {InpSet[]} */
   let _sets = [];
   let _setsLoaded = false;
+  /** each set kind's seeded text, what "+ New" starts from @type {Object<string, string>} */
+  let _defaults = {};
+  /** The inp set open in the set editor -- the inspector when nothing is
+   *  selected. `id` "" is a new set not saved yet; `base` is the text and
+   *  name as last saved (or as the new one started), what "unsaved" is
+   *  measured against. It survives selecting blocks: a draft is never lost
+   *  by looking elsewhere, only by an answered "Discard".
+   *  @type {{id: string, kind: string, name: string, text: string, base: {name: string, text: string, kind: string}}|null} */
+  let _ed = null;
+  /** why the last save of the editor's set was refused, said in the editor */
+  let _edErr = "";
   /** name -> the full calculation (get_calc) and the summary it was read for
    *  @type {Map<string, {sig: string, calc: any}>} */
   const _full = new Map();
   /** system id -> the full system, with its inputs' xyz (get_system)
    *  @type {Map<string, SystemFull>} */
   const _sysFull = new Map();
+  /** name -> the input a guided calculation's config writes (build_inp_preview),
+   *  for the Freq-level warning, and the summary it was built for
+   *  @type {Map<string, {sig: string, text: string}>} */
+  const _preview = new Map();
   /** slots the running backend does not have (an older one) @type {string[]} */
   let _missing = [];
 
@@ -95,6 +110,8 @@
   let _M = null;
   let _active = false;
   let _inspSig = "";
+  /** the selection the inspector was last drawn for */
+  let _inspFor = "";
   let _libSig = "";
 
   // ------------------------------------------------------------ helpers
@@ -129,8 +146,29 @@
       _undo.push({ label: label, ops: inverse });
       if (_undo.length > 50) _undo.shift();
     }
+    // the reply carries the queue as the batch left it: what is drawn next
+    // is that, even when a poll already in flight makes NB.poll() a no-op
+    if (r.snapshot && Array.isArray(r.snapshot.calculations)) {
+      NB.queue = r.snapshot.calculations;
+      NB.systems = Array.isArray(r.snapshot.systems) ? r.snapshot.systems : [];
+    }
     await NB.poll();
     return true;
+  }
+
+  /** apply(), then select what the batch made. Selected only once it is in
+   *  the snapshot: a render in between (a drag's end, a poll) drops a
+   *  selection whose object does not exist yet, which left a new block
+   *  unselected. @param {any[]} ops @param {any[]|null} inverse
+   *  @param {string} label @param {any} sel */
+  async function applySel(ops, inverse, label, sel) {
+    const ok = await apply(ops, inverse, label);
+    if (ok) {
+      _sel = sel;
+      if (sel.t === "node") { _expanded = ""; _pop = sel.key; }
+      render();
+    }
+    return ok;
   }
 
   async function undo() {
@@ -186,6 +224,7 @@
     const r = await NB.call("get_inp_sets");
     _setsLoaded = true;
     _sets = r && r.ok && Array.isArray(r.sets) ? r.sets : [];
+    _defaults = r && r.ok && r.defaults && typeof r.defaults === "object" ? r.defaults : {};
     return _sets;
   }
   /** @param {string} name @param {string} kind */
@@ -228,6 +267,7 @@
   function model() {
     const q = NB.queue;
     const idx = new Map(q.map((/** @type {any} */ c, /** @type {number} */ i) => [c.name, i]));
+    doomedFrom(q);
     const sysById = new Map(NB.systems.map((/** @type {any} */ s) => [s.id, s]));
     /** @type {any[]} */ const lanes = [];
     const laneOf = new Map();
@@ -291,10 +331,40 @@
   /** A name without its last "-part": the stack Ltyr-MV-sp of Ltyr-MV-sp-F. @param {string} s */
   function stem(s) { const i = s.lastIndexOf("-"); return i > 0 ? s.slice(0, i) : s; }
 
+  /** Pending calculations that cannot run because something above them, on
+   *  the `after` or the geometry chain, has failed or is blocked: drawn as
+   *  blocked now, as the design derives it, not only once a run has said so.
+   *  @type {Set<string>} */
+  let _doomed = new Set();
+  /** @param {any[]} q */
+  function doomedFrom(q) {
+    const by = new Map(q.map((/** @type {any} */ c) => [c.name, c]));
+    /** @type {Map<string, boolean>} */ const memo = new Map();
+    /** @param {any} c @param {Set<string>} seen @returns {boolean} */
+    const bad = (c, seen) => {
+      if (memo.has(c.name)) return /** @type {boolean} */ (memo.get(c.name));
+      if (seen.has(c.name)) return false;
+      seen.add(c.name);
+      let out = false;
+      const ups = [c.after, c.geometry_source === "reference" ? c.ref_name : ""];
+      for (const u of ups) {
+        const p = u ? by.get(u) : null;
+        if (!p || p === c) continue;
+        if (p.state === "failed" || p.state === "blocked" || (p.state === "running" && p.faulted)
+            || ((p.state === "pending" || p.state === "cancelled") && bad(p, seen))) { out = true; break; }
+      }
+      memo.set(c.name, out);
+      return out;
+    };
+    _doomed = new Set(q.filter((/** @type {any} */ c) => c.state === "pending" && bad(c, new Set()))
+      .map((/** @type {any} */ c) => c.name));
+  }
+
   /** @param {any} n */
   function nodeState(n) {
     const st = n.members.map((/** @type {any} */ c) =>
       c.state === "running" && c.faulted ? "failed"
+        : c.state === "pending" && _doomed.has(c.name) ? "blocked"
         : c.state === "pending" && c.waiting ? "waiting" : c.state);
     for (const s of ["running", "failed", "waiting", "blocked", "pending", "cancelled"]) {
       if (st.indexOf(s) >= 0) return s;
@@ -334,9 +404,10 @@
     const P = _sel && _sel.t === "node" ? M.lanes.flatMap((/** @type {any} */ L) => L.nodes)
       .find((/** @type {any} */ n) => n.key === _sel.key) : null;
     if (!P) return null;
-    // a standalone calculation can be adopted into a system only while it
-    // can still be edited
-    if (!P.lane.sys && !P.editable) return null;
+    // After ANY block, finished or not, as the design has it: a next step
+    // after a done OptTS or IRC is how a follow-up is queued. A standalone
+    // block becomes a one-node system first (adopt), which moves it in the
+    // layout only -- nothing it ran or produced changes (P24).
     const L = P.lane;
     const occ = (/** @type {number} */ c, /** @type {number} */ r) =>
       L.nodes.some((/** @type {any} */ n) => n.col === c && n.row === r);
@@ -386,11 +457,12 @@
     M.lanes.forEach((/** @type {any} */ L) => {
       L.edges.forEach((/** @type {any} */ e) => {
         if (e.to.setKind !== "Freq" || (e.from.setKind !== "Opt" && e.from.setKind !== "OptTS")) return;
-        const la = levelOf(templateOf(e.from.members[0])), lb = levelOf(templateOf(e.to.members[0]));
+        const la = levelOf(levelText(e.from.members[0])), lb = levelOf(levelText(e.to.members[0]));
         if (la && lb && la !== lb) w.push(e.to.short + ": Freq level differs from " + e.from.short + ".");
       });
       if (L.sys && !(L.sys.inputs || []).length
-          && L.calcs.some((/** @type {any} */ c) => !c.after && c.geometry_source !== "reference")) {
+          && L.calcs.some((/** @type {any} */ c) => !c.after && c.geometry_source !== "reference"
+                                                && EDITABLE.indexOf(c.state) >= 0)) {
         w.push(L.name + ": choose a structure for the first calculation.");
       }
       const noGeo = L.calcs.find((/** @type {any} */ c) => c.set_name && SET_KIND_OF[c.kind] !== "MLIP"
@@ -398,6 +470,17 @@
       if (noGeo) w.push(noGeo.name + ": its template has no " + GEOM + " placeholder.");
     });
     return w;
+  }
+
+  /** The input whose level of theory a block runs at: its template, else
+   *  (a block built with the Guided builder -- a finished OptTS adopted into
+   *  a row, typically) the input the builder writes for it, read once per
+   *  change (refreshFull). @param {any} c */
+  function levelText(c) {
+    const t = templateOf(c);
+    if (t) return t;
+    const p = _preview.get(c.name);
+    return p ? p.text : "";
   }
 
   /** The template text a calculation runs: its own raw text, or (an MLIP
@@ -415,32 +498,38 @@
   function renderLibrary() {
     const host = NB.$("qe-sets");
     const n = selNode();
+    const editing = editorShown() && _ed ? _ed : null;
     const sig = JSON.stringify([_sets.map(s => [s.id, s.name, s.kind]), n ? [n.key, n.setKind, n.editable,
-      n.members[0].set_name] : null, _missing.length]);
+      n.members[0].set_name] : null, _missing.length,
+      editing ? [editing.id, editing.kind, editing.id ? "" : editing.name] : null]);
     if (sig === _libSig) return;
     _libSig = sig;
-    if (!_sets.length) {
-      host.innerHTML = `<p class="hint qe-pad">${_missing.length
-        ? "The queue editor needs the updated backend: it has no inp sets to offer."
-        : "No inp sets yet."}</p>`;
+    if (_missing.length && !_sets.length) {
+      host.innerHTML = `<p class="hint qe-pad">The queue editor needs the updated backend: it has no inp sets to offer.</p>`;
       NB.$("qe-dragimgs").innerHTML = "";
       renderRecipe();
       return;
     }
+    // every kind has its group, an empty one too: "+ New" is where a kind's
+    // first set comes from
     host.innerHTML = SET_KINDS.map(kd => {
       const sets = _sets.filter(s => s.kind === kd);
-      if (!sets.length) return "";
       const match = !!n && n.setKind === kd;
+      const draft = editing && !editing.id && editing.kind === kd
+        ? `<span class="qe-set" data-edit="1" data-draft="1">${esc(editing.name || "New set")} · unsaved</span>` : "";
       return `<div class="qe-group">
-        <span class="qe-kind"${match ? ' data-on="1"' : ""}>${esc(kd === "MLIP" ? "MLIP" : kd)}</span>
+        <div class="qe-ghead"><span class="qe-kind"${match ? ' data-on="1"' : ""}>${esc(kd)}</span>
+          <button class="qe-new" type="button" data-new="${kd}" aria-label="New ${esc(kd)} set"
+            title="A new ${esc(kd)} set, starting from ORCAdesk's default ${esc(kd)} input">+ New</button></div>
         ${sets.map(s => {
           const cur = !!n && n.members[0].set_name === s.name && n.setKind === kd;
-          const off = !match || !n.editable;
+          const applies = match && n.editable;
+          const ed = !!editing && editing.id === s.id;
           return `<button class="qe-set" type="button" draggable="true" data-id="${esc(s.id)}"
-            aria-pressed="${cur}" aria-disabled="${off}"${cur ? ' data-cur="1"' : ""}${match ? ' data-match="1"' : ""}
-            aria-label="Apply ${esc(kd)} set ${esc(s.name)}"
-            title="Drag onto a block or an empty slot. Delete removes the set.">${esc(s.name)}</button>`;
-        }).join("")}
+            aria-pressed="${applies ? cur : ed}"${cur ? ' data-cur="1"' : ""}${match ? ' data-match="1"' : ""}${ed ? ' data-edit="1"' : ""}
+            aria-label="${esc((applies ? "Apply " : "Edit ") + kd + " set " + s.name)}"
+            title="${applies ? "Click to put it on the selected block. " : "Click to edit it. "}Drag onto a block or an empty slot. Delete removes the set.">${esc(s.name)}</button>`;
+        }).join("")}${draft}
       </div>`;
     }).join("");
     NB.$("qe-dragimgs").innerHTML = _sets.map(s =>
@@ -597,6 +686,14 @@
       </div>`);
     });
 
+    if (!M.lanes.length) {
+      // the empty queue says how a row starts, where the rows would be
+      parts.push(`<div class="qe-empty" style="top:${top + 24}px">
+        <p>Nothing in the queue.</p>
+        <p class="hint">Drop .xyz files on this window: each becomes a row that runs the set chosen
+          under the inp sets. Or press + system to start a row from a structure and build its steps here.</p></div>`);
+      top += 132;
+    }
     parts.push(`<button class="qe-addsys" type="button" data-a="addsys" style="top:${top + 6}px"
       aria-label="Add a system from a structure file">+ system</button>`);
     host.style.width = (X(maxCol + 2) + 40) + "px";
@@ -640,12 +737,18 @@
     }
     app.removeAttribute("data-building");
     if (_buildCell) { _buildCell = null; _buildTarget = null; _inspSig = ""; }
-    // never repaint under the cursor: a field being typed in is the user's
+    // never repaint under the cursor: a field being typed in is the user's --
+    // while it still shows what is selected; another selection is drawn
     const a = document.activeElement;
-    if (a && host.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+    const what = JSON.stringify(_sel);
+    if (a && host.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && what === _inspFor) return;
+    _inspFor = what;
     const n = selNode(), e = selEdge();
     const L = _sel && _sel.t === "sys" ? laneByKey(_sel.key) : null;
-    const sig = JSON.stringify([_sel, n ? n.members.map((/** @type {any} */ c) => [c, _full.get(c.name) && _full.get(c.name).calc]) : null,
+    if (!n && !e && !L) edEnsure();
+    const sig = JSON.stringify([_sel, !n && !e && !L ? [_ed && [_ed.id, _ed.kind, _ed.base], _edErr,
+        _sets.map(x => [x.id, x.name, x.kind]), edUsers().map((/** @type {any} */ c) => [c.name, c.state])] : null,
+      n ? n.members.map((/** @type {any} */ c) => [c, _full.get(c.name) && _full.get(c.name).calc]) : null,
       e ? [e.gate, e.to.members, e.from.members] : null, L ? L.sys : null,
       n ? (n.lane.sys || null) : null, n ? isModified(n) : null, _sets.length]);
     if (sig === _inspSig) return;
@@ -653,10 +756,7 @@
     if (n) inspectNode(host, n);
     else if (e) inspectEdge(host, e);
     else if (L) inspectSystem(host, L);
-    else host.innerHTML = `<p class="hint qe-pad">Select a block to see its system, structure and
-      template, or a connection to set when the next calculation runs.</p>
-      <p class="hint qe-pad">Drop .xyz files anywhere on this window to queue them with the
-      recipe under the inp sets.</p>`;
+    else inspectSets(host);
   }
 
   /** @param {HTMLElement} host @param {any} n */
@@ -678,23 +778,40 @@
     const kind = detectKind(text);
     const charge = sys ? sys.charge : c.charge, mult = sys ? sys.multiplicity : c.multiplicity;
 
-    // the geometry choices: the system's structures, then every ancestor's
-    // output along the `after` chain, an IRC's two ends included
+    // the geometry choices: the system's structures, then the outputs of
+    // every ancestor block along the `after` chain -- each member of a stack,
+    // an IRC's two ends -- as the design lists them
     const opts = [];
     (sys ? sys.inputs || [] : []).forEach((/** @type {any} */ inp, /** @type {number} */ i) =>
       opts.push({ key: "in:" + i, label: inp.label || "structure " + (i + 1) }));
     const seen = new Set([c.name]);
+    const blocks = new Set([n.key]);
     for (let a = c.after; a && !seen.has(a); ) {
       seen.add(a);
       const p = NB.queue.find((/** @type {any} */ x) => x.name === a);
       if (!p) break;
-      opts.push({ key: "ref:" + p.name, label: "ref → " + p.name });
-      if (p.kind === "irc") {
-        opts.push({ key: "ref:" + p.name + ":irc_f", label: "ref → " + p.name + ", forward end" });
-        opts.push({ key: "ref:" + p.name + ":irc_b", label: "ref → " + p.name + ", backward end" });
-      }
+      const pn = _M.nodeOf.get(p.name);
+      const mem = pn && pn.lane === L ? (blocks.has(pn.key) ? [] : pn.members) : [p];
+      if (pn) blocks.add(pn.key);
+      mem.forEach((/** @type {any} */ m) => {
+        opts.push({ key: "ref:" + m.name, label: "ref → " + m.name });
+        if (m.kind === "irc") {
+          opts.push({ key: "ref:" + m.name + ":irc_f", label: "ref → " + m.name + ", forward end" });
+          opts.push({ key: "ref:" + m.name + ":irc_b", label: "ref → " + m.name + ", backward end" });
+        }
+      });
       a = p.after;
     }
+    // what it runs after, said in words when no connection on this row shows
+    // it (an `after` in another row, or gone), and its gate when it waits
+    const pa = c.after ? NB.queue.find((/** @type {any} */ x) => x.name === c.after) : null;
+    const paNode = pa ? _M.nodeOf.get(pa.name) : null;
+    const afterNote = !c.after ? ""
+      : !pa ? `Runs after ${c.after}, which is not in the queue: it cannot run.`
+      : paNode && paNode.lane !== L ? `Runs after ${pa.name}, in another row${
+          c.gate === "approval" ? ", once approved" : ""}.` : "";
+    const blockedNote = _doomed.has(c.name) && !c.message
+      ? "Blocked: a calculation it depends on has failed. Remove or replace that one first." : "";
     let geo = "";
     if (c.geometry_source === "reference") {
       geo = "ref:" + c.ref_name + (c.ref_point ? ":" + c.ref_point : "");
@@ -727,6 +844,11 @@
         <span class="qe-note">${esc(ST_LABEL[nodeState({ members: [c] })] + ", run order " + (_M.idx.get(c.name) + 1))}</span>
       </div>
       ${c.message ? `<p class="qe-note" data-tone="${c.state === "failed" ? "err" : c.state === "blocked" ? "warn" : ""}">${esc(c.message)}</p>` : ""}
+      ${blockedNote ? `<p class="qe-note" data-tone="warn">${esc(blockedNote)}</p>` : ""}
+      ${afterNote ? `<p class="qe-note">${esc(afterNote)}</p>` : ""}
+      ${c.waiting ? `<div class="qe-wait"><span>${esc((pa ? pa.name : c.after) + " finished. The queue skips "
+          + c.name + " and runs the next calculation until you approve.")}</span>
+        <button class="btn btn-primary" type="button" data-a="approve">Approve</button></div>` : ""}
       <select class="qe-select" data-f="geo" aria-label="Geometry"${locked ? " disabled" : ""}>${
         opts.map(o => `<option value="${esc(o.key)}"${o.key === geo ? " selected" : ""}>${esc(o.label)}</option>`).join("")}</select>
       ${isTemplate ? `
@@ -776,12 +898,33 @@
     const pv = q('[data-f="preview"]');
     if (pv) {
       const src = full ? full : calcDict(c.name);
-      const r = src.is_raw ? { ok: true, text: src.raw_text } : await NB.call("build_inp_preview", JSON.stringify(src));
+      const k = String(src.kind || c.kind || "");
+      // an MLIP or CREST job runs no ORCA input: its settings are what it runs
+      const r = /^(mlip|crest)/.test(k) ? { ok: true, text: backendSettings(k, src.config || {}) }
+        : src.is_raw ? { ok: true, text: src.raw_text } : await NB.call("build_inp_preview", JSON.stringify(src));
       if (pv.isConnected) pv.value = r && r.ok ? String(r.text || "") : "Could not build the input" + (r && r.error ? ": " + r.error : ".");
     }
     const ed = q('[data-a="edit"]');
     if (ed) ed.addEventListener("click", () => openBuilder(c.name));
+    const ap = q('[data-a="approve"]');
+    if (ap) ap.addEventListener("click", () => {
+      const u = updates([c.name], () => ({ approved: true }));
+      apply(u.ops, u.inv, "the approval");
+    });
     q('[data-a="remove"]').addEventListener("click", () => requestRemove(n));
+  }
+
+  /** What an MLIP or CREST calculation runs, in the `key value` form an MLIP
+   *  set is written in. @param {string} kind @param {any} cfg */
+  function backendSettings(kind, cfg) {
+    const v = (/** @type {any} */ x, /** @type {string} */ dflt) => x === "" || x == null ? dflt : String(x);
+    const lines = kind.indexOf("mlip") === 0
+      ? [`model ${v(cfg.mlip_model, "(the default model)")}`, `device ${v(cfg.mlip_device, "auto")}`,
+         `nprocs ${v(cfg.nprocs, "1")}`, cfg.mlip_env_id ? `env ${cfg.mlip_env_id}` : ""]
+      : [`method ${v(cfg.crest_method, "gfn2")}`, `solvent ${v(cfg.crest_solvent, "none")}`,
+         `ewin ${v(cfg.crest_ewin, "6")}`, `threads ${v(cfg.crest_threads, "4")}`];
+    return "# " + (KIND_LABEL[kind] || kind) + ": not an ORCA input, these are the settings it runs\n"
+      + lines.filter(Boolean).join("\n");
   }
 
   /** @param {HTMLElement} host @param {any} e */
@@ -957,6 +1100,337 @@
       [{ label: "Cancel", cls: "btn-ghost" }, { label: "Replace", cls: "btn-primary", act: go, focus: true }]);
   }
 
+  // ------------------------------------------------------------ the set editor
+  // With nothing selected the inspector edits the inp sets themselves. A set
+  // is a whole ORCA input with {{GEOMETRY}} where the coordinates go (an MLIP
+  // set: its `key value` lines). It is written through save_inp_set /
+  // delete_inp_set alone. Blocks copied their text when they were made, so a
+  // saved set changes none of them by itself; the pending ones made from it
+  // are offered the new text once, as an undoable batch.
+
+  /** "a Freq", "an Opt" / "an SP" / "an IRC" / "an MLIP": the kinds as said aloud
+   *  @param {string} k */
+  const aKind = (k) => (k === "Freq" ? "a " : "an ") + k;
+  const cap = (/** @type {string} */ s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+  /** the set the editor falls back to: the last one opened or saved */
+  let _lastId = "";
+
+  /** Whether the inspector is the set editor now: nothing selected, the
+   *  builder not open in it. */
+  const editorShown = () => !_sel && NB.build.target() === null;
+
+  /** @param {InpSet} s */
+  const edFrom = (s) => ({ id: s.id, kind: s.kind, name: s.name, text: s.text,
+                           base: { name: s.name, text: s.text, kind: s.kind } });
+
+  /** Unsaved edits in the editor (a new set as it started is not). */
+  const edDirty = () => !!_ed && (_ed.name !== _ed.base.name || _ed.text !== _ed.base.text);
+
+  /** The editor's set: the one open, kept as it is while it has edits; one
+   *  saved elsewhere meanwhile (a block's "Save as") is read again; a deleted
+   *  one falls back to the last one opened, else the first. */
+  function edEnsure() {
+    if (_ed && !_ed.id) return;
+    const cur = _ed ? _sets.find(x => x.id === _ed.id) : null;
+    if (cur) {
+      if (!edDirty() && (cur.name !== _ed.base.name || cur.text !== _ed.base.text || cur.kind !== _ed.base.kind)) _ed = edFrom(cur);
+      return;
+    }
+    if (_ed && edDirty()) { _ed.id = ""; return; }   // deleted under its edits: keep them, as a new set
+    const s = _sets.find(x => x.id === _lastId) || _sets[0] || null;
+    _ed = s ? edFrom(s) : null;
+  }
+
+  /** The blocks made from the editor's set (as last saved). */
+  function edUsers() {
+    if (!_ed || !_ed.id) return [];
+    const b = _ed.base;
+    return NB.queue.filter((/** @type {any} */ c) => c.set_name === b.name && SET_KIND_OF[c.kind] === b.kind);
+  }
+
+  /** Run `fn` when the editor's edits may go: right away without any, else
+   *  after asking (keep / discard), as the builder treats its draft.
+   *  @param {() => void} fn */
+  function guardSwitch(fn) {
+    if (!edDirty()) { fn(); return; }
+    const d = /** @type {any} */ (_ed);
+    NB.modalRaw("Unsaved changes",
+      `<p>The ${esc(d.kind)} set "${esc(d.name.trim() || d.base.name)}" has changes that are not saved.</p>`,
+      [{ label: "Keep editing", cls: "btn-ghost", focus: true, act: () => { _sel = null; _expanded = ""; render(); } },
+       { label: "Discard changes", cls: "btn-danger", act: fn }]);
+  }
+
+  /** A set name not taken in its kind: base, else "base 2", "base 3" ...
+   *  @param {string} kind @param {string} base */
+  function freeSetName(kind, base) {
+    const taken = new Set(_sets.filter(x => x.kind === kind).map(x => lower(x.name)));
+    let nm = base, i = 2;
+    while (taken.has(lower(nm))) nm = base + " " + (i++);
+    return nm;
+  }
+
+  /** Redraw now, the editor included even with the cursor in one of its
+   *  fields (the inspector otherwise never repaints under the cursor) -- a
+   *  save, a refusal or a delete must show at once, Ctrl+S included. The
+   *  field keeps the cursor and its selection. */
+  function repaintEditor() {
+    _inspSig = ""; _libSig = "";
+    const host = NB.$("qe-insp");
+    const a = /** @type {any} */ (document.activeElement);
+    const f = a && host.contains(a) ? a.getAttribute("data-f") : null;
+    const range = f && typeof a.selectionStart === "number" ? [a.selectionStart, a.selectionEnd] : null;
+    if (f) a.blur();
+    render();
+    if (f && editorShown()) {
+      const el = /** @type {any} */ (host.querySelector(`[data-f="${f}"]`));
+      if (el) { el.focus(); if (range && el.setSelectionRange) el.setSelectionRange(range[0], range[1]); }
+    }
+  }
+
+  /** Show the editor (nothing selected) and put the cursor in a field.
+   *  @param {string} [field] */
+  function showEditor(field) {
+    _sel = null; _expanded = ""; _edErr = "";
+    repaintEditor();
+    if (field) setTimeout(() => {
+      const el = /** @type {any} */ (NB.$("qe-insp").querySelector(`[data-f="${field}"]`));
+      if (el) { el.focus(); if (el.select && field === "setname") el.select(); }
+    }, 0);
+  }
+
+  /** @param {InpSet} set */
+  function openSet(set) {
+    if (NB.build.target() !== null) { NB.toast("The builder is open in the inspector. Close it to edit the set."); return; }
+    if (_ed && _ed.id === set.id) { _lastId = set.id; showEditor(); return; }
+    guardSwitch(() => { _ed = edFrom(set); _lastId = set.id; showEditor(); });
+  }
+
+  /** "+ New" in a kind's group: a new set from that kind's seeded input.
+   *  @param {string} kind */
+  function newSet(kind) {
+    if (NB.build.target() !== null) { NB.toast("The builder is open in the inspector. Close it to start a set."); return; }
+    guardSwitch(() => {
+      const text = _defaults[kind] || (kind === "MLIP" ? "model \ndevice auto\nnprocs 1\n"
+        : "! \n\n* xyz {{CHARGE}} {{MULT}}\n" + GEOM + "\n*\n");
+      const name = freeSetName(kind, "New " + kind);
+      _ed = { id: "", kind: kind, name: name, text: text, base: { name: name, text: text, kind: kind } };
+      showEditor("setname");
+    });
+  }
+
+  /** The coordinates an imported .inp carries, and the text with the
+   *  placeholders in their place, or null when it has none ORCAdesk reads
+   *  (`* xyz c m ... *`, `* xyzfile c m file`). @param {string} text */
+  function placeholderize(text) {
+    const block = "* xyz {{CHARGE}} {{MULT}}\n" + GEOM + "\n*";
+    const m = /^[ \t]*\*[ \t]*xyz[ \t]+(-?\d+)[ \t]+(\d+)[^\n]*\n([\s\S]*?)^[ \t]*\*[ \t]*$/im.exec(text);
+    if (m) {
+      const atoms = m[3].split("\n").filter(l => l.trim()).length;
+      return { text: text.slice(0, m.index) + block + text.slice(m.index + m[0].length),
+               what: `${atoms} atom${atoms === 1 ? "" : "s"}, charge ${m[1]}, multiplicity ${m[2]}` };
+    }
+    const f = /^[ \t]*\*[ \t]*xyzfile[ \t]+(-?\d+)[ \t]+(\d+)[ \t]+(\S+)[^\n]*$/im.exec(text);
+    if (f) {
+      return { text: text.slice(0, f.index) + block + text.slice(f.index + f[0].length),
+               what: `read from ${f[3]}, charge ${f[1]}, multiplicity ${f[2]}` };
+    }
+    return null;
+  }
+
+  /** "Import .inp…": a picked ORCA input as a new set. Coordinates it carries
+   *  are replaced by the placeholders only when the user says so. */
+  function edImport() {
+    if (NB.build.target() !== null) { NB.toast("The builder is open in the inspector. Close it to import a set."); return; }
+    guardSwitch(async () => {
+      const r = await NB.call("load_inp_file");
+      if (!r || r.cancelled) return;
+      if (!r.ok) { NB.fail("Could not read that .inp."); return; }
+      const text = String(r.text || "").replace(/\r\n?/g, "\n");
+      const stem = String(r.name || "imported").replace(/\.inp$/i, "");
+      const open = (/** @type {string} */ t) => {
+        const kind = detectKind(t);
+        const name = freeSetName(kind, stem);
+        // `base` empty: an import is unsaved until it is saved
+        _ed = { id: "", kind: kind, name: name, text: t, base: { name: name, text: "", kind: kind } };
+        showEditor();
+      };
+      const ph = text.indexOf(GEOM) >= 0 ? null : placeholderize(text);
+      if (!ph) { open(text); return; }
+      NB.modalRaw("Use the placeholders?",
+        `<p>${esc(stem)}.inp carries its own structure (${esc(ph.what)}). A set runs on each
+          block's structure, charge and multiplicity. Replace that block with</p>
+        <div class="modal-code">* xyz {{CHARGE}} {{MULT}}\n${GEOM}\n*</div>
+        <p>Kept as it is, the set cannot be saved until it has ${GEOM}.</p>`,
+        [{ label: "Keep as it is", cls: "btn-ghost", act: () => open(text) },
+         { label: "Replace", cls: "btn-primary", focus: true, act: () => open(ph.text) }]);
+    });
+  }
+
+  /** @param {string} msg */
+  function edError(msg) { _edErr = msg; repaintEditor(); }
+
+  /** Save the editor's set: over itself, or as a new one. Refusals are said
+   *  in the editor, with the reason. @param {boolean} asNew */
+  async function edSave(asNew) {
+    const d = _ed;
+    if (!d) return;
+    const name = d.name.trim(), text = d.text, kind = detectKind(text);
+    const clash = name ? _sets.find(x => x.kind === kind && lower(x.name) === lower(name)
+                                         && (asNew || !d.id || x.id !== d.id)) : null;
+    const err = !name ? "A set needs a name."
+      : kind !== "MLIP" && text.indexOf(GEOM) < 0 ? `${cap(aKind(kind))} set needs ${GEOM} where the coordinates go.`
+      : clash ? `There is already ${aKind(kind)} set named "${clash.name}". Give this one another name.`
+      : "";
+    if (err) { edError(err); return; }
+    const id = asNew ? "" : d.id;
+    const r = await NB.call("save_inp_set", JSON.stringify({ id: id, name: name, kind: kind, text: text }));
+    if (!r || r.ok !== true || !r.set) { edError(why(r, "The set was not saved")); return; }
+    const old = id ? { name: d.base.name, kind: d.base.kind } : null;
+    await loadSets();
+    _ed = edFrom(r.set);
+    _lastId = r.set.id;
+    _edErr = "";
+    repaintEditor();
+    NB.toast(`Saved the ${r.set.kind} set "${r.set.name}".`, "ok");
+    if (old) offerUpdate(old, r.set);
+  }
+
+  /** After a set is saved over itself: the blocks made from it that have not
+   *  run, whose text is now another one, are offered the new text -- once,
+   *  as one undoable batch. Blocks that have run never change.
+   *  @param {{name: string, kind: string}} old @param {InpSet} set */
+  function offerUpdate(old, set) {
+    if (old.kind !== set.kind) return;
+    const names = NB.queue.filter((/** @type {any} */ c) => c.set_name === old.name
+        && SET_KIND_OF[c.kind] === old.kind && EDITABLE.indexOf(c.state) >= 0
+        && (templateOf(c) !== set.text || c.set_name !== set.name))
+      .map((/** @type {any} */ c) => c.name);
+    if (!names.length) return;
+    const k = names.length;
+    NB.modalRaw(`Also update ${k} pending block${k === 1 ? "" : "s"}?`,
+      `<p>${k === 1 ? "One block that has not run was" : k + " blocks that have not run were"} made from
+        "${esc(old.name)}" and still ${k === 1 ? "has" : "have"} the text it had then:</p>
+       <div class="names">${names.map(esc).join("<br>")}</div>
+       <p>Blocks keep their text unless you update them. Blocks that have run never change. Ctrl+Z undoes the update.</p>`,
+      [{ label: "Keep their text", cls: "btn-ghost" },
+       { label: `Update ${k}`, cls: "btn-primary", focus: true, act: () => {
+          const u = updates(names, () => ({ raw_text: set.text, is_raw: true, set_name: set.name, set_id: set.id }));
+          apply(u.ops, u.inv, "the set update");
+        } }]);
+  }
+
+  /** "Duplicate": a copy of the set as saved, opened. */
+  function edDuplicate() {
+    const s = _ed && _ed.id ? _sets.find(x => x.id === _ed.id) : null;
+    if (!s) return;
+    guardSwitch(async () => {
+      const r = await NB.call("save_inp_set", JSON.stringify({
+        name: freeSetName(s.kind, s.name + " copy"), kind: s.kind, text: s.text }));
+      if (!r || r.ok !== true || !r.set) { NB.fail(why(r, "Could not duplicate the set")); return; }
+      await loadSets();
+      _ed = edFrom(r.set); _lastId = r.set.id;
+      showEditor("setname");
+    });
+  }
+
+  /** Delete a set, asked first. @param {InpSet} set */
+  function deleteSet(set) {
+    const users = NB.queue.filter((/** @type {any} */ c) => c.set_name === set.name && SET_KIND_OF[c.kind] === set.kind).length;
+    NB.confirm("Delete the inp set",
+      `The ${set.kind} set "${set.name}" leaves the library.${users ? ` The ${users} block${users === 1 ? "" : "s"} made from it keep${users === 1 ? "s" : ""} ${users === 1 ? "its" : "their"} text.` : ""}`,
+      "Delete", async () => {
+        const r = await NB.call("delete_inp_set", set.id);
+        if (!r || r.ok !== true) { NB.fail(why(r, "Could not delete the set")); return; }
+        if (_ed && _ed.id === set.id) {
+          // the editor falls back to a set of the same kind, else the first
+          _ed = null;
+          const near = _sets.find(x => x.kind === set.kind && x.id !== set.id);
+          _lastId = near ? near.id : "";
+        }
+        await loadSets();
+        repaintEditor();
+      });
+  }
+
+  /** The set editor, drawn in the inspector. @param {HTMLElement} host */
+  function inspectSets(host) {
+    const d = _ed;
+    if (!d) {
+      host.innerHTML = `
+        <div class="qe-ititle"><span class="qe-sysname" data-fixed="1">Inp sets</span></div>
+        <p class="hint">${_missing.length ? "The queue editor needs the updated backend." : "There are no inp sets."}
+          Start one with + New beside a kind on the left, or import an ORCA input.</p>
+        <div class="qe-saveas"><button class="btn btn-sm" type="button" data-a="import">Import .inp…</button></div>`;
+      const im = host.querySelector('[data-a="import"]');
+      if (im) im.addEventListener("click", edImport);
+      return;
+    }
+    const users = edUsers();
+    const pending = users.filter((/** @type {any} */ c) => EDITABLE.indexOf(c.state) >= 0).length;
+    host.innerHTML = `
+      <div class="qe-ititle">
+        <input class="qe-sysname" data-f="setname" value="${esc(d.name)}" spellcheck="false"
+          style="width:${Math.max(d.name.length, 4) + 0.5}ch" aria-label="Set name"
+          title="The set's name, as the library and its blocks show it">
+      </div>
+      <div class="qe-cm"><span data-f="kind"></span><span data-f="dirty"></span></div>
+      <p class="qe-note" data-tone="warn" data-f="moves" hidden></p>
+      <textarea class="qe-tpl" data-f="settext" rows="16" spellcheck="false"
+        aria-label="${esc("The " + d.kind + " set's input")}">${esc(d.text)}</textarea>
+      <p class="hint qe-ph" data-f="ph"></p>
+      <p class="qe-note" data-tone="err" data-f="err" role="alert"${_edErr ? "" : " hidden"}>${esc(_edErr)}</p>
+      <div class="qe-saveas">
+        <button class="btn btn-primary btn-sm" type="button" data-a="save">Save</button>
+        <button class="btn btn-sm" type="button" data-a="saveas">Save as new</button>
+        <span class="qe-barsp"></span>
+        ${d.id ? `<button class="btn btn-sm btn-danger" type="button" data-a="delete">Delete…</button>`
+               : `<button class="btn btn-sm" type="button" data-a="discard">Discard</button>`}
+      </div>
+      <div class="qe-saveas">
+        ${d.id ? `<button class="btn btn-sm btn-ghost" type="button" data-a="dup">Duplicate</button>` : ""}
+        <button class="btn btn-sm btn-ghost" type="button" data-a="import">Import .inp…</button>
+      </div>
+      <p class="hint">${!d.id ? "Not saved yet."
+        : users.length ? `${users.length} block${users.length === 1 ? " in the queue was" : "s in the queue were"} made from it${
+            pending ? `, ${pending} not run yet` : ""}. A block keeps the text it was made with; saving offers the new one to those that have not run.`
+        : "No block in the queue was made from it. Blocks keep the text they were made with."}</p>`;
+    const q = (/** @type {string} */ x) => /** @type {any} */ (host.querySelector(x));
+    const nm = q('[data-f="setname"]'), ta = q('[data-f="settext"]');
+    const sync = () => {
+      const k = detectKind(d.text);
+      q('[data-f="kind"]').textContent = k + " set";
+      q('[data-f="dirty"]').textContent = !d.id ? "· new, not saved" : edDirty() ? "· unsaved changes" : "";
+      const mv = q('[data-f="moves"]');
+      mv.hidden = k === d.kind;
+      mv.textContent = k === d.kind ? "" : `This text reads as ${k === "MLIP" ? "MLIP settings" : aKind(k) + " input"}: saved, the set moves to the ${k} group.`;
+      q('[data-f="ph"]').textContent = k === "MLIP"
+        ? "One setting per line: model, device (auto, cpu, cuda), nprocs, env."
+        : GEOM + " the block's coordinates · {{CHARGE}} {{MULT}} its charge and multiplicity · {{HESS}} the Hessian of the step it runs after (IRC).";
+    };
+    sync();
+    const typed = () => {
+      d.name = nm.value; d.text = ta.value;
+      nm.style.width = Math.max(nm.value.length, 4) + 0.5 + "ch";
+      if (_edErr) { _edErr = ""; q('[data-f="err"]').hidden = true; }
+      sync();
+    };
+    nm.addEventListener("input", typed);
+    ta.addEventListener("input", typed);
+    [nm, ta].forEach(el => el.addEventListener("keydown", (/** @type {KeyboardEvent} */ ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") { ev.preventDefault(); typed(); edSave(false); }
+    }));
+    q('[data-a="save"]').addEventListener("click", () => edSave(false));
+    q('[data-a="saveas"]').addEventListener("click", () => edSave(true));
+    const del = q('[data-a="delete"]');
+    if (del) del.addEventListener("click", () => { const s = _sets.find(x => x.id === d.id); if (s) deleteSet(s); });
+    const dis = q('[data-a="discard"]');
+    if (dis) dis.addEventListener("click", () => { _ed = null; _edErr = ""; edEnsure(); showEditor(); });
+    const dup = q('[data-a="dup"]');
+    if (dup) dup.addEventListener("click", edDuplicate);
+    q('[data-a="import"]').addEventListener("click", edImport);
+  }
+
   /** A free calculation name: `base`, else base2, base3 ... (the store's
    *  names are unique without regard to case). @param {string} base @param {Set<string>} [also] */
   function freeName(base, also) {
@@ -987,22 +1461,30 @@
   }
 
   /** The ops that turn a standalone calculation into a one-node system, so a
-   *  next step can hang off it. @param {any} P */
+   *  next step can hang off it. place_calc moves the calculation in the
+   *  layout only and is allowed in every state, so a finished one is adopted
+   *  without being edited (P24: what it ran and produced stays as it is).
+   *  The system is named after it -- the prefix its follow-ups take -- made
+   *  ORCA-safe and unique among the systems. @param {any} P */
   async function adopt(P) {
     const c = P.members[0];
     const f = _full.get(c.name);
     const sysId = newId("s"), nodeId = newId("n");
     const xyz = f && f.calc && f.calc.geometry_source !== "reference" ? String(f.calc.xyz || "") : "";
+    const sysNames = new Set(NB.systems.map((/** @type {any} */ s) => lower(s.name)));
+    const base = cleanName(c.name) || "system";
+    let nm = base;
+    for (let i = 2; sysNames.has(lower(nm)); i++) nm = base + "-" + i;
     const ops = [
-      { op: "add_system", system: { id: sysId, name: c.name, charge: c.charge, multiplicity: c.multiplicity,
-          inputs: xyz ? [{ label: c.name + ".xyz", xyz: xyz }] : [] } },
-      { op: "update_calc", name: c.name, calc: { system: sysId, node: nodeId, col: 0, row: 0 } },
+      { op: "add_system", system: { id: sysId, name: nm, charge: c.charge, multiplicity: c.multiplicity,
+          inputs: xyz ? [{ label: c.name + " input", xyz: xyz }] : [] } },
+      { op: "place_calc", name: c.name, place: { system: sysId, node: nodeId, col: 0, row: 0 } },
     ];
     const inv = [
-      { op: "update_calc", name: c.name, calc: { system: "", node: "", col: 0, row: 0 } },
+      { op: "place_calc", name: c.name, place: { system: "", node: "", col: 0, row: 0 } },
       { op: "remove_system", id: sysId },
     ];
-    return { ops: ops, inv: inv, sys: { id: sysId, name: c.name, charge: c.charge, multiplicity: c.multiplicity },
+    return { ops: ops, inv: inv, sys: { id: sysId, name: nm, charge: c.charge, multiplicity: c.multiplicity },
              parent: { id: nodeId, members: [c], kind: c.kind, stack: false } };
   }
 
@@ -1061,10 +1543,7 @@
                                                   g.lane, g.c, g.r, fresh) };
     const ops = pre.ops.concat(adds, [order]);
     const inv = fresh.map(n => ({ op: "remove_calc", name: n })).concat(pre.inv);
-    const laneKey = "s:" + sys.id;
-    _sel = { t: "node", key: laneKey + "/" + nodeId, m: 0 };
-    _pop = _sel.key;
-    if (!(await apply(ops, inv, "the new " + set.kind))) _sel = null;
+    await applySel(ops, inv, "the new " + set.kind, { t: "node", key: "s:" + sys.id + "/" + nodeId, m: 0 });
   }
 
   /** The builder, hosted in the inspector. @param {string} target "" for a new one
@@ -1084,6 +1563,9 @@
       const a = await adopt(P);
       if (!(await apply(a.ops, a.inv, "making a system of " + P.members[0].name))) return;
       sys = a.sys; P = a.parent;
+      // the block is the new row's first node now: keep it selected, so the
+      // slot it offers (and its "Manual build" mark) stays drawn
+      _sel = { t: "node", key: "s:" + sys.id + "/" + P.id, m: 0 };
       g = Object.assign({}, g, { key: "s:" + sys.id + "@" + g.c + "," + g.r });
     }
     const parent = P ? P.members[Math.min((_sel && _sel.m) || 0, P.members.length - 1)] : null;
@@ -1150,15 +1632,20 @@
     // run it was -- so a removal that includes one is not offered as undoable
     // (an "undo" that queues a finished job to run again is not an undo)
     const finished = calcs.some(c => c && (c.state === "done" || c.state === "failed"));
+    // a row left with no block goes with its last one, as the design's lanes do
+    const emptied = !!L.sys && L.calcs.every((/** @type {any} */ c) => set.has(c.name));
     NB.modalRaw(`Remove ${gone.length} calculation${gone.length === 1 ? "" : "s"}?`,
-      `<p>${esc(n.short)} is removed from the queue.${esc(after)} Files already written stay on disk.${
+      `<p>${esc(n.short)} is removed from the queue.${esc(after)}${emptied ? " Its row goes too." : ""} Files already written stay on disk.${
         finished ? " Finished calculations cannot be brought back with Ctrl+Z." : " Ctrl+Z brings it back."}</p>`,
       [{ label: "Cancel", cls: "btn-ghost" },
-       { label: "Remove", cls: "btn-danger", focus: true, act: () => {
+       { label: "Remove", cls: "btn-danger", focus: true, act: async () => {
           const before = NB.queue.map((/** @type {any} */ c) => c.name);
-          const ops = gone.slice().reverse().map(x => ({ op: "remove_calc", name: x }));
-          const inv = finished ? null : gone.map(x => ({ op: "add_calc", calc: calcDict(x) }))
-            .concat([{ op: "order", names: before }]);
+          const sysFull = emptied ? await systemFull(L.sys.id) : null;
+          const ops = /** @type {any[]} */ (gone.slice().reverse().map(x => ({ op: "remove_calc", name: x })));
+          if (emptied) ops.push({ op: "remove_system", id: L.sys.id });
+          const inv = finished || (emptied && !sysFull) ? null
+            : (/** @type {any[]} */ (sysFull ? [{ op: "add_system", system: sysFull }] : []))
+              .concat(gone.map(x => ({ op: "add_calc", calc: calcDict(x) })), [{ op: "order", names: before }]);
           _sel = null;
           apply(ops, inv, "the removal");
         } }]);
@@ -1194,10 +1681,9 @@
     let nm = base, i = 2;
     while (taken.has(lower(nm)) || NB.queue.some((/** @type {any} */ c) => lower(c.name) === lower(nm))) nm = base + "-" + (i++);
     const id = newId("s");
-    _sel = { t: "sys", key: "s:" + id };
-    if (!(await apply([{ op: "add_system", system: { id: id, name: nm, charge: 0, multiplicity: 1,
-                         inputs: [{ label: (r.name || nm) + ".xyz", xyz: r.text }] } }],
-                      [{ op: "remove_system", id: id }], "the new system"))) _sel = null;
+    await applySel([{ op: "add_system", system: { id: id, name: nm, charge: 0, multiplicity: 1,
+                      inputs: [{ label: (r.name || nm) + ".xyz", xyz: r.text }] } }],
+                   [{ op: "remove_system", id: id }], "the new system", { t: "sys", key: "s:" + id });
   }
 
   // ---- lanes: move, copy
@@ -1265,9 +1751,9 @@
     fresh.forEach((/** @type {string} */ x) => inv.push({ op: "remove_calc", name: x }));
     if (sysId) inv.push({ op: "remove_system", id: sysId });
     const first = L.nodes[0];
-    _sel = sysId && first && first.id ? { t: "node", key: "s:" + sysId + "/" + nodeMap.get(first.id), m: 0 }
-      : { t: "node", key: "c:" + fresh[0], m: 0 };
-    if (!(await apply(ops, inv, "the copy"))) _sel = null;
+    await applySel(ops, inv, "the copy", sysId && first && first.id
+      ? { t: "node", key: "s:" + sysId + "/" + nodeMap.get(first.id), m: 0 }
+      : { t: "node", key: "c:" + fresh[0], m: 0 });
   }
 
   // ------------------------------------------------------------ drops of files
@@ -1495,12 +1981,18 @@
   function wireLibrary() {
     const host = NB.$("qe-sets");
     host.addEventListener("click", (/** @type {MouseEvent} */ ev) => {
-      const b = /** @type {HTMLElement} */ (ev.target).closest(".qe-set");
+      const t = /** @type {HTMLElement} */ (ev.target);
+      const nw = t.closest("[data-new]");
+      if (nw) { newSet(nw.getAttribute("data-new") || "SP"); return; }
+      const b = t.closest("button.qe-set");
       if (!b) return;
       const set = _sets.find(s => s.id === b.getAttribute("data-id"));
+      if (!set) return;
       const n = selNode();
-      if (!set || !n || set.kind !== n.setKind || !n.editable) return;
-      requestReplace(n, set);
+      // on the selected block when the kinds match and it can still change;
+      // otherwise the click opens the set in the editor
+      if (n && set.kind === n.setKind && n.editable) { requestReplace(n, set); return; }
+      openSet(set);
     });
     host.addEventListener("dragstart", (/** @type {DragEvent} */ ev) => {
       const b = /** @type {HTMLElement} */ (ev.target).closest(".qe-set");
@@ -1523,14 +2015,7 @@
       if (!set) return;
       ev.preventDefault();
       ev.stopPropagation();
-      NB.confirm("Delete the inp set",
-        `"${set.name}" leaves the library. Calculations already built from it keep their template.`,
-        "Delete", async () => {
-          const r = await NB.call("delete_inp_set", set.id);
-          if (!r || r.ok !== true) { NB.fail(why(r, "Could not delete the set")); return; }
-          await loadSets();
-          render();
-        });
+      deleteSet(set);
     });
     NB.$("qe-rset").addEventListener("change", saveRecipe);
     NB.$("qe-rsfx").addEventListener("change", saveRecipe);
@@ -1572,9 +2057,27 @@
       if (!f || f.sig !== sig || EDITABLE.indexOf(c.state) >= 0) need.push({ name: c.name, sig: sig });
     });
     [..._full.keys()].forEach(k => { if (!live.has(k)) _full.delete(k); });
+    [..._preview.keys()].forEach(k => { if (!live.has(k)) _preview.delete(k); });
     await Promise.all(need.map(async x => {
       const g = await NB.call("get_calc", x.name);
       if (g && g.ok && g.calc) _full.set(x.name, { sig: x.sig, calc: g.calc });
+    }));
+    // the guided ends of an Opt/OptTS -> Freq connection: their input, for
+    // the level comparison (a template's own text is compared directly)
+    const byName = new Map(NB.queue.map((/** @type {any} */ c) => [c.name, c]));
+    const ends = new Set();
+    NB.queue.forEach((/** @type {any} */ c) => {
+      const p = c.after ? byName.get(c.after) : null;
+      if (!p || SET_KIND_OF[c.kind] !== "Freq" || (SET_KIND_OF[p.kind] !== "Opt" && SET_KIND_OF[p.kind] !== "OptTS")) return;
+      [c, p].forEach(x => ends.add(x));
+    });
+    await Promise.all([...ends].map(async (/** @type {any} */ c) => {
+      const f = _full.get(c.name);
+      if (!f || !f.calc || f.calc.is_raw || f.calc.raw_text) return;
+      const pv = _preview.get(c.name);
+      if (pv && pv.sig === f.sig) return;
+      const r = await NB.call("build_inp_preview", JSON.stringify(f.calc));
+      if (r && r.ok) _preview.set(c.name, { sig: f.sig, text: String(r.text || "") });
     }));
     _sysFull.clear();
   }
@@ -1606,6 +2109,7 @@
             <label class="qe-rlab">runs <select class="qe-select" id="qe-rset" aria-label="The SP set a dropped structure runs"></select></label>
             <label class="qe-rlab">name + <input class="qe-input mono" id="qe-rsfx" spellcheck="false"
               aria-label="Suffix of a dropped structure's calculation name"></label>
+            <p class="hint qe-pad qe-drophint">Drop .xyz files anywhere on this window: each becomes a row that runs this set.</p>
           </div>
           <div class="qe-dragimgs" id="qe-dragimgs" aria-hidden="true"></div>
         </aside>

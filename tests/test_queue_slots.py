@@ -44,6 +44,8 @@ def test_inp_set_slots(bridge):
     sets = call(bridge, "get_inp_sets")
     assert sets["ok"] and len(sets["sets"]) == 6
     assert "%pal nprocs 4 end" in next(s for s in sets["sets"] if s["kind"] == "SP")["text"]
+    assert set(sets["defaults"]) == {"MLIP", "Opt", "OptTS", "Freq", "IRC", "SP"}
+    assert "%pal nprocs 4 end" in sets["defaults"]["Freq"]
     saved = call(bridge, "save_inp_set", json.dumps(
         {"name": "mine", "kind": "SP", "text": "! SP\n* xyz 0 1\n{{GEOMETRY}}\n*\n"}))
     assert saved["ok"] and saved["set"]["id"]

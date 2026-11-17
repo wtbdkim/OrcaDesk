@@ -2005,13 +2005,16 @@ Queue" prototype); its sample data and template texts are not the spec. Three
 columns:
 
 - **Library** (left) — the inp sets, grouped by kind (MLIP, Opt, OptTS, Freq,
-  IRC, SP). A set is dragged onto a block of its kind to replace that block's
-  template, or onto the ghost slot to add the next step; a click applies it to
-  the selected block when the kinds match. The first replacement is confirmed
-  (§13.1) and said to be asked once; later ones apply at once. Delete on a
-  focused set removes it from the library (confirmed). Under the library, the
-  **drop recipe**: the SP set and the name suffix a dropped `.xyz` runs with,
-  kept in the UI state.
+  IRC, SP), every kind's group shown with a *+ New* beside its name. A set is
+  dragged onto a block of its kind to replace that block's template, or onto
+  the ghost slot to add the next step; a click applies it to the selected
+  block when the kinds match and the block can still change, and otherwise
+  opens the set in the **set editor** (marked in the library by a left bar).
+  The first replacement is confirmed (§13.1) and said to be asked once; later
+  ones apply at once. Delete on a focused set removes it from the library
+  (confirmed). Under the library, the **drop recipe**: the SP set and the name
+  suffix a dropped `.xyz` runs with, kept in the UI state, with one line saying
+  what a dropped file becomes.
 - **Lanes** (middle) — one per system, top to bottom in run order; a standalone
   calculation is a one-node lane. A block (140 x 64, 176px a column, 104px a
   row) carries its state dot (§12 colours; *waiting* is an amber ring), its run
@@ -2019,10 +2022,17 @@ columns:
   set). A **stack** (several calculations sharing a node, e.g. an SP after an
   IRC is `-F` and `-B`) shows its count and unfolds a member list. **Edges**
   are solid when the next step runs by itself and dashed amber when it waits
-  for approval. The **ghost +** after the selected block takes a dropped set,
-  or opens **Manual build**: the Guided builder in the inspector, seeded for
-  that place, whose calculation lands in that lane, column and row. An empty
-  system shows its first slot. The **grip** moves a lane (drag), copies it
+  for approval. The **ghost +** after the selected block — any block, finished
+  or failed included, as the design has it: a next step after a done OptTS or
+  IRC is how a follow-up is queued — takes a dropped set, or opens **Manual
+  build**: the Guided builder in the inspector, seeded for that place, whose
+  calculation lands in that lane, column and row. A standalone block first
+  becomes a one-node system named after it (`place_calc`: its place in the
+  layout changes, nothing it ran — P24). A pending block below a failed or
+  blocked one is drawn blocked at once (the design's derived state), not only
+  after a run says so. An empty system shows its first slot; an empty queue
+  says how a row starts. Removing the last block of a system removes the
+  system with it (one undoable batch). The **grip** moves a lane (drag), copies it
   (Ctrl-drop, or a click: copy below) and answers Alt+↑/↓; *+ system* starts a
   lane from an `.xyz`. Top bar: Clear all, Cancel, Stop after current, Run
   queue (the main window's strip has the last three), and one line of the worst warning (duplicate
@@ -2031,17 +2041,39 @@ columns:
 - **Inspector** (right) — for a block: the system name (renames the lane, and
   every calculation name follows; read-only once the lane has started), charge
   and multiplicity, the geometry (the system's structures, or any ancestor's
-  output along the `after` chain, an IRC's two ends included), the template,
-  and *Save as* a new set of the kind its job line says. A block the Guided
-  builder made shows its generated input read-only and *Edit in the builder*.
-  For an edge: *Auto* / *After approval*, the auto-pass box after a Freq
-  (`ts_freq`: one imaginary mode expected, otherwise none), and *Approve* while
-  the next step waits.
+  output along the `after` chain — every member of an ancestor stack, an IRC's
+  two ends), the template, and *Save as* a new set of the kind its job line
+  says. A block the Guided builder made shows its generated input read-only
+  and *Edit in the builder* (an MLIP or CREST block: the settings it runs, in
+  `key value` lines, never an ORCA input it does not run). A block that waits
+  at its gate has its own *Approve*, and one that runs after a calculation in
+  another row says so (no edge on the canvas shows it). For an edge: *Auto* /
+  *After approval*, the auto-pass box after a Freq (`ts_freq`: one imaginary
+  mode expected, otherwise none), and *Approve* while the next step waits.
+  With **nothing selected** the inspector is the **set editor** (not a help
+  text): the set's name as the title, its kind as read off the job line (a
+  text that reads as another kind says it will move group), the text in the
+  template field, one line naming the placeholders (`{{GEOMETRY}}`,
+  `{{CHARGE}}` `{{MULT}}`, `{{HESS}}`; for MLIP the setting keys), then *Save*,
+  *Save as new*, *Delete…* (a new one: *Discard*), *Duplicate* and *Import
+  .inp…*. Refusals (no name, no `{{GEOMETRY}}`, a name its kind already has)
+  are said in the editor, in the error colour, not only in a toast. An
+  imported input's coordinate block is replaced by the placeholders only when
+  the user says so. Blocks copied their text: a saved set changes none by
+  itself; the pending blocks made from it are offered the new text once, as
+  one undoable batch — started blocks never. Unsaved edits survive selecting
+  blocks; switching to another set asks *Keep editing* / *Discard changes*.
+  Escape or a click on the empty canvas comes back to the editor, on the set
+  last opened (else the first). The inspector never repaints under the cursor
+  while it still shows what is selected; a new selection is drawn at once,
+  and a save or refusal in the editor is drawn with the cursor kept in place.
 
 It holds **no queue state of its own**. Every change is one `apply_queue_ops`
 batch (all or nothing) and the editor redraws from the next poll; what it keeps
 is the selection, a popover, a drag, and an **undo stack of inverse batches**
-(Ctrl+Z). A removal that takes a finished calculation with it is not offered as
+(Ctrl+Z). What a batch adds is selected once it is in the snapshot the batch
+returns, never before (a render in between would drop a selection of a block
+that does not exist yet). A removal that takes a finished calculation with it is not offered as
 undoable — the store would take it back as PENDING, which is queueing it to run
 again, not undoing. Delete removes a block and everything after it (confirmed;
 a running one is refused: cancel it first).

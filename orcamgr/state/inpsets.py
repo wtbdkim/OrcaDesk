@@ -137,6 +137,11 @@ def seed_sets(nprocs: int = 6, maxcore_mb: int = 2400) -> "list[dict]":
     return sets
 
 
+def seed_texts(nprocs: int = 6, maxcore_mb: int = 2400) -> "dict[str, str]":
+    """Each kind's seeded text — what the editor's "+ New" starts a set from."""
+    return {s["kind"]: s["text"] for s in seed_sets(nprocs, maxcore_mb)}
+
+
 def new_set_id() -> str:
     return "set-" + secrets.token_hex(4)
 
@@ -236,14 +241,23 @@ def load_sets(root: Optional[Path] = None, nprocs: int = 6,
 def save_set(d, root: Optional[Path] = None, nprocs: int = 6,
              maxcore_mb: int = 2400) -> dict:
     """Add a set, or replace the one with the same id; returns it as stored
-    (with its id). ValueError when it does not validate, OSError when the file
-    cannot be written."""
+    (with its id). ValueError when it does not validate or its name is taken
+    by another set of its kind, OSError when the file cannot be written."""
     s = validate_set(d)
     path = sets_file(root)
     with _lock:
         sets = _read(path)
         if sets is None:
             sets = seed_sets(nprocs, maxcore_mb)
+        # a block names the set it came from by (kind, name), so two sets of
+        # one kind may not share a name (other kinds may: the seeds all
+        # describe the same level of theory)
+        clash = next((o for o in sets if o["id"] != s["id"] and o["kind"] == s["kind"]
+                      and o["name"].casefold() == s["name"].casefold()), None)
+        if clash is not None:
+            article = "a" if s["kind"] == "Freq" else "an"
+            raise ValueError(f"There is already {article} {s['kind']} set named "
+                             f"'{clash['name']}'.")
         for i, old in enumerate(sets):
             if old["id"] == s["id"]:
                 sets[i] = s

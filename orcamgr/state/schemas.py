@@ -569,6 +569,7 @@ class InpSetsResult(_Ok, total=False):
     """get_inp_sets."""
     error: str
     sets: "list[InpSet]"
+    defaults: "dict[str, str]"   # set kind -> its seeded text ("+ New")
 
 
 class InpSetResult(_Ok, total=False):
