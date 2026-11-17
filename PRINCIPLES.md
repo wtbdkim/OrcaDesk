@@ -602,20 +602,21 @@ front-end-only artifacts (double modals), not the security boundary.
 ### P45 — Results gating lives on the front-end
 
 The backend always sends the whole `ParseResult` plus two gating flags; what
-to show per calc kind is decided in `renderResultSections`/`renderSummary`,
-and the payload is cached (`_resultExtras`) so the "Show all" toggle
-re-renders with **no re-fetch**. Specialty sections are present-only — they
+to show per calc kind is decided in the report (`web/next/results.js`), and
+the payload on screen is kept so the "Show all" toggle re-renders with **no
+re-fetch**. Specialty sections are present-only — they
 exist only for their kind, so presence is the gate.
 
 ### P46 — Stream-parsing and progress logic live in the `SCFGraph` modules
 
 Log-line parsing, progress tracking, and ETA estimation — the logic-dense,
-regression-prone part — live outside `app.js`, in modules shared by desktop and
-mobile: DOM-free trackers (unit-testable in node, push-based, idempotent by
+regression-prone part — live outside the page's own scripts, in modules shared
+by desktop and mobile: DOM-free trackers (unit-testable in node, push-based, idempotent by
 keying steps on the real cycle number so re-fed lines overwrite instead of
-inflating) plus pure functions returning HTML/SVG strings. `app.js` only
-pushes lines and inserts the returned strings. One-shot static SVG over a
-finished payload may stay in `app.js`. Every regex/heuristic in these modules
+inflating) plus pure functions returning HTML/SVG strings. The page only
+pushes lines and draws from what the trackers hold (the notebook draws its own
+charts in the design's vocabulary, `web/next/charts.js`, reading the trackers
+as parsers). One-shot static SVG over a finished payload may stay in the page. Every regex/heuristic in these modules
 carries its real-output validation evidence in a comment (P3).
 
 They are two files behind **one namespace**: `scf_graph.js` (SCF + geometry

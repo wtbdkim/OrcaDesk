@@ -51,9 +51,6 @@ def test_load_with_missing_file_yields_defaults(settings_file, tmp_path):
     assert s.default_nprocs == 6
     assert s.default_maxcore_mb == 2400
     assert s.theme == "dark"
-    assert s.theme_variant == "shadcn"      # Liquid-Glass is opt-in
-    assert s.glass_level == "moderate"
-    assert s.wallpaper == "aurora"
     assert s.eta_mode == "conservative"
     assert s.geo_graph_mode == "all5"
     assert s.build_mode == "beginner"
@@ -133,16 +130,24 @@ def test_save_load_roundtrip_preserves_values(settings_file, tmp_path):
     assert loaded.mlip_envs == s.mlip_envs
 
 
-def test_appearance_fields_roundtrip(settings_file, tmp_path):
-    """Liquid-Glass appearance settings persist and reload verbatim."""
-    s = Settings(theme="light", theme_variant="liquidglass",
-                 glass_level="vivid", wallpaper="sunset",
-                 workspace_root=str(tmp_path / "ws"))
-    s.save()
-    loaded = Settings.load()
-    assert loaded.theme_variant == "liquidglass"
-    assert loaded.glass_level == "vivid"
-    assert loaded.wallpaper == "sunset"
+def test_retired_classic_keys_are_dropped_on_load(settings_file):
+    """A settings.json from a build that still had the classic front-end
+    carries ui_variant and the Liquid-Glass keys (theme_variant, glass_level,
+    wallpaper). They are dropped on load like any unknown key, every setting
+    beside them survives, and the next save no longer writes them (P33)."""
+    write_settings(settings_file, {
+        "ui_variant": "classic", "theme_variant": "liquidglass",
+        "glass_level": "vivid", "wallpaper": "custom",
+        "theme": "light", "eta_mode": "eager"})
+    s = Settings.load()
+    assert s.theme == "light"
+    assert s.eta_mode == "eager"
+    retired = ("ui_variant", "theme_variant", "glass_level", "wallpaper")
+    for gone in retired:
+        assert not hasattr(s, gone)
+    assert s.save()
+    data = json.loads(settings_file.read_text(encoding="utf-8"))
+    assert not set(retired) & set(data)
 
 
 def test_save_failure_does_not_raise(monkeypatch, tmp_path):

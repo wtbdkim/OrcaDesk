@@ -70,6 +70,11 @@ REMOVED = {
     # app.css "one stage, not two").
     "secblock_viewer": "Structure is the Visual panel's first tile",
     "viewstage": "Structure is the Visual panel's first tile",
+    # The Settings sheet's Appearance card (style select + Liquid-Glass
+    # intensity slider) only ever configured the classic front-end, which is
+    # removed; the notebook draws flat and its light/dark toggle is in the
+    # top bar. The reference still draws the card.
+    "slider": "the Liquid-Glass intensity slider went with the classic UI",
 }
 # Sizes within this many px read as the same to the eye and are not worth
 # chasing; anything above it is a real difference in proportion.

@@ -18,7 +18,7 @@
      frames  ->  mol.js, the same painter as every other stage here, so drag,
                  click and right-drag-to-measure behave identically in the big
                  window and the small one.
-     volume  ->  3Dmol (../vendor/3Dmol-min.js, the one the classic UI ships),
+     volume  ->  3Dmol (../vendor/3Dmol-min.js, the bundled copy),
                  loaded on FIRST USE only. Marching cubes in the notebook's own
                  painter would be a second implementation of something already
                  in the repo, and nothing here needs WebGL until an isosurface

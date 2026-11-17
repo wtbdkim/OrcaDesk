@@ -743,7 +743,7 @@
         return;
       }
       // Going the other way IS a conversion: the form becomes the .inp it would
-      // have generated (the classic setDftSub does the same), so the text starts
+      // have generated, so the text starts
       // as what Preview showed rather than an empty editor that throws the form
       // away. No coordinates yet -> {{GEOMETRY}}, filled from the box at run
       // time. A failed conversion does not switch; the filled form stays.
@@ -770,7 +770,7 @@
       st.kind = e.target.value;
       st.xyz = snap.xyz; st.rawText = snap.raw_text;
       // The calculation type IS the kind, so it always takes the new kind's
-      // default (as the classic onKindChange does). Carried over, Optimization's
+      // default. Carried over, Optimization's
       // "TightOpt" became an Opt + Freq's whole job line: no Freq keyword, a run
       // that never computed a Hessian, FAILED and locked. SCF and extra keywords
       // follow the new kind only while they still hold the old kind's default —
@@ -1783,7 +1783,7 @@
      basis, no .inp, no constraints — so nothing of the ORCA form is drawn for
      them, and nothing of it is read back.
 
-     Hidden or locked the way the classic Build tab does it (D41 as amended):
+     Hidden or locked per D41 (as amended):
      a backend the user never set up has no button here, only "+ More
      backends…" pointing at Settings; one set up but not ready (a registered
      environment that fails to import, CREST missing from the distribution
@@ -1793,13 +1793,13 @@
      ============================================================ */
 
   /** The kinds each other backend builds, in the order the Task field offers
-   *  them (the classic card's #mlip-task order). @type {Record<string, [string, string][]>} */
+   *  them. @type {Record<string, [string, string][]>} */
   const BACKEND_KINDS = {
     mlip: [["mlip_opt", "Optimization"], ["mlip_sp", "Single point"],
            ["mlip_freq", "Frequencies"], ["mlip_opt_freq", "Opt + Frequencies"]],
     crest: [["crest_conf", "Conformer search"]],
   };
-  /* CREST's own vocabulary, as the classic card offers it. The method maps
+  /* CREST's own vocabulary. The method maps
      1:1 onto CREST's flag (build_crest_argv); the solvent is a suggestion
      list, not a closed one — any ALPB/GBSA name CREST knows is taken (D63). */
   /** @type {[string, string][]} */
@@ -1916,8 +1916,8 @@
     const m = NB.backends.mlip;
     return !!(m && (m.envs || []).some(e => e.state === "ready" && e.cuda === true));
   }
-  /** What "CPU threads" does on the chosen device (D2) — the classic card's
-   *  #mlip-threads-note. It always caps the worker; the queue charges it only
+  /** What "CPU threads" does on the chosen device (D2). It always caps the
+   *  worker; the queue charges it only
    *  off the GPU, where a job is charged one core and takes the GPU lane.
    *  @param {string} dev "" | "cpu" | "cuda" */
   function threadsNote(dev) {

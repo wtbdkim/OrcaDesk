@@ -86,15 +86,13 @@ class MainWindow(QMainWindow):
     # files that can be dropped onto the window -> routed by extension
     DROP_EXTS = (".inp", ".xyz", ".out")
 
-    # The size each front-end opens at. These are not preferences: the notebook
+    # The size the window opens at. This is not a preference: the notebook
     # layout is DRAWN at one width. design/notebook-reference.html and
     # tools/uispec.py both measure at 1680x1000, and app.css narrows the
-    # queue rail below 1320 (@media max-width:1320px), so opening the preview
-    # at the classic 1100 put it in a layout the design never shows -- a
-    # narrow rail, cells in one column -- which reads as a different UI rather
-    # than as a narrow one. Classic has no such breakpoint and keeps its size.
-    _SIZE_BY_VARIANT = {"notebook": (1680, 1000)}
-    _SIZE_DEFAULT = (1100, 820)
+    # queue rail below 1320 (@media max-width:1320px), so opening at 1100 put
+    # it in a layout the design never shows -- a narrow rail, cells in one
+    # column -- which reads as a different UI rather than as a narrow one.
+    _SIZE = (1680, 1000)
     # ...but never larger than the screen it opens on. On a display too narrow
     # for the design (a 1366-wide laptop) the clamp does drop below 1320 and the
     # rail narrows -- that is the responsive layout doing its job, and the
@@ -134,10 +132,9 @@ class MainWindow(QMainWindow):
         self._page = _ConsoleCapturePage(self.store, self.view)
         self.view.setPage(self._page)
 
-        # WebGL is ON: the Results-tab molecule viewer (3Dmol.js) renders
-        # conformers/structures with it. The Liquid-Glass wallpaper canvas is
-        # still 2D — WebGL is used only inside the viewer's own canvas. Chromium's
-        # built-in PDF viewer stays off (the UI never opens PDFs).
+        # WebGL is ON: the pop-out viewer's isosurfaces (3Dmol.js, web/next/
+        # mvwin.js) render with it; every other picture is a 2D canvas or SVG.
+        # Chromium's built-in PDF viewer stays off (the UI never opens PDFs).
         # (No cache/cookie tuning needed: the Qt 6 default profile is already
         # off-the-record — in-memory cache, no persistent cookies.)
         ws = self._page.settings()
@@ -160,7 +157,7 @@ class MainWindow(QMainWindow):
         self._drop_child = None
         self.view.loadFinished.connect(self._install_drop_filter)
         # ...and check that it loaded at all. An absent or unreadable
-        # web/index.html (a broken bundle, web/ quarantined by an antivirus)
+        # web/next/index.html (a broken bundle, web/ quarantined by an antivirus)
         # otherwise left Chromium's own ERR_FILE_NOT_FOUND page on screen, in
         # the OS language, with nothing in the log and the backend running
         # happily behind it.
@@ -201,18 +198,10 @@ class MainWindow(QMainWindow):
         # persist (writes config_file so this dialog won't show again)
         settings.save()
 
-    @staticmethod
-    def _ui_variant() -> str:
-        """Which front-end the user has selected. One reader, two callers: the
-        file to load and the size to open at, which must not disagree."""
-        return Settings.load().ui_variant
-
     def _initial_size(self) -> tuple[int, int]:
-        """The window size for the selected front-end, clamped to the screen.
-
-        See _SIZE_BY_VARIANT for why this is per-variant rather than one number.
-        """
-        w, h = self._SIZE_BY_VARIANT.get(self._ui_variant(), self._SIZE_DEFAULT)
+        """The window size the layout is drawn at (see _SIZE), clamped to the
+        screen."""
+        w, h = self._SIZE
         screen = QApplication.primaryScreen()
         if screen is not None:
             avail = screen.availableGeometry()
@@ -220,48 +209,17 @@ class MainWindow(QMainWindow):
             h = min(h, max(self._MIN_SIZE[1], avail.height() - self._SCREEN_MARGIN))
         return w, h
 
-    def _index_file(self) -> Path:
-        """The front-end entry point to load.
+    @staticmethod
+    def _index_file() -> Path:
+        """The front-end entry point: web/next/index.html, the notebook UI.
 
-        Two front-ends ship side by side while the notebook layout is in
-        development: web/index.html (classic, the default) and
-        web/next/index.html (the new single-window shell), chosen by
-        Settings.ui_variant from the bottom of Settings. They are separate
-        front-ends, not two skins of one: web/next/ has its own markup, its own
-        stylesheet and its own logic against the same Bridge, and borrows only
-        the two tracker/renderer scripts (../scf_graph.js, ../progress_panels.js)
-        that have no DOM of their own.
-
-        Falling back to classic when the chosen one is absent matters more than
-        it looks: a settings.json carried over from a build that had the
-        preview would otherwise point a release without it at a missing file,
-        and the window would come up blank with the backend running happily
-        behind it.
+        It has its own markup, stylesheet and logic against the Bridge, and
+        borrows from web/ only the two tracker/renderer scripts
+        (../scf_graph.js, ../progress_panels.js) that have no DOM of their own,
+        plus the bundled fonts and 3Dmol. If it is missing, _check_ui_loaded
+        says so instead of leaving a blank window.
         """
-        if self._ui_variant() == "notebook":
-            nxt = web_dir() / "next" / "index.html"
-            if nxt.exists():
-                return nxt
-        return web_dir() / "index.html"
-
-    def reload_web_ui(self) -> None:
-        """Re-load the front-end, picking up a just-changed ui_variant.
-
-        Only the view is replaced. The queue, the running calculation and every
-        watcher live in Python (store / Bridge), so switching front-ends mid-run
-        is a repaint, not a restart — the new page rebuilds its screen from the
-        same bridge calls a cold start uses.
-
-        The window grows if the front-end being switched TO needs more room
-        than the current size gives it -- switching to the notebook layout in a
-        classic-sized window would otherwise land on the collapsed layout, with
-        no queue rail, which reads as a broken switch rather than a narrow one.
-        It never shrinks: a window the user has sized up is their decision.
-        """
-        want_w, want_h = self._initial_size()
-        if self.width() < want_w or self.height() < want_h:
-            self.resize(max(self.width(), want_w), max(self.height(), want_h))
-        self.view.load(QUrl.fromLocalFile(str(self._index_file())))
+        return web_dir() / "next" / "index.html"
 
     def _check_ui_loaded(self, ok: bool) -> None:
         """Say so when the bundled UI could not be shown (see the connect)."""

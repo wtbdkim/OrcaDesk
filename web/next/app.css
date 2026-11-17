@@ -1327,7 +1327,7 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
    advanced section. A backend that is set up but not ready opens LOCKED -- at
    the one opacity DESIGN.md gives a locked section, with the reason above it
    in a .finding (D41); CREST's MD/MTD numbers and toggles fold into a closed
-   "Advanced", the classic card's .adv-section, because a conformer search
+   "Advanced", because a conformer search
    needs none of them to run and nine fields read as nine decisions. */
 .bkform.locked{opacity:.45; pointer-events:none;}
 .advsec > summary{cursor:pointer; width:max-content; margin-bottom:12px;

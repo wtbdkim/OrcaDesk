@@ -4,11 +4,11 @@
    ORCAdesk notebook front-end — a cell's picture of its run.
 
    ../scf_graph.js and ../progress_panels.js are used here as PARSERS only.
-   Their own render* helpers emit the classic front-end's class vocabulary
-   (.scf-line, .vstep-*, .stepc-*), and app.css — which is the design's
-   stylesheet — has no rule for any of it: a chart drawn that way had no stroke
-   colour and a stage chain no dots. Borrowing a renderer means borrowing its
-   stylesheet, and this front-end deliberately does not load the other one.
+   Their own render* helpers emit a class vocabulary of their own (.scf-line,
+   .vstep-*, .stepc-*), and app.css — which is the design's stylesheet — has no
+   rule for any of it: a chart drawn that way had no stroke colour and a stage
+   chain no dots. Borrowing a renderer means borrowing a stylesheet, and this
+   front-end deliberately has only the design's.
 
    So the trackers hand over their numbers and this file draws them in the
    design's vocabulary: `.chart` + `.serieskey` for a converging trace,

@@ -56,18 +56,19 @@ cut, on the release machine.
 
 ## UI is HTML/JS, backend is Python, glued by a QWebChannel
 
-The entire UI lives in `web/` (HTML/CSS/JS, shadcn-style dark theme). `main.py` opens
-`MainWindow` (`orcamgr/gui/window.py`), which hosts a `QWebEngineView` loading the
-front-end chosen by `MainWindow._index_file()` and registers a single `Bridge`
-object on a `QWebChannel`.
+The entire UI lives in `web/next/` (HTML/CSS/JS), plus what it borrows from
+`web/`: `scf_graph.js`, `progress_panels.js`, `fonts/` and
+`vendor/3Dmol-min.js`. `main.py` opens `MainWindow`
+(`orcamgr/gui/window.py`), which hosts a `QWebEngineView` loading
+`MainWindow._index_file()` (always `web/next/index.html`) and registers a
+single `Bridge` object on a `QWebChannel`.
 
-**Two front-ends ship.** `Settings.ui_variant` picks `web/index.html` (classic,
-the tabbed UI, the default) or `web/next/index.html` (the notebook layout — one
-window, the queue as a permanent rail; a **preview**, off by default, see
-DESIGN.md §17). They are **separate applications over the same Bridge**, not two
-skins: `web/next/` has its own markup, its own `app.css` and its own logic, and
-shares no ids, no classes and no stylesheet with `web/`. Everything below this
-paragraph describes the CLASSIC front-end unless it says otherwise.
+**One front-end ships**: the notebook layout, `web/next/index.html` — one
+window, the queue as a permanent rail (DESIGN.md §17). The classic tabbed
+front-end and the `Settings.ui_variant` switch were removed in the unreleased
+version; a `settings.json` still carrying a retired key (`ui_variant`,
+`theme_variant`, `glass_level`, `wallpaper`) loads, because `Settings.load`
+drops unknown keys (`test_retired_classic_keys_are_dropped_on_load`).
 
 One behaviour of the notebook report is worth knowing because it is a
 *deliberate absence*: the vibrational section has **no table under the
@@ -176,37 +177,35 @@ measured in the faces the design is drawn in, with no network.
 editing that UI by hand — the F5 reload, `ORCADESK_REMOTE_DEBUG=9222` for live
 DevTools, and where each region is drawn.
 
-It also links `../fonts/fonts.css`, which is **not** a classic file but a
-sibling asset directory: Inter and JetBrains Mono, the two faces the design is
+It also links `../fonts/fonts.css`, a sibling asset directory: Inter and JetBrains Mono, the two faces the design is
 drawn in, carried as variable woff2 (latin + latin-ext, SIL OFL) because the
 reference pulls them from Google Fonts and this app runs offline. Without them
-the stack fell through to `system-ui`/`ui-monospace` and the whole preview was
+the stack fell through to `system-ui`/`ui-monospace` and the whole UI was
 drawn in Segoe UI Variable and Consolas — see DESIGN.md §17.0c, and
 `tests/test_next_ui.py::test_preview_ships_the_typefaces_the_design_is_drawn_in`,
-which pins the link, the files and the stack together. The classic front-end is
-deliberately left alone: its `--font-sans` never named Inter.
+which pins the link, the files and the stack together.
 
-`MainWindow._SIZE_BY_VARIANT` opens the notebook at **1680×1000** (the size
+`MainWindow._SIZE` opens the notebook at **1680×1000** (the size
 `uispec.py` measures at), clamped to the screen, because `app.css` narrows the
 queue rail below 1320px (from the design's 600px to `clamp(360px, 40vw, 520px)`,
-and below 760px stacks it above the cells with the top bar wrapping) — at the
-classic 1100 the preview came up in a layout the design never shows. The rail
+and below 760px stacks it above the cells with the top bar wrapping) — at
+1100 it came up in a layout the design never shows. The rail
 is never hidden: it is the queue, the run controls and the result picker, and a
 window dragged narrower used to lose all three
 (`test_the_rail_never_leaves_a_narrow_window`). The top bar carries all three
 backend pills — ORCA, MLIP, CREST — always (DESIGN.md B32), polled by
 `pollBackends` in `boot.js`: every second while a probe is checking, every five
-once both have settled. `_ui_variant()` is the one reader of the
-setting, so the file that loads and the size it opens at cannot disagree.
+once both have settled.
 
-`web/next/` borrows exactly two classic files — `../scf_graph.js` and
+`web/next/` borrows two scripts from `web/` — `../scf_graph.js` and
 `../progress_panels.js`, the trackers and chart/step renderers, which own no DOM
-— and is otherwise `mol.js` (2D ball-and-stick; see below) → `boot.js` (channel,
-polled state, per-calc trackers, routing, toast/modal) → `rail.js` (queue rail +
-run controls) → `build.js` (the builder — a cell becomes the form) →
-`stream.js` (one cell per calculation) → `results.js` (the report) →
-`settings.js` (a slide-over), in that load order, all hanging off one global
-`NB` (and `MOL`).
+— and is otherwise `mol.js` (2D ball-and-stick; see below), `charts.js`,
+`boot.js` (channel, polled state, per-calc trackers, routing, toast/modal),
+`rail.js` (queue rail + run controls), `build.js` (the builder — a cell becomes
+the form), `stream.js` (one cell per calculation), `viewer.js` / `mvwin.js`
+(the Visual panel and the pop-out viewer), `results.js` (the report) and
+`settings.js` (a slide-over), all hanging off one global `NB` (and `MOL`,
+`CHARTS`); the load order is given below.
 The Settings sheet has a close guard. Every way out (×, Escape, the scrim, and
 F5/Ctrl+R) goes through `NB.settingsView.requestClose(after?)`. "Unsaved"
 means `collect(host)`, the same reader the save uses, differs from
@@ -233,7 +232,7 @@ row contradicts P24, and *stop* on one row would have to call `cancel_queue`,
 which stops every job in flight (P57). It emits the design's own ids (`q-total`,
 `c-running`, `q-done`, `fin-toggle`, `clear-finished`, `opened-group`), so a
 landmark can address both pages with one selector.
-`mol.js` is the ONE painter behind every structure the preview draws — the cell
+`mol.js` is the ONE painter behind every structure the UI draws — the cell
 thumbnails, the report's Structure and Visual stages, and the pop-out viewer —
 so a sizing or colour rule lives there once. It draws the way Avogadro2 does
 (DESIGN.md §17.4k): lit spheres and shaded cylinder sticks, the four display
@@ -290,13 +289,14 @@ own defaults) and from no literal of its own: its copies had drifted — MaxIter
 `tests/test_next_ui.py::test_the_builder_seeds_a_new_calculation_from_stepconfig_alone`
 fails if a numeric default reappears in `build.js`.
 
-One tsc project checks both front-ends and classic scripts share a global scope,
-so **a top-level declaration in `web/next/` other than `NB` collides with
-`app.js`** — `tests/test_next_ui.py` fails the build if one appears, and also
-checks that every bridge slot the preview calls actually exists.
+One tsc project checks every script under `web/`, so they share one global
+scope: **a top-level declaration in `web/next/` other than `NB` / `MOL` /
+`CHARTS` is refused** by `tests/test_next_ui.py`, and
+`tests/test_bridge_slots.py` checks that every slot the page calls is a real
+`@pyqtSlot`.
 
-Not in the preview yet: the Liquid-Glass variants (DESIGN.md B30). Its
-Interface card says so and switches back to classic.
+The Liquid-Glass variants (DESIGN.md B30) went with the classic front-end; the
+notebook draws flat.
 
 The builder builds **all three backends** (DESIGN.md §17.4s): the reference's
 backend control at the top of the form — `DFT | MLIP | CREST`, then `.seg .sep`
@@ -308,13 +308,13 @@ read for MLIP/CREST (no constraints, no push along a mode, no Preview .inp);
 `readForm` hands the config to `backendConfig`. MLIP: Task (the four `mlip_*`
 kinds), MACE model (grouped from `load_choices("mace_models")`), environment
 (`""` = first ready), device (GPU offered only when a READY env's probe reports
-CUDA; a stored `cuda` with none falls back to Auto), CPU threads with the
-classic per-device note, T/P for the freq tasks. CREST: method, search speed,
+CUDA; a stored `cuda` with none falls back to Auto), CPU threads with a
+per-device note, T/P for the freq tasks. CREST: method, search speed,
 ewin, threads, solvent model + solvent, NCI, a *Run in* target only where
 there is a choice (more than one WSL distro with CREST, or one stored), and a
 closed `<details class="advsec">` for the MD/MTD numbers and toggles, opened by
-itself when one is set. Hidden/locked from the polled `NB.backends` exactly as
-classic decides it (`backendState`): an unadopted backend has no button, only
+itself when one is set. Hidden/locked from the polled `NB.backends`
+(`backendState`): an unadopted backend has no button, only
 *+ More backends…* (opens Settings); adopted-but-not-ready opens LOCKED (`.bkform.locked`,
 every control and *Add* disabled, the reason in a `.finding` with *Open
 Settings*), and the save handler refuses on its own (P44). A backend stays
@@ -331,23 +331,18 @@ used to show a `build_inp_preview` of an ORCA job that never ran) and has no
 The backends themselves are set up from its Settings sheet: the MLIP environments
 card, and a CREST card (`paintCrest` in `settings.js` — one `.envrow` per
 target, the WSL-distribution picker, *Install CREST* / *Re-check*) over the
-same four slots the classic card uses; while the sheet is open both poll, and
+four CREST slots (`get_crest_status`, `check_crest`, `install_crest`,
+`set_crest_distro`); while the sheet is open both poll, and
 the CREST card hands each payload to the top-bar pill (`NB.backends`).
 
-The JS is plain scripts sharing one global scope (no modules/bundler). `app.js`
-holds the app shell (tabs, build cards, queue, polling); self-contained sections
-live in their own files, loaded by `index.html` **before** `app.js` in this
-order: `scf_graph.js` → `progress_panels.js` → `combo.js` (combobox widget) →
-`appearance.js` (theme variant / wallpaper / Liquid-Glass pulse) →
-`log_graph.js` (log pane + progress trackers) → `results_render.js`
-(Results-tab section renderers) → `nbo_render.js` (the natural-orbital
-analysis card) → `molviewer.js` (3D viewer + favorites) →
-`structview.js` (Build-tab structure preview / screening / NEB endpoint
-comparison).
+The JS is plain scripts sharing one global scope (no modules/bundler), loaded by
+`web/next/index.html` in this order: `../scf_graph.js` → `../progress_panels.js`
+→ `mol.js` → `charts.js` → `boot.js` → `rail.js` → `build.js` → `stream.js` →
+`viewer.js` → `mvwin.js` → `results.js` → `settings.js`.
 Cross-file calls resolve at runtime, so only top-level statements may not touch
 a later file's bindings (TDZ) — keep new top-level code declaration-only.
 
-`progress_panels.js` is the one **hard** ordering constraint in that list (the
+`progress_panels.js` is the one **hard** ordering constraint in that order (the
 rest resolve at call time): it doesn't create its own global, it `Object.assign`s
 the freq/TD-DFT/CREST trackers and step-panel renderers onto the **same
 `SCFGraph` namespace** `scf_graph.js` publishes, so it must load immediately
@@ -372,18 +367,24 @@ before the window is built, so a launch made during startup is still answered;
 
 The view's page is `_ConsoleCapturePage` (`window.py`), which forwards JS console
 output into the shared log buffer as `[web] ...` lines (rate-limited per identical
-message) — so front-end errors are visible in the Log tab even in a deployed build
-(the log ring's trim retains older `[web] ` lines preferentially, so ORCA's stdout
-flood can't evict them — `QueueStore.append_log`);
-`ORCADESK_REMOTE_DEBUG` (handled in `main.py`) remains the dev-time tool.
+message) — so front-end errors reach the log ring even in a deployed build.
+The notebook draws no Log tab (it reads `get_log` only to feed its trackers);
+the phone's `/api/log` serves the ring. Its trim retains older `[web] ` lines
+preferentially, so ORCA's stdout flood can't evict them
+(`QueueStore.append_log`). `ORCADESK_REMOTE_DEBUG` (handled in `main.py`)
+remains the dev-time tool.
 `window.py` also trims the embedded browser: Chromium's built-in PDF viewer is
-disabled (the UI never opens PDFs). **WebGL is enabled** — the Results-tab 3D
-structure viewer (3Dmol.js) needs it; the Liquid-Glass wallpaper canvas is still
-2D, so WebGL is used only inside the viewer's own canvas. Minimizing the window sets the
+disabled (the UI never opens PDFs). **WebGL is enabled** — the isosurfaces
+(3Dmol.js, loaded on first use by `web/next/mvwin.js`) need it; every other
+stage is `mol.js`'s 2D canvas, so WebGL is used only inside that one surface
+renderer. Minimizing the window sets the
 page's lifecycle state to Frozen so Chromium releases memory while ORCAdesk sits
 in the taskbar — safe because the JS side polls and already skips hidden ticks,
 catching up on restore. (No profile/cache tuning: the Qt 6 default profile is
 already off-the-record.)
+Drag-and-drop entry went with the classic front-end: `window.py` still routes a
+dropped `.inp` / `.xyz` / `.out` to `window.onInpDropped` / `onXyzDropped` /
+`onOutDropped`, but no `web/next/` script defines them, so a drop does nothing.
 
 `orcamgr/gui/bridge.py` is the **entire backend API surface for the desktop**: every
 `@pyqtSlot` is callable from JS (the full slot list, with signatures, is the `Bridge`
@@ -420,13 +421,14 @@ the front-end. Don't annotate FastAPI endpoints with these TypedDicts as return 
 — FastAPI would infer a response_model and put pydantic between the dict and the wire;
 endpoints keep `-> dict` and only *construct* through the schema types.
 
-In the **notebook preview** the Results window has no result picker of its own:
+The Results window has no result picker of its own:
 the rail is the picker (DESIGN.md §17.0e), *Open file… / Open folder…* bring in
 anything else and put it in the rail's **Opened files** group (kept across
 launches, see below), and the toolbar's
 `Output | Visual` pair jumps to a section rather than switching a mode — Visual
 is one of the report's sections there. `list_workspace_results` is therefore
-unused by `web/next/` (the classic UI still uses it). A finished cell also
+called by no page now (the classic result picker was its one caller); the slot
+stays. A finished cell also
 carries **New from this**, which opens the builder on a NEW calculation already
 referencing that run (`NB.build.open("", seed)`); the geometry is a reference,
 resolved at run time by the same `_resolve_geometry` path as opt→freq.
@@ -462,10 +464,9 @@ draft. A *New from this* seed wins, and replaces the draft only once edited.
 edit-in-place builder never reads or writes it. An in-memory copy serves the
 session, and a failed write is toasted once (P32).
 
-**Hidden for now, in both front-ends:** the reaction profile below and
+**Hidden for now:** the reaction profile below and
 ORCAdesk's own natural-orbital section (`SHOW_PROFILE` / `SHOW_OWN_NBO` at the
-top of `web/next/results.js`; `RESULTS_SHOW_PROFILE` / `RESULTS_SHOW_OWN_NBO`
-in classic `web/results_render.js`). Their backends (`get_free_energy_profile`,
+top of `web/next/results.js`). Their backends (`get_free_energy_profile`,
 `run_nbo_analysis` and the rest) and their drawing code stay.
 
 The **reaction profile** (`results.js`, the `#fep` section — it was the
@@ -555,8 +556,7 @@ read once, when complete. A file that shrank, or whose bytes before the
 offset changed (a re-run), is read from the start. With more than 4 MB unread
 the read runs on a worker thread and the slot answers `{ok, pending: true}`:
 `boot.js` `seed()` asks again on the next poll, and the cell's fact line says
-*reading the output…* until it lands (`NB.seedPending`). The classic
-`maybeSeedGraph` retries the same way.
+*reading the output…* until it lands (`NB.seedPending`).
 
 **A queued calc's report off the UI thread** (`parse_calc_output_async`). A
 finished 157 MB scan output took 20 s to parse, and `parse_calc_output` did it
@@ -569,9 +569,9 @@ worker thread, answering `{ok, pending: true}` until it is done; a failure is
 returned once, to the next ask. `NB.parseCalc(name, onWait)` polls it every
 500 ms (`stream.js` thumbnail, `results.js` `open`, which shows *Reading the
 output of …* and drops a late answer if another result was opened since).
-CREST and MLIP results are small and parse at once. The classic front-end
-keeps the synchronous `parse_calc_output`, which reads and fills the same
-cache.
+CREST and MLIP results are small and parse at once. The synchronous
+`parse_calc_output` reads and fills the same cache; no page calls it since
+the classic front-end went, and the slot stays.
 
 A cell's **Output pane** (the `.logbox` beside the chart, the last 260 lines
 of the `.out`, re-read every poll while the job runs) follows the end **only
@@ -584,7 +584,7 @@ line on screen is put back at its offset. That keeps the reader on their line
 while the window slides, and keeps a selection through a poll. It used to scroll
 every RUNNING job to the end on every poll. DESIGN.md §17.4n.
 
-In the preview, **a surface is drawn in the Visual panel, not in a pop-out**:
+**A surface is drawn in the Visual panel, not in a pop-out**:
 picking an orbital or the ESP map plots it on the panel's own stage, and the
 window is the same picture with the isovalue beside it. The isosurface renderer
 is one shared object (`volumeView` in `mvwin.js`, reached as `NB.mv.vol`) with
@@ -603,7 +603,7 @@ different files. A kind with one instance gets no list at all (§17.4g). Two con
 keeps only a handful alive and drops the oldest without asking, and the panel's
 stage is destroyed on every report render.
 
-One rule the preview's stages all depend on: **a `.molcv` is
+One rule the stages all depend on: **a `.molcv` is
 `position:absolute; inset:0` and its ResizeObserver watches the stage, not the
 canvas.** `mol.js` sets the bitmap from the canvas's own measured box every
 frame, so in flow the bitmap becomes its own input wherever `height:100%` cannot
@@ -611,114 +611,86 @@ resolve — which is every stage sized by a grid row. Invisible at
 `devicePixelRatio: 1`, a 1.25x-per-resize runaway above it. DESIGN.md §17.4f,
 and the named block at the bottom of `app.css`.
 
-The **Results tab has two modes over one selected result**: `Output` (what the
-parser read) and `Visual` (what can be *drawn* from it) — `setResultsMode` in
-`results_render.js` flips `#result-body` / `#visual-body`. The picker and the
-single *Open file…* button are **shared**, so switching modes never changes
-which calculation is on screen; `Show all` and the free-energy-profile card are
-Output's and are hidden in Visual. See the Visual-mode note below for what the
-mode discovers and why plotting happens on its rows.
-
-The Output mode is purely presentational over `ParsePayload` — with one
-section that is presentational over a *second* payload: the natural-orbital
-analysis card (`web/nbo_render.js`) is computed from the run's `.gbw` on
-demand rather than read from the parse, so it opens as a *Run analysis*
+The report's Output sections are purely presentational over `ParsePayload` —
+with one section that is presentational over a *second* payload: the
+**Natural orbitals** section (`viewer.js`, over `run_nbo_analysis` /
+`get_nbo_status` / `get_nbo_result`) is computed from the run's `.gbw` on
+demand rather than read from the parse, so it opens as a *Compute natural orbitals*
 button and renders in place when the background job lands (see the NBO
 section below). It is gated like the other electronic-structure sections.
 A QUEUED
-calc's result is fetched by NAME through `bridge.parse_calc_output`, which
+calc's result is fetched by NAME through `bridge.parse_calc_output_async` (or the
+synchronous `parse_calc_output`), which
 dispatches on the calc's **kind** (`result_from_output`); external files
-(drag-drop / *Open file…*) go through `bridge._parse_path`, which has no kind and
+(*Open file…* / *Open folder…*, `parse_out_path`) go through `bridge._parse_path`, which has no kind and
 dispatches per backend heuristically (an engine-written `*.mlip.json` → the MLIP
 parser; `crest_conformers.xyz`/`crest_best.xyz` siblings → the CREST parser; else
 the ORCA parser). Keep the heuristic OFF the queued path: workspace folders
 survive removal, so a calc reusing a removed CREST calc's name would otherwise
 parse as a conformer search.
 
-**The result picker lists more than the queue.** Those same surviving folders
-are results the user still wants — `bridge.list_workspace_results()` scans
-`{workspace}/*/` for `{name}.mlip.json` else `{name}.out` (newest first, capped
-at `_WORKSPACE_SCAN_MAX`; the folder convention itself is
-`orcamgr/resultfolder.py` `result_artifact`, shared with the folder picker
-below) and the Results `<select>` shows them in two
-`<optgroup>`s. The grouping is the parse-route split above, not decoration:
-an option's value is a **source string** (`calc:<name>` / `file:<path>`, the
-same addressing the cube slots take), and `queued` comes from the store, never
-from "have we parsed it yet" — grouping by `calcResults` would file a queued
-calc under the workspace and send it through the folder heuristic. Picking a
-queued calc not yet fetched parses it by name on demand. The scan runs on entry
-to the tab (`switchTab`), never from the 1-second poll — it touches the disk.
-A result opened from **outside** that scan is remembered in `_openedPaths` and
-re-emitted as an "Opened file" `<optgroup>` on every rebuild: the scan lists
-only `.out`/`.mlip.json` under the workspace root, so an option merely *inserted*
-into the live `<select>` was lost on the next tab entry — and never survived at
-all for a `.xyz`, which the scan does not list.
+**`list_workspace_results`** scans `{workspace}/*/` for `{name}.mlip.json`
+else `{name}.out` (newest first, capped at `_WORKSPACE_SCAN_MAX`; the folder
+convention itself is `orcamgr/resultfolder.py` `result_artifact`, shared with
+the folder picker below). The workspace result picker that listed them went
+with the classic front-end — the rail is the picker now (above). A result is
+addressed by a **source string** (`calc:<name>` / `file:<path>`, the same
+addressing the cube slots take), and whether it is queued comes from the
+store, never from "have we parsed it yet" — otherwise a queued calc would be
+sent through the folder heuristic.
 
-*Open file…* and *Open folder…* are two pickers over **one** route for both
-modes, because the user is choosing a result, not a way of reading it:
+*Open file…* and *Open folder…* are two pickers over **one** route,
+because the user is choosing a result, not a way of reading it:
 `bridge.pick_result_file()` picks the file and returns
-`{route: "parse"|"structure"}` by suffix, and the front-end reads it through
-`parse_out_path` or `get_structure_frames` (`_openPicked`, the tail both
-share). A `.xyz` becomes the shown result in
-Visual mode with nothing parsed (`_currentResult = null`), which is also the
-route `showWorkspaceResult` takes when such a path is re-picked.
+`{route: "parse"|"structure"}` by suffix; the notebook reads the parse route
+through `parse_out_path` (`openPath` in `results.js`) and answers the
+structure route (a bare `.xyz`) with a toast — opening a lone `.xyz` went with
+the classic front-end.
 `bridge.pick_result_folder()` names a **run folder** instead and resolves it
 to the result file inside (`resultfolder.find_result`: the convention above
 first, then the folder's only — or newest — `.out`, since an ORCA run made by
 hand names its output freely), always the parse route; a folder holding
 nothing to read is refused with the sentence that says what would have
-worked. The picker does not take structure-only folders: Visual already
-lists every `.xyz` set beside a result.
+worked. The picker does not take structure-only folders: the Visual panel
+already lists every `.xyz` set beside a result.
 
 Both parse paths
 send the *whole* `ParseResult` (every section the parser found) plus two gating flags
 — `is_optimization` and `show_elec` (`= ParseResult.shows_electronic_props`) — and the
-front-end (`web/results_render.js` `renderResultSections` / `renderSummary`) decides what to show
-per calc kind. Final geometry shows only for opt jobs; general electronic-structure
-sections (orbitals, charges, Mayer, dipole, rotational, SCF decomposition, and the
-`"elec"`-tagged summary rows) show only for sp/opt; freq/tddft/nmr/neb sections are
-present-only. The Results header's **`Show all`** toggle (`showAllResults` in `app.js`)
-overrides the gating to reveal everything parsed. Keep the gating on the front-end (not
-the payload) so the toggle re-renders without a re-fetch. Nothing in Output
-*draws* — no 3D entry points live there — so a section that only had a "View in
-3D" button (the ESP map) is gone from it entirely.
+front-end (`web/next/results.js`) decides what to show per calc kind (the
+`"elec"`-tagged summary rows, for instance, only under `show_elec`). The
+report's **Show all** (`_showAll` in `results.js`) overrides the gating to
+reveal everything parsed. Keep the gating on the front-end (not the payload)
+so the toggle re-renders without a re-fetch.
 
-**Visual mode discovers what there is to show.** `renderVisual` asks two slots
-about the selected result's source string and builds one row per openable thing:
+**The Visual panel discovers what there is to show.** It (`viewer.js`, and the
+pop-out's list in `mvwin.js`) asks about the result's source string and builds
+one entry per openable thing:
 the parsed geometry (no backend call — P4), every `.xyz` set
 `bridge.list_structure_sets(source)` found beside the result
 (`molview.discover_structure_sets`: direct subfolders holding `.xyz` — the
 `conformers/` export sorts first — then the folder's own `.xyz`, each labelled
 by what it *is*; past `_MANY_XYZ` unnamed ones they collapse into a single
-whole-folder set, so a hundreds-strong export is one row and not a hundred file
-reads on a tab switch; a relaxed scan's `{base}.allxyz` is the *Scan points*
+whole-folder set, so a hundreds-strong export is one entry and not a hundred file
+reads; a relaxed scan's `{base}.allxyz` is the *Scan points*
 set, read in step order and named `Step k`, and ORCA's numbered per-point
 copies `{base}.NNN.xyz` are then left out as duplicates. `iter_xyz_frames` skips
 the `>` lines between `.allxyz` frames, and `_parse_energy` reads ORCA's
-trailing `E <Eh>` comment), and, when a `.gbw` sits there, the orbital browser and
-the ESP map. Each row opens the same `#mol-viewer`; a set opens through
+trailing `E <Eh>` comment), and, when a `.gbw` sits there, the orbitals and
+the ESP map. A set opens through
 `bridge.get_structure_frames(path)`, which takes a file or a folder. This
 replaced a *Browse .xyz…* folder picker (`browse_xyz_folder`) and the
 CREST-only `get_conformer_frames`, both removed: everything worth opening
-already sits in the run folder, so the tab lists it rather than asking the user
+already sits in the run folder, so the panel lists it rather than asking the user
 to find it. `frames_from_folder` reads a folder's `conformers/` child when the
 folder itself holds no `.xyz`, so pointing it at a CREST run means the export.
 The CREST ensemble keeps its `calc:<name>` favorites key and its `{run}_c1`
 frame labels (`_CREST_ENSEMBLE` in `bridge.py`) — labels key the favorites store
-and name what *Export ★* writes, so the two must agree.
+and name what the favourites export (`export_frames`) writes, so the two must agree.
 
-**Plotting happens on the row, not behind the modal.** `mvVolShow` was split
-into `_mvVolFetch` (generate/read the cube(s)) + `_mvVolDraw` (touch the
-GLViewer) + `_mvVolSelect` (the stage's chrome), because the two halves now
-happen in different places: `viewOrbitals3D` / `viewEspMap` fetch **first** and
-call `_mvOpenStage` only once there is something to draw, while a pick clicked
-*inside* the viewer keeps the in-stage busy overlay (the stage is already on
-screen, so something has to say why it has not changed). The Visual row's
-`visOpen` wrapper is what reports the wait — the button reads `Plotting… m:ss`
-and every row is disabled (the backend serializes orca_plot anyway), leaving the
-rest of the tab usable for the minutes an ESP map takes. The ESP row also shows
-an on-disk dot via `mvEspCubeNames(base, grid)`, which goes through
-`_mvCubeName` so the dot and the fetch cannot disagree about the filename.
+A surface's *ready* mark and the fetch that follows it go through one
+cube-name rule (`cubeName` / `NB.mv.readyAt` in `mvwin.js`, above), so the
+mark and the fetch cannot disagree about the filename.
 
 ## Running the queue: core/ is GUI-agnostic
 
@@ -778,8 +750,8 @@ The `core/` pipeline:
   the rule is one version's measurement): `store.constraint_warning` rides on
   add/update as `MutationResult.warning`, which the builder shows as a `warn`
   toast (the target alone for a referenced geometry). The format and ORCA's IUPAC dihedral sign
-  were verified on 6.1.1. The notebook builder picks them on its structure stage (DESIGN.md
-  §17.4l); the classic UI has only the `.inp` snippet.
+  were verified on 6.1.1. The builder picks them on its structure stage (DESIGN.md
+  §17.4l).
   **`%geom Scan`** (`StepConfig.geom_scan`: a list of `{kind: B|A|D, atoms,
   start, end, steps}`) is a relaxed surface scan, written in the same `%geom`
   block after the `Constraints` (`    B 0 1 = 0.9000, 1.1000, 5`), and only
@@ -861,7 +833,7 @@ The `core/` pipeline:
   population (bond orders + valences), dipole moment, rotational constants,
   frequencies, full thermochemistry (U/H/G/ZPE/T·S/temp/pressure), TD-DFT
   transitions + excited-state composition, NMR, NEB/IRC path — both print a
-  `PATH SUMMARY` table; `neb_path_kind` records which, so the Results tab titles
+  `PATH SUMMARY` table; `neb_path_kind` records which, so the report titles
   an IRC profile as an IRC — and a relaxed surface scan: `scan_coords` from
   the banner, in ORCA's printed atom order, and `scan_points`, one
   `{values, e_eh, de_kcal}` per point, from the `RELAXED SURFACE SCAN
@@ -875,8 +847,8 @@ The `core/` pipeline:
   first NPA summary, its per-spin tables unread until there is a sample).
   These are NBO's numbers, never mixed with ORCAdesk's own `orcamgr/nbo/`
   analysis: the notebook report draws them as three `NBO · …` sections
-  (`nboProgram` in `web/next/results.js`) above the *Natural orbitals* one;
-  the classic UI does not show them yet. ORCA's own **orbital localization**
+  (`nboProgram` in `web/next/results.js`) above the *Natural orbitals* one.
+  ORCA's own **orbital localization**
   printout (`localization`, `%loc` — method, MO range, thresholds, the
   one-/two-centre counts and each LMO's atom shares; measured on IAO-IBO,
   `tests/test_localization_output.py`) is read the same way and drawn as the
@@ -888,7 +860,7 @@ The `core/` pipeline:
   occurrence wins. `ParseResult.summary_rows()` returns `(label, value, category)`
   rows where `category="elec"` tags general electronic-structure rows; the
   `shows_electronic_props` property (`is_optimization or not specialty`) decides
-  which sections the Results tab shows per kind — see the Results-gating note.
+  which sections the report shows per kind — see the Results-gating note.
 
 ## Queue semantics (important invariants)
 
@@ -925,20 +897,13 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   queue — so nothing changes until the user raises it.
 - **Every log line carries the calc that produced it** (`LogLine.calc`, `""` =
   engine-level). With jobs interleaving into one buffer the raw ORCA tail has no
-  name of its own, so the tag is what lets the Log tab and the per-job graphs
+  name of its own, so the tag is what lets the per-job graphs
   separate them. `QueueCallbacks.log` is `(msg, level, calc="")`. On the
-  front-end (`web/log_graph.js`) the five convergence trackers are no longer
-  globals but a **per-calc bundle** in the `_jobs` Map keyed by that tag
-  (`jobTrackers(name)`); the panel renders one job at a time — `shownJob()` =
-  the explicit pick (`setGraphJob`) else the newest running job — and the job
-  picker (only jobs with an actual curve — `graphJobs()`) and the raw-log filter
-  (every job that produced a line) are **button strips**, not selects, and only
-  appear once a second calc has produced output — so a single-calculation run is
-  visually unchanged, and a sequential run of several grows the strip when the
-  second one starts (that is when the log first holds two jobs' lines, which is
-  what the strip is for). The job name rides in `data-job` with one delegated click handler:
-  a calc name may contain a quote, which would break an inline `onclick`. `QueueSnapshot.resources` feeds the
-  queue's occupancy strip.
+  front-end (`web/next/boot.js`) the convergence trackers are a **per-calc
+  bundle** keyed by that tag (`NB.trackers(name)`, fed by `feed(calc, msg)`
+  from the `get_log` poll, dropped by `pruneTrackers` when the calc leaves the
+  queue), so each cell charts its own job. `QueueSnapshot.resources` feeds the
+  rail's occupancy strip (`occupancy` in `rail.js`).
 - **The queue stays editable while it runs (live queue, P29).** `start_run`
   hands the engine the store's **own list**, and the engine walk picks the
   next unhandled row (tracked by object identity) under the store's **own
@@ -1007,13 +972,12 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   and is **reattached** (`OrcaRunner.adopt` + `monitor`, continuing the queue).
   The monitor tails from the **current EOF** — replaying hours of output
   through the capped buffer would evict the graph — so the UI rebuilds what
-  that tail missed from the file instead: the Graph panel (SCF/geo curve
-  **and** the freq/TD-DFT/CREST step chains) via `get_graph_lines` +
-  `maybeSeedGraph`, and the Raw log's last 500 lines via `get_output_tail` +
-  `insertRestoredLog`, fenced by `log-mark` rules so restored history never
-  reads as live output. The restore is triggered by the engine's own reattach
-  line (`_CALC_REATTACH_RE`), never by queue state — a job THIS session
-  started has a complete log and must never be restored over.
+  that tail missed from the file instead: each cell's chart (SCF/geo curve
+  **and** the freq/TD-DFT/CREST step chains) is replayed once from
+  `get_graph_lines` (`seed()` in `boot.js`, for every calc with output on disk
+  not yet seeded), and its Output pane reads the `.out`'s own tail through
+  `get_output_tail` (see the Output-pane note), so it never depends on the
+  log ring.
   The resume is a **third run entry point** and applies the Run button's two
   pre-run screens as far as it can: it passes the overwrite-conflict names as
   the keep-existing set (nobody is at the keyboard to answer the modal, so
@@ -1154,7 +1118,7 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   `crest_conf` validation requires normal termination + at least one conformer.
   See the MLIP and CREST sections.
 
-## Structure screening and editing (Build tab)
+## Structure screening and editing (builder)
 
 `orcamgr/core/structure.py` is the one place geometry is reasoned about. It is
 pure and Qt-free (it needs no numpy, though `orcamgr/nbo/` has since made numpy
@@ -1162,7 +1126,7 @@ a core dependency — see P5), so it unit-tests directly (`tests/test_structure.
 through thin Bridge slots — `check_structure`, `compare_structures`,
 `apply_constraint_target`, `apply_constraint_targets` and `displace_mode` — and
 holds **no**
-geometry logic of its own. That is deliberate (P4): the Build tab's NEB badge
+geometry logic of its own. That is deliberate (P4): the builder's NEB endpoint verdict
 and `input_generator.check_neb_atom_order`'s gate are now the same judgment,
 where they used to be a Python implementation and a hand-mirrored JS copy that
 could drift. `check_neb_atom_order` is a three-key *projection* of
@@ -1231,20 +1195,15 @@ on a real ORCA 6.1.1 water `.hess` (`tests/hess/fixtures/`).
 
 One implementation note worth keeping: **bond perception is a uniform grid, not
 an all-pairs sweep.** `check_structure` runs on the Qt UI thread on every charge
-keystroke and every Build-tab entry; with the cell edge set to the longest
+keystroke and every builder entry; with the cell edge set to the longest
 possible bond, every partner is inside the 27 cells around an atom (~20 ms for
 3000 atoms, vs. a visible freeze). It is distance-based only — no bond orders —
 and feeds only the fragment count and the screening findings. **ORCA never sees
 it.**
 
-Front-end side: `web/structview.js` owns the geometry card's inline preview and
-findings list, and the `card-neb` endpoint comparison.
-`card-neb` lives in `index.html` rather than in the re-rendered method form
-**because a WebGL stage must not be re-created**: `renderConfigForm` replaces
-`#calc-config`'s innerHTML on every calc-type switch, which would orphan a
-viewer's GL context each time. For the same reason every stage re-renders on
-`switchTab("build")` and on the return to a DFT build mode — a canvas created
-while its card is `display:none` sizes to zero.
+Front-end side: `web/next/build.js` owns the builder's structure check
+(`check_structure`, findings as `.finding` rows) and the NEB endpoint comparison
+(*Compare endpoints*, over `compare_structures`).
 
 ## Optional phone-sync server
 
@@ -1318,63 +1277,32 @@ env id, guarded by `Bridge._mlip_lock`); MLIP is **not** routed through
 any env is ready, else `checking`/`error`/`unset` — built by `aggregate_status`
 and mirrored in `web/types.js`.
 
-**Build-tab modes.** The Build tab's mode toggle is **backend-first**: `DFT` /
-`MLIP` / `CREST` (`#bmode-*` in `index.html`), with a **Beginner/Expert
-sub-toggle** (`#bsub-*`) shown only while DFT is active. Internally and in
-`Settings.build_mode` the mode is still one of the four historical values
-`beginner`/`expert`/`mlip`/`crest` (beginner/expert are the DFT sub-modes), so
-persisted settings are untouched; `setBuildMode` in `app.js` maps them onto the
-toggle and `setDftSub` handles the sub-switch. **The MLIP and CREST buttons —
-and their top-bar pills — are hidden until the user has actually set that
-backend up** (`applyBackendVisibility` in `app.js`, called from `renderMlip` /
-`renderCrest` / `refreshQueue` / `setBuildMode`; both start `display:none` in
-`index.html`). Adoption is read from what the user did, never from the probe's
+**Builder modes.** The builder's backend control (`DFT | MLIP | CREST`, then
+`Guided | .inp text` for DFT) is described under the front-end section above.
+`Settings.build_mode` (`beginner`/`expert`/`mlip`/`crest`) is still stored and
+round-tripped by `get_settings` / `save_settings`, but no page reads it since
+the classic Build tab went. **The MLIP and CREST buttons are hidden until the
+user has actually set that backend up** (the top-bar pills always show, B32)
+(`backendState` in `build.js`). Adoption is read from what the user did, never from the probe's
 verdict: MLIP from `MlipStatusPayload.envs.length` (known from settings at the
 first poll, so the button never pops in after torch imports) and CREST from
 `state === "ready"` or an explicit `Settings.crest_distro` — CREST's aggregate
 `"error"` means "WSL present, no distro has CREST", i.e. the ordinary
 never-installed case, so it hides. A **registered-but-broken** setup stays
-visible and locked with its reason (the `applyBackendCardLock` path is
-unchanged), and a backend stays visible while the queue holds one of its calcs
-(`_queueHasBackend`) or while it is the active mode — otherwise an `mlip_*` /
-`crest_*` row would become uneditable. A `#bmode-more` chip ("+ More
-backends…") shows whenever one is hidden and switches to Settings, whose MLIP
-and CREST sections are unconditional. This amends DESIGN.md D41 (see its scope
-clause) — hide for "never adopted", lock for "adopted but not ready". **The Beginner↔Expert linkage is
-one-way by design**: Beginner → Expert converts the current form to a generated
-`.inp` via `build_inp_preview` and puts it in the raw editor (this replaced the
-"Edit raw .inp" button / `enterRawMode`); raw text can never be converted back,
-so Expert → Beginner confirms discarding the editor content (the
-name/type/charge/mult/geometry cards persist outside the editor). Conversion
-failures never switch (the filled form stays visible); an empty name skips
-conversion and opens a plain empty editor (logged) for the paste workflow. Raw
-editing **is** the Expert sub-mode: `enterRawWithText` forces the Expert layout,
-editing a raw calc opens Expert, editing a form calc opens Beginner (the old
-"beginner with a dimmed locked form" hybrid and `lockFormForRaw` are gone);
-backing out of a **not-yet-saved** conversion of an edit confirms and reopens
-the form edit via `editCalc` — only a saved raw calc is locked to raw. Guard
-invariants: re-clicking the active mode button is a strict no-op in
-`setBuildMode` (never drops an edit or blanks the editor; `onInpDropped`
-therefore exits any in-progress edit itself before loading — a drop starts a
-NEW calc, never an overwrite of the edited one); the Beginner branch re-renders
-the method form only when `#calc-config` is empty or the Type select changed
-while the form was hidden (`_configKind`, re-rendered with the same field
-preservation as `onKindChange` — `collectPreserve`, which also carries
-maxcore/nprocs and the kind-shared numerics, and is kind-AWARE for Extra
-options and SCF: an untouched kind default follows the new kind, an explicit
-user override survives), so the user's method setup survives Expert/MLIP/CREST
-excursions without ever going stale against the selected
-kind; the edit target is tracked **by name** (`editName`), never by queue
-index — the queue can shift under an open edit (remove/reorder, phone adds),
-and Update re-resolves the target at save time (a vanished target degrades
-to a plain add); `collectCalcFromForm(forPreview)` relaxes the NEB-TS
-product requirement like the other geometry checks. `rawText` survives an MLIP/CREST
-excursion and is cleared only by an explicit discard, edit, or reset. Raw-mode
-geometry can't desync from the text: loading a `.xyz` in raw mode is refused
-unless the text has a `{{GEOMETRY}}` placeholder (embedded coords run
-verbatim), and a raw calc's stored charge/multiplicity mirror its own
-`* xyz C M` line, not the hidden form fields. The notebook builder keeps the
-same rule the other way round (DESIGN.md §17.4t): there the coordinates box
+visible and locked with its reason, and a backend stays visible while the queue
+holds one of its calcs or while the form is on it — otherwise an `mlip_*` /
+`crest_*` row would become uneditable. *+ More backends…* shows whenever one is
+hidden and opens Settings, whose MLIP and CREST sections are unconditional.
+This amends DESIGN.md D41 (see its scope clause) — hide for "never adopted",
+lock for "adopted but not ready". **The Guided → `.inp text` linkage is
+one-way by design**: Guided → `.inp text` converts the current form to the
+generated `.inp` via `build_inp_preview` (no coordinates yet → a
+`{{GEOMETRY}}` placeholder, filled from the box at run time); raw text can
+never be converted back, so `.inp text` → Guided confirms discarding it. A
+failed conversion never switches (the filled form stays). The edit target is
+tracked **by name** (`update_calc(name, …)`), never by queue index — the
+queue can shift under an open edit (remove/reorder, phone adds). The builder
+keeps a raw calc's coordinates and its text in step (DESIGN.md §17.4t): the coordinates box
 stays usable in `.inp text` mode, and while the text carries its own
 `* xyz` block the box IS that block (`rawCoords` in `build.js` finds it; an
 edit on either side writes the other) — it used to be saved and never read,
@@ -1428,69 +1356,46 @@ are created under `user_data_root()/mlip_envs/<slug>` (P18 — never the resourc
 root), the slug sanitized because the name becomes a real directory. Wire
 shapes: `MlipInstallOptionsPayload` / `MlipInstallPayload` / `BasePythonPayload`.
 
-**Building MLIP jobs.** MLIP mode hides the whole ORCA build
-UI (`_ORCA_BUILD`) and shows a self-contained `#card-mlip`: a name, a MACE-model
-dropdown (options in `data/mace_models.json`, served via `load_choices`),
-charge/multiplicity inputs (used only by charge/spin-aware models — OMol25 /
-multi-head; MACE-OFF/MP ignore them), a **CPU threads** field
-(`StepConfig.nprocs`, seeded from `Settings.default_nprocs`) that both caps the
-worker and is what the core budget charges the job, and a
-**geometry source** selector (`.xyz` loader **or** reference another queued calc,
-mirroring the ORCA build card — `onMlipGeomSourceChange`/`refreshMlipRefSelect` in
-`app.js`), which add a calc of the kind chosen by the card's Task selector
-(`#mlip-task`: `mlip_opt` / `mlip_sp` / `mlip_freq` / `mlip_opt_freq`) to the
-**shared queue** through the
-same `add_calc`/`calc_from_dict` path as ORCA calcs. The frequency tasks reveal a
-temperature/pressure row (`#mlip-thermo-row` → `StepConfig.freq_temp_k` /
+**Building MLIP jobs.** On MLIP the builder draws none of the ORCA form, only
+the backend's own block (`backendForm` in `build.js`, see the front-end
+section): the shared name / charge / multiplicity row (charge and multiplicity
+used only by charge/spin-aware models — OMol25 / multi-head; MACE-OFF/MP
+ignore them), a MACE-model dropdown (options in `data/mace_models.json`, served
+via `load_choices`), a **CPU threads** field (`StepConfig.nprocs`, seeded from
+`Settings.default_nprocs`) that both caps the worker and is what the core
+budget charges the job, and the shared **geometry source** (coordinates **or**
+a reference to another queued calc). It adds a calc of the kind chosen by its
+Task selector (`mlip_opt` / `mlip_sp` / `mlip_freq` / `mlip_opt_freq`) to the
+**shared queue** through the same `add_calc`/`calc_from_dict` path as ORCA
+calcs. The frequency tasks add temperature/pressure (`StepConfig.freq_temp_k` /
 `freq_pressure_atm`, reused from the ORCA freq fields) for the ideal-gas
-thermochemistry. A **Device** selector (`#mlip-device` →
-`StepConfig.mlip_device`: `""` auto / `cpu` / `cuda`) picks the torch device; the
-GPU option is enabled only when a ready env's probe reports CUDA (`_mlipCuda`,
-`refreshMlipDeviceOptions`). Because the threads field means **different things
-per device** — always the worker's cap, but the queue's core charge only off the
-GPU (`declared_cores` returns 1 for an explicit `cuda`, which takes the GPU lane
-instead) — `onMlipDeviceChange` writes a per-device note into
-`#mlip-threads-note` (D2: unlabelled, "CPU threads: 6" beside "Device: GPU"
-reads as either a no-op or six reserved cores, and is neither). Every path that
-changes the device calls it: the `onchange`, `refreshMlipDeviceOptions` (which
-may itself clear a `cuda` value), and `fillMlipForm` **after** it assigns the
-value; `resetMlipForm` deliberately leaves the device alone, so the note stays
-valid across a reset. A referenced `mlip_opt`/`mlip_opt_freq`
-resolves through the very same `_resolve_geometry` path as an opt→freq handoff, so
-an MLIP pre-optimization can start from another calc's optimized geometry (e.g. a
-CREST best conformer). The model lives on
+thermochemistry. A **Device** selector (`StepConfig.mlip_device`: `""` auto /
+`cpu` / `cuda`) picks the torch device; the GPU option is offered only when a
+ready env's probe reports CUDA. Because the threads field means **different
+things per device** — always the worker's cap, but the queue's core charge
+only off the GPU (`declared_cores` returns 1 for an explicit `cuda`, which
+takes the GPU lane instead) — the field carries a per-device note
+(`threadsNote` in `build.js`; D2: unlabelled, "CPU threads: 6" beside "Device:
+GPU" reads as either a no-op or six reserved cores, and is neither). A
+referenced `mlip_opt`/`mlip_opt_freq` resolves through the very same
+`_resolve_geometry` path as an opt→freq handoff, so an MLIP pre-optimization
+can start from another calc's optimized geometry (e.g. a CREST best
+conformer). The model lives on
 `StepConfig.mlip_model` (+ `mlip_env_id`, `""` = first ready env — the engine
 takes `mlip_envs[0]`, and the Bridge orders that list ready-first via
 `_mlip_envs_for_run` / `order_envs_by_readiness`, since readiness is a live
 probe result the engine never sees; `mlip_device`);
 `build_input` ignores those — an MLIP calc never produces an ORCA `.inp`. `_meta_line` shows
 the model instead of charge/mult for `mlip*` kinds, and `CalcSummary` also carries
-the model/method as **explicit fields** (`mlip_model`, `crest_method`) so the
-desktop queue row can render them escaped (never innerHTML
-the pre-joined `meta` — it embeds user-typed ref names). MLIP/CREST calcs are
-**editable in place** in their own build cards: `editCalc` routes an `mlip*`/
-`crest*` kind to `editBackendCalc`, which loads the full calc (via `localCalcs`
-or `bridge.get_calc`), switches to the card, fills it (`fillMlipForm` /
-`fillCrestForm`, the inverse of the add functions), then sets `editName` **after**
-the mode switch so `setBuildMode`'s own `exitEditMode()` can't clobber the target
-— and the card's Add button flips to **Update** (`updateEditUI` now drives
-`#mlip-add-btn` / `#crest-add-btn` alongside `#add-btn`). All three add
-functions (`addCalcToQueue` / `addMlipCalcToQueue` / `addCrestCalcToQueue`) are
-**one implementation of everything but the card's own fields**: `readCalcName`
-(non-empty, folder-name safe, unique with the edited calc excluded),
-`collectGeomSource(prefix, …)` (the `{xyz, ref_name}` pair, with `requireXyz` /
-`requireRef` relaxed for DFT raw mode and previews), and `submitCalc` — the
-shared commit tail that re-resolves the edit target **by name** at save time
-(the queue may have shifted; a vanished target degrades to a plain add),
-calls `update_calc` in place or `add_calc` behind the mid-run overwrite gate,
-then logs, resets, refreshes and switches to the Queue tab. `submitCalc`'s
-`exitEditOnAdd` flag is DFT-only on purpose: `exitEditMode()` clears `rawText`,
-which must survive an MLIP/CREST excursion. `update_calc` is kind-agnostic at the store
-(`replace`, gated by `EDITABLE_STATES` and the mid-run protections), so no backend
-change was needed. The card is **locked**
-(greyed, inputs/buttons disabled, `#mlip-lock-note` shown) until some MLIP env is
-ready — `applyMlipLock` in `app.js`, driven by the `get_mlip_status` poll
-(`_mlipReady`); `addMlipCalcToQueue` guards on it too.
+the model/method as **explicit fields** (`mlip_model`, `crest_method`); the
+rail renders the pre-joined `meta` escaped (`NB.esc`), never as markup — it
+embeds user-typed ref names. MLIP/CREST calcs are **editable in place**: a
+row's *edit* opens the builder on that backend's own form and saves through
+`update_calc`, which is kind-agnostic at the store (`replace`, gated by
+`EDITABLE_STATES` and the mid-run protections), so no backend change was
+needed. The form is **locked** until some MLIP env is ready (`backendState`,
+from the `get_mlip_status` poll), and the save handler refuses on its own
+(P44).
 
 **Running MLIP jobs.** The run pipeline mirrors `core/` but lives in
 `orcamgr/mlip/` (kept off ORCA's path): `runner.py` (`MlipRunner` +
@@ -1531,7 +1436,7 @@ cancellable (`QueueEngine.cancel`/`detach` forward to the active `MlipRunner`).
 `parse_mlip_result` reads that JSON into the **shared `ParseResult`** (geometry,
 `final_energy_eh`, `opt_converged`, and — for freq kinds — `frequencies`/
 `n_imaginary`/`zpe_eh`/`gibbs_eh`/`enthalpy_eh`/`entropy_term_eh`/
-`total_thermal_eh`, rendered on the Results tab like an ORCA freq job), so a
+`total_thermal_eh`, rendered in the report like an ORCA freq job), so a
 downstream ORCA calc references an
 MLIP-optimized geometry through the **same** `_resolve_geometry` path an opt→freq
 handoff uses. `validate_result` checks `mlip_opt` convergence; `_failure_reason`
@@ -1621,9 +1526,8 @@ reference path still works. `validate_result` requires normal termination
 `queue_needs_orca` excludes `crest*` too, so an all-CREST queue runs with no ORCA
 path. Charge/multiplicity come from the `Calculation` (shared with ORCA); CREST's
 `--uhf` is the **number of unpaired electrons = multiplicity − 1** (not the
-multiplicity). The build card has a **geometry source** selector mirroring the
-MLIP card (`.xyz` loader **or** reference another queued calc —
-`onCrestGeomSourceChange`/`refreshCrestRefSelect` in `app.js`); a referenced
+multiplicity). The builder's CREST form takes the shared **geometry source**
+(coordinates **or** a reference to another queued calc); a referenced
 CREST search resolves through the same `_resolve_geometry` path at run time,
 so it can start from e.g. an MLIP- or ORCA-optimized geometry. The pipeline
 was validated end to end against a real CREST 3.0.2 install in WSL Ubuntu
@@ -1640,18 +1544,18 @@ method (the label maps 1:1 onto CREST's flag — `gfn2` → `--gfn2`, incl.
 flag is emitted only when set to a non-default value; the enum/numeric fields are
 validated and clamped in `StepConfig.from_dict` (the trust boundary). File-based
 options (`--cinp` constraints) and standalone modes (`--cregen`) are intentionally
-out of scope. UI: the CREST build card + a collapsible "Advanced settings"
-(`.adv-section`).
+out of scope. UI: the builder's CREST form + a closed `<details class="advsec">`
+for the advanced knobs.
 
 **Conformer → follow-up pipeline.** Follow-up MLIP/ORCA calculations are built
-on the **Build tab** by referencing the CREST calc through the normal
-geometry-source dropdown; a reference always receives the **lowest-energy
+in the **builder** by referencing the CREST calc through the normal
+geometry source; a reference always receives the **lowest-energy
 conformer** (the classic single-geometry handoff via `_resolve_geometry` —
 `parse_crest_result` sets `geometry`/`final_energy_eh` to the best conformer).
 The per-conformer track fan-out (`crest_handoff="all"`, `expand_conformer_tracks`
-/ `substitute_calcs`) was removed in 0.6.0-beta. The Results tab's conformer
+/ `substitute_calcs`) was removed in 0.6.0-beta. The report's conformer
 list is **read-only** for building: results are for interpretation; building
-happens on the Build tab.
+happens in the builder.
 
 **Per-conformer `.xyz` are exported automatically on finish.** When a
 `crest_conf` search reaches DONE the engine
@@ -1665,27 +1569,26 @@ DONE at startup that never went through the engine (finished while the app was
 closed, never re-run) gets the same split via `store._auto_export_crest` inside
 `reconcile_calcs`. The export is **best-effort** everywhere: a missing/empty
 ensemble or a write error is logged (engine path) or swallowed (reconcile path)
-and never turns a completed search into a FAILED one. The
-Results tab still offers **Export as .xyz** (`bridge.export_conformers` →
-`crest/export.py`, the same `export_conformers` split), now just a manual
-re-run of the automatic export. No file dialog — the files land next to the
-run; this only reads/writes, never touches the queue.
+and never turns a completed search into a FAILED one. The slot
+`bridge.export_conformers` (→ `crest/export.py`, the same `export_conformers`
+split) is a manual re-run of the automatic export; its button went with the
+classic front-end and no page calls it now. No file dialog — the files land
+next to the run; it only reads/writes, never touches the queue.
 
-**In-app 3D structure viewer.** The Results tab renders structures with
-**3Dmol.js** (vendored at `web/vendor/3Dmol-min.js` — bundled locally, no CDN;
-this is why WebGL is enabled in `window.py`). It opens as a modal over the
-Results tab (`#mol-viewer` in `index.html`, `openMolViewer`/`molViewerShow`/
-`closeMolViewer` in `web/molviewer.js`) and flips through a list of **frames** with the
-←/→ keys (Esc closes, drag rotates). A frame is `{label, xyz, energy}`; `xyz`
-is raw `.xyz` text 3Dmol parses directly, and the caption shows ΔE vs the
-lowest-energy frame when energies are present. Every entry point is a **Visual**
-row (see the Results-tab note): the parsed structure, or one of the `.xyz` sets
-discovered beside the result, opened through `bridge.get_structure_frames(path)`
-— one slot for a file or a folder. Frames are read on demand (never in the
-result payload, so a 100-conformer render stays light) by the Qt-free
-`orcamgr/molview.py` (`frames_from_file` / `frames_from_folder` /
-`discover_structure_sets`, unit-tested). The GLViewer is created lazily on first
-open and reused; closing clears the scene but keeps the WebGL context.
+**In-app 3D structure viewer.** Every structure stage, the pop-out viewer
+included (`web/next/mvwin.js`, `NB.mv.open`), is drawn by `mol.js`; the pop-out
+walks a list of **frames** with the ←/→ keys (Esc closes). A frame is `{label,
+xyz, energy}`; `xyz` is raw `.xyz` text, and the caption shows ΔE vs the
+lowest-energy frame of the set when energies are present. Every entry point is
+a Visual-panel entry (see the Visual note above): the parsed structure, or one
+of the `.xyz` sets discovered beside the result, opened through
+`bridge.get_structure_frames(path)` — one slot for a file or a folder. Frames
+are read on demand (never in the result payload, so a 100-conformer render
+stays light) by the Qt-free `orcamgr/molview.py` (`frames_from_file` /
+`frames_from_folder` / `discover_structure_sets`, unit-tested). **3Dmol.js**
+(vendored at `web/vendor/3Dmol-min.js` — bundled locally, no CDN; this is why
+WebGL is enabled in `window.py`) draws only the surfaces below, and is loaded
+on first use.
 
 **Viewer favorites (starred structures).** In the viewer the user stars
 structures worth following up (the **F** key or the list star); stars persist
@@ -1695,9 +1598,9 @@ rewritten on every queue mutation), keyed by a namespaced *source*:
 `"calc:<name>"` for a queued calculation's own CREST ensemble,
 `"folder:<path>"` for any other structure set, so two sources never share a star
 set. That is why a queued ensemble is opened as kind `"calc"` even though its
-frames now come from the generic `get_structure_frames`: stars set before the
-Visual mode existed still resolve. **★ only** steps the ←/→ keys through
-starred frames alone; **Export ★** writes them to a `favorites/` subfolder next
+frames now come from the generic `get_structure_frames`: stars set before then
+still resolve. *Favourites only* steps the ←/→ keys through
+starred frames alone; the export writes them to a `favorites/` subfolder next
 to the source. Bridge slots: `get_favorites(source)`, `toggle_favorite(source,
 label, on)`, `export_frames(dest_kind, dest, frames_json)` — `export_frames`
 takes the frames' xyz straight from the front-end (favorites are few) and
@@ -1705,15 +1608,12 @@ sanitizes each label into a filename, so it needs no re-parse.
 `get_structure_frames` returns a `folder` (the set's own folder, or a file's
 parent) — the export/favorites destination.
 
-**Orbital / electron-density surfaces (the viewer's second mode).** The same
-modal and the **same GLViewer instance** render volumetric data: `_mvMode` is
-`"frames"` (the .xyz list above) or `"volume"`, and `renderMvList` /
-`molViewerShow` / `molViewerStep` dispatch on it, so one WebGL context serves
-both. Entry is the **Orbitals & density** row in Visual
-(`viewOrbitals3D(_visOrbitals())`) — the front-end passes the orbital list it
-already parsed rather than the payload carrying a second copy (P4);
-`_visOrbitals()` falls back to the payload's own list because Visual is not
-gated by calc kind the way Output's sections are.
+**Orbital / electron-density surfaces (the viewer's second mode).** The pop-out
+(`_mode` `"frames"` | `"volume"` in `mvwin.js`) and the Visual panel draw
+volumetric data through the one shared 3Dmol renderer (`volumeView`, reached as
+`NB.mv.vol` — one WebGL context, see the Visual-panel note above). The orbital
+list is the one the front-end already parsed (`mountVisual(source, d)`) rather
+than the payload carrying a second copy (P4).
 
 Cubes come from **`orca_plot`**, shelled out post-hoc against a finished run's
 `.gbw` (`orcamgr/core/plot.py`, Qt-free): nothing is recomputed and no job is
@@ -1756,8 +1656,8 @@ Two things about that shell-out are load-bearing:
   `cubes/` subfolder), because orca_plot's own name is not: it names a plot by
   *what* it is, so the reuse check would otherwise hand back a 60³ cube under
   an 80³ label. `plot_output_name()` is what orca_plot writes,
-  `cube_filename()` what we keep; `web/molviewer.js` `_mvCubeName` mirrors the
-  latter so the list's "already generated" dots track the selected grid. ESP is
+  `cube_filename()` what we keep; `cubeName` in `web/next/mvwin.js` mirrors the
+  latter so the list's *ready* marks track the selected grid. ESP is
   the exception to *what orca_plot writes*: it names the file after the DENSITY
   it was computed from, so the file is `{name}.scfp.esp.cube`, not
   `{name}.esp.cube` — get it wrong and every ESP looks like a failed plot,
@@ -1780,31 +1680,24 @@ potential is not an isosurface of itself; the figure everyone means is the
 potential *painted on* an electron-density surface, so the map is `eldens`
 (shape) + `esp` (colour) at the same grid — 3Dmol's
 `addIsosurface(dens, {voldata: esp, volscheme})` samples the second field per
-surface vertex. `_mvEspParts()` issues the two requests in order through
-`_mvFetchCube` (the single-cube generate/poll/fetch loop, extracted for exactly
-this); both must ride the ESP grid or they would be two different boxes.
+surface vertex. `plot` in `mvwin.js` issues the two requests in order through
+`fetchCube` (the single-cube generate/poll/fetch loop); both must ride the ESP
+grid or they would be two different boxes.
 
-It is deliberately **not** a row in the orbital viewer's pick list: it is one
-figure, not a set to step through, and it answers a different question. It is
-its own **Visual** row with its own opener, `viewEspMap()`, which shows a single
-pick with the frame list put away. `_mvVolSetup()` is the shared
-options-fetch-and-adopt both openers use, so neither can drift from the other's
-idea of the grid choices or the ESP conventions (P4). Its row is also the one
-that carries an on-disk dot and reads *Plot* rather than *View* — the cost is
-minutes, so the button names it before the click and then reports the wait
-(`visOpen`). Consequences worth knowing:
+It is one figure, not a set to step through, and it answers a different
+question, so it is its own Visual tile (*ESP map*). Its cost is minutes, so a
+cube not yet on disk is asked about before the click spends an orca_plot run
+(`COST` in `mvwin.js`). Consequences worth knowing:
 - The isovalue slider steers the **density** level here, opening at
-  `cube.ESP_SURFACE_ISOVALUE` (0.002, the van-der-Waals-like contour) — *not*
-  the enclosed-fraction fit, which exists because an orbital's peak varies with
-  delocalization, while a total density's 0.002 contour is the same physical
-  surface in every molecule. A second slider sets the colour half-width
-  (`ESP_DEFAULT_RANGE`, ±0.05 a.u.); both re-draw in place.
-- **The grid is remembered per kind** (`_mvGridByKind`), because ESP costs
+  `cube.ESP_SURFACE_ISOVALUE` (0.002, the van-der-Waals-like contour): a total
+  density's 0.002 contour is the same physical surface in every molecule. A
+  second control sets the colour half-width (`ESP_DEFAULT_RANGE`, ±0.05 a.u.);
+  both re-draw in place.
+- **The grid is remembered per kind** (`_gridByKind` in `viewer.js`), because ESP costs
   minutes where an orbital costs a second: measured **49.3 s at 40³** on that
   same 52-atom system (~2.8 min at 60³, ~6.6 min at 80³), and 0.2 s on water at
   def2-SVP — it scales with the basis as well as the grid. `DEFAULT_GRIDS` in
-  `plot.py` opens ESP at 40³ and `default_grid_for()` is the accessor; the busy
-  card's copy is per-kind so neither wait is described by the other's sentence.
+  `plot.py` opens ESP at 40³ and `default_grid_for()` is the accessor.
 
 Rendering separates **sampling** from **smoothness**: an MO is a sum of
 Gaussians, so a coarse grid is missing *mesh*, not physics. 3Dmol's marching
@@ -1813,28 +1706,20 @@ re-meshes the `VolumeData` already in memory — no backend round-trip — which
 why 60³ is the default and the grid selector is the rare escape hatch.
 Per-kind display defaults live in `cube.py` (`DEFAULT_ISOVALUES`,
 `SIGNED_KINDS`: mo/spindens draw a ± pair, an electron density one surface) —
-but `DEFAULT_ISOVALUES` is a **ceiling, not the opening value**. 0.05 is the
+and `DEFAULT_ISOVALUES` is a **starting point, not the answer**. 0.05 is the
 convention for a *localized* orbital, which is not the same as for an orbital:
 CB8's HOMO peaks at 0.0996, so at 0.05 only 222 of 216,000 points clear the
-level and the surface is invisible — the viewer looked broken on exactly the
-molecules worth looking at. `_defaultIso` (molviewer.js) therefore fits the
-level enclosing 90% of ψ² from the values 3Dmol has already parsed and takes
-`min(convention, fit)`; measured, that is 0.060 for water's HOMO (cap holds,
-conventional picture unchanged) and 0.0097 for CB8's. It never raises above
-convention. The fit must be **NaN-safe**: 3Dmol builds its value array with
-`Float32Array.from(split(...), parseFloat)`, and a cube's trailing separator
-leaves one NaN past the data (216001 entries for a 60³ grid) — one NaN poisons
-a sum and silently voids the whole fit. While orca_plot runs for a pick chosen
-*inside* the viewer, the stage shows a *Plotting…* overlay (`#mv-vol-busy`); a
-cube already on disk opens with no flash. The overlay belongs to that path only
-— the wait for the pick a Visual row *opens with* is reported on the row's own
-button instead, so the viewer never covers the window with an empty stage.
+level and the surface is invisible. The classic viewer lowered it to the level
+enclosing 90% of ψ² (0.0097 for CB8's HOMO, while water's HOMO kept 0.05);
+that auto-fit went with the classic front-end — `mvwin.js` opens at
+`CubeDataResult.isovalue` (this table) and the user steers it from there. A
+cube already on disk opens with no wait.
 Measured cost of what it covers: a density on a 144-atom / 3648-BF system is
 22 s at 60³, against 0.34 s for one MO.
 
 **Bridge slots**: `list_structure_sets(source)` / `get_structure_frames(path)`
-(the Visual mode's discovery and its one opener),
-`pick_result_file()` / `pick_result_folder()` (the tab's two pickers: a file
+(the Visual panel's discovery and its one opener),
+`pick_result_file()` / `pick_result_folder()` (the two pickers: a file
 routes by suffix, a folder resolves to the result inside it),
 `get_plot_options(source)` (base, has_gbw, the kinds this
 wavefunction supports — spin density only when the run is open-shell — grids,
@@ -1843,8 +1728,8 @@ and the cubes already on disk), `generate_cube(payload)` / `get_cube_status()` /
 probe, guarded by `Bridge._cube_lock`; the ~3 MB cube rides `get_cube_data()`
 **once**, never the poll. Only one orca_plot runs at a time (it writes a fixed
 filename beside the `.gbw`, so two would race), and a refused request returns
-the *in-flight* job's status — so the front-end checks `_mvJobIs(job, pick)`
-before adopting a result, or it draws the previous orbital under this one's
+the *in-flight* job's status — so the front-end checks the job against its pick
+(`mine(job)` in `fetchCube`) before adopting a result, or it draws the previous orbital under this one's
 label. Wire shapes: `PlotOptionsResult` / `CubeJobPayload` / `CubeDataResult`.
 
 **Bridge slots** (`get_crest_status` / `check_crest` / `install_crest` /
@@ -1853,18 +1738,16 @@ follow
 the MLIP pattern: a background probe publishes to `Bridge._crest_status` (guarded
 by `_crest_lock`) and the UI polls `get_crest_status`. `install_crest` runs off
 the click too, so its outcome rides back on `CrestStatusPayload.install_error`
-(`""` = none) — the installer's diagnostics would otherwise reach only the Log
-tab, and the Install button reads as dead. A plain re-probe publishes no
+(`""` = none) — the installer's diagnostics would otherwise reach only the log,
+and the Install button reads as dead. A plain re-probe publishes no
 `install_error`, so **Re-check clears a stale one**: the field describes the last
 install *attempt*, not the current state. The button itself disables whenever
 there is nothing to install into (no WSL, no distro, or a probe in flight) —
 creating a distro needs a Linux account and is the one step ORCAdesk cannot
-script (D41). The Build tab gains the
-`crest` mode (`Settings.build_mode`; the CREST button on the backend toggle — see
-"Build-tab modes" — the button is hidden until CREST is set up), a locked
-`#card-crest` (until a
-distro has CREST), and a **Settings → CREST** distro picker + Install button
-(that section is unconditional — it is the way in when the button is hidden). Wire
+script (D41). The builder's CREST button (see "Builder modes" — hidden until
+CREST is set up), a locked CREST form (until a distro has CREST), and a
+**Settings → CREST** distro picker + Install button (that section is
+unconditional — it is the way in when the button is hidden). Wire
 shapes: `CrestStatusPayload` / `CrestDistroPayload` / `ConformerPayload` in
 `state/schemas.py`, mirrored in `web/types.js`.
 
@@ -1885,7 +1768,8 @@ so `core/`, `mlip/`, `gui/` and the installers can all share it — P4):
   already valid UTF-8 and is returned untouched.
 
 WSL is deliberately NOT in this: `crest/wsl.py` sets `WSL_UTF8=1`, so its output
-really is UTF-8. Picked/dropped `.inp` and `.xyz` files are read `utf-8-sig`,
+really is UTF-8. Picked `.inp` and `.xyz` files (`load_inp_file` / `load_xyz_file`,
+and the path variants `load_inp_path` / `load_xyz_path`) are read `utf-8-sig`,
 because Notepad/VS Code/PowerShell write a BOM freely and ORCA refuses an input
 that starts with one.
 
@@ -1895,14 +1779,16 @@ that starts with one.
 (the OS file association) and `show_in_folder(path)` (reveal it, selected).
 Bridge slots `open_path_external` / `show_path_in_folder` are thin wrappers;
 both return `OkResult` and log the refusal, because a missing association is a
-normal thing for a user to have (P6).
+normal thing for a user to have (P6). The notebook calls only
+`show_path_in_folder` (a rail row's *folder*, the report's folder button).
 
 P5 governs the shape: an external program is **launched, never merely named** —
 telling the user which file to open is the command line by another route. So
 the setting is `Settings.viewer_target` (`"in_app"` default | `"system"`), which
-changes **where a Visual row's click ends**, never what ORCAdesk does first:
-orca_plot still runs, the same cube at the same grid, opening on the same
-orbital. Choosing an external viewer must never mean getting less.
+changed **where a Visual row's click ended**, never what ORCAdesk did first:
+orca_plot still ran, the same cube at the same grid. Choosing an external viewer
+must never mean getting less. The setting is still stored and round-tripped,
+but no page reads it since the classic front-end went.
 
 **`OPENABLE_SUFFIXES` is a trust boundary, not tidiness.** These paths arrive
 from the front-end, and `os.startfile` on a path is double-clicking it — handed
@@ -1911,27 +1797,13 @@ data formats, so no list of dangerous extensions has to be kept correct.
 Revealing has no such hazard (the file manager selects, it does not execute) and
 accepts any existing path, falling back to the parent when the file is gone.
 
-Front-end (`web/results_render.js`): `viewerTarget()` reads the setting live,
-`visOpenExternal(row)` is the external counterpart of a row's in-app action, and
-`visRow(key)` re-derives a row from its key — the row cannot ride through an
-HTML attribute, since a calc name may hold a quote (the same trap `data-job`
-avoids in the Log tab). Rows carry `path` when they already *are* a file on
-disk; the rest produce one:
-- **Structure** — the one row backed by no file (the geometry lives in the parse
-  payload), so `bridge.save_structure_xyz` writes `<base>_structure.xyz` from the
-  front-end's own `geomToXyz` (one definition, P4).
-- **Orbitals** — `orbitalCubeForExternal` runs the same generation and returns the
-  cube *path* via `_mvCubePath`. `_mvFetchCube` was split into `_mvRunCube`
-  (generate + poll, returns the job) and the data read, so the external route
-  never pulls a 60³ cube's megabytes across the bridge for nothing.
-- **ESP map** — `espCubesForExternal` generates both cubes and the caller
-  *reveals* the potential one. An ESP map **is** two cubes (a density surface
-  coloured by a potential); opening one and calling it the map would be a quiet
-  lie, so the pair is shown instead.
-
-`PlotOptionsResult.folder` and `CubeJobPayload.path` exist for this: the
-front-end holds a calc *name*, not a path, and must never assemble a workspace
-path itself (P4).
+The external route (an in-app row's counterpart that handed the structure,
+an orbital cube, or an ESP map's cube pair to the OS) went with the classic
+front-end. Its backend pieces stay: `bridge.save_structure_xyz` (writes
+`<base>_structure.xyz` for a structure that is no file on disk — no page calls
+it now), and `PlotOptionsResult.folder` / `CubeJobPayload.path`, which exist
+because the front-end holds a calc *name*, not a path, and must never assemble
+a workspace path itself (P4).
 
 ## NBO analysis (ORCAdesk's own, in process)
 
@@ -2126,9 +1998,10 @@ cache beside the run, so two on one folder would race), the status polled,
 the result fetched once. A refused start hands back the in-flight job's
 status, which names *its* `source` — the front-end checks that before
 adopting a result, or it would render one calculation's tables under
-another's name. `web/nbo_render.js` caches by source string for the session
-(`_nboCache`), so re-rendering Output never re-runs anything; the backend's
-own on-disk cache makes the first click on an already-analysed run ~4 ms.
+another's name. The notebook's section (`mountNbo` in `web/next/viewer.js`)
+keeps no session cache of its own — the classic `_nboCache` went with that
+front-end — and relies on the backend's on-disk cache, which makes a click on
+an already-analysed run ~4 ms.
 Wire shapes: `NboJobPayload` / `NboResultPayload` (+ the atom / orbital /
 interaction / Lewis rows) in `state/schemas.py`, mirrored in `web/types.js`.
 
@@ -2151,8 +2024,8 @@ None of this touches the analysis, which never evaluates a function.
 
 `nbo/cubes.py` is the in-process twin of `core/plot.generate_cube`, and the
 request rides the **same** cube pipeline: `kind: "nbo"` is a `CUBE_KINDS`
-member named in `core/plot.py` (`{base}.nbo7a.g60.cube`, so `_mvCubeName`
-mirrors one rule) but not a `PLOT_KINDS` one — `_menu_sequence` raises and
+member named in `core/plot.py` (`{base}.nbo7a.g60.cube`, so `cubeName` in
+`mvwin.js` mirrors one rule) but not a `PLOT_KINDS` one — `_menu_sequence` raises and
 `generate_cube` refuses it, and `bridge.generate_cube` branches to
 `generate_nbo_cube` under the same `_cube_lock`, status and fetch-once
 data path. `index` is the orbital's position in its spin's `NboBasis`
@@ -2166,12 +2039,10 @@ per-spin bases, `ao_coefficients = C_NAO · C_NBO[:, k]`), which the bridge
 keeps in memory for the last analysed result (`_nbo_sets`, one entry,
 checked against the `.gbw` mtime; `analysis_for(keep=…)` hands it over when
 a fresh analysis builds one, so the first cube after an analysis costs no
-second search; a cube for another result rebuilds it in seconds). The card's
-Lewis table gets a *View* button per orbital (`nboOrbital3D` in
-`nbo_render.js` → `viewNboOrbitals3D` in `molviewer.js`, the spin's whole
-list as picks so ←/→ step through them); it follows `viewer_target` like a
-Visual row (`nboCubeForExternal` + `openExternally`), and reports the wait
-on the button that was clicked without re-rendering the tables.
+second search; a cube for another result rebuilds it in seconds). The
+per-orbital *View* button that requested it lived in the classic card's Lewis
+table and went with that front-end; the notebook's section draws no Lewis
+table and makes no `kind: "nbo"` request, so this path has no caller now.
 
 `warnings` is the honest half: below 99% of the density in the minimal basis the
 molecule is not atoms-plus-corrections and the analysis says so rather than

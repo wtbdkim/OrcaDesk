@@ -15,7 +15,7 @@
    build their responses through) — these typedefs are its JS mirror.
 
    This file is a plain global script: under jsconfig.json all
-   @typedef names declared here are visible to web/app.js and
+   @typedef names declared here are visible to web/next/*.js and
    web/scf_graph.js without imports. It defines no runtime values.
    ============================================================ */
 
@@ -245,16 +245,11 @@
  * @property {number} auto_cores           what "auto" resolves to here (physical cores)
  * @property {number} auto_ram_mb          what "auto" resolves to here (75% of RAM)
  * @property {string} theme
- * @property {"shadcn"|"liquidglass"} theme_variant
- * @property {"restrained"|"moderate"|"bold"|"vivid"|"maximal"} glass_level
- * @property {string} wallpaper     aurora|aqua|sunset|grape|graphite|ocean|custom
  * @property {"conservative"|"eager"} eta_mode
  * @property {"all5"|"maxgrad"} geo_graph_mode
  * @property {"beginner"|"expert"|"mlip"|"crest"} build_mode
  * @property {"in_app"|"system"} viewer_target  where a Visual row opens:
  *   ORCAdesk's own 3D viewer, or the program the OS associates with the file
- * @property {"classic"|"notebook"} ui_variant  which front-end the desktop
- *   window loads: the shipping UI, or the in-development notebook shell
  * @property {string} crest_distro     preferred WSL distro for CREST ("" = auto-detect)
  * @property {boolean} orca_valid
  * @property {string} save_error  why the settings on screen are not on disk ("" = they are)
