@@ -6,11 +6,6 @@
    A right-hand slide-over, not a third view: Settings is somewhere you go and
    come straight back from, and taking the whole window for it would throw away
    the queue you were watching.
-
-   The last card is the switch back to the classic UI. The way out of a preview
-   has to be inside the preview — and it also names what this front-end does
-   not have yet, rather than letting it be discovered as a control that is not
-   there.
    ============================================================ */
 
 (function () {
@@ -30,10 +25,6 @@
   let _crestTimer = null;
   /** an install was started from this sheet: report how it ended, once */
   let _crestInstallWatch = false;
-
-  /** The five Liquid-Glass steps, in the order the slider walks them. The
-   *  setting is a word, not a number: the slider is a way of picking one. */
-  const GLASS = ["restrained", "moderate", "bold", "vivid", "maximal"];
 
   /** @param {string} label @param {string} key @param {string} [kind] @param {string} [hint] */
   function row(label, key, kind, hint) {
@@ -74,27 +65,6 @@
         <button class="iconbtn" type="button" data-a="close" aria-label="Close settings">×</button>
       </div>
       <div class="sheetbody">
-
-        <div class="scard">
-          <div class="scard-title">Appearance</div>
-          <p class="scard-desc">Light and dark are the \u263d toggle in the top bar, in either
-            style. <b>This front-end draws flat</b> \u2014 the style below is what the classic
-            window uses, and it is saved from here so the choice does not depend on
-            which front-end you are in.</p>
-          <div class="field-row" style="margin-bottom:0">
-            <div class="field mid"><label for="s-style">Style</label>
-              <select id="s-style" data-s2="style">
-                <option value="shadcn"${s.theme_variant !== "liquidglass" ? " selected" : ""}>shadcn (flat)</option>
-                <option value="liquidglass"${s.theme_variant === "liquidglass" ? " selected" : ""}>Liquid Glass</option>
-              </select></div>
-            <div class="field"><label for="s-int">Glass intensity</label>
-              <input id="s-int" class="slider" type="range" min="0" max="4" step="1"
-                     data-s2="glass" value="${Math.max(0, GLASS.indexOf(s.glass_level || "moderate"))}"
-                     ${s.theme_variant === "liquidglass" ? "" : "disabled"}
-                     aria-label="Glass intensity">
-              <span class="hint" style="margin:0" data-a="glass-hint"></span></div>
-          </div>
-        </div>
 
         <div class="scard">
           <div class="scard-title">ORCA</div>
@@ -218,22 +188,6 @@
           <div class="scard-title">About</div>
           <div class="kvline"><span>Version</span>
             <span class="v">${NB.esc((NB.about && NB.about.version) || "")}</span></div>
-          <div class="kvline"><span>Front-end</span><span class="v">notebook (preview)</span></div>
-        </div>
-
-        <div class="scard">
-          <div class="scard-title">Interface</div>
-          <p class="scard-desc">Which window layout ORCAdesk opens with. Switching applies
-            immediately — a running calculation keeps running. <b>Classic</b> is the finished
-            tabbed window, and still the only one that draws the Liquid-Glass styles.
-            <b>Notebook</b> is this one, still in development.</p>
-          <div class="field-row" style="margin-bottom:0">
-            <div class="field mid"><label for="s-ui">Layout</label>
-              <select id="s-ui" data-s2="ui">
-                <option value="classic"${s.ui_variant !== "notebook" ? " selected" : ""}>Classic</option>
-                <option value="notebook"${s.ui_variant === "notebook" ? " selected" : ""}>Notebook (preview)</option>
-              </select></div>
-          </div>
         </div>
       </div>`;
 
@@ -260,19 +214,6 @@
       if (p) q('[data-s="workspace_root"]').value = p;
     });
     q('[data-a="save"]').addEventListener("click", () => { save(host); });
-
-    // --- appearance: the slider only means something in the glass style
-    const style = q('[data-s2="style"]');
-    const glass = q('[data-s2="glass"]');
-    const glassHint = q('[data-a="glass-hint"]');
-    const sayGlass = () => {
-      glassHint.textContent = style.value === "liquidglass"
-        ? GLASS.map((g, i) => i === Number(glass.value) ? g.toUpperCase() : g).join(" \u00b7 ")
-        : "shadcn is flat \u2014 intensity applies to Liquid Glass.";
-    };
-    style.addEventListener("change", () => { glass.disabled = style.value !== "liquidglass"; sayGlass(); });
-    glass.addEventListener("input", sayGlass);
-    sayGlass();
 
     // --- MLIP
     q('[data-a="e-recheck"]').addEventListener("click", async () => {
@@ -531,9 +472,6 @@
       max_total_ram_mb: num("max_total_ram_mb", 0),
       geo_graph_mode: q('[data-s2="geo"]').value,
       eta_mode: q('[data-s2="eta"]').value,
-      ui_variant: q('[data-s2="ui"]').value,
-      theme_variant: q('[data-s2="style"]').value,
-      glass_level: GLASS[Number(q('[data-s2="glass"]').value)] || "moderate",
     };
   }
 
@@ -543,8 +481,7 @@
     default_nprocs: "Default nprocs", default_maxcore_mb: "Default maxcore",
     max_concurrent_jobs: "Calculations at once", max_total_cores: "Total cores",
     max_total_ram_mb: "Total memory", geo_graph_mode: "Optimization graph",
-    eta_mode: "Time remaining", ui_variant: "Layout", theme_variant: "Style",
-    glass_level: "Glass intensity",
+    eta_mode: "Time remaining",
   };
 
   /** The fields that differ from what is saved -- empty when closing loses
@@ -588,7 +525,6 @@
   /** @param {HTMLElement} host @returns {Promise<boolean>} */
   async function doSave(host) {
     const q = (sel) => /** @type {any} */ (host.querySelector(sel));
-    const prevUi = (NB.settings && NB.settings.ui_variant) || "classic";
     const payload = collect(host);
     const res = await NB.call("save_settings", JSON.stringify(payload));
     if (!res || res.error) { NB.fail("Could not save settings: " + ((res && res.error) || "unknown")); return false; }
@@ -610,10 +546,6 @@
     const saved = q('[data-a="saved"]');
     saved.textContent = "Saved.";
     setTimeout(() => { const e = q('[data-a="saved"]'); if (e) e.textContent = ""; }, 2000);
-    // Last, and only on a clean save: this replaces the page, so nothing after
-    // it would run. The setting is already on disk, so the incoming front-end
-    // reads the choice that brought it up.
-    if (res.ui_variant !== prevUi) NB.bridge.reload_ui();
     return true;
   }
 

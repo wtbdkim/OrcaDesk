@@ -1,7 +1,7 @@
 /* ============================================================
-   Ambient declarations for the environment web/app.js runs in:
+   Ambient declarations for the environment the web/ scripts run in:
    Qt WebEngine's QWebChannel, the Python Bridge object, and the
-   globals shared between app.js and scf_graph.js.
+   SCFGraph namespace scf_graph.js / progress_panels.js share.
 
    Slot signatures mirror the @pyqtSlot declarations in
    orcamgr/gui/bridge.py (all slots take/return JSON *strings*;
@@ -17,7 +17,6 @@ interface OrcaBridge {
   set_ui_state(key: string, valueJson: string): Promise<string>; // {ok} | {ok:false, error}; valueJson "null" removes the key
   get_settings(): Promise<string>;
   save_settings(payloadJson: string): Promise<string>;
-  reload_ui(): Promise<void>;
   set_wallpaper_image(dataUri: string): Promise<string>;   // WallpaperResult JSON: {ok, stored}; stored=false when ""/invalid/oversize (cleared)
   get_wallpaper_image(): Promise<string>;                   // bare data-URI string ("" = none)
   autodetect_orca(): Promise<string>;          // AutodetectResult JSON (mutates settings on success)
@@ -135,7 +134,7 @@ interface OrcaBridge {
 /** Injected by Qt WebEngine when a QWebChannel is registered on the page. */
 declare var qt: { webChannelTransport: unknown };
 
-/** From qrc:///qtwebchannel/qwebchannel.js (loaded in index.html). */
+/** From qrc:///qtwebchannel/qwebchannel.js (loaded in web/next/index.html). */
 declare class QWebChannel {
   constructor(
     transport: unknown,
@@ -185,16 +184,6 @@ interface Window {
   onInpDropped?: (path: string) => void;
   onXyzDropped?: (path: string) => void;
   onOutDropped?: (path: string) => void;
-  /* app.js declares switchTab as a top-level function, so window.switchTab is
-     the same binding. web/next.js (loaded only by the notebook front-end)
-     re-points it to a wrapper that also paints the view state, which is why it
-     has to be declared here rather than left to the function declaration. */
-  switchTab: (name: string) => void;
-  /* the notebook front-end's top-level navigation (web/next.js) */
-  nbGo?: (view: string) => void;
-  /* selectmenu.js: upgrade the <select>s under a root now, not on the
-     observer's next microtask */
-  selectmenuScan?: (root?: ParentNode) => void;
 }
 
 /* ---------- pragmatic DOM loosening ----------

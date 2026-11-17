@@ -49,11 +49,19 @@ def _declared_slots() -> set[str]:
     return slots
 
 
+# the notebook front-end's own wrapper: NB.call("slot", ...) resolves the slot
+# by name, so a typo there is the same silent no-op as a missing decorator
+_NB_CALL = re.compile(r'\bNB\.call\(\s*"([A-Za-z_]\w*)"')
+
+
 def _called_from_web() -> dict[str, str]:
-    """Every ``bridge.X(`` the desktop front-end calls, mapped to where."""
+    """Every ``bridge.X(`` / ``NB.call("X")`` the desktop front-end makes,
+    mapped to where. web/*.js are the shared trackers; web/next/*.js is the
+    notebook UI, the only page the window loads."""
     found: dict[str, str] = {}
-    for f in sorted(WEB.glob("*.js")):
-        for name in _CALL.findall(f.read_text(encoding="utf-8")):
+    for f in sorted(list(WEB.glob("*.js")) + list((WEB / "next").glob("*.js"))):
+        text = f.read_text(encoding="utf-8")
+        for name in _CALL.findall(text) + _NB_CALL.findall(text):
             found.setdefault(name, f.name)
     return found
 

@@ -7,9 +7,7 @@ Python core.
 > **Status: 0.10.7** (`0.10.7`). Desktop app: build → queue → run →
 > parse, validated against real ORCA 6.1.1 output. A running calculation
 > **survives closing the app** and is reattached on the next launch; the UI ships
-> with both a **dark and a light theme** (plus an optional **Liquid Glass**
-> style); you can **drag a `.inp`/`.xyz`/`.out` onto the window** to load it; and
-> the Log graph shows **live progress for optimizations and frequency runs**
+> with both a **dark and a light theme**; and the convergence graph shows **live progress for optimizations and frequency runs**
 > (numerical *and* analytical/CP-SCF). Beyond ORCA, you can **pre-optimize a
 > structure with a MACE model (MLIP)** in your own Python environment, and run a
 > **CREST conformer search** — both hand their geometries off to ORCA
@@ -34,9 +32,15 @@ python main.py
 ```
 
 On first launch the app tries to auto-detect ORCA. If it can't, open the
-**Settings** tab and point it at your `orca.exe`.
+**Settings** (the gear in the top bar) and point it at your `orca.exe`.
 
 ## How it works
+
+The window is one notebook-style layout: the queue is a permanent rail on the
+left, every calculation is a cell (its structure, its live convergence and its
+output side by side), and a finished one opens as a report. Building a
+calculation turns a cell into the form. (The older tabbed interface was removed;
+the sections below describe what each part does.)
 
 - **Build**: create one calculation at a time, picking the execution backend
   first — **DFT** (ORCA), **MLIP** (MACE pre-optimization, see below), or
@@ -88,7 +92,7 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   needs a Python already on your machine to build on (auto-detected; install one
   from python.org if there is none). You can equally register an environment you
   built yourself — ORCAdesk only ever shells out to it, and never installs into
-  a Python you manage. MLIP appears on the Build tab only once you have
+  a Python you manage. MLIP appears in the builder only once you have
   registered an environment — until then the button and its status pill are not
   shown, and `+ More backends…` on the build toggle takes you here to set one
   up. Once registered, the card stays **locked until a MACE environment is
@@ -104,11 +108,11 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   `crest` already on your PATH, or installs one into `~/.local` for you, and
   **Settings → CREST** has no distribution to pick. A `crest_conf` job joins the
   same queue (it runs detached and survives the app closing, like an ORCA run);
-  its finished ensemble is listed (read-only) in the **Results** tab. Follow-up
-  calculations reference the search from their geometry source on the Build
-  tab and run on the **lowest-energy conformer**; every conformer is also
+  its finished ensemble is listed (read-only) in its report. Follow-up
+  calculations reference the search from their geometry source in the
+  builder and run on the **lowest-energy conformer**; every conformer is also
   exported as its own `.xyz` under the run's `conformers/` subfolder for manual
-  follow-ups. Like MLIP, CREST appears on the Build tab only once it is set up
+  follow-ups. Like MLIP, CREST appears in the builder only once it is set up
   — CREST found in a distro, or a distro chosen here — and until then reached
   through `+ More backends…`; after that the card stays **locked until a distro
   with CREST is ready**.
@@ -148,11 +152,8 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
   TD-DFT: setup → diagonalization with an iteration counter → states →
   spectra); numerical frequencies keep a displacement progress bar with an
   ETA. A "jump to latest" button keeps long runs readable.
-- **Theme**: toggle **dark / light** from the top bar (☀/☽), and pick a theme
-  *style* in **Settings → Appearance** — the default **shadcn (flat)** look or
-  **Liquid Glass** (a refracting frosted top bar / tabs over a wallpaper, five
-  intensity levels + six wallpaper presets or a custom image). Both styles work
-  in dark and light; the choice is remembered across launches.
+- **Theme**: toggle **dark / light** from the top bar (☀/☽); the choice is
+  remembered across launches.
 - **Results**: one selected result, read two ways — **Output** and **Visual**.
   - **Output** is what the parser extracted: the per-calculation summary, final
     geometry (with *Copy .xyz*), orbital energies (HOMO/LUMO), Mulliken &
@@ -175,23 +176,18 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
     finds it for you: the structure, any `.xyz` set sitting in the run folder
     (the CREST ensemble, the per-conformer `conformers/` export, an optimization
     trajectory), the **molecular orbitals and electron density**, and the
-    **electrostatic potential map**. No folder picker — the tab lists what is
+    **electrostatic potential map**. No folder picker — the section lists what is
     there. Each row opens the built-in **3D viewer**: flip through structures
     with the **← / →** keys, **star** the ones worth keeping (the **F** key —
     starred structures persist, can be stepped through on their own, and
     exported to a `favorites/` folder).
-  - **Or open them in your own program.** Under **Settings → Opening structures
-    and maps** you can send each row to whatever this PC already opens the file
-    with (Avogadro, VMD, ChimeraX, Jmol) instead of the built-in viewer —
-    nothing to configure, it follows your existing file associations. ORCAdesk
-    does the same work either way (orca_plot still runs, same grid, same
-    orbital); only the last step differs. **Show in folder** in the Results
-    header reveals the folder ORCA wrote the run to.
+  - **Show in folder** in the report header reveals the folder ORCA wrote the
+    run to, for opening a file in your own program (Avogadro, VMD, ChimeraX).
   - Surfaces are generated from the finished job's wavefunction — nothing is
-    re-run — and the isovalue slider re-draws instantly. The ESP map is the one
+    re-run — and changing the isovalue re-draws instantly. The ESP map is the one
     plot that costs minutes rather than seconds (the potential is a Coulomb sum
     at every grid point), so its row says so, marks whether it is already on
-    disk, and does the plotting **under the button** — the rest of the tab stays
+    disk, and does the plotting **under the button** — the rest of the report stays
     usable while it runs, and the viewer opens onto a finished figure.
   - The picker lists **every result in your workspace**, not only the queued
     ones — a calculation cleared from the queue, or one from an earlier session,
@@ -199,7 +195,7 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
     an ORCA `.out`, an MLIP result, a CREST search, or a `.xyz`, which goes
     straight to Visual. *Open folder…* takes a run folder instead and finds
     the result inside it — including a run ORCA wrote by hand, whose `.out`
-    is not named after the folder. Both pickers, and the Build tab's
+    is not named after the folder. Both pickers, and the builder's
     *Load .xyz* / *Load .inp*, open **at your workspace** rather than wherever
     the last dialog happened to be.
 - **Settings**: ORCA executable path, **MLIP environments** (create one for CPU
@@ -223,7 +219,7 @@ containing `ORCAdesk.exe` and its runtime files.
 2. Zip the **entire** `dist\ORCAdesk\` folder (not just the .exe — the
    QtWebEngine/Chromium runtime lives beside it).
 3. Send the zip. The friend unzips and runs `ORCAdesk.exe`.
-4. They still need ORCA installed; they set its path in the **Settings** tab
+4. They still need ORCA installed; they set its path in **Settings**
    on first launch (or it auto-detects).
 
 Notes:
@@ -258,7 +254,8 @@ orcamgr/
   gui/
     window.py                 QMainWindow + WebEngine
     bridge.py                 JS <-> Python bridge, worker thread
-web/                          shadcn-style dark/light UI (html/css/js)
+web/next/                     the desktop UI (notebook layout; html/css/js)
+web/                          trackers it borrows (scf_graph.js, progress_panels.js), fonts, 3Dmol
 data/                         ORCA option lists (functionals, basis sets, ...)
 ```
 

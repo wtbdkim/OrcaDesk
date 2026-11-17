@@ -1,6 +1,6 @@
 # Editing the notebook front-end
 
-This folder is the **notebook UI** (Settings → Interface → *Notebook (preview)*).
+This folder is the **notebook UI**, the desktop window's only front-end.
 It is a plain HTML/CSS/JS page — no build step, no bundler, no framework — so
 changing how it looks is: edit a file, save, press a key.
 
@@ -140,7 +140,6 @@ instead of scattering through the sheet — and add its landmark to
   stage grew 1.25x per resize and drifted away from the Visual panel beside it.
   If you add a stage, give it `position:relative` and let the rule at the bottom
   of `app.css` ("the stage owns its height") reach it. DESIGN.md §17.4f.
-- The classic UI in `web/` shares nothing with this folder — no ids, no classes,
-  no stylesheet — so you cannot break it from here. The two files this page
-  borrows (`../scf_graph.js`, `../progress_panels.js`) are shared, and changing
-  those *does* affect both.
+- The two scripts this page borrows from `web/` (`../scf_graph.js`,
+  `../progress_panels.js`) are shared with the Node tests in
+  `tests/web/scf_graph.test.js`; changing them means re-running those.

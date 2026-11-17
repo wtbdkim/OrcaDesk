@@ -5,7 +5,7 @@
 
    One cell per calculation, in queue order: the structure it is working on,
    how its convergence is going, and what its output says — together, in one
-   place. This is what the notebook layout is for. The classic UI asks you to
+   place. This is what the notebook layout is for. A tabbed layout asks you to
    pick a job and then pick a view of it (Raw or Graph, one at a time, for one
    job at a time); here you read down the run.
 
@@ -47,7 +47,7 @@
    *  A run that is a sequence of named stages (frequencies, TD-DFT, a conformer
    *  search) shows the stages; one that converges shows its trace. Both are
    *  drawn by charts.js in the design's vocabulary — the trackers' own render*
-   *  helpers emit the classic front-end's classes, which app.css does not style.
+   *  helpers emit classes of their own, which app.css does not style.
    *  @param {any} c @param {number} px the box width */
   function chartFor(c, px) {
     if (!NB.hasGraph(c.name)) return null;

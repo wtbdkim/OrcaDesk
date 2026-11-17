@@ -1,14 +1,12 @@
-"""The notebook front-end (web/next/) and its ui_variant plumbing.
+"""The notebook front-end (web/next/), the desktop window's only UI.
 
-web/next/ is a SECOND front-end, not a skin of the classic one: its own markup,
-its own stylesheet, its own logic against the same Bridge. These tests pin the
-seams that can rot without anything failing loudly at import time:
+Its own markup, its own stylesheet, its own logic against the Bridge. These
+tests pin the seams that can rot without anything failing loudly at import time:
 
-  * the two front-ends leaking into each other (the classic UI must stay exactly
-    as it was, and the preview must not depend on classic files that move)
+  * the page reaching for files in web/ beyond the DOM-free scripts it borrows
   * a script the shell references going missing, which is a blank pane at runtime
-  * the setting losing a leg — the dataclass field, the payload the UI reads, or
-    the window's choice of which file to load
+  * the window loading something other than web/next/index.html, or at a size
+    the layout is not drawn at
 """
 from __future__ import annotations
 
@@ -46,35 +44,29 @@ def test_preview_ships_every_file_its_shell_loads():
 
 
 def test_preview_borrows_only_the_dom_free_scripts():
-    """The only classic files it may reach for are the trackers and renderers.
+    """The only files above web/next/ it may reach for are the trackers.
 
     scf_graph.js and progress_panels.js parse output and return HTML strings —
     they own no ids and no elements, so sharing them is reuse, not coupling.
-    Anything else from web/ (app.js, style.css, results_render.js) would make
-    the preview a skin of the classic UI again, which it deliberately is not.
+    Anything else pulled in from web/ would be markup or styling outside the
+    approved design's own folder.
     """
     html = _read(NEXT / "index.html")
     borrowed = sorted(set(re.findall(r'(?:src|href)="\.\./([^"]+)"', html)))
-    # fonts/ is not classic UI: it is a sibling asset directory holding the two
-    # typefaces the design is drawn in, and an @font-face sheet owns no DOM and
-    # no ids. Everything else above the preview's own folder is still refused.
-    allowed = {"scf_graph.js", "progress_panels.js", "orcadesk_logo.png",
-               "fonts/fonts.css"}
-    assert set(borrowed) <= allowed, f"unexpected classic dependencies: {sorted(set(borrowed) - allowed)}"
+    # fonts/ is a sibling asset directory holding the two typefaces the design
+    # is drawn in, and an @font-face sheet owns no DOM and no ids. Everything
+    # else above the preview's own folder is still refused.
+    allowed = {"scf_graph.js", "progress_panels.js", "fonts/fonts.css"}
+    assert set(borrowed) <= allowed, f"unexpected dependencies outside web/next/: {sorted(set(borrowed) - allowed)}"
 
 
-def test_classic_ui_is_untouched_by_the_preview():
-    """No file under web/next/ is referenced by the shipping front-end."""
-    html = _read(WEB / "index.html")
-    assert "next/" not in html
+def test_preview_declares_no_globals_beyond_its_own():
+    """One tsc project checks every script under web/, so they share a global
+    scope with ../scf_graph.js and ../progress_panels.js.
 
-
-def test_preview_declares_no_globals_that_collide_with_app_js():
-    """One tsc project checks both front-ends, so they share a global scope.
-
-    The preview keeps everything on NB for that reason; a second top-level
-    `let bridge` / `queue` / `settings` would be a duplicate declaration of the
-    classic UI's and fail the type check for both.
+    The preview keeps everything on NB for that reason; a top-level
+    `let bridge` / `queue` / `settings` would be one more name in that shared
+    scope, waiting to become a duplicate declaration.
     """
     for f in sorted(NEXT.glob("*.js")):
         src = _read(f)
@@ -183,7 +175,10 @@ def test_the_preview_uses_the_references_own_component_vocabulary():
     # .viewstage is the Structure section's stage, which is gone on purpose:
     # the parsed structure is the Visual panel's first tile, so one stage draws
     # the molecule instead of two side by side (DESIGN.md §17.4c).
-    OUTSTANDING = {"viewstage"}
+    # .slider is the Settings sheet's Liquid-Glass intensity control, which
+    # only ever configured the classic front-end and went with it (DESIGN.md
+    # §17.5).
+    OUTSTANDING = {"viewstage", "slider"}
     unexpected = sorted(missing - OUTSTANDING)
     assert not unexpected, (
         "design elements dropped without a decision: " + ", ".join(unexpected))
@@ -198,71 +193,14 @@ def test_the_reference_is_a_standards_mode_document():
     assert _read(ROOT / "design" / "notebook-reference.html").lstrip()[:15].lower()         .startswith("<!doctype html>")
 
 
-# ---------------------------------------------------------------- the setting
+# ---------------------------------------------------------------- the window
 
-def test_ui_variant_defaults_to_classic():
-    assert Settings().ui_variant == "classic"
-
-
-@pytest.mark.parametrize("variant", ["classic", "notebook"])
-def test_ui_variant_round_trips_through_settings(tmp_path, monkeypatch, variant):
-    import orcamgr.config as config                      # noqa: PLC0415
-
-    cfg = tmp_path / "settings.json"
-    monkeypatch.setattr(config, "config_file", lambda: cfg)
-    s = Settings()
-    s.ui_variant = variant
-    assert s.save()
-    assert Settings.load().ui_variant == variant
-
-
-def test_unknown_ui_variant_degrades_to_classic(tmp_path, monkeypatch):
-    """A hand-edited or downgraded settings.json must not strand the window.
-
-    Settings.load() keeps whatever string is on disk (it does not validate
-    values), so the guard that matters is _index_file's: anything that is not
-    exactly "notebook" loads the classic UI.
-    """
-    import orcamgr.config as config                      # noqa: PLC0415
-
-    cfg = tmp_path / "settings.json"
-    cfg.write_text('{"ui_variant": "banana"}', encoding="utf-8")
-    monkeypatch.setattr(config, "config_file", lambda: cfg)
-    assert Settings.load().ui_variant != "notebook"
-
-
-def test_the_way_out_of_the_preview_is_inside_the_preview():
-    """Both front-ends carry the switch, at the bottom of their settings."""
-    classic = _read(WEB / "index.html")
-    assert 'name="ui-variant" value="classic"' in classic
-    assert 'name="ui-variant" value="notebook"' in classic
-    assert classic.index('name="ui-variant"') > classic.index('id="about-body"')
-
-    preview = _read(NEXT / "settings.js")
-    assert 'value="classic"' in preview
-    assert 'value="notebook"' in preview
-    assert 'data-s2="ui"' in preview
-    assert preview.index('<div class="scard-title">Interface</div>')         > preview.index('<div class="scard-title">About</div>')
-
-
-def test_bridge_reports_and_accepts_ui_variant():
-    src = _read(ROOT / "orcamgr" / "gui" / "bridge.py")
-    assert "ui_variant=self.settings.ui_variant" in src
-    assert '"ui_variant" in data' in src
-    assert "def reload_ui" in src
-    assert "ui_variant: str" in _read(ROOT / "orcamgr" / "state" / "schemas.py")
-
-
-def test_window_picks_the_front_end_from_the_setting():
+def test_window_loads_the_notebook_front_end():
+    """There is one front-end and one entry point; no setting picks another."""
     src = _read(ROOT / "orcamgr" / "gui" / "window.py")
-    # one reader for the setting, because the file to load and the size to open
-    # at are both chosen by it and must not disagree
-    assert "def _ui_variant" in src
-    assert "Settings.load().ui_variant" in src
-    assert 'self._ui_variant() == "notebook"' in src
     assert '"next" / "index.html"' in src
-    # and never loads a hard-coded index.html behind the setting's back
-    assert 'web_dir() / "index.html"\n        self.view.load' not in src
+    assert 'web_dir() / "index.html"' not in src
+    assert "ui_variant" not in src
 
 
 def test_frozen_build_ships_the_preview():
@@ -306,8 +244,8 @@ def test_preview_ships_the_typefaces_the_design_is_drawn_in():
 
 def test_window_opens_the_notebook_above_its_own_breakpoint():
     """app.css narrows the queue rail below 1320px; the preview opens above
-    that, in the layout the design is drawn in (a 600px rail). At the classic
-    1100 it came up in the narrow layout, which reads as a different UI.
+    that, in the layout the design is drawn in (a 600px rail). At 1100 it came
+    up in the narrow layout, which reads as a different UI.
     """
     app_css = _read(NEXT / "app.css")
     narrow = re.search(r"@media \(max-width:(\d+)px\)\{\s*\.app\{grid-template-columns:clamp\(",
@@ -316,8 +254,7 @@ def test_window_opens_the_notebook_above_its_own_breakpoint():
     limit = int(narrow.group(1))
 
     src = _read(ROOT / "orcamgr" / "gui" / "window.py")
-    sizes = re.search(r"_SIZE_BY_VARIANT = \{([^}]*)\}", src).group(1)
-    width = int(re.search(r'"notebook":\s*\((\d+)', sizes).group(1))
+    width = int(re.search(r"^\s*_SIZE = \((\d+),", src, re.M).group(1))
     assert width > limit, f"the notebook opens at {width}px, under the {limit}px breakpoint"
 
 
@@ -349,7 +286,7 @@ def test_the_builder_seeds_a_new_calculation_from_stepconfig_alone():
 def test_the_builder_offers_every_mlip_and_crest_kind_the_engine_runs():
     """The notebook builder's MLIP Task field and CREST form are the only way
     the preview makes those calculations (DESIGN.md §17.4s). A kind the engine
-    runs and the builder cannot pick would be reachable only from classic."""
+    runs and the builder cannot pick would be reachable from nowhere."""
     from orcamgr.core.queue import KNOWN_KINDS
     src = _read(NEXT / "build.js")
     offered = set(re.findall(r'\["((?:mlip|crest)_\w+)", "', src))
