@@ -45,7 +45,8 @@ from typing import Optional
 from ..core.input_generator import (CHARGE_PLACEHOLDER, GEOMETRY_PLACEHOLDER,
                                     HESS_PLACEHOLDER, JOB_PLACEHOLDER,
                                     MULT_PLACEHOLDER, StepConfig,
-                                    _geom_job_lines, _irc_lines, build_input)
+                                    _geom_job_lines, _irc_lines, build_input,
+                                    is_level_text)
 from ..paths import user_data_root
 
 FILE_NAME = "inp_sets.json"
@@ -149,9 +150,9 @@ def mlip_config_from_text(text: str) -> dict:
 
 
 def job_line_has_placeholder(text: str) -> bool:
-    """True when {{JOB}} stands on one of the text's ``!`` lines."""
-    return any(ln.strip().startswith("!") and JOB_PLACEHOLDER in ln
-               for ln in (text or "").splitlines())
+    """True when {{JOB}} stands on one of the text's ``!`` lines
+    (input_generator.is_level_text, the renderer's own test)."""
+    return is_level_text(text)
 
 
 def seed_sets(nprocs: int = 6, maxcore_mb: int = 2400) -> "list[dict]":

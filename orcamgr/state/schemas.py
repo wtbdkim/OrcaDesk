@@ -576,7 +576,10 @@ class InpSetsResult(_Ok, total=False):
     sets: "list[InpSet]"
     defaults: "dict[str, str]"   # set kind -> its seeded text ("+ New")
     jobs: "dict[str, str]"       # calc kind -> what {{JOB}} becomes for it
-                                 # (input_generator.TEMPLATE_JOB_KEYWORDS)
+                                 # (input_generator.TEMPLATE_JOB_KEYWORDS;
+                                 # "" for tddft: its %tddft block is the job)
+    mlip_jobs: "list[str]"       # the kinds an MLIP set's block may run
+                                 # (input_generator.MLIP_TEMPLATE_KINDS)
     next_kind: "dict[str, str]"  # calc kind -> the kind a level placed after it
                                  # runs by default ("" = a row's start; any
                                  # kind not listed: "sp") — inpsets.NEXT_KIND
@@ -732,6 +735,16 @@ class ExistsResult(_Ok, total=False):
     overwritten without the Run-click conflicts modal ever seeing it."""
     error: str
     exists: bool
+
+
+class ExistingOutputsResult(_Ok, total=False):
+    """existing_outputs — "existing" is present on every branch: the given
+    names whose {workspace}/{name}/ already holds an output (has_existing_output's
+    rule), in the order given. Backs the queue editor's overwrite guard for
+    the adds that bypass the builder (a dropped set, a paste, a row copy, a
+    dropped .xyz) and its free-name search."""
+    error: str
+    existing: "list[str]"
 
 
 class AutodetectResult(_Ok, total=False):

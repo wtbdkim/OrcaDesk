@@ -132,6 +132,7 @@ interface OrcaBridge {
   get_free_energy_profile(): Promise<string>;
   check_overwrite_conflicts(): Promise<string>;
   has_existing_output(name: string): Promise<string>;
+  existing_outputs(namesJson: string): Promise<string>;      // ExistingOutputsResult JSON
   run_queue(skipNamesJson: string): Promise<string>;
   cancel_queue(): Promise<string>;
   stop_after_current(): Promise<string>;

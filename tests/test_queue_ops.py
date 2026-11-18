@@ -505,11 +505,11 @@ LEVEL = "! B3LYP def2-SVP {{JOB}}\n* xyz {{CHARGE}} {{MULT}}\n{{GEOMETRY}}\n*\n"
 
 def test_a_level_block_refuses_a_kind_with_no_job_keyword(store):
     store.apply_ops([sys_op()])
-    with pytest.raises(QueueOpError, match="cannot run as a 'neb_ts'"):
-        store.apply_ops([calc_op("mol-x", kind="neb_ts", raw_text=LEVEL)])
+    with pytest.raises(QueueOpError, match="cannot run as a 'general'"):
+        store.apply_ops([calc_op("mol-x", kind="general", raw_text=LEVEL)])
     store.apply_ops([calc_op("mol-opt", kind="opt", raw_text=LEVEL)])
-    with pytest.raises(QueueOpError, match="cannot run as a 'tddft'"):
-        store.apply_ops([{"op": "update_calc", "name": "mol-opt", "calc": {"kind": "tddft"}}])
+    with pytest.raises(QueueOpError, match="cannot run as a 'general'"):
+        store.apply_ops([{"op": "update_calc", "name": "mol-opt", "calc": {"kind": "general"}}])
     assert store.get("mol-opt").kind == "opt"
 
 
@@ -533,4 +533,4 @@ def test_a_dropped_structure_runs_an_orca_level_as_a_single_point(store):
     out = store.add_xyz_systems([("v.xyz", XYZ)], level, "-opt", kind="opt")
     assert store.get("v-opt").kind == "opt"
     with pytest.raises(ValueError, match="cannot run as"):
-        store.add_xyz_systems([("u.xyz", XYZ)], level, "", kind="neb_ts")
+        store.add_xyz_systems([("u.xyz", XYZ)], level, "", kind="general")

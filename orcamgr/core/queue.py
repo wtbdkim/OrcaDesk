@@ -55,7 +55,9 @@ from .input_generator import (
     raw_geometry_mismatch, GEOMETRY_PLACEHOLDER, HESS_PLACEHOLDER,
     render_template_text, template_hess_need, check_neb_atom_order,
     _xyz_elements, irc_hess_input_name, irc_hess_is_path, SCAN_KINDS, normalize_scan,
+    is_level_text, template_option_conflicts,
 )
+from .structure import parse_block
 from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
                         numfreq_rank_cap, ram_headroom_mb, raw_nprocs, uses_gpu,
                         worker_threads)
@@ -249,10 +251,11 @@ def _missing_section_for_kind(kind: str, result: ParseResult) -> str:
 
 def _wants_scan(calc: Calculation) -> bool:
     """Whether this calculation's generated input carries a %geom Scan — the
-    same rule build_input writes it by."""
+    same rule build_input writes it by, and render_template_text for a level
+    block (whose options are its config)."""
     cfg = calc.config
-    return (not calc.is_raw and cfg.kind in SCAN_KINDS
-            and bool(normalize_scan(cfg.geom_scan)))
+    return ((not calc.is_raw or is_level_text(calc.raw_text))
+            and cfg.kind in SCAN_KINDS and bool(normalize_scan(cfg.geom_scan)))
 
 
 def _kept_result_matches(calc: Calculation, result: ParseResult) -> str:
@@ -386,17 +389,23 @@ def ref_point_problem(calc: "Calculation", parent: "Optional[Calculation]") -> s
 
 
 def template_hess_problem(name: str, kind: str, raw_text: str, set_name: str,
-                          after: str, has_reference: bool) -> str:
+                          after: str, has_reference: bool, cfg=None) -> str:
     """The refusal for an input that needs a parent's Hessian but has no
     parent to take it from, or "". A text naming {{HESS}} takes the .hess of
     the calc it runs after or of its geometry source; so does an inp-set IRC
     whose own %irc block reads a Hessian (InitHess read + a relative
-    Hess_Filename, staged from the referenced calc's folder). With neither an
-    `after` nor a geometry reference the run could only fail."""
+    Hess_Filename, staged from the referenced calc's folder), and a level IRC
+    whose options (``cfg``) read one by name. A picked .hess (an absolute
+    path, copied in at launch) needs no parent. With neither an `after` nor a
+    geometry reference the run could only fail."""
     if after or has_reference:
         return ""
     text = raw_text or ""
-    needs = template_hess_need(text, kind) == "required"
+    needs = template_hess_need(text, kind, cfg) == "required"
+    if (not needs and kind == "irc" and cfg is not None and is_level_text(text)
+            and (cfg.irc_init_hess or "").strip().lower() == "read"):
+        picked = (cfg.irc_hess_file or "").strip()
+        needs = bool(picked) and not irc_hess_is_path(picked)
     if not needs and set_name and kind == "irc":
         hess = QueueEngine._raw_irc_hess_file(text)
         needs = bool(hess) and not Path(hess).is_absolute()
@@ -942,7 +951,7 @@ class QueueEngine:
             if mismatch:
                 self.cb.log(f"[{calc.name}] {mismatch}", "warn", calc.name)
             text = render_raw_input(calc.raw_text, xyz)
-            text = self._render_template_values(calc, text, calc_dir)
+            text = self._render_template_values(calc, text, calc_dir, xyz)
         else:
             try:
                 text = build_input(calc.config, xyz, calc.charge, calc.multiplicity)
@@ -1074,9 +1083,18 @@ class QueueEngine:
             # consumes the stored product — it is dead state carried over from
             # the form (the _nebProductXyz global survives excursions), so
             # neither the atom-order check nor the side-file write may act on it.
-            uses_generated = (not calc.is_raw) or ('"product.xyz"' in calc.raw_text)
+            # read from the RENDERED text: a level block's %neb is added by
+            # render_template_text, and names the generated side file
+            uses_generated = (not calc.is_raw) or ('"product.xyz"' in (text or calc.raw_text))
             if not calc.is_raw and not prod:
                 raise OrcaRunError("NEB-TS needs a product geometry, but none was provided.")
+            if calc.is_raw and not prod and uses_generated and is_level_text(calc.raw_text):
+                # a level block: nothing launched yet, so BLOCKED (editable),
+                # never a locked FAILED for a choice the user has yet to make
+                raise OrcaBlocked(
+                    "NEB-TS needs a product geometry, but this block has none. "
+                    "Pick the product structure in the block's options (Edit "
+                    "options in the builder).")
             if calc.is_raw and not prod and uses_generated:
                 # The raw text keeps the generated side-file reference but no
                 # product geometry is stored: launching would fail cryptically
@@ -1121,7 +1139,7 @@ class QueueEngine:
         return m.group(1).strip() if m else ""
 
     def _render_template_values(self, calc: Calculation, text: str,
-                                calc_dir: Path) -> str:
+                                calc_dir: Path, xyz: str = "") -> str:
         """Fill an inp-set template's own placeholders (the geometry one is
         render_raw_input's) through render_template_text, the one renderer
         the queue editor's preview shows too: {{JOB}} with the calculation
@@ -1132,8 +1150,18 @@ class QueueEngine:
         is there and computes its own Hessian otherwise; a text naming
         {{HESS}} needs one (none is an OrcaRunError before launch). A text
         without placeholders is returned unchanged; a {{JOB}} text for a kind
-        with no job keyword is an OrcaRunError before anything launches."""
-        need = template_hess_need(text, calc.kind)
+        with no job keyword is an OrcaRunError before anything launches.
+
+        A level block's options (calc.config) are rendered in with it, the
+        resolved structure's atom count checking constraint / scan indices; a
+        conflict between them and the level (template_option_conflicts, the
+        store's refusal too) is an OrcaBlocked -- nothing launched, editable."""
+        cfg = calc.config if is_level_text(calc.raw_text) else None
+        if cfg is not None:
+            problem = template_option_conflicts(calc.raw_text, calc.kind, cfg)
+            if problem:
+                raise OrcaBlocked(problem)
+        need = template_hess_need(text, calc.kind, cfg)
         hess = ""
         if need:
             src, looked = find_parent_hessian(calc, self._by_name, self.workspace_root)
@@ -1147,9 +1175,10 @@ class QueueEngine:
                     f"found (looked in: {where}). It is the .hess of the calculation this "
                     "one runs after, or of its geometry source — run a frequency "
                     "calculation there first.")
+        n_atoms = len(parse_block(xyz)) if (xyz or "").strip() else None
         try:
             return render_template_text(text, calc.kind, calc.charge,
-                                        calc.multiplicity, hess)
+                                        calc.multiplicity, hess, cfg, n_atoms)
         except ValueError as e:
             raise OrcaRunError(str(e))
 
@@ -1187,8 +1216,17 @@ class QueueEngine:
         """
         if calc.kind != "irc":
             return
+        picked = ""
         if calc.is_raw:
             hess_name = self._raw_irc_hess_file(text or calc.raw_text)
+            # a level block's own "read" names a picked file by its bare name
+            # in the rendered text; the file is copied in like the Guided one
+            cfg = calc.config
+            if (is_level_text(calc.raw_text)
+                    and (cfg.irc_init_hess or "").strip().lower() == "read"
+                    and irc_hess_is_path(cfg.irc_hess_file)
+                    and hess_name == irc_hess_input_name(cfg.irc_hess_file)):
+                picked = hess_name = cfg.irc_hess_file.strip()
         elif (calc.config.irc_init_hess or "").strip().lower() == "read":
             hess_name = (calc.config.irc_hess_file or "").strip()
         else:
@@ -1196,7 +1234,7 @@ class QueueEngine:
         if not hess_name:
             return
 
-        if not calc.is_raw and irc_hess_is_path(hess_name):
+        if irc_hess_is_path(hess_name) and (not calc.is_raw or picked):
             # A picked file: the generated input names only the file
             # (irc_hess_input_name), so it must be in the run folder by launch.
             # Copied fresh every time, so re-picking a file of the same name

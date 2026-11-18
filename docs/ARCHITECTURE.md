@@ -479,12 +479,27 @@ MLIP calc; the text stays in `raw_text` for the editor, `is_raw` false. The
 text is the whole MLIP setting: the `MLIP_KEYS` fields are reset to
 `StepConfig` defaults before it is applied, so an edited text that drops a key
 (`update_calc` merges the old config in first) returns that setting to the
-default rather than keeping the old value. Also refused for a new payload
+default rather than keeping the old value. A **level block** (an ORCA inp-set
+text with `{{JOB}}` on its `!` line, `input_generator.is_level_text`) reads
+its `config` as the block's **options** (`template_config`: StepConfig field
+names, `config.kind` forced to the block's kind, an `irc_init_hess` the
+payload does not name read as `"auto"`); see *Running the queue* for how they
+merge. For such a block the store also runs the constraint / scan index
+checks against a direct `xyz` (as for a guided calc), refuses options the
+level cannot take (`template_option_conflicts`, the message prefixed with the
+calc name: a key both set, constraints into a one-line `%geom`, an IRC
+`read` without a file, an SMD solvent SMD lacks), and `constraint_warning`
+judges its constraints too. `session.json` is **schema 2**: a schema-1 file's
+level blocks had a config nobody chose as options (it was never read), so
+`load_session` reads it as none (`template_config({}, kind)`) and the block
+renders exactly as before. Also refused for a new payload
 (never on restore), because at launch they could only fail and FAILED locks:
 a raw text that reads a parent's Hessian (`{{HESS}}`, or an inp-set IRC whose
 own `%irc` block reads one — `InitHess read` with a relative
-`Hess_Filename`) with neither an `after` nor a geometry reference
-(`core.queue.template_hess_problem`); and a `ref_point` `irc_f` / `irc_b` on a
+`Hess_Filename`, or a level block whose options read one by name; a picked
+`.hess`, an absolute path, needs no parent) with neither an `after` nor a
+geometry reference (`core.queue.template_hess_problem`); and a `ref_point`
+`irc_f` / `irc_b` on a
 parent whose kind writes no IRC end points (anything but `irc` / `general`,
 `ref_point_problem`) — checked by `add` / `replace` and, for `apply_ops`, on
 the batch's final state for every row it added or rebuilt (or whose parent it
@@ -519,7 +534,15 @@ An approval-only patch on a PENDING row keeps the **live** row object
 (written back at commit like `place_calc`), because the engine pins its
 keep-existing answers to row identity (`_skip_ids`): a replacement made a row
 the user chose to keep re-run mid-run and overwrite its output. Any other
-patch rebuilds the row (a new object, PENDING again).
+patch rebuilds the row (a new object, PENDING again). On a level block a
+patch `{kind, config, geometry_source, xyz, ref_name, ref_point}` (the
+builder's *Level* mode) keeps `raw_text` / `set_name` — the patch merges over
+the calc — and `config` is the block's whole option set. A calc that
+BECOMES a level block through a patch without `config` (a level dropped on a
+guided calc) gets no options: its old config was a whole guided input. An
+MLIP set's block is re-derived from its text (`is_raw` set again) for a
+`raw_text`, `config` or `kind` patch, so an options edit (T / P for an MLIP
+frequency) never replaces the model the text sets.
 `place_calc`'s `place` holds only `system` / `node` / `col` / `row` (anything
 else is refused) and is allowed in **every** state: where the editor draws a
 calc is not what it ran (P24 freezes the latter). It is how a finished
@@ -549,7 +572,8 @@ changes nothing for the engine (it walks rows by identity).
 **`add_xyz_systems(json)`** is the "drop `.xyz`" recipe's single point:
 `{files: [{label, xyz}] | paths: [...], set_id, suffix, kind}` (`set_id ""` =
 the first ORCA level; an ORCA level runs as `kind`, default `"sp"` — a kind
-with no `{{JOB}}` keyword is refused; an MLIP set as `mlip_opt`) → per file
+with no `{{JOB}}` keyword is refused; an MLIP set as `kind` when that is one
+of `MLIP_TEMPLATE_KINDS`, else `mlip_opt`) → per file
 one system named after the file's stem and one calc `stem + suffix` from that
 inp set, each file its own `apply_ops` batch, so a refusal (a clashing or
 ORCA-hostile name, a multi-frame file, a header that counts fewer atoms than
@@ -582,7 +606,10 @@ unreadable one reads as the seeds and is replaced only on the next save. A
 name is unique within its kind (case-insensitive): a block names its set by
 (kind, name). `get_inp_sets` also returns `defaults` (each kind's seeded text,
 what *+ New* starts from), `jobs` (`TEMPLATE_JOB_KEYWORDS`: the kinds a
-level's block may run — the Type select) and `next_kind` (`NEXT_KIND`: the
+level's block may run — the Type select; `tddft` maps to `""`), `mlip_jobs`
+(`MLIP_TEMPLATE_KINDS`: `mlip_opt` / `mlip_sp` / `mlip_freq` /
+`mlip_opt_freq`, every task the MLIP pipeline runs — the frequency ones read
+`freq_temp_k` / `freq_pressure_atm`) and `next_kind` (`NEXT_KIND`: the
 natural next step a level dropped on the + slot starts as — `opt` at a row's
 start or after `mlip_opt`, `freq` after `opt`, `ts_freq` after `ts_opt`,
 `irc` after `ts_freq` / `ts_opt_freq`, `sp` after anything else). The queue
@@ -934,14 +961,54 @@ The `core/` pipeline:
   renderer). `{{JOB}}` becomes the calc kind's job keyword
   (`TEMPLATE_JOB_KEYWORDS`: opt `TightOpt`, ts_opt `OptTS`, freq / ts_freq
   `Freq`, opt_freq `TightOpt Freq`, ts_opt_freq `OptTS Freq`, irc `IRC`, sp
-  `SP`, nmr `NMR`; any other kind is a ValueError → `OrcaRunError` before
-  launch) and that kind's block is inserted right before the coordinate block
-  (`* xyz` / `* xyzfile`) by the same helpers `build_input` uses
-  (`_geom_job_lines`, `_irc_lines`): `%geom MaxIter 200` for an
-  optimization (+ `Calc_Hess true` for ts_opt / ts_opt_freq), `%irc MaxIter
-  100` with `InitHess read` + `Hess_Filename "<staged .hess>"` when a parent
-  left one, else `InitHess calc_anfreq` — nothing when the text has its own
-  `%geom` / `%irc` (the user's block wins, whole). The `.hess` is found by
+  `SP`, nmr `NMR`, neb_ts `NEB-TS`, tddft none — the token is removed, its
+  `%tddft` block is the job, and a `!` line left empty goes; general and the
+  MLIP / CREST kinds are a ValueError → `OrcaRunError` before launch) and that
+  kind's blocks are merged in by the same helpers `build_input` uses
+  (`_geom_job_lines`, `_irc_lines`, `_constraint_line`, `_scan_line`), with
+  the **block's options** — its `config`, applied only to a level
+  (`is_level_text`; the level owns method / basis / RI / `%pal` / `%maxcore`
+  / `%basis`, so those fields are never read). With no options the result is
+  byte-identical to what a level always rendered as (pinned in
+  `test_level_options.py`, and a level with options renders exactly as a
+  Guided calc with the same settings). The merge never writes a second copy
+  of a block: `!` line — the job keyword, then the SCF tier, `options` and
+  the solvation keyword, each only when no `!` line holds it already (another
+  SCF tier, or any solvent keyword / `%cpcm` in the level beside a block
+  solvation, is refused). `%cpcm` (a solvent named with spaces), `%geom`
+  (optimizations: `MaxIter`, `Calc_Hess true` for a TS, `Constraints`,
+  `Scan` for opt), `%freq` (`Temp` / `Pressure` off their defaults), `%tddft`,
+  `%irc`, `%neb` (`NEB_End_XYZFile "product.xyz"`, `Nimages`, `PreOpt_Ends`,
+  `NEB_TS_XYZFile`): a block the level lacks is inserted whole right before
+  the coordinate block (`* xyz` / `* xyzfile`; at the end when there is
+  none); into one it has (`_find_block`: a small parser counting nested
+  sub-block `end`s) only the lines it lacks go, before its closing `end` — or,
+  for a block written on one line, as words before that line's last `end`
+  (verified on 6.1.1: `%geom Trust 0.2 MaxIter 200 end`, `%freq Temp 300
+  Pressure 2.0 end` both honoured). `%geom` gets `MaxIter` only where it has
+  none and `Calc_Hess` only where it names no `Calc_Hess` / `InHess` — so a
+  level with its own `%geom` no longer loses the TS Hessian and the MaxIter
+  cap (it used to win whole). An `%irc` the level has takes only options off
+  their default (an `auto` initial Hessian adds nothing). `%eprnmr` (NMR
+  J-couplings) goes after the coordinate block's closing `*`. **Refused,
+  never guessed** (`TemplateConflict`, a ValueError naming the block and key):
+  a key set on both sides, a `Constraints` / `Scan` list on both sides,
+  constraints / scan into a one-line `%geom`, a block with no closing `end`
+  that must take lines, a second `%eprnmr`. Two `%geom` blocks in one input
+  are not relied on. `template_option_conflicts` is the one judgement: the
+  store refuses on it, and `_render_template_values` stamps the row BLOCKED
+  (`OrcaBlocked`) on it before launch. The resolved structure's atom count
+  checks constraint / scan indices as `build_input` does (a referenced
+  geometry's at launch). IRC initial Hessian (`irc_init_hess`): `auto`, the
+  level block's default — `%irc MaxIter 100` with `InitHess read` +
+  `Hess_Filename "<staged .hess>"` when a parent left one, else `InitHess
+  calc_anfreq`; an explicit `calc_anfreq` / `calc_numfreq` stages no parent
+  Hessian (`template_hess_need` honours it); `read` names `irc_hess_file`, a
+  picked absolute path copied into the run folder by `_stage_irc_hessian`
+  (the input names it bare) or a run-folder name. `_wants_scan` and the
+  kept-result scan check count a level block's `geom_scan`;
+  `_prepare_neb_side_files` reads the rendered text (a level NEB-TS without
+  `neb_product_xyz` is BLOCKED, not FAILED). The `.hess` is found by
   `find_parent_hessian` (the `after` parent's folder, `{after}.hess`, else the
   geometry reference's, `{ref}.hess`) and copied into the run folder; a text
   that names `{{HESS}}` itself needs one (none is an `OrcaBlocked` before
@@ -995,7 +1062,10 @@ The `core/` pipeline:
   `calc_from_dict` at add time for direct coordinates (not on restore). ORCA
   6.1.1's own response to such an index is `Could not make G matrix` in setup.
   A template's `{{GEOMETRY}}` defers the check to the run-time call with the
-  resolved geometry. **An angle past 175° is a linear bend to ORCA**, which it
+  resolved geometry. A level block's constraints and scan (its options) are
+  held to the same index rule, at add time against its direct coordinates and
+  at launch against the resolved ones (`render_template_text(..., n_atoms)`).
+  **An angle past 175° is a linear bend to ORCA**, which it
   can only hold where it starts: a valued `A` constraint whose start OR target
   is past `LINEAR_BEND_DEG` stops in setup ("For a linear bend you can only
   keep the initial value"), even a 180.00 target on a 180° start — measured on
@@ -1173,8 +1243,11 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   remove/rename of a referenced parent are refused at the store, because
   the pre-run screen (`find_dangling_reference`) never sees mid-run
   mutations. A mid-run add whose name already has a result on disk is
-  confirmed in the UI first (`bridge.has_existing_output`) — the Run-click
-  overwrite modal never sees it, and the engine's keep-existing set is
+  confirmed in the UI first (`bridge.has_existing_output`; the queue editor's
+  adds that bypass the builder — a dropped set, a paste, a row copy, a
+  dropped `.xyz` — ask `existing_outputs(names_json)` → `{ok, existing}`,
+  the same rule for many names, which its free-name search also skips) — the
+  Run-click overwrite modal never sees it, and the engine's keep-existing set is
   fixed at run start, so it would otherwise overwrite silently. The
   keep-existing answers from the Run-click modal are pinned to the ROWS they
   were given about (`_skip_ids`, taken at run start): a row removed and re-added

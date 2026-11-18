@@ -45,8 +45,10 @@
   const EDITABLE = ["pending", "blocked", "cancelled"];
   const STARTED = ["running", "done", "failed"];
   /** the name every new step of a kind gets after the system's: Ltyr-MV-opt */
-  const SUFFIX = { mlip_opt: "pre", opt: "opt", ts_opt: "ts", freq: "freq", ts_freq: "freq",
-                   opt_freq: "optfreq", ts_opt_freq: "tsfreq", irc: "irc", sp: "sp", nmr: "nmr" };
+  const SUFFIX = { mlip_opt: "pre", mlip_sp: "mlsp", mlip_freq: "mlfreq", mlip_opt_freq: "mloptfreq",
+                   opt: "opt", ts_opt: "ts", freq: "freq", ts_freq: "freq",
+                   opt_freq: "optfreq", ts_opt_freq: "tsfreq", irc: "irc", sp: "sp", nmr: "nmr",
+                   tddft: "tddft", neb_ts: "neb" };
   /** what a calculation of each kind is called on its block */
   const KIND_LABEL = {
     mlip_opt: "Preopt", mlip_sp: "MLIP SP", mlip_freq: "MLIP Freq", mlip_opt_freq: "MLIP Opt+Freq",
@@ -59,8 +61,14 @@
    *  fill {{JOB}} for are offered (get_inp_sets `jobs`). */
   const TYPE_LABEL = { opt: "Optimization", ts_opt: "TS optimization", freq: "Frequencies",
                        ts_freq: "TS frequencies", opt_freq: "Opt + Freq", ts_opt_freq: "TS Opt + Freq",
-                       irc: "IRC", sp: "Single point", nmr: "NMR" };
-  const TYPE_ORDER = ["opt", "ts_opt", "freq", "ts_freq", "opt_freq", "ts_opt_freq", "irc", "sp", "nmr"];
+                       irc: "IRC", sp: "Single point", nmr: "NMR", tddft: "TD-DFT", neb_ts: "NEB-TS" };
+  const TYPE_ORDER = ["opt", "ts_opt", "freq", "ts_freq", "opt_freq", "ts_opt_freq", "irc", "sp", "nmr",
+                      "tddft", "neb_ts"];
+  /** The Task select of an MLIP set's block, in the Guided builder's words */
+  const MLIP_TYPES = [["mlip_opt", "Optimization"], ["mlip_sp", "Single point"],
+                      ["mlip_freq", "Frequencies"], ["mlip_opt_freq", "Opt + Frequencies"]];
+  /** the states "Clear finished" takes off the list (a cancelled block re-runs) */
+  const FINISHED = ["done", "failed"];
   /** the kinds whose approval gate can pass by itself on the imaginary-mode count */
   const FREQ_KINDS = ["freq", "ts_freq", "opt_freq", "ts_opt_freq"];
   const ST_LABEL = { done: "done", running: "running", waiting: "waiting for approval",
@@ -87,6 +95,12 @@
   let _jobs = {};
   /** calc kind -> the kind a level placed after it runs by default @type {Object<string, string>} */
   let _next = {};
+  /** the kinds a block made from an MLIP set may run (get_inp_sets `mlip_jobs`) @type {string[]} */
+  let _mlipJobs = [];
+  /** The last refusal of an ops batch, said in the inspector beside what it
+   *  names (the error starts "'<name>': ...") as well as in a toast.
+   *  @type {{text: string, name: string}|null} */
+  let _refusal = null;
   /** The copied workflow (copyWorkflow), editor-local; mirrored in the UI
    *  state under CLIP_KEY so the main window's drop can run it. @type {any} */
   let _clip = null;
@@ -112,6 +126,11 @@
   const _preview = new Map();
   /** slots the running backend does not have (an older one) @type {string[]} */
   let _missing = [];
+  /** StepConfig's defaults (get_step_defaults): what a block's options are
+   *  compared with when its sub-label names them @type {Object<string, any>} */
+  let _stepDef = {};
+  /** the stage of the system panel's structure view, destroyed on repaint @type {any} */
+  let _sysStage = null;
 
   // ------------------------------------------------------------ visual state
   /** what is selected: a node (and which member of a stack), an edge, an
@@ -134,7 +153,7 @@
   const _undo = [];
   /** "Replace the inp set?" is asked once a session, as the design has it */
   let _replaceOk = false;
-  /** the builder hosted in the inspector: which open of it the element is */
+  /** the builder hosted over the lanes (#qe-build): which open of it the element is */
   let _buildKey = 0, _buildMounted = -1;
   /** @type {HTMLElement|null} */ let _buildCell = null;
   let _buildTarget = /** @type {string|null} */ (null);
@@ -176,7 +195,17 @@
   async function apply(ops, inverse, label) {
     if (!ops.length) return true;
     const r = await NB.call("apply_queue_ops", JSON.stringify(ops));
-    if (!r || r.ok !== true) { NB.fail(why(r, "The queue refused that change")); return false; }
+    if (!r || r.ok !== true) {
+      const text = why(r, "The queue refused that change");
+      NB.fail(text);
+      // said in the inspector too, beside the block it names
+      const m = /^'([^']+)':/.exec(String((r && r.error) || ""));
+      _refusal = { text: text, name: m ? m[1] : "" };
+      const box = /** @type {HTMLElement|null} */ (document.querySelector('#qe-insp [data-f="refusal"]'));
+      if (box) { box.textContent = text; box.hidden = false; }
+      return false;
+    }
+    _refusal = null;
     if (inverse && inverse.length) {
       _undo.push({ label: label, ops: inverse });
       if (_undo.length > 50) _undo.shift();
@@ -316,6 +345,7 @@
     _defaults = r && r.ok && r.defaults && typeof r.defaults === "object" ? r.defaults : {};
     _jobs = r && r.ok && r.jobs && typeof r.jobs === "object" ? r.jobs : {};
     _next = r && r.ok && r.next_kind && typeof r.next_kind === "object" ? r.next_kind : {};
+    _mlipJobs = r && r.ok && Array.isArray(r.mlip_jobs) ? r.mlip_jobs.map(String) : [];
     return _sets;
   }
   /** @param {string} name @param {string} kind */
@@ -328,7 +358,7 @@
   /** The set kind a calculation of `kind` is made from: "MLIP" for an MLIP
    *  pre-optimization, "ORCA" for a kind a level can run, "" otherwise.
    *  @param {string} kind */
-  const setKindOf = (kind) => (kind === "mlip_opt" ? "MLIP"
+  const setKindOf = (kind) => (/^mlip_/.test(String(kind || "")) ? "MLIP"
     : (Object.keys(_jobs).length ? kind in _jobs : TYPE_ORDER.indexOf(kind) >= 0) ? "ORCA" : "");
   /** The natural next step after a block of `kind` ("" = a row's start):
    *  the backend's rule (inpsets.NEXT_KIND). @param {string} kind */
@@ -386,6 +416,132 @@
     return String(text || "").split("\n").filter(l => l.trim().indexOf("!") === 0)
       .join(" ").toUpperCase().replace(/!/g, " ").split(/\s+/)
       .filter(x => x && !SKIP.test(x)).sort().join(" ");
+  }
+
+  /** Whether a calculation is a level's block: an ORCA text (from a set, or
+   *  pasted) with {{JOB}} on its ! line. Only such a block takes options of
+   *  its own (calc.config, merged into the level at launch); a text that
+   *  names its own job runs as written, and goes to the builder as .inp text.
+   *  @param {any} c */
+  function isLevelCalc(c) {
+    if (!c || setKindOf(c.kind) === "MLIP" || (!c.set_name && !c.is_raw)) return false;
+    return hasJobLine(templateOf(c));
+  }
+
+  /** The options a level's block adds to its level, in a few words each,
+   *  against StepConfig's defaults ("2 constraints", "MaxIter 300", "IRC
+   *  forward" ...): its sub-label and its inspector say them.
+   *  @param {string} kind @param {any} cfg @returns {string[]} */
+  function optWords(kind, cfg) {
+    const c = cfg || {}, d = _stepDef || {};
+    const out = [];
+    const n = (/** @type {any} */ x) => Number(x);
+    const differs = (/** @type {string} */ k) => c[k] != null && c[k] !== "" && d[k] != null && n(c[k]) !== n(d[k]);
+    const cons = Array.isArray(c.geom_constraints) ? c.geom_constraints.length : 0;
+    if (cons) out.push(cons + " constraint" + (cons === 1 ? "" : "s"));
+    if (Array.isArray(c.geom_scan) && c.geom_scan.length) out.push("scan");
+    if (/opt/.test(kind) && differs("max_iter")) out.push("MaxIter " + c.max_iter);
+    if (/freq/.test(kind) && (differs("freq_temp_k") || differs("freq_pressure_atm"))) {
+      out.push(c.freq_temp_k + " K, " + c.freq_pressure_atm + " atm");
+    }
+    if (kind === "irc") {
+      if (c.irc_direction && c.irc_direction !== (d.irc_direction || "both")) out.push("IRC " + c.irc_direction);
+      if (differs("irc_maxiter")) out.push(c.irc_maxiter + " points");
+      if (c.irc_init_hess && c.irc_init_hess !== "auto") out.push("Hessian " + c.irc_init_hess);
+    }
+    if (kind === "nmr" && c.nmr_jcoupling) out.push("J coupling");
+    if (kind === "tddft" && differs("tddft_nroots")) out.push(c.tddft_nroots + " roots");
+    if (kind === "neb_ts" && differs("neb_nimages")) out.push(c.neb_nimages + " images");
+    if (c.solvation && c.solvation.model) out.push(c.solvation.model + (c.solvation.solvent ? " " + c.solvation.solvent : ""));
+    if (c.scf_convergence) out.push(c.scf_convergence);
+    if (String(c.options || "").trim()) out.push(String(c.options).trim());
+    return out;
+  }
+
+  /** How many atoms an .xyz text holds (its header, if any, left out).
+   *  @param {string} xyz */
+  const xyzAtoms = (xyz) => (typeof MOL !== "undefined" ? MOL.parseXyz(xyz).length
+    : String(xyz || "").split("\n").filter(l => /^\s*[A-Za-z]{1,3}\s+[-+.\d]/.test(l)).length);
+  /** The atom count of the structure a calculation runs on, followed up its
+   *  geometry references to the coordinates they start from; 0 when that is
+   *  not known here. @param {string} name */
+  function atomsOfCalc(name) {
+    const seen = new Set();
+    for (let nm = name; nm && !seen.has(nm); ) {
+      seen.add(nm);
+      const f = _full.get(nm);
+      if (!f || !f.calc) return 0;
+      if (f.calc.geometry_source !== "reference") return xyzAtoms(String(f.calc.xyz || ""));
+      nm = String(f.calc.ref_name || "");
+    }
+    return 0;
+  }
+  /** The atoms a workflow's constraints and scans name: a structure needs
+   *  at least this many (0: none named). @param {any} wf */
+  function wfAtomNeed(wf) {
+    let need = 0;
+    (wf && wf.steps || []).forEach((/** @type {any} */ st) => {
+      const cfg = st.config || {};
+      [].concat(cfg.geom_constraints || [], cfg.geom_scan || []).forEach((/** @type {any} */ c) => {
+        (c && c.atoms || []).forEach((/** @type {number} */ a) => { need = Math.max(need, int(a) + 1); });
+      });
+    });
+    return need;
+  }
+
+  // ---- the workspace: what a new name would overwrite
+
+  /** The names among `names` whose workspace folder already holds output
+   *  (existing_outputs; an older backend is asked one name at a time).
+   *  @param {string[]} names @returns {Promise<string[]>} */
+  async function existingOutputs(names) {
+    const list = [...new Set((names || []).filter(Boolean))];
+    if (!list.length) return [];
+    if (NB.bridge && typeof NB.bridge.existing_outputs === "function") {
+      const r = await NB.call("existing_outputs", JSON.stringify(list));
+      if (r && r.ok && Array.isArray(r.existing)) return r.existing.map(String);
+    }
+    const hits = [];
+    for (const n of list) {
+      const r = await NB.call("has_existing_output", n);
+      if (r && r.ok && r.exists) hits.push(n);
+    }
+    return hits;
+  }
+  /** Names for something new that avoid folders already holding output:
+   *  `make(extra)` names it with `extra` (lower-cased names) taken as well,
+   *  and is asked again with the names found on disk, a few times. What is
+   *  left is the overwrite guard's to ask about.
+   *  @template {{names: string[]}} T @param {(extra: Set<string>) => T} make @returns {Promise<T>} */
+  async function avoidDisk(make) {
+    const extra = new Set();
+    let r = make(extra);
+    for (let i = 0; i < 4; i++) {
+      const hits = await existingOutputs(r.names);
+      if (!hits.length) return r;
+      hits.forEach(h => extra.add(lower(h)));
+      r = make(extra);
+    }
+    return r;
+  }
+  /** While a run is going, an add starts at once -- no Run click screens it
+   *  for results already on disk -- so any of `names` whose folder holds
+   *  output is asked about first, as the Guided builder's add is
+   *  (confirmOverwrite). Idle, the Run click asks. @param {string[]} names
+   *  @returns {Promise<boolean>} whether to go ahead */
+  async function guardOverwrite(names) {
+    if (!NB.running || !names.length) return true;
+    const hits = await existingOutputs(names);
+    if (!hits.length) return true;
+    const k = hits.length;
+    return new Promise(res => {
+      NB.modalRaw("Existing output",
+        `<p>The workspace already holds output for ${k === 1 ? "this name" : k + " of these names"}. The queue is
+          running, so ${k === 1 ? "it starts" : "they start"} at once and overwrite${k === 1 ? "s" : ""} it:</p>
+         <div class="names">${hits.slice(0, 12).map(esc).join("<br>")}${k > 12 ? "<br>…" : ""}</div>`,
+        [{ label: "Cancel", cls: "btn-ghost", focus: true, act: () => res(false) },
+         { label: "Overwrite", cls: "btn-danger", act: () => res(true) }]);
+    });
   }
 
   // ------------------------------------------------------------ the model
@@ -536,6 +692,9 @@
       const ups = [c.after, c.geometry_source === "reference" ? c.ref_name : ""];
       for (const u of ups) {
         const p = u ? by.get(u) : null;
+        // what it runs after, or takes its geometry from, is gone (a
+        // "Remove only this"): it cannot run until it is pointed elsewhere
+        if (u && !p) { out = true; break; }
         if (!p || p === c) continue;
         if (p.state === "failed" || p.state === "blocked" || (p.state === "running" && p.faulted)
             || ((p.state === "pending" || p.state === "cancelled") && bad(p, seen))) { out = true; break; }
@@ -639,6 +798,11 @@
     NB.$("qe-stop").disabled = !NB.running;
     NB.$("qe-cancel").disabled = !NB.running;
     NB.$("qe-clear").disabled = !NB.queue.length;
+    const fin = NB.queue.filter((/** @type {any} */ c) => FINISHED.indexOf(c.state) >= 0).length;
+    const cf = /** @type {HTMLButtonElement} */ (NB.$("qe-clearfin"));
+    cf.disabled = !fin;
+    cf.title = fin ? `Take the ${fin} finished or failed calculation${fin === 1 ? "" : "s"} off the list (their files stay)`
+                   : "Nothing has finished yet";
     const pb = /** @type {HTMLButtonElement} */ (NB.$("qe-paste"));
     pb.disabled = !_clip;
     pb.title = !_clip ? "Copy blocks first: select them (drag a box on the empty canvas, or Ctrl+click) and press Ctrl+C"
@@ -660,6 +824,14 @@
     const dup = names.find((/** @type {string} */ x, /** @type {number} */ i) =>
       x.trim() && names.findIndex((/** @type {string} */ y) => lower(y) === lower(x)) !== i);
     if (dup) w.push(dup + " is already in the queue. Names must be unique.");
+    // a dependency that is gone: the run is refused until it is re-pointed
+    const have = new Set(NB.queue.map((/** @type {any} */ c) => c.name));
+    const lost = NB.queue.find((/** @type {any} */ c) => EDITABLE.indexOf(c.state) >= 0
+      && ((c.after && !have.has(c.after)) || (c.geometry_source === "reference" && c.ref_name && !have.has(c.ref_name))));
+    if (lost) {
+      w.push(lost.name + (lost.after && !have.has(lost.after) ? " runs after " + lost.after : " takes its geometry from " + lost.ref_name)
+        + ", which is not in the queue: choose another geometry for it or remove it.");
+    }
     M.lanes.forEach((/** @type {any} */ L) => {
       L.edges.forEach((/** @type {any} */ e) => {
         if (!isFreqAfterOpt(e.from.kind, e.to.kind)) return;
@@ -825,6 +997,16 @@
           style="top:${top + LANE_PAD + 6}px"
           aria-label="Row ${esc(L.name)}. Drag to move, hold Ctrl to copy. Press to copy below. Alt+Up or Alt+Down moves it."
           title="Drag to move. Hold Ctrl while dropping to copy. Click to copy below. Alt+Up or Alt+Down moves the row.">⋮</button>`);
+        // a system's name over its row: the handle of its structures panel
+        // (add, paste, view, check), as an empty system's caption is
+        if (L.sys) {
+          const on = _sel && _sel.t === "sys" && _sel.key === L.key;
+          const k = (L.sys.inputs || []).length;
+          parts.push(`<button class="qe-cap" type="button" data-a="sys" data-row="1" data-lane="${esc(L.key)}"
+            style="left:${X0 - 4}px; top:${top + 4}px"${on ? ' aria-current="true"' : ""}
+            aria-label="System ${esc(L.name)}: its structures" title="The row's structures: add, paste, view, check">${
+              esc(L.name || "(unnamed)")} · ${k ? k + " structure" + (k === 1 ? "" : "s") : "no structure yet"}</button>`);
+        }
       } else {
         // an empty system: its name is the handle that selects it
         const on = _sel && _sel.t === "sys" && _sel.key === L.key;
@@ -867,12 +1049,15 @@
       const c0 = n.members[0];
       const mod = isModified(n);
       const setName = c0.set_name || (c0.is_raw ? ".inp text" : "guided");
+      // a level's block says what it adds to its level ("· 2 constraints")
+      const f0 = _full.get(c0.name);
+      const words = f0 && f0.calc && isLevelCalc(c0) ? optWords(c0.kind, f0.calc.config) : [];
       const aria = (n.stack ? `${n.name}, ${n.members.length} calculations` : `Select ${n.name}`)
-        + ", " + ST_LABEL[n.state];
+        + ", " + ST_LABEL[n.state] + (words.length ? ", with " + words.join(", ") : "");
       rects.push({ key: n.key, lane: L.key, x: X(n.col), y: Y(L, n.row) });
       parts.push(`<div class="qe-node" data-k="${esc(n.key)}" data-setkind="${n.setKind}"${
           n.editable ? ' data-editable="1"' : ""}${_pop === n.key ? ' data-pop="1"' : ""}
-        style="left:${X(n.col)}px; top:${Y(L, n.row)}px; z-index:${open ? 20 : 2}">
+        style="left:${X(n.col)}px; top:${Y(L, n.row)}px; z-index:${open ? 20 : 2}"${n.stack ? ' data-stack="1"' : ""}>
         ${n.stack ? `<div class="qe-back" data-depth="2"></div><div class="qe-back" data-depth="1"></div>` : ""}
         <div class="qe-card"${sel ? ' data-sel="1"' : ""} data-st="${n.state}">
           <button type="button" class="qe-pick" data-a="node" data-k="${esc(n.key)}"
@@ -890,6 +1075,7 @@
                 aria-label="Select ${esc(c.name)}, run order ${M.idx.get(c.name) + 1}"><span class="qe-nm">${esc(c.name)}</span><span
                 class="qe-ord">${M.idx.get(c.name) + 1}</span></button>`).join("")}</div>` : ""}
         </div>
+        ${words.length ? `<span class="qe-opts" aria-hidden="true">${esc(words.join(" · "))}</span>` : ""}
       </div>`);
     }));
 
@@ -919,7 +1105,7 @@
           P && P.stack ? ' data-afterstack="1"' : ""}
         style="left:${X(g.c)}px; top:${Y(g.lane, g.r)}px">
         ${picking
-          ? `<span class="qe-gtext"><span>Manual build</span><span class="qe-gsub">in the inspector</span></span>`
+          ? `<span class="qe-gtext"><span>Manual build</span><span class="qe-gsub">in the builder</span></span>`
           : `<button class="qe-gbtn" type="button" data-a="ghost" data-slot="${esc(g.key)}"
               aria-label="${esc("Add a calculation " + target + ". Drop an inp set here, or press for a manual build.")}"
               title="Drop an inp set here, or click for a manual build">+</button>`}
@@ -992,19 +1178,26 @@
     const host = NB.$("qe-insp");
     const app = NB.$("qed").querySelector(".qe-app");
     const t = NB.build.target();
+    // The builder is the main window's New calculation as it was, cell and
+    // all: drawn over the lanes and the inspector, in a stream-like column of
+    // the old cell's width (#qe-build), never squeezed into the inspector
+    const bhost = NB.$("qe-buildinner");
     if (t !== null) {
       app.setAttribute("data-building", "1");
-      if (_buildMounted !== _buildKey || _buildTarget !== t || !_buildCell || !host.contains(_buildCell)) {
+      NB.$("qe-build").hidden = false;
+      if (_buildMounted !== _buildKey || _buildTarget !== t || !_buildCell || !bhost.contains(_buildCell)) {
         const c = t ? NB.queue.find((/** @type {any} */ x) => x.name === t) || null : null;
         _buildCell = NB.build.cellFor(c);
         _buildMounted = _buildKey; _buildTarget = t;
-        host.innerHTML = "";
-        host.appendChild(_buildCell);
+        bhost.innerHTML = "";
+        bhost.appendChild(_buildCell);
+        NB.$("qe-build").scrollTop = 0;
         _inspSig = "";
       }
       return;
     }
     app.removeAttribute("data-building");
+    if (!NB.$("qe-build").hidden) { NB.$("qe-build").hidden = true; bhost.innerHTML = ""; }
     if (_buildCell) { _buildCell = null; _buildTarget = null; _inspSig = ""; }
     // never repaint under the cursor: a field being typed in is the user's --
     // while it still shows what is selected; another selection is drawn
@@ -1056,13 +1249,19 @@
     const locked = EDITABLE.indexOf(c.state) < 0;
     const f = _full.get(c.name);
     const full = f ? f.calc : null;
-    const isTemplate = !!c.set_name || (c.is_raw && !!sys);
+    // What the block is: a level's block (options of its own, merged into
+    // the level), a set's text that names its own job or an MLIP set's
+    // settings (edited here as text), or a Guided / pasted calculation
+    // (the builder edits it -- a pasted text that is no level included,
+    // so a text block can always go back to the builder)
     const isMlip = setKindOf(c.kind) === "MLIP" && !!c.set_name;
-    const text = isTemplate ? templateOf(c) : "";
+    const text = c.set_name || c.is_raw ? templateOf(c) : "";
+    const isLevel = !isMlip && !!text && hasJobLine(text);
+    const isSetText = !isLevel && !!c.set_name;
+    const isTemplate = isLevel || isSetText;
     const mod = isModified(n);
     const kind = detectKind(text);
-    // a level's block: its Type is its kind, and {{JOB}} is filled from it
-    const isLevel = isTemplate && !isMlip && hasJobLine(text);
+    const words = isLevel && full ? optWords(c.kind, full.config) : [];
     const types = typeKinds();
     const own = ownCM({ lane: L, c: c });
     const charge = sys && !own ? sys.charge : c.charge, mult = sys && !own ? sys.multiplicity : c.multiplicity;
@@ -1070,12 +1269,21 @@
 
     // the geometry choices: the system's structures, then the outputs of
     // every ancestor block along the `after` chain -- each member of a stack,
-    // an IRC's two ends -- as the design lists them
+    // an IRC's two ends -- as the design lists them; then every other
+    // calculation in the queue that does not itself hang off this one
     const opts = [];
     (sys ? sys.inputs || [] : []).forEach((/** @type {any} */ inp, /** @type {number} */ i) =>
       opts.push({ key: "in:" + i, label: inp.label || "structure " + (i + 1) }));
     const seen = new Set([c.name]);
     const blocks = new Set([n.key]);
+    /** @param {any} x @param {any[]} into */
+    const refOpts = (x, into) => {
+      into.push({ key: "ref:" + x.name, label: "ref → " + x.name });
+      if (x.kind === "irc") {
+        into.push({ key: "ref:" + x.name + ":irc_f", label: "ref → " + x.name + ", forward end" });
+        into.push({ key: "ref:" + x.name + ":irc_b", label: "ref → " + x.name + ", backward end" });
+      }
+    };
     for (let a = c.after; a && !seen.has(a); ) {
       seen.add(a);
       const p = NB.queue.find((/** @type {any} */ x) => x.name === a);
@@ -1083,29 +1291,35 @@
       const pn = _M.nodeOf.get(p.name);
       const mem = pn && pn.lane === L ? (blocks.has(pn.key) ? [] : pn.members) : [p];
       if (pn) blocks.add(pn.key);
-      mem.forEach((/** @type {any} */ m) => {
-        opts.push({ key: "ref:" + m.name, label: "ref → " + m.name });
-        if (m.kind === "irc") {
-          opts.push({ key: "ref:" + m.name + ":irc_f", label: "ref → " + m.name + ", forward end" });
-          opts.push({ key: "ref:" + m.name + ":irc_b", label: "ref → " + m.name + ", backward end" });
-        }
-      });
+      mem.forEach((/** @type {any} */ x) => refOpts(x, opts));
       a = p.after;
     }
+    const below = dependentsOf(c.name);
+    /** @type {{key: string, label: string}[]} */ const others = [];
+    NB.queue.forEach((/** @type {any} */ x) => {
+      if (x.name === c.name || below.has(x.name)) return;
+      if (opts.some(o => o.key === "ref:" + x.name)) return;
+      refOpts(x, others);
+    });
     // what it runs after, said in words when no connection on this row shows
     // it (an `after` in another row, or gone), and its gate when it waits
     const pa = c.after ? NB.queue.find((/** @type {any} */ x) => x.name === c.after) : null;
     const paNode = pa ? _M.nodeOf.get(pa.name) : null;
     const afterNote = !c.after ? ""
-      : !pa ? `Runs after ${c.after}, which is not in the queue: it cannot run.`
+      : !pa ? `Runs after ${c.after}, which is not in the queue: it cannot run. Choose another geometry, or remove it.`
       : paNode && paNode.lane !== L ? `Runs after ${pa.name}, in another row${
           c.gate === "approval" ? ", once approved" : ""}.` : "";
+    const refGone = c.geometry_source === "reference" && !!c.ref_name
+      && !NB.queue.some((/** @type {any} */ x) => x.name === c.ref_name);
     const blockedNote = _doomed.has(c.name) && !c.message
-      ? "Blocked: a calculation it depends on has failed. Remove or replace that one first." : "";
+      ? (refGone ? `Blocked: it takes its geometry from ${c.ref_name}, which is not in the queue. Choose another geometry.`
+        : "Blocked: a calculation it depends on has failed. Remove or replace that one first.") : "";
     let geo = "";
     if (c.geometry_source === "reference") {
       geo = "ref:" + c.ref_name + (c.ref_point ? ":" + c.ref_point : "");
-      if (!opts.some(o => o.key === geo)) opts.push({ key: geo, label: "ref → " + c.ref_name + (c.ref_point ? " (" + c.ref_point + ")" : "") });
+      if (!opts.some(o => o.key === geo) && !others.some(o => o.key === geo)) {
+        opts.push({ key: geo, label: "ref → " + c.ref_name + (c.ref_point ? " (" + c.ref_point + ")" : "") + (refGone ? ", gone" : "") });
+      }
     } else {
       const sf = sys ? await systemFull(sys.id) : null;
       const xyz = full ? String(full.xyz || "").trim() : "";
@@ -1116,6 +1330,13 @@
     // the selection moved while the structures were read: that one draws
     if (!host.isConnected || !_sel || _sel.key !== n.key || (_sel.m || 0) !== m0
         || tok !== _inspTok || NB.build.target() !== null) return;
+    if (_sysStage) { _sysStage.destroy(); _sysStage = null; }
+    // the last refusal, when it names this block (or names none)
+    const refusalFor = _refusal && (!_refusal.name || n.members.some((/** @type {any} */ x) => x.name === _refusal.name))
+      ? _refusal.text : "";
+    const option = (/** @type {any} */ o) => `<option value="${esc(o.key)}"${o.key === geo ? " selected" : ""}>${esc(o.label)}</option>`;
+    // its own name: the part after the row's (the whole name, standalone)
+    const ownName = !locked && !(sys && !suffix);
 
     host.innerHTML = `
       <div class="qe-ititle">
@@ -1124,8 +1345,12 @@
             aria-label="System name, renames every calculation in this row"
             title="${nameLocked ? "This row has started. Its calculations keep their names."
                                 : "Rename the row. Every calculation name follows."}">`
-          : `<span class="qe-sysname" data-fixed="1">${esc(c.name)}</span>`}
-        <span class="qe-sfx">${esc(suffix)}</span>
+          : ownName ? "" : `<span class="qe-sysname" data-fixed="1">${esc(c.name)}</span>`}
+        ${ownName ? `<input class="qe-sysname qe-sfx" data-f="ownname" value="${esc(sys ? suffix : c.name)}" spellcheck="false"
+            style="width:${Math.max((sys ? suffix : c.name).length, 2) + 0.5}ch"
+            aria-label="${esc(sys ? "The end of this calculation's name, after the row's" : "This calculation's name")}"
+            title="Rename this calculation alone (its folder). What runs after it follows.">`
+          : sys ? `<span class="qe-sfx">${esc(suffix)}</span>` : ""}
       </div>
       <div class="qe-cm">
         <label>charge <input class="qe-num" data-f="charge" value="${esc(String(charge))}" inputmode="numeric"
@@ -1139,16 +1364,29 @@
       ${c.message ? `<p class="qe-note" data-tone="${c.state === "failed" ? "err" : c.state === "blocked" ? "warn" : ""}">${esc(c.message)}</p>` : ""}
       ${blockedNote ? `<p class="qe-note" data-tone="warn">${esc(blockedNote)}</p>` : ""}
       ${afterNote ? `<p class="qe-note">${esc(afterNote)}</p>` : ""}
+      <p class="qe-note" data-tone="err" data-f="refusal" role="alert"${refusalFor ? "" : " hidden"}>${esc(refusalFor)}</p>
       ${c.waiting ? `<div class="qe-wait"><span>${esc((pa ? pa.name : c.after) + " finished. The queue skips "
           + c.name + " and runs the next calculation until you approve.")}</span>
         <button class="btn btn-primary" type="button" data-a="approve">Approve</button></div>` : ""}
       <select class="qe-select" data-f="geo" aria-label="Geometry"${locked ? " disabled" : ""}>${
-        opts.map(o => `<option value="${esc(o.key)}"${o.key === geo ? " selected" : ""}>${esc(o.label)}</option>`).join("")}</select>
+        opts.map(option).join("")}${others.length ? `<optgroup label="Other calculations">${
+        others.map(option).join("")}</optgroup>` : ""}</select>
       ${isLevel ? `
         <label class="qe-typerow"><span class="qe-note">Type</span>
           <select class="qe-select" data-f="type" aria-label="Type: the job this block runs at its level"${
             locked || !n.editable ? " disabled" : ""}>${(types.indexOf(c.kind) >= 0 ? types : [c.kind].concat(types)).map(k =>
-              `<option value="${esc(k)}"${k === c.kind ? " selected" : ""}>${esc(TYPE_LABEL[k] || KIND_LABEL[k] || k)}</option>`).join("")}</select></label>` : ""}
+              `<option value="${esc(k)}"${k === c.kind ? " selected" : ""}>${esc(TYPE_LABEL[k] || KIND_LABEL[k] || k)}</option>`).join("")}</select></label>
+        <div class="qe-saveas">
+          <span class="qe-note">${esc(words.length ? "Adds " + words.join(", ") + "." : "No options of its own: the level as it is.")}</span>
+          <button class="btn btn-sm" type="button" data-a="lvedit"${locked ? " disabled" : ""}
+            title="Constraints and scan, MaxIter, the IRC / Freq / NMR settings, solvation, extra keywords">Edit options in the builder</button>
+        </div>` : ""}
+      ${isMlip ? `
+        <label class="qe-typerow"><span class="qe-note">Task</span>
+          <select class="qe-select" data-f="type" aria-label="Task: what the MLIP runs"${
+            locked || !n.editable ? " disabled" : ""}>${MLIP_TYPES.filter(k => !_mlipJobs.length
+              || _mlipJobs.indexOf(k[0]) >= 0 || k[0] === c.kind).map(k =>
+              `<option value="${esc(k[0])}"${k[0] === c.kind ? " selected" : ""}>${esc(k[1])}</option>`).join("")}</select></label>` : ""}
       ${isTemplate ? `
         <textarea class="qe-tpl" data-f="tpl" rows="${isLevel ? 8 : 11}" spellcheck="false"${locked || !n.editable ? " readonly" : ""}
           aria-label="${esc((n.setKind === "ORCA" ? "Level" : n.setKind || "Template") + " / " + (c.set_name || ".inp text"))}">${esc(text)}</textarea>
@@ -1159,17 +1397,32 @@
             <button class="btn btn-primary" type="button" data-a="saveas" disabled>Save</button>
           </div>` : ""}
         ${isMlip ? `<p class="hint">An MLIP block runs the settings these lines name.</p>` : ""}
-        ${isTemplate && !isMlip && !isLevel && setKindOf(c.kind) === "ORCA" ? `<p class="hint">This text names its own job (it has no ${JOB}), so it runs as written; its type cannot change here.</p>` : ""}
-        ${isLevel ? `<span class="qe-note qe-rendh">Rendered input · ${esc(TYPE_LABEL[c.kind] || c.kind)}</span>
+        ${isSetText && !isMlip && setKindOf(c.kind) === "ORCA" ? `<div class="qe-saveas">
+          <span class="qe-note">This text names its own job (it has no ${JOB}), so it runs as written; its type cannot change here.</span>
+          <button class="btn btn-sm" type="button" data-a="edit"${locked ? " disabled" : ""}>Edit in the builder</button></div>` : ""}
+        ${isLevel ? `<span class="qe-note qe-rendh" data-f="rendh">Rendered input · ${esc(TYPE_LABEL[c.kind] || c.kind)}</span>
         <textarea class="qe-tpl" data-f="rendered" rows="12" readonly spellcheck="false"
           aria-label="The input this block runs, as ORCAdesk renders it for its type">Rendering…</textarea>` : ""}`
       : `
+        <span class="qe-note qe-rendh" data-f="rendh" hidden></span>
         <textarea class="qe-tpl" data-f="preview" rows="11" readonly spellcheck="false"
           aria-label="The input this calculation runs">Building the input…</textarea>
         <div class="qe-saveas">
           <span class="qe-note">${c.is_raw ? "Pasted .inp text." : "Built with the Guided builder."}</span>
           <button class="btn btn-sm" type="button" data-a="edit"${locked ? " disabled" : ""}>Edit in the builder</button>
         </div>`}
+      <div class="qe-saveas" data-acts="1">
+        <button class="btn btn-sm btn-ghost" type="button" data-a="earlier"${locked ? " disabled" : ""}
+          title="Run it before the block before it in this row (Alt+Left)">↑ Earlier</button>
+        <button class="btn btn-sm btn-ghost" type="button" data-a="later"${locked ? " disabled" : ""}
+          title="Run it after the block after it in this row (Alt+Right)">↓ Later</button>
+        <button class="btn btn-sm btn-ghost" type="button" data-a="dup"
+          title="A copy of this calculation with all its settings, queued to run">Duplicate</button>
+        <button class="btn btn-sm btn-ghost" type="button" data-a="folder"
+          title="Open its folder in the workspace">Show folder</button>
+        ${sys ? `<button class="btn btn-sm btn-ghost" type="button" data-a="structs"
+          title="The row's structures: add, paste, view, check">Structures…</button>` : ""}
+      </div>
       <div class="qe-saveas">
         <span class="qe-note">${n.stack ? "This block is " + n.members.length + " calculations; the template is shared." : ""}</span>
         <button class="btn btn-sm btn-danger" type="button" data-a="remove"${n.state === "running" ? " disabled" : ""}>Remove…</button>
@@ -1182,6 +1435,15 @@
       sn.addEventListener("focus", () => sn.select());
       sn.addEventListener("input", () => { sn.style.width = Math.max(sn.value.length, 2) + 0.5 + "ch"; });
       sn.addEventListener("change", () => { const v = live(); if (v) renameSystem(v.L, sn.value); });
+    }
+    const own2 = q('[data-f="ownname"]');
+    if (own2) {
+      own2.addEventListener("focus", () => own2.select());
+      own2.addEventListener("input", () => { own2.style.width = Math.max(own2.value.length, 2) + 0.5 + "ch"; });
+      own2.addEventListener("change", () => {
+        const v = live();
+        if (v) renameCalc(v.c, v.L.sys ? String(v.L.sys.name || "") + own2.value : own2.value);
+      });
     }
     ["charge", "mult"].forEach(k => {
       const el = q(`[data-f="${k}"]`);
@@ -1206,9 +1468,39 @@
     const ty = q('[data-f="type"]');
     if (ty) ty.addEventListener("change", () => { const v = live(); if (v) setType(v.n, ty.value); });
     wireWorkflowButtons(host, [n], L);
+    const btn = (/** @type {string} */ a, /** @type {(v: any) => void} */ fn) => {
+      const b = q(`[data-a="${a}"]`);
+      if (b) b.addEventListener("click", () => { const v = live(); if (v) fn(v); });
+    };
+    btn("lvedit", v => openLevelBuilder(v.c.name));
+    btn("edit", v => openBuilder(v.c.name));
+    btn("earlier", v => moveRun(v.c, -1));
+    btn("later", v => moveRun(v.c, 1));
+    btn("dup", v => duplicateBlock(v.n, v.c));
+    btn("folder", v => showFolder(v.c));
+    btn("structs", v => select({ t: "sys", key: v.L.key }));
+    btn("approve", v => {
+      const u = updates([v.c.name], () => ({ approved: true }));
+      apply(u.ops, u.inv, "the approval");
+    });
+    btn("remove", v => requestRemove(v.n));
+
+    // What it ran, once it has: the .inp in its run folder (get_inp), not a
+    // regenerated one -- the level or the builder may have changed since.
+    // Before that, the input it would run (build_inp_preview, the launch
+    // renderer; a level's block with its options).
+    const ran = STARTED.indexOf(c.state) >= 0 || (c.state === "cancelled" && !!c.output_path);
+    const onDisk = ran ? await NB.call("get_inp", c.name) : null;
+    const diskText = onDisk && onDisk.ok && typeof onDisk.text === "string" ? onDisk.text : "";
+    const rh = q('[data-f="rendh"]');
+    if (diskText && rh && rh.isConnected) {
+      rh.hidden = false;
+      rh.textContent = "The input it ran · from its folder";
+    }
     const rd = q('[data-f="rendered"]');
     if (rd) {
-      const r = await NB.call("build_inp_preview", JSON.stringify(calcDict(c.name, { is_raw: true, raw_text: text })));
+      const r = diskText ? { ok: true, text: diskText }
+        : await NB.call("build_inp_preview", JSON.stringify(calcDict(c.name, { is_raw: true, raw_text: text })));
       if (rd.isConnected) rd.value = r && r.ok ? String(r.text || "") : "Could not render the input" + (r && r.error ? ": " + r.error : ".");
     }
     const pv = q('[data-f="preview"]');
@@ -1216,20 +1508,27 @@
       const src = full ? full : calcDict(c.name);
       const k = String(src.kind || c.kind || "");
       // an MLIP or CREST job runs no ORCA input: its settings are what it runs
-      const r = /^(mlip|crest)/.test(k) ? { ok: true, text: backendSettings(k, src.config || {}) }
+      const r = diskText ? { ok: true, text: diskText }
+        : /^(mlip|crest)/.test(k) ? { ok: true, text: backendSettings(k, src.config || {}) }
         : src.is_raw ? { ok: true, text: src.raw_text } : await NB.call("build_inp_preview", JSON.stringify(src));
       if (pv.isConnected) pv.value = r && r.ok ? String(r.text || "") : "Could not build the input" + (r && r.error ? ": " + r.error : ".");
     }
-    const ed = q('[data-a="edit"]');
-    if (ed) ed.addEventListener("click", () => { const v = live(); if (v) openBuilder(v.c.name); });
-    const ap = q('[data-a="approve"]');
-    if (ap) ap.addEventListener("click", () => {
-      const v = live();
-      if (!v) return;
-      const u = updates([v.c.name], () => ({ approved: true }));
-      apply(u.ops, u.inv, "the approval");
-    });
-    q('[data-a="remove"]').addEventListener("click", () => { const v = live(); if (v) requestRemove(v.n); });
+  }
+
+  /** Every calculation that hangs off `name`, directly or further down (its
+   *  `after` or its geometry reference): what cannot become its geometry
+   *  source. @param {string} name */
+  function dependentsOf(name) {
+    const out = new Set();
+    for (let grew = true; grew; ) {
+      grew = false;
+      NB.queue.forEach((/** @type {any} */ x) => {
+        if (out.has(x.name) || x.name === name) return;
+        const up = [x.after, x.geometry_source === "reference" ? x.ref_name : ""];
+        if (up.some(u => u && (u === name || out.has(u)))) { out.add(x.name); grew = true; }
+      });
+    }
+    return out;
   }
 
   /** What an MLIP or CREST calculation runs, in the `key value` form an MLIP
@@ -1299,31 +1598,60 @@
     });
   }
 
-  /** An empty system: its name, charge, structures. @param {HTMLElement} host @param {any} L */
-  function inspectSystem(host, L) {
+  /** A system's panel: its name, charge, multiplicity and structures --
+   *  every row has one, not only an empty one (the row's caption on the
+   *  canvas, or *Structures…* on a block, selects it). A structure is added
+   *  from a file or pasted, viewed on a stage, checked (check_structure),
+   *  removed; the calculations already made keep the coordinates they were
+   *  given. @param {HTMLElement} host @param {any} L */
+  async function inspectSystem(host, L) {
+    const tok = ++_inspTok;
     const s = L.sys;
+    const empty = !L.calcs.length;
+    const fixed = !!L.started;
+    const sf = await systemFull(s.id);
+    if (!host.isConnected || !_sel || _sel.t !== "sys" || _sel.key !== L.key || tok !== _inspTok
+        || NB.build.target() !== null) return;
+    if (_sysStage) { _sysStage.destroy(); _sysStage = null; }
+    const inputs = (sf && sf.inputs) || s.inputs || [];
     host.innerHTML = `
       <div class="qe-ititle">
         <input class="qe-sysname" data-f="sysname" value="${esc(s.name || "")}" spellcheck="false"
-          style="width:${Math.max(String(s.name || "").length, 2) + 0.5}ch"
-          aria-label="System name" title="Rename the row. Every calculation name follows.">
+          style="width:${Math.max(String(s.name || "").length, 2) + 0.5}ch"${fixed ? " readonly" : ""}
+          aria-label="System name" title="${fixed ? "This row has started. Its calculations keep their names." : "Rename the row. Every calculation name follows."}">
       </div>
       <div class="qe-cm">
-        <label>charge <input class="qe-num" data-f="charge" value="${esc(String(s.charge))}" inputmode="numeric" spellcheck="false"></label>
-        <label>mult <input class="qe-num" data-f="mult" value="${esc(String(s.multiplicity))}" inputmode="numeric" spellcheck="false"></label>
+        <label>charge <input class="qe-num" data-f="charge" value="${esc(String(s.charge))}" inputmode="numeric" spellcheck="false"${fixed ? " readonly" : ""}></label>
+        <label>mult <input class="qe-num" data-f="mult" value="${esc(String(s.multiplicity))}" inputmode="numeric" spellcheck="false"${fixed ? " readonly" : ""}></label>
+        <span class="qe-note">${empty ? "nothing queued yet" : L.calcs.length + " calculation" + (L.calcs.length === 1 ? "" : "s")}</span>
       </div>
-      <div class="qe-inputs">${(s.inputs || []).length
-        ? s.inputs.map((/** @type {any} */ i) => `<span class="qe-note">${esc(i.label || "structure")}</span>`).join("")
+      <div class="qe-inputs">${inputs.length
+        ? inputs.map((/** @type {any} */ i, /** @type {number} */ k) => {
+            const n = xyzAtoms(String(i.xyz || ""));
+            return `<div class="qe-saveas" data-in="${k}">
+              <span class="qe-note">${esc(i.label || "structure " + (k + 1))}${n ? " · " + n + " atoms" : ""}</span>
+              <button class="btn btn-sm btn-ghost" type="button" data-a="view" data-i="${k}"
+                aria-label="${esc("View and check " + (i.label || "structure " + (k + 1)))}">View</button>
+              <button class="btn btn-sm btn-ghost" type="button" data-a="rminput" data-i="${k}"
+                aria-label="${esc("Remove " + (i.label || "structure " + (k + 1)) + " from the row")}">Remove</button>
+            </div>`;
+          }).join("")
         : `<span class="qe-note">No structure yet.</span>`}</div>
-      <div class="qe-saveas">
-        <button class="btn btn-sm" type="button" data-a="addinput">Add a structure…</button>
-        <button class="btn btn-sm btn-danger" type="button" data-a="rmsys">Remove system</button>
+      <div class="qe-stage" data-x="stage" hidden>
+        <canvas class="molcv" data-v="syscv" aria-label="The structure picked above"></canvas>
       </div>
-      <div class="qe-saveas">
+      <div data-x="check" aria-live="polite"></div>
+      <div class="qe-saveas" data-acts="1">
+        <button class="btn btn-sm" type="button" data-a="addinput">Add a structure…</button>
+        <button class="btn btn-sm" type="button" data-a="pasteinput">Paste coordinates…</button>
+        ${empty ? `<button class="btn btn-sm btn-danger" type="button" data-a="rmsys">Remove system</button>` : ""}
+      </div>
+      ${empty ? `<div class="qe-saveas">
         <button class="btn btn-sm btn-ghost" type="button" data-a="wfpaste"${_clip ? "" : " disabled"}
           title="${_clip ? "Ctrl+V: " + esc(wfSummary(_clip)) : "Nothing copied yet"}">Paste workflow</button>
       </div>
-      <p class="hint">Drop an inp set on the + slot, or press it to build the first calculation. A copied workflow pastes here as its first steps.</p>`;
+      <p class="hint">Drop an inp set on the + slot, or press it to build the first calculation. A copied workflow pastes here as its first steps.</p>`
+      : `<p class="hint">A calculation keeps the coordinates it was given. A structure added here is offered in the Geometry list of the row's blocks.</p>`}`;
     const q = (/** @type {string} */ x) => /** @type {any} */ (host.querySelector(x));
     const wp = q('[data-a="wfpaste"]');
     if (wp) wp.addEventListener("click", () => paste());
@@ -1338,8 +1666,36 @@
       el.addEventListener("focus", () => el.select());
       el.addEventListener("change", () => setChargeMult(liveL(), null, k, el.value));
     });
-    q('[data-a="addinput"]').addEventListener("click", () => addInput(L));
-    q('[data-a="rmsys"]').addEventListener("click", () => removeSystem(L));
+    q('[data-a="addinput"]').addEventListener("click", () => addInput(liveL()));
+    q('[data-a="pasteinput"]').addEventListener("click", () => addInput(liveL(), true));
+    const rm = q('[data-a="rmsys"]');
+    if (rm) rm.addEventListener("click", () => removeSystem(liveL()));
+    host.querySelectorAll('[data-a="rminput"]').forEach(b => b.addEventListener("click", () =>
+      removeInput(liveL(), int(b.getAttribute("data-i")))));
+    host.querySelectorAll('[data-a="view"]').forEach(b => b.addEventListener("click", async () => {
+      const i = inputs[int(b.getAttribute("data-i"))];
+      if (!i) return;
+      host.querySelectorAll('[data-a="view"]').forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+      const box = q('[data-x="stage"]');
+      box.hidden = false;
+      if (!_sysStage) _sysStage = MOL.mount(q('[data-v="syscv"]'), { labels: false });
+      _sysStage.setAtoms(MOL.parseXyz(String(i.xyz || "")));
+      const ls = liveL().sys || s;
+      const r = await NB.call("check_structure", String(i.xyz || ""), int(ls.charge), int(ls.multiplicity) || 1);
+      const out = q('[data-x="check"]');
+      if (!out || !out.isConnected) return;
+      if (!r || r.error) { out.innerHTML = `<p class="qe-note" data-tone="err">${esc(why(r, "Could not check the structure"))}</p>`; return; }
+      const mult = int(ls.multiplicity) || 1;
+      const fits = r.electrons != null && r.electrons % 2 === (mult - 1) % 2;
+      out.innerHTML = (r.issues || []).map((/** @type {any} */ x) =>
+          `<div class="finding ${x.level === "error" ? "err" : "warn"}"><span>${esc(x.message)}</span></div>`).join("")
+        + `<div class="factline">
+            <span>formula <b>${esc(r.formula || "—")}</b></span>
+            ${r.electrons != null ? `<span>electrons <b>${r.electrons}</b></span>` : ""}
+            <span>fragments <b>${esc(String(r.n_fragments))}</b></span>
+            ${r.electrons != null ? `<span>charge ${int(ls.charge)} / mult ${mult} <b class="${fits ? "ok" : "err"}">${
+              fits ? "consistent" : "impossible"}</b></span>` : ""}</div>`;
+    }));
   }
 
   // ------------------------------------------------------------ editing
@@ -1387,6 +1743,9 @@
       patch = { geometry_source: "reference", xyz: "", ref_name: pt ? rest.slice(0, -pt[0].length) : rest,
                 ref_point: pt ? pt[1] : "" };
     } else return;
+    // an `after` that is gone (a "Remove only this") goes with the new
+    // choice: it would keep the calculation from running
+    if (c.after && !NB.queue.some((/** @type {any} */ x) => x.name === c.after)) patch.after = "";
     const u = updates([c.name], () => patch);
     apply(u.ops, u.inv, "the geometry change");
   }
@@ -1424,7 +1783,7 @@
    *  named after its old type (Ltyr-freq) takes the new one's name
    *  (Ltyr-irc) when nothing refers to it by name.
    *  @param {any} n @param {string} kind */
-  function setType(n, kind) {
+  async function setType(n, kind) {
     if (!n.editable || !kind || kind === n.kind) return;
     const c0 = n.members[0];
     let rename = "";
@@ -1434,7 +1793,7 @@
       const used = NB.queue.some((/** @type {any} */ x) => x.name !== c0.name
         && (x.after === c0.name || (x.geometry_source === "reference" && x.ref_name === c0.name)));
       if (m && m[1] === SUFFIX[n.kind] && SUFFIX[kind] && SUFFIX[kind] !== m[1] && !used) {
-        rename = freeName(base + SUFFIX[kind]);
+        rename = (await avoidDisk(x => ({ names: [freeName(base + SUFFIX[kind], x)] }))).names[0];
       }
     }
     const ops = [], inv = [];
@@ -1443,6 +1802,172 @@
       inv.push({ op: "update_calc", name: rename || c.name, calc: rename ? { kind: c.kind, name: c.name } : { kind: c.kind } });
     });
     apply(ops, inv, "the type change");
+  }
+
+  /** Rename one calculation (its own name is its folder): what runs after
+   *  it or takes its geometry follows in the same batch. Refused when one
+   *  of those has started -- a started calculation keeps what it ran.
+   *  @param {any} c @param {string} value the whole new name */
+  async function renameCalc(c, value) {
+    const nm = cleanName(value);
+    const back = () => { _inspSig = ""; renderInspector(); };
+    if (!nm || nm === c.name) { back(); return; }
+    if (NB.queue.some((/** @type {any} */ x) => x !== c && lower(x.name) === lower(nm))) {
+      NB.fail(`There is already a calculation named '${nm}'.`); back(); return;
+    }
+    const refs = NB.queue.filter((/** @type {any} */ x) => x.name !== c.name
+      && (x.after === c.name || (x.geometry_source === "reference" && x.ref_name === c.name)));
+    const fixed = refs.find((/** @type {any} */ x) => EDITABLE.indexOf(x.state) < 0);
+    if (fixed) { NB.fail(`'${fixed.name}' has run from '${c.name}' and keeps that name; rename is not possible.`); back(); return; }
+    if ((await existingOutputs([nm])).length) {
+      NB.toast(`The workspace already holds output under '${nm}'. Running it overwrites that.`, "warn");
+    }
+    /** @type {any[]} */ const ops = [{ op: "update_calc", name: c.name, calc: { name: nm } }];
+    /** @type {any[]} */ const inv = [{ op: "update_calc", name: nm, calc: { name: c.name } }];
+    refs.forEach((/** @type {any} */ x) => {
+      /** @type {any} */ const p = {}, q = {};
+      if (x.after === c.name) { p.after = nm; q.after = c.name; }
+      if (x.geometry_source === "reference" && x.ref_name === c.name) { p.ref_name = nm; q.ref_name = c.name; }
+      ops.push({ op: "update_calc", name: x.name, calc: p });
+      inv.push({ op: "update_calc", name: x.name, calc: q });
+    });
+    if (!(await apply(ops, inv, "the rename"))) back();
+  }
+
+  /** Move a calculation's run order one step within its row -- before the
+   *  previous calculation that can still run, or after the next -- through
+   *  an `order` op. The order is the queue's priority: what is first runs
+   *  first when both are ready. A step past what it depends on (or what
+   *  depends on it) is refused: dependencies are never broken.
+   *  @param {any} c @param {number} dir -1 earlier, +1 later */
+  async function moveRun(c, dir) {
+    if (EDITABLE.indexOf(c.state) < 0) { NB.toast(`${c.name} has started; its place no longer changes what runs.`); return; }
+    const n = _M ? _M.nodeOf.get(c.name) : null;
+    if (!n) return;
+    const lane = n.lane.calcs;
+    const i = lane.findIndex((/** @type {any} */ x) => x.name === c.name);
+    let j = i + dir;
+    while (j >= 0 && j < lane.length && EDITABLE.indexOf(lane[j].state) < 0) j += dir;
+    if (j < 0 || j >= lane.length) {
+      NB.toast(`${c.name} already runs ${dir < 0 ? "first" : "last"} of what can still run in its row.`);
+      return;
+    }
+    const other = lane[j];
+    const first = dir < 0 ? other : c, second = dir < 0 ? c : other;
+    if (dependentsOf(first.name).has(second.name)) {
+      NB.toast(`${second.name} depends on ${first.name}, so it cannot run before it.`);
+      return;
+    }
+    const before = NB.queue.map((/** @type {any} */ x) => x.name);
+    const names = before.filter((/** @type {string} */ x) => x !== c.name);
+    const at = names.indexOf(other.name);
+    names.splice(dir < 0 ? at : at + 1, 0, c.name);
+    await apply([{ op: "order", names: names }], [{ op: "order", names: before }], "the run order change");
+  }
+
+  /** "Duplicate": a copy of one calculation with its whole setup (config,
+   *  level, geometry, what it runs after), queued to run, on the next free
+   *  row of its column. Its name is `<name>-copy`, clear of the queue and of
+   *  the workspace's folders. @param {any} n @param {any} c */
+  async function duplicateBlock(n, c) {
+    await fullCalcs([c.name]);
+    if (!_full.has(c.name)) { NB.fail(`Could not read '${c.name}'.`); return; }
+    const L = n.lane;
+    const pick = await avoidDisk(x => ({ names: [freeName(c.name + "-copy", x)] }));
+    const name = pick.names[0];
+    if (!(await guardOverwrite([name]))) return;
+    let row = n.row;
+    while (L.nodes.some((/** @type {any} */ x) => x.col === n.col && x.row === row)) row++;
+    const nodeId = L.sys ? newId("n") : "";
+    const calc = calcDict(c.name, {
+      name: name, state: "pending", message: "", approved: false,
+      output_path: "", pid: null, create_time: null,
+      node: nodeId, col: L.sys ? n.col : 0, row: L.sys ? row : 0,
+    });
+    const before = NB.queue.map((/** @type {any} */ x) => x.name);
+    const order = before.slice();
+    order.splice(order.indexOf(c.name) + 1, 0, name);
+    await applySel([{ op: "add_calc", calc: calc }, { op: "order", names: order }],
+                   [{ op: "remove_calc", name: name }], "the duplicate",
+                   { t: "node", key: L.sys ? L.key + "/" + nodeId : "c:" + name, m: 0 });
+  }
+
+  /** "Show folder": the calculation's run folder in the file manager. One
+   *  that has not run has none yet, and says so. @param {any} c */
+  async function showFolder(c) {
+    const ws = String((NB.settings && NB.settings.workspace_root) || "");
+    const sep = ws.indexOf("\\") >= 0 ? "\\" : "/";
+    const path = c.output_path || (ws ? ws.replace(/[\\/]+$/, "") + sep + c.name : c.name);
+    const r = await NB.call("show_path_in_folder", path);
+    if (!r || r.ok !== true) {
+      NB.fail(STARTED.indexOf(c.state) < 0 && !c.output_path
+        ? `${c.name} has no folder yet: it has not run.`
+        : why(r, "Could not show the folder of " + c.name));
+    }
+  }
+
+  /** What Level mode needs from the editor: the Type kinds a level's block
+   *  may run (get_inp_sets `jobs`) and the library's ORCA levels. */
+  function levelCtx() {
+    return { kinds: typeKinds().map(k => [k, TYPE_LABEL[k] || KIND_LABEL[k] || k]),
+             sets: _sets.filter(s => s.kind === "ORCA").map(s => ({ id: s.id, name: s.name, text: s.text })) };
+  }
+  /** "Edit options in the builder" on a level's block: the Guided builder in
+   *  Level mode (build.js), whose Save is one update_calc patch of this
+   *  block -- kind, config, geometry, and its level only when another was
+   *  picked -- through the undoable batch. @param {string} name */
+  function openLevelBuilder(name) {
+    const ctx = Object.assign(levelCtx(), {
+      save: async (/** @type {any} */ patch) => {
+        if (!NB.queue.some((/** @type {any} */ x) => x.name === name)) return { ok: false, error: `'${name}' is no longer in the queue.` };
+        const u = updates([name], () => patch);
+        const ok = await apply(u.ops, u.inv, "the options of " + name);
+        return { ok: ok, error: ok ? "" : (_refusal ? _refusal.text : "The queue refused that change.") };
+      },
+    });
+    openBuilder(name, null, { level: ctx });
+  }
+
+  /** "Clear finished": the done and failed calculations off the list (their
+   *  folders stay), as the old queue's Finished group did. One that a
+   *  calculation still to run takes its geometry from, or runs after, stays;
+   *  a row left with nothing goes with them. Not undoable: the store would
+   *  take a finished calculation back as one to run again. */
+  function clearFinished() {
+    const fin = new Set(NB.queue.filter((/** @type {any} */ c) => FINISHED.indexOf(c.state) >= 0)
+      .map((/** @type {any} */ c) => c.name));
+    for (let shrank = true; shrank; ) {
+      shrank = false;
+      NB.queue.forEach((/** @type {any} */ c) => {
+        if (fin.has(c.name)) return;
+        [c.after, c.geometry_source === "reference" ? c.ref_name : ""].forEach(u => {
+          if (u && fin.has(u)) { fin.delete(u); shrank = true; }
+        });
+      });
+    }
+    const all = NB.queue.filter((/** @type {any} */ c) => FINISHED.indexOf(c.state) >= 0).length;
+    if (!fin.size) {
+      NB.toast(all ? "Every finished calculation is still needed: something yet to run starts from it." : "Nothing has finished yet.");
+      return;
+    }
+    const kept = all - fin.size;
+    const emptied = NB.systems.filter((/** @type {any} */ s) => {
+      const lane = NB.queue.filter((/** @type {any} */ c) => c.system === s.id);
+      return lane.length && lane.every((/** @type {any} */ c) => fin.has(c.name));
+    });
+    NB.modalRaw("Clear finished",
+      `<p>${fin.size} finished or failed calculation${fin.size === 1 ? "" : "s"} leave${fin.size === 1 ? "s" : ""} the list${
+        emptied.length ? `, with ${emptied.length === 1 ? "the row it leaves" : "the " + emptied.length + " rows they leave"} empty` : ""}.
+        Their folders stay on disk. Cancelled calculations stay: they run again with the queue.${
+        kept ? ` ${kept} stay${kept === 1 ? "s" : ""} because a calculation still to run starts from ${kept === 1 ? "it" : "them"}.` : ""}
+        This cannot be undone with Ctrl+Z.</p>`,
+      [{ label: "Cancel", cls: "btn-ghost", focus: true },
+       { label: "Clear", cls: "btn-danger", act: () => {
+          /** @type {any[]} */ const ops = [...fin].map(x => ({ op: "remove_calc", name: x }));
+          emptied.forEach((/** @type {any} */ s) => ops.push({ op: "remove_system", id: s.id }));
+          if (_sel && _sel.t === "node") { const n = selNode(); if (n && n.members.some((/** @type {any} */ c) => fin.has(c.name))) _sel = null; }
+          apply(ops, null, "clearing finished calculations");
+        } }]);
   }
 
   /** The workflow buttons of an inspector: copy what is selected, copy the
@@ -1611,7 +2136,7 @@
 
   /** @param {InpSet} set */
   function openSet(set) {
-    if (NB.build.target() !== null) { NB.toast("The builder is open in the inspector. Close it to edit the set."); return; }
+    if (NB.build.target() !== null) { NB.toast("The builder is open. Close it to edit the set."); return; }
     if (_ed && _ed.id === set.id) { _lastId = set.id; showEditor(); return; }
     guardSwitch(() => { _ed = edFrom(set); _lastId = set.id; showEditor(); });
   }
@@ -1619,7 +2144,7 @@
   /** "+ New" in a kind's group: a new set from that kind's seeded input.
    *  @param {string} kind */
   function newSet(kind) {
-    if (NB.build.target() !== null) { NB.toast("The builder is open in the inspector. Close it to start a set."); return; }
+    if (NB.build.target() !== null) { NB.toast("The builder is open. Close it to start a set."); return; }
     guardSwitch(() => {
       const text = _defaults[kind] || (kind === "MLIP" ? "model \ndevice auto\nnprocs 1\n"
         : "! " + JOB + "\n\n* xyz {{CHARGE}} {{MULT}}\n" + GEOM + "\n*\n");
@@ -1651,7 +2176,7 @@
   /** "Import .inp…": a picked ORCA input as a new set. Coordinates it carries
    *  are replaced by the placeholders only when the user says so. */
   function edImport() {
-    if (NB.build.target() !== null) { NB.toast("The builder is open in the inspector. Close it to import a set."); return; }
+    if (NB.build.target() !== null) { NB.toast("The builder is open. Close it to import a set."); return; }
     guardSwitch(async () => {
       const r = await NB.call("load_inp_file");
       if (!r || r.cancelled) return;
@@ -1986,11 +2511,17 @@
       tails = [{ tail: "", after: "", ref: "", pt: "" }];
     }
     // a base whose every member name is free (Ltyr-sp, else Ltyr-sp2 ...)
+    // -- and clear of folders in the workspace that already hold output
     const root = String(sys.name || "") + "-" + (SUFFIX[kind] || "step");
-    const taken = new Set(NB.queue.map((/** @type {any} */ c) => lower(c.name)));
-    let base = root;
-    for (let i = 2; tails.some(t => taken.has(lower(base + t.tail))); i++) base = root + i;
-    const members = tails.map(t => ({ name: base + t.tail, after: t.after, ref: t.ref, pt: t.pt }));
+    const named = await avoidDisk(extra => {
+      const taken = new Set(NB.queue.map((/** @type {any} */ c) => lower(c.name)));
+      extra.forEach(x => taken.add(x));
+      let base = root;
+      for (let i = 2; tails.some(t => taken.has(lower(base + t.tail))); i++) base = root + i;
+      return { names: tails.map(t => base + t.tail) };
+    });
+    if (!(await guardOverwrite(named.names))) return;
+    const members = tails.map((t, i) => ({ name: named.names[i], after: t.after, ref: t.ref, pt: t.pt }));
     let xyz = "";
     if (!P && sys.id) {
       const sf = await systemFull(sys.id);
@@ -2015,7 +2546,7 @@
     await applySel(ops, inv, "the new " + (TYPE_LABEL[kind] || KIND_LABEL[kind] || kind), { t: "node", key: "s:" + sys.id + "/" + nodeId, m: 0 });
   }
 
-  /** The builder, hosted in the inspector. @param {string} target "" for a new one
+  /** The builder, hosted over the lanes and the inspector (#qe-build). @param {string} target "" for a new one
    *  @param {any} [seed] @param {any} [place] */
   function openBuilder(target, seed, place) {
     _buildKey++;
@@ -2046,13 +2577,27 @@
     const nodeId = newId("n");
     const col = g.c, row = g.r;
     const laneKey = "s:" + sys.id;
+    const sysName = String(sys.name || "");
+    // named as a step the editor adds is (Ltyr-opt, Ltyr-opt2 ...): the row's
+    // name and the kind's suffix, clear of the queue and of folders holding
+    // output -- one name per kind, so the Name follows the builder's Type
+    // while it is still the one given here
+    const kinds = Object.keys(SUFFIX);
+    const named = await avoidDisk(x => ({ names: kinds.map(k => freeName(sysName + "-" + SUFFIX[k], x)) }));
+    /** @type {Object<string, string>} */
+    const names = {};
+    kinds.forEach((k, i) => { names[k] = named.names[i]; });
+    // the library's levels: a manual build may start from one (Level mode)
+    const lv = levelCtx();
     openBuilder("", {
-      name: freeName(String(sys.name || "") + "-calc"), kind: "opt", is_raw: false, raw_text: "",
+      name: names.opt, kind: "opt", is_raw: false, raw_text: "",
       xyz: xyz, geometry_source: parent ? "reference" : "direct", ref_name: parent ? parent.name : "",
       charge: int(sys.charge), multiplicity: int(sys.multiplicity) || 1, config: {},
     }, {
       slot: g.key,
-      label: "New calculation " + (parent ? "after " + parent.name : "in " + sys.name),
+      levels: lv.sets.length && lv.kinds.length ? lv : null,
+      where: parent ? "after " + parent.name + " in " + sys.name : "first in " + sys.name,
+      names: names,
       fields: { system: sys.id, node: nodeId, col: col, row: row, after: parent ? parent.name : "",
                 gate: "auto", auto_pass: true, approved: false, ref_point: "" },
       done: async (/** @type {string} */ name) => {
@@ -2073,11 +2618,14 @@
     });
   }
 
-  /** Delete: a block and everything that hangs off it, asked first; a
-   *  running one is refused (stop it first). @param {any} n */
+  /** Delete: a block and everything that hangs off it, asked first -- or,
+   *  asked so, the block alone, what hangs off it staying (blocked until it
+   *  is given another geometry); a running one is refused (stop it first).
+   *  @param {any} n */
   function requestRemove(n) {
     const L = n.lane;
-    const gone = n.members.map((/** @type {any} */ c) => c.name);
+    const own = n.members.map((/** @type {any} */ c) => c.name);
+    const gone = own.slice();
     const set = new Set(gone);
     for (let grew = true; grew; ) {
       grew = false;
@@ -2096,28 +2644,50 @@
       return;
     }
     const k = gone.length - n.members.length;
-    const after = k > 0 ? ` The ${k} calculation${k === 1 ? "" : "s"} after it depend on it, so they go too.` : "";
-    // the store takes a calculation back as PENDING, never as the finished
-    // run it was -- so a removal that includes one is not offered as undoable
-    // (an "undo" that queues a finished job to run again is not an undo)
-    const finished = calcs.some(c => c && (c.state === "done" || c.state === "failed"));
     // a row left with no block goes with its last one, as the design's lanes do
-    const emptied = !!L.sys && L.calcs.every((/** @type {any} */ c) => set.has(c.name));
+    const emptiedBy = (/** @type {Set<string>} */ s) => !!L.sys && L.calcs.every((/** @type {any} */ c) => s.has(c.name));
+    /** Remove `names`: one batch, undoable unless it takes a finished
+     *  calculation (the store would take it back as PENDING, which is
+     *  queueing it to run again, not undoing). @param {string[]} names */
+    const removeNow = async (names) => {
+      const s = new Set(names);
+      const emptied = emptiedBy(s);
+      const finished = names.some(x => {
+        const c = NB.queue.find((/** @type {any} */ y) => y.name === x);
+        return c && (c.state === "done" || c.state === "failed");
+      });
+      const before = NB.queue.map((/** @type {any} */ c) => c.name);
+      const sysFull = emptied ? await systemFull(L.sys.id) : null;
+      const ops = /** @type {any[]} */ (names.slice().reverse().map(x => ({ op: "remove_calc", name: x })));
+      if (emptied) ops.push({ op: "remove_system", id: L.sys.id });
+      const inv = finished || (emptied && !sysFull) ? null
+        : (/** @type {any[]} */ (sysFull ? [{ op: "add_system", system: sysFull }] : []))
+          .concat(names.map(x => ({ op: "add_calc", calc: calcDict(x) })), [{ op: "order", names: before }]);
+      _sel = null;
+      apply(ops, inv, "the removal");
+    };
+    const finishedAny = calcs.some(c => c && (c.state === "done" || c.state === "failed"));
+    const finishedOwn = own.some(x => {
+      const c = NB.queue.find((/** @type {any} */ y) => y.name === x);
+      return c && (c.state === "done" || c.state === "failed");
+    });
+    // "Remove only this": what hangs off it stays, blocked until it is given
+    // another geometry -- refused by the store while a run is going (a
+    // calculation yet to run would point at nothing), so not offered then
+    const onlyThis = k > 0 && !NB.running;
+    const after = k > 0 ? ` The ${k} calculation${k === 1 ? "" : "s"} after it depend${k === 1 ? "s" : ""} on it${
+      onlyThis ? ": remove them too, or keep them, blocked until each is given another geometry."
+               : ", so they go too (keeping them is possible when the queue is not running)."}` : "";
     NB.modalRaw(`Remove ${gone.length} calculation${gone.length === 1 ? "" : "s"}?`,
-      `<p>${esc(n.short)} is removed from the queue.${esc(after)}${emptied ? " Its row goes too." : ""} Files already written stay on disk.${
-        finished ? " Finished calculations cannot be brought back with Ctrl+Z." : " Ctrl+Z brings it back."}</p>`,
-      [{ label: "Cancel", cls: "btn-ghost" },
-       { label: "Remove", cls: "btn-danger", focus: true, act: async () => {
-          const before = NB.queue.map((/** @type {any} */ c) => c.name);
-          const sysFull = emptied ? await systemFull(L.sys.id) : null;
-          const ops = /** @type {any[]} */ (gone.slice().reverse().map(x => ({ op: "remove_calc", name: x })));
-          if (emptied) ops.push({ op: "remove_system", id: L.sys.id });
-          const inv = finished || (emptied && !sysFull) ? null
-            : (/** @type {any[]} */ (sysFull ? [{ op: "add_system", system: sysFull }] : []))
-              .concat(gone.map(x => ({ op: "add_calc", calc: calcDict(x) })), [{ op: "order", names: before }]);
-          _sel = null;
-          apply(ops, inv, "the removal");
-        } }]);
+      `<p>${esc(n.short)} is removed from the queue.${esc(after)}${emptiedBy(set) ? " Its row goes too." : ""} Files already written stay on disk.${
+        finishedAny ? " Finished calculations cannot be brought back with Ctrl+Z." : " Ctrl+Z brings it back."}</p>`,
+      [{ label: "Cancel", cls: "btn-ghost" }].concat(onlyThis ? [{
+        label: "Remove only this", cls: "btn-ghost", act: () => {
+          if (finishedOwn) NB.toast("A finished calculation removed cannot be brought back with Ctrl+Z.", "warn");
+          removeNow(own);
+        } }] : [],
+      [{ label: k > 0 ? `Remove all ${gone.length}` : "Remove", cls: "btn-danger", focus: true,
+         act: () => { removeNow(gone); } }]));
   }
 
   /** @param {any} L */
@@ -2129,29 +2699,99 @@
           full ? [{ op: "add_system", system: full }] : null, "removing " + L.sys.name);
   }
 
-  /** @param {any} L */
-  async function addInput(L) {
-    const r = await NB.call("load_xyz_file");
-    if (!r || r.cancelled) return;
-    if (!r.ok) { NB.fail("Could not read that .xyz."); return; }
-    const full = await systemFull(L.sys.id);
-    const old = full ? (full.inputs || []) : [];
-    apply([{ op: "update_system", id: L.sys.id, patch: { inputs: old.concat([{ label: (r.name || "structure") + ".xyz", xyz: r.text }]) } }],
-          [{ op: "update_system", id: L.sys.id, patch: { inputs: old } }], "the new structure");
+  /** Coordinates typed or pasted, asked for in the modal: a name (for a new
+   *  row) and the block (an .xyz file's text, its two header lines or not).
+   *  "Load .xyz…" there takes a file instead. Resolves to {name, label, xyz},
+   *  {file: true} for the file, or null.
+   *  @param {string} title @param {string} name "" for no name field
+   *  @returns {Promise<any>} */
+  function askCoords(title, name) {
+    return new Promise(resolve => {
+      NB.modalRaw(title,
+        `${name ? `<label class="qe-rlab">name <input class="qe-input mono" id="qe-pc-name" spellcheck="false"
+            value="${esc(name)}" aria-label="Name of the new row"></label>` : ""}
+         <textarea class="qe-tpl" id="qe-pc-xyz" rows="12" spellcheck="false" aria-label="Coordinates"
+           placeholder="O   0.000   0.000   0.000&#10;H   0.000   0.757   0.587&#10;H   0.000  -0.757   0.587"></textarea>
+         <p class="hint">One atom per line: element, x, y, z in Å. An .xyz file's two header lines may stay.</p>`,
+        [{ label: "Load .xyz…", cls: "btn-ghost", act: () => resolve({ file: true }) },
+         { label: "Cancel", cls: "btn-ghost", act: () => resolve(null) },
+         { label: "Add", cls: "btn-primary", act: () => {
+            const ta = /** @type {any} */ (document.getElementById("qe-pc-xyz"));
+            const nm = /** @type {any} */ (document.getElementById("qe-pc-name"));
+            const xyz = ta ? String(ta.value || "") : "";
+            resolve({ name: nm ? String(nm.value || "").trim() : "", label: "pasted", xyz: xyz });
+          } }], true);
+      setTimeout(() => { const ta = document.getElementById("qe-pc-xyz"); if (ta) ta.focus(); }, 0);
+    });
+  }
+  /** The coordinate lines of a pasted block, or why there are none.
+   *  @param {string} text @returns {{xyz: string, n: number, error: string}} */
+  function readCoords(text) {
+    const lines = String(text || "").replace(/\r/g, "").split("\n");
+    if (lines.length > 2 && /^\s*\d+\s*$/.test(lines[0])) lines.splice(0, 2);
+    const atoms = lines.filter(l => l.trim());
+    const bad = atoms.find(l => xyzAtoms(l) !== 1);
+    if (!atoms.length) return { xyz: "", n: 0, error: "There are no coordinates in it." };
+    if (bad) return { xyz: "", n: 0, error: `"${bad.trim().slice(0, 40)}" is not an atom line (element x y z).` };
+    return { xyz: atoms.join("\n"), n: atoms.length, error: "" };
   }
 
-  /** "+ system": a structure file becomes an empty lane. */
+  /** Add a structure to a row: a picked .xyz file, or (`paste`) coordinates
+   *  typed or pasted. @param {any} L @param {boolean} [paste] */
+  async function addInput(L, paste) {
+    let label = "", xyz = "";
+    if (paste) {
+      const a = await askCoords("Paste coordinates", "");
+      if (!a) return;
+      if (a.file) { addInput(L); return; }
+      const c = readCoords(a.xyz);
+      if (c.error) { NB.fail("Could not add the structure: " + c.error); return; }
+      const n = (L.sys.inputs || []).length;
+      label = "pasted " + (n + 1); xyz = c.xyz;
+    } else {
+      const r = await NB.call("load_xyz_file");
+      if (!r || r.cancelled) return;
+      if (!r.ok) { NB.fail("Could not read that .xyz."); return; }
+      label = (r.name || "structure") + ".xyz"; xyz = r.text;
+    }
+    const full = await systemFull(L.sys.id);
+    const old = full ? (full.inputs || []) : [];
+    apply([{ op: "update_system", id: L.sys.id, patch: { inputs: old.concat([{ label: label, xyz: xyz }]) } }],
+          [{ op: "update_system", id: L.sys.id, patch: { inputs: old } }], "the new structure");
+  }
+  /** Take one structure off a row (Ctrl+Z puts it back). The calculations
+   *  that were given it keep their copy of it. @param {any} L @param {number} i */
+  async function removeInput(L, i) {
+    const full = await systemFull(L.sys.id);
+    const old = full ? (full.inputs || []) : [];
+    if (!old[i]) return;
+    apply([{ op: "update_system", id: L.sys.id, patch: { inputs: old.filter((/** @type {any} */ _x, /** @type {number} */ k) => k !== i) } }],
+          [{ op: "update_system", id: L.sys.id, patch: { inputs: old } }], "removing " + (old[i].label || "a structure"));
+  }
+
+  /** "+ system": a structure becomes an empty lane -- from a file, or
+   *  coordinates pasted (asked first, with the row's name). */
   async function addSystem() {
-    const r = await NB.call("load_xyz_file");
-    if (!r || r.cancelled) return;
-    if (!r.ok) { NB.fail("Could not read that .xyz."); return; }
+    const a = await askCoords("New system", "system");
+    if (!a) return;
+    let label = "", xyz = "", base = "";
+    if (a.file) {
+      const r = await NB.call("load_xyz_file");
+      if (!r || r.cancelled) return;
+      if (!r.ok) { NB.fail("Could not read that .xyz."); return; }
+      label = (r.name || "structure") + ".xyz"; xyz = r.text; base = r.name || "system";
+    } else {
+      const c = readCoords(a.xyz);
+      if (c.error) { NB.fail("Could not add the system: " + c.error); return; }
+      xyz = c.xyz; base = a.name || "system"; label = "pasted";
+    }
     const taken = new Set(NB.systems.map((/** @type {any} */ s) => lower(s.name)));
-    const base = cleanName(r.name || "system") || "system";
+    base = cleanName(base) || "system";
     let nm = base, i = 2;
     while (taken.has(lower(nm)) || NB.queue.some((/** @type {any} */ c) => lower(c.name) === lower(nm))) nm = base + "-" + (i++);
     const id = newId("s");
     await applySel([{ op: "add_system", system: { id: id, name: nm, charge: 0, multiplicity: 1,
-                      inputs: [{ label: (r.name || nm) + ".xyz", xyz: r.text }] } }],
+                      inputs: [{ label: label, xyz: xyz }] } }],
                    [{ op: "remove_system", id: id }], "the new system", { t: "sys", key: "s:" + id });
   }
 
@@ -2224,7 +2864,10 @@
         steps.push({ id: local.get(c.name), node: "n" + ni, suffix: suffix,
                      tail: n.stack ? c.name.slice(head.length) : "",
                      kind: c.kind, is_raw: isRaw, raw_text: isRaw ? raw : "", set_name: c.set_name || "",
-                     config: isRaw ? {} : full.config || {},
+                     // a level's block carries its options (constraints, IRC
+                     // settings ...) in its config; a text that names its own
+                     // job has none
+                     config: !isRaw || (setKindOf(c.kind) !== "MLIP" && hasJobLine(raw)) ? full.config || {} : {},
                      after: c.after && local.has(c.after) ? local.get(c.after) : "",
                      ref: ref, ref_point: ref ? String(full.ref_point || "") : "",
                      gate: c.gate === "approval" ? "approval" : "auto", auto_pass: c.auto_pass !== false,
@@ -2295,7 +2938,8 @@
         geometry_source: ref ? "reference" : "direct", xyz: ref ? "" : t.xyz,
         ref_name: ref, ref_point: st.ref ? String(st.ref_point || "") : "",
         is_raw: !!st.is_raw, raw_text: st.is_raw ? String(st.raw_text || "") : "",
-        set_name: String(st.set_name || ""), config: st.is_raw ? {} : st.config || {},
+        set_name: String(st.set_name || ""),
+        config: !st.is_raw || (setKindOf(st.kind) !== "MLIP" && hasJobLine(String(st.raw_text || ""))) ? st.config || {} : {},
         system: t.sysId, node: node, col: t.col0 + int(st.col), row: t.row0 + int(st.row),
         after: after, gate: after ? st.gate || "auto" : "auto", auto_pass: st.auto_pass !== false,
         approved: false, state: "pending", message: "",
@@ -2315,7 +2959,7 @@
     const n = selNode();
     if (n) { await pasteAfter(n, _clip); return; }
     const L = _sel && _sel.t === "sys" ? laneByKey(_sel.key) : null;
-    if (L) { await pasteIntoSystem(L, _clip); return; }
+    if (L && !L.calcs.length) { await pasteIntoSystem(L, _clip); return; }
     if (_sel) { NB.toast("Select one block to paste after, an empty row, or nothing (new rows from .xyz files)."); return; }
     const r = await NB.call("pick_xyz_files");
     if (!r || r.cancelled) return;
@@ -2339,9 +2983,21 @@
     const col0 = P.col + 1;
     let row0 = P.row;
     while (wf.steps.some((/** @type {any} */ st) => occ.has((col0 + int(st.col)) + "," + (row0 + int(st.row))))) row0++;
-    const r = instantiate(wf, { sysId: sys.id, laneName: String(sys.name || ""), charge: int(sys.charge),
-      mult: int(sys.multiplicity) || 1, xyz: "", parent: P.members[0].name, col0: col0, row0: row0,
-      taken: new Set(NB.queue.map((/** @type {any} */ c) => lower(c.name))) });
+    // the copied constraints name atoms: the structure it lands on has them
+    const need = wfAtomNeed(wf), have = atomsOfCalc(P.members[0].name);
+    if (need && have && need > have) {
+      NB.fail(`The workflow's constraints name atom ${need}, but ${P.short} has ${have} atoms.`);
+      return;
+    }
+    const sysId = sys.id, laneName = String(sys.name || ""), charge = int(sys.charge), mult = int(sys.multiplicity) || 1;
+    const r = await avoidDisk(extra => {
+      const taken = new Set(NB.queue.map((/** @type {any} */ c) => lower(c.name)));
+      extra.forEach(x => taken.add(x));
+      const out = instantiate(wf, { sysId: sysId, laneName: laneName, charge: charge, mult: mult,
+        xyz: "", parent: P.members[0].name, col0: col0, row0: row0, taken: taken });
+      return Object.assign(out, { names: out.fresh });
+    });
+    if (!(await guardOverwrite(r.names))) return;
     const order = { op: "order", names: orderWith(NB.queue.map((/** @type {any} */ c) => c.name), P.lane, col0, row0, r.fresh) };
     const inv = r.fresh.slice().reverse().map(x => ({ op: "remove_calc", name: x })).concat(pre.inv);
     await applySel(pre.ops.concat(r.ops, [order]), inv, "the pasted workflow", { t: "node", key: r.first, m: 0 });
@@ -2351,9 +3007,19 @@
   async function pasteIntoSystem(L, wf) {
     const sf = await systemFull(L.sys.id);
     const xyz = sf && sf.inputs && sf.inputs[0] ? String(sf.inputs[0].xyz || "") : "";
-    const r = instantiate(wf, { sysId: L.sys.id, laneName: String(L.sys.name || ""), charge: int(L.sys.charge),
-      mult: int(L.sys.multiplicity) || 1, xyz: xyz, parent: "", col0: 0, row0: 0,
-      taken: new Set(NB.queue.map((/** @type {any} */ c) => lower(c.name))) });
+    const need = wfAtomNeed(wf), have = xyzAtoms(xyz);
+    if (need && have && need > have) {
+      NB.fail(`The workflow's constraints name atom ${need}, but ${L.name}'s structure has ${have} atoms.`);
+      return;
+    }
+    const r = await avoidDisk(extra => {
+      const taken = new Set(NB.queue.map((/** @type {any} */ c) => lower(c.name)));
+      extra.forEach(x => taken.add(x));
+      const out = instantiate(wf, { sysId: L.sys.id, laneName: String(L.sys.name || ""), charge: int(L.sys.charge),
+        mult: int(L.sys.multiplicity) || 1, xyz: xyz, parent: "", col0: 0, row0: 0, taken: taken });
+      return Object.assign(out, { names: out.fresh });
+    });
+    if (!(await guardOverwrite(r.names))) return;
     const order = { op: "order", names: NB.queue.map((/** @type {any} */ c) => c.name).concat(r.fresh) };
     await applySel(r.ops.concat([order]), r.fresh.slice().reverse().map(x => ({ op: "remove_calc", name: x })),
                    "the pasted workflow", { t: "node", key: r.first, m: 0 });
@@ -2369,44 +3035,58 @@
    *  @param {any} wf @param {any[]} files XyzFileEntry @param {string} label
    *  @returns {Promise<boolean>} whether any row was added */
   async function pasteOnFiles(wf, files, label) {
-    /** @type {{file: string, reason: string}[]} */ const refused = [];
-    /** @type {any[]} */ const ops = [];
-    /** @type {string[]} */ const fresh = [], ids = [];
-    const rows = new Set(NB.systems.map((/** @type {any} */ s) => lower(s.name)));
-    const taken = new Set(NB.queue.map((/** @type {any} */ c) => lower(c.name)));
-    let first = "";
-    files.forEach(f => {
-      const file = String(f.label || f.path || "");
-      const nm = String(f.name || "");
-      if (f.error) { refused.push({ file: file, reason: f.error }); return; }
-      if (!nm) { refused.push({ file: file, reason: "The file has no name to give the row." }); return; }
-      if (HOSTILE.test(nm)) {
-        refused.push({ file: file, reason: "Its name has a space or one of & , ; = \\ / : * ? \" < > |, which ORCA or a folder name refuses. Rename the file." });
-        return;
-      }
-      if (rows.has(lower(nm)) || taken.has(lower(nm))) { refused.push({ file: file, reason: `There is already a row or calculation named '${nm}'.` }); return; }
-      rows.add(lower(nm));
-      const id = newId("s");
-      ops.push({ op: "add_system", system: { id: id, name: nm, charge: 0, multiplicity: 1,
-                 inputs: [{ label: file || nm + ".xyz", xyz: String(f.xyz || "") }] } });
-      const r = instantiate(wf, { sysId: id, laneName: nm, charge: 0, mult: 1, xyz: String(f.xyz || ""),
-                                  parent: "", col0: 0, row0: 0, taken: taken });
-      ops.push(...r.ops);
-      fresh.push(...r.fresh);
-      ids.push(id);
-      if (!first) first = r.first;
-    });
+    const need = wfAtomNeed(wf);
+    /** The batch for these files, with `extra` names taken as well (folders
+     *  in the workspace that hold output). @param {Set<string>} extra */
+    const plan = (extra) => {
+      /** @type {{file: string, reason: string}[]} */ const refused = [];
+      /** @type {any[]} */ const ops = [];
+      /** @type {string[]} */ const fresh = [], ids = [];
+      const rows = new Set(NB.systems.map((/** @type {any} */ s) => lower(s.name)));
+      const taken = new Set(NB.queue.map((/** @type {any} */ c) => lower(c.name)));
+      extra.forEach(x => taken.add(x));
+      let first = "";
+      files.forEach(f => {
+        const file = String(f.label || f.path || "");
+        const nm = String(f.name || "");
+        if (f.error) { refused.push({ file: file, reason: f.error }); return; }
+        if (!nm) { refused.push({ file: file, reason: "The file has no name to give the row." }); return; }
+        if (HOSTILE.test(nm)) {
+          refused.push({ file: file, reason: "Its name has a space or one of & , ; = \\ / : * ? \" < > |, which ORCA or a folder name refuses. Rename the file." });
+          return;
+        }
+        if (rows.has(lower(nm)) || taken.has(lower(nm))) { refused.push({ file: file, reason: `There is already a row or calculation named '${nm}'.` }); return; }
+        // the copied constraints name atoms: each structure is checked
+        const have = xyzAtoms(String(f.xyz || ""));
+        if (need && have && need > have) {
+          refused.push({ file: file, reason: `The workflow's constraints name atom ${need}; this structure has ${have} atoms.` });
+          return;
+        }
+        rows.add(lower(nm));
+        const id = newId("s");
+        ops.push({ op: "add_system", system: { id: id, name: nm, charge: 0, multiplicity: 1,
+                   inputs: [{ label: file || nm + ".xyz", xyz: String(f.xyz || "") }] } });
+        const r = instantiate(wf, { sysId: id, laneName: nm, charge: 0, mult: 1, xyz: String(f.xyz || ""),
+                                    parent: "", col0: 0, row0: 0, taken: taken });
+        ops.push(...r.ops);
+        fresh.push(...r.fresh);
+        ids.push(id);
+        if (!first) first = r.first;
+      });
+      return { names: fresh, refused: refused, ops: ops, fresh: fresh, ids: ids, first: first };
+    };
+    const p = await avoidDisk(plan);
     let ok = false;
-    if (fresh.length) {
-      ops.push({ op: "order", names: NB.queue.map((/** @type {any} */ c) => c.name).concat(fresh) });
-      const inv = /** @type {any[]} */ (fresh.slice().reverse().map(x => ({ op: "remove_calc", name: x })))
-        .concat(ids.map(id => ({ op: "remove_system", id: id })));
-      ok = await applySel(ops, inv, label, { t: "node", key: first, m: 0 });
-      if (ok) NB.toast(`${ids.length} row${ids.length === 1 ? "" : "s"} added, each running ${wfSummary(wf)}.`, "ok");
+    if (p.fresh.length && await guardOverwrite(p.names)) {
+      p.ops.push({ op: "order", names: NB.queue.map((/** @type {any} */ c) => c.name).concat(p.fresh) });
+      const inv = /** @type {any[]} */ (p.fresh.slice().reverse().map(x => ({ op: "remove_calc", name: x })))
+        .concat(p.ids.map(id => ({ op: "remove_system", id: id })));
+      ok = await applySel(p.ops, inv, label, { t: "node", key: p.first, m: 0 });
+      if (ok) NB.toast(`${p.ids.length} row${p.ids.length === 1 ? "" : "s"} added, each running ${wfSummary(wf)}.`, "ok");
     }
-    if (refused.length) {
-      NB.modalRaw(`${refused.length} file${refused.length === 1 ? " was" : "s were"} not added`,
-        `<div class="names">${refused.map(x =>
+    if (p.refused.length) {
+      NB.modalRaw(`${p.refused.length} file${p.refused.length === 1 ? " was" : "s were"} not added`,
+        `<div class="names">${p.refused.map(x =>
           `${esc(String(x.file).split(/[\\/]/).pop())} — ${esc(x.reason)}`).join("<br>")}</div>`);
     }
     return ok;
@@ -2492,14 +3172,21 @@
     const lanes = _M.lanes.filter((/** @type {any} */ x) => x.calcs.length);
     const ops = [], inv = [];
     const oldBase = L.name;
-    const taken = new Set(NB.queue.map((/** @type {any} */ c) => lower(c.name))
-      .concat(NB.systems.map((/** @type {any} */ s) => lower(s.name))));
-    let nm = oldBase + "-copy", k = 2;
     const rename = (/** @type {string} */ base, /** @type {string} */ x) =>
       lower(x).indexOf(lower(oldBase)) === 0 ? base + x.slice(oldBase.length) : base + "-" + x;
-    while (taken.has(lower(nm)) || laneNames(L).some((/** @type {string} */ x) => taken.has(lower(rename(nm, x))))) {
-      nm = oldBase + "-copy" + (k++);
-    }
+    // a copy's names are clear of the queue and of folders holding output
+    const pick = await avoidDisk(extra => {
+      const taken = new Set(NB.queue.map((/** @type {any} */ c) => lower(c.name))
+        .concat(NB.systems.map((/** @type {any} */ s) => lower(s.name))));
+      extra.forEach(x => taken.add(x));
+      let base = oldBase + "-copy", k = 2;
+      while (taken.has(lower(base)) || laneNames(L).some((/** @type {string} */ x) => taken.has(lower(rename(base, x))))) {
+        base = oldBase + "-copy" + (k++);
+      }
+      return { nm: base, names: laneNames(L).map((/** @type {string} */ x) => rename(base, x)) };
+    });
+    if (!(await guardOverwrite(pick.names))) return;
+    const nm = pick.nm;
     const map = new Map(laneNames(L).map((/** @type {string} */ x) => [x, rename(nm, x)]));
     let sysId = "";
     if (L.sys) {
@@ -2572,6 +3259,10 @@
       return pasteOnFiles(wf, Array.isArray(rr.files) ? rr.files : [], "the dropped structures");
     }
     if (!rec.set_id) { NB.fail("There is no ORCA level to run a dropped structure with."); return false; }
+    // each file becomes `stem + suffix` (store.add_xyz_systems, which never
+    // renames): while a run is going, one whose folder holds output is asked
+    const stems = list.map(p => String(p).split(/[\\/]/).pop().replace(/\.xyz$/i, "") + rec.suffix);
+    if (!(await guardOverwrite(stems))) return false;
     const r = await NB.call("add_xyz_systems", JSON.stringify({ paths: list, set_id: rec.set_id, suffix: rec.suffix, kind: "sp" }));
     if (!r || r.ok !== true) { NB.fail(why(r, "Could not queue the structures")); return false; }
     const added = Array.isArray(r.added) ? r.added : [];
@@ -2618,7 +3309,12 @@
       const n = _M.nodeOf.get(m.name);
       if (n) select({ t: "node", key: n.key, m: Math.max(0, n.members.findIndex((/** @type {any} */ c) => c.name === m.name)) });
       const c = NB.queue.find((/** @type {any} */ x) => x.name === m.name);
-      if (m.type === "edit" && c && !c.set_name && EDITABLE.indexOf(c.state) >= 0) openBuilder(m.name);
+      // a level's block opens in Level mode; an MLIP set's block is edited
+      // as its text in the inspector; anything else in the builder
+      if (m.type === "edit" && c && EDITABLE.indexOf(c.state) >= 0) {
+        if (isLevelCalc(c)) openLevelBuilder(m.name);
+        else if (!(c.set_name && setKindOf(c.kind) === "MLIP")) openBuilder(m.name);
+      }
       if (n) {
         const el = NB.$("qe-graph").querySelector(`.qe-node[data-k="${CSS.escape(n.key)}"]`);
         if (el) el.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -2630,6 +3326,7 @@
 
   /** @param {any} s */
   function select(s) {
+    if (JSON.stringify(s) !== JSON.stringify(_sel)) _refusal = null;
     _sel = s;
     render();
   }
@@ -2872,7 +3569,7 @@
       const t = /** @type {HTMLElement} */ (ev.target);
       if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
       // the builder's own keys, and the library's (Delete there deletes a set)
-      if (t && t.closest && (t.closest(".qe-insp .cell") || t.closest(".qe-lib"))) return;
+      if (t && t.closest && (t.closest(".qe-build") || t.closest(".qe-lib"))) return;
       if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === "z") {
         ev.preventDefault(); undo(); return;
       }
@@ -2888,6 +3585,13 @@
         ev.preventDefault(); paste(); return;
       }
       if (ev.key === "Escape" && (_sel || _expanded)) { _expanded = ""; select(null); return; }
+      // Alt+Left / Alt+Right: the selected block runs earlier / later in its
+      // row (Alt+Up / Down on a grip moves the whole row)
+      if (ev.altKey && !ev.ctrlKey && (ev.key === "ArrowLeft" || ev.key === "ArrowRight")) {
+        const c = selMember();
+        if (c) { ev.preventDefault(); moveRun(c, ev.key === "ArrowLeft" ? -1 : 1); }
+        return;
+      }
       if (ev.key === "Delete" || ev.key === "Backspace") {
         const n = selNode();
         if (n) { ev.preventDefault(); requestRemove(n); return; }
@@ -2974,6 +3678,7 @@
             <span class="qe-barsp"></span>
             <button class="btn btn-ghost qe-tbtn" type="button" id="qe-paste" disabled
               title="Copy blocks first: select them (drag a box on the empty canvas, or Ctrl+click) and press Ctrl+C">Paste workflow</button>
+            <button class="btn btn-ghost qe-tbtn" type="button" id="qe-clearfin">Clear finished</button>
             <button class="btn btn-ghost qe-tbtn" type="button" id="qe-clear">Clear all</button>
             <button class="btn btn-ghost qe-tbtn" type="button" id="qe-cancel">Cancel</button>
             <button class="btn btn-ghost qe-tbtn" type="button" id="qe-stop">Stop after current</button>
@@ -2983,11 +3688,13 @@
           <div class="qe-canvas" id="qe-canvas"><div class="qe-graph" id="qe-graph"></div></div>
         </main>
         <aside class="qe-insp" id="qe-insp" aria-label="Inspector"></aside>
+        <div class="qe-build" id="qe-build" hidden><div class="streaminner" id="qe-buildinner"></div></div>
       </div>`;
     NB.$("qe-run").addEventListener("click", () => NB.rail.runQueue());
     NB.$("qe-stop").addEventListener("click", () => NB.rail.stopAfterCurrent());
     NB.$("qe-cancel").addEventListener("click", () => NB.rail.cancelRun());
     NB.$("qe-clear").addEventListener("click", () => NB.rail.clearAll());
+    NB.$("qe-clearfin").addEventListener("click", clearFinished);
     NB.$("qe-paste").addEventListener("click", () => paste());
     wireCanvas();
     wireLibrary();
@@ -3008,6 +3715,8 @@
     });
     await loadSets();
     _clip = await loadClip();
+    const d = await NB.call("get_step_defaults");
+    _stepDef = d && !d.error ? d : {};
     sync();
   }
 
