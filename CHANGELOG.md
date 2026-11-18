@@ -5,6 +5,8 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-11-19
+
 ### Changed
 - **Inp sets are levels of theory, not jobs.** An ORCA set is a whole input
   with `{{JOB}}` on its `!` line where the job keyword goes; the block made
