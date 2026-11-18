@@ -208,7 +208,9 @@ var CHARTS = {};
       const pts = b.scf.points
         .filter(p => p.dE > 0)
         .map(p => ({ x: p.iter, y: Math.log10(p.dE) }));
-      const target = SCFGraph.targetFor(SCFGraph.tierFor(c.scf_convergence, c.kind));
+      // ORCA's own printed TolE once the SCF block has said it, else the
+      // tier expected for the kind (scf_graph.js tierFor)
+      const target = b.scf.target(c.scf_convergence, c.kind);
       const cur = pts[pts.length - 1];
       const warn = token("--warn", "#fbbf24");
       return {

@@ -43,6 +43,19 @@ def _read(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _write(path: Path, data: dict) -> None:
+    """tmp + os.replace, like the settings file. Caller holds _lock."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def _check_key(key: str) -> None:
     if not isinstance(key, str) or not key or len(key) > MAX_KEY:
         raise ValueError(f"a UI-state key is 1 to {MAX_KEY} characters")
@@ -73,12 +86,24 @@ def put(key: str, value: Any, root: Optional[Path] = None) -> None:
             data.pop(key)
         else:
             data[key] = value
-        tmp = path.with_name(path.name + ".tmp")
-        try:
-            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, path)
-        finally:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+        _write(path, data)
+
+
+def take(key: str, root: Optional[Path] = None) -> Any:
+    """The value stored under ``key`` (or None), removed in the same step.
+
+    Read and remove happen under one hold of the lock, so two windows taking
+    the same key (the queue editor's hand-off mailbox) can never both get the
+    value, and a value written between a separate read and remove is never
+    lost. Raises ValueError for a bad key, OSError when the file cannot be
+    rewritten (the value is then still there).
+    """
+    _check_key(key)
+    path = state_file(root)
+    with _lock:
+        data = _read(path)
+        if key not in data:
+            return None
+        value = data.pop(key)
+        _write(path, data)
+        return value

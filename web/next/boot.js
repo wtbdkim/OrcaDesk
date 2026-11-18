@@ -376,6 +376,38 @@ var NB = {};
     await NB.call("save_settings", JSON.stringify({ theme: next }));
   };
 
+  // ---------------------------------------------------------------- settings
+
+  /* Each window is its own page with its own NB.settings, and the other one
+     can save Settings at any time. A copy read once at start went stale, and
+     the next save from this window wrote its old values back over the other's
+     (F1). So it is read again whenever it matters: when the window comes back
+     to the front (focus, or visible again), when the Settings sheet opens,
+     and before the run's ORCA check. */
+  /** @type {Promise<any>|null} */
+  let _settingsReq = null;
+  /** Read the settings again and repaint what shows them (theme, workspace,
+   *  pills, graph modes). Overlapping calls share one read.
+   *  @returns {Promise<any>} the settings now held (NB.settings) */
+  NB.refreshSettings = function () {
+    if (!_settingsReq) {
+      _settingsReq = (async () => {
+        const s = await NB.call("get_settings");
+        // a malformed reply keeps what we had: stale beats empty
+        if (!s || typeof s !== "object" || s.error || !("orca_path" in s)) return NB.settings;
+        NB.settings = s;
+        NB.applyTheme(s.theme);
+        const ws = NB.$("ws-path");
+        if (ws) { ws.title = s.workspace_root || ""; ws.textContent = shortPath(s.workspace_root || ""); }
+        if (SCFGraph.setEtaMode) SCFGraph.setEtaMode(s.eta_mode);
+        if (SCFGraph.setGeoMode) SCFGraph.setGeoMode(s.geo_graph_mode);
+        renderPills();
+        return s;
+      })().finally(() => { _settingsReq = null; });
+    }
+    return _settingsReq;
+  };
+
   // ---------------------------------------------------------------- status pills
 
   function renderPills() {
@@ -460,12 +492,28 @@ var NB = {};
       // Reload the front-end. Nothing is lost by it — the queue, the running
       // calculation and every watcher are Python-side — and it turns editing
       // web/next/app.css into save-and-press-a-key instead of restart the app.
-      // The one exception is an unsaved Settings sheet, which is asked about.
+      // The exceptions are an unsaved Settings sheet and an unsaved inp-set
+      // draft in the queue window, which are asked about.
       if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r")) {
         e.preventDefault();
-        if (NB.$("settings").hidden) location.reload();
-        // over the sheet a modal is a question already being asked: answer it first
-        else if (NB.$("modal").hidden) NB.settingsView.requestClose(() => location.reload());
+        // over the sheet (or a draft) a modal is a question already being
+        // asked: answer it first
+        const asking = !NB.$("modal").hidden;
+        if (!NB.$("settings").hidden) {
+          if (!asking) NB.settingsView.requestClose(() => location.reload());
+          return;
+        }
+        // the queue window's inp-set editor holds a draft only this page has
+        if (NB.qed && typeof NB.qed.isDirty === "function" && NB.qed.isDirty()) {
+          if (asking) return;
+          NB.modalRaw("Discard the unsaved inp set?",
+            `<p>The inp set being edited has changes that are not saved.
+              <b>Reloading discards them.</b></p>`,
+            [{ label: "Cancel", cls: "btn-ghost", focus: true },
+             { label: "Reload", cls: "btn-danger", act: () => location.reload() }]);
+          return;
+        }
+        location.reload();
         return;
       }
       if (e.key !== "Escape") return;
@@ -485,6 +533,11 @@ var NB = {};
 
     if (NB.settingsView) NB.settingsView.init();
     installDrops();
+    // both windows: the other one may have saved Settings meanwhile
+    window.addEventListener("focus", () => { NB.refreshSettings(); });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") NB.refreshSettings();
+    });
 
     if (NB.win === "queue") {
       // the queue editor and nothing else: no Jobs, no Results, no rail. The
@@ -532,18 +585,31 @@ var NB = {};
     if (!r || !r.ok) { NB.fail("Could not reach the queue window" + (r && r.error ? ": " + r.error : ".")); return; }
     await NB.openQueueWindow();
   };
-  /** The waiting message, taken out of the mailbox, or null. */
+  /** a take in flight: every poll and every visibility change asks, and two
+   *  overlapping takes both read the message before either cleared it, so it
+   *  was acted on twice @type {boolean} */
+  let _taking = false;
+  /** The waiting message, taken out of the mailbox, or null. One take at a
+   *  time in this page: an overlapping call answers null, and the next poll
+   *  looks again. The take itself is one backend call (take_ui_state reads
+   *  and clears under the ui-state lock), so a message is acted on once, and
+   *  one the main window writes meanwhile is never cleared unread. */
   NB.takeHandOff = async function () {
-    const r = await NB.call("get_ui_state", HANDOFF_KEY);
-    const v = r && r.ok ? r.value : null;
-    if (!v || typeof v !== "object") return null;
-    await NB.call("set_ui_state", HANDOFF_KEY, "null");
-    return (Date.now() - Number(v.t || 0) < HANDOFF_TTL_MS) ? v : null;
+    if (_taking) return null;
+    _taking = true;
+    try {
+      const r = await NB.call("take_ui_state", HANDOFF_KEY);
+      const v = r && r.ok ? r.value : null;
+      if (!v || typeof v !== "object") return null;
+      return (Date.now() - Number(v.t || 0) < HANDOFF_TTL_MS) ? v : null;
+    } finally {
+      _taking = false;
+    }
   };
 
   /* Files dropped on a window. The Qt side routes a drop to one of these by
-     extension (window.py _dispatch_drop); the queue window also hands over a
-     batch of .xyz at once. What a drop does depends on the window it lands
+     extension (window.py _dispatch_drops); every .xyz of a drop arrives in
+     one onXyzFilesDropped batch, in both windows. What a drop does depends on the window it lands
      in: an output is something to READ (Results, main window), a structure
      or an input is something to RUN (the queue window). */
   function installDrops() {

@@ -5,6 +5,138 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Inp sets are levels of theory, not jobs.** An ORCA set is a whole input
+  with `{{JOB}}` on its `!` line where the job keyword goes; the block made
+  from it says which job it runs with a **Type** select (Optimization, TS
+  optimization, Frequencies, TS frequencies, Opt + Freq, TS Opt + Freq, IRC,
+  Single point, NMR), and ORCAdesk fills `{{JOB}}` (TightOpt, OptTS, Freq,
+  TightOpt Freq, OptTS Freq, IRC, SP, NMR) and adds the block that job needs,
+  exactly as the Guided builder writes it: `%geom MaxIter 200` for an
+  optimization (plus `Calc_Hess true` for a TS one), `%irc MaxIter 100` with
+  `InitHess read` of the previous step's `.hess` when it left one, else
+  `InitHess calc_anfreq`. A level that already has its own `%geom` / `%irc`
+  block gets nothing added. The library shows *ORCA levels* and *MLIP*
+  instead of one group per job type; a level dropped on the + slot starts as
+  the natural next step (Opt, then Freq; OptTS, then TS Freq, then IRC, then
+  SP); dropping one on a block changes its level and keeps its type; the
+  inspector shows the input rendered for the chosen type.
+- **Your inp sets are converted once.** The existing `inp_sets.json` is
+  copied to `inp_sets.v1.json` beside it (an existing copy is never
+  overwritten); each ORCA set's job keyword becomes `{{JOB}}`, the
+  `%geom` / `%irc` block ORCAdesk now adds is removed where it is the one
+  ORCAdesk seeded (anything you wrote stays), and sets left with the same text
+  are merged — the five seeded `wB97X-D4 / def2-TZVP` sets become one level.
+  Calculations already in the queue keep their input as it is.
+
+### Added
+- **Copy a workflow and run it on other structures.** In the queue window,
+  drag a box on the empty canvas (or Ctrl+click) to select blocks of one row,
+  press Ctrl+C (or *Copy workflow*; *Copy the row* for all of it), and Ctrl+V
+  pastes the same steps — types, levels, gates and connections — after a
+  block, into an empty row, or, with nothing selected, onto new rows from
+  `.xyz` files you pick (one row per file, steps named after it). One undoable
+  change.
+- **Dropped `.xyz` files can run a whole workflow.** The drop recipe's *Run*
+  offers an ORCA level as a single point, the copied workflow, or the
+  workflow of any row; dropped on either window, each file becomes a row
+  running it.
+
+### Fixed
+- **RI-MP2 and the other RI methods run again at RI "ORCA default".**
+  RI-MP2, OO-RI-MP2, OO-RI-SCS-MP2, F12-RI-MP2, RI-MP3 and ADC2 got no
+  correlation auxiliary basis, and ORCA stopped ("RI-MP2 needs an AuxC basis",
+  or after the SCF "Aux/C requested but not available"). They now get
+  `AutoAux` unless RI is set to NoRI, like a double hybrid. Plain MP2, MP3
+  and coupled cluster still run conventionally without one.
+- **Queue window: blocks made before inp sets became levels no longer show
+  as edited.** Their text was the old per-step set's (`TightOpt`, its
+  `%geom` block), so after the sets were converted every such block was drawn
+  amber with `*` although nothing had changed. A block now counts as
+  unmodified when its text converts to its set's level, and finds its set
+  when the conversion merged it into another or renamed it `name (Freq)`.
+  Editing a block's text still marks it.
+- **Ctrl+Z never takes away a calculation that has run.** Undoing the addition
+  of a block after it had finished removed the finished calculation from the
+  queue without a word. Such an undo is now refused with the reason (Remove…
+  takes a finished row off the list); the same holds for undoing a paste, a
+  copied row or dropped structures.
+- **Undoing a move or a removal works after the queue changed elsewhere.**
+  It re-orders the queue as it is now (rows added since, by a drop, the other
+  window or a run, keep their places) instead of failing.
+- **Approving a step while the queue runs keeps "keep existing results".** A
+  step you had chosen to keep re-ran when approved mid-run and overwrote its
+  output.
+- **Editing an MLIP set's text in a block resets a setting the text no longer
+  names** to its default (it kept the old device or environment).
+- **Undoing a level change on a Guided MLIP block restores its settings**
+  (model, device, cores), not only its text.
+- **A step that reads a Hessian or an IRC end point it cannot get is held,
+  not failed.** A template that names `{{HESS}}` (or an IRC level whose own
+  `%irc` block reads a Hessian) is refused when it has no previous step and no
+  geometry source to take it from, and a step starting from an IRC end point
+  of a calculation that is not an IRC is refused when it is added. At run
+  time a missing Hessian or IRC end file now stops the step as *blocked*
+  (editable, tried again on the next Run) instead of *failed*, which locked it.
+- **The queue no longer stalls for a second at an approval gate.** Deciding
+  whether a gate after a frequency calculation passes by itself read the
+  frequency output while holding the queue; it now uses what the finished
+  calculation already established.
+- **A dropped `.xyz` whose first line counts fewer atoms than it holds is
+  refused** with the reason, instead of silently losing the extra atoms
+  (both windows, and picked files for a workflow).
+- **An inp set with a misspelled placeholder is refused when saved** (e.g.
+  `{{Job}}`, `{{GEOM}}`): only `{{GEOMETRY}}`, `{{JOB}}`, `{{CHARGE}}`,
+  `{{MULT}}` and `{{HESS}}` are filled in, and anything else reached ORCA as
+  written. Sets already saved are kept.
+- **Queue window: the Run button is enabled when only cancelled calculations
+  remain** (they run again), in the queue window as in the main window.
+- **Queue window: renaming a row and then editing in the same inspector
+  applies the edit.** The template, geometry, Type, charge, Approve and
+  Remove acted on the old names and were refused.
+- **Queue window: a chain whose calculations run at different charges or
+  multiplicities is not silently made one.** Adding a step to it asks first;
+  the row takes the selected block's charge and multiplicity, each
+  calculation keeps its own, the inspector shows a calculation's own values
+  when they differ from its row's (and edits them on that calculation), and
+  changing the row's charge or multiplicity changes only the calculations that
+  had the row's old value.
+- **Queue window: a step queued before the calculation it hangs off is drawn
+  after it**, and making a system of that chain keeps that order (the
+  connection was drawn backwards).
+- **Queue window: a stack whose members are not all editable has its template
+  read-only** (every edit of it was refused).
+- **Queue window: the inspector shows the stack member you picked**, also when
+  you pick another while the previous one is still being drawn.
+- **Queue window: Alt+↑ / Alt+↓ on a row's grip keeps the keyboard there**, so
+  the next press moves the row again.
+- **A message handed from the main window to the queue window is taken
+  exactly once.** The take is now one step on the backend, so two overlapping
+  looks cannot both act on it and one written meanwhile is never lost.
+- **Dropping several `.xyz` files on the main window queues all of them**, not
+  just the first.
+- **Settings saved in one window are no longer overwritten by the other
+  window's stale copy.** Each window re-reads its settings when it comes to
+  the front, when Settings opens and before Run checks the ORCA path, and the
+  Settings sheet saves only the fields changed on it.
+- **The SCF progress bar and target line use the convergence target ORCA
+  prints for the run (TolE)**, so an inp set with its own SCF keyword shows
+  the right target; before that line arrives the expected target follows ORCA
+  6.1.1: 1e-9 for TightOpt (opt, opt + freq), 1e-8 for OptTS / IRC / NEB,
+  1e-6 otherwise.
+- **The main window's queue strip redraws only when something it shows
+  changes**: keyboard focus stays on a row and clicks are no longer lost.
+- **Open file… with an `.xyz` opens it in the 3D viewer.**
+- **F5 / Ctrl+R in the queue window asks before discarding an unsaved inp-set
+  draft.**
+- **Shutdown problems are logged with their error text.**
+- **Queue window: calculations that use another's geometry are drawn as its
+  next step.** A TS with the Freq and IRC built from it (by geometry
+  reference, outside the editor) now share one row, TS → Freq with the IRC
+  branching below, instead of three loose rows; adding a step to any of them
+  makes the whole chain one system. Edges and the dashed line to the + slot
+  meet blocks at their middle instead of near the top.
+
 ## [0.11.0] — 2026-11-18
 
 ### Changed
@@ -17,9 +149,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   converting Guided to `.inp` text), TD-DFT 3 roots with TDA (was 40 roots,
   full TD-DFT). An optimization stays `TightOpt`, and the optimizer and IRC
   MaxIter (200 / 100) are still written. Note what ORCA's
-  own SCF default means: an optimization, TS search or IRC still runs
-  TightSCF, but a single point, frequencies and TD-DFT run NormalSCF; pick a
-  tier to change that. `%pal` is left out of a serial run. Kept on purpose:
+  own SCF default means: an optimization (written `TightOpt`, with or without
+  Freq) converges the SCF to TolE 1e-9, a TS search, IRC or NEB runs TightSCF
+  (1e-8), and a single point, frequencies and TD-DFT run NormalSCF (1e-6);
+  pick a tier to change that. `%pal` is left out of a serial run. Kept on purpose:
   `AutoAux` for double hybrids and DLPNO, `def2/JK` under RIJK, `Calc_Hess` for
   TS optimizations, the analytic initial Hessian for IRC, and NEB-TS's `FREQ`
   (in Extra keywords). Calculations already in the queue keep their settings.
@@ -46,7 +179,7 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   and a mode picked on the spectrum moves on that tile. The panel now spans
   the full width of the report.
 - **ORCAdesk's own natural-orbital analysis and the reaction profile are
-  hidden for now, in both the notebook report and the classic Results tab.**
+  hidden for now in the notebook report.**
   Their backends are unchanged; the NBO program's results from a `! NBO` run
   are not affected.
 
@@ -187,8 +320,9 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   **Appearance** card's Liquid-Glass style, intensity and wallpapers, which only
   the classic window drew. Light/dark stays the top bar's toggle. A settings
   file from an earlier version still loads; the retired settings are ignored
-  and dropped at the next save. Not carried over from the classic window:
-  dropping a `.inp` / `.xyz` / `.out` onto the window (it does nothing now),
+  and dropped at the next save. Dropping files on the window works again in
+  the notebook (see *Added*: an `.out` opens in Results, an `.xyz` is queued,
+  an `.inp` opens in the builder). Not carried over from the classic window:
   the *Opening structures and maps* setting that sent a Visual row to your own
   program (use *Show in folder*), and the automatic lowering of the isovalue for a spread-out orbital (the
   viewer opens at the cube's own isovalue; type another in its isovalue field).
@@ -226,8 +360,7 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   100% with the rest still to run. The chart now shows the point being
   optimized, the cell says *scan point 3/10* and counts the cycles of the
   whole run, progress and the time left are over all the points, and a
-  finished scan reopened later rebuilds the same way. The classic Graph tab
-  gets the same tracker.
+  finished scan reopened later rebuilds the same way.
 
 ## [0.10.7] — 2026-10-26
 

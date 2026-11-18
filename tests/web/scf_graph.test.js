@@ -1058,16 +1058,78 @@ test("an ordinary optimization is untouched by the scan bookkeeping", function (
 });
 
 test("an empty SCF setting is the tier ORCA picks for the job", function () {
-  // measured on ORCA 6.1.1 (TolE): Opt / OptTS / IRC raise it to TightSCF,
-  // a single point, frequencies and TD-DFT stay at NormalSCF
-  assert.strictEqual(SCFGraph.tierFor("", "opt"), "TightSCF");
+  // measured on ORCA 6.1.1 (TolE): ORCAdesk writes TightOpt for opt /
+  // opt_freq, and TightOpt (Freq or not) runs the SCF at 1e-9; OptTS, IRC
+  // and NEB at TightSCF (1e-8); a single point, frequencies and TD-DFT stay
+  // at NormalSCF (1e-6)
+  assert.strictEqual(SCFGraph.targetFor(SCFGraph.tierFor("", "opt")), 1e-9);
+  assert.strictEqual(SCFGraph.targetFor(SCFGraph.tierFor("", "opt_freq")), 1e-9);
+  assert.strictEqual(SCFGraph.tierFor("", "ts_opt"), "TightSCF");
+  assert.strictEqual(SCFGraph.tierFor("", "ts_opt_freq"), "TightSCF");
   assert.strictEqual(SCFGraph.tierFor("", "irc"), "TightSCF");
+  assert.strictEqual(SCFGraph.tierFor("", "neb_ts"), "TightSCF");
   assert.strictEqual(SCFGraph.tierFor("", "freq"), "NormalSCF");
   assert.strictEqual(SCFGraph.tierFor("", "sp"), "NormalSCF");
   assert.strictEqual(SCFGraph.tierFor(undefined, "tddft"), "NormalSCF");
   // a tier the user picked is the tier
   assert.strictEqual(SCFGraph.tierFor("VeryTightSCF", "freq"), "VeryTightSCF");
+  assert.strictEqual(SCFGraph.tierFor("TightSCF", "opt"), "TightSCF");
   assert.strictEqual(SCFGraph.targetFor(SCFGraph.tierFor("", "freq")), 1e-6);
+});
+
+// verbatim from ORCA 6.1.1 outputs: the SCF settings block's target, and the
+// geometry optimizer's own (flush-left) energy criterion, which is NOT it
+const SCF_TOLE_9 = " Energy Change          TolE            ....  1.000e-09 Eh";
+const SCF_TOLE_8 = " Energy Change          TolE            ....  1.000e-08 Eh";
+const GEO_TOLE = "Energy Change            TolE     ....  5.0000e-06 Eh";
+
+test("the SCF target is what ORCA printed in the SCF settings block", function () {
+  const t = new SCFGraph.SCFTracker();
+  assert.strictEqual(t.tolE, null);
+  // before the line: the kind's expected tier
+  assert.strictEqual(t.target("", "opt"), 1e-9);
+  assert.strictEqual(t.target("", "sp"), 1e-6);
+  // a template carrying its own TightSCF on an opt: ORCA says 1e-8
+  assert.strictEqual(t.push(SCF_TOLE_8), true, "a new target is a change to repaint");
+  assert.strictEqual(t.tolE, 1e-8);
+  assert.strictEqual(t.target("", "opt"), 1e-8);
+  // ...and it outranks even an explicit setting (the text is what ran)
+  assert.strictEqual(t.target("NormalSCF", "sp"), 1e-8);
+  assert.strictEqual(SCFGraph.scfTarget(t, "", "sp"), 1e-8);
+  assert.strictEqual(t.push(SCF_TOLE_8), false, "the same target again changes nothing");
+});
+
+test("the geometry optimizer's TolE is not the SCF target", function () {
+  const t = new SCFGraph.SCFTracker();
+  assert.strictEqual(t.push(GEO_TOLE), false);
+  assert.strictEqual(t.tolE, null);
+  assert.strictEqual(t.target("", "freq"), 1e-6);
+});
+
+test("the printed target survives new SCF blocks and optimization cycles", function () {
+  const t = new SCFGraph.SCFTracker();
+  t.push(SCF_TOLE_9);
+  t.push("   1   -76.3000000000   0.000000000000  0.01  0.02");
+  t.push("   2   -76.4000000000  -1.00e-01  0.01  0.02");
+  t.push("*** GEOMETRY OPTIMIZATION CYCLE   2 ***");      // ORCA does not reprint it per cycle
+  t.push("   1   -76.4100000000  -1.00e-03  0.01  0.02");
+  assert.strictEqual(t.tolE, 1e-9);
+  assert.strictEqual(t.target("", "sp"), 1e-9);
+  // a later job in the same output that prints its own block takes over
+  t.push(SCF_TOLE_8);
+  assert.strictEqual(t.target("", "opt"), 1e-8);
+});
+
+test("progress runs to the printed target, not the guessed one", function () {
+  const t = new SCFGraph.SCFTracker();
+  t.push(SCF_TOLE_9);
+  t.push("   1   -76.3000000000   0.000000000000  0.01  0.02");
+  t.push("   2   -76.4000000000  -1.00e-01  0.01  0.02");
+  t.push("   3   -76.4000000000  -1.00e-08  0.01  0.02");
+  // 1e-8 is met at TightSCF but only 7/8 of the way to 1e-9
+  assert.strictEqual(t.progress(1e-8), 1);
+  assert.ok(Math.abs(t.progress(t.target("", "opt")) - 7 / 8) < 1e-9);
+  assert.ok(SCFGraph.renderSCFProgress(t, "TightSCF").indexOf("88%") >= 0);
 });
 
 // ---------- summary ----------

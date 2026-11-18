@@ -39,11 +39,14 @@ On first launch the app tries to auto-detect ORCA. If it can't, open the
 
 ## How it works
 
-The window is one notebook-style layout: the queue is a permanent rail on the
-left, every calculation is a cell (its structure, its live convergence and its
-output side by side), and a finished one opens as a report. Building a
-calculation turns a cell into the form. (The older tabbed interface was removed;
-the sections below describe what each part does.)
+The main window is one notebook-style layout: a narrow status strip of the
+queue on the left (each calculation's state and name; a click shows its output
+or report), every calculation as a cell in **Jobs** (its structure, its live
+convergence and its output side by side), and a finished one as a report in
+**Results**. The queue is built and edited in a **queue window** of its own
+(*Open queue*): each molecule is a row of steps, and the builder described
+below opens there. (The older tabbed interface was removed; the sections below
+describe what each part does.)
 
 - **Build**: create one calculation at a time, picking the execution backend
   first — **DFT** (ORCA), **MLIP** (MACE pre-optimization, see below), or
@@ -192,11 +195,11 @@ the sections below describe what each part does.)
     at every grid point), so its row says so, marks whether it is already on
     disk, and does the plotting **under the button** — the rest of the report stays
     usable while it runs, and the viewer opens onto a finished figure.
-  - The picker lists **every result in your workspace**, not only the queued
-    ones — a calculation cleared from the queue, or one from an earlier session,
-    opens in a click — and *Open file…* reads a result from anywhere on disk:
-    an ORCA `.out`, an MLIP result, a CREST search, or a `.xyz`, which goes
-    straight to Visual. *Open folder…* takes a run folder instead and finds
+  - The queue strip is the picker: a finished calculation's row opens its
+    report. *Open file…* reads a result from anywhere on disk — an ORCA
+    `.out`, an MLIP result, a CREST search — and lists it under the strip's
+    *Opened files* (kept across launches); an `.xyz` opens in the 3D viewer.
+    *Open folder…* takes a run folder instead and finds
     the result inside it — including a run ORCA wrote by hand, whose `.out`
     is not named after the folder. Both pickers, and the builder's
     *Load .xyz* / *Load .inp*, open **at your workspace** rather than wherever

@@ -1935,7 +1935,11 @@
     const r = await NB.call("pick_result_file");
     if (!r || r.cancelled || !r.ok) return;
     if (r.route === "structure") {
-      NB.toast("Structure files open in the 3D viewer, which is not in this preview yet.");
+      // a structure is something to LOOK at: the pop-out viewer, on that file
+      // (all its frames, when it is a trajectory or an ensemble)
+      const path = String(r.path || "");
+      NB.mv.open({ source: "file:" + path, file: path,
+                   title: path.split(/[\\/]/).pop() || "Structure viewer" });
       return;
     }
     const d = await openPath(r.path);

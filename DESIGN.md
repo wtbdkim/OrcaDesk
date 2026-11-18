@@ -2004,27 +2004,47 @@ The layout and interactions are the approved design canvas's (the "ORCAdesk
 Queue" prototype); its sample data and template texts are not the spec. Three
 columns:
 
-- **Library** (left) — the inp sets, grouped by kind (MLIP, Opt, OptTS, Freq,
-  IRC, SP), every kind's group shown with a *+ New* beside its name. A set is
-  dragged onto a block of its kind to replace that block's template, or onto
-  the ghost slot to add the next step; a click applies it to the selected
-  block when the kinds match and the block can still change, and otherwise
-  opens the set in the **set editor** (marked in the library by a left bar).
-  The first replacement is confirmed (§13.1) and said to be asked once; later
-  ones apply at once. Delete on a focused set removes it from the library
-  (confirmed). Under the library, the **drop recipe**: the SP set and the name
-  suffix a dropped `.xyz` runs with, kept in the UI state, with one line saying
-  what a dropped file becomes.
+- **Library** (left) — the inp sets in two groups, **ORCA levels** and
+  **MLIP**, each with a *+ New* beside its name. An ORCA set is a **level of
+  theory, not a job**: a whole input whose `!` line holds `{{JOB}}` where the
+  job keyword goes, so one level serves every step of a row and the library
+  no longer repeats a level once per job type (the user asked for it: the job
+  keyword follows the block's Type, chosen like the Guided builder's). A set
+  is dragged onto a block of its group to replace that block's **level** (its
+  Type stays), or onto the ghost slot to add the next step; a click applies it
+  to the selected block when the group matches and the block can still
+  change, and otherwise opens the set in the **set editor** (marked in the
+  library by a left bar). The first replacement is confirmed (§13.1) and said
+  to be asked once; later ones apply at once. Delete on a focused set removes
+  it from the library (confirmed). Under the library, the **drop recipe**:
+  *Run* — an ORCA level as a single point (the name suffix applies to this one
+  only), *the copied workflow*, or *the workflow of row …* — kept in the UI
+  state, with one line saying what a dropped file becomes.
 - **Lanes** (middle) — one per system, top to bottom in run order; a standalone
   calculation is a one-node lane. A block (140 x 64, 176px a column, 104px a
   row) carries its state dot (§12 colours; *waiting* is an amber ring), its run
   order, and `kind / set` (amber with `*` once its template differs from the
-  set). A **stack** (several calculations sharing a node, e.g. an SP after an
+  set; a block made from a set before sets were levels is compared by what
+  its text converts to, so the conversion alone never marks it). A **stack** (several calculations sharing a node, e.g. an SP after an
   IRC is `-F` and `-B`) shows its count and unfolds a member list. **Edges**
   are solid when the next step runs by itself and dashed amber when it waits
-  for approval. The **ghost +** after the selected block — any block, finished
+  for approval, and meet a block at its vertical middle. A block hangs off its
+  `after`, else the calculation its geometry is taken from: standalone
+  calculations tied that way (a TS with the Freq and IRC built from it) share
+  one lane, laid out by the slot rule below parent first (a child queued
+  before what it hangs off is still drawn to its right), and adding a step to
+  any of them turns the whole chain into one system. When the chain's
+  calculations run at different charges or multiplicities that is asked
+  first: the system takes the selected block's, and each calculation keeps
+  its own. Setting a gate on an edge drawn from
+  a geometry reference makes that reference the block's `after` first. The
+  **ghost +** after the selected block — any block, finished
   or failed included, as the design has it: a next step after a done OptTS or
-  IRC is how a follow-up is queued — takes a dropped set, or opens **Manual
+  IRC is how a follow-up is queued — takes a dropped set (a level runs the
+  natural next step: Optimization at a row's start, Frequencies after an
+  Opt, TS frequencies after an OptTS, IRC after a TS frequency, Single point
+  after an IRC — the `-F`/`-B` stack — and after anything else; the Type
+  changes it), or opens **Manual
   build**: the Guided builder in the inspector, seeded for that place, whose
   calculation lands in that lane, column and row. A standalone block first
   becomes a one-node system named after it (`place_calc`: its place in the
@@ -2033,17 +2053,46 @@ columns:
   after a run says so. An empty system shows its first slot; an empty queue
   says how a row starts. Removing the last block of a system removes the
   system with it (one undoable batch). The **grip** moves a lane (drag), copies it
-  (Ctrl-drop, or a click: copy below) and answers Alt+↑/↓; *+ system* starts a
+  (Ctrl-drop, or a click: copy below) and answers Alt+↑/↓, keeping the
+  keyboard on the moved row's grip; *+ system* starts a
   lane from an `.xyz`. Top bar: Clear all, Cancel, Stop after current, Run
   queue (the main window's strip has the last three), and one line of the worst warning (duplicate
   or empty names, a Freq at another level than its Opt, a lane with no
-  structure, a template without `{{GEOMETRY}}`; the rest in its tooltip).
+  structure, a template without `{{GEOMETRY}}`; the rest in its tooltip;
+  levels are compared with `{{JOB}}` and the job keywords left out).
+  **Several blocks of one row** are selected by a rubber band dragged from
+  the empty canvas (never from a grip or a set, whose drags are the
+  browser's) or by Ctrl/Shift+click; blocks of other rows are left out and
+  the hint says so; Escape clears. **Ctrl+C** (or *Copy workflow* in the
+  inspector; *Copy the row*, or Ctrl+C on a focused grip, for the whole row)
+  copies a **workflow** — per block its type, its level (set name and text,
+  or the Guided config), its gate, and its upstream and geometry source when
+  they lie inside the copy (a block whose parent or geometry lies outside
+  takes the target's structure), at its place relative to the copy. It is the
+  editor's own clipboard, mirrored in the UI state (`queue.workflow`) for the
+  main window's drop, never queue state. **Ctrl+V** (or *Paste workflow*, top
+  bar and inspector) pastes it after the selected block, as an empty row's
+  first steps, or — nothing selected — onto new rows from picked `.xyz` files
+  (one row per file, named after it; steps `<file>-<step>`; a name in use in
+  an existing row takes `-2`, `-3`; a file whose name ORCA refuses or whose
+  row exists is listed with the reason, never renamed). One batch, Ctrl+Z
+  undoes it. An IRC or a stack takes no paste after it (it has several ends).
 - **Inspector** (right) — for a block: the system name (renames the lane, and
   every calculation name follows; read-only once the lane has started), charge
-  and multiplicity, the geometry (the system's structures, or any ancestor's
+  and multiplicity (the system's; a calculation set apart shows its own, says
+  so, and those fields then change it alone — a system's recharge moves only
+  the calculations that had its old value), the geometry (the system's structures, or any ancestor's
   output along the `after` chain — every member of an ancestor stack, an IRC's
-  two ends), the template, and *Save as* a new set of the kind its job line
-  says. A block the Guided builder made shows its generated input read-only
+  two ends), the template, and *Save as* a new set of the kind its text is. A level's
+  block also has its **Type** (Optimization, TS optimization, Frequencies, TS
+  frequencies, Opt + Freq, TS Opt + Freq, IRC, Single point, NMR — the kinds
+  the backend fills `{{JOB}}` for, in the Guided builder's words), editable
+  while the block is (a stack whose members are not all editable has its
+  Type and template read-only), which changes only that block (a block still named
+  after its old type takes the new one's name when nothing refers to it),
+  and a read-only **rendered input** for that Type (`build_inp_preview`, the
+  renderer the engine runs). A block whose text names its own job (no
+  `{{JOB}}`, made before levels) runs as written and says so. A block the Guided builder made shows its generated input read-only
   and *Edit in the builder* (an MLIP or CREST block: the settings it runs, in
   `key value` lines, never an ORCA input it does not run). A block that waits
   at its gate has its own *Approve*, and one that runs after a calculation in
@@ -2051,15 +2100,17 @@ columns:
   *After approval*, the auto-pass box after a Freq (`ts_freq`: one imaginary
   mode expected, otherwise none), and *Approve* while the next step waits.
   With **nothing selected** the inspector is the **set editor** (not a help
-  text): the set's name as the title, its kind as read off the job line (a
-  text that reads as another kind says it will move group), the text in the
-  template field, one line naming the placeholders (`{{GEOMETRY}}`,
-  `{{CHARGE}}` `{{MULT}}`, `{{HESS}}`; for MLIP the setting keys), then *Save*,
-  *Save as new*, *Delete…* (a new one: *Discard*), *Duplicate* and *Import
-  .inp…*. Refusals (no name, no `{{GEOMETRY}}`, a name its kind already has)
-  are said in the editor, in the error colour, not only in a toast. An
-  imported input's coordinate block is replaced by the placeholders only when
-  the user says so. Blocks copied their text: a saved set changes none by
+  text): the set's name as the title, whether it is an ORCA level or MLIP
+  settings (a text that reads as the other says it will move group), the
+  text in the template field, one line naming the placeholders (`{{JOB}}`,
+  `{{GEOMETRY}}`, `{{CHARGE}}` `{{MULT}}`, `{{HESS}}` optional; for MLIP the
+  setting keys), then *Save*, *Save as new*, *Delete…* (a new one:
+  *Discard*), *Duplicate* and *Import .inp…*. *+ New* starts a level from the
+  default level's text. Refusals (no name, no `{{GEOMETRY}}`, no `{{JOB}}` on
+  the `!` line, a name its group already has) are said in the editor, in the
+  error colour, not only in a toast. An imported input's job keyword becomes
+  `{{JOB}}` and its coordinate block the placeholders only when the user says
+  so (one question, a box for each). Blocks copied their text: a saved set changes none by
   itself; the pending blocks made from it are offered the new text once, as
   one undoable batch — started blocks never. Unsaved edits survive selecting
   blocks; switching to another set asks *Keep editing* / *Discard changes*.
@@ -2067,6 +2118,10 @@ columns:
   last opened (else the first). The inspector never repaints under the cursor
   while it still shows what is selected; a new selection is drawn at once,
   and a save or refusal in the editor is drawn with the cursor kept in place.
+  Its controls act on the block as the queue holds it when they fire, so a
+  rename followed by an edit in the same inspector edits the renamed
+  calculation; a paint that waited on the backend is dropped when another
+  member or block was chosen meanwhile.
 
 It holds **no queue state of its own**. Every change is one `apply_queue_ops`
 batch (all or nothing) and the editor redraws from the next poll; what it keeps
@@ -2075,12 +2130,18 @@ is the selection, a popover, a drag, and an **undo stack of inverse batches**
 returns, never before (a render in between would drop a selection of a block
 that does not exist yet). A removal that takes a finished calculation with it is not offered as
 undoable — the store would take it back as PENDING, which is queueing it to run
-again, not undoing. Delete removes a block and everything after it (confirmed;
+again, not undoing. For the same reason an undo never removes a calculation
+that has started since: an undo whose batch would remove one is refused with
+the reason and dropped (Remove… on the block takes a finished row off the
+list). An undone move or removal re-orders the queue as it is at that moment
+(rows added since keep their places), not as it was when the change was made. Delete removes a block and everything after it (confirmed;
 a running one is refused: cancel it first).
 
-Files dropped on the queue window: every `.xyz` at once becomes a system with
-the drop recipe's single point (`add_xyz_systems`); a refused file is listed
-with its reason, never renamed to fit; an `.inp` opens in the builder as pasted
+Files dropped on the queue window: every `.xyz` at once becomes a system
+running the drop recipe — an ORCA level as a single point
+(`add_xyz_systems`), or a whole workflow, one row per file named after it,
+in one `apply_queue_ops` batch; a refused file is listed with its reason,
+never renamed to fit; an `.inp` opens in the builder as pasted
 input. On the main window an `.out` opens in Results, an `.xyz` goes through
 the same recipe and the queue window opens, an `.inp` opens there in the
 builder. What the main window hands the queue window (the builder with a seed,

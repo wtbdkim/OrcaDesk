@@ -33,6 +33,8 @@ def bridge(monkeypatch, tmp_path):
     )
     stub._inpset_defaults = lambda: Bridge._inpset_defaults(stub)
     stub._accepted = lambda calc: Bridge._accepted(stub, calc)
+    stub._preview_hess = lambda d, text, kind: Bridge._preview_hess(stub, d, text, kind)
+    stub._HESS_KINDS = Bridge._HESS_KINDS
     return stub
 
 
@@ -42,14 +44,14 @@ def call(stub, slot, *args):
 
 def test_inp_set_slots(bridge):
     sets = call(bridge, "get_inp_sets")
-    assert sets["ok"] and len(sets["sets"]) == 6
-    assert "%pal nprocs 4 end" in next(s for s in sets["sets"] if s["kind"] == "SP")["text"]
-    assert set(sets["defaults"]) == {"MLIP", "Opt", "OptTS", "Freq", "IRC", "SP"}
-    assert "%pal nprocs 4 end" in sets["defaults"]["Freq"]
+    assert sets["ok"] and [s["kind"] for s in sets["sets"]] == ["ORCA", "MLIP"]
+    assert "%pal nprocs 4 end" in next(s for s in sets["sets"] if s["kind"] == "ORCA")["text"]
+    assert set(sets["defaults"]) == {"ORCA", "MLIP"}
+    assert "%pal nprocs 4 end" in sets["defaults"]["ORCA"]
     saved = call(bridge, "save_inp_set", json.dumps(
-        {"name": "mine", "kind": "SP", "text": "! SP\n* xyz 0 1\n{{GEOMETRY}}\n*\n"}))
+        {"name": "mine", "kind": "ORCA", "text": "! {{JOB}}\n* xyz 0 1\n{{GEOMETRY}}\n*\n"}))
     assert saved["ok"] and saved["set"]["id"]
-    bad = call(bridge, "save_inp_set", json.dumps({"name": "x", "kind": "SP", "text": "! SP"}))
+    bad = call(bridge, "save_inp_set", json.dumps({"name": "x", "kind": "ORCA", "text": "! {{JOB}}"}))
     assert bad["ok"] is False and "GEOMETRY" in bad["error"]
     assert call(bridge, "delete_inp_set", saved["set"]["id"]) == {"ok": True}
     assert call(bridge, "delete_inp_set", "nope")["ok"] is False
@@ -96,7 +98,8 @@ def test_add_xyz_systems_from_paths(bridge, tmp_path):
 
 def test_add_xyz_systems_from_texts_and_an_unknown_set(bridge):
     out = call(bridge, "add_xyz_systems", json.dumps(
-        {"files": [{"label": "w.xyz", "xyz": H2}], "set_id": "seed-opt", "suffix": "_opt"}))
+        {"files": [{"label": "w.xyz", "xyz": H2}], "set_id": "seed-orca", "suffix": "_opt",
+         "kind": "opt"}))
     assert out["added"] == ["w_opt"]
     assert bridge.store.get("w_opt").kind == "opt"
     bad = call(bridge, "add_xyz_systems", json.dumps({"files": [], "set_id": "nope"}))
@@ -130,3 +133,45 @@ def test_the_guided_update_calc_keeps_a_lane_calcs_graph_fields(bridge):
     call(bridge, "update_calc", "mol-sp", json.dumps(
         {"name": "mol-sp", "kind": "sp", "xyz": H2, "gate": "auto"}))
     assert bridge.store.get("mol-sp").gate == "auto"
+
+
+def test_inp_sets_carry_the_job_map(bridge):
+    sets = call(bridge, "get_inp_sets")
+    assert sets["jobs"]["opt"] == "TightOpt" and sets["jobs"]["ts_opt_freq"] == "OptTS Freq"
+    assert "neb_ts" not in sets["jobs"]
+
+
+def test_the_preview_renders_a_level_block_for_its_kind(bridge, tmp_path):
+    bridge.settings.workspace_root = str(tmp_path)
+    level = next(s for s in call(bridge, "get_inp_sets")["sets"] if s["kind"] == "ORCA")
+    calc = {"name": "mol-ts", "kind": "ts_opt", "is_raw": True, "raw_text": level["text"],
+            "geometry_source": "direct", "xyz": H2, "charge": -1, "multiplicity": 2}
+    pv = call(bridge, "build_inp_preview", json.dumps(calc))
+    assert pv["ok"] and pv["text"].startswith("! wB97X-D4 def2-TZVP OptTS\n")
+    assert "Calc_Hess true" in pv["text"] and "* xyz -1 2\n" + H2 in pv["text"]
+    # an IRC after a frequency that has not run yet reads the .hess it will leave
+    call(bridge, "apply_queue_ops", json.dumps([{"op": "add_calc", "calc": {
+        "name": "mol-freq", "kind": "ts_freq", "xyz": H2}}]))
+    irc = dict(calc, name="mol-irc", kind="irc", after="mol-freq",
+               geometry_source="reference", ref_name="mol-freq", xyz="")
+    pv = call(bridge, "build_inp_preview", json.dumps(irc))
+    assert 'InitHess read\n  Hess_Filename "mol-freq.hess"' in pv["text"]
+    assert "{{GEOMETRY}}" in pv["text"]               # a reference: resolved at run time
+    # after nothing that leaves a Hessian, it computes its own
+    pv = call(bridge, "build_inp_preview", json.dumps(dict(irc, after="", ref_name="")))
+    assert "InitHess calc_anfreq" in pv["text"]
+    bad = call(bridge, "build_inp_preview", json.dumps(dict(calc, kind="neb_ts")))
+    assert bad["ok"] is False and "cannot run as" in bad["error"]
+
+
+def test_read_xyz_paths(bridge, tmp_path):
+    a, multi = tmp_path / "water.xyz", tmp_path / "traj.xyz"
+    frame = "2\n\n" + H2 + "\n"
+    a.write_text(frame, encoding="utf-8")
+    multi.write_text(frame + frame, encoding="utf-8")
+    out = call(bridge, "read_xyz_paths", json.dumps([str(a), str(multi), str(tmp_path / "gone.xyz")]))
+    assert out["ok"] and [f["name"] for f in out["files"]] == ["water", "traj", "gone"]
+    assert out["files"][0]["xyz"] == H2 and out["files"][0]["error"] == ""
+    assert "2 structures" in out["files"][1]["error"] and out["files"][1]["xyz"] == ""
+    assert out["files"][2]["error"]
+    assert call(bridge, "read_xyz_paths", "{}")["ok"] is False
