@@ -396,3 +396,65 @@ def test_the_main_rail_is_status_only():
         assert f'NB.call("{slot}"' not in src, f"the rail still calls {slot}"
     assert "draggable" not in src, "rail rows are not dragged any more"
     assert "open-queue" in src, "the rail lost its way to the queue window"
+
+
+def test_the_queue_editor_draws_a_geometry_reference_as_an_edge():
+    # a calculation built from another's geometry (outside the editor, so with
+    # no `after`) hangs off it in the drawing and shares its lane; adopting a
+    # block takes its whole chain into one system
+    src = (WEB / "next" / "qed.js").read_text(encoding="utf-8")
+    up = _function_body(src, "upOf")
+    assert "c.after" in up and "ref_name" in up and '"reference"' in up
+    model = _function_body(src, "model")
+    assert "upOf(c)" in model, "edges and lanes must follow upOf, not `after` alone"
+    adopt = _function_body(src, "adopt")
+    assert "P.lane.nodes" in adopt and "place_calc" in adopt and "update_calc" not in adopt
+
+
+def test_a_level_block_has_a_type_and_a_rendered_preview():
+    """An ORCA inp set is a level: the block made from it runs the job its
+    kind says. The inspector's Type select changes that kind with an
+    update_calc patch (one undoable batch), offers only the kinds the backend
+    fills {{JOB}} for (get_inp_sets `jobs`), and the rendered input comes from
+    build_inp_preview -- the renderer the engine runs, not a JS copy."""
+    src = (WEB / "next" / "qed.js").read_text(encoding="utf-8")
+    node = _function_body(src, "inspectNode")
+    assert 'data-f="type"' in node and "typeKinds()" in node
+    assert 'NB.call("build_inp_preview"' in node and 'data-f="rendered"' in node
+    st = _function_body(src, "setType")
+    assert 'op: "update_calc"' in st and "kind: kind" in st and "apply(" in st
+    assert "r.jobs" in _function_body(src, "loadSets")
+    assert "{{JOB}}" in src and "TightOpt" not in _function_body(src, "inspectNode")
+    save = _function_body(src, "edSave")
+    assert "hasJobLine" in save and "GEOM" in save, "the set editor no longer asks for {{JOB}}"
+
+
+def test_a_workflow_is_copied_locally_and_pasted_through_the_ops_batch():
+    """Copy keeps the workflow in the editor (and the UI state, for the main
+    window's drop) -- never in browser storage, never as queue state; a paste
+    is ONE apply_queue_ops batch with its inverse, like every other edit."""
+    src = (WEB / "next" / "qed.js").read_text(encoding="utf-8")
+    copy = _function_body(src, "copyWorkflow")
+    assert 'NB.call("set_ui_state", CLIP_KEY' in copy and "apply" not in copy
+    assert 'const CLIP_KEY = "queue.workflow"' in src
+    assert "localStorage" not in src and "sessionStorage" not in src
+    for fn in ("pasteAfter", "pasteIntoSystem", "pasteOnFiles"):
+        body = _function_body(src, fn)
+        assert body.count("applySel(") == 1, f"{fn} must apply one batch"
+        assert "NB.call(" not in body, f"{fn} writes around the ops batch"
+        assert "remove_calc" in body, f"{fn} has no undo"
+    assert 'op: "add_calc"' in _function_body(src, "instantiate")
+    paste = _function_body(src, "paste")
+    assert 'NB.call("pick_xyz_files")' in paste
+    drop = _function_body(src, "dropXyz")
+    assert 'NB.call("read_xyz_paths"' in drop and "pasteOnFiles(" in drop
+
+
+def test_a_rubber_band_starts_on_the_empty_canvas_only():
+    """The band must not start a lane's or a set's drag: it starts on the
+    background button alone, and a selection is one row."""
+    src = (WEB / "next" / "qed.js").read_text(encoding="utf-8")
+    wire = _function_body(src, "wireCanvas")
+    assert 'addEventListener("mousedown"' in wire and 'contains("qe-bg")' in wire
+    hits = _function_body(src, "bandHits")
+    assert "x.lane === lane" in hits and "ignored" in hits

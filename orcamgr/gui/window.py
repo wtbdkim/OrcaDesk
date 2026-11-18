@@ -180,8 +180,14 @@ class _WebWindowMixin:
             self._call_page(fn, path)
 
     def _dispatch_drops(self, paths: "list[str]") -> None:
-        """The first handled file, one at a time, as the main window always
-        has; the queue window overrides this for .xyz."""
+        """Every dropped .xyz goes to the page in ONE call,
+        ``window.onXyzFilesDropped(paths)`` (a multi-file drop is one
+        add_xyz_systems batch, not N); otherwise the first handled file takes
+        the single-file route (onInpDropped / onOutDropped). Both windows."""
+        xyz = [p for p in paths if p.lower().endswith(".xyz")]
+        if xyz:
+            self._call_page("onXyzFilesDropped", xyz)
+            return
         if paths:
             self._dispatch_single(paths[0])
 
@@ -231,8 +237,9 @@ class _WebWindowMixin:
         # raster layers while the app sits in the taskbar during a long ORCA
         # run. Deferred so Chromium registers the visibility change first (a
         # visible page cannot be frozen); JS timers stop while frozen, which is
-        # safe — the poll loop already skips hidden ticks and catches up from
-        # its last log sequence number on resume.
+        # safe — on resume the poll reads the queue snapshot whole and the log
+        # from its last sequence number. (A window hidden but not minimized is
+        # not frozen, and keeps polling.)
         if event.type() == QEvent.Type.WindowStateChange and getattr(self, "_page", None):
             if self.isMinimized():
                 QTimer.singleShot(500, self._freeze_if_minimized)
@@ -279,11 +286,9 @@ class QueueWindow(_WebWindowMixin, QMainWindow):
     main window closes it for real (MainWindow.shutdown). Its geometry and
     whether it was open are kept across launches in ui_state.json (uistate).
 
-    Dropped files: every dropped .xyz goes to the page in ONE call,
-    ``window.onXyzFilesDropped(paths)`` with ``paths`` an array — a
-    multi-file drop is one add_xyz_systems batch, not N. A dropped .inp / .out
-    takes the single-file route (onInpDropped / onOutDropped), as on the main
-    window."""
+    Dropped files take the same route as on the main window
+    (_WebWindowMixin._dispatch_drops): every dropped .xyz in one
+    ``window.onXyzFilesDropped(paths)`` call, a .inp / .out one at a time."""
 
     GEOMETRY_KEY = "window.queue.geometry"
     OPEN_KEY = "window.queue.open"
@@ -319,13 +324,6 @@ class QueueWindow(_WebWindowMixin, QMainWindow):
                     f"The queue window could not load {index_file()}.", "err")
             except Exception:
                 pass
-
-    def _dispatch_drops(self, paths: "list[str]") -> None:
-        xyz = [p for p in paths if p.lower().endswith(".xyz")]
-        if xyz:
-            self._call_page("onXyzFilesDropped", xyz)
-            return
-        super()._dispatch_drops(paths)
 
     # ---- geometry / visibility kept across launches ----
     def _restore_geometry(self) -> bool:
@@ -576,7 +574,7 @@ class MainWindow(_WebWindowMixin, QMainWindow):
             # monitors and wait_for_run no longer waits on
             self.server_ctl.stop()
         except Exception as e:
-            self._shutdown_note("server stop failed: {e}")
+            self._shutdown_note(f"server stop failed: {e}")
         try:
             # An environment install is NOT like a calculation: there is nothing
             # to reattach to, its pip children are not detached, and what it
@@ -585,19 +583,19 @@ class MainWindow(_WebWindowMixin, QMainWindow):
             # ever register is not a background job worth keeping.
             self.bridge.cancel_mlip_install()
         except Exception as e:
-            self._shutdown_note("MLIP install cancel failed: {e}")
+            self._shutdown_note(f"MLIP install cancel failed: {e}")
         try:
             self.store.pause_run()      # stop monitoring; do NOT kill ORCA
         except Exception as e:
-            self._shutdown_note("pause failed: {e}")
+            self._shutdown_note(f"pause failed: {e}")
         try:
             self.store.wait_for_run(timeout=10)
         except Exception as e:
-            self._shutdown_note("wait_for_run failed: {e}")
+            self._shutdown_note(f"wait_for_run failed: {e}")
         try:
             self.store.save_session()   # persist queue + running pid for reattach
         except Exception as e:
-            self._shutdown_note("save_session failed: {e}")
+            self._shutdown_note(f"save_session failed: {e}")
 
     def bring_to_front(self):
         """Show this window over everything — what a second launch asks for

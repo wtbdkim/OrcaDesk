@@ -1602,6 +1602,18 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 .qe-empty{position:absolute; left:28px; right:28px; max-width:520px;}
 .qe-empty p{margin:0;}
 .qe-empty p:first-child{font-size:14px; font-weight:500; color:var(--muted-foreground);}
+/* a level's block: its Type, and the input rendered for it (read-only) */
+.qe-saveas[data-wf]{flex-wrap:wrap;}
+.qe-typerow{display:flex; align-items:center; gap:10px;}
+.qe-typerow .qe-note{flex:0 0 auto;}
+.qe-typerow .qe-select{flex:1 1 auto; width:auto; min-width:0;}
+.qe-rendh{margin:-4px 0 -8px;}
+.qe-tpl[data-f="rendered"]{color:var(--muted-foreground);}
+/* several blocks of one row: the rubber band and what it touches */
+.qe-band{position:absolute; z-index:30; pointer-events:none; border:1px dashed var(--muted-foreground);
+  background:color-mix(in srgb, var(--foreground) 6%, transparent); border-radius:4px;}
+.qe-node[data-band] .qe-card{border-color:var(--foreground);}
+.qe-card[data-sel]{box-shadow:0 0 0 1px var(--muted-foreground);}
 @media (max-width:900px){
   html[data-win="queue"] body{overflow:auto;}
   .qe-app,.qe-app[data-building]{grid-template-columns:minmax(0,1fr); height:auto; overflow:visible;}

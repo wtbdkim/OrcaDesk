@@ -58,7 +58,7 @@
     if (b.geo.hasData()) return b.geo.progress();
     if (b.crest.hasData() && typeof b.crest.progress === "function") return b.crest.progress();
     if (b.freq.hasData() && typeof b.freq.progress === "function") return b.freq.progress();
-    if (b.scf.hasData()) return b.scf.progress(SCFGraph.targetFor(SCFGraph.tierFor(c.scf_convergence, c.kind)));
+    if (b.scf.hasData()) return b.scf.progress(b.scf.target(c.scf_convergence, c.kind));
     return null;
   }
 
@@ -169,10 +169,60 @@
 
   // ---------------------------------------------------------------- render
 
+  /** Everything the strip draws, as one string: a poll that changes none of it
+   *  leaves the DOM alone. Rebuilding it every 1.2 s took the keyboard focus
+   *  off a row and swallowed a click whose press and release straddled a
+   *  render (F4). The progress is in whole percent, as drawn. */
+  function signature() {
+    const cur = NB.results ? [NB.results.currentName(), NB.results.currentPath()] : [];
+    const rows = NB.queue.map(c => {
+      const lost = c.state === "running" && !!c.faulted;
+      const frac = lost ? null : progressOf(c);
+      return [c.name, c.state, !!c.faulted, !!c.waiting, c.kind, c.meta, c.message, !!c.is_raw,
+              frac == null ? null : Math.floor(frac * 100)];
+    });
+    const res = NB.running && NB.resources ? NB.resources : null;
+    return JSON.stringify([rows, cur, _opened, _folded, res]);
+  }
+  let _sig = "";
+
+  /** The poll's repaint: only when something drawn has changed. The run
+   *  buttons are cheap and are set every time. */
+  function refresh() {
+    if (signature() !== _sig) render();
+    else paintFoot();
+  }
+
+  /** Where the keyboard focus is inside the strip, as something that survives
+   *  a rebuild: the row (by calculation name, or an opened file's path) and
+   *  which of its buttons, or the control's id / data-a.
+   *  @param {HTMLElement} host @returns {null | (() => any)} */
+  function focusKey(host) {
+    const a = /** @type {any} */ (document.activeElement);
+    if (!a || a === host || !host.contains(a)) return null;
+    const r = a.closest(".qrow");
+    const cls = a.classList.contains("qclose") ? ".qclose" : ".qmain";
+    if (r && r.dataset.name != null) {
+      const n = r.dataset.name;
+      return () => [...host.querySelectorAll(".qrow")]
+        .find(e => /** @type {any} */ (e).dataset.name === n)?.querySelector(cls);
+    }
+    if (r && r.dataset.path != null) {
+      const p = r.dataset.path;
+      return () => [...host.querySelectorAll(".qrow")]
+        .find(e => /** @type {any} */ (e).dataset.path === p)?.querySelector(cls);
+    }
+    if (a.id) { const id = a.id; return () => host.querySelector("#" + CSS.escape(id)); }
+    if (a.dataset && a.dataset.a) { const k = a.dataset.a; return () => host.querySelector(`[data-a="${CSS.escape(k)}"]`); }
+    return null;
+  }
+
   function render() {
     const host = NB.$("rail");
     if (!host) return;
     const scroll = host.scrollTop;
+    const refocus = focusKey(host);
+    _sig = signature();
     host.innerHTML = "";
 
     const head = NB.el("div", "rail-h");
@@ -224,6 +274,10 @@
 
     if (NB.running && NB.resources) host.appendChild(occupancy(NB.resources));
     host.scrollTop = scroll;
+    if (refocus) {
+      const back = refocus();
+      if (back && back.focus) back.focus({ preventScroll: true });
+    }
     paintFoot();
   }
 
@@ -303,6 +357,7 @@
   function openedRow(o) {
     const el = NB.el("div", "qrow");
     el.dataset.state = "opened";
+    el.dataset.path = o.path;
     if (NB.results.currentPath() === o.path) el.setAttribute("aria-current", "true");
     const says = [o.name, o.backend, o.meta, o.folder].filter(Boolean).join(" · ");
     el.title = says;
@@ -345,7 +400,10 @@
   }
 
   function paintFoot() {
-    const anyRunnable = NB.queue.some(c => c.state === "pending" || c.state === "blocked");
+    // a CANCELLED calculation re-runs (P24; the engine picks it up like a
+    // pending one), so a queue of only cancelled rows is still runnable
+    const anyRunnable = NB.queue.some(c =>
+      c.state === "pending" || c.state === "blocked" || c.state === "cancelled");
     NB.$("btn-run").disabled = NB.running || !anyRunnable;
     NB.$("btn-stop").disabled = !NB.running;
     NB.$("btn-cancel").disabled = !NB.running;
@@ -360,6 +418,9 @@
     const needsOrca = NB.queue.some(c =>
       c.state !== "done" && c.state !== "failed"
       && !String(c.kind).startsWith("mlip") && !String(c.kind).startsWith("crest"));
+    // the path may have been set (or cleared) in the other window since this
+    // one last read its settings
+    if (needsOrca) await NB.refreshSettings();
     if (needsOrca && !(NB.settings && NB.settings.orca_valid)) {
       NB.fail("ORCA path not set — Settings.");
       NB.settingsView.open();
@@ -391,7 +452,7 @@
     NB.$("btn-run").addEventListener("click", runQueue);
     NB.$("btn-stop").addEventListener("click", stopAfterCurrent);
     NB.$("btn-cancel").addEventListener("click", cancelRun);
-    NB.watch(() => render());
+    NB.watch(() => refresh());
     restoreOpened();
   }
 

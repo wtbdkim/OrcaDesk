@@ -121,10 +121,11 @@
  * @typedef {Object} InpSet
  * @property {string} id
  * @property {string} name
- * @property {"MLIP"|"Opt"|"OptTS"|"Freq"|"IRC"|"SP"} kind
- * @property {string} text   raw ORCA input with {{GEOMETRY}} {{CHARGE}} {{MULT}}
- *                           {{HESS}}; MLIP: "key value" lines (model, device,
- *                           nprocs, env)
+ * @property {"ORCA"|"MLIP"} kind
+ * @property {string} text   ORCA (a level of theory): a whole input with {{JOB}}
+ *                           on its ! line and {{GEOMETRY}}, optionally
+ *                           {{CHARGE}} {{MULT}} {{HESS}}; MLIP: "key value"
+ *                           lines (model, device, nprocs, env)
  */
 
 /**
@@ -660,6 +661,7 @@
  * @property {boolean} ok
  * @property {string} [error]
  * @property {CalcFull} [calc]
+ * @property {string[]} [levels]  the level texts its raw_text becomes under the inp-set migration (inpsets.level_forms)
  */
 
 /**
@@ -669,6 +671,9 @@
  * @property {string} [error]
  * @property {InpSet[]} [sets]
  * @property {Object<string, string>} [defaults]  set kind -> its seeded text ("+ New")
+ * @property {Object<string, string>} [jobs]  calc kind -> what {{JOB}} becomes for it
+ * @property {Object<string, string>} [next_kind]  calc kind -> the kind a level placed
+ *           after it runs by default ("" = a row's start; not listed: "sp")
  */
 
 /**
@@ -703,6 +708,25 @@
  * @typedef {Object} XyzRefusal
  * @property {string} file    the label / path as given
  * @property {string} reason
+ */
+
+/**
+ * One picked / dropped .xyz, read (store.xyz_file_entries).
+ * @typedef {Object} XyzFileEntry
+ * @property {string} path
+ * @property {string} label   the file name
+ * @property {string} name    its stem: the system name it gives ("" if none)
+ * @property {string} xyz     its one structure as a coordinate block, "" if refused
+ * @property {string} error   why it cannot start a row, "" if it can
+ */
+
+/**
+ * pick_xyz_files() / read_xyz_paths(json) result.
+ * @typedef {Object} XyzFilesResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {boolean} [cancelled]
+ * @property {XyzFileEntry[]} [files]
  */
 
 /**

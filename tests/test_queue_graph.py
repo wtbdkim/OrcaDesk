@@ -271,8 +271,11 @@ def test_auto_pass_after_a_frequency_calc(tmp_path, kind, n_imag, auto_pass, run
     assert (gated.state == CalcState.PENDING) is (not runs)
 
 
-def test_auto_pass_parses_the_parent_on_a_miss(tmp_path, monkeypatch):
-    # a DONE parent restored from a session has no result in memory
+def test_auto_pass_never_parses_the_parent_under_the_store_lock(tmp_path, monkeypatch):
+    # a DONE parent restored from a session has no result in memory. The
+    # engine asks about the gate under the store lock (P37): parsing a large
+    # frequency output there stalled every UI snapshot for ~1 s. DONE already
+    # says the count is right (validate_result), so nothing is read.
     out = tmp_path / "f" / "f.out"
     out.parent.mkdir()
     out.write_text("ORCA output", encoding="utf-8")
@@ -281,7 +284,7 @@ def test_auto_pass_parses_the_parent_on_a_miss(tmp_path, monkeypatch):
 
     def fake_parse(calc):
         parsed.append(calc.name)
-        return ParseResult(terminated_normally=True, n_imaginary=1)
+        return ParseResult(terminated_normally=True, n_imaginary=0)
 
     monkeypatch.setattr(queue_mod, "result_from_output", fake_parse)
     harness = EngineHarness(tmp_path)
@@ -289,10 +292,9 @@ def test_auto_pass_parses_the_parent_on_a_miss(tmp_path, monkeypatch):
 
     run_bounded(harness, [parent, gated])
 
-    assert parsed == ["f"]                       # read once, and kept
-    assert parent.result is not None and parent.result.n_imaginary == 1
-    assert harness.calls == []                   # 1 imaginary mode: not a minimum
-    assert gated.state == CalcState.PENDING
+    assert parsed == []
+    assert parent.result is None
+    assert harness.calls == ["next"]             # passed on DONE's guarantee
 
 
 def test_without_a_result_the_snapshot_trusts_what_done_already_says(tmp_path):
@@ -472,7 +474,137 @@ def test_a_template_is_admitted_by_its_own_pal_and_maxcore():
 
 
 def test_a_seeded_set_carries_the_users_defaults_literally():
-    sp = next(s for s in seed_sets(nprocs=12, maxcore_mb=5000) if s["kind"] == "SP")
+    sp = next(s for s in seed_sets(nprocs=12, maxcore_mb=5000) if s["kind"] == "ORCA")
     calc = _template_calc("seeded", sp["text"])
     assert declared_cores(calc) == 12
     assert estimated_ram_mb(calc) == 60000
+
+
+# ---- level-only templates: {{JOB}} from the block's kind ---------------------------
+
+LEVEL = """! B3LYP def2-SVP {{JOB}}
+%pal nprocs 2 end
+* xyz {{CHARGE}} {{MULT}}
+{{GEOMETRY}}
+*
+"""
+
+
+@pytest.mark.parametrize("kind, job, block", [
+    ("opt", "TightOpt", "%geom\n  MaxIter 200\nend\n"),
+    ("ts_opt", "OptTS", "%geom\n  MaxIter 200\n  Calc_Hess true\nend\n"),
+    ("freq", "Freq", ""),
+    ("ts_freq", "Freq", ""),
+    ("opt_freq", "TightOpt Freq", "%geom\n  MaxIter 200\nend\n"),
+    ("ts_opt_freq", "OptTS Freq", "%geom\n  MaxIter 200\n  Calc_Hess true\nend\n"),
+    ("sp", "SP", ""),
+    ("nmr", "NMR", ""),
+])
+def test_job_is_filled_from_the_kind_with_the_guided_block(tmp_path, kind, job, block):
+    engine = _real_engine(tmp_path)
+    calc = _template_calc("lv", LEVEL, kind=kind)
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+    inp = (tmp_path / "lv" / "lv.inp").read_text(encoding="utf-8")
+    assert inp == (f"! B3LYP def2-SVP {job}\n%pal nprocs 2 end\n{block}"
+                   "* xyz 0 1\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n*\n")
+    assert calc.raw_text == LEVEL                    # the block keeps the level
+
+
+def test_the_rendered_block_is_the_one_the_guided_generator_writes():
+    """One block, two writers: what the template renderer adds for a kind is
+    exactly what build_input writes for that kind's default config."""
+    from orcamgr.core.input_generator import build_input, render_template_text
+    for kind, calc_type in (("opt", "TightOpt"), ("ts_opt", "OptTS"),
+                            ("opt_freq", "TightOpt Freq"), ("ts_opt_freq", "OptTS Freq"),
+                            ("freq", "Freq"), ("sp", "SP")):
+        guided = build_input(StepConfig(kind=kind, calculation_type=calc_type, nprocs=1),
+                             "{{GEOMETRY}}", 0, 1)
+        level = build_input(StepConfig(kind="sp", calculation_type="{{JOB}}", nprocs=1),
+                            "{{GEOMETRY}}", 0, 1)
+        assert render_template_text(level, kind, 0, 1) == guided, kind
+    irc = build_input(StepConfig(kind="irc", calculation_type="IRC", nprocs=1,
+                                 irc_init_hess="read", irc_hess_file="ts.hess"),
+                      "{{GEOMETRY}}", 0, 1)
+    level = build_input(StepConfig(kind="sp", calculation_type="{{JOB}}", nprocs=1),
+                        "{{GEOMETRY}}", 0, 1)
+    assert render_template_text(level, "irc", 0, 1, "ts.hess") == irc
+
+
+def test_a_template_with_its_own_geom_block_gets_nothing_added(tmp_path):
+    engine = _real_engine(tmp_path)
+    text = LEVEL.replace("* xyz", "%geom\n  MaxIter 30\n  Trust -0.1\nend\n* xyz")
+    calc = _template_calc("own", text, kind="ts_opt")
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+    inp = (tmp_path / "own" / "own.inp").read_text(encoding="utf-8")
+    assert "! B3LYP def2-SVP OptTS" in inp
+    assert inp.count("%geom") == 1 and "MaxIter 30" in inp
+    assert "Calc_Hess" not in inp and "MaxIter 200" not in inp   # the user's block wins, whole
+
+
+def test_a_job_irc_reads_the_parents_hessian_when_there_is_one(tmp_path):
+    engine = _real_engine(tmp_path)
+    (tmp_path / "ts-freq").mkdir()
+    (tmp_path / "ts-freq" / "ts-freq.hess").write_text("$hessian\n", encoding="utf-8")
+    freq = done("ts-freq", kind="ts_freq", tmp_path=tmp_path)
+    calc = _template_calc("irc1", LEVEL, kind="irc")
+    calc.after = "ts-freq"
+    engine._by_name = {"ts-freq": freq, "irc1": calc}
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+    inp = (tmp_path / "irc1" / "irc1.inp").read_text(encoding="utf-8")
+    assert ("%irc\n  MaxIter 100\n  InitHess read\n  Hess_Filename \"ts-freq.hess\"\nend\n"
+            "* xyz 0 1") in inp
+    assert (tmp_path / "irc1" / "ts-freq.hess").exists()      # staged
+
+
+def test_a_job_irc_without_a_parent_hessian_computes_its_own(tmp_path):
+    engine = _real_engine(tmp_path)
+    ts = done("ts", kind="ts_opt", tmp_path=tmp_path)      # no .hess on disk
+    calc = _template_calc("irc2", LEVEL, kind="irc")
+    calc.after = "ts"
+    engine._by_name = {"ts": ts, "irc2": calc}
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+    inp = (tmp_path / "irc2" / "irc2.inp").read_text(encoding="utf-8")
+    assert "%irc\n  MaxIter 100\n  InitHess calc_anfreq\nend\n* xyz 0 1" in inp
+    assert "Hess_Filename" not in inp
+
+
+def test_a_job_irc_with_its_own_irc_block_keeps_hess_working(tmp_path):
+    # the old {{HESS}} placeholder inside the user's own %irc block still works,
+    # and ORCAdesk adds no second %irc
+    engine = _real_engine(tmp_path)
+    (tmp_path / "f").mkdir()
+    (tmp_path / "f" / "f.hess").write_text("$hessian\n", encoding="utf-8")
+    parent = done("f", kind="freq", tmp_path=tmp_path)
+    text = LEVEL.replace("* xyz", '%irc\n  InitHess read\n  Hess_Filename "{{HESS}}"\nend\n* xyz')
+    calc = _template_calc("irc3", text, kind="irc")
+    calc.after = "f"
+    engine._by_name = {"f": parent, "irc3": calc}
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+    inp = (tmp_path / "irc3" / "irc3.inp").read_text(encoding="utf-8")
+    assert inp.count("%irc") == 1 and 'Hess_Filename "f.hess"' in inp and "MaxIter 100" not in inp
+
+
+@pytest.mark.parametrize("kind", ["neb_ts", "tddft", "general"])
+def test_a_kind_with_no_job_keyword_is_refused_before_launch(tmp_path, kind):
+    engine = _real_engine(tmp_path)
+    calc = _template_calc("bad", LEVEL, kind=kind)
+    with pytest.raises(OrcaRunError, match=r"\{\{JOB\}\}.*cannot run as"):
+        engine._run_calc(calc, 0)
+    assert not (tmp_path / "bad" / "bad.inp").exists()
+
+
+def test_a_text_written_before_levels_runs_as_written(tmp_path):
+    # a block made from a schema-1 set: its own job line, its own blocks
+    engine = _real_engine(tmp_path)
+    old = TEMPLATE.replace("SP", "TightOpt").replace("* xyz", "%geom\n  MaxIter 200\nend\n* xyz")
+    calc = _template_calc("old", old, kind="opt")
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+    inp = (tmp_path / "old" / "old.inp").read_text(encoding="utf-8")
+    assert inp == old.replace("{{CHARGE}} {{MULT}}", "0 1").replace(
+        "{{GEOMETRY}}", "H 0.0 0.0 0.0\nH 0.0 0.0 0.74")

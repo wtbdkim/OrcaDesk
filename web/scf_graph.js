@@ -42,14 +42,30 @@
   function targetFor(scfConv) {
     return SCF_TARGETS[scfConv] || 1e-8; // default = TightSCF-ish
   }
-  // The tier a calculation actually runs at. An empty setting is ORCA's own,
-  // and ORCA 6.1.1 picks by job (measured, TolE): an optimization, a TS
-  // search, an IRC or a NEB raises it to TightSCF (1e-8); a single point,
-  // frequencies, TD-DFT and NMR stay at NormalSCF (1e-6).
-  const TIGHT_KINDS = ["opt", "opt_freq", "ts_opt", "ts_opt_freq", "irc", "neb_ts"];
+  // The tier a calculation is EXPECTED to run at, before ORCA has said: the
+  // SCF settings block ORCA prints before the first iteration carries the real
+  // target (SCFTracker.tolE, read from its "Energy Change  TolE" line), and
+  // that wins as soon as it has been seen -- a template calculation carries
+  // its own SCF keyword in its text, which no field here knows about.
+  // An explicit setting is the tier. An empty one is ORCA's own pick by job,
+  // measured on ORCA 6.1.1 (TolE): ORCAdesk writes TightOpt for opt / opt_freq,
+  // and TightOpt (with or without Freq) raises it to 1e-9 -- VeryTightSCF's
+  // TolE; Opt / OptTS, an IRC and a NEB raise it to TightSCF (1e-8); a single
+  // point, frequencies, TD-DFT and NMR stay at NormalSCF (1e-6).
+  const TIGHTOPT_KINDS = ["opt", "opt_freq"];
+  const TIGHT_KINDS = ["ts_opt", "ts_opt_freq", "irc", "neb_ts"];
   function tierFor(scfConv, kind) {
     if (scfConv) return scfConv;
-    return TIGHT_KINDS.indexOf(String(kind || "")) >= 0 ? "TightSCF" : "NormalSCF";
+    const k = String(kind || "");
+    if (TIGHTOPT_KINDS.indexOf(k) >= 0) return "VeryTightSCF";
+    return TIGHT_KINDS.indexOf(k) >= 0 ? "TightSCF" : "NormalSCF";
+  }
+  // The SCF |Delta-E| target of a calculation: what ORCA printed, once it has
+  // (tracker.tolE), else the expected tier's. Every progress bar and goal line
+  // reads it from here.
+  function scfTarget(tracker, scfConv, kind) {
+    if (tracker && typeof tracker.tolE === "number" && tracker.tolE > 0) return tracker.tolE;
+    return targetFor(tierFor(scfConv, kind));
   }
 
   // A single SCF iteration row in ORCA looks like:
@@ -58,6 +74,14 @@
   // (works for both the DIIS and SOSCF sub-tables).
   const ITER_RE = /^\s*(\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+[eE][+-]?\d+)/;
   const GEO_RE = /GEOMETRY OPTIMIZATION CYCLE\s+(\d+)/i;
+  // The SCF's own convergence target, from the settings block ORCA prints
+  // before an SCF ("Convergence Tolerance:"), verbatim from ORCA 6.1.1:
+  //   " Energy Change          TolE            ....  1.000e-09 Eh"
+  // Indented, which is what tells it from the geometry optimizer's own TolE
+  // ("Convergence Tolerances:", flush left, an optimization criterion):
+  //   "Energy Change            TolE     ....  5.0000e-06 Eh"
+  // Mirrored by core/replay.py _G_TOLE, so a reseeded graph has it too.
+  const TOLE_RE = /^\s+Energy Change\s+TolE\s+\.{2,}\s+(\d+(?:\.\d+)?[eE][+-]?\d+)\s+Eh/;
 
   /**
    * Tracks SCF convergence from a stream of log lines.
@@ -74,14 +98,22 @@
     this.lastIter = 0;
     this.step = 0;           // geometry optimization step (0 = none / single-point)
     this.startDE = null;     // |Delta-E| of the first usable point in this block
+    this.tolE = null;        // the SCF target ORCA printed (Eh), once it has; kept across blocks
   }
   SCFTracker.prototype.reset = function () {
     this.points = [];
     this.lastIter = 0;
     this.startDE = null;
   };
-  // feed one log line; returns true if the curve changed
+  // feed one log line; returns true if the curve (or its target) changed
   SCFTracker.prototype.push = function (line) {
+    const t = line.match(TOLE_RE);
+    if (t) {
+      const v = parseFloat(t[1]);
+      if (!(isFinite(v) && v > 0) || v === this.tolE) return false;
+      this.tolE = v;
+      return true;
+    }
     const g = line.match(GEO_RE);
     if (g) {
       this.step = parseInt(g[1], 10);
@@ -121,6 +153,9 @@
     }
     return null;
   };
+  // the |Delta-E| target this SCF converges to: ORCA's printed TolE once seen,
+  // else the expected tier's (scfTarget / tierFor)
+  SCFTracker.prototype.target = function (scfConv, kind) { return scfTarget(this, scfConv, kind); };
   SCFTracker.prototype.current = function () { return this._lastNonZeroDE(); };
   SCFTracker.prototype.hasData = function () { return this.startDE !== null; };
 
@@ -535,7 +570,7 @@
   // ---------- rendering (DOM-string builders) ----------
   // progress bar HTML
   function renderSCFProgress(tracker, scfConv) {
-    const target = targetFor(scfConv);
+    const target = tracker.tolE > 0 ? tracker.tolE : targetFor(scfConv);
     const p = tracker.progress(target);
     const pct = Math.round(p * 100);
     const stepLabel = tracker.step > 0 ? `Geometry step ${tracker.step} · ` : "";
@@ -661,7 +696,7 @@
     return _renderLogSeries({
       values: pts.map(function (p) { return p.dE; }),
       labels: pts.map(function (p) { return p.iter; }),
-      goal: targetFor(scfConv),
+      goal: tracker.tolE > 0 ? tracker.tolE : targetFor(scfConv),
       yTitle: "|ΔE| per cycle (Eh)", xTitle: "SCF cycle",
       width: W, height: H,
     });
@@ -852,6 +887,7 @@
     isScfIter: function (line) { return ITER_RE.test(line); },   // is this an SCF iteration row?
     targetFor: targetFor,
     tierFor: tierFor,
+    scfTarget: scfTarget,
     renderSCFProgress: renderSCFProgress,
     renderSCFGraph: renderSCFGraph,
     renderGeoProgress: renderGeoProgress,

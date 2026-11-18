@@ -15,6 +15,7 @@ interface OrcaBridge {
   get_about(): Promise<string>;
   get_ui_state(key: string): Promise<string>;                  // {ok, value}: what a window kept across launches (uistate.py); value null = nothing kept
   set_ui_state(key: string, valueJson: string): Promise<string>; // {ok} | {ok:false, error}; valueJson "null" removes the key
+  take_ui_state(key: string): Promise<string>;                 // {ok, value} | {ok:false, error}: the value, removed in the same step under the ui-state lock (the queue hand-off mailbox)
   get_settings(): Promise<string>;
   save_settings(payloadJson: string): Promise<string>;
   set_wallpaper_image(dataUri: string): Promise<string>;   // WallpaperResult JSON: {ok, stored}; stored=false when ""/invalid/oversize (cleared)
@@ -81,7 +82,9 @@ interface OrcaBridge {
   delete_inp_set(id: string): Promise<string>;           // InpSetResult JSON ({ok} | {ok:false, error})
   get_system(id: string): Promise<string>;               // SystemResult JSON (inputs with their xyz)
   apply_queue_ops(opsJson: string): Promise<string>;     // QueueOp[] -> QueueOpsResult JSON: all applied or none
-  add_xyz_systems(payloadJson: string): Promise<string>; // {files:[{label,xyz}] | paths:[], set_id, suffix} -> XyzSystemsResult JSON
+  add_xyz_systems(payloadJson: string): Promise<string>; // {files:[{label,xyz}] | paths:[], set_id, suffix, kind} -> XyzSystemsResult JSON
+  pick_xyz_files(): Promise<string>;                     // XyzFilesResult JSON: several .xyz picked at once, each read
+  read_xyz_paths(pathsJson: string): Promise<string>;    // string[] -> XyzFilesResult JSON (dropped files, each read)
   open_queue_window(): Promise<string>;                  // OkResult JSON: show/raise the queue window
   get_log(since: number): Promise<string>;
   get_inp(name: string): Promise<string>;
@@ -166,8 +169,14 @@ interface SCFGraphAPI {
   isScfIter(line: string): boolean;
   fmtClock(sec: number): string;
   targetFor(scfConvergence: string): number;
-  /** the tier a calc runs at: its own, or ORCA's pick for its kind when "" */
+  /** the tier a calc is expected to run at before ORCA prints its TolE: an
+   *  explicit tier wins; else opt / opt_freq -> VeryTightSCF (1e-9, because
+   *  ORCAdesk writes TightOpt), ts_opt / ts_opt_freq / irc / neb_ts ->
+   *  TightSCF (1e-8), anything else -> NormalSCF (1e-6) -- ORCA 6.1.1 */
   tierFor(scfConvergence: string | undefined, kind: string): string;
+  /** the SCF target in Eh: the TolE ORCA printed for the run (tracker.tolE)
+   *  once seen, else targetFor(tierFor(...)) */
+  scfTarget(tracker: any, scfConvergence?: string, kind?: string): number;
   renderSCFProgress(...args: any[]): string;
   renderSCFGraph(...args: any[]): string;
   renderGeoProgress(...args: any[]): string;

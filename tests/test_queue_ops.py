@@ -30,7 +30,7 @@ from orcamgr.state.store import (QueueOpError, QueueStore, calc_from_dict,
 
 H2 = "H 0.0 0.0 0.0\nH 0.0 0.0 0.74"
 TPL = "! B3LYP def2-SVP SP\n* xyz {{CHARGE}} {{MULT}}\n{{GEOMETRY}}\n*\n"
-SP_SET = {"id": "seed-sp", "name": "B3LYP / def2-SVP", "kind": "SP", "text": TPL}
+SP_SET = {"id": "seed-sp", "name": "B3LYP / def2-SVP", "kind": "ORCA", "text": TPL}
 
 
 @pytest.fixture
@@ -496,3 +496,41 @@ def test_mid_run_the_single_mutations_guard_after_like_a_reference(store):
                 {"name": "mol-opt2", "kind": "sp", "xyz": H2, "system": "s1"}))
     finally:
         store._running = False
+
+
+# ---- a level's block: its kind is its Type ----------------------------------------
+
+LEVEL = "! B3LYP def2-SVP {{JOB}}\n* xyz {{CHARGE}} {{MULT}}\n{{GEOMETRY}}\n*\n"
+
+
+def test_a_level_block_refuses_a_kind_with_no_job_keyword(store):
+    store.apply_ops([sys_op()])
+    with pytest.raises(QueueOpError, match="cannot run as a 'neb_ts'"):
+        store.apply_ops([calc_op("mol-x", kind="neb_ts", raw_text=LEVEL)])
+    store.apply_ops([calc_op("mol-opt", kind="opt", raw_text=LEVEL)])
+    with pytest.raises(QueueOpError, match="cannot run as a 'tddft'"):
+        store.apply_ops([{"op": "update_calc", "name": "mol-opt", "calc": {"kind": "tddft"}}])
+    assert store.get("mol-opt").kind == "opt"
+
+
+def test_a_type_change_is_a_kind_patch_and_the_config_follows(store):
+    store.apply_ops([sys_op(), calc_op("mol-opt", kind="opt", raw_text=LEVEL)])
+    store.apply_ops([{"op": "update_calc", "name": "mol-opt", "calc": {"kind": "irc"}}])
+    c = store.get("mol-opt")
+    assert (c.kind, c.config.kind, c.raw_text, c.is_raw) == ("irc", "irc", LEVEL, True)
+
+
+def test_a_restored_level_block_is_never_evicted_over_its_kind():
+    d = {"name": "x", "kind": "tddft", "is_raw": True, "raw_text": LEVEL, "xyz": H2}
+    assert calc_from_dict(d, restoring=True).kind == "tddft"
+
+
+def test_a_dropped_structure_runs_an_orca_level_as_a_single_point(store):
+    level = {"id": "seed-orca", "name": "B3LYP / def2-SVP", "kind": "ORCA", "text": LEVEL}
+    out = store.add_xyz_systems([("w.xyz", XYZ)], level, "-sp")
+    c = store.get(out["added"][0])
+    assert (c.kind, c.raw_text, c.set_name) == ("sp", LEVEL, "B3LYP / def2-SVP")
+    out = store.add_xyz_systems([("v.xyz", XYZ)], level, "-opt", kind="opt")
+    assert store.get("v-opt").kind == "opt"
+    with pytest.raises(ValueError, match="cannot run as"):
+        store.add_xyz_systems([("u.xyz", XYZ)], level, "", kind="neb_ts")

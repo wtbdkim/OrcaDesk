@@ -647,10 +647,13 @@
   // ---------------------------------------------------------------- opening
 
   /** Open the viewer.
-   *  @param {{source: string, title?: string, path?: string, orbitals?: any[], nbos?: any[],
-   *           mode?: string, pick?: any}} o
+   *  @param {{source: string, title?: string, path?: string, file?: string, orbitals?: any[],
+   *           nbos?: any[], mode?: string, pick?: any}} o
    *    source  how the backend addresses this result: "calc:<name>" or "file:<path>"
    *    path    one structure set to open on; otherwise the first one found
+   *    file    one .xyz (or folder of them) to open as THE set, without
+   *            looking for others beside it -- a structure picked with Open
+   *            file..., which need not be one the folder listing offers
    *    mode    "frames" (default) or "volume"
    *    pick    a surface to draw at once ({kind, index, operator}); implies
    *            volume mode. The caller has already decided whether this is
@@ -704,7 +707,9 @@
 
     _bondRefs = [];
     const [r, input] = await Promise.all([
-      NB.call("list_structure_sets", src), NB.inputAtoms(src)]);
+      o.file ? Promise.resolve({ ok: true, sets: [{ path: o.file }] })
+             : NB.call("list_structure_sets", src),
+      NB.inputAtoms(src)]);
     const sets = (r && r.ok && r.sets) ? r.sets : [];
     const set = (o.path && sets.filter(s => s.path === o.path)[0]) || sets[0];
     if (!set) {

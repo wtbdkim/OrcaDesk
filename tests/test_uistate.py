@@ -47,3 +47,30 @@ def test_an_oversized_value_is_refused_and_nothing_is_written(tmp_path):
     with pytest.raises(ValueError):
         uistate.put("k", "x" * (uistate.MAX_VALUE_BYTES + 1), root=tmp_path)
     assert not uistate.state_file(tmp_path).exists()
+
+
+def test_take_returns_the_value_and_removes_it(tmp_path):
+    uistate.put("qed.handoff", {"t": 1}, root=tmp_path)
+    uistate.put("rail.opened", [1], root=tmp_path)
+    assert uistate.take("qed.handoff", root=tmp_path) == {"t": 1}
+    assert uistate.get("qed.handoff", root=tmp_path) is None
+    assert uistate.take("qed.handoff", root=tmp_path) is None
+    assert uistate.get("rail.opened", root=tmp_path) == [1]
+
+
+def test_concurrent_takes_hand_the_value_to_exactly_one_taker(tmp_path):
+    import threading
+    for _ in range(20):
+        uistate.put("qed.handoff", {"t": 1}, root=tmp_path)
+        got, start = [], threading.Barrier(4)
+
+        def taker():
+            start.wait()
+            got.append(uistate.take("qed.handoff", root=tmp_path))
+
+        ts = [threading.Thread(target=taker) for _ in range(4)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        assert [v for v in got if v is not None] == [{"t": 1}]

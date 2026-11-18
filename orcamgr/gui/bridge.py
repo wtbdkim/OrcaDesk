@@ -41,8 +41,12 @@ from ..paths import (APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL,
                      config_file, user_data_root)
 from ..textio import repair_ansi_line
 from .. import uistate
-from ..core.input_generator import StepConfig, build_input_template
-from ..core.queue import CalcState, result_from_output
+from ..core.input_generator import (GEOMETRY_PLACEHOLDER, StepConfig,
+                                    TEMPLATE_JOB_KEYWORDS, build_input_template,
+                                    render_raw_input, render_template_text,
+                                    template_hess_need)
+from ..core.queue import (CalcState, GeometrySource, find_parent_hessian,
+                          result_from_output)
 from ..core.structure import (
     apply_constraint_target, apply_constraint_targets, check_geometry, compare_atom_order,
     displace_along_mode,
@@ -60,7 +64,7 @@ from ..state.store import (
     QueueStore, QueueOpError, calc_from_dict, calc_to_session_dict,
     make_engine_factory, load_choice_groups, queue_needs_orca,
     find_dangling_reference, constraint_warning, raw_geometry_warning,
-    keep_graph_fields,
+    keep_graph_fields, xyz_file_entries,
 )
 from ..state import inpsets
 # Response payloads are CONSTRUCTED through these TypedDicts (plain dicts at
@@ -85,7 +89,7 @@ from ..state.schemas import (
     ConstraintApplyAllPayload,
     HessModesPayload, HessModePayload, ModeShiftPayload, VibModePayload,
     InpSetsResult, InpSetResult, SystemResult, QueueOpsResult,
-    XyzSystemsResult, XyzRefusal,
+    XyzSystemsResult, XyzRefusal, XyzFilesResult,
 )
 
 # Ceiling on the workspace scan behind the Results picker. Generous next to any
@@ -252,6 +256,16 @@ class Bridge(QObject):
         except (ValueError, OSError) as e:
             return json.dumps({"ok": False, "error": str(e)})
         return json.dumps({"ok": True})
+
+    @pyqtSlot(str, result=str)
+    def take_ui_state(self, key: str) -> str:
+        """{ok, value}: the value under ``key``, removed in the same step
+        under the uistate lock -- a mailbox two windows poll (the queue
+        editor's hand-off) is taken by exactly one of them."""
+        try:
+            return json.dumps({"ok": True, "value": uistate.take(key)})
+        except (ValueError, OSError) as e:
+            return json.dumps({"ok": False, "error": str(e)})
 
     # --- settings ---
     @pyqtSlot(result=str)
@@ -1447,8 +1461,26 @@ class Bridge(QObject):
     # --- raw .inp preview (for entering raw-edit mode) ---
     @pyqtSlot(str, result=str)
     def build_inp_preview(self, calc_json: str) -> str:
+        """The input a calculation runs. A guided one: what build_input writes
+        from its config. One with raw text (an inp-set block, a pasted .inp):
+        that text through render_template_text -- the renderer the engine
+        runs at launch -- for the calc's kind, its coordinates in place when
+        they are its own ({{GEOMETRY}} kept for a reference, resolved at run
+        time). The Hessian a {{JOB}} IRC reads is the parent's .hess when it
+        is on disk, or the one its frequency parent will leave; else it
+        computes its own (_preview_hess)."""
         try:
             d = json.loads(calc_json)
+            if d.get("is_raw") and isinstance(d.get("raw_text"), str) and d["raw_text"]:
+                kind = str(d.get("kind", "") or "")
+                text = d["raw_text"].replace("\r\n", "\n")
+                xyz = d.get("xyz", "") if d.get("geometry_source", "direct") != "reference" else ""
+                if isinstance(xyz, str) and xyz.strip() and GEOMETRY_PLACEHOLDER in text:
+                    text = render_raw_input(text, xyz)
+                text = render_template_text(
+                    text, kind, int(d.get("charge", 0)), int(d.get("multiplicity", 1)),
+                    self._preview_hess(d, text, kind))
+                return json.dumps(TextResult(ok=True, text=text))
             cfg = StepConfig.from_dict(d.get("config", {}))
             use_ph = d.get("geometry_source", "direct") == "reference"
             text = build_input_template(
@@ -1461,6 +1493,36 @@ class Bridge(QObject):
             return json.dumps(TextResult(ok=True, text=text))
         except Exception as e:
             return json.dumps(TextResult(ok=False, error=str(e)))
+
+    #: kinds whose finished run leaves a {name}.hess beside its output
+    _HESS_KINDS = ("freq", "ts_freq", "opt_freq", "ts_opt_freq")
+
+    def _preview_hess(self, d: dict, text: str, kind: str) -> str:
+        """The .hess name the preview shows a template reading: what the
+        engine would stage now (find_parent_hessian, the same search), else
+        -- the parent has not run yet -- the {parent}.hess a frequency parent
+        will leave; "" when it will have none to read."""
+        if not template_hess_need(text, kind):
+            return ""
+        try:
+            src = GeometrySource(d.get("geometry_source", "direct"))
+        except ValueError:
+            src = GeometrySource.DIRECT
+        probe = SimpleNamespace(name=str(d.get("name", "") or ""),
+                                after=str(d.get("after", "") or ""),
+                                geometry_source=src,
+                                ref_name=str(d.get("ref_name", "") or ""))
+        found, _ = find_parent_hessian(probe, SimpleNamespace(get=self.store.get),
+                                       Path(self.settings.workspace_root))
+        if found is not None:
+            return found.name
+        parents = [probe.after] + ([probe.ref_name] if src == GeometrySource.REFERENCE else [])
+        for pname in parents:
+            parent = self.store.get(pname) if pname else None
+            if (parent is not None and parent.kind in self._HESS_KINDS
+                    and parent.state != CalcState.DONE):
+                return f"{pname}.hess"
+        return ""
 
     # --- queue management (shared store) ---
     @pyqtSlot(str, result=str)
@@ -1546,14 +1608,20 @@ class Bridge(QObject):
 
     @pyqtSlot(result=str)
     def get_inp_sets(self) -> str:
-        """Every saved inp set (seeded from ORCAdesk's defaults on first use),
-        and each kind's seeded text (`defaults`, what "+ New" starts from)."""
+        """Every saved inp set (seeded from ORCAdesk's defaults on first use,
+        a schema-1 file migrated), each kind's seeded text (`defaults`, what
+        "+ New" starts from), and what {{JOB}} becomes per calculation kind
+        (`jobs`: the kinds a level's block may run, the editor's Type), and
+        the natural next step after each kind (`next_kind`, the Type a level
+        dropped on the + slot starts with; any other kind: "sp")."""
         try:
             sets = inpsets.load_sets(**self._inpset_defaults())
             defaults = inpsets.seed_texts(**self._inpset_defaults())
         except Exception as e:   # a slot may not raise
             return json.dumps(InpSetsResult(ok=False, error=str(e), sets=[]))
-        return json.dumps(InpSetsResult(ok=True, sets=sets, defaults=defaults))
+        return json.dumps(InpSetsResult(ok=True, sets=sets, defaults=defaults,
+                                        jobs=dict(TEMPLATE_JOB_KEYWORDS),
+                                        next_kind=dict(inpsets.NEXT_KIND)))
 
     @pyqtSlot(str, result=str)
     def save_inp_set(self, set_json: str) -> str:
@@ -1608,9 +1676,10 @@ class Bridge(QObject):
     @pyqtSlot(str, result=str)
     def add_xyz_systems(self, payload_json: str) -> str:
         """The "drop .xyz" recipe: {files:[{label, xyz}] | paths:[...],
-        set_id, suffix} -> one system per file named after its stem, and one
-        calculation `stem + suffix` from that inp set (set_id "" = the first
-        SP set). Refusals are per file, with the reason."""
+        set_id, suffix, kind} -> one system per file named after its stem, and
+        one calculation `stem + suffix` from that inp set (set_id "" = the
+        first ORCA level), an ORCA level running as `kind` (default "sp").
+        Refusals are per file, with the reason."""
         try:
             d = json.loads(payload_json or "null")
             if not isinstance(d, dict):
@@ -1619,12 +1688,15 @@ class Bridge(QObject):
             if not isinstance(suffix, str):
                 raise ValueError("suffix must be a string")
             set_id = d.get("set_id", "") or ""
+            kind = d.get("kind", "") or ""
+            if not isinstance(kind, str):
+                raise ValueError("kind must be a string")
             sets = inpsets.load_sets(**self._inpset_defaults())
             inp_set = next((s for s in sets if s["id"] == set_id), None) if set_id \
-                else next((s for s in sets if s["kind"] == "SP"), None)
+                else next((s for s in sets if s["kind"] == "ORCA"), None)
             if inp_set is None:
                 raise ValueError(f"No inp set with id '{set_id}'." if set_id
-                                 else "There is no SP inp set to build from.")
+                                 else "There is no ORCA inp set to build from.")
         except (ValueError, TypeError) as e:
             return json.dumps(XyzSystemsResult(ok=False, error=str(e), added=[],
                                                systems=[], refused=[]))
@@ -1641,7 +1713,7 @@ class Bridge(QObject):
             except OSError as e:
                 refused.append(XyzRefusal(file=str(p), reason=e.strerror or str(e)))
         try:
-            out = self.store.add_xyz_systems(files, inp_set, suffix)
+            out = self.store.add_xyz_systems(files, inp_set, suffix, kind)
         except ValueError as e:
             return json.dumps(XyzSystemsResult(ok=False, error=str(e), added=[],
                                                systems=[], refused=refused))
@@ -1649,6 +1721,31 @@ class Bridge(QObject):
             ok=True, added=out["added"], systems=out["systems"],
             refused=refused + [XyzRefusal(**r) for r in out["refused"]],
             snapshot=self.store.snapshot()))
+
+    @pyqtSlot(result=str)
+    def pick_xyz_files(self) -> str:
+        """Pick one or more .xyz files (the queue editor's "paste the copied
+        workflow onto new rows"): each read, with the system name its stem
+        gives or why it cannot start a row (store.xyz_file_entries)."""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self.window, "Load .xyz files", self._dialog_start_dir(),
+            "XYZ file (*.xyz);;All files (*.*)")
+        if not paths:
+            return json.dumps(XyzFilesResult(ok=True, cancelled=True, files=[]))
+        return json.dumps(XyzFilesResult(ok=True, cancelled=False,
+                                         files=xyz_file_entries(paths)))
+
+    @pyqtSlot(str, result=str)
+    def read_xyz_paths(self, paths_json: str) -> str:
+        """Dropped .xyz files by path, read like pick_xyz_files."""
+        try:
+            paths = json.loads(paths_json or "null")
+            if not isinstance(paths, list) or not all(isinstance(x, str) for x in paths):
+                raise ValueError("expected a list of paths")
+        except ValueError as e:
+            return json.dumps(XyzFilesResult(ok=False, error=str(e), files=[]))
+        return json.dumps(XyzFilesResult(ok=True, cancelled=False,
+                                         files=xyz_file_entries(paths)))
 
     @pyqtSlot(result=str)
     def open_queue_window(self) -> str:
@@ -1671,7 +1768,9 @@ class Bridge(QObject):
         c = self.store.get(name)
         if c is None:
             return json.dumps(GetCalcResult(ok=False, error="not found"))
-        return json.dumps(GetCalcResult(ok=True, calc=calc_to_session_dict(c)))
+        return json.dumps(GetCalcResult(
+            ok=True, calc=calc_to_session_dict(c),
+            levels=inpsets.level_forms(c.raw_text) if c.set_name else []))
 
     @pyqtSlot(int, result=str)
     def get_log(self, since: int) -> str:

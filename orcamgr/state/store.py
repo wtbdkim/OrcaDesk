@@ -24,13 +24,14 @@ from typing import Optional
 
 from ..core.queue import (
     GATES, KNOWN_KINDS, REF_POINTS, Calculation, CalcState, GeometrySource,
-    QueueEngine, QueueCallbacks, gate_waiting, result_from_output,
-    validate_result,
+    QueueEngine, QueueCallbacks, gate_waiting, ref_point_problem,
+    result_from_output, template_hess_problem, validate_result,
 )
-from ..core.input_generator import (CONSTRAINED_KINDS, SCAN_KINDS, StepConfig,
+from ..core.input_generator import (CONSTRAINED_KINDS, JOB_PLACEHOLDER,
+                                    SCAN_KINDS, StepConfig,
                                     constraint_index_error,
                                     constraint_linear_warning,
-                                    raw_geometry_mismatch)
+                                    raw_geometry_mismatch, template_job_error)
 from ..core.structure import parse_block
 from ..core.runner import OrcaRunError
 from ..core.procutil import process_matches
@@ -39,8 +40,8 @@ from ..paths import data_dir, user_data_root
 # contract with web/types.js)
 from .schemas import (CalcFull, CalcSummary, LogLine, LogPayload,
                       QueueSnapshot, RunResources, SystemInputSummary,
-                      SystemSummary)
-from .inpsets import mlip_config_from_text
+                      SystemSummary, XyzFileEntry)
+from .inpsets import MLIP_KEYS, mlip_config_from_text
 
 # States whose calculations the user may still edit / reorder.
 # PENDING: never run yet. CANCELLED: a deliberate user stop, not a failure, so
@@ -361,10 +362,33 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
     # the calc runs as an ordinary MLIP calc. The text is kept as raw_text,
     # where the queue editor shows it; is_raw is what says it is not used.
     if is_raw and kind.startswith("mlip"):
+        # The text is the whole MLIP setting: a key it leaves out is the
+        # default, not whatever an edited calc's old config held (update_calc
+        # merges the old config in before this runs).
+        defaults = StepConfig()
+        for field in MLIP_KEYS.values():
+            setattr(cfg, field, getattr(defaults, field))
         for field, value in mlip_config_from_text(_s("raw_text")).items():
             setattr(cfg, field, value)
         is_raw = False
+    # An ORCA inp set is a level: its `!` line holds {{JOB}}, filled from this
+    # calc's kind at launch (input_generator.render_template_text). A kind
+    # with no job keyword is refused HERE, when it is added or its Type is
+    # changed -- at launch it would be a FAILED calc, and FAILED is locked
+    # (P24). Never on restore, which must not evict a run's record.
+    if (not restoring and is_raw and JOB_PLACEHOLDER in _s("raw_text")
+            and template_job_error(kind)):
+        raise ValueError(template_job_error(kind))
     graph = _graph_fields(d, restoring)
+    # A text that reads a parent's Hessian ({{HESS}}, or an inp-set IRC whose
+    # %irc block reads one) with no parent to take it from could only fail at
+    # launch -- refused here, never on restore (the same rule as above).
+    if not restoring and is_raw:
+        err = template_hess_problem(
+            name, kind, _s("raw_text"), graph.get("set_name", ""),
+            graph.get("after", ""), src == "reference" and bool(_s("ref_name")))
+        if err:
+            raise ValueError(err)
 
     # A constraint naming an atom the coordinates do not have is refused when it
     # is ADDED, not at launch: build_input refuses it too, but by then the calc
@@ -594,10 +618,45 @@ def _single_structure(text: str) -> str:
     if not frames and first.isdigit():
         raise ValueError(f"Its first line says {first} atoms, and the file does "
                          "not hold them.")
+    if frames:
+        # Coordinate lines left after the one frame its header counts: the
+        # header undercounts, and taking the frame would drop atoms silently.
+        lines = text.splitlines()
+        start = next(i for i, ln in enumerate(lines)
+                     if ln.strip() not in ("", ">"))
+        count = int(lines[start].split()[0])
+        extra = parse_block("\n".join(lines[start + count + 2:]))
+        if extra:
+            raise ValueError(
+                f"Its first line says {count} atoms, but it holds "
+                f"{count + len(extra)} coordinate lines. Fix the atom count.")
     coords = strip_xyz_header(frames[0][1]) if frames else strip_xyz_header(text)
     if not parse_block(coords):
         raise ValueError("No coordinates found in it.")
     return coords
+
+
+def xyz_file_entries(paths) -> "list[XyzFileEntry]":
+    """Several .xyz files read for the queue editor (a multi-pick, a drop):
+    per path its file name, the system name its stem gives, and its one
+    structure as a coordinate block -- or why it cannot start a row (an
+    unreadable file, several frames, no coordinates), by the same rules as
+    add_xyz_systems. Read utf-8-sig (a BOM ORCA would refuse)."""
+    out: "list[XyzFileEntry]" = []
+    for p in paths or []:
+        path = str(p)
+        label = Path(path.replace("\\", "/")).name
+        entry = XyzFileEntry(path=path, label=label, name="", xyz="", error="")
+        try:
+            entry["name"] = _xyz_stem(path)
+            text = Path(path).read_text(encoding="utf-8-sig", errors="replace")
+            entry["xyz"] = _single_structure(text)
+        except OSError as e:
+            entry["error"] = e.strerror or str(e)
+        except ValueError as e:
+            entry["error"] = str(e)
+        out.append(entry)
+    return out
 
 
 def system_summary(s: dict) -> SystemSummary:
@@ -1018,6 +1077,7 @@ class QueueStore:
         """Append a calculation. Raises ValueError on duplicate name (and, while
         the queue is running, on a reference that isn't in the queue)."""
         with self._lock:
+            self._check_ref_point(calc, self._calcs)
             self._add_into(self._calcs, self._systems, calc)
             self._bump_and_save()
 
@@ -1109,9 +1169,20 @@ class QueueStore:
         runs on the next Run.
         Raises ValueError if the target isn't editable, or on a name clash."""
         with self._lock:
+            self._check_ref_point(
+                new_calc, [c for c in self._calcs if c.name != name])
             self._replace_in(self._calcs, self._systems, name, new_calc)
             self._bump_and_save()
             return True
+
+    @staticmethod
+    def _check_ref_point(calc: Calculation, calcs: "list[Calculation]") -> None:
+        """Refuse a ref_point irc_f / irc_b on a parent that writes no IRC end
+        points (ref_point_problem): it could only stop at run time."""
+        parent = next((c for c in calcs if c.name == calc.ref_name), None)
+        problem = ref_point_problem(calc, parent)
+        if problem:
+            raise ValueError(problem)
 
     def _replace_in(self, calcs: "list[Calculation]", systems: "list[dict]",
                     name: str, new_calc: Calculation,
@@ -1225,6 +1296,20 @@ class QueueStore:
                     problem = self._missing_dependency(c, names)
                     if problem:
                         raise QueueOpError(problem, None)
+            # A ref_point on a parent that writes no IRC end points, judged on
+            # the final state for every row this batch added or rebuilt (or
+            # whose parent it rebuilt) -- a batch may add the parent last.
+            live_ids = {id(c) for c in self._calcs} | set(placed)
+            by_name = {c.name: c for c in calcs}
+            for c in calcs:
+                if not c.ref_point or c.state not in EDITABLE_STATES:
+                    continue
+                parent = by_name.get(c.ref_name)
+                if id(c) in live_ids and (parent is None or id(parent) in live_ids):
+                    continue
+                problem = ref_point_problem(c, parent)
+                if problem:
+                    raise QueueOpError(problem, None)
             # A placed row goes back into the list as the SAME object, with
             # only its placement written onto it: the engine tracks rows by
             # identity and may hold this one (a running or finished row).
@@ -1232,18 +1317,21 @@ class QueueStore:
                 entry = placed.get(id(c))
                 if entry is not None and entry[0] is c:
                     live = entry[1]
-                    for f in self._PLACE_KEYS:
+                    for f in self._PLACE_KEYS + ("approved",):
                         setattr(live, f, getattr(c, f))
                     calcs[i] = live
             self._calcs[:] = calcs
             self._systems[:] = systems
             self._bump_and_save()
 
-    def add_xyz_systems(self, files, inp_set: dict, suffix: str = "") -> dict:
+    def add_xyz_systems(self, files, inp_set: dict, suffix: str = "",
+                        kind: str = "") -> dict:
         """The queue editor's "drop .xyz" recipe: per file, one system named
         after the file's stem holding that structure as its input, and one
         calculation ``stem + suffix`` built from ``inp_set`` (a template calc:
-        raw text, or an MLIP config) starting from it.
+        raw text, or an MLIP config) starting from it. ``kind`` is what an
+        ORCA level runs as (the recipe's single point: "sp" when not given);
+        an MLIP set runs as ``mlip_opt``.
 
         ``files`` is ``[(label, text)]`` — the label is what the refusal names
         and what the stem is taken from (a path or a file name). Each file is
@@ -1253,7 +1341,14 @@ class QueueStore:
         Returns {added: [calc names], systems: [ids], refused: [{file, reason}]}.
         """
         from .inpsets import calc_kind_for_set
-        kind = calc_kind_for_set(inp_set.get("kind", ""))
+        set_kind = inp_set.get("kind", "")
+        if set_kind == "ORCA":
+            kind = kind or "sp"
+            err = template_job_error(kind)
+            if err:
+                raise ValueError(err)
+        else:
+            kind = calc_kind_for_set(set_kind)
         added: list[str] = []
         ids: list[str] = []
         refused: list[dict] = []
@@ -1379,13 +1474,38 @@ class QueueStore:
                       if k not in ("state", "message", "output_path", "pid",
                                    "create_time")}
             merged.update(patch)
+            if "kind" in patch and "config" not in patch and isinstance(
+                    merged.get("config"), dict):
+                # a Type change: the config describes the calc's kind too
+                # (StepConfig.kind), so it follows rather than keeping the old
+                merged["config"] = {**merged["config"], "kind": patch["kind"]}
             if ("raw_text" in patch and merged.get("set_name")
                     and str(merged.get("kind", "")).startswith("mlip")):
                 # an MLIP template's text (a calc that came from an inp set)
                 # is applied to the config again by calc_from_dict — the
                 # stored calc reads is_raw false
                 merged["is_raw"] = True
-            self._replace_in(calcs, systems, name, calc_from_dict(merged),
+            new_calc = calc_from_dict(merged)
+            if set(patch) == {"approved"} and current.state == CalcState.PENDING:
+                # An approval-only patch on a waiting row keeps the LIVE object
+                # (written back at commit, like place_calc): the engine pins
+                # its keep-existing answers to row identity (_skip_ids), and a
+                # replacement would make a row the user chose to keep re-run.
+                if self._running and self._engine_active(name):
+                    raise ValueError(
+                        "Cannot edit: this calculation is about to run.")
+                idx = calcs.index(current)
+                entry = placed.get(id(current)) if placed is not None else None
+                if entry is not None and entry[0] is current:
+                    moved = current
+                else:
+                    moved = copy.copy(current)
+                    if placed is not None:
+                        placed[id(moved)] = (moved, current)
+                moved.approved = new_calc.approved
+                calcs[idx] = moved
+                return
+            self._replace_in(calcs, systems, name, new_calc,
                              check_refs=False)
         elif kind == "place_calc":
             self._place_calc(calcs, systems, op, {} if placed is None else placed)
@@ -1426,7 +1546,8 @@ class QueueStore:
         calc's geometry reference and `after` at the new names. It is refused
         once any calc of the lane has started — a started calc's name is its
         folder on disk — and while the engine holds one. Charge and
-        multiplicity propagate to the lane's editable calcs. Every calc this
+        multiplicity propagate to the lane's editable calcs that had the
+        lane's old value; a calc set apart (its own multiplicity) keeps it. Every calc this
         touches is an edit (a new object, PENDING again), like replace()."""
         sid = op.get("id")
         idx = next((i for i, o in enumerate(systems) if o["id"] == sid), None)
@@ -1476,8 +1597,14 @@ class QueueStore:
             if c.after in rename:
                 changes["after"] = rename[c.after]
             if recharge and c.system == sid:
-                changes["charge"] = new["charge"]
-                changes["multiplicity"] = new["multiplicity"]
+                # only a member that ran at the row's old value follows: one
+                # set apart on purpose (a triplet SP in a singlet row) keeps
+                # its own, and undoing the recharge returns exactly these
+                if new["charge"] != old["charge"] and c.charge == old["charge"]:
+                    changes["charge"] = new["charge"]
+                if (new["multiplicity"] != old["multiplicity"]
+                        and c.multiplicity == old["multiplicity"]):
+                    changes["multiplicity"] = new["multiplicity"]
             if not changes:
                 continue
             if self._engine_active(c.name):

@@ -44,7 +44,7 @@ launching. Any port above 1024 works. It is off unless you set it.)
 | `boot.js` | channel, polled queue/log, per-calculation trackers, routing (`?win=`, dropped files, the hand-over to the queue window), toast/modal |
 | `rail.js` | the main window's queue rail — a 256px status strip (dot + name per row), run controls, *Open queue* |
 | `build.js` | the builder (a cell becomes the form); hosted in the queue editor's inspector |
-| `qed.js` | the queue window: inp-set library, lanes of nodes and edges, inspector (a block, an edge, or -- nothing selected -- the inp-set editor), undo |
+| `qed.js` | the queue window: inp-set library (ORCA levels, MLIP sets), lanes of nodes and edges, multi-select and workflow copy/paste, inspector (a block with its Type and rendered input, several blocks, an edge, or -- nothing selected -- the inp-set editor), undo |
 | `stream.js` | one cell per calculation: thumbnail, chart, output, facts |
 | `results.js` | the report — sections, charts, input/output, reaction profile |
 | `settings.js` | the settings slide-over |
@@ -72,9 +72,17 @@ in both.
 The two pages share no JS. What the main window asks of the queue window (open
 the builder with a seed, load a dropped `.inp`, show a calculation) is written
 to the UI-state key `queue.handoff` by `NB.handOff()`, which then calls
-`open_queue_window`; the queue window takes it on its next poll while on
-screen. The editor holds no queue state: every change is an
-`apply_queue_ops` batch, and Ctrl+Z sends the inverse batch. DESIGN.md §17.6.
+`open_queue_window`; the queue window takes it (`NB.takeHandOff`, through
+the `take_ui_state` slot: read and cleared in one step) on its next poll and
+when it becomes visible. The editor holds no queue state: every change is an
+`apply_queue_ops` batch, and Ctrl+Z sends the inverse batch -- refused when it
+would remove a calculation that has started, with an `order` rebuilt from the
+queue as it is then. DESIGN.md §17.6.
+The one thing besides the hand-over that crosses windows is the copied
+**workflow** (Ctrl+C in the queue window): kept in the editor and mirrored
+under the UI-state key `queue.workflow`, so a `.xyz` dropped on the main
+window can run it when the drop recipe says so. A level's rendered input is
+`build_inp_preview` -- never render `{{JOB}}` in JS.
 
 To work on the queue window, open it (*Open queue*) and press F5 in it: it
 reloads on its own, like the main window.
