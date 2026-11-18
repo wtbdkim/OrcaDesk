@@ -146,9 +146,10 @@ class InpSet(TypedDict):
     """state/inpsets.py — a saved input template."""
     id: str
     name: str
-    kind: str                 # "MLIP" | "Opt" | "OptTS" | "Freq" | "IRC" | "SP"
-    text: str                 # raw ORCA input with {{GEOMETRY}} {{CHARGE}}
-                              # {{MULT}} {{HESS}}; MLIP: "key value" lines
+    kind: str                 # "ORCA" (a level of theory) | "MLIP"
+    text: str                 # ORCA: a whole input, {{JOB}} on its ! line and
+                              # {{GEOMETRY}}, optionally {{CHARGE}} {{MULT}}
+                              # {{HESS}}; MLIP: "key value" lines
 
 
 class LogLine(TypedDict):
@@ -563,6 +564,10 @@ class MutationResult(_Ok, total=False):
 class GetCalcResult(_Ok, total=False):
     error: str
     calc: CalcFull
+    #: the level texts its raw_text becomes under the inp-set migration
+    #: (inpsets.level_forms): the editor's "not modified" test for a block
+    #: made from a schema-1 set
+    levels: "list[str]"
 
 
 class InpSetsResult(_Ok, total=False):
@@ -570,6 +575,11 @@ class InpSetsResult(_Ok, total=False):
     error: str
     sets: "list[InpSet]"
     defaults: "dict[str, str]"   # set kind -> its seeded text ("+ New")
+    jobs: "dict[str, str]"       # calc kind -> what {{JOB}} becomes for it
+                                 # (input_generator.TEMPLATE_JOB_KEYWORDS)
+    next_kind: "dict[str, str]"  # calc kind -> the kind a level placed after it
+                                 # runs by default ("" = a row's start; any
+                                 # kind not listed: "sp") — inpsets.NEXT_KIND
 
 
 class InpSetResult(_Ok, total=False):
@@ -596,6 +606,22 @@ class QueueOpsResult(_Ok, total=False):
 class XyzRefusal(TypedDict):
     file: str                 # the file's label / path as given
     reason: str
+
+
+class XyzFileEntry(TypedDict):
+    """One picked / dropped .xyz, read (store.xyz_file_entries)."""
+    path: str
+    label: str                # the file name
+    name: str                 # its stem: the system name it gives ("" if none)
+    xyz: str                  # its one structure as a coordinate block, "" if refused
+    error: str                # why it cannot start a row, "" if it can
+
+
+class XyzFilesResult(_Ok, total=False):
+    """pick_xyz_files / read_xyz_paths: several .xyz files read at once."""
+    error: str
+    cancelled: bool
+    files: "list[XyzFileEntry]"
 
 
 class XyzSystemsResult(_Ok, total=False):

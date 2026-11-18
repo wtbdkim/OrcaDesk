@@ -334,3 +334,40 @@ def test_crest_markers_pass_the_byte_prefilter(line):
     from orcamgr.gui.bridge import _CREST_GRAPH
     if _CREST_GRAPH.search(line):
         assert candidate_starts(line.encode("utf-8")) == [0], line
+
+
+# The SCF settings block's target (web/scf_graph.js TOLE_RE): a reseeded graph
+# must run its SCF bar to what ORCA printed, not to the tier guessed from the
+# kind. Verbatim from ORCA 6.1.1; the flush-left line is the geometry
+# optimizer's own energy criterion, which the SCF tracker ignores.
+SCF_TOLE = " Energy Change          TolE            ....  1.000e-09 Eh"
+GEO_TOLE = "Energy Change            TolE     ....  5.0000e-06 Eh"
+
+
+def test_the_scf_target_line_passes_the_byte_prefilter():
+    from orcamgr.core.replay import candidate_starts
+    assert candidate_starts(SCF_TOLE.encode("utf-8")) == [0]
+
+
+def test_the_replay_keeps_each_scf_target_and_not_the_optimizers(tmp_path):
+    from orcamgr.core.replay import graph_lines_of
+    p = _write(tmp_path, "\n".join([
+        "Convergence Tolerances:", GEO_TOLE, "",
+        "Convergence Tolerance:", SCF_TOLE,
+        " DIIS Error             TolErr          ....  5.000e-07",
+        "   1   -76.3000000000   0.000000000000  0.01  0.02",
+        "   2   -76.4000000000  -1.00e-01  0.01  0.02",
+    ]) + "\n")
+    lines = graph_lines_of(p)
+    assert SCF_TOLE in lines
+    assert GEO_TOLE not in lines
+    assert lines.index(SCF_TOLE) < lines.index("   2   -76.4000000000  -1.00e-01  0.01  0.02")
+
+
+def test_the_scan_fixture_replays_its_scf_targets():
+    # a real relaxed scan: one SCF settings block per point, all at 1e-8
+    import pathlib
+    from orcamgr.core.replay import graph_lines_of
+    out = pathlib.Path(__file__).parent / "scan" / "fixtures" / "h2o_angle_scan.out"
+    kept = [ln for ln in graph_lines_of(out) if "TolE" in ln]
+    assert kept and all(ln.startswith(" Energy Change") and "1.000e-08" in ln for ln in kept)

@@ -53,7 +53,7 @@ from typing import Callable, Optional
 from .input_generator import (
     StepConfig, build_input, render_raw_input, raw_coordinate_block,
     raw_geometry_mismatch, GEOMETRY_PLACEHOLDER, HESS_PLACEHOLDER,
-    render_template_values, check_neb_atom_order,
+    render_template_text, template_hess_need, check_neb_atom_order,
     _xyz_elements, irc_hess_input_name, irc_hess_is_path, SCAN_KINDS, normalize_scan,
 )
 from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
@@ -357,6 +357,54 @@ GATES = ("auto", "approval")
 REF_POINTS = ("", "irc_f", "irc_b")
 # ref_point -> the file ORCA writes for that IRC end, beside {ref}.out
 _IRC_END_FILES = {"irc_f": "_IRC_F.xyz", "irc_b": "_IRC_B.xyz"}
+# The kinds whose run can write those end files: an IRC, and a "general" calc
+# (a raw input of any content). Any other parent never writes them, so a
+# ref_point on it is refused when it is added (QueueStore) rather than left
+# to block at run time.
+IRC_END_KINDS = ("irc", "general")
+
+
+class OrcaBlocked(OrcaRunError):
+    """A pre-launch problem the user fixes by editing the row or running its
+    parent first -- a missing parent Hessian a template asks for, a missing
+    IRC end file. Nothing launched, so the row is stamped BLOCKED (editable,
+    re-tried on the next Run), never FAILED (locked, P24)."""
+
+
+def ref_point_problem(calc: "Calculation", parent: "Optional[Calculation]") -> str:
+    """The refusal for a ref_point irc_f / irc_b whose parent's kind cannot
+    write IRC end points, or "" (no ref_point, no parent in hand, or an IRC)."""
+    if (calc.ref_point not in _IRC_END_FILES or parent is None
+            or calc.geometry_source != GeometrySource.REFERENCE):
+        return ""
+    if parent.kind in IRC_END_KINDS:
+        return ""
+    side = "forward" if calc.ref_point == "irc_f" else "backward"
+    return (f"'{calc.name}' starts from the {side} IRC end point of "
+            f"'{parent.name}', but '{parent.name}' is not an IRC "
+            f"({parent.kind}) and writes no IRC end points.")
+
+
+def template_hess_problem(name: str, kind: str, raw_text: str, set_name: str,
+                          after: str, has_reference: bool) -> str:
+    """The refusal for an input that needs a parent's Hessian but has no
+    parent to take it from, or "". A text naming {{HESS}} takes the .hess of
+    the calc it runs after or of its geometry source; so does an inp-set IRC
+    whose own %irc block reads a Hessian (InitHess read + a relative
+    Hess_Filename, staged from the referenced calc's folder). With neither an
+    `after` nor a geometry reference the run could only fail."""
+    if after or has_reference:
+        return ""
+    text = raw_text or ""
+    needs = template_hess_need(text, kind) == "required"
+    if not needs and set_name and kind == "irc":
+        hess = QueueEngine._raw_irc_hess_file(text)
+        needs = bool(hess) and not Path(hess).is_absolute()
+    if not needs:
+        return ""
+    return (f"'{name}' reads a Hessian from the calculation it runs after "
+            "(or its geometry source), but it has neither. Connect it after a "
+            "frequency calculation first.")
 
 # The kinds an approval gate may pass by itself after (Calculation.auto_pass):
 # every kind whose result carries a frequency table, and the imaginary-mode
@@ -368,28 +416,21 @@ def _expected_imaginary(kind: str) -> int:
     return 1 if kind in ("ts_freq", "ts_opt_freq") else 0
 
 
-def gate_auto_passes(calc: "Calculation", parent: "Calculation",
-                     parse: bool = False) -> bool:
+def gate_auto_passes(calc: "Calculation", parent: "Calculation") -> bool:
     """Whether `calc`'s approval gate passes by itself: auto_pass is on, the
     parent is a frequency calculation, and its imaginary-mode count is the one
     its kind expects (1 for a TS frequency, else 0).
 
-    The count is read from the parent's result. With ``parse`` (the engine) a
-    DONE parent restored without one is parsed on a miss, like
-    _resolve_geometry does, and the result is kept on the parent. Without a
-    result to read (the snapshot never parses; an output that cannot be read)
-    the answer falls back to what DONE already says: a frequency calc reaches
-    DONE only through validate_result, and for every kind in _GATE_FREQ_KINDS
-    that rule IS the expected count — so the two cannot disagree."""
+    The count is read from the parent's result. Without one (a DONE parent
+    restored from a session) the answer is what DONE already says: a
+    frequency calc reaches DONE only through validate_result, and for every
+    kind in _GATE_FREQ_KINDS that rule IS the expected count — so the two
+    cannot disagree. Nothing is parsed here: the engine asks under the store
+    lock (P37), and a large frequency output took ~1 s to read, stalling every
+    snapshot the UI polls."""
     if not calc.auto_pass or parent.kind not in _GATE_FREQ_KINDS:
         return False
     result = parent.result
-    if result is None and parse and parent.output_path:
-        try:
-            if Path(parent.output_path).is_file():
-                result = parent.result = result_from_output(parent)
-        except Exception:
-            result = None
     if result is None:
         return parent.state == CalcState.DONE
     return int(getattr(result, "n_imaginary", 0) or 0) == _expected_imaginary(parent.kind)
@@ -406,8 +447,7 @@ def _parent_names(calc: "Calculation") -> "list[str]":
     return out
 
 
-def gate_waiting(calc: "Calculation", parent: "Optional[Calculation]",
-                 parse: bool = False) -> bool:
+def gate_waiting(calc: "Calculation", parent: "Optional[Calculation]") -> bool:
     """True when `calc` is held at its approval gate: it would run (PENDING or
     CANCELLED), the calc it runs after is DONE, its gate is "approval", it is
     not approved and the gate does not pass by itself. Such a row is skipped
@@ -419,7 +459,7 @@ def gate_waiting(calc: "Calculation", parent: "Optional[Calculation]",
         return False
     if parent.state != CalcState.DONE:
         return False
-    return not gate_auto_passes(calc, parent, parse=parse)
+    return not gate_auto_passes(calc, parent)
 
 
 def validate_result(calc: Calculation, result: ParseResult) -> None:
@@ -527,6 +567,30 @@ def result_from_output(calc: Calculation):
     return parse_file(str(calc.output_path))
 
 
+def find_parent_hessian(calc: "Calculation", by_name: "dict",
+                        workspace_root: Path) -> "tuple[Optional[Path], list[str]]":
+    """The Hessian an inp-set template takes from a parent, and every place
+    looked: the ``{after}.hess`` of the calc this one runs after, else the
+    ``{ref}.hess`` of its geometry source. Each parent's folder is its
+    output_path's (a restored session may live in another workspace), else
+    {workspace}/{name}. (None, looked) when there is none. Shared by the
+    engine (which stages what it finds) and the queue editor's preview."""
+    parents = [calc.after]
+    if calc.geometry_source == GeometrySource.REFERENCE:
+        parents.append(calc.ref_name)
+    looked: "list[str]" = []
+    for pname in dict.fromkeys(p for p in parents if p and p != calc.name):
+        parent = by_name.get(pname)
+        folder = (Path(parent.output_path).parent
+                  if parent is not None and parent.output_path
+                  else Path(workspace_root) / pname)
+        src = folder / f"{pname}.hess"
+        looked.append(str(src))
+        if src.is_file():
+            return src, looked
+    return None, looked
+
+
 class QueueEngine:
     """Runs a list of Calculations in order, resolving geometry references."""
 
@@ -595,9 +659,6 @@ class QueueEngine:
         self._slot_cv = threading.Condition(self._queue_lock)
         # Per-job state for the thread running it (see _job).
         self._job_local = threading.local()
-        # Gate parents whose result _gate_holds already tried to parse (id ->
-        # the object, pinned so the id cannot be recycled onto another row).
-        self._gate_parse_tried: "dict[int, Calculation]" = {}
 
     # -- per-job state ----------------------------------------------------
     @property
@@ -763,7 +824,7 @@ class QueueEngine:
         side = "forward" if calc.ref_point == "irc_f" else "backward"
         path = folder / f"{ref.name}{_IRC_END_FILES[calc.ref_point]}"
         if not path.is_file():
-            raise OrcaRunError(
+            raise OrcaBlocked(
                 f"'{calc.ref_name}' has no {side} IRC end point: {path.name} is "
                 f"not in {folder}. ORCA writes it only when the IRC runs in that "
                 "direction (check its %irc Direction).")
@@ -1062,51 +1123,47 @@ class QueueEngine:
     def _render_template_values(self, calc: Calculation, text: str,
                                 calc_dir: Path) -> str:
         """Fill an inp-set template's own placeholders (the geometry one is
-        render_raw_input's): {{CHARGE}} / {{MULT}} with the calculation's
-        charge and multiplicity, and {{HESS}} with the bare file name of a
-        Hessian staged into the run folder (_stage_template_hessian). A text
-        without them is returned unchanged."""
-        text = render_template_values(text, calc.charge, calc.multiplicity)
-        if HESS_PLACEHOLDER in text:
-            text = text.replace(HESS_PLACEHOLDER,
-                                self._stage_template_hessian(calc, calc_dir))
-        return text
+        render_raw_input's) through render_template_text, the one renderer
+        the queue editor's preview shows too: {{JOB}} with the calculation
+        kind's job keyword plus that kind's block (%geom / %irc, unless the
+        text has its own), {{CHARGE}} / {{MULT}} with its charge and
+        multiplicity, and {{HESS}} with the bare file name of a Hessian staged
+        into the run folder. A {{JOB}} IRC reads the parent's .hess when one
+        is there and computes its own Hessian otherwise; a text naming
+        {{HESS}} needs one (none is an OrcaRunError before launch). A text
+        without placeholders is returned unchanged; a {{JOB}} text for a kind
+        with no job keyword is an OrcaRunError before anything launches."""
+        need = template_hess_need(text, calc.kind)
+        hess = ""
+        if need:
+            src, looked = find_parent_hessian(calc, self._by_name, self.workspace_root)
+            if src is not None:
+                hess = self._stage_template_hessian(calc, calc_dir, src)
+            elif need == "required":
+                where = "; ".join(looked) if looked else (
+                    "this calculation runs after nothing and references no calculation")
+                raise OrcaBlocked(
+                    f"The input asks for a Hessian ({HESS_PLACEHOLDER}), but none was "
+                    f"found (looked in: {where}). It is the .hess of the calculation this "
+                    "one runs after, or of its geometry source — run a frequency "
+                    "calculation there first.")
+        try:
+            return render_template_text(text, calc.kind, calc.charge,
+                                        calc.multiplicity, hess)
+        except ValueError as e:
+            raise OrcaRunError(str(e))
 
-    def _stage_template_hessian(self, calc: Calculation, calc_dir: Path) -> str:
-        """Copy the Hessian a {{HESS}} template asks for into the run folder and
-        return its bare file name: the ``{after}.hess`` of the calc this one
-        runs after, else the ``{ref}.hess`` of its geometry source. Each
-        parent's folder is its output_path's (a restored session may live in
-        another workspace), else {workspace}/{name}. None there is an
-        OrcaRunError before anything launches — ORCA would otherwise die inside
-        on a file it cannot open."""
-        parents = [calc.after]
-        if calc.geometry_source == GeometrySource.REFERENCE:
-            parents.append(calc.ref_name)
-        looked: list[str] = []
-        for pname in dict.fromkeys(p for p in parents if p and p != calc.name):
-            parent = self._by_name.get(pname)
-            folder = (Path(parent.output_path).parent
-                      if parent is not None and parent.output_path
-                      else self.workspace_root / pname)
-            src = folder / f"{pname}.hess"
-            looked.append(str(src))
-            if not src.is_file():
-                continue
-            dest = calc_dir / src.name
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if src.resolve() != dest.resolve():
-                shutil.copyfile(src, dest)
-                self.cb.log(f"[{calc.name}] copied {src.name} from {pname}'s "
-                            "folder.", "info", calc.name)
-            return src.name
-        where = "; ".join(looked) if looked else (
-            "this calculation runs after nothing and references no calculation")
-        raise OrcaRunError(
-            f"The input asks for a Hessian ({HESS_PLACEHOLDER}), but none was "
-            f"found (looked in: {where}). It is the .hess of the calculation this "
-            "one runs after, or of its geometry source — run a frequency "
-            "calculation there first.")
+    def _stage_template_hessian(self, calc: Calculation, calc_dir: Path,
+                                src: Path) -> str:
+        """Copy the parent Hessian a template uses (find_parent_hessian) into
+        the run folder and return its bare file name."""
+        dest = calc_dir / src.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if src.resolve() != dest.resolve():
+            shutil.copyfile(src, dest)
+            self.cb.log(f"[{calc.name}] copied {src.name} from "
+                        f"{src.parent.name}'s folder.", "info", calc.name)
+        return src.name
 
     def _stage_irc_hessian(self, calc: Calculation, calc_dir: Path,
                            text: str = "") -> None:
@@ -1713,20 +1770,15 @@ class QueueEngine:
         return not self._gate_holds(calc)
 
     def _gate_holds(self, calc: Calculation) -> bool:
-        """True when `calc` waits at its approval gate (gate_waiting), with the
-        `after` parent's result parsed on a miss. A parent whose output could
-        not be parsed is remembered, so the dispatcher's re-scan does not
-        re-read it every quarter second; it then falls back to DONE's own
-        guarantee (see gate_auto_passes)."""
+        """True when `calc` waits at its approval gate (gate_waiting). Read
+        from the parent's in-memory result or its DONE state -- never by
+        parsing its output, which this runs under the store lock (P37)."""
         if calc.gate != "approval" or calc.approved or not calc.after:
             return False
         parent = self._by_name.get(calc.after)
         if parent is None or parent is calc:
             return False
-        parse = id(parent) not in self._gate_parse_tried
-        if parse and parent.result is None:
-            self._gate_parse_tried[id(parent)] = parent
-        return gate_waiting(calc, parent, parse=parse)
+        return gate_waiting(calc, parent)
 
     def _handled_without_running(self, calc: Calculation) -> bool:
         """True when _precheck will dispose of this row without launching
@@ -2144,6 +2196,15 @@ class QueueEngine:
             calc.pid = None
             calc.create_time = None
             self.cb.log(f"[{calc.name}] cancelled.", "info", calc.name)
+            self.cb.calc_update(i, calc)
+        except OrcaBlocked as e:
+            # nothing launched, and the fix is an edit (or a parent's run):
+            # BLOCKED stays editable and is re-tried on the next Run
+            calc.state = CalcState.BLOCKED
+            calc.message = f"Skipped: {e}"
+            calc.pid = None
+            calc.create_time = None
+            self.cb.log(f"[{calc.name}] blocked: {e}", "warn", calc.name)
             self.cb.calc_update(i, calc)
         except OrcaRunError as e:
             calc.state = CalcState.FAILED

@@ -703,6 +703,44 @@ def test_dlpno_gets_an_aux_even_with_ri_switched_off(functional):
     assert "AutoAux" in _keyword_line(build_input(cfg, WATER_XYZ))
 
 
+# An RI-named method (or RI-only ADC2) is RI by itself: at RI "ORCA default"
+# ORCA 6.1.1 aborts "RI-MP2 needs an AuxC basis but none was defined!" (ADC2:
+# "Aux/C requested but not available" after the SCF), so it gets AutoAux unless
+# RI is NoRI -- the same rule as a double hybrid.
+_RI_METHODS = ["RI-MP2", "OO-RI-MP2", "OO-RI-SCS-MP2", "F12-RI-MP2", "RI-MP3",
+               "ADC2", "ri-mp2"]
+
+
+@pytest.mark.parametrize("functional", _RI_METHODS)
+def test_an_ri_method_gets_autoaux_at_orca_default_ri(functional):
+    cfg = StepConfig(kind="sp", functional=functional, basis_set="def2-SVP")
+    assert _auto_aux(cfg) == "AutoAux"
+    line = _keyword_line(build_input(cfg, WATER_XYZ))
+    assert line.split().count("AutoAux") == 1
+
+
+@pytest.mark.parametrize("functional", _RI_METHODS)
+def test_an_ri_method_under_an_rij_keyword_gets_autoaux(functional):
+    cfg = StepConfig(kind="sp", functional=functional, basis_set="def2-SVP",
+                     ri_approximation="RIJCOSX")
+    assert _auto_aux(cfg) == "AutoAux"
+
+
+@pytest.mark.parametrize("functional", _RI_METHODS)
+def test_an_ri_method_honours_nori(functional):
+    cfg = StepConfig(kind="sp", functional=functional, basis_set="def2-SVP",
+                     ri_approximation="NoRI")
+    assert _auto_aux(cfg) == ""
+
+
+@pytest.mark.parametrize("functional", ["MP2", "SCS-MP2", "MP3", "SCS-MP3",
+                                        "F12-MP2", "CCSD(T)"])
+def test_a_conventional_method_at_orca_default_ri_stays_without_an_aux(functional):
+    # the RI-name rule must not catch the conventional spellings
+    cfg = StepConfig(kind="sp", functional=functional, basis_set="def2-SVP")
+    assert _auto_aux(cfg) == ""
+
+
 def test_a_conventional_correlated_method_still_honours_nori():
     cfg = StepConfig(kind="sp", functional="MP2", basis_set="def2-SVP",
                      ri_approximation="NoRI")
@@ -1113,8 +1151,8 @@ def test_a_scan_survives_the_config_round_trip():
 # A setting at ORCA's own default is not written
 #
 # Measured on ORCA 6.1.1 (H2O, def2-SVP) with each keyword left out: a hybrid
-# runs RIJCOSX + def2/J; Opt raises the SCF to TightSCF (TolE 1e-8), SP and
-# Freq stay at NormalSCF; %tddft TDA on, triplets off, 3 roots; %neb 8
+# runs RIJCOSX + def2/J; Opt raises the SCF to TightSCF (TolE 1e-8) and the
+# TightOpt ORCAdesk writes to TolE 1e-9, SP and Freq stay at NormalSCF; %tddft TDA on, triplets off, 3 roots; %neb 8
 # intermediate images. Kept as ORCAdesk's own on purpose: TightOpt, and the
 # %geom / %irc MaxIter (200 / 100, always written; ORCA's are 50 / 20).
 # ---------------------------------------------------------------------------

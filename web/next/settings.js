@@ -34,8 +34,17 @@
       ${hint ? `<span class="hint">${hint}</span>` : ""}</div>`;
   }
 
-  function open() {
+  /** an open() waiting on its settings read, so a second click does not
+   *  draw the sheet twice @type {boolean} */
+  let _opening = false;
+  async function open() {
     // already open: a re-render would throw away what is typed in it
+    if (!NB.$("settings").hidden || _opening) return;
+    // the other window may have saved Settings since this one last read them:
+    // the sheet is drawn from what is saved NOW, or its Save writes old values
+    // back (boot.js NB.refreshSettings)
+    _opening = true;
+    try { await NB.refreshSettings(); } finally { _opening = false; }
     if (!NB.$("settings").hidden) return;
     render();
     NB.$("scrim").hidden = false;
@@ -525,7 +534,12 @@
   /** @param {HTMLElement} host @returns {Promise<boolean>} */
   async function doSave(host) {
     const q = (sel) => /** @type {any} */ (host.querySelector(sel));
-    const payload = collect(host);
+    // Only what was changed on this sheet: a field left alone keeps whatever
+    // is saved now, even if the other window saved it while this sheet was
+    // open (sending the whole form wrote its old value back).
+    const all = collect(host);
+    /** @type {Record<string, any>} */ const payload = {};
+    Object.keys(all).forEach(k => { if (!_baseline || all[k] !== _baseline[k]) payload[k] = all[k]; });
     const res = await NB.call("save_settings", JSON.stringify(payload));
     if (!res || res.error) { NB.fail("Could not save settings: " + ((res && res.error) || "unknown")); return false; }
     NB.settings = res;

@@ -14,6 +14,7 @@ Each step produces a complete .inp text given an XYZ coordinate block.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field, fields as dataclass_fields, asdict
 from pathlib import PurePosixPath, PureWindowsPath
 
@@ -29,8 +30,9 @@ from .structure import compare_atom_order, measure, parse_block
 #   RI        a hybrid runs RIJCOSX with def2/J chosen by ORCA ("Auxiliary
 #             Coulomb fitting basis ... AVAILABLE", COSX grid); HF and MP2 run
 #             without RI. "! ... RIJCOSX" alone gets def2/J the same way.
-#   SCF       Opt raises it to TightSCF itself (TolE 1e-8); SP and Freq stay at
-#             NormalSCF (TolE 1e-6).
+#   SCF       Opt / OptTS / IRC / NEB raise it to TightSCF itself (TolE 1e-8),
+#             and the TightOpt ORCAdesk writes raises it further (TolE 1e-9,
+#             with or without Freq); SP and Freq stay at NormalSCF (TolE 1e-6).
 #   %tddft    TDA on, triplets off, 3 roots.
 #   %irc      both directions (InitHess: a numerical Hessian).
 #   %neb      8 intermediate images.
@@ -154,6 +156,20 @@ def _is_dlpno(functional: str) -> bool:
     """True for a DLPNO method, which is RI-based by construction: turning RI
     off does not give it a conventional path, it gives it no path at all."""
     return "dlpno" in normalize_functional(functional).lower()
+
+
+def _is_ri_method(functional: str) -> bool:
+    """True for a method whose name makes it RI by itself (RI-MP2, OO-RI-MP2,
+    OO-RI-SCS-MP2, F12-RI-MP2, RI-MP3) or that ORCA only runs RI-based (ADC2).
+
+    Like a double hybrid it needs a /C set even at RI "ORCA default", and ORCA
+    6.1.1 picks none itself: "! RI-MP2 def2-SVP" aborts "RI-MP2 needs an AuxC
+    basis but none was defined!", and ADC2 aborts after the SCF ("Aux/C
+    requested but not available")."""
+    norm = normalize_functional(functional).strip().lower()
+    base = norm.split()[0] if norm else ""
+    return (base.startswith("ri-") or "-ri-" in base
+            or base.startswith("adc2"))
 
 
 def _needs_auxc(functional: str) -> bool:
@@ -795,6 +811,9 @@ def _auto_aux(cfg: "StepConfig") -> str:
     - MP2 and the coupled-cluster family get AutoAux only when the user turned
       an RI on: with no RI keyword ORCA runs them conventionally (measured:
       "! MP2 def2-SVP" runs with no aux at all).
+    - So does a method that is RI by its own name (RI-MP2, OO-RI-MP2,
+      OO-RI-SCS-MP2, F12-RI-MP2, RI-MP3) or RI-only (ADC2): at RI "ORCA
+      default" ORCA aborts for want of the /C set (6.1.1).
     - A DLPNO method always gets it (there is no conventional DLPNO).
     - RIJK fits exchange too and ORCA picks no /JK itself ("no AuxJK basis set
       in ORCA_GTOInt!"), so it gets def2/JK (AutoAux off def2).
@@ -835,8 +854,9 @@ def _auto_aux(cfg: "StepConfig") -> str:
         # stays for everything else.
         if _is_dlpno(cfg.functional):
             return "AutoAux"
-        if _is_double_hybrid(cfg.functional):
-            # RI-MP2 is a double hybrid's default; only NoRI takes it off
+        if _is_double_hybrid(cfg.functional) or _is_ri_method(cfg.functional):
+            # RI-MP2 is a double hybrid's default, and an RI-named method (or
+            # ADC2) is RI by itself; only NoRI takes it off
             return "" if ri_raw.strip() == "NORI" else "AutoAux"
         # MP2 / CC: conventional unless the user asked for an RI
         return "" if _ri_is_off(cfg.ri_approximation) else "AutoAux"
@@ -891,6 +911,107 @@ def render_template_values(text: str, charge: int, multiplicity: int) -> str:
                 .replace(MULT_PLACEHOLDER, str(int(multiplicity))))
 
 
+# An inp set is a LEVEL of theory, not a job: its `!` line holds {{JOB}} where
+# the job keyword goes, and the block made from it says which job by its kind
+# (the queue editor's Type). TEMPLATE_JOB_KEYWORDS is what {{JOB}} becomes per
+# kind -- the job line the Guided builder writes for that kind (build.js
+# KINDS[].calc). A kind not listed has no level-only form (NEB-TS needs its
+# product, TD-DFT its %tddft block, a General input is the user's alone, MLIP
+# and CREST run no ORCA input) and is refused, at the store's trust boundary
+# and again before launch.
+JOB_PLACEHOLDER = "{{JOB}}"
+TEMPLATE_JOB_KEYWORDS = {
+    "opt": "TightOpt", "ts_opt": "OptTS", "freq": "Freq", "ts_freq": "Freq",
+    "opt_freq": "TightOpt Freq", "ts_opt_freq": "OptTS Freq", "irc": "IRC",
+    "sp": "SP", "nmr": "NMR",
+}
+
+
+def template_job_error(kind: str) -> str:
+    """Why a {{JOB}} template cannot run as ``kind``, or ""."""
+    if kind in TEMPLATE_JOB_KEYWORDS:
+        return ""
+    return (f"An inp-set template ({JOB_PLACEHOLDER}) cannot run as a '{kind}' "
+            "calculation: its job keyword is one of "
+            + ", ".join(sorted(TEMPLATE_JOB_KEYWORDS)) + ".")
+
+
+def _has_block(text: str, name: str) -> bool:
+    return re.search(r"^[ \t]*%" + name + r"\b", text, re.I | re.M) is not None
+
+
+def template_hess_need(text: str, kind: str) -> str:
+    """What a template asks of a parent's Hessian: "required" when its text
+    names {{HESS}} (none found is a refusal), "optional" when it is a {{JOB}}
+    IRC that gets ORCAdesk's own %irc block (it reads the parent's .hess when
+    there is one, else computes the Hessian), "" otherwise."""
+    if HESS_PLACEHOLDER in text:
+        return "required"
+    if (JOB_PLACEHOLDER in text and kind == "irc"
+            and not _has_block(text, "irc")):
+        return "optional"
+    return ""
+
+
+def template_job_block(text: str, kind: str, hess_name: str = "") -> "list[str]":
+    """The block ORCAdesk adds to a {{JOB}} template for ``kind``, as lines,
+    or [] -- the one the Guided generator writes for that kind (build_input,
+    via the same helpers): ``%geom`` MaxIter (+ Calc_Hess for a TS
+    optimization), or ``%irc`` MaxIter with InitHess read + Hess_Filename when
+    ``hess_name`` is given, else InitHess calc_anfreq. A template that already
+    has that block gets nothing: the user's own block wins, whole."""
+    if kind in CONSTRAINED_KINDS and not _has_block(text, "geom"):
+        return ["%geom", *_geom_job_lines(kind), "end"]
+    if kind == "irc" and not _has_block(text, "irc"):
+        return _irc_lines(StepConfig(
+            kind="irc", irc_init_hess="read" if hess_name else "calc_anfreq",
+            irc_hess_file=hess_name))
+    return []
+
+
+def render_template_job(text: str, kind: str, hess_name: str = "") -> str:
+    """``text`` with {{JOB}} replaced by ``kind``'s job keyword and that kind's
+    extra block inserted right before the coordinate block (``* xyz`` /
+    ``* xyzfile``; at the end when there is none). A text without {{JOB}} is
+    returned unchanged -- an input written before sets were levels runs as
+    written. ValueError for a kind with no job keyword."""
+    if JOB_PLACEHOLDER not in text:
+        return text
+    err = template_job_error(kind)
+    if err:
+        raise ValueError(err)
+    block = template_job_block(text, kind, hess_name)
+    out = text.replace(JOB_PLACEHOLDER, TEMPLATE_JOB_KEYWORDS[kind])
+    if not block:
+        return out
+    lines = out.split("\n")
+    at = next((i for i, ln in enumerate(lines)
+               if ln.strip().startswith("*")
+               and ln.strip()[1:].strip().lower().startswith("xyz")), None)
+    if at is None:
+        if lines and lines[-1] == "":
+            lines[-1:] = block + [""]
+        else:
+            lines.extend(block)
+    else:
+        lines[at:at] = block
+    return "\n".join(lines)
+
+
+def render_template_text(text: str, kind: str, charge: int, multiplicity: int,
+                         hess_name: str = "") -> str:
+    """Every placeholder of an inp-set template but the geometry
+    (render_raw_input's): {{JOB}} and its block (render_template_job),
+    {{CHARGE}} / {{MULT}}, and {{HESS}} with ``hess_name`` (left as it is when
+    that is ""). The one renderer: QueueEngine runs it at launch, and the
+    queue editor's preview (Bridge.build_inp_preview) shows its result."""
+    text = render_template_job(text, kind, hess_name)
+    text = render_template_values(text, charge, multiplicity)
+    if hess_name and HESS_PLACEHOLDER in text:
+        text = text.replace(HESS_PLACEHOLDER, hess_name)
+    return text
+
+
 def irc_hess_is_path(hess: str) -> bool:
     """True when an IRC's .hess is a picked file (an absolute path) rather than
     a name inside the run folder. Judged on both path syntaxes, so a Windows
@@ -943,6 +1064,68 @@ def check_neb_atom_order(reactant_xyz: str, product_xyz: str) -> dict:
     rich = compare_atom_order(reactant_xyz, product_xyz)
     return {"ok": rich["ok"], "error": rich["error"],
             "mismatch_index": rich["mismatch_index"]}
+
+
+def _geom_job_lines(kind: str, max_iter: int = DEFAULT_GEOM_MAXITER) -> "list[str]":
+    """The lines a ``%geom`` block of an optimization carries for its kind
+    alone (no constraints, no scan): the MaxIter cap, and for a TS
+    optimization the exact initial Hessian. [] for a kind that does not
+    optimize. Shared by build_input and the inp-set template renderer
+    (render_template_text), so both write the same block."""
+    if kind not in CONSTRAINED_KINDS:
+        return []
+    out = [f"  MaxIter {max_iter}"]
+    if kind in ("ts_opt", "ts_opt_freq"):
+        # OptTS follows the LOWEST mode of its initial Hessian, and the
+        # default (Almloef's model) has no negative curvature at all, so
+        # the first steps climb a mode chosen by the model, not the
+        # reaction. Calc_Hess computes the exact Hessian inside cycle 1
+        # (after the first gradient) and the first step reads it — the
+        # settings echo still prints "InHess .... Almloef's Model"; the
+        # proof is "Evaluating the initial hessian .... (read)". Measured
+        # on ORCA 6.1.1, B3LYP-D3BJ/def2-SVP, OptTS Freq, same guess:
+        # HCN<->HNC 2 cycles vs 11 without (17 s vs 25 s); malonaldehyde
+        # proton transfer 7 vs 27 (203 s vs 355 s, ~68 s of it the
+        # Hessian). Both reached the same 1-imaginary saddle — the exact
+        # Hessian buys the start, not a different answer.
+        out.append("  Calc_Hess true")
+    return out
+
+
+def _irc_lines(cfg: StepConfig) -> "list[str]":
+    """The ``%irc`` block build_input writes for an IRC (and the template
+    renderer writes for a {{JOB}} IRC), as lines."""
+    out: "list[str]" = []
+    # IRC follows the reaction path downhill from a TS in both directions.
+    # It needs an initial Hessian to know which way is "downhill" (the
+    # imaginary mode): either compute one (calc_anfreq/calc_numfreq) or read
+    # a .hess from a previous freq/TS run.
+    out.append("%irc")
+    out.append(f"  MaxIter {cfg.irc_maxiter}")
+    direction = (cfg.irc_direction or "both").strip().lower()
+    if direction in ("forward", "backward"):
+        out.append(f"  Direction {direction}")
+    # lowercased like irc_direction just above: "READ" from a phone/API
+    # payload fell through to the else branch and silently ran calc_anfreq
+    # instead — a different, and possibly far more expensive, method than
+    # the one selected, with the named .hess quietly ignored.
+    init = (cfg.irc_init_hess or "calc_anfreq").strip().lower()
+    if init == "read":
+        hess = irc_hess_input_name(cfg.irc_hess_file)
+        if not hess:
+            # Silently substituting calc_anfreq for an explicit "read"
+            # selection would run a different (and possibly far more
+            # expensive) method than the user chose. Refuse here — the
+            # trust boundary — so phone/API payloads that bypass the
+            # form check fail loudly too.
+            raise ValueError("IRC InitHess 'read' requires a .hess filename.")
+        out.append("  InitHess read")
+        out.append(f'  Hess_Filename "{hess}"')
+    else:
+        # calc_anfreq (analytic) or calc_numfreq (numerical)
+        out.append(f"  InitHess {init if init in ('calc_anfreq', 'calc_numfreq') else 'calc_anfreq'}")
+    out.append("end")
+    return out
 
 
 def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 1) -> str:
@@ -1004,23 +1187,8 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         if err:
             raise ValueError(err)
 
-    geom = []
+    geom = _geom_job_lines(cfg.kind, cfg.max_iter)
     if cfg.kind in CONSTRAINED_KINDS:
-        geom.append(f"  MaxIter {cfg.max_iter}")
-        if cfg.kind in ("ts_opt", "ts_opt_freq"):
-            # OptTS follows the LOWEST mode of its initial Hessian, and the
-            # default (Almloef's model) has no negative curvature at all, so
-            # the first steps climb a mode chosen by the model, not the
-            # reaction. Calc_Hess computes the exact Hessian inside cycle 1
-            # (after the first gradient) and the first step reads it — the
-            # settings echo still prints "InHess .... Almloef's Model"; the
-            # proof is "Evaluating the initial hessian .... (read)". Measured
-            # on ORCA 6.1.1, B3LYP-D3BJ/def2-SVP, OptTS Freq, same guess:
-            # HCN<->HNC 2 cycles vs 11 without (17 s vs 25 s); malonaldehyde
-            # proton transfer 7 vs 27 (203 s vs 355 s, ~68 s of it the
-            # Hessian). Both reached the same 1-imaginary saddle — the exact
-            # Hessian buys the start, not a different answer.
-            geom.append("  Calc_Hess true")
         if constraints:
             # inside the ONE %geom block: a second %geom would be a second
             # block for ORCA to merge, and the generator never relies on that
@@ -1059,35 +1227,7 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         lines.append("end")
 
     if cfg.kind == "irc":
-        # IRC follows the reaction path downhill from a TS in both directions.
-        # It needs an initial Hessian to know which way is "downhill" (the
-        # imaginary mode): either compute one (calc_anfreq/calc_numfreq) or read
-        # a .hess from a previous freq/TS run.
-        lines.append("%irc")
-        lines.append(f"  MaxIter {cfg.irc_maxiter}")
-        direction = (cfg.irc_direction or "both").strip().lower()
-        if direction in ("forward", "backward"):
-            lines.append(f"  Direction {direction}")
-        # lowercased like irc_direction just above: "READ" from a phone/API
-        # payload fell through to the else branch and silently ran calc_anfreq
-        # instead — a different, and possibly far more expensive, method than
-        # the one selected, with the named .hess quietly ignored.
-        init = (cfg.irc_init_hess or "calc_anfreq").strip().lower()
-        if init == "read":
-            hess = irc_hess_input_name(cfg.irc_hess_file)
-            if not hess:
-                # Silently substituting calc_anfreq for an explicit "read"
-                # selection would run a different (and possibly far more
-                # expensive) method than the user chose. Refuse here — the
-                # trust boundary — so phone/API payloads that bypass the
-                # form check fail loudly too.
-                raise ValueError("IRC InitHess 'read' requires a .hess filename.")
-            lines.append("  InitHess read")
-            lines.append(f'  Hess_Filename "{hess}"')
-        else:
-            # calc_anfreq (analytic) or calc_numfreq (numerical)
-            lines.append(f"  InitHess {init if init in ('calc_anfreq', 'calc_numfreq') else 'calc_anfreq'}")
-        lines.append("end")
+        lines.extend(_irc_lines(cfg))
 
     if cfg.kind == "neb_ts":
         # NEB-TS finds the minimum-energy path between reactant (the coordinate

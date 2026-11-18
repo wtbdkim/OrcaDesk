@@ -13,7 +13,8 @@ which on a long run cut off the very lines that say what the run IS: a
 header and its first 35 points, so the cell forgot it was a scan.
 
 - The run's SKELETON, all of it: cycle banners and wall times, scan point
-  banners and header, done / post-stage markers, an IRC's settings, banners
+  banners and header, done / post-stage markers, each SCF settings block's
+  target (TolE), an IRC's settings, banners
   and step rows, CREST's phase markers, the freq / TD-DFT stage banners.
   It grows with cycles and steps, about 100 bytes per optimization cycle.
 - The echoed input lines (method, cores), the first of them.
@@ -54,6 +55,10 @@ _G_ITER = re.compile(r"^\s*\d+\s+-?\d+\.\d+\s+-?\d+\.\d+[eE][+-]?\d+")
 _G_TABLE = re.compile(r"\|Geometry convergence\|", re.I)
 _G_ITEM = re.compile(
     r"(Energy change|RMS gradient|MAX gradient|RMS step|MAX step)\s+-?[\d.]+\s+[\d.]+\s+(YES|NO)", re.I)
+# The SCF's own convergence target from the settings block ORCA prints before
+# an SCF (mirror of scf_graph.js TOLE_RE): indented, unlike the geometry
+# optimizer's flush-left "Energy Change  TolE" criterion, which is not kept.
+_G_TOLE = re.compile(r"^\s+Energy Change\s+TolE\s+\.{2,}\s+\d+(?:\.\d+)?[eE][+-]?\d+\s+Eh")
 _G_DASHES = re.compile(r"-{5,}")
 _G_DOTS = re.compile(r"\.{5,}")
 # optimization-finished + post-opt-stage markers, so a reattach-seeded graph also
@@ -157,6 +162,8 @@ _WORDS = (
     b"OPTIMIZATION RUN DONE", b"HAS CONVERGED", b"HURRAY",
     b"FREQUENCIES", b"SCF RESPONSE", b"PERTURBATIONS", b"DRIVER", b"SCF HESSIAN",
     b"Time for complete geometry iter",
+    # the SCF settings block's target
+    b"TolE",
     # a relaxed surface scan
     b"SURFACE SCAN STEP", b"There will be",
     # an IRC
@@ -242,7 +249,7 @@ class GraphDigest:
         elif self._in_table and _G_ITEM.search(ln):
             self._saw_item = True
             self.tables.append((key, ln))
-        elif _G_DONE.search(ln) or _G_POST.search(ln):
+        elif _G_DONE.search(ln) or _G_POST.search(ln) or _G_TOLE.match(ln):
             self.skeleton.append((key, ln))
         elif _G_ITER.match(ln):
             self.scf.append((key, ln))

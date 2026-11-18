@@ -234,25 +234,34 @@ means `collect(host)`, the same reader the save uses, differs from
 after a clean save once the backend's clamped values are written back into the
 fields. The MLIP and CREST controls apply immediately, so they are left out.
 `save()` resolves true only on a clean save: `{error}` and `save_error` both
-count as failure, and the sheet stays open. The shared `NB.modalRaw` accepts
+count as failure, and the sheet stays open. A save sends **only the fields
+changed on the sheet** (those that differ from `_baseline`), so a field left
+alone never writes back an old value over one the other window saved.
+`NB.settings` is a copy each window holds, so `NB.refreshSettings()`
+(boot.js; one request shared by overlapping callers) re-reads `get_settings`
+— and re-applies the theme, workspace label, graph modes and backend pills —
+when the window gets focus or becomes visible, when Settings opens, and
+before Run checks the ORCA path; a malformed reply keeps the old copy. The shared `NB.modalRaw` accepts
 `focus: true` on one button; that button takes focus, and `closeModal` gives
 focus back to where it was.
-The rail holds three state groups, of which only **Finished** folds and carries
-its own *Clear* (queue-list only — no folder is touched), plus an **Opened
-files** group listing results read from outside the workspace (kept across
-launches in `ui_state.json`, see *Front-end state across launches*), whose header is also the rail's *Open file…*; `results.js` hands each one over
-through `NB.rail.noteOpened`. A click on a row in Jobs expands it (in Results
-a finished row's click opens its report instead — the rail is the picker
-there); the row expands (`.qdet`) into the design's own
-controls, in its wording: **↑ earlier / ↓ later** (the keyboard path for a
-reorder the drag only adds to — they walk the row's own group and disable
-themselves at its ends), *results*, *duplicate* (the setup back as a new PENDING
-row under a free name, whatever the original became), *folder*, *remove*. Two of
-the design's are deliberately absent and the code says so: *requeue* on a failed
-row contradicts P24, and *stop* on one row would have to call `cancel_queue`,
-which stops every job in flight (P57). It emits the design's own ids (`q-total`,
-`c-running`, `q-done`, `fin-toggle`, `clear-finished`, `opened-group`), so a
-landmark can address both pages with one selector.
+The rail is the queue's **status strip**, not its editor (DESIGN.md §17.2):
+building, editing, reordering, removing and clearing happen in the queue
+window (`qed.js`), which its header's *Open queue* brings up. It holds three
+state groups (Running, Queued, Finished), of which only **Finished** folds,
+plus an **Opened files** group listing results read from outside the
+workspace (kept across launches in `ui_state.json`, see *Front-end state
+across launches*), whose header is also the rail's *Open file…*;
+`results.js` hands each one over through `NB.rail.noteOpened`, and each
+opened row has an × that takes it off the list. A calculation row is its
+state dot and name (kind, state and last message in its tooltip; a running
+one with a thin progress bar); a click takes you to it — its cell in Jobs, or
+in Results a finished row's report. There are no per-row actions and no
+*Clear*. The strip redraws only when what it draws changes (`signature()`:
+rows, progress in whole percent, the current report, opened files, folds,
+resources) and puts the keyboard focus back on the same row or control after
+a redraw (`focusKey`), so a poll neither steals focus nor swallows a click.
+It emits the design's own ids (`q-total`, `c-running`, `fin-toggle`,
+`opened-group`, …), so a landmark can address both pages with one selector.
 `mol.js` is the ONE painter behind every structure the UI draws — the cell
 thumbnails, the report's Structure and Visual stages, and the pop-out viewer —
 so a sizing or colour rule lives there once. It draws the way Avogadro2 does
@@ -400,16 +409,21 @@ disabled (the UI never opens PDFs). **WebGL is enabled** — the isosurfaces
 stage is `mol.js`'s 2D canvas, so WebGL is used only inside that one surface
 renderer. Minimizing the window sets the
 page's lifecycle state to Frozen so Chromium releases memory while ORCAdesk sits
-in the taskbar — safe because the JS side polls and already skips hidden ticks,
-catching up on restore. (No profile/cache tuning: the Qt 6 default profile is
+in the taskbar (both windows, `_WebWindowMixin.changeEvent`). JS timers stop
+while frozen, and the poll simply resumes on restore: it reads the queue
+snapshot whole and the log from its last sequence number, so nothing is lost.
+The poll does **not** skip ticks of its own — `setInterval(poll, 1200)` runs
+in every page that is not frozen, so a queue window that is hidden (closed,
+not minimized) keeps polling `get_queue` (only that: the queue window reads no
+log and no output). (No profile/cache tuning: the Qt 6 default profile is
 already off-the-record.)
 **Dropped files** are handed to the page by `runJavaScript`, guarded by
-`window.fn && ...`, so a page that defines no handler ignores the drop. The
-main window routes the first dropped `.inp` / `.xyz` / `.out` to
-`window.onInpDropped(path)` / `onXyzDropped(path)` / `onOutDropped(path)`. The
-queue window passes **every dropped `.xyz` at once** to
-`window.onXyzFilesDropped(paths)` (a JS array — one `add_xyz_systems` batch per
-drop, not N); a drop with no `.xyz` takes the single-file route above. All are
+`window.fn && ...`, so a page that defines no handler ignores the drop. Both
+windows go through `_WebWindowMixin._dispatch_drops`: **every dropped `.xyz`
+at once** goes to `window.onXyzFilesDropped(paths)` (a JS array — one batch
+per drop, not N); a drop with no `.xyz` takes the single-file route, the first
+handled `.inp` / `.out` to `window.onInpDropped(path)` /
+`onOutDropped(path)`. All are
 declared on `Window` in `web/globals.d.ts`.
 
 `orcamgr/gui/bridge.py` is the **entire backend API surface for the desktop**: every
@@ -461,7 +475,20 @@ avoid). `CalcSummary.waiting` is derived in `snapshot()` by
 `core.queue.gate_waiting` (Queue semantics). An MLIP template (`kind mlip*`
 sent with `is_raw` and `key value` text) is turned into the MLIP config by
 `calc_from_dict` (`inpsets.mlip_config_from_text`) and runs as an ordinary
-MLIP calc; the text stays in `raw_text` for the editor, `is_raw` false.
+MLIP calc; the text stays in `raw_text` for the editor, `is_raw` false. The
+text is the whole MLIP setting: the `MLIP_KEYS` fields are reset to
+`StepConfig` defaults before it is applied, so an edited text that drops a key
+(`update_calc` merges the old config in first) returns that setting to the
+default rather than keeping the old value. Also refused for a new payload
+(never on restore), because at launch they could only fail and FAILED locks:
+a raw text that reads a parent's Hessian (`{{HESS}}`, or an inp-set IRC whose
+own `%irc` block reads one — `InitHess read` with a relative
+`Hess_Filename`) with neither an `after` nor a geometry reference
+(`core.queue.template_hess_problem`); and a `ref_point` `irc_f` / `irc_b` on a
+parent whose kind writes no IRC end points (anything but `irc` / `general`,
+`ref_point_problem`) — checked by `add` / `replace` and, for `apply_ops`, on
+the batch's final state for every row it added or rebuilt (or whose parent it
+rebuilt).
 
 **Systems** (the lanes) live in the store beside the calculations,
 `{id, name, charge, multiplicity, inputs: [{label, xyz}]}` (`system_from_dict`:
@@ -488,6 +515,11 @@ adds a child before its parent, or removes a node with its descendants, is
 consistent as a whole. A refusal is `{ok:false, error, op_index}` (`-1` = the
 batch as a whole) and changes nothing. `update_calc`'s `calc` is a **patch**
 (omitted keys keep their value, so `{"approved": true}` approves a gate).
+An approval-only patch on a PENDING row keeps the **live** row object
+(written back at commit like `place_calc`), because the engine pins its
+keep-existing answers to row identity (`_skip_ids`): a replacement made a row
+the user chose to keep re-run mid-run and overwrite its output. Any other
+patch rebuilds the row (a new object, PENDING again).
 `place_calc`'s `place` holds only `system` / `node` / `col` / `row` (anything
 else is refused) and is allowed in **every** state: where the editor draws a
 calc is not what it ran (P24 freezes the latter). It is how a finished
@@ -502,45 +534,99 @@ may hold this one (running, or finished and already seen).
 starts with the old one (`new + rest`) and re-points every editable calc's
 `ref_name` / `after` at the new names — refused once any calc of the lane is
 RUNNING / DONE / FAILED (its name is its folder) or held by the engine; charge
-/ multiplicity propagate to the lane's editable calcs (each touched calc is an
-edit: a new object, PENDING again). `remove_system` takes the lane's calcs with
+/ multiplicity propagate to the lane's editable calcs that had the lane's OLD
+value, each field on its own (each touched calc is an edit: a new object,
+PENDING again) — a calc set apart on purpose (a triplet SP in a singlet row)
+keeps its own, and undoing the recharge returns exactly the calcs it moved.
+The editor shows such a calc's own charge / multiplicity, says so, and edits
+it on the calc alone. `remove_system` takes the lane's calcs with
 it and is refused while the lane holds a started one (remove those rows first —
 queue-list only); a `remove_calc` naming a calc an earlier op of the same batch
 already removed is a no-op. `order` takes any full permutation: the editor's
 run order is lane by lane and a lane moves with its finished rows, which
 changes nothing for the engine (it walks rows by identity).
 
-**`add_xyz_systems(json)`** is the "drop `.xyz`" recipe:
-`{files: [{label, xyz}] | paths: [...], set_id, suffix}` (`set_id ""` = the
-first SP set) → per file one system named after the file's stem and one calc
-`stem + suffix` from that inp set, each file its own `apply_ops` batch, so a
-refusal (a clashing or ORCA-hostile name, a multi-frame file, no coordinates,
-an unreadable path) is reported per file — `{added, systems, refused: [{file,
-reason}]}` — and nothing is ever renamed to fit. Paths are read `utf-8-sig`.
+**`add_xyz_systems(json)`** is the "drop `.xyz`" recipe's single point:
+`{files: [{label, xyz}] | paths: [...], set_id, suffix, kind}` (`set_id ""` =
+the first ORCA level; an ORCA level runs as `kind`, default `"sp"` — a kind
+with no `{{JOB}}` keyword is refused; an MLIP set as `mlip_opt`) → per file
+one system named after the file's stem and one calc `stem + suffix` from that
+inp set, each file its own `apply_ops` batch, so a refusal (a clashing or
+ORCA-hostile name, a multi-frame file, a header that counts fewer atoms than
+the coordinate lines that follow it, no coordinates, an unreadable path) is
+reported per file — `{added, systems, refused: [{file, reason}]}` — and
+nothing is ever renamed to fit. Paths are read `utf-8-sig`.
+`pick_xyz_files()` (a multi-select picker) and `read_xyz_paths(json)` (dropped
+paths) read several `.xyz` at once for the editor's **workflow** paste and the
+recipe's workflow runs — `XyzFilesResult {cancelled, files: [{path, label,
+name, xyz, error}]}` through `store.xyz_file_entries`, the same stem /
+single-structure rules; the editor then builds ONE `apply_queue_ops` batch
+(a system plus the workflow's calcs per file). A workflow (copied in the
+queue window) lives in the editor and under the UI-state key
+`queue.workflow`, never in the store.
 
 **Inp sets** (`orcamgr/state/inpsets.py`, slots `get_inp_sets`,
 `save_inp_set(json)` → the set with its id, `delete_inp_set(id)`) are saved
-templates `{id, name, kind, text}`, `kind` ∈ MLIP / Opt / OptTS / Freq / IRC /
-SP, in `user_data_root()/inp_sets.json`. A missing file seeds one set per kind
-from `StepConfig` + `build_input` with placeholders, at the user's
-`default_nprocs` / `default_maxcore_mb` written literally (so a template is
-admitted by what it asks — `core/resources.py` reads a raw input's own `%pal` /
-`%maxcore`); a file emptied by the user stays empty, an unreadable one reads as
-the seeds and is replaced only on the next save. A non-MLIP set must contain
-`{{GEOMETRY}}`; an MLIP set is `model` / `device` / `nprocs` / `env` lines. A
-name is unique within its kind (case-insensitive; other kinds may share it —
-the seeds all describe one level): a block names its set by (kind, name).
-`get_inp_sets` also returns `defaults` — each kind's seeded text
-(`seed_texts`), what the editor's *+ New* starts from. The queue window's set
-editor (DESIGN.md §17.6) writes through `save_inp_set` / `delete_inp_set`
-only; pushing a saved set's text onto the pending blocks made from it is an
-ordinary `update_calc` batch the user is offered, never automatic.
-`calc_kind_for_set` maps a set to the kind a node runs (Freq after a `ts_opt`
-is `ts_freq`).
+templates `{id, name, kind, text}`, `kind` ∈ **ORCA** / **MLIP**, in
+`user_data_root()/inp_sets.json` (schema 2). An ORCA set is a **level of
+theory**: a whole input whose `!` line holds `{{JOB}}` where the job keyword
+goes (required, with `{{GEOMETRY}}`; `{{CHARGE}}` / `{{MULT}}` optional) — the
+block made from it runs the job its own `kind` says (the editor's Type), so
+one level serves every step. An MLIP set is `model` / `device` / `nprocs` /
+`env` lines. A missing file seeds one level (`wB97X-D4 / def2-TZVP`, from
+`StepConfig` + `build_input` with `calculation_type="{{JOB}}"`) and the MACE
+set, at the user's `default_nprocs` / `default_maxcore_mb` written literally
+(so a template is admitted by what it asks — `core/resources.py` reads a raw
+input's own `%pal` / `%maxcore`); a file emptied by the user stays empty, an
+unreadable one reads as the seeds and is replaced only on the next save. A
+name is unique within its kind (case-insensitive): a block names its set by
+(kind, name). `get_inp_sets` also returns `defaults` (each kind's seeded text,
+what *+ New* starts from), `jobs` (`TEMPLATE_JOB_KEYWORDS`: the kinds a
+level's block may run — the Type select) and `next_kind` (`NEXT_KIND`: the
+natural next step a level dropped on the + slot starts as — `opt` at a row's
+start or after `mlip_opt`, `freq` after `opt`, `ts_freq` after `ts_opt`,
+`irc` after `ts_freq` / `ts_opt_freq`, `sp` after anything else). The queue
+window's set editor (DESIGN.md §17.6) writes through `save_inp_set` /
+`delete_inp_set` only. `save_set` also refuses a `{{...}}` that is not one of
+`KNOWN_PLACEHOLDERS` (`{{GEOMETRY}}`, `{{JOB}}`, `{{CHARGE}}`, `{{MULT}}`,
+`{{HESS}}`): nothing fills it, so it would reach ORCA verbatim. Only on save —
+a set already in the file is never dropped on read for that rule. Pushing a
+saved set's text onto the pending blocks made
+from it is an ordinary `update_calc` batch the user is offered, never
+automatic. A block's Type change is an `update_calc` `{kind}` patch; the store
+moves `config.kind` with it, and refuses (not on restore) a `{{JOB}}` text for
+a kind with no job keyword (`template_job_error`) — at launch it would be a
+locked FAILED calc.
+
+**Schema 1 → 2.** A file with `schema` < 2 (or a schema-1 kind) is migrated on
+read: its bytes are copied to `inp_sets.v1.json` beside it first — once; an
+existing backup is never overwritten, and a backup that cannot be written
+leaves the original in place (load keeps the migrated sets in memory; a save
+fails with the OSError). Each Opt/OptTS/Freq/IRC/SP set's `!`-line job
+keywords (`Opt TightOpt LooseOpt VeryTightOpt COpt ZOpt OptTS ScanTS Freq
+NumFreq AnFreq IRC SP`) become one `{{JOB}}` (appended when it had none), and
+exactly the block the renderer now adds for its kind is removed when it is
+there unchanged (the seeded `%geom MaxIter 200` [+ `Calc_Hess true`], `%irc
+MaxIter 100 / InitHess read / Hess_Filename "{{HESS}}"`; whitespace and case
+aside) — anything else the user wrote stays. Sets whose converted text is
+identical merge into the first (its id and name kept; the five seeds become
+one level); a converted set whose name another kept level has is renamed
+`name (Kind)`. Calcs already in the queue keep their `raw_text`: a text
+without `{{JOB}}` renders exactly as before. Such a block's text is the OLD
+set's, so the editor would draw it as modified (`*`, amber) against the
+migrated level although nothing was edited: `get_calc` therefore also returns
+`levels`, `inpsets.level_forms(raw_text)` — what that text becomes under
+`convert_legacy_text` for each legacy kind (the migration's own rule, so the
+editor holds no second copy of it). A block is unmodified when its text is
+its set's or one of those; and its set is the one its `set_name` names when
+that matches, else (a set merged into another, or renamed `name (Kind)`) the
+set of its kind whose text it migrates to, a renamed one first (`setOf` in
+`qed.js`).
 
 The slot list is in `web/globals.d.ts`; the payloads are `InpSet`,
 `InpSetsResult`, `InpSetResult`, `SystemSummary` / `SystemFull`,
-`SystemResult`, `QueueOpsResult`, `XyzSystemsResult` (schemas.py ↔ types.js),
+`SystemResult`, `QueueOpsResult`, `XyzSystemsResult`, `XyzFileEntry` /
+`XyzFilesResult` (schemas.py ↔ types.js),
 plus the `QueueOp` union in `types.js`. `open_queue_window()` → `{ok}` shows /
 raises the queue window (`MainWindow.show_queue_window`).
 
@@ -552,12 +638,15 @@ launches, see below), and the toolbar's
 is one of the report's sections there. `list_workspace_results` is therefore
 called by no page now (the classic result picker was its one caller); the slot
 stays. A finished cell also
-carries **New from this**, which opens the builder on a NEW calculation already
-referencing that run (`NB.build.open("", seed)`); the geometry is a reference,
-resolved at run time by the same `_resolve_geometry` path as opt→freq.
+carries **New from this**. The builder lives in the queue window, so the cell
+hands a `{type: "build", seed}` message over (`NB.handOff`, the mailbox under
+*Front-end state across launches*) and raises that window, which opens its
+builder on a NEW calculation already referencing that run
+(`openBuilder("", seed)`); the geometry is a reference, resolved at run time by
+the same `_resolve_geometry` path as opt→freq.
 
 **Front-end state across launches** (`orcamgr/uistate.py`, slots
-`get_ui_state(key)` / `set_ui_state(key, valueJson)`). The Qt 6 default
+`get_ui_state(key)` / `set_ui_state(key, valueJson)` / `take_ui_state(key)`). The Qt 6 default
 WebEngine profile is off-the-record, so `localStorage` only lasts one sitting
 (the display style in `mol.js` is per-sitting for that reason). What a window
 must find again on the next launch goes to `ui_state.json` under
@@ -566,7 +655,15 @@ must find again on the next launch goes to `ui_state.json` under
 reads as empty and a failed write is returned as data. It holds conveniences
 only, never queue state. Keys: `rail.opened` (the Opened files rows, newest
 first, ≤ 50; the file is re-read on click, so a moved file reports itself
-then) and `build.draft` (below).
+then), `build.draft` (below) and `queue.handoff`: the one-slot mailbox the
+main window leaves a message for the queue window in (*New from this*'s seed,
+a dropped `.inp`, a calculation to select or edit), stamped `t` so one left
+behind by a crash (older than 2 min) is ignored. The queue window takes it on
+every poll and when it becomes visible, through `take_ui_state`, which reads
+and removes the key under `uistate`'s lock in one step (`uistate.take`), so
+two overlapping takes cannot both act on one message and a message written
+meanwhile is never cleared unread; `NB.takeHandOff` also keeps one take in
+flight per page.
 
 **New-calculation draft.** `build.js` keeps the new calculation being built
 under `build.draft`. The draft is `readForm()`'s payload (what `render()` takes
@@ -652,7 +749,10 @@ points 1–35, so the reopened cell had no *scan point k/N*, a cycle count of
 the points it still saw, and the ETA of one point. `GraphDigest` now keeps
 lines by class:
 - **skeleton, whole:** cycle banners and wall times, scan header and point
-  banners, done / post-stage markers, an IRC's settings, banners and step
+  banners, done / post-stage markers, each SCF settings block's `Energy
+  Change TolE .... x Eh` line (`_G_TOLE`, prefilter word `TolE`; it mirrors
+  `scf_graph.js`'s `TOLE_RE` — the optimizer's flush-left "Energy Change
+  TolE" criterion is not kept), an IRC's settings, banners and step
   rows, CREST's markers, freq / TD-DFT stage banners. It grows about
   100 bytes per optimization cycle;
 - **the echoed input** (`|  1> ! ...`, `%pal`), the first 200 lines;
@@ -827,22 +927,42 @@ The `core/` pipeline:
 - `input_generator.py` — `StepConfig` → ORCA `.inp` text (`build_input`). Handles
   solvation (CPCM/SMD), RI, per-element basis/ECP, charge/multiplicity, raw-input mode
   (verbatim text with a `{{GEOMETRY}}` placeholder — and, for an inp-set
-  template, `{{CHARGE}}` / `{{MULT}}` / `{{HESS}}`, filled at launch by
-  `QueueEngine._render_template_values`: the calc's charge and multiplicity,
-  and the bare name of a `.hess` `_stage_template_hessian` copies into the run
-  folder from the `after` parent's folder (`{after}.hess`), else the geometry
-  reference's (`{ref}.hess`) — none there is an `OrcaRunError` before launch,
-  naming where it looked; the raw IRC Hessian guard then reads the RENDERED
-  text, so `Hess_Filename "{{HESS}}"` is already a real, staged file), NEB-TS side `.xyz` files,
+  template, `{{JOB}}` / `{{CHARGE}}` / `{{MULT}}` / `{{HESS}}`, filled at
+  launch by `render_template_text` (called from
+  `QueueEngine._render_template_values`; the queue editor's preview,
+  `build_inp_preview`, shows the same function's output — there is no second
+  renderer). `{{JOB}}` becomes the calc kind's job keyword
+  (`TEMPLATE_JOB_KEYWORDS`: opt `TightOpt`, ts_opt `OptTS`, freq / ts_freq
+  `Freq`, opt_freq `TightOpt Freq`, ts_opt_freq `OptTS Freq`, irc `IRC`, sp
+  `SP`, nmr `NMR`; any other kind is a ValueError → `OrcaRunError` before
+  launch) and that kind's block is inserted right before the coordinate block
+  (`* xyz` / `* xyzfile`) by the same helpers `build_input` uses
+  (`_geom_job_lines`, `_irc_lines`): `%geom MaxIter 200` for an
+  optimization (+ `Calc_Hess true` for ts_opt / ts_opt_freq), `%irc MaxIter
+  100` with `InitHess read` + `Hess_Filename "<staged .hess>"` when a parent
+  left one, else `InitHess calc_anfreq` — nothing when the text has its own
+  `%geom` / `%irc` (the user's block wins, whole). The `.hess` is found by
+  `find_parent_hessian` (the `after` parent's folder, `{after}.hess`, else the
+  geometry reference's, `{ref}.hess`) and copied into the run folder; a text
+  that names `{{HESS}}` itself needs one (none is an `OrcaBlocked` before
+  launch, naming where it looked: the row is BLOCKED — editable, re-tried on
+  the next Run — not FAILED), a `{{JOB}}` IRC does not. The raw IRC
+  Hessian guard then reads the RENDERED text), NEB-TS side `.xyz` files,
   and **`%geom Constraints`** (below). **A setting at ORCA's own default is not
   written**: only the method and basis must be named, and the builders seed
   every other field with ORCA's default (`StepConfig`'s, via
   `get_step_defaults`; an empty RI / SCF select is "ORCA default"). Measured on
   6.1.1 (H2O, def2-SVP) with the keyword left out: a hybrid runs RIJCOSX with
   def2/J chosen by ORCA (also with a bare `RIJCOSX`); HF and MP2 run without
-  RI; Opt, OptTS and IRC raise the SCF to TightSCF themselves (TolE 1e-8) while
-  SP, Freq and TD-DFT stay at NormalSCF (1e-6) — `SCFGraph.tierFor` gives the
-  progress bar that same tier for an empty setting; `%tddft` TDA on, triplets
+  RI; Opt, OptTS, IRC and NEB raise the SCF to TightSCF themselves (TolE
+  1e-8), the `TightOpt` ORCAdesk writes for opt / opt_freq raises it to 1e-9
+  (VeryTightSCF's TolE), while SP, Freq and TD-DFT stay at NormalSCF (1e-6) —
+  `SCFGraph.tierFor` gives the progress bar that same tier for an empty
+  setting until ORCA's own printed `TolE` arrives (`SCFTracker.tolE`, read
+  from the SCF settings block by `TOLE_RE`, which then wins:
+  `SCFGraph.scfTarget(tracker, scfConvergence, kind)` is what every progress
+  bar and goal line reads), so a template with its own SCF keyword is aimed
+  right too; `%tddft` TDA on, triplets
   off, 3 roots; `%neb` 8 images. So `%tddft` is `nroots` plus whatever
   differs; `%pal` only above one rank. **Kept as ORCAdesk's own by the user's
   choice**: an optimization is `TightOpt` (`TightOpt Freq`), and `%geom
@@ -850,7 +970,11 @@ The `core/` pipeline:
   ORCA's 50 / 20 run out on a floppy molecule or a long path. What else is
   still written although ORCA would default otherwise, each for a measured
   reason: `AutoAux` for a double hybrid (ORCA aborts "RI-MP2 needs an
-  AuxC basis") unless RI is NoRI, and for DLPNO always; `def2/JK` under RIJK
+  AuxC basis") unless RI is NoRI, likewise for a method RI by its own name
+  (RI-MP2, OO-RI-MP2, OO-RI-SCS-MP2, F12-RI-MP2, RI-MP3) or RI-only (ADC2:
+  "Aux/C requested but not available" after the SCF) — `_is_ri_method`, so
+  at RI "ORCA default" they run (RI-MP2 on H2 verified on 6.1.1) — and for
+  DLPNO always; plain MP2 / MP3 / CC still run conventionally without an aux; `def2/JK` under RIJK
   ("no AuxJK basis set"); `def2/J` beside an aux the user typed that is not a
   /J one (ORCA then picks none: "no AuxJ basis set"); `Calc_Hess true` for an
   OptTS; `InitHess calc_anfreq` for an IRC (ORCA's own is a numerical Hessian).
@@ -1134,8 +1258,10 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   structure automatically. `ref_point` picks another geometry of the
   reference: `irc_f` / `irc_b` read the `{ref}_IRC_F.xyz` / `{ref}_IRC_B.xyz`
   ORCA writes beside an IRC's `.out` (the IRC's `output_path` folder, else
-  `{workspace}/{ref}`); a missing file is an `OrcaRunError` saying which end
-  point and which file — the IRC finished, it just did not run that way.
+  `{workspace}/{ref}`); a missing file is an `OrcaBlocked` saying which end
+  point and which file — the IRC finished, it just did not run that way — so
+  the row is BLOCKED (editable), not FAILED. A `ref_point` on a parent whose
+  kind writes no IRC ends is refused when it is added (Queue store above).
 - **`after` is a dependency like a reference, and its edge may be gated.** The
   queue editor's edge (`Calculation.after`) is independent of the geometry, but
   the engine treats it exactly like a reference: `_deps_ready` waits for it,
@@ -1152,16 +1278,19 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   descendants) remain, `_block_unreachable` leaves them **untouched** —
   `_held_at_gates` — logs "N calculation(s) waiting for approval", and the run
   ends normally: never BLOCKED, never a hang. Approving mid-run (an
-  `update_calc` patch → a new row object) is picked up by the live walk (P29).
+  approval-only `update_calc` patch, which keeps the live row object so a
+  keep-existing answer pinned to it still holds) is picked up by the live
+  walk (P29).
   **Auto-pass**: with `auto_pass` on, a gate after a frequency kind
   (`freq`, `ts_freq`, `opt_freq`, `ts_opt_freq`, `mlip_freq`, `mlip_opt_freq`)
   passes by itself when the parent's imaginary-mode count is the expected one
-  (1 for `ts_freq` / `ts_opt_freq`, else 0). The engine parses a restored
-  parent on a miss (once per parent — `_gate_parse_tried`), like
-  `_resolve_geometry`, under the dispatcher's lock; the snapshot never parses
-  and, with no result in memory, trusts what DONE already says — a frequency
-  calc reaches DONE only through `validate_result`, whose rule for every one of
-  those kinds IS the expected count, so the two cannot disagree. (The same fact
+  (1 for `ts_freq` / `ts_opt_freq`, else 0), read from the parent's result in
+  memory. Nothing is parsed for it — the engine asks under the store lock
+  (P37), and parsing a large frequency output there stalled every UI snapshot
+  for ~1 s. With no result in memory (a restored parent) both the engine and
+  the snapshot trust what DONE already says — a frequency calc reaches DONE
+  only through `validate_result`, whose rule for every one of those kinds IS
+  the expected count, so the two cannot disagree. (The same fact
   means a frequency parent with the wrong count is FAILED, and its gated child
   BLOCKED, before any gate is asked.)
 - **Failure propagation is dependency-scoped, not whole-queue.** If a calc fails,
@@ -1738,7 +1867,9 @@ classic front-end and no page calls it now. No file dialog — the files land
 next to the run; it only reads/writes, never touches the queue.
 
 **In-app 3D structure viewer.** Every structure stage, the pop-out viewer
-included (`web/next/mvwin.js`, `NB.mv.open`), is drawn by `mol.js`; the pop-out
+included (`web/next/mvwin.js`, `NB.mv.open`; `open({file})` shows that one
+`.xyz` without looking for other sets beside it — *Open file…* with an `.xyz`
+opens it so), is drawn by `mol.js`; the pop-out
 walks a list of **frames** with the ←/→ keys (Esc closes). A frame is `{label,
 xyz, energy}`; `xyz` is raw `.xyz` text, and the caption shows ΔE vs the
 lowest-energy frame of the set when energies are present. Every entry point is
@@ -1942,7 +2073,7 @@ that starts with one.
 Bridge slots `open_path_external` / `show_path_in_folder` are thin wrappers;
 both return `OkResult` and log the refusal, because a missing association is a
 normal thing for a user to have (P6). The notebook calls only
-`show_path_in_folder` (a rail row's *folder*, the report's folder button).
+`show_path_in_folder` (the report's folder button).
 
 P5 governs the shape: an external program is **launched, never merely named** —
 telling the user which file to open is the command line by another route. So
