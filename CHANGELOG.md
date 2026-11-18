@@ -15,8 +15,9 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   exactly as the Guided builder writes it: `%geom MaxIter 200` for an
   optimization (plus `Calc_Hess true` for a TS one), `%irc MaxIter 100` with
   `InitHess read` of the previous step's `.hess` when it left one, else
-  `InitHess calc_anfreq`. A level that already has its own `%geom` / `%irc`
-  block gets nothing added. The library shows *ORCA levels* and *MLIP*
+  `InitHess calc_anfreq`. A level that already has its own `%irc` block gets
+  nothing added; one with its own `%geom` gets only what it lacks (see
+  *Fixed*). The library shows *ORCA levels* and *MLIP*
   instead of one group per job type; a level dropped on the + slot starts as
   the natural next step (Opt, then Freq; OptTS, then TS Freq, then IRC, then
   SP); dropping one on a block changes its level and keeps its type; the
@@ -30,6 +31,23 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   Calculations already in the queue keep their input as it is.
 
 ### Added
+- **A level block runs with its own options.** A block made from an ORCA
+  level now carries the settings the Guided builder has — constraints and a
+  relaxed scan, MaxIter, IRC max points / direction / initial Hessian
+  (*auto* = the previous step's `.hess`, analytic, numerical, or a `.hess`
+  you load), Freq temperature and pressure, NMR J-couplings, TD-DFT and
+  NEB-TS settings, extra keywords, solvation and SCF convergence — and
+  ORCAdesk merges them into the level's input exactly as the Guided builder
+  writes them, never a second copy of a block the level already has. A block
+  with no options runs exactly as before. Options that clash with the level
+  (both set MaxIter, both list constraints, a solvent model on both sides, a
+  different SCF tier, constraints for a `%geom` the level writes on one line)
+  are refused when the block is added or edited, with a message naming the
+  block and setting, and the preview shows the input that will run.
+  Constraint and scan atom numbers are checked against the block's structure
+  when it is added. **TD-DFT and NEB-TS** blocks can now be made from a
+  level, and an MLIP set's block can run **MLIP SP, Freq and Opt + Freq**,
+  not only the pre-optimization.
 - **Copy a workflow and run it on other structures.** In the queue window,
   drag a box on the empty canvas (or Ctrl+click) to select blocks of one row,
   press Ctrl+C (or *Copy workflow*; *Copy the row* for all of it), and Ctrl+V
@@ -41,8 +59,54 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   offers an ORCA level as a single point, the copied workflow, or the
   workflow of any row; dropped on either window, each file becomes a row
   running it.
+- **The queue window does everything the old queue did.** *Edit options in
+  the builder* on a level's block opens the builder in **Level mode**: the
+  Type, geometry, structure stage (constraints and scan picked on it, *Apply*
+  / *Apply all*, push along a mode, the structure check) and every per-job
+  block, with the level's name and text (read-only, another level can be
+  picked) in place of Method / Resources / Per-element basis; coordinates
+  moved there become the block's own, never the row's. A manual build on the
+  + slot can start from a level too (*Level* beside *Guided* / *.inp text*),
+  and a draft kept from an earlier new calculation is offered (*Use the
+  draft*). The block's sub-label names its options (`1 constraint · MaxIter
+  300`). New in the inspector: *Duplicate*, *Show folder*, *↑ Earlier* / *↓
+  Later* (Alt+←/→; never past what it depends on), renaming one
+  calculation (what runs after it follows), *Remove only this* (what hangs
+  off it stays, blocked until given another geometry), a geometry list with
+  every calculation, and, once it has run, the `.inp` its folder holds. Every
+  row has a structures panel (its caption on the canvas, or *Structures…*):
+  add from a file or paste coordinates, view, check, remove; *+ system* can
+  paste coordinates. *Clear finished* in the top bar. A copied workflow keeps
+  a level block's options and is refused on a structure with fewer atoms
+  than its constraints name.
+- **Adds to a running queue ask before overwriting.** Dropping a set or an
+  `.xyz`, pasting a workflow, copying a row and *Duplicate* ask, as the
+  builder does, when a name's folder already holds output; the names they
+  make step around such folders (`w-opt-2` taken on disk → `w-opt-3`).
 
 ### Fixed
+- **Queue window: the builder is the New calculation it was in the main
+  window.** It opened squeezed into the inspector column (Mult. on a row of
+  its own, a narrow stage); it now opens over the lanes and the inspector as
+  the same cell at the same width, scrolling inside, with the library beside
+  it -- Level mode in the same frame. Its title is *New calculation* again,
+  with where it goes (*after mol-opt in mol*) beside it.
+- **Queue window: "New calculation after X" takes X's geometry.** It could
+  open on an older draft's reference (the first calculation in the list)
+  under X's title; the builder now keeps the seed it was opened with. A new
+  step is named like the editor names one, the row's name and the kind's
+  suffix (`mol-opt2`, not `mol-calc`), and the name follows the Type while
+  you have not typed your own (`mol-opt2` → `mol-freq`).
+- **Guided builder: an IRC's Direction was always "both".** The push along
+  a mode's own *Direction* toggle was found first by label, so the IRC's
+  select was never read; and the IRC's own *Load .hess…* did nothing (the
+  push-along-a-mode button above set the IRC's Hessian file instead).
+- **Queue window: a pasted .inp block in a row could not go back to the
+  builder** once saved; it now opens in the builder like any other.
+- **A level with its own `%geom` block no longer drops ORCAdesk's lines.** It
+  used to win whole, so a TS optimization from it lost `Calc_Hess true` and an
+  optimization its `MaxIter 200` cap; now only the lines it lacks are added
+  (its own `MaxIter` stays), also into a `%geom` written on one line.
 - **RI-MP2 and the other RI methods run again at RI "ORCA default".**
   RI-MP2, OO-RI-MP2, OO-RI-SCS-MP2, F12-RI-MP2, RI-MP3 and ADC2 got no
   correlation auxiliary basis, and ORCA stopped ("RI-MP2 needs an AuxC basis",

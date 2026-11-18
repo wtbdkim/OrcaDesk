@@ -42,14 +42,15 @@ from ..paths import (APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL,
 from ..textio import repair_ansi_line
 from .. import uistate
 from ..core.input_generator import (GEOMETRY_PLACEHOLDER, StepConfig,
-                                    TEMPLATE_JOB_KEYWORDS, build_input_template,
+                                    MLIP_TEMPLATE_KINDS, TEMPLATE_JOB_KEYWORDS,
+                                    build_input_template, is_level_text,
                                     render_raw_input, render_template_text,
-                                    template_hess_need)
+                                    template_config, template_hess_need)
 from ..core.queue import (CalcState, GeometrySource, find_parent_hessian,
                           result_from_output)
 from ..core.structure import (
     apply_constraint_target, apply_constraint_targets, check_geometry, compare_atom_order,
-    displace_along_mode,
+    displace_along_mode, parse_block,
 )
 from ..core.hessfile import HessError, read_hess
 from ..core.normalmodes import modes_for_report, place_on, read_out_modes
@@ -72,7 +73,7 @@ from ..state import inpsets
 # source of truth, mirrored for the front-end by web/types.js.
 from ..state.schemas import (
     AboutPayload, AutodetectResult, ConflictsResult, ErrorPayload, ExistsResult,
-    FepPoint,
+    ExistingOutputsResult, FepPoint,
     FepResult, GeomAtomPayload, GetCalcResult, GraphLinesResult, LoadResult,
     LogTailResult, OutputInfoResult, OutputLinesResult, OutputFindResult,
     MlipStatusPayload, MlipInstallPayload, MlipInstallOptionsPayload,
@@ -1466,20 +1467,26 @@ class Bridge(QObject):
         that text through render_template_text -- the renderer the engine
         runs at launch -- for the calc's kind, its coordinates in place when
         they are its own ({{GEOMETRY}} kept for a reference, resolved at run
-        time). The Hessian a {{JOB}} IRC reads is the parent's .hess when it
-        is on disk, or the one its frequency parent will leave; else it
-        computes its own (_preview_hess)."""
+        time). A level block's options are its config, read as the store
+        reads them (template_config) and rendered by the same call with the
+        same atom count, so the preview is the launch renderer's output. The
+        Hessian a {{JOB}} IRC reads is the parent's .hess when it is on disk,
+        or the one its frequency parent will leave; else it computes its own
+        (_preview_hess)."""
         try:
             d = json.loads(calc_json)
             if d.get("is_raw") and isinstance(d.get("raw_text"), str) and d["raw_text"]:
                 kind = str(d.get("kind", "") or "")
                 text = d["raw_text"].replace("\r\n", "\n")
+                cfg = template_config(d.get("config"), kind) if is_level_text(text) else None
                 xyz = d.get("xyz", "") if d.get("geometry_source", "direct") != "reference" else ""
+                n_atoms = None
                 if isinstance(xyz, str) and xyz.strip() and GEOMETRY_PLACEHOLDER in text:
                     text = render_raw_input(text, xyz)
+                    n_atoms = len(parse_block(xyz)) or None
                 text = render_template_text(
                     text, kind, int(d.get("charge", 0)), int(d.get("multiplicity", 1)),
-                    self._preview_hess(d, text, kind))
+                    self._preview_hess(d, text, kind, cfg), cfg, n_atoms)
                 return json.dumps(TextResult(ok=True, text=text))
             cfg = StepConfig.from_dict(d.get("config", {}))
             use_ph = d.get("geometry_source", "direct") == "reference"
@@ -1497,12 +1504,13 @@ class Bridge(QObject):
     #: kinds whose finished run leaves a {name}.hess beside its output
     _HESS_KINDS = ("freq", "ts_freq", "opt_freq", "ts_opt_freq")
 
-    def _preview_hess(self, d: dict, text: str, kind: str) -> str:
+    def _preview_hess(self, d: dict, text: str, kind: str, cfg=None) -> str:
         """The .hess name the preview shows a template reading: what the
         engine would stage now (find_parent_hessian, the same search), else
         -- the parent has not run yet -- the {parent}.hess a frequency parent
-        will leave; "" when it will have none to read."""
-        if not template_hess_need(text, kind):
+        will leave; "" when it will have none to read (or the block's options
+        choose its initial Hessian themselves)."""
+        if not template_hess_need(text, kind, cfg):
             return ""
         try:
             src = GeometrySource(d.get("geometry_source", "direct"))
@@ -1611,9 +1619,11 @@ class Bridge(QObject):
         """Every saved inp set (seeded from ORCAdesk's defaults on first use,
         a schema-1 file migrated), each kind's seeded text (`defaults`, what
         "+ New" starts from), and what {{JOB}} becomes per calculation kind
-        (`jobs`: the kinds a level's block may run, the editor's Type), and
-        the natural next step after each kind (`next_kind`, the Type a level
-        dropped on the + slot starts with; any other kind: "sp")."""
+        (`jobs`: the kinds a level's block may run, the editor's Type; "" for
+        TD-DFT, whose %tddft block is the job), the kinds an MLIP set's block
+        may run (`mlip_jobs`), and the natural next step after each kind
+        (`next_kind`, the Type a level dropped on the + slot starts with; any
+        other kind: "sp")."""
         try:
             sets = inpsets.load_sets(**self._inpset_defaults())
             defaults = inpsets.seed_texts(**self._inpset_defaults())
@@ -1621,6 +1631,7 @@ class Bridge(QObject):
             return json.dumps(InpSetsResult(ok=False, error=str(e), sets=[]))
         return json.dumps(InpSetsResult(ok=True, sets=sets, defaults=defaults,
                                         jobs=dict(TEMPLATE_JOB_KEYWORDS),
+                                        mlip_jobs=list(MLIP_TEMPLATE_KINDS),
                                         next_kind=dict(inpsets.NEXT_KIND)))
 
     @pyqtSlot(str, result=str)
@@ -2495,12 +2506,39 @@ class Bridge(QObject):
         Run-click overwrite-conflicts modal — the front-end asks here first so
         a name reuse can be confirmed before it lands in a running queue."""
         try:
-            d = Path(self.settings.workspace_root) / str(name)
-            exists = (d / f"{name}.out").exists() or (
-                d / f"{name}.mlip.json").exists()
-            return json.dumps(ExistsResult(ok=True, exists=exists))
+            return json.dumps(ExistsResult(ok=True, exists=self._holds_output(str(name))))
         except Exception as e:
             return json.dumps(ExistsResult(ok=False, error=str(e), exists=False))
+
+    def _holds_output(self, name: str) -> bool:
+        """Whether {workspace}/{name}/ holds a result artifact: {name}.out, or
+        the MLIP worker's {name}.mlip.json (has_existing_output's rule)."""
+        d = Path(self.settings.workspace_root) / name
+        return (d / f"{name}.out").exists() or (d / f"{name}.mlip.json").exists()
+
+    @pyqtSlot(str, result=str)
+    def existing_outputs(self, names_json: str) -> str:
+        """has_existing_output for many names at once: ``["a", "b"]`` ->
+        {ok, existing: [the names whose workspace folder already holds an
+        output]}, in the order given. The queue editor's adds that bypass the
+        builder (a dropped set, a paste, a row copy, a dropped .xyz) ask here
+        before they land in a running queue, and its free-name search skips
+        such names. A name that is not a plain folder name (empty, a path) is
+        simply not listed."""
+        try:
+            names = json.loads(names_json or "[]")
+            if not isinstance(names, list):
+                raise ValueError("expected a list of calculation names")
+            existing: list[str] = []
+            for n in names[:10_000]:
+                if (not isinstance(n, str) or not n.strip() or n in existing
+                        or Path(n).name != n or n in (".", "..")):
+                    continue
+                if self._holds_output(n):
+                    existing.append(n)
+            return json.dumps(ExistingOutputsResult(ok=True, existing=existing))
+        except Exception as e:   # a slot may not raise
+            return json.dumps(ExistingOutputsResult(ok=False, error=str(e), existing=[]))
 
     @pyqtSlot(str, result=str)
     def run_queue(self, skip_names_json: str = "") -> str:

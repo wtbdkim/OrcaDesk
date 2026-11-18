@@ -915,16 +915,25 @@ def render_template_values(text: str, charge: int, multiplicity: int) -> str:
 # the job keyword goes, and the block made from it says which job by its kind
 # (the queue editor's Type). TEMPLATE_JOB_KEYWORDS is what {{JOB}} becomes per
 # kind -- the job line the Guided builder writes for that kind (build.js
-# KINDS[].calc). A kind not listed has no level-only form (NEB-TS needs its
-# product, TD-DFT its %tddft block, a General input is the user's alone, MLIP
-# and CREST run no ORCA input) and is refused, at the store's trust boundary
-# and again before launch.
+# KINDS[].calc; TD-DFT has none, its %tddft block is the job). A kind not
+# listed has no level-only form (a General input is the user's alone; MLIP and
+# CREST run no ORCA input) and is refused, at the store's trust boundary and
+# again before launch.
 JOB_PLACEHOLDER = "{{JOB}}"
 TEMPLATE_JOB_KEYWORDS = {
     "opt": "TightOpt", "ts_opt": "OptTS", "freq": "Freq", "ts_freq": "Freq",
     "opt_freq": "TightOpt Freq", "ts_opt_freq": "OptTS Freq", "irc": "IRC",
-    "sp": "SP", "nmr": "NMR",
+    "sp": "SP", "nmr": "NMR", "tddft": "", "neb_ts": "NEB-TS",
 }
+#: the kinds a block made from an MLIP set may run: every task the MLIP
+#: pipeline has (orcamgr/mlip; the frequency ones read freq_temp_k /
+#: freq_pressure_atm for their thermochemistry)
+MLIP_TEMPLATE_KINDS = ("mlip_opt", "mlip_sp", "mlip_freq", "mlip_opt_freq")
+#: a level block's IRC initial Hessian by default: the parent's .hess when one
+#: is found (staged into the run folder), else ORCA computes it (calc_anfreq)
+IRC_INIT_AUTO = "auto"
+_IRC_INIT_EXPLICIT = ("calc_anfreq", "calc_numfreq", "read")
+_FREQ_BLOCK_KINDS = ("freq", "ts_freq", "opt_freq", "ts_opt_freq")
 
 
 def template_job_error(kind: str) -> str:
@@ -936,76 +945,472 @@ def template_job_error(kind: str) -> str:
             + ", ".join(sorted(TEMPLATE_JOB_KEYWORDS)) + ".")
 
 
+def is_level_text(text: str) -> bool:
+    """True when {{JOB}} stands on one of the text's ``!`` lines -- an inp-set
+    LEVEL, the only raw text a block's options (its config) apply to."""
+    return any(ln.strip().startswith("!") and JOB_PLACEHOLDER in ln
+               for ln in (text or "").splitlines())
+
+
+def template_config(data, kind: str) -> StepConfig:
+    """A level block's options from a payload's config dict (StepConfig field
+    names, the trust boundary's coercion): its kind is the block's own, and
+    an IRC initial Hessian the payload does not name is IRC_INIT_AUTO, the
+    level renderer's default (StepConfig's own, calc_anfreq, is the Guided
+    builder's). An empty dict renders exactly as a level with no options."""
+    data = data if isinstance(data, dict) else {}
+    cfg = StepConfig.from_dict(data)
+    cfg.kind = kind
+    if "irc_init_hess" not in data:
+        cfg.irc_init_hess = IRC_INIT_AUTO
+    return cfg
+
+
+def _block_options(cfg, kind: str) -> StepConfig:
+    """The options a level is rendered with: ``cfg``, or none at all."""
+    if cfg is None:
+        return StepConfig(kind=kind, irc_init_hess=IRC_INIT_AUTO)
+    return cfg
+
+
+def _irc_init(cfg: StepConfig) -> str:
+    init = (cfg.irc_init_hess or "").strip().lower()
+    return init if init in _IRC_INIT_EXPLICIT else IRC_INIT_AUTO
+
+
 def _has_block(text: str, name: str) -> bool:
     return re.search(r"^[ \t]*%" + name + r"\b", text, re.I | re.M) is not None
 
 
-def template_hess_need(text: str, kind: str) -> str:
+def template_hess_need(text: str, kind: str, cfg=None) -> str:
     """What a template asks of a parent's Hessian: "required" when its text
     names {{HESS}} (none found is a refusal), "optional" when it is a {{JOB}}
-    IRC that gets ORCAdesk's own %irc block (it reads the parent's .hess when
-    there is one, else computes the Hessian), "" otherwise."""
+    IRC that gets ORCAdesk's own %irc block with the initial Hessian left at
+    IRC_INIT_AUTO (it reads the parent's .hess when there is one, else
+    computes the Hessian), "" otherwise -- an explicit calc_anfreq /
+    calc_numfreq computes it, an explicit read names its own file."""
     if HESS_PLACEHOLDER in text:
         return "required"
     if (JOB_PLACEHOLDER in text and kind == "irc"
             and not _has_block(text, "irc")):
-        return "optional"
+        opts = _block_options(cfg if is_level_text(text) else None, kind)
+        return "optional" if _irc_init(opts) == IRC_INIT_AUTO else ""
     return ""
 
 
-def template_job_block(text: str, kind: str, hess_name: str = "") -> "list[str]":
-    """The block ORCAdesk adds to a {{JOB}} template for ``kind``, as lines,
-    or [] -- the one the Guided generator writes for that kind (build_input,
-    via the same helpers): ``%geom`` MaxIter (+ Calc_Hess for a TS
-    optimization), or ``%irc`` MaxIter with InitHess read + Hess_Filename when
-    ``hess_name`` is given, else InitHess calc_anfreq. A template that already
-    has that block gets nothing: the user's own block wins, whole."""
-    if kind in CONSTRAINED_KINDS and not _has_block(text, "geom"):
-        return ["%geom", *_geom_job_lines(kind), "end"]
-    if kind == "irc" and not _has_block(text, "irc"):
-        return _irc_lines(StepConfig(
-            kind="irc", irc_init_hess="read" if hess_name else "calc_anfreq",
-            irc_hess_file=hess_name))
+class TemplateConflict(ValueError):
+    """A level's own text and its block's options set the same thing (or the
+    level is written so the option cannot be added to it). Refused, never
+    guessed: which of the two the user meant is not knowable here."""
+
+
+def _both(block: str, key: str, value) -> TemplateConflict:
+    return TemplateConflict(
+        f"The level's own %{block} block already sets {key}, and this block's "
+        f"options set it too ({value}). Keep it in one place: clear the "
+        f"option on the block, or take {key} out of the level's text.")
+
+
+def _tokens(line: str) -> "list[str]":
+    """The words of an input line, a ``#`` comment left out."""
+    return line.split("#", 1)[0].split()
+
+
+# Sub-blocks of %geom that close with their own `end` (ORCA 6.1.1 manual);
+# any other line holding a single word inside a block is read as one too.
+_SUB_OPENERS = frozenset({"constraints", "scan", "hybrid_hess",
+                          "modify_internal", "fragments", "frozen_atoms"})
+
+
+class _Block:
+    """Where a ``%name`` block of a text is: its first line, the line of its
+    closing ``end`` (the first line again for a block written on one line;
+    None when it is never closed), the words it holds outside its sub-blocks
+    (lower case) and the sub-blocks it has."""
+    __slots__ = ("start", "end", "single", "words", "subs")
+
+    def __init__(self, start, end, single, words, subs):
+        self.start, self.end, self.single = start, end, single
+        self.words, self.subs = words, subs
+
+
+def _find_block(lines: "list[str]", name: str) -> "_Block | None":
+    pat = re.compile(r"^[ \t]*%" + name + r"\b", re.I)
+    for i, ln in enumerate(lines):
+        if not pat.match(ln):
+            continue
+        rest = [t.lower() for t in _tokens(ln)[1:]]
+        if rest and rest[-1] == "end":
+            return _Block(i, i, True, set(rest[:-1]),
+                          {t for t in rest if t in _SUB_OPENERS})
+        words, subs, depth = set(rest), set(), 0
+        for j in range(i + 1, len(lines)):
+            toks = [t.lower() for t in _tokens(lines[j])]
+            if not toks:
+                continue
+            if toks[0] == "end":
+                if depth == 0:
+                    return _Block(i, j, False, words, subs)
+                depth -= 1
+                continue
+            if depth:
+                continue
+            words.update(toks)
+            if toks[0] in _SUB_OPENERS:
+                subs.add(toks[0])
+            if toks[-1] != "end" and (toks[0] in _SUB_OPENERS or len(toks) == 1):
+                subs.add(toks[0])
+                depth += 1
+        return _Block(i, None, False, words, subs)
+    return None
+
+
+def _add_to_block(lines: "list[str]", blk: _Block, name: str,
+                  add: "list[str]") -> None:
+    """Put ``add`` (indented block lines) into the level's own block: before
+    its closing ``end``, or -- a block written on one line -- as words before
+    the line's last ``end``."""
+    if not add:
+        return
+    if blk.end is None:
+        raise TemplateConflict(
+            f"The level's own %{name} block has no closing end, so this "
+            f"block's options cannot be added to it. Close it with end in the "
+            "level's text.")
+    if blk.single:
+        code, sep, comment = lines[blk.start].partition("#")
+        m = re.search(r"\bend\s*$", code, re.I)
+        words = " ".join(a.strip() for a in add)
+        lines[blk.start] = (code[:m.start()] + words + " " + code[m.start():]
+                            + sep + comment)
+        return
+    lines[blk.end:blk.end] = add
+
+
+def _merge_keyed(lines: "list[str]", name: str, whole: "list[str]",
+                 wants: "list[tuple]") -> "list[str]":
+    """The keyed half of a block's options merged with the level: with no
+    ``%name`` in the level, ``whole`` (the block as build_input writes it) is
+    returned for the caller to insert; otherwise each ``(key, line, value,
+    fill)`` the level's block lacks is added to it, and a key it already has
+    is a TemplateConflict -- unless ``fill`` (a line ORCAdesk adds only where
+    the level says nothing, never a choice of the user's), which is then
+    left out. Returns [] when the level's block took the lines."""
+    blk = _find_block(lines, name)
+    if blk is None:
+        return whole
+    add = []
+    for key, line, value, fill in wants:
+        if key.lower() in blk.words:
+            if not fill:
+                raise _both(name, key, value)
+            continue
+        add.append(line)
+    _add_to_block(lines, blk, name, add)
     return []
 
 
-def render_template_job(text: str, kind: str, hess_name: str = "") -> str:
+def _coordinate_line(lines: "list[str]") -> "int | None":
+    return next((i for i, ln in enumerate(lines)
+                 if ln.strip().startswith("*")
+                 and ln.strip()[1:].strip().lower().startswith("xyz")), None)
+
+
+_SCF_TIER = re.compile(r"^(sloppy|loose|normal|strong|tight|verytight|extreme)scf$", re.I)
+_SOLVENT_WORD = re.compile(r"^(cpcm|smd|alpb|ddcosmo|cosmors|cpcmc)\b", re.I)
+
+
+def _job_line(lines: "list[str]", kind: str, cfg: StepConfig) -> None:
+    """{{JOB}} filled on every line, and on the job's own ``!`` line the
+    block's extra keywords, SCF tier and solvation keyword appended -- each
+    only when no ``!`` line holds it already (case aside)."""
+    job = TEMPLATE_JOB_KEYWORDS[kind]
+    first = next((i for i, ln in enumerate(lines)
+                  if ln.strip().startswith("!") and JOB_PLACEHOLDER in ln), None)
+    for i, ln in enumerate(lines):
+        if JOB_PLACEHOLDER not in ln:
+            continue
+        if job:
+            lines[i] = ln.replace(JOB_PLACEHOLDER, job)
+        else:
+            lines[i] = re.sub(r"[ \t]*" + re.escape(JOB_PLACEHOLDER), "", ln)
+    if first is None:
+        return
+    # lower case -> as the level writes it (what a refusal quotes)
+    have = {t.lower(): t for ln in lines if ln.strip().startswith("!")
+            for t in _tokens(ln.strip()[1:])}
+    extra = []
+    scf = (cfg.scf_convergence or "").strip()
+    if scf:
+        tier = next((t for t in have.values() if _SCF_TIER.match(t)), "")
+        if tier and tier.lower() != scf.lower():
+            raise TemplateConflict(
+                f"The level already sets its SCF convergence ({tier}), and this "
+                f"block's options ask for {scf}. Keep it in one place: clear "
+                "the block's SCF convergence, or take it out of the level's text.")
+        extra.append(scf)
+    extra.extend(cfg.options.split())
+    if cfg.solvation.model:
+        kw = cfg.solvation.keyword()
+        own = next((t for t in have.values() if _SOLVENT_WORD.match(t)), "")
+        if own or _has_block("\n".join(lines), "cpcm"):
+            raise TemplateConflict(
+                f"The level already selects a solvent model "
+                f"({own or '%cpcm'}), and this block's options ask for "
+                f"{kw} too. Keep it in one place: set the block's solvation "
+                "to gas phase, or take it out of the level's text.")
+        extra.append(kw)
+    add = []
+    for t in extra:
+        if t and t.lower() not in have:
+            have[t.lower()] = t
+            add.append(t)
+    if add:
+        lines[first] = lines[first].rstrip() + " " + " ".join(add)
+    if lines[first].strip() == "!":
+        del lines[first]
+
+
+def _geom_options(lines: "list[str]", kind: str, cfg: StepConfig,
+                  n_atoms) -> "list[str]":
+    """%geom for an optimization: the job lines (MaxIter, Calc_Hess for a TS)
+    and the block's Constraints / Scan. Returns the whole block when the level
+    has none; otherwise adds what the level's own block lacks -- MaxIter only
+    where it has none, Calc_Hess only where it names no initial Hessian --
+    and refuses a Constraints / Scan list on both sides, or one that would go
+    into a %geom written on one line."""
+    if kind not in CONSTRAINED_KINDS:
+        return []
+    constraints = normalize_constraints(cfg.geom_constraints)
+    scan = normalize_scan(cfg.geom_scan) if kind in SCAN_KINDS else []
+    if n_atoms:
+        err = (constraint_index_error(constraints, n_atoms)
+               or constraint_index_error(scan, n_atoms, "scan"))
+        if err:
+            raise ValueError(err)
+    job = _geom_job_lines(kind, cfg.max_iter)
+    sub: "list[str]" = []
+    if constraints:
+        sub += ["  Constraints", *(_constraint_line(c) for c in constraints), "  end"]
+    if scan:
+        sub += ["  Scan", *(_scan_line(c) for c in scan), "  end"]
+    blk = _find_block(lines, "geom")
+    if blk is None:
+        return ["%geom", *job, *sub, "end"]
+    add = []
+    if "maxiter" in blk.words:
+        if cfg.max_iter != DEFAULT_GEOM_MAXITER:
+            raise _both("geom", "MaxIter", cfg.max_iter)
+    else:
+        add.append(job[0])
+    if len(job) > 1 and not {"calc_hess", "inhess"} & blk.words:
+        add.extend(job[1:])
+    for word, title, wanted in (("constraints", "Constraints", constraints),
+                                ("scan", "Scan", scan)):
+        if wanted and word in blk.subs:
+            raise TemplateConflict(
+                f"The level's own %geom block already has a {title} block, and "
+                f"this block's options add {title.lower()} too. ORCAdesk does "
+                "not merge two lists: keep them in one place (the block's "
+                "options, or the level's text).")
+    if sub and blk.single:
+        raise TemplateConflict(
+            "The level's own %geom block is written on one line, so this "
+            "block's constraints / scan cannot be added to it. Write the "
+            "level's %geom over several lines (its closing end on a line of "
+            "its own), or clear the block's constraints / scan.")
+    _add_to_block(lines, blk, "geom", add + sub)
+    return []
+
+
+def _irc_options(lines: "list[str]", cfg: StepConfig,
+                 hess_name: str) -> "list[str]":
+    """%irc: the whole block (_irc_lines, build_input's) when the level has
+    none -- the initial Hessian read from ``hess_name`` (the parent's, staged)
+    when left at IRC_INIT_AUTO and there is one, else computed; an explicit
+    choice is written as chosen. Into a level's own %irc only the options that
+    differ from the default go (auto adds nothing: the level's block decides)."""
+    init = _irc_init(cfg)
+    hess_file = (cfg.irc_hess_file or "").strip()
+    if init == IRC_INIT_AUTO:
+        eff, hess_file = ("read", hess_name) if hess_name else ("calc_anfreq", "")
+    else:
+        eff = init
+    whole = _irc_lines(StepConfig(kind="irc", irc_maxiter=cfg.irc_maxiter,
+                                  irc_direction=cfg.irc_direction,
+                                  irc_init_hess=eff, irc_hess_file=hess_file))
+    wants = []
+    if cfg.irc_maxiter != DEFAULT_IRC_MAXITER:
+        wants.append(("MaxIter", f"  MaxIter {cfg.irc_maxiter}", cfg.irc_maxiter, False))
+    direction = (cfg.irc_direction or "both").strip().lower()
+    if direction in ("forward", "backward"):
+        wants.append(("Direction", f"  Direction {direction}", direction, False))
+    if init != IRC_INIT_AUTO:
+        wants.append(("InitHess", f"  InitHess {init}", init, False))
+        if init == "read":
+            name = irc_hess_input_name(hess_file)
+            wants.append(("Hess_Filename", f'  Hess_Filename "{name}"', name, False))
+    return _merge_keyed(lines, "irc", whole, wants)
+
+
+def _freq_options(lines: "list[str]", cfg: StepConfig) -> "list[str]":
+    t_set = abs(cfg.freq_temp_k - 298.15) > 1e-6
+    p_set = abs(cfg.freq_pressure_atm - 1.0) > 1e-6
+    if not (t_set or p_set):
+        return []
+    whole = ["%freq", f"  Temp {cfg.freq_temp_k}",
+             f"  Pressure {cfg.freq_pressure_atm}", "end"]
+    wants = []
+    if t_set:
+        wants.append(("Temp", f"  Temp {cfg.freq_temp_k}", cfg.freq_temp_k, False))
+    if p_set:
+        wants.append(("Pressure", f"  Pressure {cfg.freq_pressure_atm}",
+                      cfg.freq_pressure_atm, False))
+    return _merge_keyed(lines, "freq", whole, wants)
+
+
+def _tddft_options(lines: "list[str]", cfg: StepConfig) -> "list[str]":
+    whole = ["%tddft", f"  nroots {cfg.tddft_nroots}"]
+    wants = [("nroots", f"  nroots {cfg.tddft_nroots}", cfg.tddft_nroots,
+              cfg.tddft_nroots == ORCA_TDDFT_NROOTS)]
+    if cfg.tddft_maxdim > 0:
+        whole.append(f"  maxdim {cfg.tddft_maxdim}")
+        wants.append(("maxdim", f"  maxdim {cfg.tddft_maxdim}", cfg.tddft_maxdim, False))
+    if not cfg.tddft_tda:
+        whole.append("  tda false")
+        wants.append(("tda", "  tda false", "false", False))
+    if cfg.tddft_triplets:
+        whole.append("  triplets true")
+        wants.append(("triplets", "  triplets true", "true", False))
+    whole.append("end")
+    return _merge_keyed(lines, "tddft", whole, wants)
+
+
+def _neb_options(lines: "list[str]", cfg: StepConfig) -> "list[str]":
+    whole = ["%neb", '  NEB_End_XYZFile "product.xyz"']
+    wants = [("NEB_End_XYZFile", '  NEB_End_XYZFile "product.xyz"', "product.xyz", True)]
+    if cfg.neb_nimages != ORCA_NEB_IMAGES:
+        whole.append(f"  Nimages {cfg.neb_nimages}")
+        wants.append(("Nimages", f"  Nimages {cfg.neb_nimages}", cfg.neb_nimages, False))
+    if cfg.neb_preopt_ends:
+        whole.append("  PreOpt_Ends true")
+        wants.append(("PreOpt_Ends", "  PreOpt_Ends true", "true", False))
+    if cfg.neb_ts_guess_xyz.strip():
+        whole.append('  NEB_TS_XYZFile "ts_guess.xyz"')
+        wants.append(("NEB_TS_XYZFile", '  NEB_TS_XYZFile "ts_guess.xyz"',
+                      "ts_guess.xyz", False))
+    whole.append("end")
+    return _merge_keyed(lines, "neb", whole, wants)
+
+
+def render_template_job(text: str, kind: str, hess_name: str = "",
+                        cfg=None, n_atoms=None) -> str:
     """``text`` with {{JOB}} replaced by ``kind``'s job keyword and that kind's
-    extra block inserted right before the coordinate block (``* xyz`` /
-    ``* xyzfile``; at the end when there is none). A text without {{JOB}} is
-    returned unchanged -- an input written before sets were levels runs as
-    written. ValueError for a kind with no job keyword."""
+    blocks merged in, the ones build_input writes for it (through the same
+    helpers) -- never a second copy of a block the level already has.
+
+    The block's options (``cfg``, its config: StepConfig field names) apply
+    only to a LEVEL (is_level_text); the level owns its method, basis, RI,
+    %pal / %maxcore and %basis, so those fields are never read here. With no
+    options the result is what the level always rendered as.
+
+    * ``!`` line: the job keyword, then the block's SCF tier, extra keywords
+      and solvation keyword, each only when no ``!`` line holds it already.
+    * ``%cpcm`` (a solvent name with spaces), ``%geom`` (_geom_options),
+      ``%freq`` T / P, ``%tddft``, ``%irc`` (_irc_options), ``%neb``: a block
+      the level lacks is inserted whole right before the coordinate block
+      (``* xyz`` / ``* xyzfile``; at the end when there is none); into one it
+      has, only the lines it lacks go -- a key set on both sides is a
+      TemplateConflict.
+    * ``%eprnmr`` (NMR J-couplings) after the coordinate block's closing ``*``.
+
+    ``n_atoms`` (the resolved structure's) checks constraint and scan indices
+    as build_input does. A text without {{JOB}} is returned unchanged -- an
+    input written before sets were levels runs as written. ValueError for a
+    kind with no job keyword, a conflict (TemplateConflict) or an option the
+    generator refuses."""
     if JOB_PLACEHOLDER not in text:
         return text
     err = template_job_error(kind)
     if err:
         raise ValueError(err)
-    block = template_job_block(text, kind, hess_name)
-    out = text.replace(JOB_PLACEHOLDER, TEMPLATE_JOB_KEYWORDS[kind])
-    if not block:
-        return out
-    lines = out.split("\n")
-    at = next((i for i, ln in enumerate(lines)
-               if ln.strip().startswith("*")
-               and ln.strip()[1:].strip().lower().startswith("xyz")), None)
-    if at is None:
-        if lines and lines[-1] == "":
-            lines[-1:] = block + [""]
+    cfg = _block_options(cfg if is_level_text(text) else None, kind)
+    lines = text.split("\n")
+    _job_line(lines, kind, cfg)
+    before: "list[str]" = []
+    solv_block = cfg.solvation.block() if cfg.solvation.model else ""
+    if solv_block:
+        before += solv_block.split("\n")
+    before += _geom_options(lines, kind, cfg, n_atoms)
+    if kind in _FREQ_BLOCK_KINDS:
+        before += _freq_options(lines, cfg)
+    if kind == "tddft":
+        before += _tddft_options(lines, cfg)
+    if kind == "irc":
+        before += _irc_options(lines, cfg, hess_name)
+    if kind == "neb_ts":
+        before += _neb_options(lines, cfg)
+    after: "list[str]" = []
+    if kind == "nmr" and cfg.nmr_jcoupling:
+        if _find_block(lines, "eprnmr") is not None:
+            raise TemplateConflict(
+                "The level already has its own %eprnmr block, and this block "
+                "asks for J-couplings too, which would be a second one. Keep "
+                "it in one place: clear J-coupling on the block, or take the "
+                "%eprnmr block out of the level's text.")
+        after = ["%eprnmr", "  Nuclei = all H { shift, ssall }",
+                 "  Nuclei = all C { shift, ssall }", "end"]
+    at = _coordinate_line(lines)
+    if before:
+        if at is None:
+            if lines and lines[-1] == "":
+                lines[-1:] = before + [""]
+            else:
+                lines.extend(before)
         else:
-            lines.extend(block)
-    else:
-        lines[at:at] = block
+            lines[at:at] = before
+            at += len(before)
+    if after:
+        close = None
+        if at is not None and "xyzfile" not in lines[at].lower():
+            close = next((j for j in range(at + 1, len(lines))
+                          if lines[j].strip().startswith("*")), None)
+        if close is None:
+            if lines and lines[-1] == "":
+                lines[-1:] = after + [""]
+            else:
+                lines.extend(after)
+        else:
+            lines[close + 1:close + 1] = after
     return "\n".join(lines)
 
 
+def template_option_conflicts(text: str, kind: str, cfg) -> str:
+    """Why a level block's options cannot be rendered into its level, as the
+    sentence the queue shows, or "": a key both set (TemplateConflict), a
+    %geom the constraints cannot go into, an option the generator refuses
+    (an IRC "read" with no file, an SMD solvent SMD lacks). "" for a text that
+    is not a level, and for a kind with no job keyword (template_job_error
+    says that). Shared by the store (refused when added or edited) and the
+    engine (BLOCKED before launch), so the two never disagree."""
+    if not is_level_text(text) or template_job_error(kind):
+        return ""
+    try:
+        render_template_job(text, kind, "", cfg)
+    except ValueError as e:
+        return str(e)
+    return ""
+
+
 def render_template_text(text: str, kind: str, charge: int, multiplicity: int,
-                         hess_name: str = "") -> str:
+                         hess_name: str = "", cfg=None, n_atoms=None) -> str:
     """Every placeholder of an inp-set template but the geometry
-    (render_raw_input's): {{JOB}} and its block (render_template_job),
-    {{CHARGE}} / {{MULT}}, and {{HESS}} with ``hess_name`` (left as it is when
-    that is ""). The one renderer: QueueEngine runs it at launch, and the
-    queue editor's preview (Bridge.build_inp_preview) shows its result."""
-    text = render_template_job(text, kind, hess_name)
+    (render_raw_input's): {{JOB}} and its blocks with the block's options
+    (render_template_job), {{CHARGE}} / {{MULT}}, and {{HESS}} with
+    ``hess_name`` (left as it is when that is ""). The one renderer:
+    QueueEngine runs it at launch, and the queue editor's preview
+    (Bridge.build_inp_preview) shows its result."""
+    text = render_template_job(text, kind, hess_name, cfg, n_atoms)
     text = render_template_values(text, charge, multiplicity)
     if hess_name and HESS_PLACEHOLDER in text:
         text = text.replace(HESS_PLACEHOLDER, hess_name)

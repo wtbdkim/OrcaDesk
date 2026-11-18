@@ -1408,12 +1408,19 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
 html[data-win="queue"] .app{display:none;}
 .qed{height:100vh; height:100dvh;}
 .qe-app{
-  display:grid; height:100%; overflow:hidden;
+  display:grid; height:100%; overflow:hidden; position:relative;
   grid-template-columns:220px minmax(0,1fr) 360px;
 }
-/* the Guided builder is hosted in the inspector, and its rows need the room */
-.qe-app[data-building]{grid-template-columns:220px minmax(0,1fr) min(680px, 50vw);}
 .qe-app > *{min-height:0; overflow-y:auto;}
+/* The builder is the main window's New calculation as it was (DESIGN.md
+   §17.6): the same cell in a column like the stream (.streaminner's padding
+   and gap), over the lanes and the inspector rather than squeezed into the
+   inspector, at the width the reference draws the cell (1680 - 600 rail -
+   40 padding); it scrolls inside. The library stays beside it. */
+.qe-build{position:absolute; top:0; bottom:0; left:220px; right:0;
+  background:var(--background); scroll-behavior:smooth;}
+.qe-build > .streaminner > .cell{width:100%; max-width:1040px;}
+.qe-app[data-building] > .qe-main,.qe-app[data-building] > .qe-insp{visibility:hidden;}
 @keyframes qe-breathe{0%,100%{border-color:var(--qe-faint)}50%{border-color:var(--ring)}}
 @keyframes qe-pop{from{opacity:0; transform:scale(.92)} to{opacity:1; transform:none}}
 
@@ -1577,8 +1584,6 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 .qe-saveas{display:flex; align-items:center; gap:8px;}
 .qe-saveas .qe-note{flex:1 1 auto;}
 .qe-insp .seg{align-self:flex-start;}
-/* the hosted builder is as tall as its form; the column scrolls, the cell is not squeezed */
-.qe-insp > .cell{flex:0 0 auto;}
 .qe-check{display:flex; align-items:flex-start; gap:8px; font-size:12.5px; line-height:1.5;
   color:color-mix(in srgb, var(--foreground) 85%, var(--background));}
 .qe-check input{width:15px; height:15px; margin:2px 0 0; accent-color:var(--foreground);}
@@ -1614,9 +1619,26 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
   background:color-mix(in srgb, var(--foreground) 6%, transparent); border-radius:4px;}
 .qe-node[data-band] .qe-card{border-color:var(--foreground);}
 .qe-card[data-sel]{box-shadow:0 0 0 1px var(--muted-foreground);}
+/* what the old queue did, inherited (DESIGN.md §17.6): a level's block names
+   the options it adds under the block (the card has no third line); a
+   system's caption over a non-empty row selects its structures panel, whose
+   stage is shorter than the builder's; the block's own actions wrap */
+.qe-opts{position:absolute; left:2px; right:-24px; top:calc(100% + 4px); pointer-events:none;
+  font-size:10.5px; color:var(--qe-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.qe-node[data-stack] .qe-opts{top:calc(100% + 14px);}
+.qe-cap[data-row]{font-size:11px; color:var(--qe-dim); z-index:3;}
+.qe-saveas[data-acts]{flex-wrap:wrap; gap:6px;}
+.qe-saveas[data-in] .qe-note{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.qe-stage{position:relative; height:240px; flex:0 0 auto; overflow:hidden;
+  border:1px solid var(--border); border-radius:10px; background:var(--stage);}
+.qe-stage canvas.molcv{position:absolute; inset:0; display:block; width:100%; height:100%;}
+.qe-insp .finding{margin:0;}
+.qe-insp .factline{margin:0;}
 @media (max-width:900px){
   html[data-win="queue"] body{overflow:auto;}
-  .qe-app,.qe-app[data-building]{grid-template-columns:minmax(0,1fr); height:auto; overflow:visible;}
+  .qe-app{grid-template-columns:minmax(0,1fr); height:auto; overflow:visible;}
+  .qe-build{position:static;}
+  .qe-app[data-building] > .qe-main,.qe-app[data-building] > .qe-insp{display:none;}
   .qe-app > *{overflow:visible;}
   .qe-canvas{min-height:60vh;}
   .qe-insp{border-left:none; border-top:1px solid var(--border);}

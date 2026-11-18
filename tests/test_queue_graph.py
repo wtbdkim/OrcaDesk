@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 import orcamgr.core.queue as queue_mod
-from orcamgr.core.input_generator import StepConfig
+from orcamgr.core.input_generator import StepConfig, template_config
 from orcamgr.core.parser import ParseResult
 from orcamgr.core.queue import (CalcState, Calculation, GeometrySource,
                                 gate_auto_passes, gate_waiting)
@@ -393,7 +393,10 @@ end
 
 
 def _template_calc(name: str, text: str, kind: str = "sp") -> Calculation:
-    c = Calculation(name=name, kind=kind, config=StepConfig(kind=kind))
+    # a level block's config as the store holds it: no options
+    # (template_config -- its IRC initial Hessian "auto", not StepConfig's
+    # Guided default calc_anfreq)
+    c = Calculation(name=name, kind=kind, config=template_config({}, kind))
     c.is_raw = True
     c.raw_text = text
     c.xyz = "H 0.0 0.0 0.0\nH 0.0 0.0 0.74"
@@ -531,7 +534,10 @@ def test_the_rendered_block_is_the_one_the_guided_generator_writes():
     assert render_template_text(level, "irc", 0, 1, "ts.hess") == irc
 
 
-def test_a_template_with_its_own_geom_block_gets_nothing_added(tmp_path):
+def test_a_template_with_its_own_geom_block_gets_only_the_lines_it_lacks(tmp_path):
+    # The level's own %geom used to win WHOLE, so a TS optimization from a
+    # level with a %geom lost Calc_Hess (and an opt its MaxIter cap). Now only
+    # what the level's block lacks goes into it -- its own MaxIter stays.
     engine = _real_engine(tmp_path)
     text = LEVEL.replace("* xyz", "%geom\n  MaxIter 30\n  Trust -0.1\nend\n* xyz")
     calc = _template_calc("own", text, kind="ts_opt")
@@ -539,8 +545,15 @@ def test_a_template_with_its_own_geom_block_gets_nothing_added(tmp_path):
         engine._run_calc(calc, 0)
     inp = (tmp_path / "own" / "own.inp").read_text(encoding="utf-8")
     assert "! B3LYP def2-SVP OptTS" in inp
-    assert inp.count("%geom") == 1 and "MaxIter 30" in inp
-    assert "Calc_Hess" not in inp and "MaxIter 200" not in inp   # the user's block wins, whole
+    assert inp.count("%geom") == 1 and "MaxIter 200" not in inp
+    assert "%geom\n  MaxIter 30\n  Trust -0.1\n  Calc_Hess true\nend\n* xyz 0 1" in inp
+    # ...and an optimization's MaxIter goes into a %geom that has none
+    calc = _template_calc("own2", LEVEL.replace("* xyz", "%geom\n  Trust -0.1\nend\n* xyz"),
+                          kind="opt")
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+    inp = (tmp_path / "own2" / "own2.inp").read_text(encoding="utf-8")
+    assert "%geom\n  Trust -0.1\n  MaxIter 200\nend\n* xyz 0 1" in inp
 
 
 def test_a_job_irc_reads_the_parents_hessian_when_there_is_one(tmp_path):
@@ -589,7 +602,7 @@ def test_a_job_irc_with_its_own_irc_block_keeps_hess_working(tmp_path):
     assert inp.count("%irc") == 1 and 'Hess_Filename "f.hess"' in inp and "MaxIter 100" not in inp
 
 
-@pytest.mark.parametrize("kind", ["neb_ts", "tddft", "general"])
+@pytest.mark.parametrize("kind", ["general", "crest_conf"])
 def test_a_kind_with_no_job_keyword_is_refused_before_launch(tmp_path, kind):
     engine = _real_engine(tmp_path)
     calc = _template_calc("bad", LEVEL, kind=kind)

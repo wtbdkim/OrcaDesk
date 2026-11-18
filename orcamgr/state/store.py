@@ -30,8 +30,11 @@ from ..core.queue import (
 from ..core.input_generator import (CONSTRAINED_KINDS, JOB_PLACEHOLDER,
                                     SCAN_KINDS, StepConfig,
                                     constraint_index_error,
-                                    constraint_linear_warning,
-                                    raw_geometry_mismatch, template_job_error)
+                                    MLIP_TEMPLATE_KINDS,
+                                    constraint_linear_warning, is_level_text,
+                                    raw_geometry_mismatch, template_config,
+                                    template_job_error,
+                                    template_option_conflicts)
 from ..core.structure import parse_block
 from ..core.runner import OrcaRunError
 from ..core.procutil import process_matches
@@ -291,9 +294,13 @@ def constraint_warning(calc) -> str:
     constraints when it is added or edited: a valued angle ORCA will stop on
     as a linear bend (input_generator.constraint_linear_warning). The start
     angle is judged when the coordinates are in hand, the target alone for a
-    referenced geometry. "" when there is nothing to say."""
+    referenced geometry. A level block's constraints (its options) are judged
+    the same way; any other raw text is the user's own. "" when there is
+    nothing to say."""
     cfg = calc.config
-    if calc.is_raw or not cfg.geom_constraints or cfg.kind not in CONSTRAINED_KINDS:
+    if calc.is_raw and not is_level_text(calc.raw_text):
+        return ""
+    if not cfg.geom_constraints or cfg.kind not in CONSTRAINED_KINDS:
         return ""
     if calc.geometry_source == GeometrySource.DIRECT:
         atoms = parse_block(calc.xyz or "")
@@ -379,6 +386,13 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
     if (not restoring and is_raw and JOB_PLACEHOLDER in _s("raw_text")
             and template_job_error(kind)):
         raise ValueError(template_job_error(kind))
+    # A level block's config is its OPTIONS (constraints, scan, MaxIter, IRC /
+    # Freq / NMR / TD-DFT / NEB settings, extra keywords, solvation, SCF),
+    # merged into the level at launch by render_template_text; its kind is
+    # the block's own, and an IRC Hessian it does not name is "auto".
+    level = is_raw and is_level_text(_s("raw_text"))
+    if level:
+        cfg = template_config(d.get("config"), kind)
     graph = _graph_fields(d, restoring)
     # A text that reads a parent's Hessian ({{HESS}}, or an inp-set IRC whose
     # %irc block reads one) with no parent to take it from could only fail at
@@ -386,9 +400,18 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
     if not restoring and is_raw:
         err = template_hess_problem(
             name, kind, _s("raw_text"), graph.get("set_name", ""),
-            graph.get("after", ""), src == "reference" and bool(_s("ref_name")))
+            graph.get("after", ""), src == "reference" and bool(_s("ref_name")),
+            cfg if level else None)
         if err:
             raise ValueError(err)
+    # Options the level cannot take -- a key both set, constraints for a %geom
+    # written on one line, an IRC "read" with no file -- are refused when the
+    # block is added or edited (template_option_conflicts; the engine BLOCKs
+    # on the same answer before launch). Never on restore.
+    if not restoring and level and not template_job_error(kind):
+        err = template_option_conflicts(_s("raw_text"), kind, cfg)
+        if err:
+            raise ValueError(f"'{name}': {err}")
 
     # A constraint naming an atom the coordinates do not have is refused when it
     # is ADDED, not at launch: build_input refuses it too, but by then the calc
@@ -397,14 +420,14 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
     # restore, which must not evict an entry for a rule a new run obeys.
     # (A valued angle ORCA will stop on as a linear bend is NOT refused: it is
     # a warning — constraint_warning below — and the user's call.)
-    if (not restoring and not is_raw and src == "direct"
+    if (not restoring and (not is_raw or level) and src == "direct"
             and cfg.geom_constraints and cfg.kind in CONSTRAINED_KINDS):
         n_atoms = len(parse_block(_s("xyz")))
         err = constraint_index_error(cfg.geom_constraints, n_atoms) if n_atoms else ""
         if err:
             raise ValueError(err)
     # A scan coordinate is held to the same rule, for the same reason.
-    if (not restoring and not is_raw and src == "direct"
+    if (not restoring and (not is_raw or level) and src == "direct"
             and cfg.geom_scan and cfg.kind in SCAN_KINDS):
         n_atoms = len(parse_block(_s("xyz")))
         err = constraint_index_error(cfg.geom_scan, n_atoms, "scan") if n_atoms else ""
@@ -672,6 +695,12 @@ def system_summary(s: dict) -> SystemSummary:
 # The whole queue is mirrored to a JSON file so closing ORCAdesk does not lose
 # it, and a calculation left RUNNING (its detached ORCA still going) can be
 # reattached on the next launch.
+#
+# Schema 2: a level block's config holds its options (render_template_text
+# reads them). A schema-1 file's level blocks carry config nobody chose as
+# options, and load_session reads it as none.
+SESSION_SCHEMA = 2
+
 
 def _session_file():
     return user_data_root() / "session.json"
@@ -1331,7 +1360,8 @@ class QueueStore:
         calculation ``stem + suffix`` built from ``inp_set`` (a template calc:
         raw text, or an MLIP config) starting from it. ``kind`` is what an
         ORCA level runs as (the recipe's single point: "sp" when not given);
-        an MLIP set runs as ``mlip_opt``.
+        an MLIP set runs as ``kind`` when that is an MLIP task
+        (MLIP_TEMPLATE_KINDS), else as ``mlip_opt``.
 
         ``files`` is ``[(label, text)]`` — the label is what the refusal names
         and what the stem is taken from (a path or a file name). Each file is
@@ -1347,6 +1377,8 @@ class QueueStore:
             err = template_job_error(kind)
             if err:
                 raise ValueError(err)
+        elif set_kind == "MLIP" and kind in MLIP_TEMPLATE_KINDS:
+            pass
         else:
             kind = calc_kind_for_set(set_kind)
         added: list[str] = []
@@ -1479,12 +1511,22 @@ class QueueStore:
                 # a Type change: the config describes the calc's kind too
                 # (StepConfig.kind), so it follows rather than keeping the old
                 merged["config"] = {**merged["config"], "kind": patch["kind"]}
-            if ("raw_text" in patch and merged.get("set_name")
+            if (({"raw_text", "config", "kind"} & set(patch))
+                    and merged.get("set_name") and merged.get("raw_text")
                     and str(merged.get("kind", "")).startswith("mlip")):
                 # an MLIP template's text (a calc that came from an inp set)
                 # is applied to the config again by calc_from_dict — the
-                # stored calc reads is_raw false
+                # stored calc reads is_raw false. Also for an options edit
+                # (config: T / P for an MLIP frequency) or a Type change, or
+                # the patch's config would replace the model the text sets.
                 merged["is_raw"] = True
+            if ("config" not in patch and merged.get("is_raw")
+                    and is_level_text(merged.get("raw_text") or "")
+                    and not (current.is_raw and is_level_text(current.raw_text))):
+                # a calc BECOMING a level block (a level dropped on a guided
+                # calc): its old config was a whole guided input, not options
+                # for the level -- none of it carries over
+                merged["config"] = {}
             new_calc = calc_from_dict(merged)
             if set(patch) == {"approved"} and current.state == CalcState.PENDING:
                 # An approval-only patch on a waiting row keeps the LIVE object
@@ -1809,7 +1851,7 @@ class QueueStore:
         effort: a save failure must never break the running app."""
         with self._lock:
             payload = {
-                "schema": 1,
+                "schema": SESSION_SCHEMA,
                 "calculations": [calc_to_session_dict(c) for c in self._calcs],
                 "systems": copy.deepcopy(self._systems),
             }
@@ -1855,11 +1897,21 @@ class QueueStore:
             entries = []
         restored = []
         seen_names: set[str] = set()
+        schema = data.get("schema", 1)
+        legacy = not (isinstance(schema, int) and not isinstance(schema, bool)
+                      and schema >= SESSION_SCHEMA)
         for d in entries:
             try:
                 c = calc_from_session_dict(d)
             except Exception:
                 continue  # skip a corrupt entry rather than lose the whole queue
+            if legacy and c.is_raw and is_level_text(c.raw_text):
+                # Before schema 2 a level block's config was never read (its
+                # text was the whole input), so whatever it holds -- the
+                # defaults, or a guided calc's settings the level was dropped
+                # onto -- is not options anybody chose: read as none, the
+                # block renders exactly as it did.
+                c.config = template_config({}, c.kind)
             # The restore path must uphold the same case-insensitive name
             # uniqueness add() enforces (Windows folder identity): a session
             # written by an older build (or edited/merged externally) could
