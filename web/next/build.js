@@ -126,20 +126,53 @@
   let _target = null;
 
   /** What a NEW calculation starts from, when it starts from something: the
-   *  partial calc "New from this" hands over. Cleared as soon as it is used,
-   *  so the next new calculation is a blank one. @type {any} */
+   *  partial calc "New from this" hands over. The builder cell made for the
+   *  open takes it (cellFor) and clears it, so the next new calculation is a
+   *  blank one. @type {any} */
   let _seed = null;
   /** Where a NEW calculation goes in the queue editor (the queue window's
    *  "Manual build" on a ghost slot): `fields` are merged into the payload
    *  (system, node, col, row, after, gate), `done(name)` runs once it is
    *  queued. null for a calculation that is simply appended.
-   *  @type {null|{fields: any, done?: (name: string) => void, label?: string}} */
+   *  `levels` (the queue window's library) offers Level mode as a third way.
+   *  `where` is said beside the editbar's "New calculation"; `names` maps a
+   *  kind to the name this place gives a calculation of it, so the Name
+   *  follows the Type while it is still the one this place gave.
+   *  @type {null|{fields: any, done?: (name: string) => void, where?: string, levels?: any, names?: any}} */
   let _place = null;
   /** The queue fields a calculation keeps across an edit: the form does not
    *  draw them, so update_calc would otherwise get a payload without them and
    *  pull the calculation out of its lane. */
   const PLACE_KEYS = ["system", "node", "col", "row", "after", "gate", "auto_pass",
                       "approved", "ref_point", "set_name"];
+
+  /* ---- Level mode ---------------------------------------------------------
+     A block made from an ORCA level (the queue window's inp sets) runs the
+     level's own text with {{JOB}} filled from its Type. The level owns the
+     method, basis, resources and per-element basis; what the block adds are
+     the per-job options -- constraints and scan, MaxIter, the IRC / Freq /
+     NMR / TD-DFT / NEB settings, extra keywords, SCF tier, solvation --
+     stored in its config under StepConfig's own field names and merged into
+     the level by the backend (render_template_text) at launch and in the
+     preview. So in Level mode the form keeps the Type, the geometry, the
+     stage and those blocks, and in place of Method / Resources / Per-element
+     basis shows the level's name and text, read-only, with a picker for
+     another level. Opened by the queue window: on a level's block
+     (`place.level`, an edit whose save goes through the editor's undoable
+     batch) or as a third mode of a new calculation (`place.levels`). */
+  /** the Level-mode context of the next open, or null @type {any} */
+  let _lvl = null;
+  /** A level's IRC reads the Hessian of the step before it unless told
+   *  otherwise -- the template default, not StepConfig's (calc_anfreq). */
+  const AUTO_HESS = "auto";
+  /** The config keys a level's block carries: the per-job options. The rest
+   *  of StepConfig (method, basis, RI, resources, per-element basis) is the
+   *  level's and is never sent for one. */
+  const LEVEL_KEYS = ["kind", "scf_convergence", "options", "solvation", "geom_constraints",
+                      "geom_scan", "max_iter", "freq_temp_k", "freq_pressure_atm",
+                      "tddft_nroots", "tddft_maxdim", "tddft_tda", "tddft_triplets",
+                      "nmr_jcoupling", "irc_maxiter", "irc_direction", "irc_init_hess",
+                      "irc_hess_file", "neb_product_xyz", "neb_nimages", "neb_preopt_ends"];
 
   /* ---- the new calculation's draft ---------------------------------------
      A new calculation half typed is kept: closing the builder (×, Cancel,
@@ -216,6 +249,7 @@
       pickMode: st.pickMode,
       cfgBy: Object.assign({}, st.cfgBy, { [st.backend]: p.config }),
       kindBy: Object.assign({}, st.kindBy, { [st.backend]: p.kind }),
+      level: st.level || null,
     };
   }
 
@@ -232,8 +266,11 @@
     _target = (_target === target && !seed) ? null : target;
     _seed = _target === null ? null : (seed || null);
     _place = _target === "" ? (place || null) : null;
-    // the main window hosts the form in the stream, the queue window in the
-    // editor's inspector column
+    // Level mode on a level's block: its context rides on `place` (an edit
+    // has no place of its own otherwise)
+    _lvl = _target !== null && place && place.level ? place.level : null;
+    // the main window hosts the form in the stream, the queue window in a
+    // stream-like column over its lanes and inspector (qed.js #qe-build)
     if (NB.win === "queue") { if (NB.qed) NB.qed.render(); }
     else NB.stream.render();
     if (_target !== null) {
@@ -268,14 +305,28 @@
   function cellFor(calc) {
     const el = NB.el("article", "cell editing" + (calc ? "" : " stub"));
     el.dataset.name = calc ? calc.name : "";
+    // what this open is: a level's block (Level mode), or a new calculation
+    // that may start from a level (the third mode); fixed for the cell's life
+    // The seed is this cell's, taken when the cell is made: a mount that
+    // reads the shared one later (after its awaits) could find it taken by
+    // another mount, and would open on the draft -- another place's name
+    // and reference -- under this place's title.
+    const ctx = { lvl: calc ? _lvl : null,
+                  offer: !calc && _place && _place.levels ? _place.levels : null,
+                  /** @type {any} */ seed: calc ? null : _seed,
+                  /** the queue window's names for this place, by kind @type {any} */
+                  names: !calc && _place && _place.names ? _place.names : null };
+    _seed = null;
     el.innerHTML = `
       <div class="editbar">
-        <b>${calc ? "Editing " + NB.esc(calc.name)
-                  : _place && _place.label ? NB.esc(_place.label) : "New calculation"}</b>
-        ${calc ? "<span>changes apply to the queued calculation</span>"
-               : `<span data-x="draftnote" hidden>draft · kept when you close it</span>`}
+        <b>${calc ? (ctx.lvl ? "Options of " : "Editing ") + NB.esc(calc.name) : "New calculation"}</b>
+        ${calc ? `<span>${ctx.lvl ? "added to its level when it runs" : "changes apply to the queued calculation"}</span>`
+               : `${_place && _place.where ? `<span>${NB.esc(_place.where)}</span>` : ""}
+        <span data-x="draftnote" hidden>draft · kept when you close it</span>`}
         <span class="sp"></span>
-        ${calc ? "" : `<button class="btn btn-sm btn-ghost" type="button" data-act="startover" hidden
+        ${calc ? "" : `<button class="btn btn-sm btn-ghost" type="button" data-act="usedraft" hidden
+                title="Open the draft kept from an earlier new calculation, at this place">Use the draft</button>
+        <button class="btn btn-sm btn-ghost" type="button" data-act="startover" hidden
                 title="Clear the form and forget the draft">Start over</button>`}
         <button class="iconbtn ebclose" type="button" data-act="cancel"
                 aria-label="Close the builder" title="Close">×</button>
@@ -297,12 +348,29 @@
             const old = _session && _session.st;
             if (old && old.stage) { old.stage.destroy(); old.stage = null; }
             forgetDraft();
-            _seed = null;
-            mount(el, null, close);
+            ctx.seed = null;
+            mount(el, null, close, ctx);
           });
       });
+      // A seeded new calculation (the queue window's Manual build always
+      // seeds) opens at its place; a draft kept from an earlier one is
+      // offered rather than lost: it opens with this place's name, charge,
+      // multiplicity and geometry and the draft's kind and settings.
+      el.querySelector('[data-act="usedraft"]').addEventListener("click", async () => {
+        const d = await loadDraft();
+        const here = _session && _session.st ? _session.st.seededFrom : null;
+        if (!d || !here) return;
+        const old = _session && _session.st;
+        if (old && old.stage) { old.stage.destroy(); old.stage = null; }
+        ctx.seed = Object.assign({}, d.payload, {
+          name: here.name, charge: here.charge, multiplicity: here.multiplicity,
+          geometry_source: here.geometry_source, xyz: here.xyz, ref_name: here.ref_name,
+        });
+        ctx.seed.__draft = d;
+        mount(el, null, close, ctx);
+      });
     }
-    mount(el, calc, close);
+    mount(el, calc, close, ctx);
     return el;
   }
 
@@ -316,8 +384,10 @@
     if (b) b.hidden = !has;
   }
 
-  /** @param {HTMLElement} el @param {any} summary @param {() => void} close */
-  async function mount(el, summary, close) {
+  /** @param {HTMLElement} el @param {any} summary @param {() => void} close
+   *  @param {{lvl: any, offer: any, seed?: any, names?: any}} [ctx] what cellFor fixed for this cell */
+  async function mount(el, summary, close, ctx) {
+    ctx = ctx || { lvl: null, offer: null, seed: null, names: null };
     await loadChoices();
     const body = /** @type {HTMLElement} */ (el.querySelector(".stubbody"));
     // Editing needs the FULL calculation (the summary in the queue carries no
@@ -335,24 +405,52 @@
     // name as its geometry source -- the same reference an opt->freq handoff
     // uses, resolved to the optimized geometry at run time. It is a seed, not
     // an edit: nothing is saved until Add.
-    const seeded = !calc && !!_seed;
-    if (seeded) { calc = _seed; _seed = null; }
+    const seeded = !calc && !!ctx.seed;
+    /** "Use the draft" on a seeded form: the draft, at the seed's place @type {any} */
+    let merged = null;
+    if (seeded) {
+      calc = ctx.seed;
+      if (calc.__draft) { merged = calc.__draft; calc = Object.assign({}, calc); delete calc.__draft; }
+    }
     // A new calculation that is not seeded opens on the draft, if there is
     // one. A seed is a new calculation asked for from a row, so it wins; it
-    // replaces the draft only once something in it is changed.
+    // replaces the draft only once something in it is changed -- and a draft
+    // there is is offered beside it ("Use the draft"), never dropped unseen.
     /** @type {any} */
     let dr = null;
+    let offerDraft = false;
     if (!summary && !seeded) {
       dr = await loadDraft();
       if (dr) calc = dr.payload;
+    } else if (seeded && !merged) {
+      offerDraft = !!(await loadDraft());
     }
     if (!el.isConnected) return;   // closed while the draft was read
-    const st = buildState(summary, calc, dr);
+    const st = buildState(summary, calc, dr || merged);
     if (!st) {
       // a draft this version cannot read is not worth a broken form
       forgetDraft();
-      mount(el, summary, close);
+      mount(el, summary, close, ctx);
       return;
+    }
+    // the seeded place, kept for "Use the draft": the draft opens there
+    if (seeded) st.seededFrom = { name: calc.name, charge: calc.charge, multiplicity: calc.multiplicity,
+                                  geometry_source: calc.geometry_source, xyz: calc.xyz || "",
+                                  ref_name: calc.ref_name || "" };
+    if (merged) st.xyz = calc.xyz || "";
+    st.autoNames = summary ? null : ctx.names || null;
+    // Level mode: a level's block, or a new one started from a level
+    st.lvlCtx = ctx.lvl || ctx.offer || null;
+    st.levelEdit = !!(ctx.lvl && summary);
+    if (st.levelEdit) {
+      st.level = { text: String(calc.raw_text || ""), set_name: String(calc.set_name || ""),
+                   set_id: String(calc.set_id || "") };
+    } else if (!(ctx.offer && st.level && st.level.text)) {
+      st.level = null;
+    }
+    if (st.level) {
+      st.raw = false; st.backend = "dft";
+      if (!st.levelEdit && !levelKinds(st).some(k => k[0] === st.kind)) st.kind = "opt";
     }
     if (st.backend === "dft" && !KINDS[st.kind]) st.kind = "general";
     if (st.backend === "dft" && st.scan.length && KINDS[st.kind].scan && !dr) st.pickMode = "scan";
@@ -360,6 +458,29 @@
     _session = null;
     render(body, st, calc, close);
     if (!st.editing) autosave(el, body, st, !!dr);
+    const ud = /** @type {HTMLElement|null} */ (el.querySelector('[data-act="usedraft"]'));
+    if (ud) ud.hidden = !offerDraft;
+  }
+
+  /** The Name a Type change leaves: the name the queue window's place gives
+   *  the new kind while the field still holds the one it gave the old kind
+   *  (mol-opt -> mol-freq, as a block's Type change renames it); a name the
+   *  user typed is theirs. @param {any} st @param {string} name
+   *  @param {string} from @param {string} to @returns {string} */
+  function followName(st, name, from, to) {
+    const n = st.autoNames;
+    return n && n[from] && n[to] && name === n[from] ? n[to] : name;
+  }
+
+  /** The Type choices of a level's block: the kinds the backend fills
+   *  {{JOB}} for, and the block's own kind when it is not one of them.
+   *  @param {any} st @returns {[string, string][]} */
+  function levelKinds(st) {
+    const ks = st.lvlCtx && Array.isArray(st.lvlCtx.kinds) ? st.lvlCtx.kinds.slice() : [];
+    if (st.levelEdit && !ks.some((/** @type {any} */ k) => k[0] === st.kind)) {
+      ks.unshift([st.kind, KINDS[st.kind] ? KINDS[st.kind].label : st.kind]);
+    }
+    return ks;
   }
 
   /** Save the new calculation as it is typed (debounced) and when it is left
@@ -412,6 +533,11 @@
         st.pickMode = dr.pickMode === "scan" ? "scan" : "cons";
         st.cfgBy = dr.cfgBy && typeof dr.cfgBy === "object" ? dr.cfgBy : {};
         st.kindBy = dr.kindBy && typeof dr.kindBy === "object" ? dr.kindBy : {};
+        // a draft started from a level comes back on it (mount drops it
+        // where no level is offered)
+        st.level = dr.level && typeof dr.level === "object" && dr.level.text
+          ? { text: String(dr.level.text), set_name: String(dr.level.set_name || ""),
+              set_id: String(dr.level.set_id || "") } : null;
       }
       return st;
     } catch (e) {
@@ -455,6 +581,18 @@
       /** a new calculation's draft save, after a re-render (autosave)
        *  @type {null|(() => void)} */
       autosave: null,
+      /** Level mode: the level the block runs ({text, set_name, set_id}),
+       *  null for a Guided / .inp calculation @type {any} */
+      level: null,
+      /** the queue window's levels and Type kinds for Level mode @type {any} */
+      lvlCtx: null,
+      /** an existing level's block: Level is its only mode */
+      levelEdit: false,
+      /** a seeded new calculation's place, for "Use the draft" @type {any} */
+      seededFrom: null,
+      /** the queue window's names for this place by kind (place.names), or
+       *  null @type {any} */
+      autoNames: null,
     };
   }
 
@@ -473,7 +611,14 @@
     const refs = NB.queue
       .filter(c => c.name !== st.editing && (c.state === "done" || c.state === "pending" || c.state === "running"))
       .map(c => c.name);
+    // the reference it has now is offered whatever that calculation's state:
+    // a select without it would show the first name and Save would move it
+    if (calc && calc.geometry_source === "reference" && calc.ref_name && refs.indexOf(calc.ref_name) < 0) {
+      refs.unshift(calc.ref_name);
+    }
     const src = calc ? calc.geometry_source : "direct";
+    const lv = dft && st.level ? st.level : null;
+    const types = lv ? levelKinds(st) : KIND_ORDER.map(k => [k, KINDS[k].label]);
 
     const calcTypes = K.allTypes ? items(CHOICES.calculation_types)
                      : K.group ? items(CHOICES.calculation_types, K.group)
@@ -483,10 +628,13 @@
       ${backendRow(st)}
 
       <div class="field-row">
-        ${text("Name", calc ? calc.name : "", "")}
+        ${st.levelEdit
+          ? `<div class="field"><label>Name</label><input type="text" value="${NB.esc(calc ? calc.name : "")}" readonly
+              title="Rename it in the queue window's inspector"></div>`
+          : text("Name", calc ? calc.name : "", "")}
         ${dft ? `<div class="field mid"><label>Type</label><select data-f="kind">${
-          KIND_ORDER.map(k => `<option value="${k}"${
-            k === st.kind ? " selected" : ""}>${KINDS[k].label}</option>`).join("")
+          types.map(k => `<option value="${k[0]}"${
+            k[0] === st.kind ? " selected" : ""}>${NB.esc(k[1])}</option>`).join("")
         }</select></div>` : backendKindField(st)}
         ${text("Charge", calc ? calc.charge : 0, "narrow", "number")}
         ${text("Mult.", calc ? calc.multiplicity : 1, "narrow", "number")}
@@ -585,7 +733,7 @@
         </div>
       </div>` : ""}
 
-      ${!dft ? backendForm(st, cfg) : `<div data-form${st.raw ? " hidden" : ""}>
+      ${!dft ? backendForm(st, cfg) : lv ? levelForm(st, cfg, K) : `<div data-form${st.raw ? " hidden" : ""}>
         <div class="divider"></div>
         <div class="grouplabel">Method &amp; options</div>
         <div class="field-row">
@@ -620,6 +768,58 @@
           ${K.maxiter ? text("Max iterations", cfg.max_iter || DEF.max_iter, "mid", "number") : ""}
         </div>
 
+        ${kindBlocks(K, cfg, false)}
+
+        <div class="divider"></div>
+        <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:12px">
+          <div class="grouplabel" style="margin:0">Per-element basis / ECP</div>
+          <button class="btn btn-sm" type="button" data-act="addbasis">+ Element</button>
+        </div>
+        <div data-a="basis">${
+          ((cfg.basis_assignments && cfg.basis_assignments.length)
+            ? cfg.basis_assignments : []).map(basisRow).join("")}</div>
+      </div>
+
+      <div data-raw${st.raw ? "" : " hidden"}>
+        <div class="divider"></div>
+        <div class="btn-group" style="align-items:center;margin-bottom:10px">
+          <button class="btn btn-sm" type="button" data-act="loadinp">Load .inp…</button>
+        </div>
+        <!-- the %-blocks, at the cursor: typing them out from memory is where
+             a hand-written .inp usually goes wrong -->
+        <div class="snips">
+          <span class="hint" style="margin:0">Insert at the cursor:</span>
+          ${SNIPPETS.map((sn, i) =>
+            `<button class="btn btn-sm btn-ghost" type="button" data-snip="${i}">${
+              NB.esc(sn[0])}</button>`).join("")}
+        </div>
+        <div class="field"><textarea class="raw-editor" data-f="rawtext" spellcheck="false"
+          placeholder="! B3LYP def2-SVP Opt&#10;* xyz 0 1&#10;…&#10;*">${NB.esc(st.rawText)}</textarea></div>
+      </div>`}
+
+      <div class="divider"></div>
+      <div data-x="saveerr"></div>
+      <div class="btn-group" style="align-items:center">
+        ${dft ? `<button class="btn btn-sm btn-ghost" type="button" data-act="preview">Preview .inp</button>` : ""}
+        <span class="sp" style="flex:1"></span>
+        <button class="btn btn-sm btn-ghost" type="button" data-act="cancel">Cancel</button>
+        <button class="btn btn-sm btn-primary" type="button" data-act="save">${
+          st.editing ? "Save changes" : "Add to queue"}</button>
+      </div>`;
+
+    wire(el, st, calc, close);
+    // a switch (backend, kind, Guided <-> .inp) can end in an await, past the
+    // click's own save, so the form it lands on is saved from here
+    if (st.autosave) st.autosave();
+  }
+
+  /** The blocks a kind adds to the form -- Thermochemistry, TD-DFT, NMR,
+   *  IRC, NEB -- shared by the Guided form and Level mode (a level's block
+   *  takes the same options, merged into its level at launch). `lvl`: a
+   *  level's IRC starts from the Hessian of the step before it unless told
+   *  otherwise (AUTO_HESS). @param {any} K @param {any} cfg @param {boolean} lvl */
+  function kindBlocks(K, cfg, lvl) {
+    return `
         ${K.freq ? `<div class="divider"></div>
         <div class="grouplabel">Thermochemistry</div>
         <div class="field-row">
@@ -650,14 +850,17 @@
         <div class="field-row">
           ${text("Max points", cfg.irc_maxiter || DEF.irc_maxiter, "narrow", "number")}
           ${select("Direction", ["both", "forward", "backward"], cfg.irc_direction || DEF.irc_direction, "mid")}
-          ${select("Initial Hessian", ["calc_anfreq", "calc_numfreq", "read"],
-                   cfg.irc_init_hess || DEF.irc_init_hess, "mid")}
+          ${lvl ? pick("Initial Hessian", [[AUTO_HESS, "Parent's Hessian (auto)"], ["calc_anfreq", "calc_anfreq"],
+                                            ["calc_numfreq", "calc_numfreq"], ["read", "read"]],
+                        cfg.irc_init_hess || AUTO_HESS, "mid")
+            : select("Initial Hessian", ["calc_anfreq", "calc_numfreq", "read"],
+                     cfg.irc_init_hess || DEF.irc_init_hess, "mid")}
         </div>
         <!-- a picked .hess, by path: it is copied into the run folder at launch,
              so the Hessian a TS frequency run already paid for is reused
              rather than computed again -->
         <div class="btn-group" style="align-items:center;margin-top:10px">
-          <button class="btn btn-sm" type="button" data-act="loadhess">Load .hess…</button>
+          <button class="btn btn-sm" type="button" data-act="irchess">Load .hess…</button>
           <span class="hint" style="margin:0" data-x="hess"></span>
           <button class="btn btn-sm btn-ghost" type="button" data-act="clearhess">Clear</button>
         </div>
@@ -695,48 +898,64 @@
           <span class="hint" style="margin:0">Checks that both endpoints carry the same
             atoms in the same order — a reordered atom makes the band meaningless.</span>
         </div>
-        <div data-a="neb-verdict"></div>` : ""}
+        <div data-a="neb-verdict"></div>` : ""}`;
+  }
 
-        <div class="divider"></div>
-        <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:12px">
-          <div class="grouplabel" style="margin:0">Per-element basis / ECP</div>
-          <button class="btn btn-sm" type="button" data-act="addbasis">+ Element</button>
+  /** Level mode's control row: the level is this block's only mode (an
+   *  existing level's block), said in the design's segmented control. */
+  function levelRow() {
+    return `<div class="backendrow">
+        <div class="seg" role="group" aria-label="Input">
+          <button type="button" data-mode="level" aria-pressed="true">Level</button>
         </div>
-        <div data-a="basis">${
-          ((cfg.basis_assignments && cfg.basis_assignments.length)
-            ? cfg.basis_assignments : []).map(basisRow).join("")}</div>
+        <span class="hint" style="margin:0">A level's block: its level brings the method; these are the job's options.</span>
       </div>
+      <div data-x="bklock"></div>`;
+  }
 
-      <div data-raw${st.raw ? "" : " hidden"}>
+  /** Level mode in place of Method / Resources / Per-element basis: the
+   *  level's name (a picker of the library's levels) and its text read-only,
+   *  then the options the block adds to it. Labels are readForm's.
+   *  @param {any} st @param {any} cfg @param {any} K */
+  function levelForm(st, cfg, K) {
+    const sets = (st.lvlCtx && Array.isArray(st.lvlCtx.sets)) ? st.lvlCtx.sets : [];
+    const cur = sets.find((/** @type {any} */ s) => s.text === st.level.text && s.name === st.level.set_name)
+      || sets.find((/** @type {any} */ s) => s.text === st.level.text) || null;
+    /** @type {any[][]} */
+    const opts = (cur ? [] : [["", (st.level.set_name || "its own text") + " (as it is now)"]])
+      .concat(sets.map((/** @type {any} */ s) => [s.id, s.name]));
+    const sol = cfg.solvation || {};
+    return `<div data-form data-level="1">
         <div class="divider"></div>
-        <div class="btn-group" style="align-items:center;margin-bottom:10px">
-          <button class="btn btn-sm" type="button" data-act="loadinp">Load .inp…</button>
-        </div>
-        <!-- the %-blocks, at the cursor: typing them out from memory is where
-             a hand-written .inp usually goes wrong -->
-        <div class="snips">
-          <span class="hint" style="margin:0">Insert at the cursor:</span>
-          ${SNIPPETS.map((sn, i) =>
-            `<button class="btn btn-sm btn-ghost" type="button" data-snip="${i}">${
-              NB.esc(sn[0])}</button>`).join("")}
-        </div>
-        <div class="field"><textarea class="raw-editor" data-f="rawtext" spellcheck="false"
-          placeholder="! B3LYP def2-SVP Opt&#10;* xyz 0 1&#10;…&#10;*">${NB.esc(st.rawText)}</textarea></div>
-      </div>`}
+        <div class="grouplabel">Level</div>
+        <div class="field-row">${pick("Level", opts, cur ? cur.id : "")}</div>
+        <div class="field"><textarea class="raw-editor" data-f="leveltext" readonly spellcheck="false"
+          aria-label="The level's text, read-only">${NB.esc(st.level.text)}</textarea></div>
+        <p class="hint" style="margin:0">The level brings the method, basis, resources and per-element
+          basis; {{JOB}} becomes the Type above. Edit the level's own text in the queue window's
+          inspector or the set editor.</p>
 
-      <div class="divider"></div>
-      <div class="btn-group" style="align-items:center">
-        ${dft ? `<button class="btn btn-sm btn-ghost" type="button" data-act="preview">Preview .inp</button>` : ""}
-        <span class="sp" style="flex:1"></span>
-        <button class="btn btn-sm btn-ghost" type="button" data-act="cancel">Cancel</button>
-        <button class="btn btn-sm btn-primary" type="button" data-act="save">${
-          st.editing ? "Save changes" : "Add to queue"}</button>
+        <div class="divider"></div>
+        <div class="grouplabel">Options</div>
+        <div class="field-row">
+          ${select("SCF convergence", items(CHOICES.scf_convergences), cfg.scf_convergence || "",
+                   "mid", "The level's")}
+          ${text("Extra keywords", cfg.options || "", "", "text", "added to the ! line")}
+        </div>
+        ${K.maxiter ? `<div class="field-row">
+          ${text("Max iterations", cfg.max_iter || DEF.max_iter, "mid", "number")}
+        </div>` : ""}
+
+        <div class="divider"></div>
+        <div class="grouplabel">Solvation</div>
+        <div class="field-row">
+          ${select("Model", ["", "CPCM", "SMD"], sol.model || "", "mid")}
+          ${combo("Solvent", items(CHOICES.solvents), sol.solvent || "")}
+        </div>
+        <p class="hint" style="margin:0">Only for a level without solvation of its own: one that has
+          it is refused rather than given two.</p>
+        ${kindBlocks(K, cfg, true)}
       </div>`;
-
-    wire(el, st, calc, close);
-    // a switch (backend, kind, Guided <-> .inp) can end in an await, past the
-    // click's own save, so the form it lands on is saved from here
-    if (st.autosave) st.autosave();
   }
 
   /** @param {HTMLElement} el @param {any} st @param {any} calc @param {() => void} close */
@@ -749,7 +968,45 @@
     wireBackends(el, st, calc, close);
 
     all(".backendrow .seg button[data-mode]").forEach(b => b.addEventListener("click", async () => {
-      const wantRaw = b.getAttribute("data-mode") === "raw";
+      const mode = b.getAttribute("data-mode");
+      if (st.levelEdit) return;            // a level's block stays one
+      if (mode === "level") {
+        if (st.level) return;
+        const sets = (st.lvlCtx && st.lvlCtx.sets) || [];
+        if (!sets.length) return;
+        // what the form shares with a level (name, charge, geometry, the
+        // constraints and the job's options) goes along; the method is the level's
+        const snap = readForm(el, st, calc);
+        if (st.raw) st.rawText = snap.raw_text;
+        st.level = { text: String(sets[0].text || ""), set_name: String(sets[0].name || ""),
+                     set_id: String(sets[0].id || "") };
+        st.raw = false;
+        st.xyz = snap.xyz;
+        if (!levelKinds(st).some(k => k[0] === st.kind)) st.kind = "opt";
+        render(el, st, Object.assign({}, snap, { kind: st.kind, is_raw: false,
+          config: Object.assign({}, snap.config, { kind: st.kind }) }), close);
+        return;
+      }
+      if (st.level) {
+        // leaving a level: Guided keeps the job's options (the method comes
+        // back at its default); .inp text starts as the level rendered for
+        // this block -- the input it would have run
+        const snap = readForm(el, st, calc);
+        st.xyz = snap.xyz;
+        let text = "";
+        if (mode === "raw") {
+          const pv = await NB.call("build_inp_preview", JSON.stringify(
+            snap.geometry_source === "direct" && !snap.xyz ? Object.assign({}, snap, { geometry_source: "reference" }) : snap));
+          if (!pv || !pv.ok) { NB.fail("Could not render the level: " + ((pv && pv.error) || "no answer")); return; }
+          text = pv.text || "";
+        }
+        st.level = null;
+        st.raw = mode === "raw";
+        st.rawText = text;
+        render(el, st, Object.assign({}, snap, { is_raw: st.raw, raw_text: text }), close);
+        return;
+      }
+      const wantRaw = mode === "raw";
       if (wantRaw === st.raw) return;
       // The two modes are not two views of one thing: the guided form GENERATES
       // input, raw text IS input. Going back would have to un-parse text nobody
@@ -786,6 +1043,7 @@
     if (q('[data-f="kind"]')) q('[data-f="kind"]').addEventListener("change", e => {
       const snap = readForm(el, st, calc);
       const prev = KINDS[st.kind] || KINDS.general;
+      snap.name = followName(st, snap.name, st.kind, e.target.value);
       st.kind = e.target.value;
       st.xyz = snap.xyz; st.rawText = snap.raw_text;
       // The calculation type IS the kind, so it always takes the new kind's
@@ -827,13 +1085,17 @@
         const path = hessEl.value.trim();
         const file = path.split(/[\\/]/).pop();
         const reading = initSel && initSel.value === "read";
+        const auto = initSel && initSel.value === AUTO_HESS;
         q('[data-x="hess"]').textContent = !path
-          ? (reading ? "no .hess loaded" : "computed at the start of the run")
+          ? (reading ? "no .hess loaded" : auto ? "the Hessian of the step before it, copied in at launch"
+                                                 : "computed at the start of the run")
           : (reading ? file : `${file} — not used unless Initial Hessian is read`);
         q('[data-act="clearhess"]').hidden = !path;
       };
       if (initSel) initSel.addEventListener("change", sayHess);
-      act("loadhess", async () => {
+      // the IRC's own button: the stage's "Load .hess…" (data-act loadhess,
+      // first in the form) is the push along a mode's, a different file use
+      act("irchess", async () => {
         const r = await NB.call("pick_hess_file");
         if (!r || r.cancelled) return;
         if (!r.ok || !r.path) { NB.fail(r && r.error ? r.error : "Could not pick that file."); return; }
@@ -843,6 +1105,23 @@
       });
       act("clearhess", () => { hessEl.value = ""; sayHess(); });
       sayHess();
+    }
+
+    // Level mode: another level of the library (or back to the block's own text)
+    const lvPick = st.level ? [...el.querySelectorAll(".field-row .field")].find(f => {
+      const l = f.querySelector("label");
+      return l && l.textContent.trim() === "Level";
+    }) : null;
+    if (lvPick) {
+      const orig = Object.assign({}, st.level);
+      const sel = /** @type {any} */ (lvPick.querySelector("select"));
+      sel.addEventListener("change", () => {
+        const s = ((st.lvlCtx && st.lvlCtx.sets) || []).find((/** @type {any} */ x) => x.id === sel.value);
+        st.level = s ? { text: String(s.text || ""), set_name: String(s.name || ""), set_id: String(s.id || "") }
+                     : orig;
+        const ta = q('[data-f="leveltext"]');
+        if (ta) ta.value = st.level.text;
+      });
     }
 
     act("loadxyz", async () => {
@@ -1034,10 +1313,14 @@
 
     act("preview", async () => {
       const payload = readForm(el, st, calc);
-      if (payload.is_raw) { NB.modalCode("Input preview", payload.raw_text); return; }
+      const lvl = !!(st.backend === "dft" && st.level);
+      // a level's block is rendered by the backend like any input it runs
+      // (its {{JOB}} and options merged in), so it is not shown as its text
+      if (payload.is_raw && !lvl) { NB.modalCode("Input preview", payload.raw_text); return; }
+      if (lvl && st.editing && calc) payload.ref_point = payload.ref_name === calc.ref_name ? calc.ref_point || "" : "";
       // an unfinished scan is left out of the input, so the preview says why
       // its %geom has no Scan rather than looking like a plain optimization
-      const scanErr = scanProblem(payload);
+      const scanErr = scanProblem(payload, lvl);
       if (scanErr) NB.toast(scanErr + " Until then the input has no scan.", "warn");
       const pv = await NB.call("build_inp_preview", JSON.stringify(payload));
       if (pv && pv.ok) NB.modalCode("Input preview", pv.text);
@@ -1047,18 +1330,52 @@
 
     act("cancel", () => close());
 
+    /** A refusal (the form's own check, or the queue's: "'name': ..."
+     *  naming the clashing block or key) said above the Save button, not
+     *  only in a toast that is gone in seconds. "" clears it. @param {string} msg */
+    function sayRefusal(msg) {
+      const box = q('[data-x="saveerr"]');
+      if (!box) return;
+      box.innerHTML = msg ? `<div class="finding err" role="alert" style="margin-bottom:12px"><span>${NB.esc(msg)}</span></div>` : "";
+    }
+
     act("save", async () => {
       // the locked form already says this; a disabled button is not the guard
       // (D41, P44) — the queue would take the calc and the run would fail it
       const bs = st.backend === "dft" ? null : backendState(st.backend);
       if (bs && !bs.ready) { NB.fail(bs.reason); return; }
       const payload = readForm(el, st, calc);
-      const err = validate(payload);
-      if (err) { NB.fail(err); return; }
+      const lvl = !!(st.backend === "dft" && st.level);
+      const err = validate(payload, lvl);
+      if (err) { NB.fail(err); sayRefusal(err); return; }
+      sayRefusal("");
+      if (st.levelEdit && calc && st.lvlCtx && typeof st.lvlCtx.save === "function") {
+        // A level's block: one patch through the queue window's undoable
+        // batch. Its level (raw_text / set_name) is sent only when another
+        // was picked; coordinates moved here (Apply, a push) are the block's
+        // own xyz, never the row's shared structure.
+        /** @type {any} */
+        const patch = { kind: payload.kind, config: payload.config,
+          geometry_source: payload.geometry_source, xyz: payload.xyz, ref_name: payload.ref_name,
+          ref_point: payload.ref_name === calc.ref_name ? calc.ref_point || "" : "" };
+        if (payload.charge !== calc.charge) patch.charge = payload.charge;
+        if (payload.multiplicity !== calc.multiplicity) patch.multiplicity = payload.multiplicity;
+        if (payload.raw_text !== String(calc.raw_text || "")) {
+          Object.assign(patch, { is_raw: true, raw_text: payload.raw_text,
+                                 set_name: payload.set_name, set_id: payload.set_id });
+        }
+        const res = await st.lvlCtx.save(patch);
+        if (!res || !res.ok) { sayRefusal((res && res.error) || "The queue refused that change."); return; }
+        NB.toast(`"${calc.name}" saved.`, "ok");
+        close();
+        return;
+      }
       if (st.editing && calc) {
         PLACE_KEYS.forEach(k => { if (k in calc) payload[k] = calc[k]; });
         // a reference moved to another calculation is that one's final geometry
         if (payload.ref_name !== calc.ref_name) payload.ref_point = "";
+        // made Guided from a set's text: it is no longer that set's block
+        if (!payload.is_raw && backendOfKind(payload.kind) === "dft") payload.set_name = "";
       }
       const placed = st.editing ? null : _place;
       if (placed) Object.assign(payload, placed.fields);
@@ -1067,8 +1384,8 @@
       const r = st.editing
         ? await NB.call("update_calc", st.editing, JSON.stringify(payload))
         : await NB.call("add_calc", JSON.stringify(payload));
-      if (r && r.error) { NB.fail(r.error); return; }
-      if (r && r.ok === false) { NB.fail(r.error || "The queue refused that calculation."); return; }
+      if (r && r.error) { NB.fail(r.error); sayRefusal(r.error); return; }
+      if (r && r.ok === false) { NB.fail(r.error || "The queue refused that calculation."); sayRefusal(r.error || "The queue refused that calculation."); return; }
       // the draft has become a calculation: the next new one starts blank
       if (!st.editing) forgetDraft();
       if (placed && placed.done) placed.done(payload.name);
@@ -1634,9 +1951,12 @@
     const fields = [...el.querySelectorAll(".field-row .field")];
     /** @param {string} label */
     const byLabel = (label) => {
+      // a field with a control: the push-along-a-mode plate's "Direction" is
+      // a +/- toggle, and found first it hid the IRC's Direction select, so
+      // an IRC's direction always read as the default
       const f = fields.find(x => {
         const l = x.querySelector("label");
-        return l && l.textContent.trim() === label;
+        return l && l.textContent.trim() === label && !!x.querySelector("input, select, textarea");
       });
       if (!f) return null;
       return /** @type {any} */ (f.querySelector("input, select, textarea"));
@@ -1715,7 +2035,12 @@
       config.neb_preopt_ends = chk("preopt");
     }
 
-    return {
+    // Level mode: the level's text runs, with only the job's options beside
+    // it -- the method, basis, resources and per-element basis are the
+    // level's and are not sent (LEVEL_KEYS)
+    const lv = dft && st.level ? st.level : null;
+    /** @type {any} */
+    const out = {
       name: String(val("Name", "")).trim(),
       kind: kind,
       charge: Math.round(num("Charge", 0)),
@@ -1731,21 +2056,33 @@
       state: "pending",
       message: "",
     };
+    if (lv) {
+      /** @type {any} */
+      const lc = {};
+      LEVEL_KEYS.forEach(k => { if (k in config) lc[k] = config[k]; });
+      if (!K.maxiter) delete lc.max_iter;
+      Object.assign(out, { is_raw: true, raw_text: String(lv.text || ""), set_name: String(lv.set_name || ""),
+                           set_id: String(lv.set_id || ""), config: lc });
+    }
+    return out;
   }
 
   /** The checks that can be made here — everything about ORCA itself is the
-   *  backend's to refuse, and it does (P4). @param {any} p @returns {string} */
-  function validate(p) {
+   *  backend's to refuse, and it does (P4). `lvl`: a level's block, raw text
+   *  whose options (constraints, scan, IRC Hessian) apply like the Guided
+   *  form's. @param {any} p @param {boolean} [lvl] @returns {string} */
+  function validate(p, lvl) {
+    const opts = !p.is_raw || !!lvl;
     if (!p.name) return "Give the calculation a name — it becomes its folder.";
     if (/[\\/:*?"<>|]/.test(p.name)) return "A calculation name cannot contain \\ / : * ? \" < > |";
     if (p.is_raw && !p.raw_text.trim()) return "Paste or load a complete .inp first.";
-    if (!p.is_raw && p.geometry_source === "direct" && !p.xyz) return "Load or paste a geometry first.";
+    if (opts && p.geometry_source === "direct" && !p.xyz) return "Load or paste a geometry first.";
     if (p.geometry_source === "reference" && !p.ref_name) return "Pick the calculation to take the geometry from.";
     if (p.multiplicity < 1) return "Multiplicity is at least 1.";
     // the backend refuses this too (calc_from_dict), but the row that is wrong
     // is on screen here, marked
     const cons = (p.config && p.config.geom_constraints) || [];
-    if (!p.is_raw && p.geometry_source === "direct" && cons.length) {
+    if (opts && p.geometry_source === "direct" && cons.length) {
       const n = MOL.parseXyz(p.xyz).length;
       const bad = cons.find(c => Math.max(...c.atoms) >= n);
       if (bad) {
@@ -1753,9 +2090,9 @@
           Math.max(...bad.atoms) + 1}, but the structure has ${n} atoms.`;
       }
     }
-    const scanErr = scanProblem(p);
+    const scanErr = scanProblem(p, lvl);
     if (scanErr) return scanErr;
-    if (!p.is_raw && p.kind === "irc" && p.config.irc_init_hess === "read"
+    if (opts && p.kind === "irc" && p.config.irc_init_hess === "read"
         && !p.config.irc_hess_file) {
       return "Initial Hessian is read — load the .hess it starts from.";
     }
@@ -1764,9 +2101,9 @@
 
   /** What is wrong with the scan as it stands, or "". The backend drops an
    *  incomplete one at the boundary (normalize_scan) — which, said nowhere,
-   *  would queue a plain optimization in its place. @param {any} p */
-  function scanProblem(p) {
-    const scan = (!p.is_raw && p.config && p.config.geom_scan) || [];
+   *  would queue a plain optimization in its place. @param {any} p @param {boolean} [lvl] */
+  function scanProblem(p, lvl) {
+    const scan = ((!p.is_raw || lvl) && p.config && p.config.geom_scan) || [];
     for (const c of scan) {
       const what = CONS_NAME[c.kind].toLowerCase() + " scan";
       if (c.start == null || c.end == null || c.steps == null) {
@@ -1889,20 +2226,27 @@
   /** The control at the top of the form — the reference's own: the backends,
    *  then (for DFT only) the divider and Guided | .inp text. @param {any} st */
   function backendRow(st) {
+    if (st.levelEdit) return levelRow();
     const dft = st.backend === "dft";
+    // a new calculation in the queue window may start from a level: the
+    // third mode beside Guided and .inp text
+    const lvOffer = dft && st.lvlCtx && (st.lvlCtx.sets || []).length && levelKinds(st).length;
     const btn = (b, label, title) => `<button type="button" data-backend="${b}" aria-pressed="${
       st.backend === b}" title="${title}"${backendShown(b, st) ? "" : " hidden"}>${label}</button>`;
     const hint = st.backend === "mlip"
       ? "A machine-learned potential, run in its own Python environment — no .inp."
-      : st.backend === "crest" ? "A conformer search with xTB; a later calculation takes its best conformer." : "";
+      : st.backend === "crest" ? "A conformer search with xTB; a later calculation takes its best conformer."
+      : st.level ? "The level brings the method; this block adds the job's options." : "";
     return `<div class="backendrow">
         <div class="seg" role="group" aria-label="Backend and input">
           ${btn("dft", "DFT", "An ORCA calculation")}
           ${btn("mlip", "MLIP", "A machine-learned interatomic potential (MACE)")}
           ${btn("crest", "CREST", "A CREST conformer search")}
           ${dft ? `<span class="sep"></span>
-          <button type="button" data-mode="form" aria-pressed="${!st.raw}">Guided</button>
-          <button type="button" data-mode="raw" aria-pressed="${st.raw}">.inp text</button>` : ""}
+          <button type="button" data-mode="form" aria-pressed="${!st.raw && !st.level}">Guided</button>
+          <button type="button" data-mode="raw" aria-pressed="${st.raw}">.inp text</button>${lvOffer ? `
+          <button type="button" data-mode="level" aria-pressed="${!!st.level}"
+            title="Start from a level of the library: it brings the method; this block adds the job's options">Level</button>` : ""}` : ""}
         </div>
         <button class="btn btn-sm btn-ghost" type="button" data-act="morebk"${
           ["mlip", "crest"].some(b => !backendShown(b, st)) ? "" : " hidden"}
@@ -2139,7 +2483,9 @@
       if (st.backend === "dft" && st.raw) st.rawText = snap.raw_text;
       st.xyz = snap.xyz;
       st.backend = want;
+      const was = snap.kind;
       st.kind = st.kindBy[want] || (want === "dft" ? "opt" : BACKEND_KINDS[want][0][0]);
+      snap.name = followName(st, snap.name, was, st.kind);
       render(el, st, Object.assign({}, snap, { kind: st.kind, config: st.cfgBy[want] || {} }), close);
     }));
     const more = q('[data-act="morebk"]');

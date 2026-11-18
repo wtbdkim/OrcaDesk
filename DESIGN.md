@@ -2045,13 +2045,35 @@ columns:
   Opt, TS frequencies after an OptTS, IRC after a TS frequency, Single point
   after an IRC — the `-F`/`-B` stack — and after anything else; the Type
   changes it), or opens **Manual
-  build**: the Guided builder in the inspector, seeded for that place, whose
-  calculation lands in that lane, column and row. A standalone block first
+  build**: the Guided builder, seeded for that place, whose
+  calculation lands in that lane, column and row. The builder is the main
+  window's *New calculation* as it was -- the same cell, title and footer,
+  at the reference's cell width (1040px) in a stream-like column drawn over
+  the lanes and the inspector (never squeezed into the inspector), the
+  library beside it; where it goes is said beside the title. A step it
+  makes is named as the editor names one (`row-opt`, `row-opt2` ...), and
+  the name follows the Type until it is typed over. A standalone block first
   becomes a one-node system named after it (`place_calc`: its place in the
   layout changes, nothing it ran — P24). A pending block below a failed or
   blocked one is drawn blocked at once (the design's derived state), not only
   after a run says so. An empty system shows its first slot; an empty queue
-  says how a row starts. Removing the last block of a system removes the
+  says how a row starts. A system's name over its row (or *Structures…* on a
+  block) selects its **structures panel** -- every row has one: name,
+  charge, multiplicity, its structures (add from a file or paste coordinates,
+  *View* on a stage with the structure check, remove; a calculation keeps the
+  coordinates it was given); *+ system* asks for coordinates to paste or a
+  file. *Clear finished* (top bar) takes the done and failed calculations off
+  the list -- not cancelled ones, which run again, nor one a calculation yet
+  to run starts from -- with any row it empties; not undoable. **While a run
+  is going, every add outside the builder** (a set on the + slot, a paste, a
+  row copy, *Duplicate*, an `.xyz` drop) asks before writing over a folder
+  that holds output (`existing_outputs`), as the builder's own add does; the
+  names those adds make step around such folders in the first place. A
+  copied workflow carries a level block's options and is refused on a
+  structure with fewer atoms than its constraints name. A *Manual build*
+  can start from a level (*Level* beside *Guided* / *.inp text*), and offers
+  a draft kept from an earlier new calculation (*Use the draft*: the draft's
+  kind and settings at this place). Removing the last block of a system removes the
   system with it (one undoable batch). The **grip** moves a lane (drag), copies it
   (Ctrl-drop, or a click: copy below) and answers Alt+↑/↓, keeping the
   keyboard on the moved row's grip; *+ system* starts a
@@ -2092,9 +2114,37 @@ columns:
   after its old type takes the new one's name when nothing refers to it),
   and a read-only **rendered input** for that Type (`build_inp_preview`, the
   renderer the engine runs). A block whose text names its own job (no
-  `{{JOB}}`, made before levels) runs as written and says so. A block the Guided builder made shows its generated input read-only
+  `{{JOB}}`, made before levels) runs as written and says so, and keeps *Edit
+  in the builder* (as `.inp` text) -- a text block can always go back to the
+  builder. A block the Guided builder made, or a pasted text that is no level,
+  shows its generated input read-only
   and *Edit in the builder* (an MLIP or CREST block: the settings it runs, in
-  `key value` lines, never an ORCA input it does not run). A block that waits
+  `key value` lines, never an ORCA input it does not run). A level's block
+  has **its own options** (calc.config under StepConfig's names, merged into
+  the level by the backend): *Edit options in the builder* opens the builder
+  in **Level mode** -- the Type (the template kinds), geometry, the stage
+  with constraints / scan / *Apply all* / push along a mode / the structure
+  check, and the per-kind blocks (MaxIter, Thermochemistry, IRC with
+  *Parent's Hessian (auto)* as its default, NMR J, TD-DFT, NEB), extra
+  keywords, SCF tier, solvation; in place of Method / Resources /
+  Per-element basis, the level's name (a picker of the library's levels) and
+  its text read-only. Its Save is one `update_calc` patch through the
+  undoable batch (raw_text / set_name only when another level was picked);
+  coordinates moved there are the block's own, never the row's structure.
+  The block's options are named under it (`1 constraint · MaxIter 300`) and
+  in the inspector. A refusal (`'name': …`) is said in the inspector, and in
+  the builder above its Save, not only in a toast. An MLIP set's block has a
+  *Task* select (`mlip_jobs`). Below that: *↑ Earlier* /
+  *↓ Later* (Alt+←/→: the block's run order within its row, an `order` op,
+  never past what it depends on or what depends on it), *Duplicate* (the
+  whole setup as `<name>-copy`, next free row of its column), *Show folder*,
+  *Structures…* (the row's panel). Its own name after the row's is editable
+  while it is (what runs after it, or takes its geometry, follows). The
+  geometry list ends with **every other calculation** that does not hang off
+  it. Once it has run, the input shown is the `.inp` its run folder holds
+  (`get_inp`), not a regenerated one. Remove… offers *Remove only this*
+  when something hangs off it and no run is going: those stay, drawn blocked
+  and listed in the warning line, until each is given another geometry. A block that waits
   at its gate has its own *Approve*, and one that runs after a calculation in
   another row says so (no edge on the canvas shows it). For an edge: *Auto* /
   *After approval*, the auto-pass box after a Freq (`ts_freq`: one imaginary

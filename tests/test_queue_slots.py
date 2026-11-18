@@ -33,7 +33,8 @@ def bridge(monkeypatch, tmp_path):
     )
     stub._inpset_defaults = lambda: Bridge._inpset_defaults(stub)
     stub._accepted = lambda calc: Bridge._accepted(stub, calc)
-    stub._preview_hess = lambda d, text, kind: Bridge._preview_hess(stub, d, text, kind)
+    stub._preview_hess = lambda *a: Bridge._preview_hess(stub, *a)
+    stub._holds_output = lambda name: Bridge._holds_output(stub, name)
     stub._HESS_KINDS = Bridge._HESS_KINDS
     return stub
 
@@ -138,7 +139,11 @@ def test_the_guided_update_calc_keeps_a_lane_calcs_graph_fields(bridge):
 def test_inp_sets_carry_the_job_map(bridge):
     sets = call(bridge, "get_inp_sets")
     assert sets["jobs"]["opt"] == "TightOpt" and sets["jobs"]["ts_opt_freq"] == "OptTS Freq"
-    assert "neb_ts" not in sets["jobs"]
+    # TD-DFT and NEB-TS run from a level too (the block's options carry their
+    # %tddft / %neb settings); a General input is the user's alone
+    assert sets["jobs"]["neb_ts"] == "NEB-TS" and sets["jobs"]["tddft"] == ""
+    assert "general" not in sets["jobs"]
+    assert sets["mlip_jobs"] == ["mlip_opt", "mlip_sp", "mlip_freq", "mlip_opt_freq"]
 
 
 def test_the_preview_renders_a_level_block_for_its_kind(bridge, tmp_path):
@@ -160,7 +165,7 @@ def test_the_preview_renders_a_level_block_for_its_kind(bridge, tmp_path):
     # after nothing that leaves a Hessian, it computes its own
     pv = call(bridge, "build_inp_preview", json.dumps(dict(irc, after="", ref_name="")))
     assert "InitHess calc_anfreq" in pv["text"]
-    bad = call(bridge, "build_inp_preview", json.dumps(dict(calc, kind="neb_ts")))
+    bad = call(bridge, "build_inp_preview", json.dumps(dict(calc, kind="general")))
     assert bad["ok"] is False and "cannot run as" in bad["error"]
 
 

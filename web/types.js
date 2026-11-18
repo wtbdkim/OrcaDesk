@@ -672,6 +672,8 @@
  * @property {InpSet[]} [sets]
  * @property {Object<string, string>} [defaults]  set kind -> its seeded text ("+ New")
  * @property {Object<string, string>} [jobs]  calc kind -> what {{JOB}} becomes for it
+ *           ("" for tddft: its %tddft block is the job)
+ * @property {string[]} [mlip_jobs]  the kinds a block made from an MLIP set may run
  * @property {Object<string, string>} [next_kind]  calc kind -> the kind a level placed
  *           after it runs by default ("" = a row's start; not listed: "sp")
  */
@@ -1259,6 +1261,16 @@
  * @property {boolean} ok
  * @property {string} [error]
  * @property {boolean} exists
+ */
+
+/**
+ * existing_outputs(names_json) result; "existing" is always present: the
+ * given names whose workspace folder already holds an output (the
+ * has_existing_output rule), in the order given.
+ * @typedef {Object} ExistingOutputsResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {string[]} existing
  */
 
 /* ---------- server control (phone sync) ---------- */

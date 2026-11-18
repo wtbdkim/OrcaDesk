@@ -458,3 +458,129 @@ def test_a_rubber_band_starts_on_the_empty_canvas_only():
     assert 'addEventListener("mousedown"' in wire and 'contains("qe-bg")' in wire
     hits = _function_body(src, "bandHits")
     assert "x.lane === lane" in hits and "ignored" in hits
+
+
+def test_a_level_block_takes_its_options_through_the_builders_level_mode():
+    """Every option the old queue's builder had reaches a level's block:
+    "Edit options in the builder" opens the Guided builder in Level mode
+    (the level's text read-only, no Method / Resources / Per-element basis)
+    and its Save is ONE update_calc patch through the editor's undoable
+    batch -- kind, config (StepConfig field names, LEVEL_KEYS only),
+    geometry -- keeping raw_text / set_name unless another level was picked."""
+    build = _read(NEXT / "build.js")
+    for name in ("levelForm", "levelRow", "kindBlocks"):
+        assert f"function {name}(" in build, f"build.js lost {name}()"
+    assert "const LEVEL_KEYS = [" in build
+    keys = re.search(r"const LEVEL_KEYS = \[(.*?)\];", build, re.S).group(1)
+    for k in ("geom_constraints", "geom_scan", "max_iter", "irc_init_hess", "irc_hess_file",
+              "freq_temp_k", "nmr_jcoupling", "options", "solvation", "scf_convergence"):
+        assert f'"{k}"' in keys, f"Level mode no longer sends {k}"
+    for k in ("functional", "basis_set", "nprocs", "maxcore_mb", "basis_assignments"):
+        assert f'"{k}"' not in keys, f"Level mode sends {k}, which is the level's"
+    form = _function_body(build, "levelForm")
+    assert "Per-element" not in form and "Resources" not in form and "readonly" in form
+    assert "st.lvlCtx.save(" in build, "a level's Save no longer goes through the editor's batch"
+    src = _read(NEXT / "qed.js")
+    opener = _function_body(src, "openLevelBuilder")
+    assert "level:" in opener and "apply(" in opener and "updates(" in opener
+    assert 'data-a="lvedit"' in _function_body(src, "inspectNode")
+
+
+def test_the_irc_direction_is_read_from_its_own_select():
+    """The push-along-a-mode plate has a "Direction" field too (a +/- toggle
+    without a control); found first by label, it made every IRC's Direction
+    read as the default. A field is found by its label AND its control."""
+    body = _function_body(_read(NEXT / "build.js"), "readForm")
+    assert 'x.querySelector("input, select, textarea")' in body.split("const val")[0]
+
+
+def test_every_add_outside_the_builder_is_guarded_against_overwriting_output():
+    """While a run is going an add starts at once, with no Run click to screen
+    it: a set drop, a paste, a row copy, a duplicate and an .xyz drop ask
+    first (existing_outputs) as the builder does, and the names they make
+    step around folders that already hold output."""
+    src = _read(NEXT / "qed.js")
+    assert 'NB.call("existing_outputs"' in _function_body(src, "existingOutputs")
+    for fn in ("addFromSet", "pasteAfter", "pasteIntoSystem", "pasteOnFiles", "copyLane",
+               "duplicateBlock", "dropXyz"):
+        assert "guardOverwrite(" in _function_body(src, fn), f"{fn} adds without asking"
+    for fn in ("addFromSet", "pasteAfter", "pasteIntoSystem", "pasteOnFiles", "copyLane",
+               "duplicateBlock", "manualBuild"):
+        assert "avoidDisk(" in _function_body(src, fn), f"{fn} names over existing folders"
+
+
+def test_a_copied_workflow_keeps_a_level_blocks_options():
+    """buildWorkflow / instantiate dropped the config of every text step, so
+    a copied level block lost its constraints and IRC settings; a level
+    ('{{JOB}}' on its ! line) keeps them, and a paste checks the atoms
+    they name against each structure it lands on."""
+    src = _read(NEXT / "qed.js")
+    for fn in ("buildWorkflow", "instantiate"):
+        assert "hasJobLine(" in _function_body(src, fn), f"{fn} drops a level's options"
+    for fn in ("pasteAfter", "pasteIntoSystem", "pasteOnFiles"):
+        assert "wfAtomNeed(" in _function_body(src, fn), f"{fn} does not check constraint atoms"
+
+
+def test_the_old_queues_block_actions_are_in_the_inspector():
+    """Duplicate, Show folder, run earlier / later, the structures panel, the
+    input the run folder holds, and Clear finished (done and failed only: a
+    cancelled block runs again) -- each through the ops batch."""
+    src = _read(NEXT / "qed.js")
+    node = _function_body(src, "inspectNode")
+    for a in ("dup", "folder", "earlier", "later", "structs", "ownname"):
+        assert f'"{a}"' in node, f"the inspector lost {a}"
+    assert 'NB.call("get_inp"' in node, "a finished block shows a regenerated input again"
+    assert 'const FINISHED = ["done", "failed"]' in src
+    assert 'id="qe-clearfin"' in src
+    move = _function_body(src, "moveRun")
+    assert 'op: "order"' in move and "dependentsOf(" in move, "a reorder may break a dependency"
+    rm = _function_body(src, "requestRemove")
+    assert "Remove only this" in rm and "NB.running" in rm
+    assert 'NB.call("check_structure"' in _function_body(src, "inspectSystem")
+
+def test_the_queue_window_hosts_the_main_windows_new_calculation_unsqueezed():
+    """The builder in the queue window IS the main window's New calculation:
+    the same cell (.cell.editing.stub, "New calculation" in its editbar), in a
+    stream-like column (.streaminner) of the reference's cell width drawn over
+    the lanes and the inspector -- not squeezed into the 360px inspector,
+    which stacked Mult. on a row of its own and narrowed the stage."""
+    src = _read(NEXT / "qed.js")
+    insp = _function_body(src, "renderInspector")
+    assert 'NB.$("qe-buildinner")' in insp and "bhost.appendChild(_buildCell)" in insp
+    assert not re.search(r"(?<!b)host\.appendChild\(_buildCell\)", insp), "the builder is back in the inspector"
+    assert '<div class="qe-build" id="qe-build" hidden><div class="streaminner" id="qe-buildinner">' in src
+    css = _read(NEXT / "app.css")
+    assert re.search(r"\.qe-build\{position:absolute; top:0; bottom:0; left:220px; right:0;", css)
+    assert ".qe-build > .streaminner > .cell{width:100%; max-width:1040px;}" in css
+    assert ".qe-app[data-building]{grid-template-columns" not in css, "the inspector widens for the builder again"
+    build = _read(NEXT / "build.js")
+    cell = _function_body(build, "cellFor")
+    assert '"New calculation"}</b>' in cell, "a new calculation's title is not the old builder's"
+
+
+def test_a_manual_build_opens_on_the_block_it_follows():
+    """"New calculation after X" takes X's optimized geometry, whatever else
+    the queue holds: the seed carries X as its reference, the builder cell
+    takes the seed when it is made (a mount reading the shared one after its
+    awaits could find it gone and open on an old draft's reference -- the
+    first name in the list -- under X's title), and the select defaults to
+    the seed's reference, offered even when X's state would not list it. The
+    name is the row's name and the kind's suffix (mol-opt2), as the editor
+    names a step, never "<row>-calc"."""
+    src = _read(NEXT / "qed.js")
+    mb = _function_body(src, "manualBuild")
+    assert 'geometry_source: parent ? "reference" : "direct", ref_name: parent ? parent.name : ""' in mb
+    assert '"-calc"' not in mb
+    assert 'freeName(sysName + "-" + SUFFIX[k], x)' in mb and "name: names.opt" in mb
+    build = _read(NEXT / "build.js")
+    cell = _function_body(build, "cellFor")
+    assert "seed: calc ? null : _seed" in cell and "_seed = null;" in cell
+    mount = _function_body(build, "mount")
+    assert "_seed" not in mount, "mount reads the shared seed again"
+    assert "calc = ctx.seed;" in mount
+    render = _function_body(build, "render")
+    assert 'calc.geometry_source === "reference" && calc.ref_name && refs.indexOf(calc.ref_name) < 0' in render
+    assert 'select("Take the optimized geometry from", refs, calc ? calc.ref_name : refs[0])' in render
+    # the Name follows the Type while it is still the one the place gave
+    follow = _function_body(build, "followName")
+    assert "name === n[from] ? n[to] : name" in follow
