@@ -408,15 +408,6 @@ def test_an_mlip_set_block_keeps_its_model_through_an_options_edit(store):
         "mlip_freq", "MACE-OFF small", "cpu", 310.0)
 
 
-def test_a_dropped_structure_runs_an_mlip_set_as_the_task_asked(store):
-    mlip = {"id": "m", "name": "MACE", "kind": "MLIP", "text": "model MACE-OFF small\n"}
-    xyz = "3\n\n" + H2O + "\n"
-    out = store.add_xyz_systems([("w.xyz", xyz)], mlip, "-f", kind="mlip_freq")
-    assert store.get(out["added"][0]).kind == "mlip_freq"
-    out = store.add_xyz_systems([("v.xyz", xyz)], mlip, "-p", kind="opt")
-    assert store.get(out["added"][0]).kind == "mlip_opt"   # not an MLIP task
-
-
 def test_constraint_warning_judges_a_level_blocks_constraints():
     angle = {"kind": "A", "atoms": [1, 0, 2], "value": 179.0}
     c = calc_from_dict(block("w-opt", config={"geom_constraints": [angle]}))

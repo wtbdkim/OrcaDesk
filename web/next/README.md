@@ -78,15 +78,24 @@ when it becomes visible. The editor holds no queue state: every change is an
 `apply_queue_ops` batch, and Ctrl+Z sends the inverse batch -- refused when it
 would remove a calculation that has started, with an `order` rebuilt from the
 queue as it is then. DESIGN.md §17.6.
-The one thing besides the hand-over that crosses windows is the copied
-**workflow** (Ctrl+C in the queue window): kept in the editor and mirrored
-under the UI-state key `queue.workflow`, so a `.xyz` dropped on the main
-window can run it when the drop recipe says so. A level's rendered input is
+The copied **workflow** (Ctrl+C in the queue window) is kept in the editor
+and mirrored under the UI-state key `queue.workflow`, so it outlives a reload
+of the queue window. A `.xyz` dropped on either window becomes a row holding
+the structure and nothing queued (`pasteOnFiles` with no workflow); its steps
+are built in the queue window. A level's rendered input is
 `build_inp_preview` -- never render `{{JOB}}` in JS, nor merge a level
 block's options into it: the backend does both, for the preview and the run.
-An add that does not go through the builder (a set drop, a paste, a row
-copy, *Duplicate*, an `.xyz` drop) names its calculations with `avoidDisk`
-and asks `guardOverwrite` before the batch -- a new add path needs both.
+An add that does not go through the builder (a set drop, the + slot's add
+menu, a paste, a saved workflow, a row copy, *Duplicate*) names its
+calculations with `avoidDisk` and asks `guardOverwrite` before the batch -- a
+new add path that makes calculations needs both. The add menu and a saved
+workflow reuse the existing paths (`addFromSet` with a kind, `pasteAfter` /
+`pasteIntoSystem`) rather than building ops of their own; saved workflows
+come from `get_workflows` / `save_workflow` / `delete_workflow`
+(`state/workflows.py`), never browser storage. A new add path that can land
+after an IRC asks `askIrcStructure(irc, both)` first (as `addFromSet`,
+`pasteAfter` and `setGeometry` do): an end comes back as a reference
+(`ref_point` `irc_f` / `irc_b`), any other point of the path as coordinates.
 
 To work on the queue window, open it (*Open queue*) and press F5 in it: it
 reloads on its own, like the main window.

@@ -525,8 +525,8 @@ The poll carries them as `QueueSnapshot.systems` with inputs **by label only**;
 
 **`apply_queue_ops(ops_json)`** is the editor's one write path: a list of
 `add_system` / `update_system {id, patch}` / `remove_system` / `add_calc` /
-`update_calc {name, calc}` / `place_calc {name, place}` / `remove_calc` /
-`order {names}` applied by
+`update_calc {name, calc}` / `rerun_calc {name, calc}` / `undo_rerun {name}` /
+`place_calc {name, place}` / `remove_calc` / `order {names}` applied by
 `QueueStore.apply_ops` **atomically**: every op runs against a working copy
 through the single mutations' own rules (`_add_into` / `_replace_in` /
 `_remove_from` — the bodies `add` / `replace` / `remove` now call: name rules,
@@ -551,12 +551,33 @@ guided calc) gets no options: its old config was a whole guided input. An
 MLIP set's block is re-derived from its text (`is_raw` set again) for a
 `raw_text`, `config` or `kind` patch, so an options edit (T / P for an MLIP
 frequency) never replaces the model the text sets.
+`rerun_calc` is P24's one explicit way back from DONE: the queue editor sends
+it when a set is dropped on (or clicked onto) a finished block, only after an
+overwrite warning that is asked every time (`requestRerun`, never the
+once-only replace answer). It is refused for anything but a DONE row the
+engine is not handling, and its `calc` may hold only the set fields
+(`raw_text` / `set_name` / `set_id` / `is_raw` / `config`); the patch merges
+like `update_calc`'s (the same `_patched` helper, so a guided calc becoming a
+level block drops its old config). The row is rebuilt PENDING with no
+message, result, output path or pid, keeping its name, place and edges, and
+is marked `Calculation.rerun`. While the row has not started (`is_rerun`:
+PENDING / BLOCKED), the mark keeps it out of `_overwrite_conflicts` (the
+Run-click modal and the startup resume), and `make_engine_factory` drops it
+from any keep answers. So the old output in its folder is overwritten, never
+adopted. The mark is persisted in the session and is carried by an
+`update_calc` while unstarted. A row that starts, is cancelled, or is removed
+and re-added loses it, and `calc_from_dict` never reads it, so no client can
+set it. The replaced DONE row is held in an in-memory stash.
+`undo_rerun {name}` puts that same object back while the row under the name
+is still the unstarted rerun; once it has started, or after a restart, it is
+refused (its output may already be overwritten). DONE rows that ran after it
+keep their results; pending ones wait for it and read its new geometry.
 `place_calc`'s `place` holds only `system` / `node` / `col` / `row` (anything
 else is refused) and is allowed in **every** state: where the editor draws a
 calc is not what it ran (P24 freezes the latter). It is how a finished
 standalone calc becomes the first node of a new system so a follow-up can hang
 off it — `update_calc` stays refused for DONE/FAILED, and would re-queue the
-row. The state, message, result, `after` and inputs are untouched and the row
+row (`rerun_calc` is the explicit, warned way to do that for a DONE one). The state, message, result, `after` and inputs are untouched and the row
 is not reset to PENDING. The op works on a batch-private copy (so a refused
 batch leaves the row where it was); at commit the placement is written back
 onto the **same** row object, because the engine tracks rows by identity and
@@ -577,25 +598,85 @@ already removed is a no-op. `order` takes any full permutation: the editor's
 run order is lane by lane and a lane moves with its finished rows, which
 changes nothing for the engine (it walks rows by identity).
 
-**`add_xyz_systems(json)`** is the "drop `.xyz`" recipe's single point:
-`{files: [{label, xyz}] | paths: [...], set_id, suffix, kind}` (`set_id ""` =
-the first ORCA level; an ORCA level runs as `kind`, default `"sp"` — a kind
-with no `{{JOB}}` keyword is refused; an MLIP set as `kind` when that is one
-of `MLIP_TEMPLATE_KINDS`, else `mlip_opt`) → per file
-one system named after the file's stem and one calc `stem + suffix` from that
-inp set, each file its own `apply_ops` batch, so a refusal (a clashing or
-ORCA-hostile name, a multi-frame file, a header that counts fewer atoms than
-the coordinate lines that follow it, no coordinates, an unreadable path) is
-reported per file — `{added, systems, refused: [{file, reason}]}` — and
-nothing is ever renamed to fit. Paths are read `utf-8-sig`.
 `pick_xyz_files()` (a multi-select picker) and `read_xyz_paths(json)` (dropped
-paths) read several `.xyz` at once for the editor's **workflow** paste and the
-recipe's workflow runs — `XyzFilesResult {cancelled, files: [{path, label,
-name, xyz, error}]}` through `store.xyz_file_entries`, the same stem /
-single-structure rules; the editor then builds ONE `apply_queue_ops` batch
-(a system plus the workflow's calcs per file). A workflow (copied in the
-queue window) lives in the editor and under the UI-state key
-`queue.workflow`, never in the store.
+paths) read several `.xyz` at once — `XyzFilesResult {cancelled, files:
+[{path, label, name, xyz, error, charge, multiplicity}]}` through
+`store.xyz_file_entries`: per file the system name its stem gives, its one
+structure, and the charge / multiplicity its comment line states
+(`store.xyz_charge_mult`: `charge` / `chrg` / `chg` and `mult` /
+`multiplicity`, `=` or `:` or a space, case aside; xtb's `uhf=N` as
+multiplicity N+1 when none is stated; `null` when not stated, and a value no
+molecule has — multiplicity outside 1–20, a charge past ±50 — is not read
+rather than clamped; only the line after an `.xyz` count is read), or why it
+cannot start a row (unreadable, several frames, no coordinates, a header that
+counts fewer atoms than follow it). *+ system*'s file branch is the same
+multi-pick, so it makes rows by the drop's rules. The editor then builds ONE `apply_queue_ops`
+batch: per file a system holding the structure, plus the copied workflow's
+calcs for a **paste** onto picked files, or nothing else for a **drop** (a
+dropped `.xyz` queues nothing; its steps are built on the row). A file whose
+name ORCA or a folder refuses, or whose row already exists, is listed with
+the reason, never renamed to fit. A workflow (copied in the queue window)
+lives in the editor and under the UI-state key `queue.workflow`, never in the
+store. (Until 0.11.1 a drop ran a "drop recipe" — by default a single point
+at an ORCA level, through an `add_xyz_systems` slot; both are gone.)
+
+**Saved workflows** (`orcamgr/state/workflows.py`, slots `get_workflows`,
+`save_workflow(json)` → the workflow with its id, `delete_workflow(id)`) are
+copied workflows kept by name: `{id, name, v, from, steps}` in
+`user_data_root()/workflows.json` (schema 1, tmp + `os.replace`). `steps` is
+the editor's own workflow step list (`buildWorkflow` in `qed.js`), replayed
+as `add_calc` ops by `instantiate`, so the store's trust boundary judges what
+a step would run; the module checks only what a replay needs — a non-empty
+list (≤ 200) of objects, each with its own `id`, a `node` and a kind in
+`KNOWN_KINDS` — plus a name (unique case-insensitively), an id pattern and a
+500 kB cap. A missing or unreadable file reads as none and a bad entry is
+dropped on read, the rest kept (P32). The editor uses them from the
+library's *Workflows* group, the + slot's add menu, and a row inspector's
+buttons — always through `pasteAfter` / `pasteIntoSystem`, the paste's own
+one-batch paths (`avoidDisk` + `guardOverwrite` included).
+
+The + slot's **add menu** adds through `addFromSet(slot, set, kind)` — the
+same batch a set dropped on the slot makes, with the Type chosen in the menu
+instead of `next_kind`; the level used is remembered under the UI-state key
+`queue.level`. `pasteIntoSystem(lanes, wf)` takes several rows (a
+Ctrl+click selection, `{t: "rows", keys}`) and fills every empty one in ONE
+batch, each with its own charge / multiplicity; a row with steps, or a
+structure with fewer atoms than the workflow's constraints name, is listed
+and left as it is. A rows selection's charge / multiplicity is one batch of
+`update_system` ops, skipping rows that have started.
+
+**After an IRC** every add path — `addFromSet` (the menu, a dropped set),
+`pasteAfter` (a paste or saved workflow) and `setGeometry("pick:<irc>")` (a
+block's geometry list) — asks `askIrcStructure(irc, both)` first. It reads
+`get_irc_structures(name)` → `IrcStructuresResult {ok, done, files: [{key,
+label, path, count}]}`: the `_IRC_F.xyz` / `_IRC_B.xyz` / `_IRC_F_trj` /
+`_IRC_B_trj` / `_IRC_Full_trj.xyz` files in the IRC's run folder
+(`_calc_run_dir`), listed **only once it is DONE** — a re-queued IRC's
+folder still holds the last run's files. The frames come from the viewer's
+`get_structure_frames(path)`. The graph is the whole path from
+`_IRC_Full_trj.xyz` (measured on real ORCA 6.1.1 runs: frame 1 is the
+backward end, the last the forward end, the TS in between), else the
+backward path reversed + the forward one. An end picked becomes a reference
+(`ref_point` `irc_f` / `irc_b`, resolved from the end-point file at run time
+as before); any other point is copied in as direct coordinates (`_P<k>`),
+still `after` the IRC. A paste after an IRC runs `instantiate` once per
+structure with a name tail (`_F`, `_B`) and shared node ids, so each step's
+copies stack. The IRC's bare final geometry (`ref_point ""`) is no longer
+offered: measured, it is the starting TS (RMSD 0 to the OptTS geometry).
+
+**Names** the editor makes are `<system>_<Job>` (`SUFFIX` + `SEP` in
+`qed.js`): the job word reads like ORCA's job keyword but is a name, not
+`TEMPLATE_JOB_KEYWORDS` itself (that has `TightOpt Freq`, with a space, and
+an empty TD-DFT) — `Opt`, `OptTS`, `FreqTS`, `OptFreq`, `IRC`, `SP`, `NEB-TS`,
+`Preopt` / `MLSP` / … for MLIP. A taken base is numbered (`_SP2`), stack
+members are tailed `_F` / `_B` / `_P<k>` (`tailOf`), a copy is `<name>_copy`;
+`stem` splits on the last `_` or `-`, so older hyphen names still form stacks.
+**A redraw waits for a click**: the editor redraws the canvas and inspector
+by `innerHTML` on every changed poll, and a redraw between a press and its
+release replaced the element under the pointer, so the browser dropped the
+click. `render()` returns while a button is down (`wirePress`, at most
+`PRESS_MS` = 1.5 s, released on mouseup / dragstart / blur) and draws once
+on the release.
 
 **Inp sets** (`orcamgr/state/inpsets.py`, slots `get_inp_sets`,
 `save_inp_set(json)` → the set with its id, `delete_inp_set(id)`) are saved
@@ -660,7 +741,8 @@ set of its kind whose text it migrates to, a renamed one first (`setOf` in
 
 The slot list is in `web/globals.d.ts`; the payloads are `InpSet`,
 `InpSetsResult`, `InpSetResult`, `SystemSummary` / `SystemFull`,
-`SystemResult`, `QueueOpsResult`, `XyzSystemsResult`, `XyzFileEntry` /
+`SystemResult`, `QueueOpsResult`, `SavedWorkflow`, `WorkflowsResult`,
+`WorkflowResult`, `IrcStructureFile` / `IrcStructuresResult`, `XyzFileEntry` /
 `XyzFilesResult` (schemas.py ↔ types.js),
 plus the `QueueOp` union in `types.js`. `open_queue_window()` → `{ok}` shows /
 raises the queue window (`MainWindow.show_queue_window`).
@@ -1253,7 +1335,7 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   mutations. A mid-run add whose name already has a result on disk is
   confirmed in the UI first (`bridge.has_existing_output`; the queue editor's
   adds that bypass the builder — a dropped set, a paste, a row copy, a
-  dropped `.xyz` — ask `existing_outputs(names_json)` → `{ok, existing}`,
+  duplicate — ask `existing_outputs(names_json)` → `{ok, existing}`,
   the same rule for many names, which its free-name search also skips) — the
   Run-click overwrite modal never sees it, and the engine's keep-existing set is
   fixed at run start, so it would otherwise overwrite silently. The
@@ -1317,7 +1399,8 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   pre-run screens as far as it can: it passes the overwrite-conflict names as
   the keep-existing set (nobody is at the keyboard to answer the modal, so
   existing results are preserved rather than recomputed over, and the log says
-  which), and reports a dangling reference — which it cannot refuse, having a
+  which; a `rerun_calc` row is never among them, as its overwrite was already
+  confirmed), and reports a dangling reference — which it cannot refuse, having a
   running job to reattach, but which the engine now blocks rather than fails.
   A process that is gone → judged from its output (`DONE` if terminated
   normally + valid, else

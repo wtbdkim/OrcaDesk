@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 import orcamgr.state.inpsets as inpsets_mod
+import orcamgr.state.workflows as workflows_mod
 import orcamgr.state.store as store_mod
 from orcamgr.gui.bridge import Bridge
 from orcamgr.state.store import QueueStore
@@ -26,6 +27,7 @@ H2 = "H 0.0 0.0 0.0\nH 0.0 0.0 0.74"
 def bridge(monkeypatch, tmp_path):
     monkeypatch.setattr(store_mod, "user_data_root", lambda: tmp_path)
     monkeypatch.setattr(inpsets_mod, "user_data_root", lambda: tmp_path)
+    monkeypatch.setattr(workflows_mod, "user_data_root", lambda: tmp_path)
     stub = SimpleNamespace(
         store=QueueStore(),
         settings=SimpleNamespace(default_nprocs=4, default_maxcore_mb=2000),
@@ -82,29 +84,46 @@ def test_get_system_slot(bridge):
     assert call(bridge, "get_system", "s9")["ok"] is False
 
 
-def test_add_xyz_systems_from_paths(bridge, tmp_path):
-    a, b, multi = tmp_path / "water.xyz", tmp_path / "ammonia.xyz", tmp_path / "traj.xyz"
-    frame = "2\n\n" + H2 + "\n"
-    a.write_text("﻿" + frame, encoding="utf-8")       # a BOM is not a problem
-    b.write_text(frame, encoding="utf-8")
-    multi.write_text(frame + frame, encoding="utf-8")
-    out = call(bridge, "add_xyz_systems", json.dumps(
-        {"paths": [str(a), str(b), str(multi), str(tmp_path / "gone.xyz")],
-         "set_id": "", "suffix": "-sp"}))
-    assert out["ok"] and out["added"] == ["water-sp", "ammonia-sp"]
-    assert len(out["systems"]) == 2
-    assert {r["file"] for r in out["refused"]} == {str(multi), str(tmp_path / "gone.xyz")}
-    assert out["snapshot"]["calculations"][0]["set_name"] == "wB97X-D4 / def2-TZVP"
+def test_workflow_slots_save_list_and_delete(bridge):
+    step = {"id": "c0", "node": "n0", "kind": "opt", "raw_text": "", "config": {}}
+    assert call(bridge, "get_workflows") == {"ok": True, "workflows": []}
+    saved = call(bridge, "save_workflow", json.dumps({"name": "Opt", "steps": [step]}))
+    assert saved["ok"] and saved["workflow"]["id"] and saved["workflow"]["steps"] == [step]
+    assert [w["name"] for w in call(bridge, "get_workflows")["workflows"]] == ["Opt"]
+    clash = call(bridge, "save_workflow", json.dumps({"name": "opt", "steps": [step]}))
+    assert clash["ok"] is False and "already a workflow" in clash["error"]
+    assert call(bridge, "save_workflow", "not json")["ok"] is False
+    assert call(bridge, "delete_workflow", saved["workflow"]["id"]) == {"ok": True}
+    gone = call(bridge, "delete_workflow", saved["workflow"]["id"])
+    assert gone["ok"] is False and "No workflow" in gone["error"]
 
 
-def test_add_xyz_systems_from_texts_and_an_unknown_set(bridge):
-    out = call(bridge, "add_xyz_systems", json.dumps(
-        {"files": [{"label": "w.xyz", "xyz": H2}], "set_id": "seed-orca", "suffix": "_opt",
-         "kind": "opt"}))
-    assert out["added"] == ["w_opt"]
-    assert bridge.store.get("w_opt").kind == "opt"
-    bad = call(bridge, "add_xyz_systems", json.dumps({"files": [], "set_id": "nope"}))
-    assert bad["ok"] is False and "nope" in bad["error"]
+def test_irc_structures_lists_an_irc_runs_files_only_once_it_is_done(bridge, tmp_path):
+    """get_irc_structures: the ends and paths ORCA wrote in the IRC's run
+    folder, in the editor's order -- and none while the IRC is not DONE (a
+    re-queued IRC's folder still holds the last run's files)."""
+    from orcamgr.core.queue import CalcState
+    run = tmp_path / "ws" / "ts-irc"
+    run.mkdir(parents=True)
+    frame = "2\nE -1.0\nH 0 0 0\nH 0 0 0.74\n"
+    for suffix, frames in (("_IRC_F.xyz", 1), ("_IRC_B.xyz", 1), ("_IRC_Full_trj.xyz", 3)):
+        (run / f"ts-irc{suffix}").write_text(frame * frames, encoding="utf-8")
+    bridge.settings.workspace_root = str(tmp_path / "ws")
+    bridge._calc_run_dir = lambda name: Bridge._calc_run_dir(bridge, name)
+    bridge._IRC_FILES = Bridge._IRC_FILES
+    call(bridge, "apply_queue_ops", json.dumps([
+        {"op": "add_calc", "calc": {"name": "ts-irc", "kind": "irc", "xyz": H2}},
+        {"op": "add_calc", "calc": {"name": "ts-opt", "kind": "opt", "xyz": H2}}]))
+    pending = call(bridge, "get_irc_structures", "ts-irc")
+    assert pending == {"ok": True, "done": False, "files": []}
+    bridge.store.get("ts-irc").state = CalcState.DONE
+    got = call(bridge, "get_irc_structures", "ts-irc")
+    assert got["ok"] and got["done"]
+    assert [(f["key"], f["label"], f["count"]) for f in got["files"]] == [
+        ("F", "Forward end", 1), ("B", "Backward end", 1), ("Full_trj", "Whole path", 3)]
+    assert got["files"][2]["path"] == str(run / "ts-irc_IRC_Full_trj.xyz")
+    assert call(bridge, "get_irc_structures", "ts-opt")["ok"] is False      # not an IRC
+    assert call(bridge, "get_irc_structures", "nope")["ok"] is False
 
 
 def test_open_queue_window_slot(bridge):
@@ -179,4 +198,5 @@ def test_read_xyz_paths(bridge, tmp_path):
     assert out["files"][0]["xyz"] == H2 and out["files"][0]["error"] == ""
     assert "2 structures" in out["files"][1]["error"] and out["files"][1]["xyz"] == ""
     assert out["files"][2]["error"]
+    assert (out["files"][0]["charge"], out["files"][0]["multiplicity"]) == (None, None)
     assert call(bridge, "read_xyz_paths", "{}")["ok"] is False

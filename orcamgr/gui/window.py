@@ -182,7 +182,7 @@ class _WebWindowMixin:
     def _dispatch_drops(self, paths: "list[str]") -> None:
         """Every dropped .xyz goes to the page in ONE call,
         ``window.onXyzFilesDropped(paths)`` (a multi-file drop is one
-        add_xyz_systems batch, not N); otherwise the first handled file takes
+        batch of new rows, not N); otherwise the first handled file takes
         the single-file route (onInpDropped / onOutDropped). Both windows."""
         xyz = [p for p in paths if p.lower().endswith(".xyz")]
         if xyz:

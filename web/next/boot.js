@@ -625,9 +625,9 @@ var NB = {};
       const d = await NB.results.openPath(p);
       if (d) NB.results.noteOpened(p, d);
     };
-    // a structure becomes a system with the drop recipe's single point,
-    // exactly as if it had been dropped on the queue window, which then opens
-    // to show where it went
+    // a structure becomes a row holding it (nothing queued yet), exactly as
+    // if it had been dropped on the queue window, which then opens to show
+    // where it went and to build its steps
     w.onXyzDropped = async (/** @type {string} */ p) => {
       if (NB.qed && await NB.qed.dropXyz([p])) NB.openQueueWindow();
     };

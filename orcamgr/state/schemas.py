@@ -71,7 +71,7 @@ class CalcSummary(TypedDict):
 
 
 class CalcFull(TypedDict):
-    """Full-fidelity form — mirror of store.calc_to_session_dict (25 keys)."""
+    """Full-fidelity form — mirror of store.calc_to_session_dict (26 keys)."""
     name: str
     kind: str
     config: dict              # StepConfig.to_dict(), {} when absent
@@ -97,6 +97,7 @@ class CalcFull(TypedDict):
     approved: bool
     ref_point: str
     set_name: str
+    rerun: bool               # put back from DONE by rerun_calc (never kept)
 
 
 # ---- queue snapshot / log ---------------------------------------------------
@@ -591,6 +592,29 @@ class InpSetResult(_Ok, total=False):
     set: InpSet
 
 
+class SavedWorkflow(TypedDict):
+    """state/workflows.py — a copied workflow kept by name. `steps` is the
+    queue editor's own workflow step list, replayed as add_calc ops."""
+    id: str
+    name: str
+    v: int
+    # "from" (the row it was copied from) is a keyword, so it is not a field
+    # here; it rides the JSON as written
+    steps: "list[dict]"
+
+
+class WorkflowsResult(_Ok, total=False):
+    """get_workflows."""
+    error: str
+    workflows: "list[SavedWorkflow]"
+
+
+class WorkflowResult(_Ok, total=False):
+    """save_workflow (the workflow as stored, with its id) / delete_workflow."""
+    error: str
+    workflow: SavedWorkflow
+
+
 class SystemResult(_Ok, total=False):
     """get_system."""
     error: str
@@ -606,9 +630,21 @@ class QueueOpsResult(_Ok, total=False):
     snapshot: QueueSnapshot
 
 
-class XyzRefusal(TypedDict):
-    file: str                 # the file's label / path as given
-    reason: str
+class IrcStructureFile(TypedDict):
+    """One structure file an IRC wrote (get_irc_structures)."""
+    key: str                  # "F" | "B" | "F_trj" | "B_trj" | "Full_trj"
+    label: str                # "Forward end", "Whole path", ...
+    path: str
+    count: int                # frames (0: not counted -- too large)
+
+
+class IrcStructuresResult(_Ok, total=False):
+    """get_irc_structures: the structure files an IRC's run folder holds --
+    listed only once it is DONE (a re-queued IRC's old files are not its
+    result)."""
+    error: str
+    done: bool
+    files: "list[IrcStructureFile]"
 
 
 class XyzFileEntry(TypedDict):
@@ -618,6 +654,8 @@ class XyzFileEntry(TypedDict):
     name: str                 # its stem: the system name it gives ("" if none)
     xyz: str                  # its one structure as a coordinate block, "" if refused
     error: str                # why it cannot start a row, "" if it can
+    charge: Optional[int]     # stated on its comment line ("charge=1"), else None
+    multiplicity: Optional[int]  # stated there ("mult=2", or xtb's "uhf=1"), else None
 
 
 class XyzFilesResult(_Ok, total=False):
@@ -625,15 +663,6 @@ class XyzFilesResult(_Ok, total=False):
     error: str
     cancelled: bool
     files: "list[XyzFileEntry]"
-
-
-class XyzSystemsResult(_Ok, total=False):
-    """add_xyz_systems: per file, a system + one calc, or a refusal."""
-    error: str
-    added: "list[str]"        # names of the calcs added
-    systems: "list[str]"      # ids of the systems added (same order)
-    refused: "list[XyzRefusal]"
-    snapshot: QueueSnapshot
 
 
 class TextResult(_Ok, total=False):

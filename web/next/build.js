@@ -464,7 +464,7 @@
 
   /** The Name a Type change leaves: the name the queue window's place gives
    *  the new kind while the field still holds the one it gave the old kind
-   *  (mol-opt -> mol-freq, as a block's Type change renames it); a name the
+   *  (mol_Opt -> mol_Freq, as a block's Type change renames it); a name the
    *  user typed is theirs. @param {any} st @param {string} name
    *  @param {string} from @param {string} to @returns {string} */
   function followName(st, name, from, to) {

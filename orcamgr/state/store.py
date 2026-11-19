@@ -30,7 +30,6 @@ from ..core.queue import (
 from ..core.input_generator import (CONSTRAINED_KINDS, JOB_PLACEHOLDER,
                                     SCAN_KINDS, StepConfig,
                                     constraint_index_error,
-                                    MLIP_TEMPLATE_KINDS,
                                     constraint_linear_warning, is_level_text,
                                     raw_geometry_mismatch, template_config,
                                     template_job_error,
@@ -53,9 +52,20 @@ from .inpsets import MLIP_KEYS, mlip_config_from_text
 # calculation — locking it would strand it forever. FAILED is deliberately NOT
 # editable (P24 revision): a failure locks the calc at the moment it fails —
 # no edit, no re-run; the only remaining interaction is removal (×). DONE is
-# excluded too (a completed result is frozen — make a new calculation to
-# rerun), and RUNNING is in flight.
+# excluded too (a completed result is frozen; the one explicit way back is the
+# apply_ops op rerun_calc, a new set put on it behind an overwrite warning),
+# and RUNNING is in flight.
 EDITABLE_STATES = {CalcState.PENDING, CalcState.CANCELLED, CalcState.BLOCKED}
+#: the states a rerun row (Calculation.rerun) still has not started in
+_UNSTARTED = (CalcState.PENDING, CalcState.BLOCKED)
+
+
+def is_rerun(c: Calculation) -> bool:
+    """A DONE calc put back to PENDING by rerun_calc that has not started since:
+    the old output in its folder is one the user chose to overwrite, so it is
+    neither offered nor given keep-existing (bridge._overwrite_conflicts,
+    make_engine_factory). A row that started (or was cancelled) is not one."""
+    return bool(getattr(c, "rerun", False)) and c.state in _UNSTARTED
 
 
 class QueueOpError(ValueError):
@@ -659,21 +669,58 @@ def _single_structure(text: str) -> str:
     return coords
 
 
+_CHARGE_RE = re.compile(r"(?<![A-Za-z])(?:charge|chrg|chg)\s*[=:]?\s*([+-]?\d+)(?![\d.])", re.I)
+_MULT_RE = re.compile(r"(?<![A-Za-z])(?:multiplicity|mult)\s*[=:]?\s*(\d+)(?![\d.])", re.I)
+_UHF_RE = re.compile(r"(?<![A-Za-z])uhf\s*[=:]?\s*(\d+)(?![\d.])", re.I)
+
+
+def xyz_charge_mult(text: str) -> "tuple[Optional[int], Optional[int]]":
+    """The charge and multiplicity an .xyz file's comment line states, each
+    None when it states none: ``charge=1 mult=2``, ``Charge: -1
+    Multiplicity: 2``, ``chrg 1``; xtb's ``uhf=N`` (unpaired electrons) reads
+    as multiplicity N+1 when no multiplicity is given. Only the comment line
+    of a file with the .xyz header is read -- a bare coordinate block has
+    none -- and a value no molecule can have (multiplicity 0, a charge past
+    +-50) is not read at all, never "fixed" into one it might."""
+    lines = str(text or "").lstrip("﻿").splitlines()
+    head = next((i for i, ln in enumerate(lines) if ln.strip()), None)
+    if head is None or not lines[head].strip().split()[0].isdigit() or head + 1 >= len(lines):
+        return None, None
+    comment = lines[head + 1]
+    charge = mult = None
+    m = _CHARGE_RE.search(comment)
+    if m and abs(int(m.group(1))) <= 50:
+        charge = int(m.group(1))
+    m = _MULT_RE.search(comment)
+    if m:
+        mult = int(m.group(1))
+    else:
+        m = _UHF_RE.search(comment)
+        if m:
+            mult = int(m.group(1)) + 1
+    if mult is not None and not 1 <= mult <= 20:
+        mult = None
+    return charge, mult
+
+
 def xyz_file_entries(paths) -> "list[XyzFileEntry]":
     """Several .xyz files read for the queue editor (a multi-pick, a drop):
-    per path its file name, the system name its stem gives, and its one
-    structure as a coordinate block -- or why it cannot start a row (an
-    unreadable file, several frames, no coordinates), by the same rules as
-    add_xyz_systems. Read utf-8-sig (a BOM ORCA would refuse)."""
+    per path its file name, the system name its stem gives, its one
+    structure as a coordinate block and the charge / multiplicity its comment
+    line states (xyz_charge_mult) -- or why it cannot start a row (an
+    unreadable file, several frames, no coordinates, a header that counts
+    fewer atoms than follow it). Read utf-8-sig (a BOM ORCA would refuse)."""
     out: "list[XyzFileEntry]" = []
     for p in paths or []:
         path = str(p)
         label = Path(path.replace("\\", "/")).name
-        entry = XyzFileEntry(path=path, label=label, name="", xyz="", error="")
+        entry = XyzFileEntry(path=path, label=label, name="", xyz="", error="",
+                             charge=None, multiplicity=None)
         try:
             entry["name"] = _xyz_stem(path)
             text = Path(path).read_text(encoding="utf-8-sig", errors="replace")
             entry["xyz"] = _single_structure(text)
+            entry["charge"], entry["multiplicity"] = xyz_charge_mult(text)
         except OSError as e:
             entry["error"] = e.strerror or str(e)
         except ValueError as e:
@@ -737,6 +784,7 @@ def calc_to_session_dict(c: Calculation) -> CalcFull:
         approved=c.approved,
         ref_point=c.ref_point,
         set_name=c.set_name,
+        rerun=bool(c.rerun),
     )
 
 
@@ -769,6 +817,9 @@ def calc_from_session_dict(d: dict) -> Calculation:
         c.create_time = float(ct) if ct is not None else None
     except (TypeError, ValueError):
         c.create_time = None
+    # restored here only, never read by calc_from_dict: no client can hand a
+    # new calc the overwrite answer (a rerun row skips keep-existing)
+    c.rerun = d.get("rerun") is True
     return c
 
 
@@ -942,6 +993,9 @@ class QueueStore:
         # connected phone clients: {client_id: last_seen_epoch}
         self._clients: dict[str, float] = {}
         self._client_ttl = 15.0   # seconds without heartbeat = considered gone
+        # rerun_calc's undo stash: name -> the DONE row it replaced, put back by
+        # undo_rerun while the rerun has not started. In memory only.
+        self._rerun_stash: dict[str, Calculation] = {}
 
     # ---- auth token ----
     @property
@@ -1353,67 +1407,6 @@ class QueueStore:
             self._systems[:] = systems
             self._bump_and_save()
 
-    def add_xyz_systems(self, files, inp_set: dict, suffix: str = "",
-                        kind: str = "") -> dict:
-        """The queue editor's "drop .xyz" recipe: per file, one system named
-        after the file's stem holding that structure as its input, and one
-        calculation ``stem + suffix`` built from ``inp_set`` (a template calc:
-        raw text, or an MLIP config) starting from it. ``kind`` is what an
-        ORCA level runs as (the recipe's single point: "sp" when not given);
-        an MLIP set runs as ``kind`` when that is an MLIP task
-        (MLIP_TEMPLATE_KINDS), else as ``mlip_opt``.
-
-        ``files`` is ``[(label, text)]`` — the label is what the refusal names
-        and what the stem is taken from (a path or a file name). Each file is
-        its own apply_ops batch, so one refusal never costs the others; a
-        refusal says why (a clash, an ORCA-hostile name, a multi-frame file,
-        no coordinates) and nothing is ever renamed to make it fit.
-        Returns {added: [calc names], systems: [ids], refused: [{file, reason}]}.
-        """
-        from .inpsets import calc_kind_for_set
-        set_kind = inp_set.get("kind", "")
-        if set_kind == "ORCA":
-            kind = kind or "sp"
-            err = template_job_error(kind)
-            if err:
-                raise ValueError(err)
-        elif set_kind == "MLIP" and kind in MLIP_TEMPLATE_KINDS:
-            pass
-        else:
-            kind = calc_kind_for_set(set_kind)
-        added: list[str] = []
-        ids: list[str] = []
-        refused: list[dict] = []
-        for label, text in files:
-            label = str(label)
-            try:
-                stem = _xyz_stem(label)
-                coords = _single_structure(text)
-                with self._lock:
-                    taken = {s["id"] for s in self._systems}
-                sid = new_system_id()
-                while sid in taken:
-                    sid = new_system_id()
-                name = stem + (suffix or "")
-                self.apply_ops([
-                    {"op": "add_system", "system": {
-                        "id": sid, "name": stem, "charge": 0, "multiplicity": 1,
-                        "inputs": [{"label": Path(label).name or stem, "xyz": coords}]}},
-                    {"op": "add_calc", "calc": {
-                        "name": name, "kind": kind, "charge": 0,
-                        "multiplicity": 1, "geometry_source": "direct",
-                        "xyz": coords, "is_raw": True,
-                        "raw_text": inp_set.get("text", ""),
-                        "set_name": inp_set.get("name", ""), "system": sid,
-                        "node": "n-" + secrets.token_hex(4), "col": 0, "row": 0}},
-                ])
-            except ValueError as e:
-                refused.append({"file": label, "reason": str(e)})
-                continue
-            added.append(name)
-            ids.append(sid)
-        return {"added": added, "systems": ids, "refused": refused}
-
     _SYSTEM_PATCH_KEYS = {"name", "charge", "multiplicity", "inputs"}
     _STARTED = (CalcState.RUNNING, CalcState.DONE, CalcState.FAILED)
     #: what place_calc may change: where a row is DRAWN, never what it runs
@@ -1458,6 +1451,101 @@ class QueueStore:
             setattr(moved, k, checked[k])
         calcs[idx] = moved
 
+    @staticmethod
+    def _patched(current: Calculation, patch: dict) -> Calculation:
+        """The calculation `current` becomes under an update_calc / rerun_calc
+        patch, validated (calc_from_dict). What the patch leaves out keeps the
+        current value (so {"approved": true} approves a gate without resending
+        the rest); state and result are not carried."""
+        merged = {k: v for k, v in calc_to_session_dict(current).items()
+                  if k not in ("state", "message", "output_path", "pid",
+                               "create_time", "rerun")}
+        merged.update(patch)
+        if "kind" in patch and "config" not in patch and isinstance(
+                merged.get("config"), dict):
+            # a Type change: the config describes the calc's kind too
+            # (StepConfig.kind), so it follows rather than keeping the old
+            merged["config"] = {**merged["config"], "kind": patch["kind"]}
+        if (({"raw_text", "config", "kind"} & set(patch))
+                and merged.get("set_name") and merged.get("raw_text")
+                and str(merged.get("kind", "")).startswith("mlip")):
+            # an MLIP template's text (a calc that came from an inp set)
+            # is applied to the config again by calc_from_dict — the
+            # stored calc reads is_raw false. Also for an options edit
+            # (config: T / P for an MLIP frequency) or a Type change, or
+            # the patch's config would replace the model the text sets.
+            merged["is_raw"] = True
+        if ("config" not in patch and merged.get("is_raw")
+                and is_level_text(merged.get("raw_text") or "")
+                and not (current.is_raw and is_level_text(current.raw_text))):
+            # a calc BECOMING a level block (a level dropped on a guided
+            # calc): its old config was a whole guided input, not options
+            # for the level -- none of it carries over
+            merged["config"] = {}
+        return calc_from_dict(merged)
+
+    #: what rerun_calc may change: the set a calculation runs, nothing else
+    _RERUN_KEYS = ("raw_text", "set_name", "set_id", "is_raw", "config")
+
+    def _rerun_calc(self, calcs: "list[Calculation]", systems: "list[dict]",
+                    op: dict) -> None:
+        """rerun_calc: put a set (a level, or MLIP settings) on a DONE
+        calculation and queue it to run again -- the one way a finished result
+        is recomputed (P24). The queue editor sends it only after an overwrite
+        warning: the row goes back to PENDING with no message or result, keeps
+        its name, place and everything it hangs off, and is marked `rerun`, so
+        the old output in its folder is overwritten when it runs, never kept.
+        The DONE row it replaced is held (in memory) for undo_rerun. FAILED
+        stays locked and a row the engine is handling is never touched."""
+        name = op.get("name")
+        idx = next((i for i, c in enumerate(calcs) if c.name == name), None)
+        if idx is None:
+            raise ValueError(f"No calculation named '{name}'.")
+        current = calcs[idx]
+        if current.state != CalcState.DONE:
+            raise ValueError(f"'{name}' has not finished: only a done "
+                             "calculation runs again this way.")
+        if self._engine_active(name):
+            raise ValueError(f"'{name}' cannot change: the run is handling it.")
+        patch = op.get("calc")
+        if not isinstance(patch, dict) or not patch:
+            raise ValueError("rerun_calc needs a 'calc' object.")
+        unknown = set(patch) - set(self._RERUN_KEYS)
+        if unknown:
+            raise ValueError("rerun_calc can change only the set a calculation "
+                             "runs (" + ", ".join(self._RERUN_KEYS) + "), not: "
+                             + ", ".join(sorted(map(str, unknown))))
+        new_calc = self._patched(current, patch)
+        if new_calc.system and new_calc.system not in {s["id"] for s in systems}:
+            raise ValueError(f"'{name}' belongs to a system that does not exist.")
+        new_calc.state = CalcState.PENDING
+        new_calc.message = ""
+        new_calc.result = None
+        new_calc.output_path = ""
+        new_calc.pid = None
+        new_calc.create_time = None
+        new_calc.rerun = True
+        calcs[idx] = new_calc
+        self._rerun_stash[name] = current
+
+    def _undo_rerun(self, calcs: "list[Calculation]", systems: "list[dict]",
+                    op: dict) -> None:
+        """undo_rerun: rerun_calc's inverse -- the finished row comes back as it
+        was (the same object, result and all), only while the row under that
+        name is still the unstarted rerun of it. Once it has started, or after
+        a restart (the stash is not persisted), its output may already be
+        overwritten, and the finished result is gone for good."""
+        name = op.get("name")
+        idx = next((i for i, c in enumerate(calcs) if c.name == name), None)
+        old = self._rerun_stash.get(name)
+        if (idx is None or old is None or not is_rerun(calcs[idx])
+                or self._engine_active(name)):
+            raise ValueError(f"'{name}' cannot go back to its finished result: "
+                             "it has started since (or the app was restarted).")
+        if old.system and old.system not in {s["id"] for s in systems}:
+            raise ValueError(f"'{name}' cannot go back: its system is gone.")
+        calcs[idx] = old
+
     def _apply_op(self, calcs: "list[Calculation]", systems: "list[dict]",
                   op, removed: "set[str]",
                   placed: "dict[int, tuple] | None" = None) -> None:
@@ -1500,34 +1588,9 @@ class QueueStore:
             patch = op.get("calc")
             if not isinstance(patch, dict):
                 raise ValueError("update_calc needs a 'calc' object.")
-            # a patch: what it leaves out keeps the calculation's current value
-            # (so {"approved": true} approves a gate without resending the rest)
-            merged = {k: v for k, v in calc_to_session_dict(current).items()
-                      if k not in ("state", "message", "output_path", "pid",
-                                   "create_time")}
-            merged.update(patch)
-            if "kind" in patch and "config" not in patch and isinstance(
-                    merged.get("config"), dict):
-                # a Type change: the config describes the calc's kind too
-                # (StepConfig.kind), so it follows rather than keeping the old
-                merged["config"] = {**merged["config"], "kind": patch["kind"]}
-            if (({"raw_text", "config", "kind"} & set(patch))
-                    and merged.get("set_name") and merged.get("raw_text")
-                    and str(merged.get("kind", "")).startswith("mlip")):
-                # an MLIP template's text (a calc that came from an inp set)
-                # is applied to the config again by calc_from_dict — the
-                # stored calc reads is_raw false. Also for an options edit
-                # (config: T / P for an MLIP frequency) or a Type change, or
-                # the patch's config would replace the model the text sets.
-                merged["is_raw"] = True
-            if ("config" not in patch and merged.get("is_raw")
-                    and is_level_text(merged.get("raw_text") or "")
-                    and not (current.is_raw and is_level_text(current.raw_text))):
-                # a calc BECOMING a level block (a level dropped on a guided
-                # calc): its old config was a whole guided input, not options
-                # for the level -- none of it carries over
-                merged["config"] = {}
-            new_calc = calc_from_dict(merged)
+            new_calc = self._patched(current, patch)
+            # still the row the user chose to overwrite, while it has not started
+            new_calc.rerun = is_rerun(current)
             if set(patch) == {"approved"} and current.state == CalcState.PENDING:
                 # An approval-only patch on a waiting row keeps the LIVE object
                 # (written back at commit, like place_calc): the engine pins
@@ -1549,6 +1612,10 @@ class QueueStore:
                 return
             self._replace_in(calcs, systems, name, new_calc,
                              check_refs=False)
+        elif kind == "rerun_calc":
+            self._rerun_calc(calcs, systems, op)
+        elif kind == "undo_rerun":
+            self._undo_rerun(calcs, systems, op)
         elif kind == "place_calc":
             self._place_calc(calcs, systems, op, {} if placed is None else placed)
         elif kind == "remove_calc":
@@ -1937,6 +2004,11 @@ class QueueStore:
             self._systems = systems
             self._version += 1
 
+    def rerun_names(self) -> "set[str]":
+        """The rows rerun_calc put back that have not started (is_rerun)."""
+        with self._lock:
+            return {c.name for c in self._calcs if is_rerun(c)}
+
     def has_live_running(self) -> bool:
         """True if a calculation is still RUNNING after reconciliation — i.e. a
         detached ORCA survived a previous session and should be reattached."""
@@ -2034,7 +2106,10 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
         # the store's own lock doubles as the engine's queue lock: run_all
         # walks the store's live list (start_run), so the walk's pick step and
         # user mutations must serialize on the same lock (P29)
-        return QueueEngine(orca_path, workspace_root, cb, skip_names=skip,
+        # a rerun row's old output is one the user chose to overwrite: never
+        # kept, whatever the keep answers (Run modal, resume) say
+        keep = skip - store.rerun_names()
+        return QueueEngine(orca_path, workspace_root, cb, skip_names=keep,
                            mlip_envs=envs, crest_distro=crest_pref,
                            queue_lock=store._lock, budget=budget)
     return factory
