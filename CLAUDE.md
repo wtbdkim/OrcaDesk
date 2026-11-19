@@ -67,6 +67,10 @@ Testing notes (full description: ARCHITECTURE.md *Test suite*):
   phone API via `fastapi.testclient`). The Qt bridge/window layers are thin
   adapters exercised manually. Corpus-reading tests auto-skip when the real
   ORCA output corpus is absent. No linter is configured.
+- `tests/conftest.py` points the user data folder (`%APPDATA%` /
+  `$XDG_CONFIG_HOME`) at a throwaway one for the whole run — a leftover run
+  thread once overwrote a real `session.json`. Keep it; stop any run a test
+  starts in a `finally`.
 - Three **static guards** over the source: `test_no_undefined_names.py`,
   `test_no_lock_reentry.py` (P37), and `test_bridge_slots.py` — every
   `bridge.X` the front-end calls must be a real `@pyqtSlot` (QWebChannel exposes
