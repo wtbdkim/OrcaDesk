@@ -105,17 +105,6 @@ def default_kind_after(after_kind: str = "") -> str:
     return NEXT_KIND.get(after_kind or "", "sp")
 
 
-def calc_kind_for_set(set_kind: str, after_kind: str = "") -> str:
-    """The calculation kind a node built from a ``set_kind`` set runs: an MLIP
-    set's is ``mlip_opt``; an ORCA level's is the natural next step
-    (default_kind_after), which the editor's Type then changes."""
-    if set_kind == "MLIP":
-        return "mlip_opt"
-    if set_kind == "ORCA":
-        return default_kind_after(after_kind)
-    raise ValueError(f"Unknown inp set kind '{set_kind}'.")
-
-
 def mlip_config_from_text(text: str) -> dict:
     """The StepConfig fields an MLIP set's text sets, as a dict.
 

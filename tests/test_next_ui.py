@@ -430,8 +430,8 @@ def test_a_level_block_has_a_type_and_a_rendered_preview():
 
 
 def test_a_workflow_is_copied_locally_and_pasted_through_the_ops_batch():
-    """Copy keeps the workflow in the editor (and the UI state, for the main
-    window's drop) -- never in browser storage, never as queue state; a paste
+    """Copy keeps the workflow in the editor (and the UI state, to outlive a
+    reload) -- never in browser storage, never as queue state; a paste
     is ONE apply_queue_ops batch with its inverse, like every other edit."""
     src = (WEB / "next" / "qed.js").read_text(encoding="utf-8")
     copy = _function_body(src, "copyWorkflow")
@@ -447,7 +447,7 @@ def test_a_workflow_is_copied_locally_and_pasted_through_the_ops_batch():
     paste = _function_body(src, "paste")
     assert 'NB.call("pick_xyz_files")' in paste
     drop = _function_body(src, "dropXyz")
-    assert 'NB.call("read_xyz_paths"' in drop and "pasteOnFiles(" in drop
+    assert 'NB.call("read_xyz_paths"' in drop and "pasteOnFiles(null" in drop
 
 
 def test_a_rubber_band_starts_on_the_empty_canvas_only():
@@ -496,13 +496,14 @@ def test_the_irc_direction_is_read_from_its_own_select():
 
 def test_every_add_outside_the_builder_is_guarded_against_overwriting_output():
     """While a run is going an add starts at once, with no Run click to screen
-    it: a set drop, a paste, a row copy, a duplicate and an .xyz drop ask
-    first (existing_outputs) as the builder does, and the names they make
-    step around folders that already hold output."""
+    it: a set drop, a paste, a row copy and a duplicate ask first
+    (existing_outputs) as the builder does, and the names they make step
+    around folders that already hold output. (An .xyz drop makes rows with
+    no calculation in them, so there is no folder to overwrite.)"""
     src = _read(NEXT / "qed.js")
     assert 'NB.call("existing_outputs"' in _function_body(src, "existingOutputs")
     for fn in ("addFromSet", "pasteAfter", "pasteIntoSystem", "pasteOnFiles", "copyLane",
-               "duplicateBlock", "dropXyz"):
+               "duplicateBlock"):
         assert "guardOverwrite(" in _function_body(src, fn), f"{fn} adds without asking"
     for fn in ("addFromSet", "pasteAfter", "pasteIntoSystem", "pasteOnFiles", "copyLane",
                "duplicateBlock", "manualBuild"):
@@ -565,13 +566,13 @@ def test_a_manual_build_opens_on_the_block_it_follows():
     awaits could find it gone and open on an old draft's reference -- the
     first name in the list -- under X's title), and the select defaults to
     the seed's reference, offered even when X's state would not list it. The
-    name is the row's name and the kind's suffix (mol-opt2), as the editor
+    name is the row's name, "_" and the kind's job (mol_Opt2), as the editor
     names a step, never "<row>-calc"."""
     src = _read(NEXT / "qed.js")
     mb = _function_body(src, "manualBuild")
     assert 'geometry_source: parent ? "reference" : "direct", ref_name: parent ? parent.name : ""' in mb
     assert '"-calc"' not in mb
-    assert 'freeName(sysName + "-" + SUFFIX[k], x)' in mb and "name: names.opt" in mb
+    assert 'freeName(sysName + SEP + SUFFIX[k], x)' in mb and "name: names.opt" in mb
     build = _read(NEXT / "build.js")
     cell = _function_body(build, "cellFor")
     assert "seed: calc ? null : _seed" in cell and "_seed = null;" in cell
@@ -584,3 +585,167 @@ def test_a_manual_build_opens_on_the_block_it_follows():
     # the Name follows the Type while it is still the one the place gave
     follow = _function_body(build, "followName")
     assert "name === n[from] ? n[to] : name" in follow
+
+
+def test_the_plus_slot_opens_the_add_menu():
+    """Pressing + opens the add menu instead of the whole builder: a level
+    and a step type go through addFromSet (one undoable, guarded batch) with
+    the kind chosen, a workflow through pasteAfter / pasteIntoSystem, and the
+    manual build is one of its choices. The level used is remembered in the
+    UI state, and the menu's own keys never reach the canvas's (Escape would
+    clear the selection, Delete remove a block)."""
+    src = _read(NEXT / "qed.js")
+    wire = _function_body(src, "wireCanvas")
+    assert "openAddMenu(" in wire and "manualBuild(" not in wire
+    add = _function_body(src, "menuAdd")
+    assert "addFromSet(g, set, kind" in add and 'NB.call("set_ui_state", LEVEL_KEY' in add
+    assert 'want || nextKind(' in _function_body(src, "addFromSet")
+    slot = _function_body(src, "workflowAtSlot")
+    assert "pasteAfter(g.parent" in slot and "pasteIntoSystem([g.lane]" in slot
+    assert "manualBuild(" in _function_body(src, "menuManual")
+    assert 'closest(".qe-addmenu")' in _function_body(src, "wireKeys")
+
+
+def test_saved_workflows_go_through_their_own_slots():
+    """The library's Workflows group is the backend's workflows.json (never
+    browser storage, never queue state); a saved workflow clicked goes into
+    the selected rows or after the selected block, else becomes the copy."""
+    src = _read(NEXT / "qed.js")
+    assert 'NB.call("get_workflows")' in _function_body(src, "loadWorkflows")
+    assert 'NB.call("save_workflow"' in _function_body(src, "saveWorkflowAs")
+    assert 'NB.call("delete_workflow"' in _function_body(src, "deleteWorkflow")
+    use = _function_body(src, "useWorkflow")
+    assert "pasteIntoSystem(rows" in use and "pasteAfter(n" in use and "CLIP_KEY" in use
+
+
+def test_several_rows_take_one_paste_and_one_charge():
+    """Ctrl+click on row names selects several; a paste fills every empty
+    one in one batch; their charge / multiplicity is set in one batch (a row
+    that has started keeps its own); dropped files arrive selected, with the
+    charge / multiplicity their comment line states."""
+    src = _read(NEXT / "qed.js")
+    assert "pasteIntoSystem(rows, _clip)" in _function_body(src, "paste")
+    files = _function_body(src, "pasteOnFiles")
+    assert 't: "rows"' in files and "f.charge" in files and "f.multiplicity" in files
+    rc = _function_body(src, "setRowsChargeMult")
+    assert "update_system" in rc and "apply(" in rc and "L.started" in rc
+    assert "toggleRow(" in _function_body(src, "wireCanvas")
+
+
+def test_a_stack_removes_one_member_and_draws_one_card_each():
+    """Remove / Delete on one selected block takes the selected calculation
+    only -- a stack loses one member at a time -- unless a band selected the
+    block whole; several selected blocks go together. A stack draws a back
+    card per other member (capped) and its count bottom right, apart from the
+    run order a block shows top right."""
+    src = _read(NEXT / "qed.js")
+    pick = _function_body(src, "removeChoice")
+    assert "_sel.all ? allNames([n]) : [c.name]" in pick, "a stack's Remove takes every member again"
+    assert 't === "multi"' in pick and "allNames(nodes)" in pick
+    assert "all: true" in _function_body(src, "endBand"), "a band over one block no longer selects it whole"
+    assert "requestRemove(removeChoice())" in _function_body(src, "inspectNode")
+    assert "requestRemove(removeChoice())" in _function_body(src, "inspectMulti")
+    assert "requestRemove(pick)" in _function_body(src, "wireKeys")
+    draw = _function_body(src, "renderCanvas")
+    assert "Math.min(n.members.length - 1, MAX_BACKS)" in draw
+    # each card's border is its own calculation's state: front = member 0
+    assert "const edge = (/** @type {number} */ i) => calcState(n.members[i]);" in draw
+    assert 'data-depth="${backs - i}" data-edge="${edge(backs - i)}"' in draw
+    assert 'data-st="${n.state}" data-edge="${edge(0)}"' in draw
+    assert "n.members.map(calcState)" in _function_body(src, "nodeState")
+    css = _read(NEXT / "app.css")
+    assert ':is(.qe-card,.qe-back)[data-edge="running"]' in css
+    assert 'class="qe-line qe-line2">${sub}<span class="qe-ord" data-stack="1"' in draw
+
+
+def test_a_step_after_an_irc_asks_which_structure():
+    """Every add after an IRC -- the + menu / a dropped set (addFromSet), a
+    paste (pasteAfter, once per structure picked, sharing nodes), a block's
+    geometry (setGeometry "pick:") -- goes through askIrcStructure: the
+    IRC's energy profile from its _Full_trj (else B reversed + F), an end
+    taken by reference, any other point copied in; and the inspector no
+    longer offers the IRC's bare final geometry, which is the TS."""
+    src = _read(NEXT / "qed.js")
+    ask = _function_body(src, "askIrcStructure")
+    assert 'NB.call("get_irc_structures", irc.name)' in ask and 'NB.call("get_structure_frames"' in ask
+    assert 'read("Full_trj")' in ask and '(await read("B_trj")).slice().reverse()' in ask
+    assert 'at === fEnd ? [F] : at === bEnd ? [B]' in ask, "an end picked on the graph is copied instead of referenced"
+    assert 'tail: SEP + "P" + (at + 1), pt: "", xyz: coordsOf(pts[at].xyz)' in ask
+    # Left / Right step the point wherever the keyboard is in the window (the
+    # confirm button has it first), and the hook goes when the window does
+    assert 'document.addEventListener("keydown", keys, true)' in ask
+    assert 'document.removeEventListener("keydown", keys, true)' in ask and "unhook();" in ask
+    assert 'prof.addEventListener("keydown"' not in ask, "the arrows work on the graph alone again"
+    css = _read(NEXT / "app.css")
+    assert ".qe-ircnum::-webkit-inner-spin-button" in css, "the number field shows its spin arrows again"
+    # a point can be named by its number (its frame in _IRC_Full_trj.xyz), clamped
+    assert 'data-f="num" min="1" max="${n}"' in ask
+    assert "goTo(v - 1)" in ask and 'num.addEventListener("input"' in ask
+    assert "const goTo = (i) => { at = Math.max(0, Math.min(n - 1, i)); mode = \"point\"; show(); };" in ask
+    # One point / Both ends is a choice in the window; ONE confirm button says what it does
+    assert 'seg([["point", "One point"], ["both", "Both ends"]], mode)' in ask
+    assert "foot().textContent = label();" in ask and '"Add at both ends"' in ask
+    assert '{ label: "This point"' not in ask, "picking and confirming are one click again"
+    assert "await askIrcStructure(P.members[0], true)" in _function_body(src, "addFromSet")
+    paste = _function_body(src, "pasteAfter")
+    assert "await askIrcStructure(P.members[0], true)" in paste and "nodeIds: nodeIds" in paste
+    assert 'P.kind === "irc"' not in paste.split("askIrcStructure")[0].replace('if (P.kind === "irc")', ""), \
+        "a paste after an IRC is refused again"
+    assert "askIrcStructure(irc, false)" in _function_body(src, "setGeometry")
+    insp = _function_body(src, "inspectNode")
+    assert 'key: "pick:" + x.name' in insp
+    irc_branch = insp[insp.index('if (x.kind === "irc")'):]
+    assert irc_branch.index("return;") < irc_branch.index('into.push({ key: "ref:" + x.name, label'), \
+        "an IRC's bare final geometry (the TS) is offered again"
+    for slot in ("get_irc_structures", "get_structure_frames"):
+        assert f'"{slot}"' in src[src.index("const SLOTS_NEEDED"):src.index("];", src.index("const SLOTS_NEEDED"))]
+
+
+def test_the_editor_names_a_step_system_underscore_job():
+    """A step the editor makes is `<system>_<Job>` -- the job as ORCA's
+    keyword ({{JOB}}) reads it, Ltyr_Opt, Ltyr_IRC -- its tails _F / _B /
+    _P<k>, a copy <name>_copy; older hyphen names still split into a stack."""
+    src = _read(NEXT / "qed.js")
+    assert 'const SEP = "_";' in src
+    assert 'opt: "Opt", ts_opt: "OptTS"' in src and 'irc: "IRC", sp: "SP"' in src
+    assert 'const root = String(sys.name || "") + SEP + (SUFFIX[kind] || "step");' in _function_body(src, "addFromSet")
+    assert "tail: tailOf(c.name)" in _function_body(src, "addFromSet")
+    assert "const root = t.laneName + SEP + members[0].suffix;" in _function_body(src, "instantiate")
+    assert 'freeName(c.name + SEP + "copy", x)' in _function_body(src, "duplicateBlock")
+    assert "Math.max(s.lastIndexOf(SEP), s.lastIndexOf(\"-\"))" in _function_body(src, "stem")
+    for old in ('+ "-" + SUFFIX', '"-copy"', 'tail: "-F"', 'tail: "-P"'):
+        assert old not in src, old
+
+
+def test_a_redraw_waits_for_a_click_under_way():
+    """A poll's redraw between a press and its release replaced the block
+    under the pointer, and the click was lost: render() holds while a button
+    is down (up to PRESS_MS) and draws once it is released."""
+    src = _read(NEXT / "qed.js")
+    body = _function_body(src, "render")
+    assert "if (_pressAt && Date.now() - _pressAt < PRESS_MS) { _held = true; return; }" in body
+    press = _function_body(src, "wirePress")
+    assert 'document.addEventListener("mouseup", release, true)' in press
+    assert 'host.addEventListener("dragstart", release, true)' in press
+    assert "setTimeout(render, 0)" in press
+    assert "wirePress(host);" in _function_body(src, "init")
+
+
+def test_a_set_on_a_finished_block_is_an_overwrite_asked_every_time():
+    """A level / MLIP set dropped on (or clicked onto) a DONE block runs it
+    again -- P24's one way back -- behind an overwrite warning that is never
+    skipped by the once-only replace answer; undo is undo_rerun."""
+    src = _read(NEXT / "qed.js")
+    assert 'c.state === "done"' in _function_body(src, "rerunnable")
+    assert "n.editable || rerunnable(n)" in _function_body(src, "takesSet")
+    rp = _function_body(src, "requestReplace")
+    assert "if (!n.editable) { if (rerunnable(n)) requestRerun(n, set); return; }" in rp
+    assert rp.index("requestRerun") < rp.index("_replaceOk")
+    rr = _function_body(src, "requestRerun")
+    assert '{ op: "rerun_calc", name: nm,' in rr and '({ op: "undo_rerun", name: nm })' in rr
+    assert '{ label: "Overwrite", cls: "btn-danger", act: go }' in rr
+    assert '{ label: "Cancel", cls: "btn-ghost", focus: true }' in rr
+    assert "_replaceOk" not in rr
+    assert "takesSet(n) ? { node: n } : null" in _function_body(src, "dropTarget")
+    assert "takesSet(nodeByKey(" in _function_body(src, "showSetTargets")
+    assert "set.kind === n.setKind && takesSet(n)) { requestReplace(n, set); return; }" in src

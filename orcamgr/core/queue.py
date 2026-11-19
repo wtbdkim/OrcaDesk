@@ -130,6 +130,12 @@ class Calculation:
     # and Stop still applies — and reads as failed. Not persisted: a reattach
     # finds the marker in the .out again.
     faulted: bool = False
+    # a DONE calc the queue editor put back to PENDING with a new set
+    # (store rerun_calc, behind an overwrite warning; P24): the output in its
+    # folder is the old run's, which the user chose to overwrite -- so it is
+    # never offered, or given, keep-existing. Meaningful only until the row
+    # starts (store.is_rerun: PENDING / BLOCKED); persisted in the session.
+    rerun: bool = False
 
     # ---- the queue editor's graph (all default to "standalone, as today") ----
     # system: the lane (one molecule) this calc belongs to, a QueueStore system

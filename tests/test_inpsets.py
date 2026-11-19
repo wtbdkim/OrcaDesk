@@ -17,7 +17,7 @@ import pytest
 
 from orcamgr.core.input_generator import StepConfig, build_input
 from orcamgr.state import inpsets
-from orcamgr.state.inpsets import (SET_KINDS, calc_kind_for_set,
+from orcamgr.state.inpsets import (SET_KINDS,
                                    convert_legacy_text, default_kind_after,
                                    delete_set, load_sets, migrate_sets,
                                    mlip_config_from_text, save_set,
@@ -133,11 +133,6 @@ def test_the_natural_next_step_a_level_runs():
             ("", "mlip_opt", "opt", "ts_opt", "ts_freq", "ts_opt_freq", "irc",
              "freq", "sp", "opt_freq", "crest_conf")] == [
         "opt", "opt", "freq", "ts_freq", "irc", "irc", "sp", "sp", "sp", "sp", "sp"]
-    assert calc_kind_for_set("ORCA") == "opt"
-    assert calc_kind_for_set("ORCA", after_kind="ts_opt") == "ts_freq"
-    assert calc_kind_for_set("MLIP", after_kind="opt") == "mlip_opt"
-    with pytest.raises(ValueError):
-        calc_kind_for_set("Freq")
 
 
 # ---- schema 1 -> 2 -----------------------------------------------------------

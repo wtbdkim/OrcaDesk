@@ -62,12 +62,12 @@ from ..core.replay import (  # noqa: F401  (the patterns: tests read them here)
 )
 from ..core.resources import ResourceBudget, auto_cores, auto_ram_mb
 from ..state.store import (
-    QueueStore, QueueOpError, calc_from_dict, calc_to_session_dict,
+    QueueStore, QueueOpError, calc_from_dict, calc_to_session_dict, is_rerun,
     make_engine_factory, load_choice_groups, queue_needs_orca,
     find_dangling_reference, constraint_warning, raw_geometry_warning,
     keep_graph_fields, xyz_file_entries,
 )
-from ..state import inpsets
+from ..state import inpsets, workflows
 # Response payloads are CONSTRUCTED through these TypedDicts (plain dicts at
 # runtime, so the JSON wire format is unchanged) — schemas.py is the single
 # source of truth, mirrored for the front-end by web/types.js.
@@ -90,7 +90,8 @@ from ..state.schemas import (
     ConstraintApplyAllPayload,
     HessModesPayload, HessModePayload, ModeShiftPayload, VibModePayload,
     InpSetsResult, InpSetResult, SystemResult, QueueOpsResult,
-    XyzSystemsResult, XyzRefusal, XyzFilesResult,
+    XyzFilesResult, WorkflowsResult, WorkflowResult,
+    IrcStructureFile, IrcStructuresResult,
 )
 
 # Ceiling on the workspace scan behind the Results picker. Generous next to any
@@ -1655,6 +1656,70 @@ class Bridge(QObject):
             return json.dumps(InpSetResult(ok=False, error=f"No inp set with id '{set_id}'."))
         return json.dumps(InpSetResult(ok=True))
 
+    @pyqtSlot(result=str)
+    def get_workflows(self) -> str:
+        """Every saved workflow (state/workflows.py), in the order they were
+        first saved."""
+        try:
+            wfs = workflows.load_workflows()
+        except Exception as e:   # a slot may not raise
+            return json.dumps(WorkflowsResult(ok=False, error=str(e), workflows=[]))
+        return json.dumps(WorkflowsResult(ok=True, workflows=wfs))
+
+    @pyqtSlot(str, result=str)
+    def save_workflow(self, workflow_json: str) -> str:
+        """Add a workflow, or replace the one with the same id. Returns it as
+        stored (with its id — minted when the payload had none)."""
+        try:
+            saved = workflows.save_workflow(json.loads(workflow_json or "null"))
+        except (ValueError, OSError, TypeError) as e:
+            return json.dumps(WorkflowResult(ok=False, error=str(e)))
+        return json.dumps(WorkflowResult(ok=True, workflow=saved))
+
+    @pyqtSlot(str, result=str)
+    def delete_workflow(self, workflow_id: str) -> str:
+        try:
+            ok = workflows.delete_workflow(str(workflow_id))
+        except (ValueError, OSError) as e:
+            return json.dumps(WorkflowResult(ok=False, error=str(e)))
+        if not ok:
+            return json.dumps(WorkflowResult(ok=False, error=f"No workflow with id '{workflow_id}'."))
+        return json.dumps(WorkflowResult(ok=True))
+
+    # The structure files ORCA writes for an IRC, in the order the queue
+    # editor offers them: the two end points (what a step after it references
+    # by ref_point irc_f / irc_b), then the paths a point is picked from.
+    _IRC_FILES = (("F", "_IRC_F.xyz", "Forward end"),
+                  ("B", "_IRC_B.xyz", "Backward end"),
+                  ("F_trj", "_IRC_F_trj.xyz", "Forward path"),
+                  ("B_trj", "_IRC_B_trj.xyz", "Backward path"),
+                  ("Full_trj", "_IRC_Full_trj.xyz", "Whole path"))
+
+    @pyqtSlot(str, result=str)
+    def get_irc_structures(self, name: str) -> str:
+        """What a step after an IRC can start from, as files in its run
+        folder: {ok, done, files:[{key, label, path, count}]}. Listed only
+        once the IRC is DONE -- a re-queued IRC's folder still holds the last
+        run's files, and offering those as its result would be wrong; before
+        that the editor offers the end points by reference (resolved when the
+        step runs). The frames themselves come from get_structure_frames."""
+        from ..molview import count_xyz_frames
+        calc = self.store.get(name or "")
+        if calc is None:
+            return json.dumps(IrcStructuresResult(ok=False, error=f"No calculation named '{name}'."))
+        if calc.kind != "irc":
+            return json.dumps(IrcStructuresResult(ok=False, error=f"{name} is not an IRC."))
+        done = calc.state == CalcState.DONE
+        files: "list[IrcStructureFile]" = []
+        if done:
+            folder = self._calc_run_dir(calc.name)
+            for key, suffix, label in self._IRC_FILES:
+                p = folder / f"{calc.name}{suffix}"
+                if p.is_file():
+                    files.append(IrcStructureFile(key=key, label=label, path=str(p),
+                                                  count=count_xyz_frames(p)))
+        return json.dumps(IrcStructuresResult(ok=True, done=done, files=files))
+
     @pyqtSlot(str, result=str)
     def get_system(self, system_id: str) -> str:
         """One lane in full — its inputs' coordinates included (the polled
@@ -1683,55 +1748,6 @@ class Bridge(QObject):
         except (ValueError, TypeError) as e:
             return json.dumps(QueueOpsResult(ok=False, error=str(e), op_index=-1))
         return json.dumps(QueueOpsResult(ok=True, snapshot=self.store.snapshot()))
-
-    @pyqtSlot(str, result=str)
-    def add_xyz_systems(self, payload_json: str) -> str:
-        """The "drop .xyz" recipe: {files:[{label, xyz}] | paths:[...],
-        set_id, suffix, kind} -> one system per file named after its stem, and
-        one calculation `stem + suffix` from that inp set (set_id "" = the
-        first ORCA level), an ORCA level running as `kind` (default "sp").
-        Refusals are per file, with the reason."""
-        try:
-            d = json.loads(payload_json or "null")
-            if not isinstance(d, dict):
-                raise ValueError("expected an object")
-            suffix = d.get("suffix", "") or ""
-            if not isinstance(suffix, str):
-                raise ValueError("suffix must be a string")
-            set_id = d.get("set_id", "") or ""
-            kind = d.get("kind", "") or ""
-            if not isinstance(kind, str):
-                raise ValueError("kind must be a string")
-            sets = inpsets.load_sets(**self._inpset_defaults())
-            inp_set = next((s for s in sets if s["id"] == set_id), None) if set_id \
-                else next((s for s in sets if s["kind"] == "ORCA"), None)
-            if inp_set is None:
-                raise ValueError(f"No inp set with id '{set_id}'." if set_id
-                                 else "There is no ORCA inp set to build from.")
-        except (ValueError, TypeError) as e:
-            return json.dumps(XyzSystemsResult(ok=False, error=str(e), added=[],
-                                               systems=[], refused=[]))
-        files: list = []
-        refused: list = []
-        for f in d.get("files") or []:
-            if isinstance(f, dict):
-                files.append((str(f.get("label", "") or ""), f.get("xyz", "")))
-        for p in d.get("paths") or []:
-            try:
-                # utf-8-sig: see _load_result (a BOM ORCA would refuse)
-                files.append((str(p), Path(str(p)).read_text(
-                    encoding="utf-8-sig", errors="replace")))
-            except OSError as e:
-                refused.append(XyzRefusal(file=str(p), reason=e.strerror or str(e)))
-        try:
-            out = self.store.add_xyz_systems(files, inp_set, suffix, kind)
-        except ValueError as e:
-            return json.dumps(XyzSystemsResult(ok=False, error=str(e), added=[],
-                                               systems=[], refused=refused))
-        return json.dumps(XyzSystemsResult(
-            ok=True, added=out["added"], systems=out["systems"],
-            refused=refused + [XyzRefusal(**r) for r in out["refused"]],
-            snapshot=self.store.snapshot()))
 
     @pyqtSlot(result=str)
     def pick_xyz_files(self) -> str:
@@ -2470,12 +2486,15 @@ class Bridge(QObject):
         ws = Path(self.settings.workspace_root)
         # DONE is skipped by the run loop anyway; FAILED is locked (P24) and
         # never runs again; a CANCELLED calc overwriting its own partial .out is
-        # the point of a retry; a RUNNING one is appending to its own file.
+        # the point of a retry; a RUNNING one is appending to its own file. A
+        # rerun row (a set put on a DONE calc, store rerun_calc) was confirmed
+        # as an overwrite when it was made: it is not asked about again, and
+        # never kept (make_engine_factory drops it from the keep answers too).
         skip = {CalcState.DONE, CalcState.FAILED, CalcState.CANCELLED,
                 CalcState.RUNNING}
         out = set()
         for c in self.store.list():
-            if c.state in skip:
+            if c.state in skip or is_rerun(c):
                 continue
             d = ws / c.name
             if (d / f"{c.name}.out").exists() or (d / f"{c.name}.mlip.json").exists():

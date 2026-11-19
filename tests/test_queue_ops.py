@@ -10,7 +10,8 @@
   changes — through the single mutations' own rules;
 * a system rename renames its lane and re-points references, and is refused
   once the lane has started;
-* add_xyz_systems: one system + one calc per dropped file, refusals per file.
+* xyz_file_entries: a dropped / picked .xyz gives one structure (and the
+  charge / multiplicity its comment line states), or why not.
 
 Session I/O is redirected to tmp_path (see test_store.py for why the store
 module's own user_data_root is patched).
@@ -26,11 +27,11 @@ import orcamgr.state.store as store_mod
 from orcamgr.core.queue import CalcState, Calculation
 from orcamgr.state.store import (QueueOpError, QueueStore, calc_from_dict,
                                  calc_from_session_dict, calc_to_dict,
-                                 calc_to_session_dict, system_from_dict)
+                                 calc_to_session_dict, system_from_dict,
+                                 xyz_charge_mult, xyz_file_entries)
 
 H2 = "H 0.0 0.0 0.0\nH 0.0 0.0 0.74"
 TPL = "! B3LYP def2-SVP SP\n* xyz {{CHARGE}} {{MULT}}\n{{GEOMETRY}}\n*\n"
-SP_SET = {"id": "seed-sp", "name": "B3LYP / def2-SVP", "kind": "ORCA", "text": TPL}
 
 
 @pytest.fixture
@@ -419,52 +420,66 @@ def test_system_names_are_unique(store):
         store.apply_ops([sys_op(sid="s2", name="MOL")])
 
 
-# ---- add_xyz_systems: the drop recipe -----------------------------------------------
+# ---- xyz_file_entries: how a dropped / picked .xyz is read ----------------------------
 
 XYZ = "2\nhydrogen\n" + H2 + "\n"
 
 
-def test_each_dropped_file_becomes_a_system_and_one_calc(store):
-    out = store.add_xyz_systems([("C:/data/water.xyz", XYZ), ("benzene.xyz", XYZ)],
-                                SP_SET, "-sp")
-    assert out["added"] == ["water-sp", "benzene-sp"] and out["refused"] == []
-    s = store.get_system(out["systems"][0])
-    assert s["name"] == "water" and s["inputs"] == [{"label": "water.xyz", "xyz": H2}]
-    calc = store.get("water-sp")
-    assert calc.is_raw and calc.raw_text == TPL and calc.kind == "sp"
-    assert calc.system == s["id"] and calc.xyz == H2 and calc.set_name == SP_SET["name"]
+def _entries(tmp_path, files):
+    paths = []
+    for name, text in files:
+        f = tmp_path / name
+        f.write_text(text, encoding="utf-8")
+        paths.append(f)
+    return xyz_file_entries(paths)
 
 
-def test_a_clashing_or_hostile_name_is_refused_per_file(store):
-    store.add_xyz_systems([("water.xyz", XYZ)], SP_SET, "-sp")
-    out = store.add_xyz_systems([("water.xyz", XYZ), ("my mol.xyz", XYZ),
-                                 ("ok.xyz", XYZ)], SP_SET, "-sp")
-    assert out["added"] == ["ok-sp"]
-    reasons = {r["file"]: r["reason"] for r in out["refused"]}
-    assert "already exists" in reasons["water.xyz"]
-    assert "space" in reasons["my mol.xyz"]
-    assert sorted(store.names()) == ["ok-sp", "water-sp"]    # nothing renamed
+def test_each_file_gives_its_stem_and_one_structure(tmp_path):
+    (water,) = _entries(tmp_path, [("water.xyz", "\ufeff" + XYZ)])   # a BOM is fine
+    assert (water["label"], water["name"], water["xyz"], water["error"]) == (
+        "water.xyz", "water", H2, "")
 
 
-def test_a_multi_frame_file_is_refused(store):
-    out = store.add_xyz_systems([("traj.xyz", XYZ + XYZ)], SP_SET, "")
-    assert out["added"] == []
-    assert "2 structures" in out["refused"][0]["reason"]
-    assert store.systems() == []
+def test_a_multi_frame_file_is_refused(tmp_path):
+    (traj,) = _entries(tmp_path, [("traj.xyz", XYZ + XYZ)])
+    assert "2 structures" in traj["error"] and traj["xyz"] == ""
 
 
-def test_a_file_without_coordinates_is_refused(store):
-    out = store.add_xyz_systems([("empty.xyz", "")], SP_SET, "")
-    assert "No coordinates" in out["refused"][0]["reason"]
+def test_a_file_without_coordinates_is_refused(tmp_path):
+    (empty,) = _entries(tmp_path, [("empty.xyz", "")])
+    assert "No coordinates" in empty["error"]
 
 
-def test_an_mlip_set_builds_an_mlip_calc(store):
-    mlip = {"id": "m", "name": "MACE", "kind": "MLIP",
-            "text": "model MACE-OFF medium\ndevice auto\nnprocs 4\n"}
-    out = store.add_xyz_systems([("w.xyz", XYZ)], mlip, "-mace")
-    calc = store.get(out["added"][0])
-    assert calc.kind == "mlip_opt" and not calc.is_raw
-    assert calc.config.mlip_model == "MACE-OFF medium" and calc.config.nprocs == 4
+def test_a_truncated_file_is_refused_not_half_read(tmp_path):
+    (cut,) = _entries(tmp_path, [("cut.xyz", "3\n\n" + H2 + "\n")])
+    assert "says 3 atoms" in cut["error"] and cut["xyz"] == ""
+
+
+@pytest.mark.parametrize("comment, want", [
+    ("charge=1 mult=2", (1, 2)),
+    ("Charge: -1  Multiplicity: 2", (-1, 2)),
+    ("anion chrg -2", (-2, None)),
+    ("xtb opt, uhf=2", (None, 3)),          # unpaired electrons -> 2S+1
+    ("mult 3 uhf 0", (None, 3)),            # a stated multiplicity wins over uhf
+    ("energy: -76.4 converged", (None, None)),
+    ("charge=+1 multiplicity=0", (1, None)),  # no molecule has multiplicity 0
+    ("charge=99", (None, None)),            # nor that charge: not read, not clamped
+    ("discharged multiple times", (None, None)),
+])
+def test_the_comment_line_may_state_charge_and_multiplicity(comment, want):
+    assert xyz_charge_mult(f"2\n{comment}\n{H2}\n") == want
+
+
+def test_a_bare_block_has_no_comment_line_to_read():
+    assert xyz_charge_mult("charge=1 mult=2\n" + H2) == (None, None)
+    assert xyz_charge_mult("") == (None, None)
+
+
+def test_a_file_entry_carries_what_its_comment_line_states(tmp_path):
+    ion, plain = _entries(tmp_path, [("ion.xyz", "2\ncharge=1 mult=2\n" + H2 + "\n"),
+                                     ("plain.xyz", XYZ)])
+    assert (ion["charge"], ion["multiplicity"], ion["xyz"]) == (1, 2, H2)
+    assert (plain["charge"], plain["multiplicity"]) == (None, None)
 
 
 def test_an_mlip_template_patch_is_applied_to_the_config_again(store):
@@ -475,11 +490,6 @@ def test_an_mlip_template_patch_is_applied_to_the_config_again(store):
                       "calc": {"raw_text": "model MACE-OFF large\nnprocs 2\n"}}])
     m = store.get("m")
     assert (m.config.mlip_model, m.config.nprocs, m.is_raw) == ("MACE-OFF large", 2, False)
-
-
-def test_a_truncated_file_is_refused_not_half_read(store):
-    out = store.add_xyz_systems([("cut.xyz", "3\n\n" + H2 + "\n")], SP_SET, "")
-    assert "says 3 atoms" in out["refused"][0]["reason"]
 
 
 def test_mid_run_the_single_mutations_guard_after_like_a_reference(store):
@@ -525,12 +535,3 @@ def test_a_restored_level_block_is_never_evicted_over_its_kind():
     assert calc_from_dict(d, restoring=True).kind == "tddft"
 
 
-def test_a_dropped_structure_runs_an_orca_level_as_a_single_point(store):
-    level = {"id": "seed-orca", "name": "B3LYP / def2-SVP", "kind": "ORCA", "text": LEVEL}
-    out = store.add_xyz_systems([("w.xyz", XYZ)], level, "-sp")
-    c = store.get(out["added"][0])
-    assert (c.kind, c.raw_text, c.set_name) == ("sp", LEVEL, "B3LYP / def2-SVP")
-    out = store.add_xyz_systems([("v.xyz", XYZ)], level, "-opt", kind="opt")
-    assert store.get("v-opt").kind == "opt"
-    with pytest.raises(ValueError, match="cannot run as"):
-        store.add_xyz_systems([("u.xyz", XYZ)], level, "", kind="general")

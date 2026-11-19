@@ -255,6 +255,7 @@
  * @property {boolean} approved
  * @property {""|"irc_f"|"irc_b"} ref_point
  * @property {string} set_name
+ * @property {boolean} rerun        put back from DONE by rerun_calc (its old output is overwritten, never kept)
  */
 
 /**
@@ -293,12 +294,17 @@
  * place_calc moves a row in the editor's layout only (lane, node, cell) and is
  * allowed in every state -- how a finished calc becomes a lane's first node.
  * remove_system also removes the lane's (unstarted) calcs.
+ * rerun_calc puts a set on a DONE calc and queues it again (P24: the one way
+ * a finished result is recomputed, behind the editor's overwrite warning);
+ * undo_rerun puts the finished row back while the rerun has not started.
  * @typedef {{op: "add_system", system: Partial<SystemFull> & {name: string}}
  *   | {op: "update_system", id: string, patch: {name?: string, charge?: number, multiplicity?: number, inputs?: SystemInput[]}}
  *   | {op: "remove_system", id: string}
  *   | {op: "add_calc", calc: CalcInput}
  *   | {op: "update_calc", name: string, calc: Partial<CalcInput>}
  *   | {op: "place_calc", name: string, place: {system?: string, node?: string, col?: number, row?: number}}
+ *   | {op: "rerun_calc", name: string, calc: {raw_text?: string, set_name?: string, set_id?: string, is_raw?: boolean, config?: Partial<StepConfigPayload>}}
+ *   | {op: "undo_rerun", name: string}
  *   | {op: "remove_calc", name: string}
  *   | {op: "order", names: string[]}} QueueOp
  */
@@ -688,6 +694,34 @@
  */
 
 /**
+ * A copied workflow kept by name (state/workflows.py): the queue editor's
+ * workflow step list, replayed as add_calc ops.
+ * @typedef {Object} SavedWorkflow
+ * @property {string} id
+ * @property {string} name
+ * @property {number} v
+ * @property {string} [from]   the row it was copied from
+ * @property {Object[]} steps
+ */
+
+/**
+ * get_workflows() result.
+ * @typedef {Object} WorkflowsResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {SavedWorkflow[]} [workflows]
+ */
+
+/**
+ * save_workflow(json) / delete_workflow(id) result; `workflow` (save only)
+ * is the workflow as stored, with its id.
+ * @typedef {Object} WorkflowResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {SavedWorkflow} [workflow]
+ */
+
+/**
  * get_system(id) result.
  * @typedef {Object} SystemResult
  * @property {boolean} ok
@@ -707,12 +741,6 @@
  */
 
 /**
- * @typedef {Object} XyzRefusal
- * @property {string} file    the label / path as given
- * @property {string} reason
- */
-
-/**
  * One picked / dropped .xyz, read (store.xyz_file_entries).
  * @typedef {Object} XyzFileEntry
  * @property {string} path
@@ -720,6 +748,8 @@
  * @property {string} name    its stem: the system name it gives ("" if none)
  * @property {string} xyz     its one structure as a coordinate block, "" if refused
  * @property {string} error   why it cannot start a row, "" if it can
+ * @property {number|null} [charge]        stated on its comment line ("charge=1"), else null
+ * @property {number|null} [multiplicity]  stated there ("mult=2", or xtb's "uhf=1"), else null
  */
 
 /**
@@ -729,17 +759,6 @@
  * @property {string} [error]
  * @property {boolean} [cancelled]
  * @property {XyzFileEntry[]} [files]
- */
-
-/**
- * add_xyz_systems(json) result: per file a system + one calc, or a refusal.
- * @typedef {Object} XyzSystemsResult
- * @property {boolean} ok
- * @property {string} [error]
- * @property {string[]} [added]     names of the calcs added
- * @property {string[]} [systems]   ids of the systems added (same order)
- * @property {XyzRefusal[]} [refused]
- * @property {QueueSnapshot} [snapshot]
  */
 
 /**
@@ -817,6 +836,25 @@
  * @property {string} label
  * @property {string} xyz
  * @property {number|null} energy    Hartree, or null when unknown
+ */
+
+/**
+ * One structure file an IRC wrote. Mirror of the Python IrcStructureFile.
+ * @typedef {Object} IrcStructureFile
+ * @property {string} key      "F" | "B" | "F_trj" | "B_trj" | "Full_trj"
+ * @property {string} label
+ * @property {string} path
+ * @property {number} count    frames (0: not counted)
+ */
+
+/**
+ * get_irc_structures(name) result. Mirror of the Python IrcStructuresResult;
+ * files are listed only once the IRC is done.
+ * @typedef {Object} IrcStructuresResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {boolean} [done]
+ * @property {IrcStructureFile[]} [files]
  */
 
 /**
