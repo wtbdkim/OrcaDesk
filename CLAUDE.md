@@ -147,6 +147,8 @@ Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
   the ORCA pipeline.
 - **`DONE` is frozen, `FAILED` is locked** (P24): no re-run, edit or reorder;
   only `CANCELLED` re-runs. `EDITABLE_STATES` = PENDING / CANCELLED / BLOCKED.
+  The one explicit exception: a set put on a DONE block, behind an overwrite
+  warning, returns it to PENDING (`rerun_calc`; never kept, always recomputed).
   Removal is queue-list-only — **nothing on the removal path touches the
   filesystem**.
 - **Live queue (P29)**: the engine walks the store's own list under the store's

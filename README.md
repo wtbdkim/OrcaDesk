@@ -18,8 +18,8 @@ Python core.
 > from source, or build a
 > standalone Windows app with `build.bat`. Since 0.11.0 the queue has its own
 > window: a **queue editor** with one row per molecule, steps chained block by
-> block (Opt → Freq → IRC → SP, approval gates, saved inp sets), and `.xyz`
-> files dropped onto it queued in one go; the main window keeps Jobs and Results. (Phone-sync is in development and not
+> block (Opt → Freq → IRC → SP, approval gates, saved inp sets and workflows), and `.xyz`
+> files dropped onto it turned into rows in one go; the main window keeps Jobs and Results. (Phone-sync is in development and not
 > part of this build.) See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Requirements

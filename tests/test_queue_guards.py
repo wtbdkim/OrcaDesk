@@ -316,13 +316,6 @@ def test_the_gate_auto_pass_does_not_hold_the_store_lock_on_a_parse(store, tmp_p
 UNDERCOUNT = "2\ncomment\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.24\n"
 
 
-def test_a_dropped_xyz_with_an_undercounting_header_is_refused(store):
-    out = store.add_xyz_systems([("water.xyz", UNDERCOUNT)], _orca_set(), "_sp", "sp")
-    assert out["added"] == []
-    assert "says 2 atoms" in str(out)
-    assert store.list() == []
-
-
 def test_xyz_file_entries_refuses_an_undercounting_header(tmp_path):
     p = tmp_path / "water.xyz"
     p.write_text(UNDERCOUNT, encoding="utf-8")

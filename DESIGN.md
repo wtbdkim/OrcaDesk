@@ -2015,18 +2015,36 @@ columns:
   to the selected block when the group matches and the block can still
   change, and otherwise opens the set in the **set editor** (marked in the
   library by a left bar). The first replacement is confirmed (§13.1) and said
-  to be asked once; later ones apply at once. Delete on a focused set removes
-  it from the library (confirmed). Under the library, the **drop recipe**:
-  *Run* — an ORCA level as a single point (the name suffix applies to this one
-  only), *the copied workflow*, or *the workflow of row …* — kept in the UI
-  state, with one line saying what a dropped file becomes.
+  to be asked once; later ones apply at once. A set dropped on, or clicked
+  onto, a **finished** block is an overwrite and is asked every time: the
+  warning names it and says its output is overwritten. *Overwrite* (danger)
+  puts the set on it and returns it to pending (P24's one way back). Undo
+  restores it until it starts. Delete on a focused set removes
+  it from the library (confirmed). Under them, **Workflows**: copied
+  workflows kept by name (*+ Save copied*, locked with its reason until
+  something is copied; *Save as workflow…* in a block's inspector). A click
+  puts one into the selected rows (their empty ones) or after the selected
+  block, and with nothing to put it on makes it the copied workflow; a drag
+  puts it on a + slot; Delete removes it (confirmed; the rows it was put on
+  keep their steps). A dropped `.xyz` has no recipe to choose (see *Files
+  dropped* below).
 - **Lanes** (middle) — one per system, top to bottom in run order; a standalone
   calculation is a one-node lane. A block (140 x 64, 176px a column, 104px a
-  row) carries its state dot (§12 colours; *waiting* is an amber ring), its run
+  row) carries its state dot (§12 colours; *waiting* is an amber ring) — its
+  **border takes the dot's colour** (pending the ring's grey, done green,
+  running amber with a soft glow, failed red, blocked / cancelled faint) —
+  per calculation: a stack's front card is its first member's, each back
+  card the next one's, while the dot is the block's overall state — so a
+  running queue reads from across the canvas, and a selected block is an
+  outer ring that never hides it — its run
   order, and `kind / set` (amber with `*` once its template differs from the
   set; a block made from a set before sets were levels is compared by what
   its text converts to, so the conversion alone never marks it). A **stack** (several calculations sharing a node, e.g. an SP after an
-  IRC is `-F` and `-B`) shows its count and unfolds a member list. **Edges**
+  IRC is `_F` and `_B`) is drawn as one card per calculation (the front one
+  and a back card 5px behind it for each other member, at most three — past
+  that the count tells), shows its count bottom right, at the end of the
+  `kind / set` line — never top right, where a block shows its run order —
+  and unfolds a member list. **Edges**
   are solid when the next step runs by itself and dashed amber when it waits
   for approval, and meet a block at its vertical middle. A block hangs off its
   `after`, else the calculation its geometry is taken from: standalone
@@ -2043,30 +2061,65 @@ columns:
   IRC is how a follow-up is queued — takes a dropped set (a level runs the
   natural next step: Optimization at a row's start, Frequencies after an
   Opt, TS frequencies after an OptTS, IRC after a TS frequency, Single point
-  after an IRC — the `-F`/`-B` stack — and after anything else; the Type
-  changes it), or opens **Manual
-  build**: the Guided builder, seeded for that place, whose
+  after an IRC and after anything else; the Type changes it) or a dropped
+  saved workflow. **After an IRC, every add asks which structure it starts
+  from** (the IRC picker): once the IRC has run, one compact energy profile
+  of its whole path — backward end → TS → forward end, ORCA's
+  `_IRC_Full_trj.xyz` (else the backward path reversed and the forward one),
+  an 88px graph with B, F and TS marked — on which a point is clicked,
+  dragged or moved with the arrow keys, or **named by its number** (its frame
+  in `_IRC_Full_trj.xyz`, 1 to N; a number past the ends is clamped on Enter
+  or leaving the field), the structure there drawn small
+  beside the energy (ΔE from the TS). **Choosing and confirming are
+  separate**: a segmented *Start from — One point | Both ends* (Both ends
+  preselected when adding; picking a point switches to One point; both ends
+  are then marked on the graph), and ONE confirm button that says what it
+  will do — *Add at both ends*, *Add at point 50*, *Add at the forward end*,
+  *Add at the TS (point 35)* (*Use …* when a block's geometry is changed).
+  One point at an end is taken by reference (`_F` / `_B`, read from
+  `_IRC_F/_B.xyz` when the step runs), any other point with its coordinates
+  copied in (`_P<k>`); both ends make the `_F`/`_B` stack. Left / Right step
+  the point wherever the keyboard is in the window (Shift: 10); the number
+  field has no spin arrows. Before the IRC
+  has run there is no path: *Start from — Both ends | Forward end | Backward
+  end*, by reference. **Pressed, it opens the add
+  menu** beside it (the stack list's popover recipe, drawn over the canvas
+  so a redraw of the lanes leaves it open): the **level** (the one the block
+  before runs at — a Freq has to match its Opt — else the one last used from
+  the menu, else the first), the natural next step as the primary button
+  (Enter), every other Type the level can run (O / T / F / I / S answer
+  Optimization, TS optimization, Frequencies — TS frequencies after an
+  OptTS —, IRC, Single point), an MLIP pre-optimization per MLIP set, the
+  copied and the saved workflows (locked after a stack, with the reason;
+  after an IRC the picker asks first, as for a step), and **Manual build…** (M). Escape or a click elsewhere closes it
+  and leaves the selection as it was; what was chosen is one undoable batch,
+  like a dropped set. **Manual
+  build** is the Guided builder, seeded for that place, whose
   calculation lands in that lane, column and row. The builder is the main
   window's *New calculation* as it was -- the same cell, title and footer,
   at the reference's cell width (1040px) in a stream-like column drawn over
   the lanes and the inspector (never squeezed into the inspector), the
   library beside it; where it goes is said beside the title. A step it
-  makes is named as the editor names one (`row-opt`, `row-opt2` ...), and
+  makes is named as the editor names one (`row_Opt`, `row_Opt2` ...), and
   the name follows the Type until it is typed over. A standalone block first
   becomes a one-node system named after it (`place_calc`: its place in the
   layout changes, nothing it ran — P24). A pending block below a failed or
   blocked one is drawn blocked at once (the design's derived state), not only
   after a run says so. An empty system shows its first slot; an empty queue
-  says how a row starts. A system's name over its row (or *Structures…* on a
+  says how a row starts. **Ctrl/Shift+click on row names selects several
+  rows**: the inspector then sets one charge and multiplicity on all of them
+  (a row that has started keeps its own) and puts a workflow into every
+  empty one, as Ctrl+V or a saved workflow's click does; Escape clears. A
+  system's name over its row (or *Structures…* on a
   block) selects its **structures panel** -- every row has one: name,
   charge, multiplicity, its structures (add from a file or paste coordinates,
   *View* on a stage with the structure check, remove; a calculation keeps the
-  coordinates it was given); *+ system* asks for coordinates to paste or a
-  file. *Clear finished* (top bar) takes the done and failed calculations off
+  coordinates it was given); *+ system* asks for coordinates to paste or
+  `.xyz` files (several at once, each a row by the drop's rules below). *Clear finished* (top bar) takes the done and failed calculations off
   the list -- not cancelled ones, which run again, nor one a calculation yet
   to run starts from -- with any row it empties; not undoable. **While a run
   is going, every add outside the builder** (a set on the + slot, a paste, a
-  row copy, *Duplicate*, an `.xyz` drop) asks before writing over a folder
+  row copy, *Duplicate*) asks before writing over a folder
   that holds output (`existing_outputs`), as the builder's own add does; the
   names those adds make step around such folders in the first place. A
   copied workflow carries a level block's options and is refused on a
@@ -2085,27 +2138,37 @@ columns:
   **Several blocks of one row** are selected by a rubber band dragged from
   the empty canvas (never from a grip or a set, whose drags are the
   browser's) or by Ctrl/Shift+click; blocks of other rows are left out and
-  the hint says so; Escape clears. **Ctrl+C** (or *Copy workflow* in the
+  the hint says so; Escape clears. A band over a single block selects it
+  **whole**. **Ctrl+C** (or *Copy workflow* in the
   inspector; *Copy the row*, or Ctrl+C on a focused grip, for the whole row)
   copies a **workflow** — per block its type, its level (set name and text,
   or the Guided config), its gate, and its upstream and geometry source when
   they lie inside the copy (a block whose parent or geometry lies outside
   takes the target's structure), at its place relative to the copy. It is the
-  editor's own clipboard, mirrored in the UI state (`queue.workflow`) for the
-  main window's drop, never queue state. **Ctrl+V** (or *Paste workflow*, top
-  bar and inspector) pastes it after the selected block, as an empty row's
-  first steps, or — nothing selected — onto new rows from picked `.xyz` files
+  editor's own clipboard, mirrored in the UI state (`queue.workflow`) so it
+  outlives a reload, never queue state. **Ctrl+V** (or *Paste workflow*, top
+  bar and inspector) pastes it after the selected block, as the first steps
+  of the selected empty row(s), or — nothing selected — onto new rows from picked `.xyz` files
   (one row per file, named after it; steps `<file>-<step>`; a name in use in
   an existing row takes `-2`, `-3`; a file whose name ORCA refuses or whose
   row exists is listed with the reason, never renamed). One batch, Ctrl+Z
-  undoes it. An IRC or a stack takes no paste after it (it has several ends).
+  undoes it. A stack takes no paste after it (it has several ends); after an
+  IRC the IRC picker asks which structure(s), and the workflow is pasted once
+  per structure picked (`_F` / `_B`, each step's two copies stacked).
+- **Names** — a step the editor makes is `<system>_<Job>`: the job as ORCA's
+  keyword (`{{JOB}}`) reads it — `_Opt`, `_OptTS`, `_FreqTS`, `_IRC`, `_SP`,
+  `_Preopt` (MLIP) — a taken one numbered (`_SP2`), a stack's members tailed
+  `_F` / `_B` / `_P<k>`, a copy `<name>_copy`. Older hyphen names still read
+  as stacks. A redraw (a poll while the queue runs) waits while a mouse button
+  is down, so a click is never lost to the block being redrawn under it.
 - **Inspector** (right) — for a block: the system name (renames the lane, and
   every calculation name follows; read-only once the lane has started), charge
   and multiplicity (the system's; a calculation set apart shows its own, says
   so, and those fields then change it alone — a system's recharge moves only
   the calculations that had its old value), the geometry (the system's structures, or any ancestor's
   output along the `after` chain — every member of an ancestor stack, an IRC's
-  two ends), the template, and *Save as* a new set of the kind its text is. A level's
+  two ends and *a point on its path…*, which opens the IRC picker; never an
+  IRC's bare final geometry, which measured as the TS it started from), the template, and *Save as* a new set of the kind its text is. A level's
   block also has its **Type** (Optimization, TS optimization, Frequencies, TS
   frequencies, Opt + Freq, TS Opt + Freq, IRC, Single point, NMR — the kinds
   the backend fills `{{JOB}}` for, in the Guided builder's words), editable
@@ -2137,7 +2200,7 @@ columns:
   *Task* select (`mlip_jobs`). Below that: *↑ Earlier* /
   *↓ Later* (Alt+←/→: the block's run order within its row, an `order` op,
   never past what it depends on or what depends on it), *Duplicate* (the
-  whole setup as `<name>-copy`, next free row of its column), *Show folder*,
+  whole setup as `<name>_copy`, next free row of its column), *Show folder*,
   *Structures…* (the row's panel). Its own name after the row's is editable
   while it is (what runs after it, or takes its geometry, follows). The
   geometry list ends with **every other calculation** that does not hang off
@@ -2184,17 +2247,26 @@ again, not undoing. For the same reason an undo never removes a calculation
 that has started since: an undo whose batch would remove one is refused with
 the reason and dropped (Remove… on the block takes a finished row off the
 list). An undone move or removal re-orders the queue as it is at that moment
-(rows added since keep their places), not as it was when the change was made. Delete removes a block and everything after it (confirmed;
-a running one is refused: cancel it first).
+(rows added since keep their places), not as it was when the change was made. Delete (or Remove…) takes **the selected calculation**
+and everything after it (confirmed; a running one is refused: cancel it
+first): a stack loses one member at a time — the one picked in its member
+list, the first when it was clicked — and stays selected. A stack selected
+whole by a band (*Remove all N…*) or several blocks (*Remove all…* in their
+inspector) go together.
 
-Files dropped on the queue window: every `.xyz` at once becomes a system
-running the drop recipe — an ORCA level as a single point
-(`add_xyz_systems`), or a whole workflow, one row per file named after it,
-in one `apply_queue_ops` batch; a refused file is listed with its reason,
-never renamed to fit; an `.inp` opens in the builder as pasted
-input. On the main window an `.out` opens in Results, an `.xyz` goes through
-the same recipe and the queue window opens, an `.inp` opens there in the
-builder. What the main window hands the queue window (the builder with a seed,
+Files dropped on the queue window: every `.xyz` at once becomes a row
+holding its structure, named after the file, with **nothing queued** — its
+steps are built on the row (the + slot's add menu, a pasted or saved
+workflow); one `apply_queue_ops` batch, Ctrl+Z undoes it; the new rows arrive
+**selected**, so one Ctrl+V, one click on a saved workflow or one charge
+fills them all; a file's comment line may state its charge and multiplicity
+(`charge=1 mult=2`, `Charge: -1 Multiplicity: 2`, xtb's `uhf=N` as N+1),
+which the row takes (none stated: 0 and 1; a value no molecule has is not
+read); a refused file is listed with its reason, never renamed to fit; an
+`.inp` opens in the builder as pasted input. On the main window an `.out` opens in Results, an `.xyz`
+becomes such a row and the queue window opens, an `.inp` opens there in the
+builder. (A drop no longer runs anything by itself: the single point it used
+to queue at a chosen level was removed at the user's request.) What the main window hands the queue window (the builder with a seed,
 an `.inp`, a calculation to show) goes through a one-slot mailbox in the UI
 state (`queue.handoff`, stamped, read while the window is on screen) — the two
 pages share the Bridge, not a line of JS.

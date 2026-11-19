@@ -80,9 +80,12 @@ interface OrcaBridge {
   get_inp_sets(): Promise<string>;                       // InpSetsResult JSON
   save_inp_set(setJson: string): Promise<string>;        // InpSetResult JSON (the set as stored, with its id); add or replace by id
   delete_inp_set(id: string): Promise<string>;           // InpSetResult JSON ({ok} | {ok:false, error})
+  get_workflows(): Promise<string>;                      // WorkflowsResult JSON: the saved workflows
+  save_workflow(workflowJson: string): Promise<string>;  // WorkflowResult JSON (as stored, with its id); add or replace by id
+  delete_workflow(id: string): Promise<string>;          // WorkflowResult JSON ({ok} | {ok:false, error})
   get_system(id: string): Promise<string>;               // SystemResult JSON (inputs with their xyz)
+  get_irc_structures(name: string): Promise<string>;     // IrcStructuresResult JSON: an IRC's end / path .xyz files (once done)
   apply_queue_ops(opsJson: string): Promise<string>;     // QueueOp[] -> QueueOpsResult JSON: all applied or none
-  add_xyz_systems(payloadJson: string): Promise<string>; // {files:[{label,xyz}] | paths:[], set_id, suffix, kind} -> XyzSystemsResult JSON
   pick_xyz_files(): Promise<string>;                     // XyzFilesResult JSON: several .xyz picked at once, each read
   read_xyz_paths(pathsJson: string): Promise<string>;    // string[] -> XyzFilesResult JSON (dropped files, each read)
   open_queue_window(): Promise<string>;                  // OkResult JSON: show/raise the queue window

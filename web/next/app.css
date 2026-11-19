@@ -1442,8 +1442,6 @@ html[data-win="queue"] .app{display:none;}
 .qe-set:hover{background:var(--accent);}
 .qe-set[data-dragging]{opacity:.4;}
 .qe-pad{padding:0 10px; margin:0;}
-.qe-recipe{display:flex; flex-direction:column; gap:6px; padding:12px 0 0;
-  border-top:1px solid var(--border);}
 .qe-rlab{display:flex; align-items:center; gap:8px; padding:0 10px;
   font-size:12px; color:var(--muted-foreground);}
 .qe-rlab .qe-select,.qe-rlab .qe-input{flex:1 1 auto; min-width:0; min-height:30px; padding:4px 8px; font-size:12px;}
@@ -1497,6 +1495,7 @@ html[data-win="queue"] .app{display:none;}
 .qe-node{position:absolute; width:140px;}
 .qe-node[data-pop]{animation:qe-pop .24s cubic-bezier(.32,.72,0,1);}
 .qe-back{position:absolute; width:140px; height:100%; border:1px solid var(--border); border-radius:10px;}
+.qe-back[data-depth="3"]{left:15px; top:15px; background:color-mix(in srgb, var(--card) 25%, var(--stage));}
 .qe-back[data-depth="2"]{left:10px; top:10px; background:color-mix(in srgb, var(--card) 40%, var(--stage));}
 .qe-back[data-depth="1"]{left:5px; top:5px; background:color-mix(in srgb, var(--card) 70%, var(--stage));}
 .qe-card{position:relative; width:140px; height:64px; padding:12px 12px 10px;
@@ -1504,6 +1503,21 @@ html[data-win="queue"] .app{display:none;}
   transition:border-color .18s, transform .18s cubic-bezier(.32,.72,0,1), box-shadow .18s;}
 .qe-card[data-sel]{border-color:var(--muted-foreground);}
 .qe-card[data-st="blocked"]{opacity:.45;}
+/* every card's border takes the state dot's colour of ITS calculation
+   (data-edge: a stack's front card is its first member, each back card the
+   next), so a running queue reads from across the canvas: done green,
+   running amber with a glow, failed red, waiting amber, blocked / cancelled
+   faint, pending its ring's grey. Selection is an outer ring (with the
+   rubber band's rules below), so it never hides the state. */
+:is(.qe-card,.qe-back)[data-edge="pending"]{border-color:var(--qe-dim);}
+:is(.qe-card,.qe-back)[data-edge="done"]{border-color:var(--ok);}
+:is(.qe-card,.qe-back)[data-edge="running"]{border-color:var(--warn);
+  box-shadow:0 0 10px color-mix(in srgb, var(--warn) 45%, transparent);}
+.qe-card[data-edge="running"][data-sel]{box-shadow:0 0 0 2px color-mix(in srgb, var(--foreground) 45%, transparent),
+  0 0 10px color-mix(in srgb, var(--warn) 45%, transparent);}
+:is(.qe-card,.qe-back)[data-edge="failed"]{border-color:var(--err);}
+:is(.qe-card,.qe-back)[data-edge="waiting"]{border-color:var(--warn);}
+:is(.qe-card,.qe-back)[data-edge="blocked"],:is(.qe-card,.qe-back)[data-edge="cancelled"]{border-color:var(--qe-faint);}
 .qe-node[data-drop] .qe-card{border-style:dashed; border-color:var(--foreground);
   transform:translateY(-2px); box-shadow:var(--shadow-md);}
 .qe-pick{display:flex; flex-direction:column; gap:2px; width:100%; padding:0; background:none;
@@ -1524,6 +1538,9 @@ html[data-win="queue"] .app{display:none;}
 .qe-sub{display:block; padding-left:15px; font-size:11.5px; color:var(--qe-dim);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .qe-sub[data-mod]{color:var(--warn);}
+/* a stack's second line: the Type / level, its count at the right end */
+.qe-line2{gap:6px;}
+.qe-line2 .qe-sub{flex:1 1 auto; min-width:0;}
 .qe-pop{position:absolute; left:0; right:0; top:calc(100% + 6px); z-index:10;
   display:flex; flex-direction:column; padding:6px 0;
   background:var(--popover); border:1px solid var(--secondary-hover); border-radius:10px; box-shadow:var(--shadow-md);}
@@ -1601,7 +1618,6 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 .qe-set[data-edit]{background:var(--card); color:var(--foreground);
   box-shadow:inset 2px 0 0 var(--muted-foreground);}
 .qe-set[data-draft]{font-style:italic; cursor:default;}
-.qe-drophint{margin:2px 0 0;}
 .qe-ph{margin:-8px 0 0;}
 .qe-insp .qe-cm [data-f="dirty"]{color:var(--warn);}
 .qe-empty{position:absolute; left:28px; right:28px; max-width:520px;}
@@ -1618,7 +1634,7 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 .qe-band{position:absolute; z-index:30; pointer-events:none; border:1px dashed var(--muted-foreground);
   background:color-mix(in srgb, var(--foreground) 6%, transparent); border-radius:4px;}
 .qe-node[data-band] .qe-card{border-color:var(--foreground);}
-.qe-card[data-sel]{box-shadow:0 0 0 1px var(--muted-foreground);}
+.qe-card[data-sel]{box-shadow:0 0 0 2px color-mix(in srgb, var(--foreground) 45%, transparent);}
 /* what the old queue did, inherited (DESIGN.md §17.6): a level's block names
    the options it adds under the block (the card has no third line); a
    system's caption over a non-empty row selects its structures panel, whose
@@ -1634,6 +1650,43 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 .qe-stage canvas.molcv{position:absolute; inset:0; display:block; width:100%; height:100%;}
 .qe-insp .finding{margin:0;}
 .qe-insp .factline{margin:0;}
+/* adding a step in fewer moves (DESIGN.md §17.6): the + slot's add menu --
+   the level, the step to run with it (the natural next one first), an MLIP
+   pre-optimization, a workflow, the manual build -- drawn over the canvas
+   in the stack list's popover recipe; "+ Save copied" locked until something
+   is copied */
+.qe-addmenu{position:fixed; z-index:40; width:300px; max-height:calc(100vh - 16px); overflow:auto;
+  display:flex; flex-direction:column; gap:10px; padding:12px;
+  background:var(--popover); border:1px solid var(--secondary-hover); border-radius:10px; box-shadow:var(--shadow-md);}
+.qe-amhead{font-size:12px; color:var(--muted-foreground);}
+.qe-amhead b{font-weight:600; color:var(--foreground);}
+.qe-addmenu .qe-rlab{padding:0;}
+.qe-amrow{display:flex; flex-wrap:wrap; align-items:center; gap:4px;}
+.qe-amrow .qe-note{margin-right:4px;}
+.qe-amsugg{justify-content:space-between;}
+.qe-amman{align-self:flex-start;}
+.qe-addmenu kbd{margin-left:6px; font:inherit; font-size:10.5px; color:var(--qe-faint);}
+.qe-amsugg kbd{color:inherit; opacity:.7;}
+.qe-new:disabled{cursor:default; opacity:.5;}
+.qe-new:disabled:hover{color:var(--qe-faint);}
+/* the IRC picker (a step after an IRC): one compact energy profile of the
+   whole path, backward end -> TS -> forward end, a point picked on it, and
+   the structure there -- kept small: an 88px graph, a 150px stage */
+.qe-ircprof{display:block; width:100%; height:88px; cursor:crosshair; outline:none;
+  background:color-mix(in srgb, var(--foreground) 4%, transparent); border-radius:6px;}
+.qe-ircprof:focus-visible{box-shadow:0 0 0 2px color-mix(in srgb, var(--foreground) 45%, transparent);}
+.qe-ircline{fill:none; stroke:var(--muted-foreground); stroke-width:1.5;}
+.qe-ircguide{stroke:color-mix(in srgb, var(--warn) 55%, transparent); stroke-width:1;}
+.qe-ircdot{fill:var(--warn); stroke:var(--popover); stroke-width:1.5;}
+.qe-irctext{font-size:10px; fill:var(--qe-faint);}
+.qe-ircrow{display:flex; align-items:center; gap:8px; margin-top:8px;}
+.qe-ircrow .qe-rlab{padding:0;}
+.qe-ircrow:first-child{margin:0 0 10px;}
+/* no spin arrows: Left / Right (and Up / Down) step the point */
+.qe-ircnum{width:6ch; font-variant-numeric:tabular-nums; appearance:textfield;}
+.qe-ircnum::-webkit-inner-spin-button,
+.qe-ircnum::-webkit-outer-spin-button{-webkit-appearance:none; appearance:none; margin:0;}
+.qe-ircstage{height:150px; margin-top:8px; border-radius:6px;}
 @media (max-width:900px){
   html[data-win="queue"] body{overflow:auto;}
   .qe-app{grid-template-columns:minmax(0,1fr); height:auto; overflow:visible;}

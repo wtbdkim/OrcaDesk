@@ -5,10 +5,95 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **The + slot opens an add menu.** Pressing + beside a block no longer
+  opens the whole builder: a small menu offers the level (the one the block
+  before runs at, else the one you used last), the natural next step as the
+  main button (Enter), every other step type (O / T / F / I / S for Opt,
+  OptTS, Freq, IRC, SP), an MLIP pre-optimization, the copied and saved
+  workflows, and *Manual build…* (M) for the full builder. Adding Opt → Freq
+  to a row is now two clicks.
+- **Saved workflows.** Copied steps can be kept by name (*+ Save copied*
+  under the new *Workflows* group of the library, or *Save as workflow…* in a
+  block's inspector) and put on any row again: click one with rows
+  selected, drag it onto a + slot, or pick it from the add menu. Kept in
+  `workflows.json` beside the inp sets.
+- **Several rows at once.** Ctrl+click row names to select several: one
+  Ctrl+V (or one click on a saved workflow) fills every empty one, and one
+  charge / multiplicity goes on all of them. Dropped `.xyz` files arrive
+  selected, so a drop of five structures followed by one click queues the
+  same steps on all five.
+- **Charge and multiplicity from the file.** A dropped or picked `.xyz`
+  whose comment line says `charge=1 mult=2` (or `Charge: -1 Multiplicity:
+  2`, or xtb's `uhf=1`) starts its row with them.
+- *+ system* takes several `.xyz` files at once, by the same rules as a drop.
+- **Pick the structure after an IRC on its energy profile.** Adding any step
+  after an IRC (the + menu, a dropped level, a pasted or saved workflow) now
+  asks which structure it starts from: a small graph of the whole IRC path
+  (backward end → TS → forward end, from ORCA's `_IRC_Full_trj.xyz`) where
+  you click or drag to a point — or type its number, the frame number in
+  `_IRC_Full_trj.xyz` — and see the structure there. Choose *One point* or
+  *Both ends*, then confirm with the one button, which names what it does
+  (*Add at point 50*, *Add at both ends*). A point at an end queues `_F` /
+  `_B` (read from the end-point file when it runs); any other point copies
+  its coordinates in (`_P<k>`); both ends make the usual `_F` / `_B` pair. Before the IRC has run only the ends are offered.
+  ← / → step the point from anywhere in the window (Shift+← / → by 10).
+  A block's geometry list has the same picker (*a point on its path…*), and
+  a workflow can now be pasted after an IRC (once per end picked).
+
+### Changed
+- **A level dropped on a finished calculation runs it again.** Dropping a
+  level or MLIP set on a done block, or clicking one while a done block is
+  selected, is now an overwrite. A warning names the block and says its
+  output will be overwritten. *Overwrite* puts the set on it and turns it back
+  to pending, and Undo restores the finished result until it starts. The
+  Run-time overwrite question no longer asks about it again, and its old
+  output is never kept in place of the new run. A failed calculation stays
+  locked.
+- **An IRC's own "final geometry" is no longer offered.** The geometry list
+  listed "ref → <IRC>" besides its two ends, which looked like a third
+  structure; on real outputs it is the TS the IRC started from. A block that
+  already uses it keeps it.
+- **Remove takes one calculation of a stack.** Remove… (or Delete) on a
+  stack such as an IRC's `_F` / `_B` ends takes only the selected member
+  (and what hangs off it); the other stays. To remove a whole stack, drag a
+  band over it (*Remove all 2…*); several blocks selected by a drag or
+  Ctrl+click now have *Remove all…* too, and Delete takes them all.
+- **A stack shows how many it holds.** It is drawn as one card per
+  calculation (up to four), and its count sits at the bottom right instead of
+  where a block shows its run order, so a stack of 2 no longer reads as
+  run-order 2.
+- **A block's border shows its state.** In the queue window a block's border
+  takes its status light's colour — grey pending, green done, amber running
+  (with a soft glow), red failed — so a running queue can be read at a
+  glance; the selected block is marked by an outer ring instead. In a stack
+  each card is one calculation and takes that calculation's colour (an
+  IRC's `_F` done and `_B` running show green and amber).
+- **New steps are named `<system>_<Job>`.** The queue window names a step it
+  adds after its system and its job as ORCA's keyword reads it —
+  `mol_Opt`, `mol_OptTS`, `mol_FreqTS`, `mol_IRC`, `mol_SP` (then `mol_SP2`),
+  `mol_Preopt` for MLIP — instead of `mol-opt`; an IRC's ends are `_F` /
+  `_B`, a point on its path `_P<k>`, a duplicate `<name>_copy`. Existing
+  calculations keep their names.
+
 ### Fixed
+- A click on a block in the queue window was sometimes ignored while the
+  queue ran: the window redrew itself between the press and the release.
+  It now waits for the release.
 - The test suite can no longer overwrite your queue: it runs against a
   throwaway user-data folder (a failed test once left a run behind that
   saved its rows over the real `session.json`).
+
+### Removed
+- **A dropped `.xyz` no longer queues a single point.** The *Dropped .xyz*
+  panel under the inp sets (*Run* a level as a single point or a workflow,
+  *name +* suffix) is gone, and with it the backend's `add_xyz_systems` slot.
+  A `.xyz` dropped on the queue window — or on the main window, which then
+  opens the queue window — becomes a row holding the structure, named after
+  the file, with nothing queued: build its steps on the row's + slot, or
+  paste a copied workflow into it. Several files dropped at once are one
+  undoable batch, and a file that cannot start a row is listed with the
+  reason, as before.
 
 ## [0.11.1] — 2026-11-19
 
