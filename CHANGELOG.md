@@ -5,6 +5,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- The test suite can no longer overwrite your queue: it runs against a
+  throwaway user-data folder (a failed test once left a run behind that
+  saved its rows over the real `session.json`).
+
 ## [0.11.1] — 2026-11-19
 
 ### Changed

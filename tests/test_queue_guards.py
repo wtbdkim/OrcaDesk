@@ -111,12 +111,16 @@ def test_approving_a_gate_mid_run_keeps_the_keep_existing_answer(store, tmp_path
         return eng
 
     store.start_run(factory)
-    assert _wait(lambda: "L" in calls)
-    store.apply_ops([{"op": "update_calc", "name": "G", "calc": {"approved": True}}])
-    assert store.get("G") is live_g and live_g.approved is True
-    assert _wait(lambda: live_g.state == CalcState.DONE, 3)
-    release.set()
-    store.wait_for_run(5)
+    try:
+        assert _wait(lambda: "L" in calls)
+        store.apply_ops([{"op": "update_calc", "name": "G", "calc": {"approved": True}}])
+        assert store.get("G") is live_g and live_g.approved is True
+        assert _wait(lambda: live_g.state == CalcState.DONE, 3)
+    finally:
+        # A failed assert must not leave the run going past the fixture: its
+        # last autosave would land wherever user_data_root points by then.
+        release.set()
+        store.wait_for_run(5)
 
     assert "G" not in calls                      # kept, never re-run
     assert "Kept existing result" in store.get("G").message

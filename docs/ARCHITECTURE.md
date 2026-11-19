@@ -38,7 +38,15 @@ calls the queue editor's slots **unbound on a stub `self`** (no Qt application,
 no probes) to pin their JSON envelopes. The Qt bridge/window layers
 are otherwise thin adapters and are exercised manually. Tests that read the real ORCA output
 corpus auto-skip when the corpus directory is absent, so the suite is green on any
-machine. There is no linter configured. Parser/input-generator *evidence* still
+machine. **No test touches the user's own data folder**: `tests/conftest.py`
+points `%APPDATA%` / `$XDG_CONFIG_HOME` at a throwaway folder for the whole
+process (before any test module is imported, never restored), with only a copy
+of the real `settings.json` in it for the smoke tier, and pins
+`PYTHONUSERBASE` so child interpreters still find the user site-packages. A
+per-test `monkeypatch` of `user_data_root` is not enough on its own — it is
+undone at teardown, and a run thread a failed test left behind autosaved
+`session.json` after that, replacing a user's real queue with the test's rows.
+A test that starts a run also stops it in a `finally`. There is no linter configured. Parser/input-generator *evidence* still
 comes from manual validation against real ORCA 6.1.1 output (P3); the
 `orcamgr/server/STAGE*_TEST_KR.md` files are manual server-test checklists
 (Korean), not runnable tests.
