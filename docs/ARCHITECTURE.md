@@ -649,6 +649,20 @@ structure with fewer atoms than the workflow's constraints name, is listed
 and left as it is. A rows selection's charge / multiplicity is one batch of
 `update_system` ops, skipping rows that have started.
 
+**A step before a block** goes through the same menu from a second slot,
+`beforeSlotOf` (`{before: B, parent, c, r, key: "<lane><<node>"}`, offered for
+an editable B only and kept in `_ghosts` so `menuSlot` / `dropTarget` find
+it); `addFromSet` hands a `before` slot to `insertBefore`. One batch:
+`place_calc {col: +1}` for B and its descendants (by the lane's edges — or
+for every node from B's column on when one would land on a node that
+stays), one `add_calc` per member of B carrying the member's `after`, gate,
+geometry (reference + `ref_point`, or its `xyz` read with `get_calc`) and
+charge / multiplicity, an `update_calc` re-pointing the member (`after` =
+`ref_name` = the new step, gate auto), and an `order` placing the new names
+just before B's. The inverse restores the members first, so the
+`remove_calc`s find nothing referring to them. A standalone chain is
+adopted first, as for an add after it.
+
 **After an IRC** every add path — `addFromSet` (the menu, a dropped set),
 `pasteAfter` (a paste or saved workflow) and `setGeometry("pick:<irc>")` (a
 block's geometry list) — asks `askIrcStructure(irc, both)` first. It reads
