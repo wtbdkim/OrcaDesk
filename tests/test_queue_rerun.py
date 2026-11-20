@@ -1,13 +1,18 @@
-"""A set put on a DONE calculation runs it again (state/store.py rerun_calc).
+"""A set put on a DONE or FAILED calculation runs it again (state/store.py
+rerun_calc).
 
-P24's one explicit way back from DONE: the queue editor sends rerun_calc only
-after an overwrite warning. What is pinned here:
+P24's one explicit way back from DONE and FAILED: the queue editor sends
+rerun_calc only after an overwrite warning. What is pinned here:
 
-* rerun_calc puts the set on a DONE row and returns it to PENDING (no message,
-  result or output path), keeping its name, place and edges; it refuses every
-  other state and a row the engine is handling, and changes nothing but the set;
-* undo_rerun puts the finished row back (the same object) while the rerun has
-  not started, and refuses once it has;
+* rerun_calc puts the set on a DONE or FAILED row and returns it to PENDING (no
+  message, result or output path), keeping its name, place and edges; it
+  refuses every other state and a row the engine is handling, and changes
+  nothing but the set;
+* the rows a FAILED one held BLOCKED (downstream, transitively) go back to
+  PENDING as new objects, so a running engine picks them again in the same run;
+* undo_rerun puts the old row back (the same object), and the blocked rows it
+  freed that are still the freed objects, while the rerun has not started, and
+  refuses once it has;
 * a rerun row is never kept: it is left out of the overwrite conflicts (the Run
   modal and the startup resume) and dropped from any keep answers the engine
   is given; the mark survives a session round trip and an edit, never a start.
@@ -18,12 +23,17 @@ Session I/O is redirected to tmp_path (see test_store.py).
 from __future__ import annotations
 
 import json
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
 
+import orcamgr.core.queue as queue_mod
 import orcamgr.state.store as store_mod
-from orcamgr.core.queue import CalcState
+from orcamgr.core.parser import ParseResult
+from orcamgr.core.queue import CalcState, QueueCallbacks, QueueEngine
+from orcamgr.core.resources import ResourceBudget
 from orcamgr.gui.bridge import Bridge
 from orcamgr.state.store import (QueueOpError, QueueStore, calc_from_session_dict,
                                  calc_to_session_dict, is_rerun, make_engine_factory)
@@ -77,12 +87,11 @@ def test_a_guided_done_calc_becoming_a_level_block_drops_its_old_config(store):
     assert c.is_raw and c.raw_text == NEW and c.config.max_iter != 60
 
 
-@pytest.mark.parametrize("state", [CalcState.PENDING, CalcState.FAILED,
-                                   CalcState.RUNNING, CalcState.CANCELLED,
-                                   CalcState.BLOCKED])
-def test_only_a_done_calc_runs_again(store, state):
+@pytest.mark.parametrize("state", [CalcState.PENDING, CalcState.RUNNING,
+                                   CalcState.CANCELLED, CalcState.BLOCKED])
+def test_only_a_done_or_failed_calc_runs_again(store, state):
     store.get("mol_Opt").state = state
-    with pytest.raises(QueueOpError, match="only a done"):
+    with pytest.raises(QueueOpError, match="only a done or failed"):
         store.apply_ops([{"op": "rerun_calc", "name": "mol_Opt", "calc": RERUN}])
     assert store.get("mol_Opt").state == state
 
@@ -165,3 +174,108 @@ def test_a_rerun_row_is_never_offered_or_given_keep_existing(store, tmp_path):
     assert engine._skip_names == {"mol_Freq"}                  # a keep answer is dropped
     store.get("mol_Opt").state = CalcState.DONE                # once it has run: an ordinary row
     assert store.rerun_names() == set()
+
+
+# ---- a FAILED calculation ----------------------------------------------------
+
+def _fail_with_dependents(store):
+    """mol_Opt FAILED; mol_Freq (after it) and mol_SP (after mol_Freq) BLOCKED
+    by it; mol_X BLOCKED for its own reason, downstream of nothing."""
+    store.apply_ops([
+        {"op": "add_calc", "calc": {"name": "mol_SP", "kind": "sp", "is_raw": True,
+                                    "raw_text": OLD, "geometry_source": "reference",
+                                    "ref_name": "mol_Freq", "after": "mol_Freq",
+                                    "system": "s1", "node": "n4", "col": 3}},
+        {"op": "add_calc", "calc": {"name": "mol_X", "kind": "sp", "is_raw": True,
+                                    "raw_text": OLD, "xyz": H2,
+                                    "system": "s1", "node": "n5", "col": 1, "row": 1}},
+    ])
+    c = store.get("mol_Opt")
+    c.state, c.message = CalcState.FAILED, "SCF did not converge."
+    for name, why in (("mol_Freq", "Skipped: a dependency failed."),
+                      ("mol_SP", "Skipped: a dependency failed."),
+                      ("mol_X", "Skipped: something else.")):
+        b = store.get(name)
+        b.state, b.message = CalcState.BLOCKED, why
+    return {n: store.get(n) for n in ("mol_Opt", "mol_Freq", "mol_SP", "mol_X")}
+
+
+def test_a_set_on_a_failed_calc_runs_it_again_with_what_it_blocked(store):
+    old = _fail_with_dependents(store)
+    store.apply_ops([{"op": "rerun_calc", "name": "mol_Opt", "calc": RERUN}])
+    c = store.get("mol_Opt")
+    assert (c.state, c.message, c.raw_text) == (CalcState.PENDING, "", NEW)
+    assert c.rerun and is_rerun(c)
+    for name in ("mol_Freq", "mol_SP"):                 # downstream, transitively
+        freed = store.get(name)
+        assert freed is not old[name]                   # a new object: picked again
+        assert (freed.state, freed.message) == (CalcState.PENDING, "")
+        assert (freed.raw_text, freed.after) == (old[name].raw_text, old[name].after)
+        assert not freed.rerun                          # its own set is unchanged
+    assert store.get("mol_X") is old["mol_X"]           # not downstream: left alone
+    assert store.get("mol_X").state == CalcState.BLOCKED
+
+
+def test_undo_puts_the_failed_row_and_what_it_blocked_back(store):
+    old = _fail_with_dependents(store)
+    store.apply_ops([{"op": "rerun_calc", "name": "mol_Opt", "calc": RERUN}])
+    # an edit in between makes mol_SP the user's row: the undo leaves it be
+    store.apply_ops([{"op": "update_calc", "name": "mol_SP", "calc": {"gate": "approval"}}])
+    edited = store.get("mol_SP")
+    store.apply_ops([{"op": "undo_rerun", "name": "mol_Opt"}])
+    assert store.get("mol_Opt") is old["mol_Opt"]
+    assert store.get("mol_Opt").state == CalcState.FAILED
+    assert store.get("mol_Opt").message == "SCF did not converge."
+    assert store.get("mol_Freq") is old["mol_Freq"]
+    assert store.get("mol_Freq").state == CalcState.BLOCKED
+    assert store.get("mol_SP") is edited and edited.gate == "approval"
+
+
+def _wait(pred, timeout=5.0):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if pred():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_a_failed_calc_rerun_mid_run_runs_what_it_blocked_in_that_run(store, tmp_path,
+                                                                      monkeypatch):
+    # "hold" keeps the run alive while the rerun is put on; the budget below
+    # admits two jobs at once, whatever the free memory (0 = cannot tell)
+    monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
+    store.apply_ops([{"op": "add_calc", "calc": {
+        "name": "hold", "kind": "sp", "is_raw": True, "raw_text": OLD, "xyz": H2}}])
+    store.get("mol_Opt").state = CalcState.FAILED
+    calls, release = [], threading.Event()
+
+    def fake(calc, index):
+        calls.append(calc.name)
+        if calc.name == "hold":
+            release.wait(5)
+        calc.result = ParseResult(terminated_normally=True)
+        calc.state = CalcState.DONE
+
+    def factory():
+        eng = QueueEngine("orca", str(tmp_path / "ws"), QueueCallbacks(
+            log=lambda *a, **k: None, calc_update=lambda i, c: store.touch()),
+            queue_lock=store._lock,
+            budget=ResourceBudget(max_jobs=2, cores=64, ram_mb=10**6))
+        eng._run_calc = fake
+        return eng
+
+    store.start_run(factory)
+    try:
+        assert _wait(lambda: "hold" in calls)
+        assert _wait(lambda: store.get("mol_Freq").state == CalcState.BLOCKED)
+        store.apply_ops([{"op": "rerun_calc", "name": "mol_Opt", "calc": RERUN}])
+        assert _wait(lambda: "mol_Opt" in calls)
+        release.set()
+        assert _wait(lambda: store.get("mol_Freq").state == CalcState.DONE)
+    finally:
+        # stop the run before the fixture's data folder goes away
+        release.set()
+        store.wait_for_run(5)
+    assert calls.count("mol_Opt") == 1 and calls.count("mol_Freq") == 1
+    assert store.get("mol_Opt").state == CalcState.DONE

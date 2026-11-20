@@ -732,17 +732,24 @@ def test_a_redraw_waits_for_a_click_under_way():
 
 
 def test_a_set_on_a_finished_block_is_an_overwrite_asked_every_time():
-    """A level / MLIP set dropped on (or clicked onto) a DONE block runs it
-    again -- P24's one way back -- behind an overwrite warning that is never
-    skipped by the once-only replace answer; undo is undo_rerun."""
+    """A level / MLIP set dropped on (or clicked onto) a DONE or FAILED block
+    runs it again -- P24's one way back -- behind an overwrite warning that is
+    never skipped by the once-only replace answer; undo is undo_rerun. A
+    member still to run (none running) just takes the set in the same batch."""
     src = _read(NEXT / "qed.js")
-    assert 'c.state === "done"' in _function_body(src, "rerunnable")
+    assert 'const RERUN = ["done", "failed"];' in src
+    rn = _function_body(src, "rerunnable")
+    assert "n.members.some((/** @type {any} */ c) => RERUN.indexOf(c.state) >= 0)" in rn
+    assert "RERUN.indexOf(c.state) >= 0 || EDITABLE.indexOf(c.state) >= 0" in rn
     assert "n.editable || rerunnable(n)" in _function_body(src, "takesSet")
     rp = _function_body(src, "requestReplace")
     assert "if (!n.editable) { if (rerunnable(n)) requestRerun(n, set); return; }" in rp
     assert rp.index("requestRerun") < rp.index("_replaceOk")
     rr = _function_body(src, "requestRerun")
-    assert '{ op: "rerun_calc", name: nm,' in rr and '({ op: "undo_rerun", name: nm })' in rr
+    assert '({ op: "rerun_calc", name: nm, calc: patch })' in rr
+    assert '({ op: "undo_rerun", name: nm })' in rr
+    assert "updates(rest, " in rr                  # a member still to run: update_calc
+    assert "`Overwrite a ${word} calculation?`" in rr
     assert '{ label: "Overwrite", cls: "btn-danger", act: go }' in rr
     assert '{ label: "Cancel", cls: "btn-ghost", focus: true }' in rr
     assert "_replaceOk" not in rr

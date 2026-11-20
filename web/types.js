@@ -255,7 +255,7 @@
  * @property {boolean} approved
  * @property {""|"irc_f"|"irc_b"} ref_point
  * @property {string} set_name
- * @property {boolean} rerun        put back from DONE by rerun_calc (its old output is overwritten, never kept)
+ * @property {boolean} rerun        put back from DONE / FAILED by rerun_calc (its old output is overwritten, never kept)
  */
 
 /**
@@ -294,9 +294,10 @@
  * place_calc moves a row in the editor's layout only (lane, node, cell) and is
  * allowed in every state -- how a finished calc becomes a lane's first node.
  * remove_system also removes the lane's (unstarted) calcs.
- * rerun_calc puts a set on a DONE calc and queues it again (P24: the one way
- * a finished result is recomputed, behind the editor's overwrite warning);
- * undo_rerun puts the finished row back while the rerun has not started.
+ * rerun_calc puts a set on a DONE or FAILED calc and queues it again (P24:
+ * the one way either is recomputed, behind the editor's overwrite warning; a
+ * FAILED one's BLOCKED dependents go back to pending with it); undo_rerun
+ * puts the old row back while the rerun has not started.
  * @typedef {{op: "add_system", system: Partial<SystemFull> & {name: string}}
  *   | {op: "update_system", id: string, patch: {name?: string, charge?: number, multiplicity?: number, inputs?: SystemInput[]}}
  *   | {op: "remove_system", id: string}

@@ -555,11 +555,13 @@ guided calc) gets no options: its old config was a whole guided input. An
 MLIP set's block is re-derived from its text (`is_raw` set again) for a
 `raw_text`, `config` or `kind` patch, so an options edit (T / P for an MLIP
 frequency) never replaces the model the text sets.
-`rerun_calc` is P24's one explicit way back from DONE: the queue editor sends
-it when a set is dropped on (or clicked onto) a finished block, only after an
-overwrite warning that is asked every time (`requestRerun`, never the
-once-only replace answer). It is refused for anything but a DONE row the
-engine is not handling, and its `calc` may hold only the set fields
+`rerun_calc` is P24's one explicit way back from DONE and FAILED: the queue
+editor sends it when a set is dropped on (or clicked onto) a finished or
+failed block, only after an overwrite warning that is asked every time
+(`requestRerun`, never the once-only replace answer). A stack whose other
+members are still editable (none running) takes the set too, by
+`update_calc` in the same batch. It is refused for anything but a DONE or
+FAILED row the engine is not handling, and its `calc` may hold only the set fields
 (`raw_text` / `set_name` / `set_id` / `is_raw` / `config`); the patch merges
 like `update_calc`'s (the same `_patched` helper, so a guided calc becoming a
 level block drops its old config). The row is rebuilt PENDING with no
@@ -571,17 +573,25 @@ from any keep answers. So the old output in its folder is overwritten, never
 adopted. The mark is persisted in the session and is carried by an
 `update_calc` while unstarted. A row that starts, is cancelled, or is removed
 and re-added loses it, and `calc_from_dict` never reads it, so no client can
-set it. The replaced DONE row is held in an in-memory stash.
+set it. For a FAILED row, `_unblock_after` also puts every BLOCKED row
+downstream of it (by reference or `after`, transitively) back to PENDING with
+no message, each as a **new object**: a running engine has already handled
+(seen) the blocked one and tracks rows by identity, so only a new object is
+picked again in the same run (P29). One still blocked by another failure is
+stamped BLOCKED again when the walk reaches it, as at a run's start. The
+replaced row and the (blocked, freed) pairs are held in an in-memory stash.
 `undo_rerun {name}` puts that same object back while the row under the name
-is still the unstarted rerun; once it has started, or after a restart, it is
-refused (its output may already be overwritten). DONE rows that ran after it
-keep their results; pending ones wait for it and read its new geometry.
+is still the unstarted rerun, and each freed row that is still the freed
+object (one edited since stays as edited); once it has started, or after a
+restart, it is refused (its output may already be overwritten). DONE rows
+that ran after it keep their results; pending ones wait for it and read its
+new geometry.
 `place_calc`'s `place` holds only `system` / `node` / `col` / `row` (anything
 else is refused) and is allowed in **every** state: where the editor draws a
 calc is not what it ran (P24 freezes the latter). It is how a finished
 standalone calc becomes the first node of a new system so a follow-up can hang
 off it — `update_calc` stays refused for DONE/FAILED, and would re-queue the
-row (`rerun_calc` is the explicit, warned way to do that for a DONE one). The state, message, result, `after` and inputs are untouched and the row
+row (`rerun_calc` is the explicit, warned way to do that). The state, message, result, `after` and inputs are untouched and the row
 is not reset to PENDING. The op works on a batch-private copy (so a refused
 batch leaves the row where it was); at commit the placement is written back
 onto the **same** row object, because the engine tracks rows by identity and

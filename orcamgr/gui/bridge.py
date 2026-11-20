@@ -2485,9 +2485,9 @@ class Bridge(QObject):
         means (P4)."""
         ws = Path(self.settings.workspace_root)
         # DONE is skipped by the run loop anyway; FAILED is locked (P24) and
-        # never runs again; a CANCELLED calc overwriting its own partial .out is
-        # the point of a retry; a RUNNING one is appending to its own file. A
-        # rerun row (a set put on a DONE calc, store rerun_calc) was confirmed
+        # never runs as it is; a CANCELLED calc overwriting its own partial .out
+        # is the point of a retry; a RUNNING one is appending to its own file. A
+        # rerun row (a set put on a DONE or FAILED calc, store rerun_calc) was confirmed
         # as an overwrite when it was made: it is not asked about again, and
         # never kept (make_engine_factory drops it from the keep answers too).
         skip = {CalcState.DONE, CalcState.FAILED, CalcState.CANCELLED,
@@ -2507,7 +2507,8 @@ class Bridge(QObject):
         existing result on disk (a {name}.out already in the workspace), so the
         UI can warn before a run clobbers earlier work. Excluded states:
         DONE is skipped by the run loop anyway; FAILED is locked (P24) — it
-        never runs again, so it has nothing to overwrite; and a CANCELLED calc
+        never runs as it is, so it has nothing to overwrite (a rerun of it was
+        asked about as an overwrite when it was made); and a CANCELLED calc
         overwriting its own partial .out is the whole point of a retry, not a
         loss worth warning about. The warning exists for PENDING/BLOCKED name
         reuse — a fresh calc whose name would clobber an earlier good result."""
