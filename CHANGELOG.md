@@ -6,6 +6,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Add a step before a block.** A selected block that has not run yet
+  shows a small + on its incoming arrow; press it (or drop a level on it)
+  to put a step in front of it — an Opt before an SP, a Preopt before the
+  first step. The new step takes over what the block started from (the
+  previous step, its structure — an IRC end too — and an approval gate on
+  that connection), and the block then runs on its result. Before an IRC's
+  `_F` / `_B` pair it adds one step per end. Ctrl+Z undoes it.
 - **The + slot opens an add menu.** Pressing + beside a block no longer
   opens the whole builder: a small menu offers the level (the one the block
   before runs at, else the one you used last), the natural next step as the

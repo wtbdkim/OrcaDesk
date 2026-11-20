@@ -2093,7 +2093,17 @@ columns:
   copied and the saved workflows (locked after a stack, with the reason;
   after an IRC the picker asks first, as for a step), and **Manual build…** (M). Escape or a click elsewhere closes it
   and leaves the selection as it was; what was chosen is one undoable batch,
-  like a dropped set. **Manual
+  like a dropped set. **A step before a block**: the selected block that
+  can still change shows a small round dashed **+** on its incoming side (in
+  the gap on its arrow, or on its left edge first in a row). Pressed, the
+  same menu opens as *Before X* — a level and its step only (Optimization
+  suggested), no workflow or manual build — and a level can be dropped on
+  it. The new step takes the block's place in the chain: what it ran after,
+  the approval gate on that connection, the structure it started from (an
+  IRC end included), its charge and multiplicity; the block then runs on its
+  result. One per member of a stack (`_F` / `_B` kept). The block and what
+  hangs off it move one column right (the whole row from its column when
+  that would land on another block); one undoable batch. **Manual
   build** is the Guided builder, seeded for that place, whose
   calculation lands in that lane, column and row. The builder is the main
   window's *New calculation* as it was -- the same cell, title and footer,

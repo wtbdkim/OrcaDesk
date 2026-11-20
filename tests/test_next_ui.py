@@ -749,3 +749,33 @@ def test_a_set_on_a_finished_block_is_an_overwrite_asked_every_time():
     assert "takesSet(n) ? { node: n } : null" in _function_body(src, "dropTarget")
     assert "takesSet(nodeByKey(" in _function_body(src, "showSetTargets")
     assert "set.kind === n.setKind && takesSet(n)) { requestReplace(n, set); return; }" in src
+
+
+def test_a_step_can_go_before_a_block():
+    """The selected block that can still change has a + on its incoming
+    side (beforeSlotOf): the add menu opens "Before X" (a level and its step
+    only, Opt suggested), a level can be dropped on it, and insertBefore puts
+    one new calculation per member in the member's place -- its `after`, the
+    gate on that connection, its structure -- re-points the member at it,
+    and moves the member and what hangs off it one column right (the whole
+    row from its column when that would land on a block)."""
+    src = _read(NEXT / "qed.js")
+    slot = _function_body(src, "beforeSlotOf")
+    assert "if (!B || !B.editable) return null;" in slot, "a + before a started block"
+    draw = _function_body(src, "renderCanvas")
+    assert 'class="qe-ins" type="button" data-a="ghost"' in draw
+    assert "host._ghosts = before ? ghosts.concat([before]) : ghosts;" in draw
+    assert "if (g.before) { await insertBefore(g, set, want); return; }" in _function_body(src, "addFromSet")
+    ins = _function_body(src, "insertBefore")
+    assert 'after: fresh[i], geometry_source: "reference", ref_name: fresh[i], ref_point: ""' in ins
+    assert 'gate: f.gate === "approval" ? "approval" : "auto"' in ins
+    assert "const moved = hit ? L.nodes.filter((/** @type {any} */ n) => n.col >= B.col) : [...down];" in ins
+    # undo: the members first (nothing then refers to the new steps), then the removal
+    assert "const inv = unlink.concat(fresh.map(" in ins
+    assert "B.stack ? tailOf(c.name)" in ins
+    menu = _function_body(src, "openAddMenu")
+    assert 'let sugg = B ? "opt" : nextKind(P ? P.kind : "");' in menu
+    assert '${B ? "" : `<button class="btn btn-sm btn-ghost qe-amman"' in menu, "a manual build before a block"
+    assert "!B && (_clip || _wfs.length)" in menu, "a workflow before a block"
+    assert 't.closest(".qe-ins")' in _function_body(src, "dropTarget")
+    assert ".qe-ins{" in _read(NEXT / "app.css")

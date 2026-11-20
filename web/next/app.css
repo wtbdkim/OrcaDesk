@@ -1566,6 +1566,19 @@ html[data-win="queue"] .app{display:none;}
 .qe-gtext{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
   height:100%; font-size:12px; color:var(--muted-foreground);}
 .qe-gsub{font-size:10.5px; color:var(--qe-faint);}
+/* the + before the selected block, on its incoming side: a step put there
+   takes the block's place in the chain (insertBefore) */
+.qe-ins{position:absolute; z-index:16; width:18px; height:18px; padding:0; border-radius:50%;
+  border:1px dashed var(--qe-ghost); background:var(--stage); color:var(--qe-dim);
+  font-size:13px; line-height:16px; text-align:center; cursor:pointer;
+  transition:transform .18s cubic-bezier(.32,.72,0,1);}
+.qe-ins:hover,.qe-ins:focus-visible{border-style:solid; border-color:var(--foreground); color:var(--foreground); background:var(--card);}
+.qe-ins[data-drop]{border-color:var(--muted-foreground); animation:qe-breathe 1.2s ease-in-out infinite;}
+.qe-ins[data-hot]{border-style:solid; border-color:var(--foreground); background:var(--card); transform:scale(1.2); animation:none;}
+@media (prefers-reduced-motion: reduce){
+  .qe-ins{transition:none;}
+  .qe-ins[data-drop]{animation:none;}
+}
 @media (prefers-reduced-motion: reduce){
   .qe-node[data-pop],.qe-ghost[data-drop]{animation:none;}
   .qe-card,.qe-ghost{transition:none;}
