@@ -51,20 +51,23 @@ from .inpsets import MLIP_KEYS, mlip_config_from_text
 # failed parent is removed the user has to re-point the reference at another
 # calculation — locking it would strand it forever. FAILED is deliberately NOT
 # editable (P24 revision): a failure locks the calc at the moment it fails —
-# no edit, no re-run; the only remaining interaction is removal (×). DONE is
-# excluded too (a completed result is frozen; the one explicit way back is the
-# apply_ops op rerun_calc, a new set put on it behind an overwrite warning),
-# and RUNNING is in flight.
+# no edit, no implicit re-run; the only interactions are removal (×) and the
+# explicit way back below. DONE is excluded too (a completed result is frozen).
+# The one explicit way back from either is the apply_ops op rerun_calc, a new
+# set put on it behind an overwrite warning. RUNNING is in flight.
 EDITABLE_STATES = {CalcState.PENDING, CalcState.CANCELLED, CalcState.BLOCKED}
+#: the states rerun_calc puts a new set on (behind an overwrite warning)
+RERUNNABLE_STATES = (CalcState.DONE, CalcState.FAILED)
 #: the states a rerun row (Calculation.rerun) still has not started in
 _UNSTARTED = (CalcState.PENDING, CalcState.BLOCKED)
 
 
 def is_rerun(c: Calculation) -> bool:
-    """A DONE calc put back to PENDING by rerun_calc that has not started since:
-    the old output in its folder is one the user chose to overwrite, so it is
-    neither offered nor given keep-existing (bridge._overwrite_conflicts,
-    make_engine_factory). A row that started (or was cancelled) is not one."""
+    """A DONE or FAILED calc put back to PENDING by rerun_calc that has not
+    started since: the old output in its folder is one the user chose to
+    overwrite, so it is neither offered nor given keep-existing
+    (bridge._overwrite_conflicts, make_engine_factory). A row that started (or
+    was cancelled) is not one."""
     return bool(getattr(c, "rerun", False)) and c.state in _UNSTARTED
 
 
@@ -993,9 +996,12 @@ class QueueStore:
         # connected phone clients: {client_id: last_seen_epoch}
         self._clients: dict[str, float] = {}
         self._client_ttl = 15.0   # seconds without heartbeat = considered gone
-        # rerun_calc's undo stash: name -> the DONE row it replaced, put back by
-        # undo_rerun while the rerun has not started. In memory only.
+        # rerun_calc's undo stash: name -> the DONE/FAILED row it replaced, put
+        # back by undo_rerun while the rerun has not started, and the BLOCKED
+        # rows the rerun of a FAILED one freed, as (blocked row, freed row)
+        # pairs. In memory only.
         self._rerun_stash: dict[str, Calculation] = {}
+        self._rerun_freed: "dict[str, list[tuple[Calculation, Calculation]]]" = {}
 
     # ---- auth token ----
     @property
@@ -1489,21 +1495,23 @@ class QueueStore:
 
     def _rerun_calc(self, calcs: "list[Calculation]", systems: "list[dict]",
                     op: dict) -> None:
-        """rerun_calc: put a set (a level, or MLIP settings) on a DONE
-        calculation and queue it to run again -- the one way a finished result
-        is recomputed (P24). The queue editor sends it only after an overwrite
-        warning: the row goes back to PENDING with no message or result, keeps
-        its name, place and everything it hangs off, and is marked `rerun`, so
-        the old output in its folder is overwritten when it runs, never kept.
-        The DONE row it replaced is held (in memory) for undo_rerun. FAILED
-        stays locked and a row the engine is handling is never touched."""
+        """rerun_calc: put a set (a level, or MLIP settings) on a DONE or
+        FAILED calculation and queue it to run again -- the one way a finished
+        or failed calculation is recomputed (P24). The queue editor sends it
+        only after an overwrite warning: the row goes back to PENDING with no
+        message or result, keeps its name, place and everything it hangs off,
+        and is marked `rerun`, so the old output in its folder is overwritten
+        when it runs, never kept. The row it replaced is held (in memory) for
+        undo_rerun. The rows a FAILED one held BLOCKED go back to PENDING
+        with it (_unblock_after). A row the engine is handling is never
+        touched."""
         name = op.get("name")
         idx = next((i for i, c in enumerate(calcs) if c.name == name), None)
         if idx is None:
             raise ValueError(f"No calculation named '{name}'.")
         current = calcs[idx]
-        if current.state != CalcState.DONE:
-            raise ValueError(f"'{name}' has not finished: only a done "
+        if current.state not in RERUNNABLE_STATES:
+            raise ValueError(f"'{name}' has not finished: only a done or failed "
                              "calculation runs again this way.")
         if self._engine_active(name):
             raise ValueError(f"'{name}' cannot change: the run is handling it.")
@@ -1527,14 +1535,45 @@ class QueueStore:
         new_calc.rerun = True
         calcs[idx] = new_calc
         self._rerun_stash[name] = current
+        self._rerun_freed[name] = (self._unblock_after(calcs, name)
+                                   if current.state == CalcState.FAILED else [])
+
+    def _unblock_after(self, calcs: "list[Calculation]",
+                       name: str) -> "list[tuple[Calculation, Calculation]]":
+        """The rows downstream of `name` (by geometry reference or `after`,
+        transitively) that are BLOCKED go back to PENDING, each as a new
+        object, so a running engine, which has already handled the blocked
+        one, picks it again (P29). A row still blocked by another failure is
+        stamped BLOCKED again when the run reaches it, as at a run's start.
+        Returns the (blocked row, freed row) pairs undo_rerun puts back."""
+        down, grew = {name}, True
+        while grew:
+            grew = False
+            for c in calcs:
+                ref = c.ref_name if self._is_reference(c) else ""
+                if c.name not in down and (ref in down or c.after in down):
+                    down.add(c.name)
+                    grew = True
+        freed = []
+        for i, c in enumerate(calcs):
+            if (c.name == name or c.name not in down
+                    or c.state != CalcState.BLOCKED or self._engine_active(c.name)):
+                continue
+            again = copy.copy(c)
+            again.state = CalcState.PENDING
+            again.message = ""
+            calcs[i] = again
+            freed.append((c, again))
+        return freed
 
     def _undo_rerun(self, calcs: "list[Calculation]", systems: "list[dict]",
                     op: dict) -> None:
-        """undo_rerun: rerun_calc's inverse -- the finished row comes back as it
-        was (the same object, result and all), only while the row under that
-        name is still the unstarted rerun of it. Once it has started, or after
-        a restart (the stash is not persisted), its output may already be
-        overwritten, and the finished result is gone for good."""
+        """undo_rerun: rerun_calc's inverse -- the done or failed row comes
+        back as it was (the same object, result and all), only while the row
+        under that name is still the unstarted rerun of it, and so does each
+        row its rerun freed that is still the freed object. Once it has
+        started, or after a restart (the stash is not persisted), its output
+        may already be overwritten, and the old result is gone for good."""
         name = op.get("name")
         idx = next((i for i, c in enumerate(calcs) if c.name == name), None)
         old = self._rerun_stash.get(name)
@@ -1545,6 +1584,10 @@ class QueueStore:
         if old.system and old.system not in {s["id"] for s in systems}:
             raise ValueError(f"'{name}' cannot go back: its system is gone.")
         calcs[idx] = old
+        for blocked, freed in self._rerun_freed.get(name, ()):
+            j = next((k for k, c in enumerate(calcs) if c is freed), None)
+            if j is not None and not self._engine_active(freed.name):
+                calcs[j] = blocked
 
     def _apply_op(self, calcs: "list[Calculation]", systems: "list[dict]",
                   op, removed: "set[str]",

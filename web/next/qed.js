@@ -983,14 +983,15 @@
             title="A new ${esc(what)}, starting from ORCAdesk's default">+ New</button></div>
         ${sets.map(s => {
           const cur = !!n && n.members[0].set_name === s.name && n.setKind === kd;
-          // a finished block takes a set too: it then runs again (asked first)
+          // a finished or failed block takes a set too: it then runs again
+          // (asked first)
           const applies = match && takesSet(n);
           const ed = !!editing && editing.id === s.id;
           return `<button class="qe-set" type="button" draggable="true" data-id="${esc(s.id)}"
             aria-pressed="${applies ? cur : ed}"${cur ? ' data-cur="1"' : ""}${match ? ' data-match="1"' : ""}${ed ? ' data-edit="1"' : ""}
             aria-label="${esc((applies ? "Apply " : "Edit ") + what + " " + s.name)}"
             title="${applies ? (n.editable ? "Click to put this level on the selected block (its type stays). "
-              : "Click to run the selected finished block again with this level (asked first: its output is overwritten). ")
+              : "Click to run the selected finished or failed block again with this level (asked first: its output is overwritten). ")
               : "Click to edit it. "}Drag onto a block (its level changes, its type stays) or onto the + slot (a new step). Delete removes the set.">${esc(s.name)}</button>`;
         }).join("")}${draft}
       </div>`;
@@ -1397,7 +1398,7 @@
       && !NB.queue.some((/** @type {any} */ x) => x.name === c.ref_name);
     const blockedNote = _doomed.has(c.name) && !c.message
       ? (refGone ? `Blocked: it takes its geometry from ${c.ref_name}, which is not in the queue. Choose another geometry.`
-        : "Blocked: a calculation it depends on has failed. Remove or replace that one first.") : "";
+        : "Blocked: a calculation it depends on has failed. Put a new level on that one to run it again, or remove it.") : "";
     let geo = "";
     if (c.geometry_source === "reference") {
       geo = "ref:" + c.ref_name + (c.ref_point ? ":" + c.ref_point : "");
@@ -2195,44 +2196,65 @@
     if (rm) rm.addEventListener("click", () => requestRemove(removeChoice()));
   }
 
-  /** A finished block a set can be put on: every member done. It then runs
-   *  again (requestRerun) -- P24's one way back from DONE. @param {any} n */
+  /** The states a set put on a block runs again (rerun_calc), behind the
+   *  overwrite warning -- P24's one way back from DONE or FAILED. */
+  const RERUN = ["done", "failed"];
+  /** A block a set can be put on although it has finished or failed: one
+   *  member at least done or failed, and each of the others too or still
+   *  editable (none running). It then runs again (requestRerun).
+   *  @param {any} n */
   function rerunnable(n) {
-    return !!n && n.members.every((/** @type {any} */ c) => c.state === "done");
+    return !!n && n.members.some((/** @type {any} */ c) => RERUN.indexOf(c.state) >= 0)
+      && n.members.every((/** @type {any} */ c) => RERUN.indexOf(c.state) >= 0 || EDITABLE.indexOf(c.state) >= 0);
   }
   /** Whether a set of the block's kind can land on block `n`: it can still
-   *  change, or it has finished (then it is an overwrite, asked first).
-   *  @param {any} n */
+   *  change, or it has finished or failed (then it is an overwrite, asked
+   *  first). @param {any} n */
   function takesSet(n) {
     return !!n && (n.editable || rerunnable(n));
   }
 
-  /** A set put on a finished block: an overwrite, asked every time (never
-   *  through the once-only replace answer). Confirmed, each member goes back
-   *  to pending with the set (rerun_calc) and the output in its folder is
-   *  overwritten when it runs, never kept; undo (undo_rerun) puts the
-   *  finished results back while none of them has started.
+  /** A set put on a finished or failed block: an overwrite, asked every
+   *  time (never through the once-only replace answer). Confirmed, each done
+   *  or failed member goes back to pending with the set (rerun_calc) and the
+   *  output in its folder is overwritten when it runs, never kept; what a
+   *  failed one held blocked goes back to pending with it (the store does
+   *  that); a member still to run just takes the set. Undo (undo_rerun) puts
+   *  the old results back while none of them has started.
    *  @param {any} n @param {any} set */
   function requestRerun(n, set) {
-    const names = n.members.map((/** @type {any} */ c) => c.name);
+    const again = n.members.filter((/** @type {any} */ c) => RERUN.indexOf(c.state) >= 0);
+    const names = again.map((/** @type {any} */ c) => c.name);
+    const rest = n.members.filter((/** @type {any} */ c) => RERUN.indexOf(c.state) < 0)
+      .map((/** @type {any} */ c) => c.name);
     const k = names.length, one = k === 1;
+    const failed = again.filter((/** @type {any} */ c) => c.state === "failed").length;
+    const word = !failed ? "finished" : failed === k ? "failed" : "finished or failed";
     const what = set.kind === "ORCA" ? "level" : "MLIP set";
+    const them = one ? "it" : "them";
     // what already ran after it keeps its own results (P24): said, not changed
     const kids = NB.queue.some((/** @type {any} */ c) => c.state === "done" && names.indexOf(upOf(c)) >= 0);
+    const freed = !!failed && NB.queue.some((/** @type {any} */ c) => c.state === "blocked" && names.indexOf(upOf(c)) >= 0);
     const go = () => {
-      const ops = names.map((/** @type {string} */ nm) => ({ op: "rerun_calc", name: nm,
-        calc: { raw_text: set.text, set_name: set.name, set_id: set.id, is_raw: true } }));
-      const inv = names.map((/** @type {string} */ nm) => ({ op: "undo_rerun", name: nm }));
+      const patch = { raw_text: set.text, set_name: set.name, set_id: set.id, is_raw: true };
+      const u = updates(rest, () => Object.assign({}, patch));
+      const ops = names.map((/** @type {string} */ nm) => ({ op: "rerun_calc", name: nm, calc: patch }))
+        .concat(u.ops);
+      const inv = u.inv.concat(names.map((/** @type {string} */ nm) => ({ op: "undo_rerun", name: nm })));
       _sel = { t: "node", key: n.key, m: 0 };
       apply(ops, inv, "the overwrite of " + n.short);
     };
-    NB.modalRaw(one ? "Overwrite a finished calculation?" : "Overwrite finished calculations?",
-      `<p>${one ? esc(names[0]) + " has finished." : "These have finished:"}</p>
-       ${one ? "" : `<div class="names">${names.map(esc).join("<br>")}</div>`}
-       <p>Putting the ${what} ${esc(set.name)} on ${one ? "it" : "them"} runs ${one ? "it" : "them"} again: ${
+    const label = (/** @type {any} */ c) => esc(c.name) + (failed && failed < k ? " (" + c.state + ")" : "");
+    NB.modalRaw(one ? `Overwrite a ${word} calculation?` : `Overwrite ${word} calculations?`,
+      `<p>${one ? esc(names[0]) + " has " + word + "." : "These have " + word + ":"}</p>
+       ${one ? "" : `<div class="names">${again.map(label).join("<br>")}</div>`}
+       <p>Putting the ${what} ${esc(set.name)} on ${them} runs ${them} again: ${
          one ? "it goes" : "they go"} back to pending, and the output in ${one ? "its folder" : "their folders"} is
          overwritten when ${one ? "it runs" : "they run"}${NB.running ? " (the queue is running, so at once)" : ""}.${
-         kids ? " What already ran after " + (one ? "it" : "them") + " keeps its own results." : ""}</p>`,
+         freed ? " What was blocked by " + them + " goes back to pending too." : ""}${
+         kids ? " What already ran after " + them + " keeps its own results." : ""}${
+         rest.length ? " " + esc(rest.join(", ")) + (rest.length === 1 ? " has" : " have")
+           + " not run yet and " + (rest.length === 1 ? "takes" : "take") + " the " + what + " too." : ""}</p>`,
       [{ label: "Cancel", cls: "btn-ghost", focus: true },
        { label: "Overwrite", cls: "btn-danger", act: go }]);
   }

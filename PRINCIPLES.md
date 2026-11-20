@@ -317,20 +317,22 @@ queue itself never dies.
 ### P24 — DONE is frozen; FAILED is locked; only CANCELLED re-runs
 
 A DONE calc is never recomputed **implicitly** (recomputing wastes hours
-and overwrites a good result on disk). The one explicit way back is putting
-a set (a level or MLIP settings) on a finished block in the queue editor:
-an overwrite warning names it, and only on confirmation does the store's
-`rerun_calc` return it to PENDING with the new set, marked so that its old
-output is overwritten when it runs and is never offered or given
-keep-existing. Undo restores the finished row only until the rerun starts;
-what already ran after it keeps its own results. A calc that fails is **locked at the moment of
-failure** — terminally inert, in the spirit of the MLIP-card lock (D41,
-§13.3): it cannot be edited, re-run, or reordered, never re-enters the run
-loop, and never appears in the overwrite/keep-existing decision. Its only
-interactions are read-only diagnosis (state badge, failure message, its
-on-disk output — P28) and **removal**. A failed result must never be
-promoted to DONE (P2, P25); retrying means building a new calculation, not
-resurrecting the failed one. CANCELLED calcs (a deliberate user stop — P22,
+and overwrites a good result on disk). A calc that fails is **locked at the
+moment of failure** — terminally inert, in the spirit of the MLIP-card lock
+(D41, §13.3): it cannot be edited or reordered, never re-enters the run
+loop on its own, and never appears in the overwrite/keep-existing decision.
+Its interactions are read-only diagnosis (state badge, failure message, its
+on-disk output — P28), **removal**, and the one explicit way back below. A
+failed result must never be promoted to DONE (P2, P25).
+
+The one explicit way back from either is putting a set (a level or MLIP
+settings) on a finished or failed block in the queue editor: an overwrite
+warning names it, and only on confirmation does the store's `rerun_calc`
+return it to PENDING with the new set, marked so that its old output is
+overwritten when it runs and is never offered or given keep-existing. What a
+failed one held BLOCKED goes back to PENDING with it. Undo restores the old
+row (and those blocked rows) only until the rerun starts; what already ran
+after it keeps its own results. CANCELLED calcs (a deliberate user stop — P22,
 not a failure) remain editable and do re-run. Only `EDITABLE_STATES`
 (pending/cancelled/blocked) may be edited or reordered, and the UI derives
 its affordances from the same rule (D64). Frozen results are reconstructed

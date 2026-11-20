@@ -28,9 +28,10 @@ Failure propagation: if a calculation fails, any calculation that depends on it
 (directly or transitively) is marked BLOCKED and skipped. Unrelated calculations
 continue. This is dependency-scoped, not whole-queue.
 
-A FAILED calculation is locked (P24): it never re-enters the run loop — retrying
-means building a new calculation. Only CANCELLED (a deliberate user stop, not a
-failure) re-runs.
+A FAILED calculation is locked (P24): it never re-enters the run loop on its
+own. Only CANCELLED (a deliberate user stop, not a failure) re-runs; a FAILED or
+DONE one runs again only when the queue editor puts a new set on it behind an
+overwrite warning (store rerun_calc), which makes it a PENDING row again.
 
 Folder layout: each calculation gets its own folder ``{workspace}/{name}/``.
 Names are unique within a queue (enforced by the store — ``QueueStore`` rejects
@@ -130,8 +131,8 @@ class Calculation:
     # and Stop still applies — and reads as failed. Not persisted: a reattach
     # finds the marker in the .out again.
     faulted: bool = False
-    # a DONE calc the queue editor put back to PENDING with a new set
-    # (store rerun_calc, behind an overwrite warning; P24): the output in its
+    # a DONE or FAILED calc the queue editor put back to PENDING with a new
+    # set (store rerun_calc, behind an overwrite warning; P24): the output in its
     # folder is the old run's, which the user chose to overwrite -- so it is
     # never offered, or given, keep-existing. Meaningful only until the row
     # starts (store.is_rerun: PENDING / BLOCKED); persisted in the session.
@@ -1029,8 +1030,9 @@ class QueueEngine:
         without being asked (AutoStart) and, when the atoms differ, dies in
         GUESS: "Error: Input geometry does not match current geometry", exit
         code 55 (verified on 6.1.1). That is a FAILED calc, and FAILED is locked
-        (P24) — the name can then never be run again, and the reported reason
-        says nothing about a stale file the user cannot see.
+        (P24) — the name runs again only through an explicit overwrite, and
+        the reported reason says nothing about a stale file the user cannot
+        see.
 
         A restart from the SAME structure and charge/multiplicity is left alone:
         that is a free warm start, and it is what a re-run of a cancelled job
@@ -2069,12 +2071,14 @@ class QueueEngine:
             self.cb.calc_update(i, calc)
             return False
 
-        # FAILED is locked (P24): never re-run a failed calc; a retry is a
-        # NEW calculation. Checked before the dependency check so the failure
-        # diagnosis is never re-stamped BLOCKED.
+        # FAILED is locked (P24): never re-run a failed calc implicitly; a
+        # retry is a new set put on it in the queue editor (store rerun_calc,
+        # which makes it PENDING again). Checked before the dependency check so
+        # the failure diagnosis is never re-stamped BLOCKED.
         if calc.state == CalcState.FAILED:
-            self.cb.log(f"[{calc.name}] failed previously — locked; "
-                        "build a new calculation to retry.", "warn", calc.name)
+            self.cb.log(f"[{calc.name}] failed previously — locked; put a "
+                        "new set on it in the queue editor to retry.", "warn",
+                        calc.name)
             return False
 
         # A reference to a calculation that is not in the queue at all. Both
