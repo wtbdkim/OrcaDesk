@@ -24,18 +24,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import threading
+import time
+
 import pytest
 
 from orcamgr.core.input_generator import StepConfig
-from orcamgr.core.parser import ParseResult
+from orcamgr.core.parser import Atom, ParseResult
 from orcamgr.core.queue import (
     CalcState,
     Calculation,
     GeometrySource,
     QueueCallbacks,
     QueueEngine,
+    _kept_result_matches,
 )
+from orcamgr.core.resources import ResourceBudget
 from orcamgr.core.runner import OrcaCancelled, OrcaRunError
+
+
+_CALLS_LOCK = threading.Lock()
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -67,26 +75,35 @@ class EngineHarness:
     _monitor_and_finish would. `calls` records which calcs actually ran.
     """
 
-    def __init__(self, tmp_path, skip_names=None):
+    def __init__(self, tmp_path, skip_names=None, budget=None):
         self.logs: list[tuple[str, str]] = []
+        self.tagged: list[tuple[str, str, str]] = []   # (msg, level, calc name)
         self.calls: list[str] = []
         self.behaviors: dict = {}
-        callbacks = QueueCallbacks(
-            log=lambda msg, level: self.logs.append((msg, level)),
-            calc_update=lambda index, calc: None,
-        )
+
+        def _log(msg, level, calc=""):
+            self.logs.append((msg, level))
+            self.tagged.append((msg, level, calc))
+
+        callbacks = QueueCallbacks(log=_log, calc_update=lambda index, calc: None)
         self.engine = QueueEngine(
             orca_path="orca-not-needed-in-tests",
             workspace_root=str(tmp_path),
             callbacks=callbacks,
             skip_names=skip_names,
+            budget=budget,
         )
-        # Instance attribute shadows the bound method: run_all's
-        # self._run_calc(...) resolves to the fake.
+        # Instance attributes shadow the bound methods: run_all's
+        # self._run_calc(...) resolves to the fake. The MLIP and CREST entry
+        # points are faked too — the dispatcher routes those kinds elsewhere,
+        # so a test using one would otherwise reach the real backend.
         self.engine._run_calc = self._fake_run_calc
+        self.engine._run_mlip_calc = self._fake_run_calc
+        self.engine._run_crest_calc = self._fake_run_calc
 
     def _fake_run_calc(self, calc: Calculation, index: int) -> None:
-        self.calls.append(calc.name)
+        with _CALLS_LOCK:
+            self.calls.append(calc.name)
         action = self.behaviors.get(calc.name)
         if action is not None:
             action(calc)  # may raise OrcaRunError / OrcaCancelled / anything
@@ -332,7 +349,7 @@ def test_running_calc_with_dead_process_is_judged_not_relaunched(tmp_path, monke
     logs: list = []
     engine = QueueEngine(
         orca_path="orca-not-needed-in-tests", workspace_root=str(tmp_path),
-        callbacks=QueueCallbacks(log=lambda m, l: logs.append(m),
+        callbacks=QueueCallbacks(log=lambda m, l, _calc="": logs.append(m),
                                  calc_update=lambda i, c: None))
     calc = make_calc("orphan", kind="opt", state=CalcState.RUNNING)
     calc.xyz = "H 0.0 0.0 0.0\nH 0.0 0.0 0.74"
@@ -355,7 +372,7 @@ def test_running_calc_dead_without_output_fails_and_blocks_dependents(tmp_path, 
     monkeypatch.setattr(queue_mod, "process_matches", lambda pid, ct: False)
     engine = QueueEngine(
         orca_path="orca-not-needed-in-tests", workspace_root=str(tmp_path),
-        callbacks=QueueCallbacks(log=lambda m, l: None,
+        callbacks=QueueCallbacks(log=lambda m, l, _calc="": None,
                                  calc_update=lambda i, c: None))
     calc = make_calc("orphan", kind="opt", state=CalcState.RUNNING)
     calc.pid = 4242
@@ -448,16 +465,38 @@ def test_real_prelaunch_failure_ignores_stale_out(tmp_path):
     engine = QueueEngine(
         orca_path="orca-not-needed-in-tests",
         workspace_root=str(tmp_path),
-        callbacks=QueueCallbacks(log=lambda msg, level: logs.append((msg, level))),
+        callbacks=QueueCallbacks(log=lambda msg, level, _calc="": logs.append((msg, level))),
     )
-    calc = make_calc("child", kind="opt", ref="ghost")   # ref not in the queue
+    # An empty DIRECT geometry: _resolve_geometry refuses it before anything is
+    # launched. (A dangling REFERENCE used to be the example here, but that is
+    # now BLOCKED rather than FAILED — a missing parent is an unsatisfiable
+    # dependency the user can re-point, not a computation that failed, and
+    # FAILED would lock it.)
+    calc = make_calc("child", kind="opt")
+    calc.xyz = ""
     _write_out(tmp_path, "child", ABORTED_OPT_OUT)       # stale diagnosis on disk
 
     engine.run_all([calc])
 
     assert calc.state is CalcState.FAILED
-    assert calc.message == "Referenced calculation 'ghost' not found in queue."
+    assert calc.message == "No coordinates provided (direct source is empty)."
     assert "error termination" not in calc.message       # the stale .out stayed out
+
+
+def test_a_missing_reference_blocks_the_dependent_instead_of_locking_it(tmp_path):
+    """Both run entry points screen for a dangling reference up front
+    (find_dangling_reference), but the startup resume cannot refuse — it has a
+    running job to reattach — and a mid-run add is never screened. Reaching
+    _resolve_geometry it became FAILED, which is locked (P24): a queue the user
+    could have fixed by re-pointing one row needed that row rebuilt."""
+    harness = EngineHarness(tmp_path)
+    calc = make_calc("child", kind="opt", ref="ghost")
+
+    harness.engine.run_all([calc])
+
+    assert calc.state is CalcState.BLOCKED
+    assert "ghost" in calc.message
+    assert harness.calls == []
 
 
 def test_keep_existing_fallback_prelaunch_failure_keeps_real_cause(tmp_path):
@@ -553,7 +592,7 @@ class _SentinelRunner:
 def _real_engine(tmp_path) -> QueueEngine:
     engine = QueueEngine(orca_path="orca-not-needed-in-tests",
                          workspace_root=str(tmp_path))
-    engine.runner = _SentinelRunner()
+    engine._orca_runner_factory = _SentinelRunner
     return engine
 
 
@@ -648,6 +687,33 @@ def test_irc_read_hess_staged_from_referenced_calc_folder(tmp_path):
     assert (tmp_path / "irc2" / "TS2.hess").exists()
 
 
+def test_irc_picked_hess_is_copied_into_the_run_folder(tmp_path):
+    # Load .hess stores the picked file's full path; the input names only the
+    # file, so it must be in the run folder before ORCA starts
+    engine = _real_engine(tmp_path)
+    src_dir = tmp_path / "elsewhere with space"
+    src_dir.mkdir()
+    (src_dir / "TS2.hess").write_text("$hessian\n", encoding="utf-8")
+    calc = Calculation(name="irc3", kind="irc",
+                       config=StepConfig(kind="irc", irc_init_hess="read",
+                                         irc_hess_file=str(src_dir / "TS2.hess")))
+    calc.xyz = "H 0.0 0.0 0.0"
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+    assert (tmp_path / "irc3" / "TS2.hess").read_text(encoding="utf-8") == "$hessian\n"
+    assert 'Hess_Filename "TS2.hess"' in (tmp_path / "irc3" / "irc3.inp").read_text(encoding="utf-8")
+
+
+def test_irc_picked_hess_that_vanished_fails_before_launch(tmp_path):
+    engine = _real_engine(tmp_path)
+    calc = Calculation(name="irc4", kind="irc",
+                       config=StepConfig(kind="irc", irc_init_hess="read",
+                                         irc_hess_file=str(tmp_path / "gone" / "TS2.hess")))
+    calc.xyz = "H 0.0 0.0 0.0"
+    with pytest.raises(OrcaRunError, match="Load the .hess again"):
+        engine._run_calc(calc, 0)
+
+
 def test_raw_neb_custom_end_file_ignores_stale_stored_product(tmp_path):
     # A stored product is dead state for a raw text that points NEB_End_XYZFile
     # at its own file (the _nebProductXyz global survives excursions): no
@@ -733,7 +799,7 @@ class _DetachingRunner:
     def end_position(self, out_path):
         return 0
 
-    def monitor(self, out_path, on_line=None, start_pos=0):
+    def monitor(self, out_path, on_line=None, start_pos=0, on_fatal=None):
         raise OrcaDetached("Monitoring stopped; ORCA left running.")
 
 
@@ -748,11 +814,11 @@ def test_orca_launch_persists_output_path_before_detach(tmp_path):
         orca_path="orca-not-needed-in-tests",
         workspace_root=str(tmp_path),
         callbacks=QueueCallbacks(
-            log=lambda m, level: None,
+            log=lambda m, level, _calc="": None,
             calc_update=lambda i, c: updates.append((c.output_path, c.state)),
         ),
     )
-    engine.runner = _DetachingRunner()
+    engine._orca_runner_factory = _DetachingRunner
     calc = make_calc("shutme", kind="sp")
 
     engine.run_all([calc])
@@ -816,7 +882,7 @@ def test_reattach_prefers_persisted_output_path_over_current_workspace(tmp_path,
     engine = QueueEngine(
         orca_path="orca-not-needed-in-tests",
         workspace_root=str(tmp_path / "NEW_WS"),
-        callbacks=QueueCallbacks(log=lambda m, l: None,
+        callbacks=QueueCallbacks(log=lambda m, l, _calc="": None,
                                  calc_update=lambda i, c: None))
     old_out = tmp_path / "OLD_WS" / "job" / "job.out"
     old_out.parent.mkdir(parents=True)
@@ -827,8 +893,12 @@ def test_reattach_prefers_persisted_output_path_over_current_workspace(tmp_path,
     calc.output_path = str(old_out)
 
     seen = {}
-    monkeypatch.setattr(engine.runner, "adopt", lambda pid, ct: None)
-    monkeypatch.setattr(engine.runner, "end_position", lambda p: 0)
+
+    class _AdoptRunner:
+        def adopt(self, pid, ct): return None
+        def end_position(self, path): return 0
+
+    engine._orca_runner_factory = _AdoptRunner
 
     def fake_monitor(calc_, index, out_path, start_pos=0):
         seen["path"] = str(out_path)
@@ -839,6 +909,443 @@ def test_reattach_prefers_persisted_output_path_over_current_workspace(tmp_path,
 
     assert seen["path"] == str(old_out)
     assert calc.output_path == str(old_out)
+
+
+# ---- dependency blocking is judged from the LIVE queue ----------------------
+# The queue is live (P29) and rows are tracked by object identity, but a NAME is
+# not an identity: the failure bookkeeping was a set of names filled at run
+# start, so a blocked row edited to point somewhere healthy — or removed and
+# re-added with its own coordinates — was blocked again by a decision about a
+# calculation that no longer existed.
+
+def test_blocked_row_repointed_mid_run_runs_after_all(tmp_path):
+    harness = EngineHarness(tmp_path)
+    boom = make_calc("boom")
+    good = make_calc("good")
+    dep = make_calc("dep", ref="boom", state=CalcState.BLOCKED)
+    dep.message = "Skipped: a dependency failed."
+    calcs = [boom, good, dep]
+    harness.behaviors["boom"] = raiser(OrcaRunError("simulated failure"))
+
+    def repoint(_c):
+        fixed = make_calc("dep", ref="good")     # same name, NEW object
+        calcs[2] = fixed
+
+    harness.behaviors["good"] = repoint
+    harness.engine.run_all(calcs)
+
+    assert boom.state is CalcState.FAILED
+    assert calcs[2].state is CalcState.DONE
+    assert harness.calls == ["boom", "good", "dep"]
+
+
+def test_blocked_row_readded_with_direct_geometry_runs(tmp_path):
+    harness = EngineHarness(tmp_path)
+    boom = make_calc("boom")
+    slow = make_calc("slow")
+    dep = make_calc("dep", ref="boom")
+    calcs = [boom, slow, dep]
+    harness.behaviors["boom"] = raiser(OrcaRunError("simulated failure"))
+
+    def readd(_c):
+        calcs.remove(dep)
+        calcs.append(make_calc("dep"))           # DIRECT geometry now
+
+    harness.behaviors["slow"] = readd
+    harness.engine.run_all(calcs)
+
+    assert calcs[-1].name == "dep" and calcs[-1].state is CalcState.DONE
+
+
+def test_a_failed_grandparent_blocks_through_a_pending_parent(tmp_path):
+    # queue order puts the child first; walking the chain does not care
+    harness = EngineHarness(tmp_path)
+    boom = make_calc("boom", state=CalcState.FAILED)
+    parent = make_calc("parent", ref="boom")
+    child = make_calc("child", ref="parent")
+
+    harness.engine.run_all([child, parent, boom])
+
+    assert (child.state, parent.state) == (CalcState.BLOCKED, CalcState.BLOCKED)
+    assert harness.calls == []
+
+
+# ---- a reference cycle must not touch rows that were never going to run ------
+
+def test_reference_cycle_leaves_done_failed_and_running_rows_alone(tmp_path):
+    """_block_unreachable used to stamp EVERY unhandled row BLOCKED. BLOCKED is
+    an editable state that run_all normalizes back to PENDING, so a frozen DONE
+    result would be recomputed over, a FAILED row would lose its diagnosis and
+    its P24 lock, and a RUNNING row would be stamped while its detached ORCA
+    kept going."""
+    harness = EngineHarness(tmp_path)
+    done = make_calc("done", state=CalcState.DONE)
+    done.message = "Completed."
+    failed = make_calc("failed", state=CalcState.FAILED)
+    failed.message = "Optimization did not converge."
+    # two rows that reference each other: nothing can ever resolve them
+    a = make_calc("a", ref="b")
+    b = make_calc("b", ref="a")
+
+    harness.engine.run_all([done, failed, a, b])
+
+    assert done.state is CalcState.DONE and done.message == "Completed."
+    assert failed.state is CalcState.FAILED
+    assert failed.message == "Optimization did not converge."
+    assert (a.state, b.state) == (CalcState.BLOCKED, CalcState.BLOCKED)
+    assert harness.calls == []
+
+
+# ---- keep-existing belongs to the ROW the modal was about -------------------
+
+def test_keep_existing_is_not_inherited_by_a_new_row_of_the_same_name(tmp_path):
+    """_skip_names comes from the overwrite modal, which was about the rows in
+    the queue at run start. A row removed and re-added under that name mid-run
+    is a different calculation and must actually run, not be stamped DONE from
+    an output it never produced."""
+    harness = EngineHarness(tmp_path, skip_names={"keep"})
+    run_dir = tmp_path / "keep"
+    run_dir.mkdir()
+    (run_dir / "keep.out").write_text("****ORCA TERMINATED NORMALLY****\n",
+                                      encoding="utf-8")
+    first = make_calc("first")
+    original = make_calc("keep")
+    calcs = [first, original]
+
+    def swap(_c):
+        calcs[1] = make_calc("keep")             # same name, NEW object
+    harness.behaviors["first"] = swap
+
+    harness.engine.run_all(calcs)
+
+    assert harness.calls == ["first", "keep"]    # it RAN
+    assert calcs[1].message != "Kept existing result (not recomputed)."
+
+
+# ---- an existing output has to be this KIND of result ------------------------
+
+def test_keep_existing_refuses_an_output_of_another_kind(tmp_path):
+    """The structural check compared atoms only, and validate_result's freq rule
+    ("no imaginary modes") is vacuously true of an output with no frequency
+    table — so an opt run's folder was adopted as a finished freq job."""
+    harness = EngineHarness(tmp_path, skip_names={"job"})
+    run_dir = tmp_path / "job"
+    run_dir.mkdir()
+    (run_dir / "job.out").write_text(
+        "|  1> ! B3LYP def2-SVP Opt\n"
+        "INPUT FILE\n"
+        "|  1> ! B3LYP def2-SVP Opt\n"
+        "THE OPTIMIZATION HAS CONVERGED\n"
+        "CARTESIAN COORDINATES (ANGSTROEM)\n"
+        "---------------------------------\n"
+        "  H      0.000000    0.000000    0.000000\n"
+        "  H      0.000000    0.000000    0.740000\n"
+        "\n"
+        "FINAL SINGLE POINT ENERGY      -1.100000000000\n"
+        "****ORCA TERMINATED NORMALLY****\n", encoding="utf-8")
+    freq = make_calc("job", kind="freq")
+    freq.xyz = "H 0.0 0.0 0.0\nH 0.0 0.0 0.74"
+
+    harness.engine.run_all([freq])
+
+    assert harness.calls == ["job"]              # it ran instead of being kept
+    assert "frequencies" in harness.log_text()
+
+
+# ---- a raw input that promises coordinates must have them -------------------
+
+def test_raw_placeholder_without_a_geometry_is_refused_before_launch(tmp_path):
+    """render_raw_input substituted "" and ORCA was launched on an empty
+    coordinate block, failing into a locked FAILED (P24) minutes later."""
+    harness = EngineHarness(tmp_path)
+    calc = make_calc("raw")
+    calc.is_raw = True
+    calc.raw_text = "! HF def2-SVP SP\n* xyz 0 1\n{{GEOMETRY}}\n*\n"
+    calc.xyz = ""
+
+    with pytest.raises(OrcaRunError) as e:
+        harness.engine._resolve_geometry(calc)
+
+    assert "placeholder" in str(e.value)
+
+
+def test_raw_input_with_its_own_coordinates_still_needs_no_xyz(tmp_path):
+    harness = EngineHarness(tmp_path)
+    calc = make_calc("raw")
+    calc.is_raw = True
+    calc.raw_text = "! HF def2-SVP SP\n* xyz 0 1\nH 0 0 0\n*\n"
+    calc.xyz = ""
+
+    assert harness.engine._resolve_geometry(calc) == ""
+
+
+def test_raw_input_whose_own_block_is_not_its_stored_geometry_is_warned_before_launch(tmp_path):
+    """A copied raw calc with new coordinates pasted into the box: the text's
+    own * xyz block runs verbatim and the box's never do. It launches (the
+    text is the user's input) but the log says which structure runs."""
+    logs = []
+    engine = QueueEngine(orca_path="orca-not-needed-in-tests",
+                         workspace_root=str(tmp_path),
+                         callbacks=QueueCallbacks(
+                             log=lambda msg, level, calc="": logs.append((msg, level)),
+                             calc_update=lambda index, calc: None))
+    engine._orca_runner_factory = _SentinelRunner
+    calc = make_calc("copied")
+    calc.is_raw = True
+    calc.raw_text = "! HF def2-SVP Opt\n* xyz 0 1\nH 0 0 0\nH 0 0 0.74\n*\n"
+    calc.xyz = "H 0 0 0\nH 0 0 0.90"
+
+    with pytest.raises(_LaunchAttempted):
+        engine._run_calc(calc, 0)
+
+    warned = [m for m, lv in logs if lv == "warn" and "* xyz block" in m]
+    assert warned and "atom 2" in warned[0]
+    assert (tmp_path / "copied" / "copied.inp").read_text() == calc.raw_text
+
+
+# ---- a DONE parent ends the dependency chain --------------------------------
+
+def test_a_dependent_of_a_done_parent_runs_even_when_its_grandparent_failed(tmp_path):
+    """A -> B -> C with A FAILED and B DONE: B's geometry is on disk and frozen
+    (P24), so C is perfectly runnable. Propagation walked straight through B and
+    blocked C — whatever A was needed for already happened."""
+    harness = EngineHarness(tmp_path)
+    a = make_calc("A", state=CalcState.FAILED)
+    b = make_calc("B", ref="A", state=CalcState.DONE)
+    b.result = ParseResult(terminated_normally=True,
+                           geometry=[Atom("H", 0.0, 0.0, 0.0)])
+    b.output_path = str(tmp_path / "B" / "B.out")
+    c = make_calc("C", ref="B")
+
+    harness.engine.run_all([a, b, c])
+
+    assert c.state is CalcState.DONE
+    assert harness.calls == ["C"]
+
+
+def test_a_dependent_of_a_failed_parent_is_still_blocked(tmp_path):
+    harness = EngineHarness(tmp_path)
+    a = make_calc("A", state=CalcState.FAILED)
+    b = make_calc("B", ref="A")
+
+    harness.engine.run_all([a, b])
+
+    assert b.state is CalcState.BLOCKED
+    assert harness.calls == []
+
+
+# ---- keep-existing: "cannot tell" is not "does not match" -------------------
+
+def test_keep_existing_does_not_reject_a_raw_calc_whose_geometry_it_cannot_see(tmp_path):
+    """A raw '* xyzfile' input reads its geometry from a file the app never
+    parses, so calc.xyz is whatever was last loaded — stale by its own
+    docstring. Judging the on-disk result against it answered "different
+    structure" about a perfectly matching result, and the run the user asked to
+    KEEP was recomputed over it."""
+    calc = make_calc("raw", kind="sp")
+    calc.is_raw = True
+    calc.raw_text = "! HF STO-3G\n* xyzfile 0 1 external.xyz\n"
+    calc.xyz = "H 0.0 0.0 0.0\nH 0.0 0.0 0.74"          # stale, 2 atoms
+    disk = ParseResult(terminated_normally=True,
+                       geometry=[Atom("O", 0.0, 0.0, 0.0),
+                                 Atom("H", 0.0, 0.0, 1.0),
+                                 Atom("H", 0.0, 1.0, 0.0)])
+
+    assert _kept_result_matches(calc, disk) == ""
+
+
+def test_keep_existing_still_rejects_a_raw_calc_whose_block_it_can_read(tmp_path):
+    calc = make_calc("raw", kind="sp")
+    calc.is_raw = True
+    calc.raw_text = "! HF STO-3G\n* xyz 0 1\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n*\n"
+    disk = ParseResult(terminated_normally=True,
+                       geometry=[Atom("O", 0.0, 0.0, 0.0),
+                                 Atom("H", 0.0, 0.0, 1.0),
+                                 Atom("H", 0.0, 1.0, 0.0)])
+
+    assert "different structure" in _kept_result_matches(calc, disk)
+
+
+# ---- the raw IRC gets its Hessian staged too --------------------------------
+
+def test_a_raw_irc_reading_a_hessian_gets_it_staged(tmp_path):
+    """Raw inputs were exempt from the staging guard, so the ts->irc handoff —
+    the whole point of it — did not happen in Expert mode: ORCA launched with no
+    .hess and died inside."""
+    harness = EngineHarness(tmp_path)
+    (tmp_path / "ts").mkdir(parents=True)
+    (tmp_path / "ts" / "ts.hess").write_text("hessian", encoding="utf-8")
+    run_dir = tmp_path / "ircraw"
+    run_dir.mkdir()
+    calc = make_calc("ircraw", kind="irc", ref="ts")
+    calc.is_raw = True
+    calc.raw_text = ('! B3LYP def2-SVP IRC\n%irc\n  InitHess read\n'
+                     '  Hess_Filename "ts.hess"\nend\n')
+
+    harness.engine._stage_irc_hessian(calc, run_dir)
+
+    assert (run_dir / "ts.hess").read_text(encoding="utf-8") == "hessian"
+
+
+def test_a_raw_irc_that_computes_its_own_hessian_is_left_alone(tmp_path):
+    harness = EngineHarness(tmp_path)
+    run_dir = tmp_path / "ircraw"
+    run_dir.mkdir(parents=True)
+    calc = make_calc("ircraw", kind="irc", ref="ts")
+    calc.is_raw = True
+    calc.raw_text = "! B3LYP def2-SVP IRC\n%irc\n  InitHess calc_anfreq\nend\n"
+
+    harness.engine._stage_irc_hessian(calc, run_dir)   # must not raise
+
+    assert list(run_dir.iterdir()) == []
+
+
+def test_a_raw_irc_whose_hessian_is_nowhere_fails_with_a_clear_message(tmp_path):
+    harness = EngineHarness(tmp_path)
+    run_dir = tmp_path / "ircraw"
+    run_dir.mkdir(parents=True)
+    calc = make_calc("ircraw", kind="irc", ref="ts")
+    calc.is_raw = True
+    calc.raw_text = ('! B3LYP IRC\n%irc\n  InitHess read\n'
+                     '  Hess_Filename "missing.hess"\nend\n')
+
+    with pytest.raises(OrcaRunError) as e:
+        harness.engine._stage_irc_hessian(calc, run_dir)
+
+    assert "missing.hess" in str(e.value)
+
+
+# ---- how ORCA is invoked ----------------------------------------------------
+# ORCA 6 hands its own argument on to orca_startup and the MPI ranks unquoted,
+# so an absolute path with a space in it truncates: "Error: Cannot open input
+# file C:/Users/John" and an error termination in Startup (verified on 6.1.1,
+# serial and 2-rank MPI). The default workspace sits under the user profile, so
+# an account name with a space would break every run. Naming the input relative
+# to the folder we already run in leaves nothing to split.
+
+def test_orca_is_launched_with_the_bare_input_file_name(tmp_path, monkeypatch):
+    import orcamgr.core.runner as runner_mod
+
+    folder = tmp_path / "John Smith" / "work space"
+    folder.mkdir(parents=True)
+    inp = folder / "h2.inp"
+    inp.write_text("! B3LYP\n", encoding="utf-8")
+    orca = tmp_path / "orca.exe"
+    orca.write_text("", encoding="utf-8")
+    seen = {}
+
+    class _Proc:
+        pid = 4321
+
+    def fake_popen(cmd, cwd=None, **kw):
+        seen["cmd"], seen["cwd"] = cmd, cwd
+        return _Proc()
+
+    monkeypatch.setattr(runner_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runner_mod, "create_time_of", lambda pid: 1.0, raising=False)
+
+    runner = runner_mod.OrcaRunner(str(orca))
+    runner.launch(inp, folder / "h2.out")
+
+    assert seen["cmd"][1] == "h2.inp"          # not the absolute path
+    assert " " not in seen["cmd"][1]
+    assert Path(seen["cwd"]) == folder         # ...which is why cwd must be it
+
+
+# ---- stale ORCA restart files in a reused run folder -------------------------
+# ORCA 6 reads a {name}.gbw sitting beside {name}.inp as the SCF's initial guess
+# without being asked (AutoStart). Workspace folders are never deleted and a
+# queue name is unique only within the current queue, so that file may be from
+# another molecule; ORCA then dies in GUESS ("Input geometry does not match
+# current geometry", exit 55 on 6.1.1) and the calc is FAILED — locked (P24).
+
+_H2_INP = """! B3LYP def2-SVP
+* xyz 0 1
+H 0.0 0.0 0.0
+H 0.0 0.0 0.74
+*
+"""
+_H2O_INP = """! B3LYP def2-SVP
+* xyz 0 1
+O 0.0 0.0 0.117
+H 0.0 0.757 -0.469
+H 0.0 -0.757 -0.469
+*
+"""
+
+
+def _folder_with_previous_run(tmp_path, prev_inp_text):
+    """A run folder as an earlier run of 'y' left it: its .inp and its .gbw."""
+    d = tmp_path / "y"
+    d.mkdir(parents=True, exist_ok=True)
+    if prev_inp_text is not None:
+        (d / "y.inp").write_text(prev_inp_text, encoding="utf-8")
+    (d / "y.gbw").write_bytes(b"binary orbitals")
+    return d
+
+
+def test_restart_file_from_another_structure_is_set_aside(tmp_path):
+    harness = EngineHarness(tmp_path)
+    d = _folder_with_previous_run(tmp_path, _H2_INP)
+
+    harness.engine._set_aside_stale_guess(make_calc("y"), d, _H2O_INP)
+
+    assert not (d / "y.gbw").exists()
+    assert (d / "y.gbw.bak").read_bytes() == b"binary orbitals"
+    assert "different structure" in harness.log_text()
+
+
+def test_restart_file_from_the_same_structure_is_kept(tmp_path):
+    """A re-run of a cancelled job: the warm start is valid and free."""
+    harness = EngineHarness(tmp_path)
+    d = _folder_with_previous_run(tmp_path, _H2_INP)
+
+    harness.engine._set_aside_stale_guess(make_calc("y"), d, _H2_INP)
+
+    assert (d / "y.gbw").exists()
+    assert not (d / "y.gbw.bak").exists()
+
+
+def test_restart_file_is_kept_when_the_input_asks_to_read_it(tmp_path):
+    harness = EngineHarness(tmp_path)
+    d = _folder_with_previous_run(tmp_path, _H2_INP)
+    reads_it = ('! B3LYP def2-SVP MORead\n%moinp "y.gbw"\n' + _H2O_INP)
+
+    harness.engine._set_aside_stale_guess(make_calc("y"), d, reads_it)
+
+    assert (d / "y.gbw").exists()
+
+
+def test_restart_file_is_set_aside_when_the_previous_input_is_gone(tmp_path):
+    """Cannot tell -> cold start. The two answers do not cost the same: a
+    needless SCF restart against a permanently locked calculation."""
+    harness = EngineHarness(tmp_path)
+    d = _folder_with_previous_run(tmp_path, None)
+
+    harness.engine._set_aside_stale_guess(make_calc("y"), d, _H2O_INP)
+
+    assert (d / "y.gbw.bak").exists()
+
+
+def test_charge_change_alone_sets_the_restart_file_aside(tmp_path):
+    harness = EngineHarness(tmp_path)
+    d = _folder_with_previous_run(tmp_path, _H2_INP)
+    cation = _H2_INP.replace("* xyz 0 1", "* xyz 1 2")
+
+    harness.engine._set_aside_stale_guess(make_calc("y"), d, cation)
+
+    assert (d / "y.gbw.bak").exists()
+
+
+def test_no_restart_file_is_a_no_op(tmp_path):
+    harness = EngineHarness(tmp_path)
+    d = tmp_path / "y"
+    d.mkdir()
+
+    harness.engine._set_aside_stale_guess(make_calc("y"), d, _H2O_INP)
+
+    assert list(d.iterdir()) == []
+    assert harness.log_text() == ""
 
 
 # ---- P29: the walked queue is LIVE ------------------------------------------
@@ -855,6 +1362,40 @@ def test_calc_added_mid_run_executes_in_same_run(tmp_path):
     harness.behaviors["first"] = lambda _c: calcs.append(late)
 
     harness.engine.run_all(calcs)
+
+    assert harness.calls == ["first", "late"]
+    assert late.state is CalcState.DONE
+
+
+def test_calc_added_while_last_job_runs_executes_in_same_run(tmp_path):
+    """The row lands while the ONLY job is in flight, from outside that job.
+
+    Every row the walk knows about is already `seen` at that moment, so the
+    dispatcher must keep waiting on the in-flight slot and rescan when it
+    frees — exiting the walk there would leave the new row PENDING for a run
+    that reports "Queue finished." (P29). The sibling test above adds from
+    inside the job's own callback, which usually wins the race against the
+    dispatcher's next scan; this one cannot.
+    """
+    harness = EngineHarness(tmp_path)
+    started, release = threading.Event(), threading.Event()
+    calcs = [make_calc("first")]
+    late = make_calc("late")
+
+    def hold(_c):
+        started.set()
+        release.wait(10)
+
+    harness.behaviors["first"] = hold
+    walk = threading.Thread(target=harness.engine.run_all, args=(calcs,))
+    walk.start()
+    try:
+        assert started.wait(10)
+        calcs.append(late)          # the user hits "Add to queue" mid-run
+        release.set()
+    finally:
+        release.set()
+        walk.join(20)
 
     assert harness.calls == ["first", "late"]
     assert late.state is CalcState.DONE
@@ -923,13 +1464,70 @@ def test_rows_reordered_mid_run_execute_in_new_order(tmp_path):
     assert harness.calls == ["first", "third", "second"]
 
 
-def test_active_name_is_exposed_while_a_calc_is_handled(tmp_path):
+def test_active_names_expose_every_calc_being_handled(tmp_path):
     harness = EngineHarness(tmp_path)
     seen: list = []
     harness.behaviors["only"] = lambda _c: seen.append(
-        harness.engine.active_name)
+        harness.engine.active_names)
 
     harness.engine.run_all([make_calc("only")])
 
-    assert seen == ["only"]                       # set while handling
-    assert harness.engine.active_name is None     # cleared when the run ends
+    assert seen == [{"only"}]                     # set while handling
+    assert harness.engine.active_names == set()   # cleared when the run ends
+
+
+# ---- a hand-written NumFreq is warned about, never rewritten -----------------
+# ORCA runs one displaced-geometry gradient per rank and hangs after the last
+# one when it is given more ranks than displacements (measured on 6.1.1: CO2 at
+# nprocs 15 spun for 20 minutes, at nprocs 12 it finished in 38 s). The
+# generated path caps itself; raw text is the user's own and is left alone
+# (P26), so here the engine reports and runs.
+
+_CO2_NUMFREQ = """! wB97M-V def2-QZVPP VeryTightSCF RIJCOSX TightOpt NumFreq
+%maxcore 3000
+%pal nprocs 15 end
+* xyz 0 1
+C -5.7587182242 1.7728411732 -0.0000024862
+O -4.5968066976 1.6752829290 0.0000048413
+O -6.9206296202 1.8704017487 -0.0000098136
+*
+"""
+
+
+def test_raw_numfreq_with_too_many_ranks_is_warned_about(tmp_path):
+    h = EngineHarness(tmp_path)
+    h.engine._warn_numfreq_ranks(make_calc("CO2"), _CO2_NUMFREQ)
+
+    warnings = [(msg, lvl) for msg, lvl in h.logs if lvl == "warn"]
+    assert len(warnings) == 1
+    msg = warnings[0][0]
+    assert "12 displacements" in msg and "15 processes" in msg
+    # it says what to do, and that it is not doing it for you
+    assert "12 or fewer" in msg and "Running as written." in msg
+
+
+def test_the_warning_does_not_touch_the_input_text(tmp_path):
+    h = EngineHarness(tmp_path)
+    text = _CO2_NUMFREQ
+    h.engine._warn_numfreq_ranks(make_calc("CO2"), text)
+
+    assert text == _CO2_NUMFREQ          # P26: raw text is never edited
+
+
+def test_a_raw_numfreq_that_fits_is_not_warned_about(tmp_path):
+    h = EngineHarness(tmp_path)
+    h.engine._warn_numfreq_ranks(make_calc("CO2"),
+                                 _CO2_NUMFREQ.replace("nprocs 15", "nprocs 12"))
+
+    assert not [msg for msg, lvl in h.logs if lvl == "warn"]
+
+
+def test_an_unknowable_geometry_is_not_guessed_at(tmp_path):
+    # "* xyzfile" points at a file the engine cannot see, so the atom count —
+    # and with it the ceiling — is genuinely unknown. Say nothing (P2).
+    h = EngineHarness(tmp_path)
+    h.engine._warn_numfreq_ranks(
+        make_calc("CO2"),
+        "! B3LYP NumFreq\n%pal nprocs 64 end\n* xyzfile 0 1 mol.xyz\n")
+
+    assert not [msg for msg, lvl in h.logs if lvl == "warn"]

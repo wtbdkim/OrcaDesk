@@ -148,7 +148,6 @@
 
   "auxiliary_coulomb_exchange_JK": [
     "def2/JK",
-    "cc-pVDZ/JK",
     "cc-pVTZ/JK",
     "cc-pVQZ/JK"
   ],

@@ -26,8 +26,8 @@ python -m orcamgr.server.run
      "xyz": "H 0 0 0\nH 0 0 0.74",
      "config": { "kind": "opt", "functional": "wB97X-D4",
                  "basis_set": "def2-SVP", "calculation_type": "TightOpt",
-                 "scf_convergence": "TightSCF", "ri_approximation": "RIJCOSX",
-                 "options": "def2/J" }
+                 "scf_convergence": "", "ri_approximation": "",
+                 "options": "" }
    }
    ```
 

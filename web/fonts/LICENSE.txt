@@ -1,0 +1,17 @@
+Bundled typefaces
+=================
+
+Inter            variable, latin + latin-ext subsets
+                 https://github.com/rsms/inter
+                 via Google Fonts (fonts.gstatic.com), Inter v20
+
+JetBrains Mono   variable, latin + latin-ext subsets
+                 https://github.com/JetBrains/JetBrainsMono
+                 via Google Fonts (fonts.gstatic.com)
+
+Both are licensed under the SIL Open Font License, Version 1.1.
+The full licence text, with both copyright notices, is in OFL.txt.
+
+These are the two typefaces design/notebook-reference.html requests from
+Google Fonts.  ORCAdesk runs offline, so they are carried here instead of
+linked -- see the comment at the top of fonts.css.

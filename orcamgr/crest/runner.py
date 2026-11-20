@@ -1,28 +1,39 @@
 """
-Run a single CREST conformer search through WSL, DETACHED, and monitor it by
-tailing its output file.
+Run a single CREST conformer search in a POSIX shell, DETACHED, and monitor it
+by tailing its output file.
 
-Windows has no native CREST binary, so ORCAdesk runs the Linux binary inside a
-WSL distro. The design mirrors ``core/runner.OrcaRunner`` (not the simpler
-``mlip`` runner), because a CREST run is long and MUST survive ORCAdesk closing:
+*Which* shell is ``shell.py``'s decision: a WSL distro on Windows (CREST has no
+native Windows binary), or this machine on Linux, where the very same binary
+runs directly. Everything below is written once against that transport — the
+generated script differs in exactly one respect (the scratch directory), and
+that difference is a measured fact about 9P, not a platform quirk.
 
-* A generated ``run_crest.sh`` is launched with ``setsid`` inside WSL so it
-  becomes a new session/process-group leader that is NOT torn down when the
-  launching ``wsl.exe`` returns. (Verified: such a process keeps running for
-  well beyond the WSL idle timeout after every ``wsl.exe`` exits.)
-* The script runs CREST in an **ext4 scratch dir** (``~/.orcadesk/scratch/<name>``)
-  — never on ``/mnt`` — because CREST's many-small-file I/O is pathologically slow
-  over the 9P mount. It copies the input in and the ensemble results back to the
-  Windows workspace folder, then writes a ``<name>.crest.rc`` marker with the exit
-  code. So even if ORCAdesk is closed for the whole run, results still land in the
-  Windows folder.
-* CREST writes its stdout straight to the Windows ``<name>.out``; live log +
-  progress come from TAILING that file, identical whether we launched it this
-  session or are reattaching to one from a previous session.
-* The script records its own Linux PID (``$$``) and start-time (``/proc`` field
-  22) so ORCAdesk can persist ``(pid, create_time)`` and later check liveness /
-  kill the whole process group across a restart — the WSL analogue of
-  ``procutil.process_matches`` / ``kill_tree`` (psutil can't see inside WSL).
+The design mirrors ``core/runner.OrcaRunner`` (not the simpler ``mlip`` runner),
+because a CREST run is long and MUST survive ORCAdesk closing:
+
+* A generated ``run_crest.sh`` is launched with ``setsid`` so it becomes a new
+  session/process-group leader that is NOT torn down when the launching shell
+  returns. (Verified under WSL: such a process keeps running for well beyond the
+  WSL idle timeout after every ``wsl.exe`` exits.)
+* Under WSL the script runs CREST in an **ext4 scratch dir**
+  (``~/.orcadesk/scratch/<name>``) — never on ``/mnt`` — because CREST's
+  many-small-file I/O is pathologically slow over the 9P mount; it copies the
+  ensemble results back to the Windows workspace folder afterwards. Locally
+  there is no such mount and no such penalty, so the run happens in the calc
+  folder itself: nothing to copy, and whatever CREST leaves behind
+  (``--keepdir``, a crashed run's trajectories) stays where the user can look at
+  it instead of inside a VHD the script then deletes.
+* Either way the script ends by writing a ``<name>.crest.rc`` marker with the
+  exit code, so even if ORCAdesk is closed for the whole run the results land in
+  the workspace folder and the finish is judged from disk.
+* CREST writes its stdout straight to ``<name>.out``; live log + progress come
+  from TAILING that file, identical whether we launched it this session or are
+  reattaching to one from a previous session.
+* The script records its own PID (``$$``) and start-time (``/proc`` field 22) so
+  ORCAdesk can persist ``(pid, create_time)`` and later check liveness / kill the
+  whole process group across a restart — the shell-side analogue of
+  ``procutil.process_matches`` / ``kill_tree`` (psutil cannot see inside WSL, and
+  reusing the same check locally keeps one code path rather than two).
 
 Reuses ``OrcaRunError`` / ``OrcaCancelled`` / ``OrcaDetached`` from
 ``core/runner.py`` so ``QueueEngine.run_all``'s existing except-handlers treat a
@@ -38,7 +49,10 @@ from pathlib import Path
 from typing import Callable, Optional, Tuple
 
 from ..core.runner import OrcaRunError, OrcaCancelled, OrcaDetached
-from .wsl import run_bash
+from ..core.tailer import FileTailer
+from ..core.xyzutil import as_xyz_file
+from . import shell
+from .shell import run_bash
 
 
 LogCallback = Callable[[str], None]
@@ -53,49 +67,35 @@ _MAX_INDETERMINATE = 20
 _PID_WAIT = 10.0        # seconds to wait for the launched script to write its .pid
 _WSL_CALL_TIMEOUT = 20.0
 
-# Map the UI method label to CREST's tight-binding flag.
-_METHOD_FLAGS = {
-    "gfn2": "--gfn2",
-    "gfnff": "--gfnff",
-    "gfn0": "--gfn0",
-    "gfn1": "--gfn1",
-    "gfn2//gfnff": "--gfn2//gfnff",
-}
-
-
 def build_crest_argv(config, charge: int, multiplicity: int) -> list[str]:
     """Build CREST CLI flags (excluding the binary and the input filename) from a
     StepConfig + the calc's charge/multiplicity. CREST's --uhf is the number of
     unpaired electrons (multiplicity - 1), NOT the multiplicity."""
+    # The method label maps 1:1 onto CREST's flag (gfn2 -> --gfn2, incl.
+    # gfn2//gfnff); an already-dashed value passes through verbatim.
     method = (getattr(config, "crest_method", "") or "gfn2").strip().lower()
-    flag = _METHOD_FLAGS.get(method)
-    if flag is None:
-        flag = method if method.startswith("-") else "--" + method
-    argv = [flag]
+    argv = [method if method.startswith("-") else "--" + method]
 
     solvent = (getattr(config, "crest_solvent", "") or "").strip()
     if solvent:
         model = (getattr(config, "crest_solvent_model", "alpb") or "alpb").strip().lower()
         argv += ["--gbsa" if model == "gbsa" else "--alpb", solvent]
 
-    try:
-        ewin = float(getattr(config, "crest_ewin", 6.0) or 6.0)
-        argv += ["--ewin", f"{ewin:g}"]
-    except (TypeError, ValueError):
-        pass
+    # Numeric knobs. StepConfig.from_dict is the trust boundary — it coerces and
+    # clamps every one of these — so the fallback here only covers a hand-built
+    # StepConfig (tests / direct construction). A bad value degrades to the
+    # field's default rather than dropping the flag: a silently missing -T would
+    # ignore the user's thread setting without saying so.
+    def _num(attr, default=0.0):
+        try:
+            return float(getattr(config, attr, default) or default)
+        except (TypeError, ValueError):
+            return default
 
-    try:
-        threads = int(getattr(config, "crest_threads", 4) or 4)
-        argv += ["-T", str(max(1, threads))]
-    except (TypeError, ValueError):
-        pass
+    argv += ["--ewin", f"{_num('crest_ewin', 6.0):g}"]
+    argv += ["-T", str(max(1, int(_num('crest_threads', 4.0))))]
 
     # --- advanced knobs (each emitted only when set to a non-default value) ---
-    def _num(attr):
-        try:
-            return float(getattr(config, attr, 0.0) or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
 
     preset = (getattr(config, "crest_preset", "") or "").strip().lower()
     if preset in ("quick", "squick", "mquick"):
@@ -130,63 +130,92 @@ def build_crest_argv(config, charge: int, multiplicity: int) -> list[str]:
     return argv
 
 
-def _as_xyz_file(coords: str) -> str:
-    """Wrap a bare 'El x y z' coordinate block as a standard .xyz (count header +
-    comment + body). If it already starts with a lone integer, assume it's a full
-    .xyz and return as-is. (Local copy to keep crest/ independent of core/queue.)"""
-    lines = [ln for ln in coords.strip().splitlines() if ln.strip()]
-    if lines and lines[0].split() and lines[0].split()[0].isdigit() and len(lines[0].split()) == 1:
-        return coords.strip() + "\n"
-    n = sum(1 for ln in lines if len(ln.split()) >= 4)
-    return f"{n}\ngenerated by ORCAdesk\n" + "\n".join(lines) + "\n"
-
-
 def write_crest_run_files(calc_dir, name: str, xyz: str, crest_bin: str,
-                          argv_flags: list[str]) -> Path:
+                          argv_flags: list[str], transport: str = "") -> Path:
     """Write the input ``{name}.xyz`` and the self-contained ``run_crest.sh`` into
-    the (Windows) calc folder. Returns the run_crest.sh path. The script is
-    written with LF line endings (bash chokes on CRLF)."""
+    the calc folder. Returns the run_crest.sh path. The script is written with LF
+    line endings (bash chokes on CRLF).
+
+    ``transport`` defaults to the active one and exists so both shapes can be
+    read and tested from either platform — the script is the one artefact where
+    WSL and a local shell genuinely differ, so it is worth being able to look at
+    the other one.
+    """
     calc_dir = Path(calc_dir)
     calc_dir.mkdir(parents=True, exist_ok=True)
-    (calc_dir / f"{name}.xyz").write_text(_as_xyz_file(xyz), encoding="utf-8", newline="\n")
+    (calc_dir / f"{name}.xyz").write_text(as_xyz_file(xyz), encoding="utf-8", newline="\n")
 
-    win_dir = str(calc_dir)                       # e.g. D:\workspace\name  (backslashes)
+    kind = transport or shell.transport_kind()
+    scratch = shell.uses_scratch(kind)
+    # The calc folder as the RUNNING shell sees it: /mnt/d/... under WSL, itself
+    # locally. One expression, so the script and launch() cannot disagree.
+    mnt = shell.shell_path_expr(str(calc_dir), kind)
     flags = " ".join(shlex.quote(a) for a in argv_flags)
-    script = (
-        "#!/bin/bash\n"
-        "set -u\n"
-        f"WIN_DIR={shlex.quote(win_dir)}\n"
-        f"NAME={shlex.quote(name)}\n"
-        f"CRESTBIN={shlex.quote(crest_bin)}\n"
-        'MNT="$(wslpath -u "$WIN_DIR")"\n'
-        # record our own real PID (== session/group leader after setsid) + start
+
+    lines = [
+        "#!/bin/bash",
+        "set -u",
+        f"NAME={shlex.quote(name)}",
+        f"CRESTBIN={shlex.quote(crest_bin)}",
+        f"MNT={mnt}",
+        # our own real PID (== session/process-group leader after setsid) + start
         # time, for liveness / group-kill / reattach across an app restart.
-        'echo "$$" > "$MNT/$NAME.crest.pid"\n'
-        "awk '{print $22}' /proc/$$/stat > \"$MNT/$NAME.crest.start\" 2>/dev/null || true\n"
-        'SCRATCH="$HOME/.orcadesk/scratch/$NAME"\n'
-        'rm -rf "$SCRATCH"; mkdir -p "$SCRATCH" || { echo "ORCAdesk: could not create WSL scratch dir" > "$MNT/$NAME.out"; echo 96 > "$MNT/$NAME.crest.rc"; exit 96; }\n'
-        'cp "$MNT/$NAME.xyz" "$SCRATCH/input.xyz" || { echo "ORCAdesk: could not copy input .xyz into WSL scratch" > "$MNT/$NAME.out"; echo 95 > "$MNT/$NAME.crest.rc"; exit 95; }\n'
-        'cd "$SCRATCH" || { echo 94 > "$MNT/$NAME.crest.rc"; exit 94; }\n'
-        f'"$CRESTBIN" input.xyz {flags} > "$MNT/$NAME.out" 2>&1\n'
-        "rc=$?\n"
-        'for f in crest_conformers.xyz crest_best.xyz crest.energies crest_rotamers.xyz; do\n'
-        '  [ -f "$f" ] && cp "$f" "$MNT/" 2>/dev/null\n'
-        "done\n"
-        'echo "$rc" > "$MNT/$NAME.crest.rc"\n'
-        'cd "$HOME" 2>/dev/null && rm -rf "$SCRATCH"\n'
-        "exit $rc\n"
-    )
+        'echo "$$" > "$MNT/$NAME.crest.pid"',
+        "awk '{print $22}' /proc/$$/stat > \"$MNT/$NAME.crest.start\" 2>/dev/null || true",
+    ]
+
+    if scratch:
+        # ext4, never /mnt: CREST's many-small-file I/O is 5-300x slower over 9P.
+        lines += [
+            'SCRATCH="$HOME/.orcadesk/scratch/$NAME"',
+            'rm -rf "$SCRATCH"; mkdir -p "$SCRATCH" || { echo "ORCAdesk: could not '
+            'create WSL scratch dir" > "$MNT/$NAME.out"; echo 96 > "$MNT/$NAME.crest.rc"; exit 96; }',
+            'cp "$MNT/$NAME.xyz" "$SCRATCH/input.xyz" || { echo "ORCAdesk: could not '
+            'copy input .xyz into WSL scratch" > "$MNT/$NAME.out"; echo 95 > "$MNT/$NAME.crest.rc"; exit 95; }',
+            'cd "$SCRATCH" || { echo 94 > "$MNT/$NAME.crest.rc"; exit 94; }',
+            'INPUT=input.xyz',
+        ]
+    else:
+        # No 9P mount to stage away from: run where the results belong. The .xyz
+        # is already here, so there is nothing to copy in either.
+        lines += [
+            'cd "$MNT" || { echo 94 > "$MNT/$NAME.crest.rc"; exit 94; }',
+            'INPUT="$NAME.xyz"',
+        ]
+
+    lines += [
+        f'"$CRESTBIN" "$INPUT" {flags} > "$MNT/$NAME.out" 2>&1',
+        "rc=$?",
+    ]
+
+    if scratch:
+        lines += [
+            'for f in crest_conformers.xyz crest_best.xyz crest.energies crest_rotamers.xyz; do',
+            '  [ -f "$f" ] && cp "$f" "$MNT/" 2>/dev/null',
+            "done",
+        ]
+
+    # The .rc marker is what monitor() stops on and what a finished-while-closed
+    # run is judged from, so it is written LAST — after the ensemble is in place.
+    lines.append('echo "$rc" > "$MNT/$NAME.crest.rc"')
+
+    if scratch:
+        # Only ever the scratch dir. There is deliberately no rm in the local
+        # shape: SCRATCH would be the user's calc folder, results and all.
+        lines.append('cd "$HOME" 2>/dev/null && rm -rf "$SCRATCH"')
+
+    lines.append("exit $rc")
+
     script_path = calc_dir / "run_crest.sh"
-    script_path.write_text(script, encoding="utf-8", newline="\n")
+    script_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return script_path
 
 
 class CrestRunner:
     """Launches / reattaches to / monitors a CREST run in WSL for one calc."""
 
-    def __init__(self, distro: str, crest_bin: str):
+    def __init__(self, distro: str):
         self.distro = distro
-        self.crest_bin = crest_bin
         self._lock = threading.Lock()
         self._pid: Optional[int] = None
         self._start_time: Optional[int] = None   # /proc/<pid>/stat field 22
@@ -206,7 +235,10 @@ class CrestRunner:
         Linux PID and start-time — to persist for reattach. Raises OrcaRunError if
         the launch fails or no PID appears."""
         if not self.distro:
-            raise OrcaRunError("No WSL distro configured for CREST. Set one in Settings.")
+            raise OrcaRunError(
+                "No WSL distro configured for CREST. Set one in Settings."
+                if not shell.is_local() else
+                "No CREST target resolved. Check Settings → CREST.")
         # No event clearing (here or in adopt): the runner is created fresh per
         # calc, and the engine forwards a Stop/shutdown that landed before the
         # runner was registered — clearing would erase exactly that signal.
@@ -216,31 +248,49 @@ class CrestRunner:
         pid_file = out_path.parent / f"{name}.crest.pid"
         start_file = out_path.parent / f"{name}.crest.start"
         rc_file = out_path.parent / f"{name}.crest.rc"
-        for f in (pid_file, start_file, rc_file):
+        # The markers AND everything the last attempt produced. Folders are
+        # never deleted and a name can be reused, so an attempt that fails
+        # leaves an ensemble behind that parse_crest_result reads as this run's
+        # result: the Results tab showed the previous molecule and the real
+        # diagnosis was replaced by "CREST did not report normal termination".
+        # The .out is the same story from the other side — monitor() tails from
+        # position 0, so the old content was replayed into the live log as this
+        # calculation's output, and once the detached script truncated the file
+        # the tailer's position was past the new EOF and the first real lines
+        # were lost. The ORCA runner opens its .out "w" before launching and the
+        # MLIP runner unlinks its stale JSON; this is the same rule.
+        for f in (pid_file, start_file, rc_file, out_path,
+                  out_path.parent / "crest_conformers.xyz",
+                  out_path.parent / "crest_best.xyz",
+                  out_path.parent / "crest.energies",
+                  out_path.parent / "crest_rotamers.xyz"):
             try:
                 f.unlink()
             except OSError:
                 pass
 
-        # setsid → new session leader that outlives wsl.exe; redirect all stdio
-        # away so the job is fully detached. CRITICAL: after backgrounding, the
-        # launcher WAITS (inside WSL) until the detached script has written its
-        # .pid file, THEN returns it. Without this wait, `wsl.exe` returns so fast
-        # that it closes the pty before setsid finishes detaching and the child is
-        # killed before it runs a single line (the .pid never appears). Keeping the
-        # foreground alive until .pid exists lets the child detach cleanly; it then
-        # runs to completion independently (verified: survives the app closing).
-        pid_wsl = f'$(wslpath -u {shlex.quote(str(pid_file))})'
+        # setsid -> new session leader that outlives the launching shell; all
+        # stdio redirected away so the job is fully detached. CRITICAL: after
+        # backgrounding, the launcher WAITS (inside that shell) until the detached
+        # script has written its .pid file, THEN returns it. Without this wait,
+        # `wsl.exe` returns so fast that it closes the pty before setsid finishes
+        # detaching and the child is killed before it runs a single line (the .pid
+        # never appears). Keeping the foreground alive until .pid exists lets the
+        # child detach cleanly; it then runs to completion independently
+        # (verified under WSL: survives the app closing). The wait costs nothing
+        # locally and is kept there too -- one launcher, one behaviour.
+        script_expr = shell.shell_path_expr(str(script_path))
+        pid_expr = shell.shell_path_expr(str(pid_file))
         launch_cmd = (
-            f'setsid bash "$(wslpath -u {shlex.quote(str(script_path))})" '
+            f'setsid bash {script_expr} '
             "</dev/null >/dev/null 2>&1 & "
-            f'p="{pid_wsl}"; '
+            f'p={pid_expr}; '
             'for i in $(seq 1 100); do [ -s "$p" ] && break; sleep 0.1; done; '
             'cat "$p" 2>/dev/null'
         )
         rc, out, err = run_bash(self.distro, launch_cmd, timeout=30.0)
-        if err == "wsl-not-found":
-            raise OrcaRunError("wsl.exe not found — WSL is required to run CREST.")
+        if shell.is_missing(err):
+            raise OrcaRunError(shell.missing_message())
         if rc != 0 and "Wsl/" in (err or ""):
             raise OrcaRunError(f"Could not start CREST in WSL: {err.strip()}")
 
@@ -264,9 +314,14 @@ class CrestRunner:
                     pass
                 time.sleep(0.2)
         if pid is None:
+            # `setsid` is the one launcher dependency that is not universal
+            # (macOS has none), and its absence looks exactly like this: the
+            # command "succeeds", nothing detaches, no .pid is ever written.
+            where = (f"the WSL distro '{self.distro}'" if not shell.is_local()
+                     else "your shell (is `setsid` available?)")
             raise OrcaRunError(
-                "CREST did not start in WSL (no PID file was written). "
-                f"Check the WSL distro '{self.distro}' and the CREST install."
+                "CREST did not start (no PID file was written). "
+                f"Check {where} and the CREST install."
             )
         start_time = None
         try:
@@ -287,15 +342,9 @@ class CrestRunner:
 
     @staticmethod
     def end_position(output_path: Path) -> int:
-        """text-mode tell() cookie for the current EOF of output_path (0 if
-        unreadable) — a reattach tails from here so pre-close output isn't
-        re-streamed. Mirrors OrcaRunner.end_position."""
-        try:
-            with open(output_path, "r", encoding="utf-8", errors="replace") as f:
-                f.seek(0, 2)
-                return f.tell()
-        except OSError:
-            return 0
+        """Text-mode tell() cookie for the current EOF of ``output_path`` — see
+        FileTailer.end_position (a reattach tails from here)."""
+        return FileTailer.end_position(output_path)
 
     # ---- monitor (worker thread, blocks) ----
     def monitor(self, out_path: Path, name: str,
@@ -305,34 +354,12 @@ class CrestRunner:
         the marker) or None. Raises OrcaCancelled / OrcaDetached accordingly."""
         out_path = Path(out_path)
         rc_path = out_path.parent / f"{name}.crest.rc"
-        pos = int(start_pos)
-        buf = ""
+        tail = FileTailer(out_path, start_pos)
         last_liveness = time.monotonic()
         indeterminate = 0   # consecutive liveness checks WSL couldn't answer
 
-        def _drain() -> None:
-            nonlocal pos, buf
-            try:
-                with open(out_path, "r", encoding="utf-8", errors="replace") as f:
-                    f.seek(pos)
-                    chunk = f.read()
-                    pos = f.tell()
-            except OSError:
-                return
-            if not chunk:
-                return
-            buf += chunk
-            while True:
-                nl = buf.find("\n")
-                if nl < 0:
-                    break
-                line = buf[:nl].rstrip("\r")
-                buf = buf[nl + 1:]
-                if on_line is not None:
-                    on_line(line)
-
         while True:
-            _drain()
+            tail.drain(on_line)
             if self._cancel_event.is_set():
                 self._kill(scratch_name=name)
                 raise OrcaCancelled("Cancelled by user.")
@@ -340,9 +367,8 @@ class CrestRunner:
                 # True detach: leave CREST running in WSL for reattach next launch.
                 raise OrcaDetached("Monitoring stopped; CREST left running.")
             if rc_path.exists():
-                _drain()
-                if buf.strip() and on_line is not None:
-                    on_line(buf.rstrip("\r\n"))
+                tail.drain(on_line)
+                tail.flush_tail(on_line)
                 break
             # Safety net for a job killed without writing its .rc (e.g. WSL shut
             # down): check liveness occasionally so we don't tail forever. Only
@@ -361,11 +387,10 @@ class CrestRunner:
                     indeterminate = 0
                 if alive is False or indeterminate >= _MAX_INDETERMINATE:
                     time.sleep(0.5)   # give a just-finishing script time to flush .rc
-                    _drain()
+                    tail.drain(on_line)
                     if rc_path.exists():
                         break
-                    if buf.strip() and on_line is not None:
-                        on_line(buf.rstrip("\r\n"))
+                    tail.flush_tail(on_line)   # emit any partial trailing line
                     break
             time.sleep(_TAIL_POLL)
 
@@ -421,11 +446,14 @@ class CrestRunner:
         # and its xtb/OpenMP children all die; then the leader PID as a fallback.
         cmd = (f"kill -TERM -{pid} 2>/dev/null; kill -TERM {pid} 2>/dev/null; "
                f"sleep 0.3; kill -KILL -{pid} 2>/dev/null; kill -KILL {pid} 2>/dev/null; true")
-        if scratch_name:
+        if scratch_name and shell.uses_scratch():
             # run_crest.sh only removes its ext4 scratch dir on a normal finish;
             # a kill would otherwise leak MD trajectories (hundreds of MB per
-            # cancelled run) inside the WSL VHD forever. (Adjacent-string
-            # concatenation: "$HOME/..." expands, the quoted name doesn't.)
+            # cancelled run) inside the WSL VHD forever. Guarded on the transport
+            # because locally there IS no scratch dir -- the run happens in the
+            # calc folder, and this rm would take the user's results with it.
+            # (Adjacent-string concatenation: "$HOME/..." expands, the quoted
+            # name doesn't.)
             cmd += (f'; rm -rf "$HOME/.orcadesk/scratch/"'
                     f'{shlex.quote(scratch_name)} 2>/dev/null; true')
         run_bash(self.distro, cmd, timeout=_WSL_CALL_TIMEOUT)

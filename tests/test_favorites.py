@@ -15,7 +15,8 @@ def _use_tmp(monkeypatch, tmp_path):
 
 def test_toggle_adds_and_persists(monkeypatch, tmp_path):
     f = _use_tmp(monkeypatch, tmp_path)
-    labels = fav.toggle("calc:asp", "asp_c5", True)
+    labels, saved = fav.toggle("calc:asp", "asp_c5", True)
+    assert saved is True     # the star lighting up IS the confirmation
     assert labels == ["asp_c5"]
     assert f.exists()
     # a fresh read (simulating a restart) sees the star

@@ -1,0 +1,572 @@
+"""Measure a rendered notebook UI and dump a spec the two sides can be diffed on.
+
+    python tools/uispec.py mock spec_mock.json    # design/notebook-reference.html
+    python tools/uispec.py real spec_real.json    # web/next/, in the real window
+    python tools/uidiff.py spec_mock.json spec_real.json
+
+The notebook front-end (DESIGN.md §17) is meant to BE the approved design, not
+an interpretation of it, and "looks about right" is not a check anyone can
+repeat. So both sides are rendered and measured through the same landmark list
+and the same computed properties, and the difference is a number.
+
+The real side is seeded so the two pages hold the same SHAPE of data — finished
+rows and queued ones, a raw calculation, a cell with both a chart and an output
+pane — because otherwise the diff measures the sample, not the layout.
+Requires PyQt6 (it boots the real MainWindow against a throwaway %APPDATA%).
+"""
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+MODE = sys.argv[1] if len(sys.argv) > 1 else "mock"
+OUT = Path(sys.argv[2] if len(sys.argv) > 2 else f"spec_{MODE}.json").resolve()  # before any chdir
+ROOT = Path(__file__).resolve().parent.parent
+MOCK = ROOT / "design" / "notebook-reference.html"
+
+# role -> (mockup selector, web/next selector)
+# The preview adopted the design's class vocabulary, so both sides are measured
+# through the SAME selector — any difference left is a real one.
+SEL = [
+    "topbar", ".topbar",
+    "brand", ".brand",
+    "brand_name", ".brand h1",
+    "ver_badge", ".ver-badge",
+    "studypick", ".studypick",
+    "tools", ".topbar .tools",
+    "view_seg", ".seg.viewseg",
+    "view_seg_btn", ".seg.viewseg button",
+    "view_seg_on", '.seg.viewseg button[aria-pressed="true"]',
+    "iconbtn", ".topbar .iconbtn",
+    "tools_btn", ".topbar .tools .btn",
+    "status_pill", ".status-pill",
+
+    "rail", ".rail",
+    "rail_scroll", ".railscroll",
+    "rail_head", ".rail-h",
+    "rail_foot", ".railfoot",
+    "runrow", ".railfoot .runrow",
+    "runrow_btn", ".railfoot .runrow .btn",
+    "q_total", "#q-total",
+    "q_group", ".qgroup",
+    "q_group_head", ".qgroup .qgh",
+    "q_list", ".qgroup .qlist",
+    # The three controls the landmark list used to be blind to: only the
+    # Finished group folds and offers to be emptied, and the rail's way to a
+    # result that is not in the workspace is its own group's header. Addressed
+    # by the design's ids, which web/next/ now carries. The opened LIST is not a
+    # landmark: a seeded session has opened nothing, and an empty group is the
+    # honest state of it.
+    "q_group_fin", "#fin-toggle",
+    "q_clear_fin", "#clear-finished",
+    "opened_group", "#opened-group",
+    "opened_head", "#opened-group .qgh",
+    "q_row", '.qrow[data-state="queued"]',
+    "q_main", '.qrow[data-state="queued"] .qmain',
+    "q_dot", '.qrow[data-state="queued"] .qmain .d.raw',
+    "q_name", '.qrow[data-state="queued"] .qn',
+    "q_tag", '.qrow[data-state="queued"] .qtag',
+    "q_meta", '.qrow[data-state="queued"] .qm',
+    "q_acts", '.qrow[data-state="queued"] .qacts',
+    "q_badge", '.qrow[data-state="queued"] .qacts .badge',
+    "q_exp", '.qrow[data-state="queued"] .qexp',
+    "grip", '.qrow[data-state="queued"] .grip',
+
+    "stream", ".stream",
+    "streaminner", ".streaminner",
+    "cell", ".cell:not(.live):not(.dead):not(.stub)",
+    "cell_head", ".cell:not(.stub) .cellhead",
+    "cell_idx", ".cell:not(.stub) .cellhead .idx",
+    "cell_name", ".cell:not(.stub) .cellhead .nm",
+    "cell_acts", ".cell:not(.stub) .cellhead .acts",
+    "cell_body", ".cellbody",
+    "cell_grid", ".celgrid",
+    "thumb", ".thumb",
+    "pane", ".pane:not([hidden])",
+    "pane_head", ".pane:not([hidden]) .panehead",
+    "pane_title", ".pane:not([hidden]) .panehead .t",
+    "logbox", ".logbox",
+    "facts", ".factline",
+]
+LANDMARKS = {SEL[i]: (SEL[i + 1], SEL[i + 1]) for i in range(0, len(SEL), 2)}
+
+# The report, measured with a result open. Its own pass, because these elements
+# do not exist until the Results view is up — and because leaving them out of
+# the first list is exactly how a report of unstyled markup passed a 0-difference
+# check once already.
+RSEL = [
+    "res_tool", ".restool",
+    "res_title", ".restitle",
+    "res_content", ".rescontent",
+    "res_inner", ".resinner",
+    "secchips", ".secchips",
+    "secchip_btn", '.secchips button[aria-current="true"]',
+    "secblock", ".secblock",
+    "secblock_wide", ".secblock.wide",
+    "secblock_third", ".secblock.third",
+    "secblock_two", ".secblock.twothirds",
+    "sech", ".resinner .sech",
+    "sech_h2", ".resinner .sech h2",
+    "sech_meta", ".resinner .sech .meta",
+    "secdesc", ".resinner .secdesc",
+    "plate", '.resinner .plate:not([style])',
+    "tablewrap", ".resinner .tw",
+    "table_th", ".resinner .tw th",
+    # a plain data cell on both sides: td.lab is a different thing (sans, wraps,
+    # 13px) and which column carries it depends on the table, not the design
+    "table_td", ".resinner .tw td:not(.lab)",
+    "table_td_lab", ".resinner .tw td.lab",
+    "rep_factline", ".resinner .factline",
+    "rawin", ".rawin",
+    "rawout", ".rawout",
+    "secblock_viewer", ".secblock.viewer",
+    "secblock_vizhalf", ".secblock.vizhalf",
+    "viewstage", ".viewstage",
+    # the Structure section's stage is the Visual panel's first tile now
+    # (DESIGN.md §17.4c), so its legend and buttons are measured there -- the
+    # reference's Visual stage carries the same two
+    "viewlegend", ".vizstage .viewlegend",
+    "stage_act", ".vizstage .act",
+    "vizpanel", ".vizpanel",
+    "vizlist", ".vizlist",
+    "vizstage", ".vizstage",
+    "viztypes", ".viztypes",
+    "viztype", ".viztype",
+    "vizcap", ".vizcap",
+]
+REPORT = {RSEL[i]: (RSEL[i + 1], RSEL[i + 1]) for i in range(0, len(RSEL), 2)}
+
+# The overlays: the pop-out viewer, the settings sheet, and the builder's
+# conditional blocks. A third pass for the same reason the report needed a
+# second one — none of this exists until something is opened, so a check that
+# only ever measures the window at rest cannot see any of it, and would read 0
+# while every one of them was unstyled.
+OSEL = [
+    "mvwin", ".mvwin",
+    "mvhead", ".mvhead",
+    "mvhead_t", ".mvhead .t",
+    "mvhead_seg", ".mvhead .seg",
+    "mvstage", ".mvstage",
+    "mvlegend", ".mvlegend",
+    "mvbar", "#mv-frames",
+    "mvbar_btn", "#mv-frames .btn",
+    "mvcount", ".mvcount",
+    "mvkbd", "#mv-frames kbd",
+    "mvbar_vol", "#mv-volume",
+    "mvbar_lb", "#mv-volume .lb",
+    "mvbar_select", "#mv-volume select",
+    "mvbar_number", '#mv-volume input[type="number"]',
+    "mvramp", ".mvramp",
+
+    "sheet", ".sheet",
+    "sheethead", ".sheethead",
+    "sheetbody", ".sheetbody",
+    "scard", ".scard",
+    "scard_title", ".scard-title",
+    "scard_desc", ".scard-desc",
+    "kvline", ".kvline",
+    "envrow", ".envrow",
+    "envrow_n", ".envrow .n",
+    "envrow_d", ".envrow .d",
+    "envrow_badge", ".envrow .badge",
+    "slider", "input.slider",
+
+    "nebrow", ".nebrow",
+    "nebslot", ".nebslot",
+    "nebslot_lb", ".nebslot .lb",
+    "nebslot_fn", ".nebslot .fn",
+    "basisrow", ".basis-row",
+    "basisrow_field", ".basis-row .field",
+    "basisrow_rm", ".basis-row .rm",
+    "snips", ".snips",
+    "snips_btn", ".snips .btn",
+    "finding", ".finding.warn",
+]
+OVERLAY = {OSEL[i]: (OSEL[i + 1], OSEL[i + 1]) for i in range(0, len(OSEL), 2)}
+# The one landmark whose two sides are addressed differently: both pages hold
+# several .finding boxes and querySelector takes the first, which is a
+# different one on each side. Name the NEB verdict on both, so the same box
+# is compared with the same box.
+OVERLAY["finding"] = ("#neb-verdict", '[data-a="neb-verdict"] .finding')
+
+# Everything the mockup keeps behind a `hidden` attribute that this pass has to
+# see. Both sides are opened to the same state before anything is measured.
+MOCK_OPEN = """
+(function () {
+  ["mv-scrim","mvwin","mv-volume","neb-card","pane-raw","scrim","settings"]
+    .forEach(function (id) { var e = document.getElementById(id); if (e) e.hidden = false; });
+  return true;
+})()
+"""
+
+PROPS = ["display", "gridTemplateColumns", "gridTemplateRows", "gap",
+         "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+         "marginTop", "marginBottom",
+         "borderRadius", "borderTopWidth", "borderColor",
+         "fontSize", "fontWeight", "lineHeight", "letterSpacing", "fontFamily",
+         "color", "backgroundColor", "boxShadow", "textTransform", "minHeight"]
+
+JS = """
+(function (map, props) {
+  var out = {};
+  var root = getComputedStyle(document.documentElement);
+  out.__tokens = {};
+  ["--radius","--radius-sm","--radius-lg","--pill","--radius-pill","--rail",
+   "--background","--foreground","--card","--border","--accent","--muted-foreground",
+   "--font-sans","--font-mono"].forEach(function (t) {
+    var v = root.getPropertyValue(t).trim();
+    if (v) out.__tokens[t] = v;
+  });
+  out.__window = {w: window.innerWidth, h: window.innerHeight,
+                  bodyW: document.documentElement.scrollWidth};
+  // Which FACE the stacks actually resolve to. A computed fontFamily is the
+  // declared list, identical on both sides by construction, so it can never
+  // show that one side fell through to a substitute -- which is what happened:
+  // the design pulls Inter and JetBrains Mono from Google Fonts and the app
+  // shipped no copy, so every label in it was drawn in Segoe UI Variable and
+  // Consolas and the check said zero differences. A rendered width names the
+  // face; a width equal to `fallback` means the whole stack resolved to
+  // nothing and the page is drawing in the engine's default.
+  out.__fonts = (function () {
+    var TXT = "TS Opt + Freq / charge +2 / mult 1 / 0123456789";
+    function w(stack) {
+      var s = document.createElement("span");
+      s.style.cssText = "position:absolute;left:-9999px;top:0;visibility:hidden;"
+                      + "white-space:pre;font-size:11px;font-family:" + stack;
+      s.textContent = TXT;
+      document.body.appendChild(s);
+      var v = Math.round(s.getBoundingClientRect().width * 100) / 100;
+      s.remove();
+      return v;
+    }
+    return {sans: w(root.getPropertyValue("--font-sans")),
+            mono: w(root.getPropertyValue("--font-mono")),
+            fallback: w('"NoSuchFaceZZ"')};
+  })();
+  // Every class name actually in the DOM. The landmark list measures the
+  // PROPERTIES of the elements it names, so a control that exists on one side
+  // and not the other -- the Finished group's Clear button, the Opened files
+  // group -- changes nothing it looks at and reads as no difference at all.
+  // This is the structural half: what is on the page, rather than how it looks.
+  out.__classes = (function () {
+    var seen = {};
+    var all = document.querySelectorAll("*");
+    for (var i = 0; i < all.length; i++) {
+      var cl = all[i].classList;
+      for (var j = 0; j < cl.length; j++) seen[cl[j]] = 1;
+    }
+    return Object.keys(seen).sort();
+  })();
+  // Every distinct (parent, element) class combination the page draws, with the
+  // metrics the stylesheet gives it. The landmark list is 121 selectors somebody
+  // chose; a padding a pixel off on a control nobody named is exactly as visible
+  // and was never looked at.
+  //
+  // The key carries the PARENT because these rules are contextual: .qacts > .badge
+  // and .viztype > .d are not the same element wearing the same class, and a flex
+  // or grid parent also blockifies its children's `display` and turns their
+  // `min-height` into `auto`. Keyed by the class alone, half the report was the
+  // two sides having picked different elements.
+  //
+  // Elements that are not rendered are skipped, so a region open on one side and
+  // closed on the other drops out instead of comparing a hidden box with a shown
+  // one. Colour and opacity are absent on purpose: they carry STATE (a badge is
+  // green or red by what it reports, a button half-lit by whether it is
+  // disabled), and state is the sample, not the design.
+  out.__styles = (function () {
+    var METRIC = ["display", "gap",
+      "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+      "marginTop", "marginRight", "marginBottom", "marginLeft",
+      "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth",
+      "borderRadius", "fontSize", "fontWeight", "lineHeight", "letterSpacing",
+      "textTransform", "minHeight", "alignItems", "flexDirection"];
+    function sig(el) {
+      var cl = Array.prototype.slice.call(el.classList).sort().join(".");
+      return cl ? "." + cl : el.tagName.toLowerCase();
+    }
+    var res = {}, all = document.querySelectorAll("*");
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (!el.classList.length) continue;
+      if (!el.getClientRects().length) continue;      // not rendered
+      // What the STYLESHEET gives the element, not what one instance was told
+      // on the spot. Both pages use inline style= for one-off spacing, and the
+      // first instance bearing a key is rarely the same one on both sides -- so
+      // an inline margin on either read as a rule that differed, and the report
+      // filled with pairs that were never the same element to begin with.
+      if (el.getAttribute("style")) continue;
+      var key = (el.parentElement ? sig(el.parentElement) : "?") + " > " + sig(el);
+      if (res[key]) continue;
+      var cs = getComputedStyle(el);
+      var o = {h: Math.round(el.getBoundingClientRect().height * 10) / 10};
+      for (var m = 0; m < METRIC.length; m++) o[METRIC[m]] = cs[METRIC[m]];
+      res[key] = o;
+    }
+    return res;
+  })();
+  Object.keys(map).forEach(function (role) {
+    var el = document.querySelector(map[role]);
+    if (!el) { out[role] = null; return; }
+    var cs = getComputedStyle(el);
+    var r = el.getBoundingClientRect();
+    var o = {box: [Math.round(r.width * 10) / 10, Math.round(r.height * 10) / 10]};
+    props.forEach(function (p) { o[p] = cs[p]; });
+    out[role] = o;
+  });
+  return out;
+})(%s, %s)
+"""
+
+
+def measure(page, side, on_done, table=None):
+    m = table if table is not None else LANDMARKS
+    js = JS % (json.dumps({k: v[0 if side == "mock" else 1] for k, v in m.items()}),
+               json.dumps(PROPS))
+    page.runJavaScript(js, on_done)
+
+
+def merge(a, b):
+    """Fold the report pass into the jobs pass. __tokens/__window come from the
+    first, which is the one measured with the window in its normal state.
+
+    __classes is the exception: it is a census of what is ON the page, and the
+    three passes deliberately show different parts of it, so the union over all
+    of them is the answer and the first pass alone is not.
+    """
+    for k, v in b.items():
+        if not k.startswith("__"):
+            a[k] = v
+    a["__classes"] = sorted(set(a.get("__classes", [])) | set(b.get("__classes", [])))
+    merged = dict(b.get("__styles", {}))
+    merged.update(a.get("__styles", {}))   # the first pass wins where both saw it
+    a["__styles"] = merged
+    return a
+
+
+# --------------------------------------------------------------------------
+def run_mock():
+    from PyQt6.QtCore import QTimer, QUrl
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+    app = QApplication(sys.argv)
+    view = QWebEngineView()
+    view.resize(1680, 1000)
+    view.show()
+    # the window chrome the real app has (title bar) is not in the mockup, so
+    # both sides are measured at the same INNER size
+    view.load(QUrl.fromLocalFile(str(MOCK)))
+    # Both sides are measured in the same theme -- the mockup opens light -- and
+    # in the same TYPEFACES. The mockup asks Google Fonts for Inter and JetBrains
+    # Mono; here it gets the copies the app ships (web/fonts/), so the comparison
+    # holds with no network and, more to the point, so the mockup is measured in
+    # the faces it was drawn in rather than in whatever the engine substitutes.
+    FONTS_HREF = QUrl.fromLocalFile(str(ROOT / "web" / "fonts" / "fonts.css")).toString()
+    PREPARE = (
+        "(function(){"
+        "document.documentElement.setAttribute('data-theme','dark');"
+        "var l=document.createElement('link');l.rel='stylesheet';"
+        "l.href=" + json.dumps(FONTS_HREF) + ";document.head.appendChild(l);"
+        "return true;})()"
+    )
+
+    state = {}
+
+    def jobs_done(res):
+        state["jobs"] = res
+        # the reference's Results view is a data-view on the shell
+        view.page().runJavaScript(
+            'document.querySelector(".app").setAttribute("data-view","results")',
+            lambda _r: QTimer.singleShot(900,
+                lambda: measure(view.page(), "mock", report_done, REPORT)))
+
+    def report_done(res):
+        state["report"] = res
+        # back to the jobs view: the builder and the sheet belong to it
+        view.page().runJavaScript(
+            'document.querySelector(".app").setAttribute("data-view","jobs");' + MOCK_OPEN,
+            lambda _r: QTimer.singleShot(900,
+                lambda: measure(view.page(), "mock", overlay_done, OVERLAY)))
+
+    def overlay_done(res):
+        out = merge(merge(state["jobs"], state["report"]), res)
+        OUT.write_text(json.dumps(out, indent=1), encoding="utf-8")
+        print("wrote", OUT, "landmarks:", len([k for k in out if not k.startswith("__")]))
+        missing = [k for k in out if not k.startswith("__") and out[k] is None]
+        if missing:
+            print("  NOT FOUND in mockup:", missing)
+        app.quit()
+
+    view.loadFinished.connect(
+        lambda ok: QTimer.singleShot(1200, lambda: view.page().runJavaScript(
+            PREPARE, lambda _r: QTimer.singleShot(900,
+                lambda: measure(view.page(), "mock", jobs_done)))))
+    QTimer.singleShot(60000, app.quit)
+    app.exec()
+
+
+def run_real():
+    tmp = Path(tempfile.mkdtemp(prefix="orcadesk-spec-"))
+    os.environ["APPDATA"] = str(tmp)
+    (tmp / "ORCAdesk").mkdir(parents=True, exist_ok=True)
+    ws = tmp / "ws"; ws.mkdir(exist_ok=True)
+    fake = tmp / "orca.exe"; fake.write_bytes(b"")
+    (tmp / "ORCAdesk" / "settings.json").write_text(json.dumps({
+        "workspace_root": str(ws),
+        "orca_path": str(fake),
+        # something for the settings sheet to draw an .envrow from. The
+        # interpreter does not exist, so the probe comes back "unusable" - a
+        # state the row has to draw anyway, and the only one reachable with
+        # nothing installed.
+        "mlip_envs": [{"id": "e1", "name": "mace-gpu",
+                       "python": str(tmp / "nope" / "python.exe")}],
+        }), encoding="utf-8")
+    import shutil
+    (ws / "h2o").mkdir(parents=True, exist_ok=True)
+    shutil.copy(ROOT / "tests" / "nbo" / "fixtures" / "h2o.out", ws / "h2o" / "h2o.out")
+    # something for the Visual panel to find, so both sides have one to measure
+    NL = chr(10)
+    (ws / "h2o" / "h2o_trj.xyz").write_text(
+        "3" + NL + "frame 1  E = -76.4000" + NL
+        + "O 0.0 0.0 0.117" + NL + "H 0.0 0.757 -0.469" + NL + "H 0.0 -0.757 -0.469" + NL
+        + "3" + NL + "frame 2  E = -76.4210" + NL
+        + "O 0.0 0.0 0.120" + NL + "H 0.0 0.760 -0.470" + NL + "H 0.0 -0.760 -0.470" + NL,
+        encoding="utf-8")
+
+    os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --no-sandbox")
+    sys.path.insert(0, str(ROOT))
+    os.chdir(ROOT)
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QApplication
+    from orcamgr.gui.window import MainWindow
+
+    app = QApplication(sys.argv)
+    win = MainWindow()
+    page = win.view.page()
+    console = []
+
+    def hook(self, level, msg, line, source):
+        console.append(f"[{level}] {str(source).split('/')[-1]}:{line} {msg}")
+    type(page).javaScriptConsoleMessage = hook
+
+    win.resize(1680, 1000)
+    win.show()
+
+    # Seed a queue that exercises the same shapes the mockup draws: a row, and a
+    # cell with BOTH panes (chart + output). "h2o" already has an .out in the
+    # workspace, so NB.seed replays its convergence history into the trackers.
+    SEED = """
+      (async function () {
+        var wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+        var NL = String.fromCharCode(10);
+        var xyz = "O 0.0 0.0 0.1173" + NL + "H 0.0 0.7572 -0.4692" + NL + "H 0.0 -0.7572 -0.4692";
+        function calc(name, raw) {
+          return JSON.stringify({
+            name: name, kind: "opt", charge: 0, multiplicity: 1,
+            geometry_source: "direct", xyz: xyz, ref_name: "",
+            is_raw: !!raw,
+            raw_text: raw ? "! B3LYP def2-SVP Opt" + NL + "* xyz 0 1" + NL + xyz + NL + "*" + NL : "",
+            config: {kind: "opt", functional: "wB97X-D4", basis_set: "def2-TZVP",
+                     ri_approximation: "RIJCOSX", scf_convergence: "TightSCF",
+                     calculation_type: "TightOpt", options: "", maxcore_mb: 2400,
+                     nprocs: 6, max_iter: 0, solvation: {model: "", solvent: ""},
+                     basis_assignments: []},
+            state: "pending", message: ""});
+        }
+        // four that will finish (against the throwaway orca.exe they fail at
+        // once, which is still a Done group), then three left queued
+        // NOT named after the fixture folder: running the queue would write into
+        // ws/h2o/ and clobber the .out the report pass reads
+        for (var i = 0; i < 4; i++) await NB.call("add_calc", calc("run-" + i, false));
+        await NB.poll();
+        await NB.call("run_queue", "[]");
+        // wait for the run to actually stop before queueing more, or the engine
+        // starts them too and there is no Queued group left to measure
+        for (var t = 0; t < 40; t++) {
+          await wait(400);
+          await NB.poll();
+          if (!NB.running) break;
+        }
+        for (var j = 0; j < 3; j++) await NB.call("add_calc", calc("queued-" + j, j === 1));
+        await NB.poll();
+        await NB.seed("h2o");
+        NB.stream.render();
+        await wait(700);
+        return [].map.call(document.querySelectorAll(".qrow"), function (r) {
+          return r.dataset.state; }).join(",") + " | groups=" +
+          document.querySelectorAll(".qgroup").length + " running=" + NB.running;
+      })()
+    """
+
+    state = {}
+    json_out = json.dumps(str(ws / "h2o" / "h2o.out"))
+
+    def seeded(n):
+        QTimer.singleShot(900, lambda: measure(page, "real", jobs_done))
+
+    def jobs_done(res):
+        state["jobs"] = res
+        # h2o has a real .out in the throwaway workspace, so the report has
+        # something to render
+        page.runJavaScript(
+            'NB.results.openPath(' + json_out + ').then(function(){'
+            '  document.querySelector(\"[data-r=\\"showall\\"]\").click(); })',
+            lambda _r: QTimer.singleShot(2600,
+                lambda: measure(page, "real", report_done, REPORT)))
+
+    def report_done(res):
+        state["report"] = res
+        # Back to the jobs view and open everything the third pass measures.
+        # Three steps rather than one: the builder mounts asynchronously (it
+        # loads the option lists and, when editing, the calculation itself), and
+        # changing the kind rebuilds the form from scratch.
+        page.runJavaScript(
+            'NB.go("jobs"); NB.settingsView.open(); NB.build.open("");',
+            lambda _r: QTimer.singleShot(2000, overlay_kind))
+
+    def overlay_kind():
+        page.runJavaScript(
+            '(function(){var c=document.querySelector(".cell.editing");'
+            'var k=c.querySelector(\'[data-f="kind"]\');'
+            'k.value="neb_ts"; k.dispatchEvent(new Event("change")); return true;})()',
+            lambda _r: QTimer.singleShot(2000, overlay_open))
+
+    def overlay_open():
+        page.runJavaScript(
+            '(function(){'
+            'var c=document.querySelector(".cell.editing");'
+            'c.querySelector(\'[data-act="addbasis"]\').click();'
+            # the raw pane holds .snips, and the mockup measures it open too
+            'c.querySelector("[data-raw]").hidden=false;'
+            '["mv-scrim","mvwin","mv-volume","mv-ramp","mv-ramphint"]'
+            '.forEach(function(id){'
+            '  var e=document.getElementById(id); if(e) e.hidden=false;});'
+            'return true;})()',
+            lambda _r: QTimer.singleShot(1200,
+                lambda: measure(page, "real", overlay_done, OVERLAY)))
+
+    def overlay_done(res):
+        done(merge(merge(state["jobs"], state["report"]), res))
+
+    def done(res):
+        res["__console"] = console
+        res["__panes"] = None
+        OUT.write_text(json.dumps(res, indent=1), encoding="utf-8")
+        print("wrote", OUT, "landmarks:", len([k for k in res if not k.startswith("__")]))
+        missing = [k for k in res if not k.startswith("__") and res[k] is None]
+        if missing:
+            print("  NOT FOUND in web/next:", missing)
+        if console:
+            print("  CONSOLE:", console)
+        app.quit()
+
+    def go(ok):
+        if ok:
+            QTimer.singleShot(2200, lambda: page.runJavaScript(SEED, seeded))
+    win.view.loadFinished.connect(go)
+    QTimer.singleShot(90000, app.quit)
+    app.exec()
+
+
+run_mock() if MODE == "mock" else run_real()

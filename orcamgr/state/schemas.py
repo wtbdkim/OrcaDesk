@@ -3,7 +3,8 @@ TypedDict schemas for every payload exchanged across the QWebChannel bridge
 (orcamgr/gui/bridge.py) and the phone HTTP API (orcamgr/server/app.py) that is
 NOT already covered by the Calculation/StepConfig serialization in store.py /
 input_generator.py: settings, log entries, queue snapshots, parse-result
-summaries, server status, and the ok/error envelopes.
+summaries, 3D-viewer frames, export/favorites envelopes, server status, and
+the ok/error envelopes.
 
 MIRROR CONTRACT: web/types.js holds the JSDoc mirror of these shapes for the
 front-end. The two files must stay in sync field by field — when you add or
@@ -22,7 +23,7 @@ supports 3.10.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Optional, TypedDict
 
 
 # ---- calculations as serialized by store.py --------------------------------
@@ -30,7 +31,7 @@ from typing import TypedDict
 # these names exist so snapshot/envelope schemas can reference the shapes.)
 
 class CalcSummary(TypedDict):
-    """Compact queue-row form — mirror of store.calc_to_dict (14 keys)."""
+    """Compact queue-row form — mirror of store.calc_to_dict (26 keys)."""
     name: str
     kind: str
     charge: int
@@ -48,10 +49,29 @@ class CalcSummary(TypedDict):
     # it must never land in innerHTML)
     mlip_model: str           # mlip* kinds: the MACE model label
     crest_method: str         # crest* kinds: the tight-binding method
+    # RUNNING only: ORCA printed a fatal marker but its process is still alive
+    # — the run is lost, the row stays among the running ones
+    faulted: bool
+    # the queue editor's graph (core.queue.Calculation; all default to
+    # "standalone, as today")
+    system: str               # lane (system id); "" = a standalone calc
+    node: str                 # node id within the lane; stack members share it
+    col: int                  # grid column of the node
+    row: int                  # grid row of the node
+    after: str                # calc this one runs after (edge source); "" = root
+    gate: str                 # "auto" | "approval" — the edge's gate
+    auto_pass: bool           # approval gate after a Freq passes by itself on
+                              # the expected imaginary-mode count
+    approved: bool            # the user approved the gate
+    ref_point: str            # "" final geometry | "irc_f" | "irc_b" of ref_name
+    set_name: str             # display only: the inp set it came from
+    # derived (core.queue.gate_waiting): `after` is DONE but the approval gate
+    # is closed — the run skips this row and leaves it PENDING
+    waiting: bool
 
 
 class CalcFull(TypedDict):
-    """Full-fidelity form — mirror of store.calc_to_session_dict (15 keys)."""
+    """Full-fidelity form — mirror of store.calc_to_session_dict (26 keys)."""
     name: str
     kind: str
     config: dict              # StepConfig.to_dict(), {} when absent
@@ -67,6 +87,17 @@ class CalcFull(TypedDict):
     output_path: str
     pid: "int | None"
     create_time: "float | None"
+    system: str
+    node: str
+    col: int
+    row: int
+    after: str
+    gate: str
+    auto_pass: bool
+    approved: bool
+    ref_point: str
+    set_name: str
+    rerun: bool               # put back from DONE/FAILED by rerun_calc (never kept)
 
 
 # ---- queue snapshot / log ---------------------------------------------------
@@ -76,6 +107,50 @@ class QueueSnapshot(TypedDict):
     running: bool
     version: int
     calculations: "list[CalcSummary]"
+    # Live CPU/RAM occupancy of the run. All zeros while nothing runs — the
+    # budgets are only known to the engine, so an idle client shows the limits
+    # from SettingsPayload instead.
+    resources: "RunResources"
+    # the queue editor's lanes, in order — inputs by label only (get_system
+    # serves the coordinates)
+    systems: "list[SystemSummary]"
+
+
+class SystemInputSummary(TypedDict):
+    label: str
+
+
+class SystemSummary(TypedDict):
+    """store.system_summary — a lane as the poll carries it."""
+    id: str
+    name: str                 # prefix of every calc name in the lane
+    charge: int
+    multiplicity: int
+    inputs: "list[SystemInputSummary]"
+
+
+class SystemInput(TypedDict):
+    label: str
+    xyz: str                  # coordinate block (no .xyz header)
+
+
+class SystemFull(TypedDict):
+    """store.system_from_dict — a lane in full (get_system, session.json)."""
+    id: str
+    name: str
+    charge: int
+    multiplicity: int
+    inputs: "list[SystemInput]"
+
+
+class InpSet(TypedDict):
+    """state/inpsets.py — a saved input template."""
+    id: str
+    name: str
+    kind: str                 # "ORCA" (a level of theory) | "MLIP"
+    text: str                 # ORCA: a whole input, {{JOB}} on its ! line and
+                              # {{GEOMETRY}}, optionally {{CHARGE}} {{MULT}}
+                              # {{HESS}}; MLIP: "key value" lines
 
 
 class LogLine(TypedDict):
@@ -84,12 +159,33 @@ class LogLine(TypedDict):
     # lines streamed during a run — see core/queue.py)
     level: str
     msg: str
+    # Name of the calculation this line belongs to, "" for engine-level lines.
+    # Several calculations can run at once, so their tailed output interleaves
+    # in one buffer: this tag is what routes a line back to its job (the Log
+    # tab's per-job filter and the per-job convergence graphs both key off it).
+    calc: str
 
 
 class LogPayload(TypedDict):
     """store.QueueStore.log_since() — what get_log / GET /api/log serve."""
     lines: "list[LogLine]"
     latest: int
+
+
+class RunResources(TypedDict):
+    """Live CPU/RAM occupancy of a parallel run — the queue header's readout.
+
+    `cores_used`/`ram_used_mb` are what the in-flight jobs reserved (declared
+    cores; ORCA %maxcore x cores for memory, a flat estimate for MLIP/CREST —
+    see core/resources.py), the budgets are the resolved limits, and `jobs` is
+    how many calculations are in flight against `max_jobs`.
+    """
+    cores_used: int
+    cores_budget: int
+    ram_used_mb: int
+    ram_budget_mb: int
+    jobs: int
+    max_jobs: int
 
 
 # ---- settings / about (desktop bridge) --------------------------------------
@@ -99,15 +195,26 @@ class SettingsPayload(TypedDict):
     workspace_root: str
     default_nprocs: int
     default_maxcore_mb: int
+    # Parallel-run admission (core/resources.py). 0 = auto for the two budgets;
+    # auto_cores / auto_ram_mb report what auto resolves to on THIS machine so
+    # the UI can label the control ("auto (16 cores)") without guessing.
+    max_concurrent_jobs: int
+    max_total_cores: int
+    max_total_ram_mb: int
+    auto_cores: int
+    auto_ram_mb: int
     theme: str                # "dark" | "light"
-    theme_variant: str        # "shadcn" | "liquidglass"
-    glass_level: str          # restrained|moderate|bold|vivid|maximal (liquidglass)
-    wallpaper: str            # aurora|aqua|sunset|grape|graphite|ocean|custom
     eta_mode: str             # "conservative" | "eager"
     geo_graph_mode: str       # "all5" | "maxgrad"
     build_mode: str           # "beginner" | "expert" | "mlip" | "crest"
+    viewer_target: str        # "in_app" | "system" — where a Visual row opens
     crest_distro: str         # preferred WSL distro for CREST ("" = auto-detect)
     orca_valid: bool
+    # Why the settings on screen are not the settings on disk. "" = they are.
+    # Settings.save() is best-effort by design (P32 — a failed write must not
+    # break the running app), but the UI used to answer "Saved." to a write
+    # that never happened and lose everything at the next launch.
+    save_error: str
 
 
 class MlipBackend(TypedDict):
@@ -143,9 +250,46 @@ class MlipStatusPayload(TypedDict):
     envs: "list[MlipEnvPayload]"
 
 
+class BasePythonPayload(TypedDict):
+    """One interpreter that could serve as the base for a new MLIP venv."""
+    python: str               # absolute path to python.exe
+    version: str              # "3.12"
+    supported: bool           # torch publishes wheels for this CPython
+
+
+class MlipInstallOptionsPayload(TypedDict):
+    """Bridge.get_mlip_install_options() — what a one-click env creation can be
+    built from on this machine. Detection runs in the background (each candidate
+    is launched to report its version), so the UI polls this."""
+    state: str                # "checking" | "ready"
+    base_pythons: "list[BasePythonPayload]"
+    gpu: bool                 # an NVIDIA GPU is visible to the driver
+    gpu_name: str             # e.g. "NVIDIA GeForce RTX 5080", or ""
+    cuda_index: str           # torch wheel index its architecture needs, e.g. "cu128"
+    # {key, label} per installable backend, in MLIP_BACKENDS order — the
+    # install card builds its Backend dropdown from this rather than
+    # hardcoding a second copy of the registry.
+    backends: "list[dict]"
+
+
+class MlipInstallPayload(TypedDict):
+    """Bridge.get_mlip_install_status() / create_mlip_env() / cancel_mlip_install()
+    — progress of the running (or last) environment creation. `step`/`steps` drive
+    the progress line; `error` is why it failed, "" when it did not."""
+    state: str                # "idle" | "running" | "done" | "error"
+    step: int                 # 1-based, 0 before the first step
+    steps: int                # total steps in the plan
+    label: str                # what that step is doing
+    error: str                # failure reason, or ""
+    cancelled: bool
+
+
 class CrestDistroPayload(TypedDict):
-    """One WSL distro probed for CREST (backs the "CREST ready" indicator)."""
-    distro: str               # distro name (pass to `wsl -d <distro>`)
+    """One TARGET probed for CREST (backs the "CREST ready" indicator). A target
+    is a WSL distro on Windows and the single pseudo-target "local" elsewhere --
+    the field keeps the name `distro` because it is what the desktop and the
+    phone already read."""
+    distro: str               # distro name (`wsl -d <distro>`), or "local"
     ready: bool               # crest binary found + runnable
     crest_bin: str            # resolved binary path inside the distro, or ""
     version: str              # `crest --version` line, or ""
@@ -160,7 +304,10 @@ class CrestStatusPayload(TypedDict):
     are absent."""
     state: str                # "unset" | "checking" | "ready" | "error"
     distros: "list[CrestDistroPayload]"
-    wsl: bool                 # whether wsl.exe is available at all
+    transport: str            # "wsl" | "local" -- which shell CREST runs in
+    wsl: bool                 # whether the transport is usable at all
+                              # (wsl.exe on Windows, bash locally)
+    install_error: str        # why the last install attempt failed, or ""
 
 
 class ErrorPayload(TypedDict):
@@ -218,6 +365,106 @@ class NebPointPayload(TypedDict):
     is_ts: bool
 
 
+class ScanCoordPayload(TypedDict):
+    """One scanned coordinate of a relaxed surface scan, as ORCA's banner
+    states it (parser.py _parse_scan). `atoms` are 0-based in ORCA's printed
+    order, which is not always the input's ("B 0 1" prints as (1, 0))."""
+    kind: str                 # "B" (Å) | "A" | "D" (degrees)
+    atoms: "list[int]"
+    start: float
+    end: float
+    steps: int
+
+
+class ScanPointPayload(TypedDict):
+    """One finished point of a relaxed surface scan."""
+    values: "list[float]"     # one per ScanCoordPayload, in the same order
+    e_eh: float
+    de_kcal: float            # against the lowest point of the scan
+
+
+class NboAtomPopPayload(TypedDict):
+    """One atom of the NBO program's natural population summary."""
+    index: int                # 0-based
+    el: str
+    charge: float
+    core: float
+    valence: float
+    rydberg: float
+    total: float
+    config: str               # "[core]2s( 1.06)2p( 2.89)...", as NBO prints it
+
+
+class NboLewisShare(TypedDict):
+    """One line of NBO's Lewis/non-Lewis electron accounting."""
+    e: float                  # electrons
+    pct: float                # percent of `of`, as NBO prints it
+    of: int
+
+
+class NboProgramOrbitalPayload(TypedDict):
+    """One NBO from the program's NATURAL BOND ORBITALS (Summary)."""
+    index: int                # NBO's own 1-based number (the E(2) table uses it)
+    type: str                 # CR | LP | BD | BD* | RY | LP* | 3C | ...
+    label: str                # "BD*(1) C1–C2"
+    atoms: "list[int]"        # its centres, 0-based
+    occ: float
+    energy_eh: float
+    lewis: bool
+
+
+class NboProgramE2Payload(TypedDict):
+    """One donor -> acceptor row of the second-order perturbation table."""
+    donor: int
+    donor_label: str
+    acceptor: int
+    acceptor_label: str
+    e2_kcal: float
+    de_au: float              # E(NL) - E(L)
+    f_au: float               # F(L,NL)
+
+
+class NboProgramPayload(TypedDict):
+    """What the NBO program (`! NBO` -> gennbo) printed into the .out
+    (parser.py _parse_nbo_program). Not ORCAdesk's own analysis
+    (NboResultPayload); the two are never mixed. An open-shell run carries
+    only `atoms` (the total density's NPA)."""
+    version: str              # "7.0.10", "" when not printed
+    open_shell: bool
+    atoms: "list[NboAtomPopPayload]"
+    lewis: "dict[str, NboLewisShare]"   # core, valence_lewis, total_lewis, ...
+    accepted: str             # NBO's "Structure accepted: ..." line
+    orbitals: "list[NboProgramOrbitalPayload]"
+    interactions: "list[NboProgramE2Payload]"
+
+
+class LmoPartPayload(TypedDict):
+    """One atom's Mulliken population in a localized orbital."""
+    atom: int                 # 0-based, as ORCA prints it
+    el: str
+    pop: float
+
+
+class LmoPayload(TypedDict):
+    """One localized MO as ORCA's %loc printout describes it."""
+    mo: int                   # ORCA's MO number (0-based, as in the .loc file)
+    kind: str                 # "one" (lone pair / core) | "two" (two-centre bond)
+    parts: "list[LmoPartPayload]"
+
+
+class LocalizationPayload(TypedDict):
+    """ORCA's orbital localization (%loc) printout (parser.py
+    _parse_localization). Delocalized LMOs are counted, not listed."""
+    method: str               # "IAO-IBO", as ORCA names the criterion
+    range: "list[int]"        # [first, last] MO localized
+    strong_threshold: Optional[float]
+    bond_threshold: Optional[float]
+    n_strong: int
+    n_bond: int
+    n_deloc: int
+    orbitals: "list[LmoPayload]"
+
+
 class GeomAtomPayload(TypedDict):
     """One atom of the final/optimized geometry (Angstrom)."""
     el: str
@@ -231,6 +478,14 @@ class OrbitalPayload(TypedDict):
     idx: int
     occ: float
     ev: float
+    # "" for a restricted run, else "a"/"b": an unrestricted calculation prints
+    # two manifolds whose indices both start at 0, so idx alone is ambiguous.
+    spin: str
+    # "homo" | "lumo" | "": which frontier orbital this is, decided by the
+    # parser across BOTH manifolds. The front-end used to re-derive it as "the
+    # last row with occupation" — right for one manifold, wrong for two (P4:
+    # one judgment, made where the data is).
+    frontier: str
 
 
 class TddftStatePayload(TypedDict):
@@ -253,10 +508,12 @@ class ConformerPayload(TypedDict):
 
 class ParsePayload(TypedDict, total=False):
     """Successful parse of a .out. All keys optional on the wire because the
-    failure branch sends ErrorPayload and parse_out_file's cancelled dialog
+    failure branch sends ErrorPayload and a cancelled dialog
     sends only {"cancelled": true}; a successful parse emits every data key
     it has."""
-    cancelled: bool           # True only for a cancelled Open-.out dialog (A2)
+    cancelled: bool           # True only for a cancelled Open-file dialog (A2)
+    path: str                 # set only on the path-addressed routes (_parse_path),
+                              # so a result opened from disk stays plottable
     summary: "list[tuple[str, str, str]]"     # label/value/category rows
     is_optimization: bool                     # gates "Final geometry" (front-end)
     show_elec: bool                           # gates electronic-structure sections
@@ -270,6 +527,10 @@ class ParsePayload(TypedDict, total=False):
     nmr: "list[NmrPayload]"
     neb_path: "list[NebPointPayload]"
     neb_path_kind: str                        # "neb" | "irc" — titles the path profile
+    scan_coords: "list[ScanCoordPayload]"     # relaxed surface scan: what was scanned
+    scan_points: "list[ScanPointPayload]"     # ...and each finished point
+    nbo_program: "Optional[NboProgramPayload]"   # the NBO program's printout, if any
+    localization: "Optional[LocalizationPayload]"  # ORCA's %loc printout, if any
     geometry: "list[GeomAtomPayload]"         # final/optimized coordinates (A)
     orbitals: "list[OrbitalPayload]"          # orbital energies (eV) + occupations
     tddft_states: "list[TddftStatePayload]"   # excited-state composition
@@ -293,14 +554,115 @@ class OkResult(_Ok, total=False):
 
 class MutationResult(_Ok, total=False):
     """Queue mutations (add/update/remove/clear/reorder, desktop and HTTP):
-    a fresh snapshot rides along on success."""
+    a fresh snapshot rides along on success. "warning" is a sentence the
+    calculation was accepted DESPITE (store.constraint_warning) - shown, not
+    a refusal."""
     error: str
+    warning: str
     snapshot: QueueSnapshot
 
 
 class GetCalcResult(_Ok, total=False):
     error: str
     calc: CalcFull
+    #: the level texts its raw_text becomes under the inp-set migration
+    #: (inpsets.level_forms): the editor's "not modified" test for a block
+    #: made from a schema-1 set
+    levels: "list[str]"
+
+
+class InpSetsResult(_Ok, total=False):
+    """get_inp_sets."""
+    error: str
+    sets: "list[InpSet]"
+    defaults: "dict[str, str]"   # set kind -> its seeded text ("+ New")
+    jobs: "dict[str, str]"       # calc kind -> what {{JOB}} becomes for it
+                                 # (input_generator.TEMPLATE_JOB_KEYWORDS;
+                                 # "" for tddft: its %tddft block is the job)
+    mlip_jobs: "list[str]"       # the kinds an MLIP set's block may run
+                                 # (input_generator.MLIP_TEMPLATE_KINDS)
+    next_kind: "dict[str, str]"  # calc kind -> the kind a level placed after it
+                                 # runs by default ("" = a row's start; any
+                                 # kind not listed: "sp") — inpsets.NEXT_KIND
+
+
+class InpSetResult(_Ok, total=False):
+    """save_inp_set (the set as stored, with its id) / delete_inp_set."""
+    error: str
+    set: InpSet
+
+
+class SavedWorkflow(TypedDict):
+    """state/workflows.py — a copied workflow kept by name. `steps` is the
+    queue editor's own workflow step list, replayed as add_calc ops."""
+    id: str
+    name: str
+    v: int
+    # "from" (the row it was copied from) is a keyword, so it is not a field
+    # here; it rides the JSON as written
+    steps: "list[dict]"
+
+
+class WorkflowsResult(_Ok, total=False):
+    """get_workflows."""
+    error: str
+    workflows: "list[SavedWorkflow]"
+
+
+class WorkflowResult(_Ok, total=False):
+    """save_workflow (the workflow as stored, with its id) / delete_workflow."""
+    error: str
+    workflow: SavedWorkflow
+
+
+class SystemResult(_Ok, total=False):
+    """get_system."""
+    error: str
+    system: SystemFull
+
+
+class QueueOpsResult(_Ok, total=False):
+    """apply_queue_ops: all applied (with a fresh snapshot) or none.
+    op_index is the 0-based operation that was refused (-1 = the batch as a
+    whole, e.g. a reference it would leave dangling mid-run)."""
+    error: str
+    op_index: int
+    snapshot: QueueSnapshot
+
+
+class IrcStructureFile(TypedDict):
+    """One structure file an IRC wrote (get_irc_structures)."""
+    key: str                  # "F" | "B" | "F_trj" | "B_trj" | "Full_trj"
+    label: str                # "Forward end", "Whole path", ...
+    path: str
+    count: int                # frames (0: not counted -- too large)
+
+
+class IrcStructuresResult(_Ok, total=False):
+    """get_irc_structures: the structure files an IRC's run folder holds --
+    listed only once it is DONE (a re-queued IRC's old files are not its
+    result)."""
+    error: str
+    done: bool
+    files: "list[IrcStructureFile]"
+
+
+class XyzFileEntry(TypedDict):
+    """One picked / dropped .xyz, read (store.xyz_file_entries)."""
+    path: str
+    label: str                # the file name
+    name: str                 # its stem: the system name it gives ("" if none)
+    xyz: str                  # its one structure as a coordinate block, "" if refused
+    error: str                # why it cannot start a row, "" if it can
+    charge: Optional[int]     # stated on its comment line ("charge=1"), else None
+    multiplicity: Optional[int]  # stated there ("mult=2", or xtb's "uhf=1"), else None
+
+
+class XyzFilesResult(_Ok, total=False):
+    """pick_xyz_files / read_xyz_paths: several .xyz files read at once."""
+    error: str
+    cancelled: bool
+    files: "list[XyzFileEntry]"
 
 
 class TextResult(_Ok, total=False):
@@ -310,16 +672,77 @@ class TextResult(_Ok, total=False):
 
 
 class GraphLinesResult(_Ok, total=False):
-    """get_graph_lines — "lines" is present on every branch."""
+    """get_graph_lines — "lines" is present on every branch. "pending": the
+    file is still being read on a worker thread; ask again."""
     error: str
+    lines: "list[str]"
+    pending: bool
+
+
+class LogTailResult(_Ok, total=False):
+    """get_output_tail — the last lines of a run's .out, for the Raw log's
+    restored history after a reattach. "lines" is present on every branch."""
+    error: str
+    lines: "list[str]"
+    file: str        # basename shown in the restored-history marker
+    truncated: bool  # the file held more than the requested tail
+
+
+class OutputInfoResult(_Ok, total=False):
+    """get_output_info — the shape of a run's whole .out, for the Results
+    window's output pane, which draws only the lines on screen and fetches
+    them by number (orcamgr/outview.py)."""
+    error: str
+    file: str        # basename, for the section's meta line
+    bytes: int
+    lines: int       # line count
+    max_len: int     # longest line in bytes -- sizes the horizontal scroll
+
+
+class OutputLinesResult(_Ok, total=False):
+    """get_output_lines — lines start .. start+len(lines)-1 of a .out.
+    "lines" is present on every branch."""
+    error: str
+    start: int
     lines: "list[str]"
 
 
+class OutputFindResult(_Ok, total=False):
+    """find_in_output — the line of every match, in order (a line holding two
+    is listed twice), capped; "total" counts every match. "hits" is present on
+    every branch."""
+    error: str
+    hits: "list[int]"
+    total: int
+
+
 class FepPoint(TypedDict):
+    """One finished calculation that can stand in a reaction profile.
+
+    "gibbs_eh" is None when the run produced no thermochemistry — which
+    includes the species that CANNOT have any: a monatomic ion has no
+    vibrations, and an sp of one is still a species in the reaction. The UI
+    picks the quantity (G, H, T·S, S, U, E+ZPE, E) and refuses to mix them.
+
+    "atoms" and "charge" are what let the UI check that the two sides of a step
+    are the same matter: a profile is built by giving each stage a set of these
+    with stoichiometric coefficients, and comparing a stage against one that
+    holds different atoms is a number with no meaning. Reported, never enforced
+    (P2) — a deliberate fragment comparison is the user's to make."""
     name: str
-    gibbs_eh: float
+    gibbs_eh: "float | None"
     final_energy_eh: "float | None"
+    # the rest of the thermochemistry, each None when the run printed none:
+    # ZPE and the thermal energy U, H, and T*S (Eh) at temperature_k (K), so the
+    # profile can show dH, TdS, dS and dU as well as dG
+    zpe_eh: "float | None"
+    total_thermal_eh: "float | None"
+    enthalpy_eh: "float | None"
+    entropy_term_eh: "float | None"
+    temperature_k: "float | None"
     kind: str
+    atoms: "dict[str, int]"   # element symbol -> count, from the parsed geometry
+    charge: int
 
 
 class FepResult(TypedDict):
@@ -343,6 +766,16 @@ class ExistsResult(_Ok, total=False):
     exists: bool
 
 
+class ExistingOutputsResult(_Ok, total=False):
+    """existing_outputs — "existing" is present on every branch: the given
+    names whose {workspace}/{name}/ already holds an output (has_existing_output's
+    rule), in the order given. Backs the queue editor's overwrite guard for
+    the adds that bypass the builder (a dropped set, a paste, a row copy, a
+    dropped .xyz) and its free-name search."""
+    error: str
+    existing: "list[str]"
+
+
 class AutodetectResult(_Ok, total=False):
     """autodetect_orca — "path" is present on every branch ("" when nothing
     was found); "error" only when detection itself raised. NOTE: despite the
@@ -353,7 +786,410 @@ class AutodetectResult(_Ok, total=False):
     error: str
 
 
+# ---- appearance / 3D viewer / conformer export (desktop bridge) ---------------
+
+class WallpaperResult(_Ok, total=False):
+    """set_wallpaper_image — the ok branches carry "stored" (False = the input
+    was empty / not an image / oversize, so the stored file was cleared, not
+    written). The OSError branch keeps its bare ErrorPayload wire ({"error":
+    ...}, no "ok"); "error" is declared here for the web/types.js mirror."""
+    stored: bool
+    error: str
+
+
+class SavedFileResult(_Ok, total=False):
+    """save_structure_xyz — one file written, and where it landed. The path
+    comes back because the caller's next move is to hand it to another program
+    (open_path_external), and the front-end holds a calc name, not a path."""
+    error: str
+    path: str
+
+
+class ExportResult(_Ok, total=False):
+    """export_conformers / export_frames — how many .xyz files were written
+    and into which folder."""
+    error: str
+    count: int
+    folder: str
+
+
+class MolFramePayload(TypedDict):
+    """One 3D-viewer frame (rides FramesResult.frames; built by
+    molview.frames_from_file / frames_from_folder). "xyz" is raw .xyz frame
+    text 3Dmol parses directly."""
+    label: str
+    xyz: str
+    energy: "float | None"    # absolute energy (Hartree), None when unknown
+
+
+class FramesResult(_Ok, total=False):
+    """get_structure_frames — viewer frame lists. "folder" is the
+    favorites/export destination: the folder itself, or a file's parent."""
+    error: str
+    title: str
+    folder: str
+    frames: "list[MolFramePayload]"
+
+
+class StructureSetPayload(TypedDict):
+    """One openable ``.xyz`` set found beside a result (molview
+    .discover_structure_sets). "kind" is "folder" (a subfolder of .xyz files,
+    e.g. the conformers/ export) or "file" (one possibly multi-frame .xyz);
+    "count" is files for a folder and frames for a file, 0 when unknown."""
+    key: str
+    label: str
+    kind: str
+    path: str
+    count: int
+
+
+class StructureSetsResult(_Ok, total=False):
+    """list_structure_sets — what the Visual mode can open for a result without
+    sending the user through a file dialog."""
+    error: str
+    sets: "list[StructureSetPayload]"
+
+
+class PickedResultPayload(_Ok, total=False):
+    """pick_result_file / pick_result_folder — the Results tab's two pickers.
+    "route" is "parse" (an .out / .mlip.json, read by the parser into the
+    Output mode) or "structure" (a .xyz, opened in the 3D viewer); a folder
+    always resolves to the result file inside it, so it is always "parse".
+    "cancelled" marks a closed picker, which is a choice rather than a
+    failure."""
+    cancelled: bool
+    error: str
+    path: str
+    route: str
+
+
+class PickedFilePayload(_Ok, total=False):
+    """pick_hess_file — a file chosen to be used by PATH (it is copied into the
+    run folder at launch, never read here). "cancelled" marks a closed picker,
+    which is a choice rather than a failure."""
+    cancelled: bool
+    error: str
+    path: str
+
+
+class FavoritesResult(_Ok, total=False):
+    """get_favorites / toggle_favorite — "labels" is present on every branch
+    ([] on failure)."""
+    error: str
+    labels: "list[str]"
+
+
+# ---- structure screening + editing (Build tab) --------------------------------
+
+class StructureIssuePayload(TypedDict):
+    """One finding from core.structure.check_geometry — 4 keys. "level" is
+    "error" (ORCA will refuse this, or it is not the structure anyone meant) or
+    "warn" (legitimate, but worth a look); "atoms" are 0-based indices the
+    front-end highlights in the 3D preview."""
+    level: str
+    code: str
+    message: str
+    atoms: "list[int]"
+
+
+class StructureCheckPayload(TypedDict):
+    """check_structure — 7 keys, exactly core.structure.check_geometry's dict.
+    "ok" is the *verdict* (no error-level issues), not a call-succeeded flag:
+    the slot cannot fail, since an unreadable block is itself a finding.
+    "electrons" is None when a symbol is not an element, so the count is
+    genuinely unknown rather than guessed (P2)."""
+    ok: bool
+    n_atoms: int
+    formula: str
+    electrons: "int | None"
+    n_bonds: int
+    n_fragments: int
+    issues: "list[StructureIssuePayload]"
+
+
+class AtomOrderMismatchPayload(TypedDict):
+    """One diverging index in a NEB endpoint pair — 3 keys, 0-based index."""
+    index: int
+    reactant: str
+    product: str
+
+
+class AtomOrderPayload(TypedDict):
+    """compare_structures — 9 keys, exactly core.structure.compare_atom_order's
+    dict. "mismatch_index" is the FIRST divergence (the three-key gate
+    input_generator.check_neb_atom_order projects); "mismatches" is the whole
+    list the Build tab tabulates, capped, with "n_mismatches" the true total."""
+    ok: bool
+    error: str
+    mismatch_index: "int | None"
+    n_reactant: int
+    n_product: int
+    n_mismatches: int
+    mismatches: "list[AtomOrderMismatchPayload]"
+    formula_reactant: str
+    formula_product: str
+
+
+class ConstraintApplyPayload(TypedDict):
+    """apply_constraint_target — 7 keys, exactly
+    core.structure.apply_constraint_target's dict. "xyz" is the whole
+    coordinate text back, only the moved atoms' lines rewritten; "moved" their
+    0-based indices; "before"/"after" the coordinate's value (A or degrees),
+    None on a refusal; "warnings" the atoms the motion put too close to one
+    that stayed. "error" is the sentence when "ok" is false."""
+    ok: bool
+    error: str
+    xyz: str
+    moved: "list[int]"
+    before: "float | None"
+    after: "float | None"
+    warnings: "list[str]"
+
+
+class ConstraintApplyAllPayload(TypedDict):
+    """apply_constraint_targets — 7 keys, exactly
+    core.structure.apply_constraint_targets's dict: ConstraintApplyPayload
+    with "before"/"after" one value per constraint that had a target, in the
+    order sent (empty on a refusal)."""
+    ok: bool
+    error: str
+    xyz: str
+    moved: "list[int]"
+    before: "list[float]"
+    after: "list[float]"
+    warnings: "list[str]"
+
+
+class HessModePayload(TypedDict):
+    """One vibration of a .hess - 3 keys. "index" addresses it in the file
+    (translations and rotations included, so the first vibration is usually
+    6); "n" is its 1-based number among the vibrations, the way the report
+    numbers modes; "freq" in cm^-1, negative = imaginary."""
+    index: int
+    n: int
+    freq: float
+
+
+class HessModesPayload(TypedDict, total=False):
+    """read_hess_modes - the vibrations a .hess carries, and its geometry (the
+    one the modes were computed at) as a coordinate block in Angstrom."""
+    ok: bool
+    error: str
+    path: str
+    name: str
+    n_atoms: int
+    symbols: "list[str]"
+    xyz: str
+    modes: "list[HessModePayload]"
+
+
+class ModeShiftPayload(TypedDict):
+    """displace_mode - 6 keys, exactly core.structure.displace_along_mode's
+    dict. "xyz" is the whole coordinate text, only the moved lines rewritten
+    (or the Hessian's own geometry, pushed, for an empty box); "max_shift" the
+    most-moved atom's shift in Angstrom; "atom" that atom (C3)."""
+    ok: bool
+    error: str
+    xyz: str
+    moved: "list[int]"
+    max_shift: float
+    atom: str
+
+
+class VibModePayload(TypedDict, total=False):
+    """get_vibration_mode - one of a finished result's vibrations, for the
+    report to animate. "n" is the report's own 1-based mode number and "count"
+    how many it lists; "origin" names the file the vector came from (the
+    .hess, else the .out's NORMAL MODES table). "coords" is the geometry the
+    modes belong to, moved onto the report's structure (a .hess is written
+    about the centre of mass), and "max_dev" how far it then still is from it,
+    Angstrom - more than a rounding error means the Hessian was taken at
+    another geometry. "vec" is the mode's Cartesian displacement per atom,
+    ORCA's normalized vector."""
+    ok: bool
+    error: str
+    n: int
+    count: int
+    freq: float
+    origin: str
+    coords: "list[list[float]]"
+    vec: "list[list[float]]"
+    max_dev: float
+
+
+# ---- orbital / density cubes (Results tab 3D viewer) --------------------------
+
+class WorkspaceResultPayload(TypedDict):
+    """One result found in the workspace. "path" is the artifact to parse
+    ({name}.mlip.json for an MLIP run, else {name}.out); "queued" marks the ones
+    the queue also holds — those must be parsed by NAME (kind dispatch), not by
+    path (folder heuristic), so the front-end keeps the two routes apart.
+    "kind" is a display hint only."""
+    name: str
+    path: str
+    queued: bool
+    kind: str                 # "orca" | "mlip" | "crest"
+
+
+class WorkspaceResultsResult(_Ok, total=False):
+    """list_workspace_results — every result on disk under the workspace root,
+    newest first. "results" is present on every branch ([] on failure)."""
+    error: str
+    root: str
+    results: "list[WorkspaceResultPayload]"
+
+
+class PlotOptionsResult(_Ok, total=False):
+    """get_plot_options — what a finished calculation can be visualized as.
+    "kinds" holds only what this wavefunction actually supports (spin density
+    needs an open-shell calc) and "cached" names the cubes already on disk, so
+    the UI can mark which picks are instant. The orbital *list* is deliberately
+    absent: the Results tab already holds it from the parse payload, and a
+    second copy would be a second source of truth (P4). "base" is the filename
+    stem the cubes are named from — the calc name for a queued source, the
+    file's stem for one opened from disk."""
+    error: str
+    base: str
+    # The run folder these files live in. The front-end holds a calc NAME,
+    # not a path, so without this it cannot offer "show me where this was
+    # written" — and must never assemble a workspace path itself (P4).
+    folder: str
+    has_gbw: bool
+    has_nbo: bool             # {base}.nbo from a `! NBO` run, closed shell (kind "pnbo")
+    open_shell: bool
+    kinds: "list[str]"
+    grids: "list[int]"
+    default_grid: int
+    cached: "list[str]"
+    # ESP is the one kind whose cost is minutes rather than seconds, and the one
+    # drawn from two cubes instead of one, so it carries its own defaults rather
+    # than sharing the others': the grid it should open at, the density level its
+    # surface is drawn at, and the half-width of its colour scale. All three are
+    # conventions defined in orcamgr/cube.py and core/plot.py — sent here so the
+    # front-end never holds a second copy (P4).
+    esp_grid: int
+    esp_surface_iso: float
+    esp_range: float
+
+
+class CubeJobPayload(TypedDict, total=False):
+    """get_cube_status / generate_cube — progress of the running (or last) cube
+    generation. "state" is idle | running | done | error; "cached" marks a
+    result served from an existing file rather than a fresh orca_plot run."""
+    state: str
+    label: str
+    error: str
+    kind: str
+    index: int
+    operator: int
+    grid: int
+    cached: bool
+    seconds: float
+    # The cube this job produced ("" until it is done). Sent so the Visual
+    # tab can hand the file to another program instead of loading its text
+    # (P5) — which for a 60 grid is megabytes the external path never needs.
+    path: str
+
+
+class CubeDataResult(_Ok, total=False):
+    """get_cube_data — the finished cube, ready for 3Dmol's
+    addVolumetricData(text, "cube"). "text" is the file verbatim; "title" is
+    ORCA's own description of what it plotted, "isovalue"/"signed" seed the
+    viewer's surface controls."""
+    error: str
+    text: str
+    title: str
+    npoints: int
+    dims: "list[int]"
+    bytes: int
+    isovalue: float
+    signed: bool
+
+
 # ---- phone-sync server (bridge slots + HTTP endpoints) ------------------------
+
+# ---- natural-orbital analysis (orcamgr/nbo) ---------------------------------
+
+class NboJobPayload(TypedDict, total=False):
+    """run_nbo_analysis / get_nbo_status -- progress of the running (or last)
+    analysis. "state" is idle | running | done | error; "source" names the
+    result it belongs to, so a poll can tell whose answer it is reading."""
+    state: str
+    source: str
+    error: str
+    seconds: float
+
+
+class NboHybridPayload(TypedDict):
+    atom: int
+    element: str
+    share: float              # fraction of the bond's density on this atom
+    label: str                # "sp2.48"
+
+
+class NboOrbitalPayload(TypedDict):
+    label: str                # "BD (1) C1-O2"
+    index: int                # position in its spin's NBO basis -- what a
+                              # generate_cube {kind: "nbo"} request names
+    kind: str                 # CR | LP | BD | BD* | LP*
+    atoms: "list[int]"
+    occupancy: float
+    energy: float             # Hartree
+    hybrids: "list[NboHybridPayload]"
+
+
+class NboInteractionPayload(TypedDict):
+    donor: str
+    acceptor: str
+    energy_kcal: float
+    gap_hartree: float
+    fock_hartree: float
+
+
+class NboLewisPayload(TypedDict):
+    """One spin's Lewis structure (spin "" for a closed shell)."""
+    spin: str
+    threshold: float
+    lewis_electrons: float
+    total_electrons: float
+    lewis_fraction: float
+    complete: bool
+    rydberg_count: int
+    rydberg_electrons: float
+    orbitals: "list[NboOrbitalPayload]"
+    interactions: "list[NboInteractionPayload]"
+
+
+class NboAtomPayload(TypedDict):
+    index: int
+    element: str
+    charge: float             # NPA
+    core: float
+    valence: float
+    rydberg: float
+    total: float
+    configuration: str        # "[core] 2s( 1.75) 2p( 5.12)"
+    spin: float
+    valence_index: float      # natural valence (sum of Wiberg orders)
+
+
+class NboResultPayload(_Ok, total=False):
+    """get_nbo_result -- nbo.analysis.NboAnalysis.to_dict() plus the envelope.
+    The NAO coefficient matrix is deliberately absent (nbf**2 floats)."""
+    error: str
+    base: str
+    n_atoms: int
+    n_basis: int
+    n_electrons: float
+    charge: float
+    restricted: bool
+    has_ecp: bool
+    atoms: "list[NboAtomPayload]"
+    bonds: "list[list]"                       # [i, j, order]
+    lewis: "list[NboLewisPayload]"
+    diagnostics: dict
+    warnings: "list[str]"
+
 
 class ServerStatusPayload(TypedDict, total=False):
     """get_server_status — url/token/clients absent when unavailable."""
