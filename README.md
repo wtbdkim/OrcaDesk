@@ -71,7 +71,7 @@
 | ![Main window](docs/images/main-window.png) | ![IRC structure picker](docs/images/irc-picker.png) |
 | **Main window**: the queue strip, and every job as a cell with its live convergence and output. | **After an IRC**: choose the structure to continue from on the IRC's energy profile. |
 | ![Results](docs/images/results.png) | ![3D viewer](docs/images/viewer.png) |
-| **Results**: what the parser read for that calculation type, with spectra and thermochemistry. | **3D**: orbitals, densities and ESP maps from the finished wavefunction. |
+| **Results**: the summary the parser read (thermochemistry here) beside the input and the whole output, searchable. | **3D**: orbitals, densities and ESP maps from the finished wavefunction. |
 
 ## Install
 
