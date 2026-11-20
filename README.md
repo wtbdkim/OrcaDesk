@@ -19,13 +19,18 @@ Python core.
 > standalone Windows app with `build.bat`. Since 0.11.0 the queue has its own
 > window: a **queue editor** with one row per molecule, steps chained block by
 > block (Opt → Freq → IRC → SP, approval gates, saved inp sets and workflows), and `.xyz`
-> files dropped onto it turned into rows in one go; the main window keeps Jobs and Results. (Phone-sync is in development and not
+> files dropped onto it turned into rows in one go. A **+** beside a block adds
+> the next step (or a step in front of it), an **IRC's end structures are picked
+> on its energy profile**, and a finished or failed step **runs again with a new
+> level** after an overwrite warning. The main window keeps Jobs and Results. (Phone-sync is in development and not
 > part of this build.) See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Requirements
 
 - Python 3.10+
 - ORCA 6.x installed (the app calls your `orca` executable)
+- Windows 10/11 is the tested platform and the only packaged one; Linux runs
+  from source (macOS is untested)
 
 ## Install & run (development)
 
@@ -52,11 +57,12 @@ describe what each part does.)
   first — **DFT** (ORCA), **MLIP** (MACE pre-optimization, see below), or
   **CREST** (conformer search, see below); MLIP and CREST show up only once you
   have set them up, so a plain ORCA install sees DFT alone. DFT has two
-  sub-modes: **Beginner**
-  (guided form) and **Expert** (edit the full `.inp`). Switching Beginner →
-  Expert converts your current form into a generated `.inp` you can keep
-  editing; the reverse conversion doesn't exist (raw text can't become a form
-  again), so switching back asks before discarding the editor text. Give the
+  sub-modes: **Guided** (a form) and **.inp text** (edit the full input).
+  Switching Guided → .inp text converts your current form into a generated
+  `.inp` you can keep editing; the reverse conversion doesn't exist (raw text
+  can't become a form again), so switching back asks before discarding the
+  editor text. Opened from the queue window's + slot, the builder can also
+  start from a saved **level** (see *Queue window* below). Give the
   calculation a unique name (used as its folder), pick the type, set
   charge/multiplicity, choose a geometry source, configure the method, and add
   it to the queue.
@@ -84,7 +90,7 @@ describe what each part does.)
   - **Method fields** (functional / basis / solvent) are searchable
     comboboxes: type to filter the grouped list, or enter any value not in the
     list (e.g. a LibXC functional or a custom basis) — it's used verbatim.
-  - **Expert (raw `.inp`)** mode lets you hand-edit the full input for anything the
+  - **.inp text** mode lets you hand-edit the full input for anything the
     form doesn't cover (e.g. per-element basis/ECP via `%basis newgto/newecp`,
     `%plots`, custom blocks). Use `{{GEOMETRY}}` where coordinates go.
 - **MLIP calculations**: relax a structure, get a single-point energy, or run a
@@ -137,7 +143,38 @@ describe what each part does.)
   > and run `wsl --shutdown` once while **no CREST job is running** (it would
   > kill the job). Optionally add `memory=8GB` under a `[wsl2]` section to cap
   > the VM outright.
-- **Queue**: calculations run in order. If one fails, anything that references
+- **Queue window** (*Open queue*): one **row per molecule**, its steps chained
+  left to right as blocks (Opt → Freq → IRC → SP …), each drawn in its state's
+  colour.
+  - **Rows**: drop `.xyz` files onto the window (several at once) and each
+    becomes a row, with its charge / multiplicity read from the comment line
+    when it says so (`charge=1 mult=2`). Ctrl+click row names to select
+    several: one paste or one charge then goes on all of them.
+  - **Inp sets**: the library holds your ORCA **levels** (a whole input with
+    `{{JOB}}` where the job keyword goes, so one level serves every step type)
+    and MLIP sets. Drop one on a block to change its level (its type stays),
+    or click one while a block is selected.
+  - **Adding steps**: the **+** beside a block opens a small menu: the
+    natural next step (Enter), every other step type, an MLIP
+    pre-optimization, your workflows, and *Manual build…* for the full
+    builder. A selected block that has not run yet also shows a **+** on its
+    incoming arrow, which puts a step in front of it (between two blocks,
+    too). New steps are named `<row>_<Job>` (`mol_Opt`, `mol_FreqTS`, …).
+  - **After an IRC**, adding a step first shows the IRC's **energy profile**:
+    take its forward or backward end, any point along the path, or both ends
+    at once (an `_F` / `_B` pair drawn as one stacked block). ← / → step
+    through the points.
+  - A connection can wait for your **approval** before the next step runs.
+    A row's steps can be copied (Ctrl+C) and pasted onto other rows
+    (Ctrl+V), or kept by name as a **workflow**. Ctrl+Z undoes.
+  - The queue is **live**: steps can be added, edited and reordered while it
+    runs. A finished step is frozen and a failed one locked, but putting a
+    new level on either **runs it again** after an overwrite warning (its old
+    output is replaced; a failed step's blocked follow-ups run after it).
+    Removing a step only takes it off the queue; its folder stays on disk.
+- **Queue**: a calculation runs as soon as what it depends on has finished,
+  and **several run at once** within the budget set in Settings (calculations
+  at once, total cores, total memory). If one fails, anything that depends on
   it (directly or transitively) is skipped (blocked); unrelated calculations
   continue. Each calculation gets its own folder `{workspace}/{name}/`. The
   queue **autosaves and is restored on the next launch**; you can **Cancel**
@@ -207,8 +244,10 @@ describe what each part does.)
 - **Settings**: ORCA executable path, **MLIP environments** (create one for CPU
   or GPU in a click, or register your own MACE-capable Python interpreters;
   backends are auto-detected), workspace folder,
-  per-step defaults (nprocs / maxcore), and two live-graph options — the
-  optimization time-estimate mode and what the optimization graph plots.
+  per-step defaults (nprocs / maxcore), **how much of the machine the queue
+  may use** (calculations at once, total cores, total memory; 0 = auto), and
+  two live-graph options — the optimization time-estimate mode and what the
+  optimization graph plots.
 
 ## Build a standalone Windows app
 
@@ -248,18 +287,27 @@ orcamgr/
     input_generator.py        .inp generation (+ CPCM/SMD solvation)
     structure.py              geometry screening + rigid, order-preserving edits
     runner.py                 detached ORCA subprocess; tail .out + reattach
+    tailer.py                 incremental tail of a growing .out (ORCA and CREST)
     procutil.py               psutil process identity + tree-kill (reattach)
-    queue.py                  multi-job pipeline orchestration
+    queue.py                  queue engine: dependency-ready, budget-admitted parallel runs
+    resources.py              core / memory accounting for running several jobs at once
+    plot.py                   orbitals / density / ESP cubes via orca_plot
+    hessfile.py, normalmodes.py  vibrational modes from a frequency run's .hess
   state/
     store.py                  shared queue (single source of truth) + session autosave
+    inpsets.py                the queue window's inp sets (ORCA levels, MLIP sets)
+    workflows.py              saved workflows (step chains)
   mlip/                       MLIP (MACE) env detection + relaxation runner/parser
-  crest/                      CREST conformer search via WSL (env/installer/runner/parser)
+  crest/                      CREST conformer search (WSL on Windows, directly on Linux)
   nbo/                        NPA charges, Wiberg bond orders, Lewis structure + E(2) table (no NBO licence)
+  cube.py, molview.py         .cube / .xyz readers for the 3D viewer
+  textio.py                   decoding ORCA / process output that is not UTF-8 on Windows
   openwith.py                 hand a generated file to the user's own viewer / file manager
   server/                     optional phone-sync HTTP layer (FastAPI; not in the build)
   gui/
-    window.py                 QMainWindow + WebEngine
-    bridge.py                 JS <-> Python bridge, worker thread
+    window.py                 QMainWindow + WebEngine (main and queue windows)
+    bridge.py                 JS <-> Python bridge (@pyqtSlot API)
+    single_instance.py        one ORCAdesk per user; a second launch shows the open window
 web/next/                     the desktop UI (notebook layout; html/css/js)
 web/                          trackers it borrows (scf_graph.js, progress_panels.js), fonts, 3Dmol
 data/                         ORCA option lists (functionals, basis sets, ...)
