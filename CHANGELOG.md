@@ -5,6 +5,8 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.3] — 2026-11-20
+
 ### Changed
 - **The vibrational spectrum in the report is an IR spectrum.** Each band
   now stands at its IR intensity, read from ORCA's IR SPECTRUM table and

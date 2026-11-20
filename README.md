@@ -32,7 +32,7 @@
   <img src="docs/images/queue-window.png" alt="The queue window: one row per molecule, each a chain of calculation steps" width="100%">
 </p>
 
-> **Status: 0.11.2** (`0.11.2`, beta), validated against real ORCA 6.1.1
+> **Status: 0.11.3** (`0.11.3`, beta), validated against real ORCA 6.1.1
 > output. ORCAdesk is an independent project, not affiliated with the ORCA
 > developers or FACCTs, and it does not include ORCA: it drives the `orca` you
 > install yourself (free for academic use).
