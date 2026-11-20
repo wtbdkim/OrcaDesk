@@ -46,7 +46,11 @@ of the real `settings.json` in it for the smoke tier, and pins
 per-test `monkeypatch` of `user_data_root` is not enough on its own — it is
 undone at teardown, and a run thread a failed test left behind autosaved
 `session.json` after that, replacing a user's real queue with the test's rows.
-A test that starts a run also stops it in a `finally`. There is no linter configured. Parser/input-generator *evidence* still
+A test that starts a run also stops it in a `finally`. A test that needs two
+jobs in flight pins `queue.ram_headroom_mb` to 0: with a job running the
+engine also checks the host's live free memory against the next job's
+estimate (14.4 GB for a default calc), so without the pin the test passes or
+fails with how busy the machine is. There is no linter configured. Parser/input-generator *evidence* still
 comes from manual validation against real ORCA 6.1.1 output (P3); the
 `orcamgr/server/STAGE*_TEST_KR.md` files are manual server-test checklists
 (Korean), not runnable tests.

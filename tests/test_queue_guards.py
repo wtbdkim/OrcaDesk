@@ -81,6 +81,12 @@ def test_approving_a_gate_mid_run_keeps_the_keep_existing_answer(store, tmp_path
     # any existing output "validates" (stands in for a real, valid G.out)
     monkeypatch.setattr(queue_mod, "result_from_output",
                         lambda c: ParseResult(terminated_normally=True))
+    # G must be admitted while L is in flight. A default calc is charged
+    # 14.4 GB, and with a job running the engine also asks the machine for its
+    # live free memory: on a busy host that held G back until L finished, and
+    # the test failed or passed with the host's RAM. 0 = "cannot tell", so the
+    # explicit budget below decides (as test_parallel_queue's fixture does).
+    monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
     ws = tmp_path / "ws"
     (ws / "G").mkdir(parents=True)
     (ws / "G" / "G.out").write_text("the result the user chose to keep\n")
