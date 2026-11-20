@@ -1,0 +1,38 @@
+name: Bug report
+description: Something in ORCAdesk does not work as it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please take out anything you do not want public
+        (unpublished structures, names, paths) before attaching files.
+  - type: input
+    id: version
+    attributes:
+      label: ORCAdesk version
+      description: In the top bar, or Settings → About.
+      placeholder: "0.11.2"
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: OS and ORCA version
+      placeholder: "Windows 11, ORCA 6.1.1"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Output or screenshots
+      description: |
+        For a result that reads wrongly, attach the .out (or the part around the
+        problem). A screenshot helps for anything you can see.
