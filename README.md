@@ -4,7 +4,7 @@ A desktop GUI for building, queuing, running, and parsing ORCA computational
 chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark **or light** UI),
 Python core.
 
-> **Status: 0.11.1** (`0.11.1`). Desktop app: build → queue → run →
+> **Status: 0.11.2** (`0.11.2`). Desktop app: build → queue → run →
 > parse, validated against real ORCA 6.1.1 output. A running calculation
 > **survives closing the app** and is reattached on the next launch; the UI ships
 > with both a **dark and a light theme**; and the convergence graph shows **live progress for optimizations and frequency runs**

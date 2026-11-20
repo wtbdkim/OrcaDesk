@@ -5,6 +5,8 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-11-20
+
 ### Added
 - **Add a step before a block.** A selected block that has not run yet
   shows a small + on its incoming arrow; press it (or drop a level on it)
