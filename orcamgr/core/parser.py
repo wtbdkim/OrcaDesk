@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Optional
+
+from .tailer import decode_orca_line
 
 
 # ---- physical constants -------------------------------------------------
@@ -38,6 +40,10 @@ class Orbital:
     occ: float
     energy_eh: float
     energy_ev: float
+    # "" for a restricted calculation (one manifold), else "a"/"b" — an
+    # unrestricted run prints SPIN UP and SPIN DOWN as two separate tables and
+    # the index restarts at 0 in each, so it does not identify an orbital alone.
+    spin: str = ""
 
 
 @dataclass
@@ -48,6 +54,12 @@ class Transition:
     energy_cm: float
     wavelength_nm: float
     fosc: float
+    # Spin multiplicity of the excited state, read from the "N-3A" suffix of
+    # ORCA's transition label (1 = singlet, 3 = triplet). With `triplets true`
+    # both manifolds are printed in ONE energy-sorted table and the state number
+    # restarts per multiplicity, so without this the state number is ambiguous
+    # and the row count is twice the root count.
+    mult: int = 1
 
 
 @dataclass
@@ -59,6 +71,39 @@ class Conformer:
     energy_eh: float        # absolute energy (Hartree), from the .xyz comment line
     rel_kcal: float         # energy relative to the best conformer (kcal/mol)
     geometry: list = field(default_factory=list)   # list[Atom]
+
+
+# Homogeneous scalar summary rows: (attribute, label, format, category), in
+# emission order. ``summary_rows()`` interleaves these tables with the
+# composite / conditional rows (File, Termination, Optimization, HOMO/LUMO,
+# Rotational, Frequencies, TD-DFT, NMR), which stay explicit there. The label
+# text, decimal places / units, category, and row order are a tested contract.
+_SUMMARY_ENERGY_ROWS = [
+    ("final_energy_eh", "Final SP energy", "{:.8f} Eh", ""),
+    ("dispersion_correction_eh", "Dispersion corr.", "{:.8f} Eh", ""),
+    # SCF energy decomposition (electronic)
+    ("nuclear_repulsion_eh", "Nuclear repulsion", "{:.6f} Eh", "elec"),
+    ("electronic_energy_eh", "Electronic energy", "{:.6f} Eh", "elec"),
+    ("one_electron_eh", "One-electron energy", "{:.6f} Eh", "elec"),
+    ("two_electron_eh", "Two-electron energy", "{:.6f} Eh", "elec"),
+    ("kinetic_energy_eh", "Kinetic energy", "{:.6f} Eh", "elec"),
+    ("potential_energy_eh", "Potential energy", "{:.6f} Eh", "elec"),
+    ("virial_ratio", "Virial ratio", "{:.5f}", "elec"),
+]
+_SUMMARY_PROP_ROWS = [
+    ("gap_ev", "HOMO-LUMO gap", "{:.4f} eV", "elec"),
+    ("dipole_debye", "Dipole moment", "{:.4f} Debye", "elec"),
+]
+_SUMMARY_THERMO_ROWS = [
+    ("gibbs_eh", "Final Gibbs G", "{:.8f} Eh", ""),
+    ("total_thermal_eh", "Inner energy U", "{:.8f} Eh", ""),
+    ("enthalpy_eh", "Enthalpy H", "{:.8f} Eh", ""),
+    ("entropy_term_eh", "Entropy term T·S", "{:.8f} Eh", ""),
+    ("zpe_eh", "ZPE", "{:.8f} Eh", ""),
+    ("g_minus_e_el_eh", "G - E(el)", "{:.8f} Eh", ""),
+    ("temperature_k", "Temperature", "{:.2f} K", ""),
+    ("pressure_atm", "Pressure", "{:.2f} atm", ""),
+]
 
 
 @dataclass
@@ -118,6 +163,10 @@ class ParseResult:
     orbitals: list[Orbital] = field(default_factory=list)
     homo_index: Optional[int] = None
     lumo_index: Optional[int] = None
+    # which manifold the frontier orbital is in ("" restricted, else "a"/"b"):
+    # in an unrestricted run the index alone does not identify an orbital
+    homo_spin: str = ""
+    lumo_spin: str = ""
     homo_ev: Optional[float] = None
     lumo_ev: Optional[float] = None
     gap_ev: Optional[float] = None
@@ -133,6 +182,12 @@ class ParseResult:
     # --- frequencies / thermochemistry ---
     has_frequencies: bool = False
     frequencies: list[float] = field(default_factory=list)
+    # The subset ORCA itself marked "***imaginary mode***". Kept separately
+    # because the marker is the authority, not the sign: ORCA prints a
+    # numerically-zero mode as "-0.00", and -0.0 < 0 is False in IEEE
+    # arithmetic — so re-deriving the list from the values reported "1
+    # imaginary frequency (cm^-1: none)".
+    imaginary_frequencies: list[float] = field(default_factory=list)
     n_imaginary: int = 0
     zpe_eh: Optional[float] = None
     total_thermal_eh: Optional[float] = None
@@ -162,8 +217,23 @@ class ParseResult:
     # (IRC PATH SUMMARY) — the Results tab titles/captions the profile per kind
     neb_path_kind: str = "neb"
 
-    def to_dict(self) -> dict:
-        return asdict(self)
+    # --- relaxed surface scan (%geom Scan) ---
+    # The scanned coordinates as ORCA's banner states them — {kind "B"|"A"|"D",
+    # atoms (0-based, in ORCA's printed order), start, end, steps} — and one
+    # point per finished constrained optimization: {values (one per
+    # coordinate), e_eh, de_kcal (against the lowest point)}.
+    scan_coords: list = field(default_factory=list)
+    scan_points: list = field(default_factory=list)
+
+    # --- the NBO program's own printout (`! NBO` runs gennbo inside ORCA) ---
+    # None when the run printed none. Otherwise a dict built by
+    # _parse_nbo_program; these numbers are the NBO program's, not ORCAdesk's
+    # own analysis (orcamgr/nbo/), and the two are never mixed.
+    nbo_program: Optional[dict] = None
+
+    # --- ORCA's orbital localization printout (%loc, e.g. IAO-IBO) ---
+    # None when the run localized nothing; otherwise _parse_localization's dict.
+    localization: Optional[dict] = None
 
     @property
     def shows_electronic_props(self) -> bool:
@@ -188,6 +258,14 @@ class ParseResult:
         def add(label: str, value: str, cat: str = "") -> None:
             rows.append((label, value, cat))
 
+        def add_scalars(spec: list[tuple[str, str, str, str]]) -> None:
+            # homogeneous rows from the module-level _SUMMARY_* tables;
+            # each is emitted only when its attribute is set
+            for attr, label, fmt, cat in spec:
+                v = getattr(self, attr)
+                if v is not None:
+                    add(label, fmt.format(v), cat)
+
         add("File", self.filename)
         # only when a version was actually parsed — MLIP/CREST results (and
         # non-ORCA files) have none, and a "?" row is just noise for them
@@ -205,37 +283,18 @@ class ParseResult:
             add("Atoms", str(self.n_atoms))
         if self.n_electrons is not None:
             add("Electrons", str(self.n_electrons))
-        if self.final_energy_eh is not None:
-            add("Final SP energy", f"{self.final_energy_eh:.8f} Eh")
-        if self.dispersion_correction_eh is not None:
-            add("Dispersion corr.", f"{self.dispersion_correction_eh:.8f} Eh")
-        # SCF energy decomposition (electronic)
-        if self.nuclear_repulsion_eh is not None:
-            add("Nuclear repulsion", f"{self.nuclear_repulsion_eh:.6f} Eh", "elec")
-        if self.electronic_energy_eh is not None:
-            add("Electronic energy", f"{self.electronic_energy_eh:.6f} Eh", "elec")
-        if self.one_electron_eh is not None:
-            add("One-electron energy", f"{self.one_electron_eh:.6f} Eh", "elec")
-        if self.two_electron_eh is not None:
-            add("Two-electron energy", f"{self.two_electron_eh:.6f} Eh", "elec")
-        if self.kinetic_energy_eh is not None:
-            add("Kinetic energy", f"{self.kinetic_energy_eh:.6f} Eh", "elec")
-        if self.potential_energy_eh is not None:
-            add("Potential energy", f"{self.potential_energy_eh:.6f} Eh", "elec")
-        if self.virial_ratio is not None:
-            add("Virial ratio", f"{self.virial_ratio:.5f}", "elec")
+        add_scalars(_SUMMARY_ENERGY_ROWS)
         if self.is_optimization:
             add("Optimization",
                 "converged" if self.opt_converged else "NOT converged")
         # orbital / dipole / rotational props (electronic)
         if self.homo_ev is not None:
-            add("HOMO", f"#{self.homo_index}  {self.homo_ev:.4f} eV", "elec")
+            add("HOMO", f"#{self.homo_index}{_spin_tag(self.homo_spin)}  "
+                        f"{self.homo_ev:.4f} eV", "elec")
         if self.lumo_ev is not None:
-            add("LUMO", f"#{self.lumo_index}  {self.lumo_ev:.4f} eV", "elec")
-        if self.gap_ev is not None:
-            add("HOMO-LUMO gap", f"{self.gap_ev:.4f} eV", "elec")
-        if self.dipole_debye is not None:
-            add("Dipole moment", f"{self.dipole_debye:.4f} Debye", "elec")
+            add("LUMO", f"#{self.lumo_index}{_spin_tag(self.lumo_spin)}  "
+                        f"{self.lumo_ev:.4f} eV", "elec")
+        add_scalars(_SUMMARY_PROP_ROWS)
         if self.rot_const_cm:
             add("Rotational const.",
                 " / ".join(f"{c:.4f}" for c in self.rot_const_cm) + " cm⁻¹", "elec")
@@ -246,29 +305,26 @@ class ParseResult:
         # reading a Hessian prints a full GIBBS FREE ENERGY block), so each row
         # is emitted on its own presence — never gated behind has_frequencies,
         # per the "all rows are always emitted" contract above.
-        if self.gibbs_eh is not None:
-            add("Final Gibbs G", f"{self.gibbs_eh:.8f} Eh")
-        if self.total_thermal_eh is not None:
-            add("Inner energy U", f"{self.total_thermal_eh:.8f} Eh")
-        if self.enthalpy_eh is not None:
-            add("Enthalpy H", f"{self.enthalpy_eh:.8f} Eh")
-        if self.entropy_term_eh is not None:
-            add("Entropy term T·S", f"{self.entropy_term_eh:.8f} Eh")
-        if self.zpe_eh is not None:
-            add("ZPE", f"{self.zpe_eh:.8f} Eh")
-        if self.g_minus_e_el_eh is not None:
-            add("G - E(el)", f"{self.g_minus_e_el_eh:.8f} Eh")
-        if self.temperature_k is not None:
-            add("Temperature", f"{self.temperature_k:.2f} K")
-        if self.pressure_atm is not None:
-            add("Pressure", f"{self.pressure_atm:.2f} atm")
+        add_scalars(_SUMMARY_THERMO_ROWS)
         if self.has_tddft:
-            add("TD-DFT states", str(len(self.transitions)))
+            # Counting rows says "6 states" for `nroots 3 / triplets true`,
+            # which is three singlets and three triplets. Say which.
+            by_mult: dict[int, int] = {}
+            for t in self.transitions:
+                by_mult[t.mult] = by_mult.get(t.mult, 0) + 1
+            if len(by_mult) > 1:
+                add("TD-DFT states", " + ".join(
+                    f"{n} {_MULT_NAMES.get(m, str(m) + '-plet')}"
+                    for m, n in sorted(by_mult.items())))
+            else:
+                add("TD-DFT states", str(len(self.transitions)))
             bright = self.brightest_transition()
             if bright:
                 add("Brightest", f"{bright.wavelength_nm:.1f} nm  (f={bright.fosc:.4f})")
         if self.has_nmr:
             add("NMR nuclei", str(len(self.nmr_shieldings)))
+        if self.scan_points:
+            add("Surface scan", f"{len(self.scan_points)} points")
         return rows
 
     def brightest_transition(self) -> Optional[Transition]:
@@ -284,6 +340,64 @@ def _clean_lines(text: str) -> list[str]:
 
 def _find_all(lines: list[str], needle: str) -> list[int]:
     return [i for i, ln in enumerate(lines) if needle in ln]
+
+
+def _scan_scalars(lines: list[str], r: ParseResult, spec: dict) -> None:
+    """Assign scalar fields from a declarative ``attr -> (pattern, cast)`` spec.
+
+    Every line is visited and each match overwrites the previous value, which
+    implements the parser-wide last-occurrence-wins rule (the converged / final
+    value of a recurring quantity). ``cast`` receives capture group 1; a cast
+    failure leaves the previous value in place (e.g. a malformed
+    rotational-constants line)."""
+    compiled = [(attr, re.compile(pat), cast) for attr, (pat, cast) in spec.items()]
+    for ln in lines:
+        for attr, rx, cast in compiled:
+            m = rx.search(ln)
+            if m:
+                try:
+                    setattr(r, attr, cast(m.group(1)))
+                except ValueError:
+                    pass
+
+
+# Spin multiplicity names for the TD-DFT state count. Only the ones ORCA can
+# actually print in one absorption table (a closed-shell reference gives
+# singlets and, with `triplets true`, triplets).
+_MULT_NAMES = {1: "singlet", 2: "doublet", 3: "triplet", 4: "quartet", 5: "quintet"}
+
+
+def _spin_tag(spin: str) -> str:
+    """" (alpha)"/" (beta)" for a frontier orbital in an unrestricted run, "" for
+    a restricted one — where there is only one manifold and the label would be
+    noise."""
+    return {"a": " (alpha)", "b": " (beta)"}.get(spin, "")
+
+
+def _scan_rows(lines: list[str], start: int, row_re: re.Pattern, build, stop=None) -> list:
+    """Collect table rows from ``lines[start:]``: each stripped line must match
+    ``row_re`` (``re.match``; the match object is fed to ``build``). A blank
+    line, a line matching the optional ``stop`` predicate, or the first
+    non-matching line ends the table."""
+    out: list = []
+    for ln in lines[start:]:
+        s = ln.strip()
+        if not s or (stop is not None and stop(s)):
+            break
+        m = row_re.match(s)
+        if not m:
+            break
+        out.append(build(m))
+    return out
+
+
+def _find_header(lines: list[str], start: int, within: int, pred) -> Optional[int]:
+    """Locate a column-header line (``pred(line)`` true) within ``within``
+    lines after a section marker; returns its index, or None if absent."""
+    for i in range(start, min(start + within, len(lines))):
+        if pred(lines[i]):
+            return i
+    return None
 
 
 # Common ORCA failure signatures, checked in priority order. Each entry is
@@ -308,6 +422,33 @@ _ERROR_SIGNATURES = [
 ]
 
 
+# How far back to look for the line that explains an abort. ORCA prints the
+# cause and then the banner, usually within a couple of lines.
+_CAUSE_LOOKBACK = 12
+
+
+def _nearest_cause(lines: list[str], upper: list[str], i: int) -> str:
+    """The line worth quoting for the signature that matched at ``i``.
+
+    The matched line is often the banner, not the reason: ORCA prints
+    "Error: Cannot open input file ..." and then ".... aborting the run", and
+    quoting the match verbatim handed the user the second one — literally the
+    words "aborting the run", which is what they already knew. Every real
+    failure this app has seen (a space in the run path, a stale .gbw, an
+    incompatible RI choice) prints its cause a line or two above. Prefer the
+    nearest preceding "Error:" line; fall back to the matched line itself.
+    """
+    matched = lines[i].strip()
+    if "ERROR:" in upper[i]:
+        return matched
+    for j in range(i - 1, max(-1, i - _CAUSE_LOOKBACK) - 1, -1):
+        if "ERROR:" in upper[j]:
+            cause = lines[j].strip()
+            if cause:
+                return cause
+    return matched
+
+
 def _extract_orca_error(lines: list[str]) -> str:
     """Best-effort explanation of why an ORCA run failed, read from its .out.
 
@@ -320,7 +461,7 @@ def _extract_orca_error(lines: list[str]) -> str:
     for needle, explanation in _ERROR_SIGNATURES:
         for i, u in enumerate(upper):
             if needle in u:
-                raw = lines[i].strip()
+                raw = _nearest_cause(lines, upper, i)
                 return (f"{explanation} (ORCA: \"{raw[:160]}\")") if raw else explanation
     # 2) generic error-ish line, searched from the end
     for ln in reversed(lines):
@@ -354,8 +495,12 @@ class OrcaOutParser:
         if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
             text = raw.decode("utf-16", errors="replace")
         else:
-            text = raw.decode("utf-8", errors="replace")
-        lines = _clean_lines(text)
+            # surrogateescape + per-line repair: the file is mixed-encoding on
+            # Windows (ORCA's own strings UTF-8, argv paths in the ANSI code
+            # page). See tailer.decode_orca_line — the same judgment the live
+            # log uses, so the Log tab and the Results tab agree.
+            text = raw.decode("utf-8", errors="surrogateescape")
+        lines = [decode_orca_line(ln) for ln in _clean_lines(text)]
 
         r = ParseResult(filename=self.filename, path=self.path)
 
@@ -379,6 +524,9 @@ class OrcaOutParser:
         self._parse_tddft_states(lines, r)
         self._parse_nmr(lines, r)
         self._parse_neb_path(lines, r)
+        self._parse_scan(lines, r)
+        self._parse_nbo_program(lines, r)
+        self._parse_localization(lines, r)
 
         return r
 
@@ -408,17 +556,26 @@ class OrcaOutParser:
                 r.run_time_string = " ".join(parts)
                 break
 
+    # ORCA's own framing between the "INPUT FILE" banner and the first echoed
+    # line: an "=====" rule and a "NAME = job.inp". Neither is input text, and
+    # both were showing up at the top of the Results tab's input echo (the rule
+    # is 80 characters, which also stretched the block).
+    _ECHO_FRAMING = re.compile(r"^\s*(=+\s*$|NAME\s*=)")
+
     def _parse_input_block(self, lines, r):
         starts = _find_all(lines, "INPUT FILE")
         if not starts:
             return
-        start = starts[-1]
+        # start + 1: the banner line itself is not input text
+        start = starts[-1] + 1
         block, keywords = [], []
         for ln in lines[start: start + 400]:
             if "END OF INPUT" in ln:
                 break
             m = re.match(r"\|\s*\d+>\s?(.*)", ln)
             content = m.group(1) if m else ln
+            if m is None and self._ECHO_FRAMING.match(content):
+                continue           # ORCA's "=====" rule / "NAME = job.inp"
             block.append(content.rstrip())
             if content.lstrip().startswith("!"):
                 keywords.append(content.lstrip()[1:].strip())
@@ -426,127 +583,134 @@ class OrcaOutParser:
         r.input_keywords = " ".join(keywords).strip()
 
     def _parse_charge_mult(self, lines, r):
-        for ln in lines:
-            m = re.search(r"Total Charge\s+Charge\s+\.+\s*(-?\d+)", ln)
-            if m:
-                r.charge = int(m.group(1))
-            m = re.search(r"Multiplicity\s+Mult\s+\.+\s*(\d+)", ln)
-            if m:
-                r.multiplicity = int(m.group(1))
-            m = re.search(r"Number of Electrons\s+NEL\s+\.+\s*(\d+)", ln)
-            if m:
-                r.n_electrons = int(m.group(1))
+        _scan_scalars(lines, r, {
+            "charge": (r"Total Charge\s+Charge\s+\.+\s*(-?\d+)", int),
+            "multiplicity": (r"Multiplicity\s+Mult\s+\.+\s*(\d+)", int),
+            "n_electrons": (r"Number of Electrons\s+NEL\s+\.+\s*(\d+)", int),
+        })
 
     def _parse_final_energy(self, lines, r):
-        vals = []
-        for ln in lines:
-            m = re.search(r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)", ln)
-            if m:
-                vals.append(float(m.group(1)))
-        if vals:
-            r.final_energy_eh = vals[-1]
+        _scan_scalars(lines, r, {
+            "final_energy_eh": (r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)", float),
+        })
 
     def _parse_dispersion(self, lines, r):
-        vals = []
-        for ln in lines:
-            m = re.match(r"\s*Dispersion correction\s+(-?\d+\.\d+)\s*$", ln)
-            if m:
-                vals.append(float(m.group(1)))
-        if vals:
-            r.dispersion_correction_eh = vals[-1]
+        _scan_scalars(lines, r, {
+            "dispersion_correction_eh":
+                (r"^\s*Dispersion correction\s+(-?\d+\.\d+)\s*$", float),
+        })
+
+    # An optimization keyword is a whole TOKEN on the ! line, never a substring
+    # of one. "opt" in the keyword line also matched the shipped basis labels
+    # cc-pVDZ-F12-OptRI / cc-pVTZ-F12-OptRI and the option ExtOpt, so a
+    # perfectly good single point was reported as an optimization that did NOT
+    # converge — a red row and a "Final geometry" section on a job that never
+    # moved an atom. Anchored so OptTS/TightOpt/... still match and OptRI does
+    # not; the marker below is the second, independent witness.
+    _OPT_KEYWORD = re.compile(
+        r"(?:^|\s)(?:(?:very)?tight|loose|normal)?opt(?:ts)?(?:$|\s)", re.I)
 
     def _parse_optimization(self, lines, r):
-        kw = r.input_keywords.lower()
-        r.is_optimization = ("opt" in kw)
         r.opt_converged = any("THE OPTIMIZATION HAS CONVERGED" in ln for ln in lines)
+        r.is_optimization = bool(
+            self._OPT_KEYWORD.search(r.input_keywords)
+            # A raw .inp may drive the optimization from a %geom block with no
+            # keyword at all, so the output's own cycle banner counts too.
+            or any("GEOMETRY OPTIMIZATION CYCLE" in ln for ln in lines))
 
     def _parse_geometry(self, lines, r):
         idxs = _find_all(lines, "CARTESIAN COORDINATES (ANGSTROEM)")
         if not idxs:
             return
-        start = idxs[-1] + 2
-        atoms: list[Atom] = []
-        for ln in lines[start:]:
-            s = ln.strip()
-            if not s:
-                break
-            m = re.match(r"([A-Za-z]{1,3})\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", s)
-            if not m:
-                break
-            atoms.append(Atom(m.group(1), float(m.group(2)),
-                              float(m.group(3)), float(m.group(4))))
+        atoms: list[Atom] = _scan_rows(
+            lines, idxs[-1] + 2,
+            re.compile(r"([A-Za-z]{1,3})\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)"),
+            lambda m: Atom(m.group(1), float(m.group(2)),
+                           float(m.group(3)), float(m.group(4))))
         r.geometry = atoms
         r.n_atoms = len(atoms)
 
+    _ORBITAL_ROW = re.compile(
+        r"(\d+)\s+(\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)")
+
     def _parse_orbitals(self, lines, r):
+        """Orbital energies — BOTH manifolds when the run is unrestricted.
+
+        UKS/UHF prints "SPIN UP ORBITALS" and "SPIN DOWN ORBITALS" as two
+        tables separated by a blank line. Reading rows until the first blank
+        stopped at the end of the alpha table, so an open-shell system's
+        HOMO/LUMO and gap came from alpha alone — and for a radical the true
+        LUMO is in the OTHER manifold. Measured on ORCA 6.1.1, OH radical
+        (UKS B3LYP/def2-SVP, mult 2): alpha-only reports LUMO #5 at +1.5038 eV
+        and a 10.3498 eV gap, while across both manifolds the highest occupied
+        orbital is beta #3 (-8.1108 eV) and the lowest virtual is beta #4
+        (-4.0376 eV) — a 4.0732 eV gap. The frontier pair is therefore taken by
+        ENERGY across everything parsed, not by index within one table.
+        """
         idxs = _find_all(lines, "ORBITAL ENERGIES")
         if not idxs:
             return
         start = idxs[-1]
-        header = None
-        for i in range(start, min(start + 8, len(lines))):
-            if "OCC" in lines[i] and "E(eV)" in lines[i]:
-                header = i
-                break
-        if header is None:
-            return
         orbs: list[Orbital] = []
-        for ln in lines[header + 1:]:
-            s = ln.strip()
-            if not s:
+        # Each spin table has its own "NO OCC E(Eh) E(eV)" header; a restricted
+        # run has exactly one, so the same walk covers both cases.
+        cursor, spins = start, ["a", "b"]
+        while True:
+            header = _find_header(lines, cursor, 8,
+                                  lambda ln: "OCC" in ln and "E(eV)" in ln)
+            if header is None:
                 break
-            m = re.match(r"(\d+)\s+(\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", s)
-            if not m:
+            unrestricted = any("SPIN UP ORBITALS" in ln or "SPIN DOWN ORBITALS" in ln
+                               for ln in lines[cursor:header + 1])
+            spin = spins.pop(0) if unrestricted and spins else ""
+            block = _scan_rows(
+                lines, header + 1, self._ORBITAL_ROW,
+                lambda m, _s=spin: Orbital(int(m.group(1)), float(m.group(2)),
+                                           float(m.group(3)), float(m.group(4)),
+                                           spin=_s))
+            if not block:
                 break
-            orbs.append(Orbital(int(m.group(1)), float(m.group(2)),
-                                float(m.group(3)), float(m.group(4))))
+            orbs.extend(block)
+            if not unrestricted:
+                break
+            cursor = header + 1 + len(block)
         if not orbs:
             return
         r.orbitals = orbs
-        homo = None
-        for o in orbs:
-            if o.occ > 0.01:
-                homo = o
-        if homo is not None:
-            r.homo_index = homo.index
-            r.homo_ev = homo.energy_ev
-            lumo = next((o for o in orbs if o.index == homo.index + 1), None)
-            if lumo is not None:
-                r.lumo_index = lumo.index
-                r.lumo_ev = lumo.energy_ev
-                r.gap_ev = lumo.energy_ev - homo.energy_ev
+        occupied = [o for o in orbs if o.occ > 0.01]
+        virtual = [o for o in orbs if o.occ <= 0.01]
+        if not occupied:
+            return
+        homo = max(occupied, key=lambda o: o.energy_ev)
+        r.homo_index = homo.index
+        r.homo_ev = homo.energy_ev
+        r.homo_spin = homo.spin
+        if virtual:
+            lumo = min(virtual, key=lambda o: o.energy_ev)
+            r.lumo_index = lumo.index
+            r.lumo_ev = lumo.energy_ev
+            r.lumo_spin = lumo.spin
+            r.gap_ev = lumo.energy_ev - homo.energy_ev
+
+    def _parse_atomic_charges(self, lines, marker) -> list[tuple[str, float]]:
+        """MULLIKEN/LOEWDIN ATOMIC CHARGES share one table shape; only the
+        section marker differs. Returns [] when the section is absent."""
+        idxs = _find_all(lines, marker)
+        if not idxs:
+            return []
+        return _scan_rows(
+            lines, idxs[-1] + 2,
+            re.compile(r"\d+\s+([A-Za-z]{1,3})\s*:\s*(-?\d+\.\d+)"),
+            lambda m: (m.group(1), float(m.group(2))),
+            stop=lambda s: s.startswith("Sum of atomic charges"))
 
     def _parse_mulliken(self, lines, r):
-        idxs = _find_all(lines, "MULLIKEN ATOMIC CHARGES")
-        if not idxs:
-            return
-        start = idxs[-1] + 2
-        charges: list[tuple[str, float]] = []
-        for ln in lines[start:]:
-            s = ln.strip()
-            if s.startswith("Sum of atomic charges") or not s:
-                break
-            m = re.match(r"\d+\s+([A-Za-z]{1,3})\s*:\s*(-?\d+\.\d+)", s)
-            if not m:
-                break
-            charges.append((m.group(1), float(m.group(2))))
-        r.mulliken_charges = charges
+        r.mulliken_charges = self._parse_atomic_charges(
+            lines, "MULLIKEN ATOMIC CHARGES")
 
     def _parse_loewdin(self, lines, r):
-        idxs = _find_all(lines, "LOEWDIN ATOMIC CHARGES")
-        if not idxs:
-            return
-        start = idxs[-1] + 2
-        charges: list[tuple[str, float]] = []
-        for ln in lines[start:]:
-            s = ln.strip()
-            if s.startswith("Sum of atomic charges") or not s:
-                break
-            m = re.match(r"\d+\s+([A-Za-z]{1,3})\s*:\s*(-?\d+\.\d+)", s)
-            if not m:
-                break
-            charges.append((m.group(1), float(m.group(2))))
-        r.loewdin_charges = charges
+        r.loewdin_charges = self._parse_atomic_charges(
+            lines, "LOEWDIN ATOMIC CHARGES")
 
     def _parse_mayer(self, lines, r):
         idxs = _find_all(lines, "MAYER POPULATION ANALYSIS")
@@ -554,26 +718,20 @@ class OrcaOutParser:
             return
         start = idxs[-1]
         # per-atom table: header "ATOM  NA  ZA  QA  VA  BVA  FA", then rows
-        head = None
-        for i in range(start, min(start + 20, len(lines))):
-            if lines[i].strip().startswith("ATOM") and "VA" in lines[i]:
-                head = i
-                break
+        head = _find_header(
+            lines, start, 20,
+            lambda ln: ln.strip().startswith("ATOM") and "VA" in ln)
         vals: list = []
         scan_from = start
         if head is not None:
             scan_from = head + 1
-            for ln in lines[head + 1:]:
-                s = ln.strip()
-                if not s:
-                    break
-                m = re.match(
+            vals = _scan_rows(
+                lines, head + 1,
+                re.compile(
                     r"(\d+)\s+([A-Za-z]{1,3})\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+"
-                    r"(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", s)
-                if not m:
-                    break
+                    r"(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)"),
                 # groups: idx, el, NA, ZA, QA, VA, BVA, FA  -> keep VA (group 6)
-                vals.append((int(m.group(1)), m.group(2), float(m.group(6))))
+                lambda m: (int(m.group(1)), m.group(2), float(m.group(6))))
         r.mayer_valences = vals
         # bond orders, printed after the table as "B(  i-El ,  j-El ) :  order"
         bond_re = re.compile(
@@ -590,44 +748,31 @@ class OrcaOutParser:
         r.mayer_bonds = bonds
 
     def _parse_scf_components(self, lines, r):
-        pats = {
-            "nuclear_repulsion_eh": r"Nuclear Repulsion\s*:\s*(-?\d+\.\d+)",
-            "electronic_energy_eh": r"Electronic Energy\s*:\s*(-?\d+\.\d+)",
-            "one_electron_eh": r"One Electron Energy\s*:\s*(-?\d+\.\d+)",
-            "two_electron_eh": r"Two Electron Energy\s*:\s*(-?\d+\.\d+)",
-            "potential_energy_eh": r"Potential Energy\s*:\s*(-?\d+\.\d+)",
-            "kinetic_energy_eh": r"Kinetic Energy\s*:\s*(-?\d+\.\d+)",
-            "virial_ratio": r"Virial Ratio\s*:\s*(-?\d+\.\d+)",
-        }
-        for ln in lines:
-            for attr, pat in pats.items():
-                m = re.search(pat, ln)
-                if m:
-                    setattr(r, attr, float(m.group(1)))
+        _scan_scalars(lines, r, {
+            "nuclear_repulsion_eh": (r"Nuclear Repulsion\s*:\s*(-?\d+\.\d+)", float),
+            "electronic_energy_eh": (r"Electronic Energy\s*:\s*(-?\d+\.\d+)", float),
+            "one_electron_eh": (r"One Electron Energy\s*:\s*(-?\d+\.\d+)", float),
+            "two_electron_eh": (r"Two Electron Energy\s*:\s*(-?\d+\.\d+)", float),
+            "potential_energy_eh": (r"Potential Energy\s*:\s*(-?\d+\.\d+)", float),
+            "kinetic_energy_eh": (r"Kinetic Energy\s*:\s*(-?\d+\.\d+)", float),
+            "virial_ratio": (r"Virial Ratio\s*:\s*(-?\d+\.\d+)", float),
+        })
 
     def _parse_dipole(self, lines, r):
-        for ln in lines:
-            m = re.search(r"Magnitude \(a\.u\.\)\s*:\s*(-?\d+\.\d+)", ln)
-            if m:
-                r.dipole_au = float(m.group(1))
-            m = re.search(r"Magnitude \(Debye\)\s*:\s*(-?\d+\.\d+)", ln)
-            if m:
-                r.dipole_debye = float(m.group(1))
+        _scan_scalars(lines, r, {
+            "dipole_au": (r"Magnitude \(a\.u\.\)\s*:\s*(-?\d+\.\d+)", float),
+            "dipole_debye": (r"Magnitude \(Debye\)\s*:\s*(-?\d+\.\d+)", float),
+        })
 
     def _parse_rotational(self, lines, r):
-        for ln in lines:
-            m = re.search(r"Rotational constants in cm-1:\s*(.+)", ln)
-            if m:
-                try:
-                    r.rot_const_cm = [float(x) for x in m.group(1).split()][:3]
-                except ValueError:
-                    pass
-            m = re.search(r"Rotational constants in MHz\s*:\s*(.+)", ln)
-            if m:
-                try:
-                    r.rot_const_mhz = [float(x) for x in m.group(1).split()][:3]
-                except ValueError:
-                    pass
+        # cast splits the captured tail into the first three floats; a
+        # malformed line raises ValueError, which _scan_scalars swallows
+        # (keeping the previous value), matching the old try/except.
+        first3 = lambda tail: [float(x) for x in tail.split()][:3]  # noqa: E731
+        _scan_scalars(lines, r, {
+            "rot_const_cm": (r"Rotational constants in cm-1:\s*(.+)", first3),
+            "rot_const_mhz": (r"Rotational constants in MHz\s*:\s*(.+)", first3),
+        })
 
     def _parse_frequencies(self, lines, r):
         idxs = _find_all(lines, "VIBRATIONAL FREQUENCIES")
@@ -636,6 +781,7 @@ class OrcaOutParser:
         r.has_frequencies = True
         start = idxs[-1]
         freqs: list[float] = []
+        imag_vals: list[float] = []
         n_imag = 0
         for ln in lines[start:]:
             m = re.match(r"\s*\d+:\s*(-?\d+\.\d+)\s*cm\*\*-1", ln)
@@ -644,40 +790,34 @@ class OrcaOutParser:
                 if "imaginary" in ln.lower():
                     n_imag += 1
                     freqs.append(val)
+                    imag_vals.append(val)
                 elif abs(val) > 1e-6:
                     freqs.append(val)
             elif "NORMAL MODES" in ln and freqs:
                 break
-        n_imag = max(n_imag, sum(1 for f in freqs if f < 0))
+        # a mode can be negative without the marker (older/partial output), so
+        # the count is the larger of the two readings and the value list is the
+        # union — both stay consistent with each other
+        by_sign = [f for f in freqs if f < 0]
+        n_imag = max(n_imag, len(by_sign))
+        for f in by_sign:
+            if f not in imag_vals:
+                imag_vals.append(f)
         r.frequencies = freqs
+        r.imaginary_frequencies = imag_vals
         r.n_imaginary = n_imag
 
     def _parse_thermochemistry(self, lines, r):
-        for ln in lines:
-            m = re.search(r"Zero point energy\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
-            if m:
-                r.zpe_eh = float(m.group(1))
-            m = re.search(r"Total thermal energy\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
-            if m:
-                r.total_thermal_eh = float(m.group(1))
-            m = re.search(r"Final Gibbs free energy\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
-            if m:
-                r.gibbs_eh = float(m.group(1))
-            m = re.search(r"G-E\(el\)\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
-            if m:
-                r.g_minus_e_el_eh = float(m.group(1))
-            m = re.search(r"Total Enthalpy\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
-            if m:
-                r.enthalpy_eh = float(m.group(1))
-            m = re.search(r"Final entropy term\s+\.*\s*(-?\d+\.\d+)\s*Eh", ln)
-            if m:
-                r.entropy_term_eh = float(m.group(1))
-            m = re.search(r"Temperature\s+\.*\s*(-?\d+\.\d+)\s*K\b", ln)
-            if m:
-                r.temperature_k = float(m.group(1))
-            m = re.search(r"Pressure\s+\.*\s*(-?\d+\.\d+)\s*atm", ln)
-            if m:
-                r.pressure_atm = float(m.group(1))
+        _scan_scalars(lines, r, {
+            "zpe_eh": (r"Zero point energy\s+\.*\s*(-?\d+\.\d+)\s*Eh", float),
+            "total_thermal_eh": (r"Total thermal energy\s+\.*\s*(-?\d+\.\d+)\s*Eh", float),
+            "gibbs_eh": (r"Final Gibbs free energy\s+\.*\s*(-?\d+\.\d+)\s*Eh", float),
+            "g_minus_e_el_eh": (r"G-E\(el\)\s+\.*\s*(-?\d+\.\d+)\s*Eh", float),
+            "enthalpy_eh": (r"Total Enthalpy\s+\.*\s*(-?\d+\.\d+)\s*Eh", float),
+            "entropy_term_eh": (r"Final entropy term\s+\.*\s*(-?\d+\.\d+)\s*Eh", float),
+            "temperature_k": (r"Temperature\s+\.*\s*(-?\d+\.\d+)\s*K\b", float),
+            "pressure_atm": (r"Pressure\s+\.*\s*(-?\d+\.\d+)\s*atm", float),
+        })
 
     def _parse_tddft(self, lines, r):
         idxs = _find_all(lines, "ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE")
@@ -686,18 +826,24 @@ class OrcaOutParser:
         r.has_tddft = True
         start = idxs[-1]
         trans: list[Transition] = []
+        # "0-1A  ->  2-3A": the digit before the letter is the excited state's
+        # spin multiplicity, and it must be kept. With `triplets true` ORCA
+        # prints singlets and triplets in ONE energy-sorted table, so the state
+        # number restarts per multiplicity — discarding it gave two rows called
+        # "state 2" and a state count of twice the root count.
         row = re.compile(
-            r"->\s*(\d+)-\S+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)"
+            r"->\s*(\d+)-(\d+)\S*\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)"
         )
         for ln in lines[start:start + 400]:
             m = row.search(ln)
             if m:
                 trans.append(Transition(
                     state=int(m.group(1)),
-                    energy_ev=float(m.group(2)),
-                    energy_cm=float(m.group(3)),
-                    wavelength_nm=float(m.group(4)),
-                    fosc=float(m.group(5)),
+                    mult=int(m.group(2)),
+                    energy_ev=float(m.group(3)),
+                    energy_cm=float(m.group(4)),
+                    wavelength_nm=float(m.group(5)),
+                    fosc=float(m.group(6)),
                 ))
             elif trans and ln.strip() == "":
                 # rows are contiguous (verified on real ORCA 6.x output), so
@@ -768,27 +914,19 @@ class OrcaOutParser:
         start = idxs[-1]
         # find the "Nucleus  Element  Isotropic  Anisotropy" header, then the
         # dashed separator; data rows follow until a blank line
-        header = None
-        for i in range(start, min(start + 8, len(lines))):
-            if "Nucleus" in lines[i] and "Isotropic" in lines[i]:
-                header = i
-                break
+        header = _find_header(lines, start, 8,
+                              lambda ln: "Nucleus" in ln and "Isotropic" in ln)
         if header is None:
             return
         # data begins after the dashed line following the header
         data_start = header + 1
         if data_start < len(lines) and set(lines[data_start].strip()) <= {"-", " "}:
             data_start += 1
-        shieldings: list[tuple[int, str, float, float]] = []
-        for ln in lines[data_start:]:
-            s = ln.strip()
-            if not s:
-                break
-            m = re.match(r"(\d+)\s+([A-Za-z]{1,3})\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", s)
-            if not m:
-                break
-            shieldings.append((int(m.group(1)), m.group(2),
-                               float(m.group(3)), float(m.group(4))))
+        shieldings: list[tuple[int, str, float, float]] = _scan_rows(
+            lines, data_start,
+            re.compile(r"(\d+)\s+([A-Za-z]{1,3})\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)"),
+            lambda m: (int(m.group(1)), m.group(2),
+                       float(m.group(3)), float(m.group(4))))
         if shieldings:
             r.has_nmr = True
             r.nmr_shieldings = shieldings
@@ -863,6 +1001,333 @@ class OrcaOutParser:
             r.neb_path = path
             r.neb_path_kind = path_kind
 
+    # A relaxed surface scan, as ORCA 6.1.1 prints it (measured on water /
+    # H2O2, HF/def2-SVP, 1-D and 2-D):
+    #
+    #                        *    Relaxed Surface Scan    *
+    #                       Bond (  1,   0):   range=   0.90000000 ..   1.10000000  steps =    5
+    #   ... per point, a box naming the values it holds:
+    #          *               RELAXED SURFACE SCAN STEP   1               *
+    #          *                 Bond (  1,   0)  :   0.90000000           *
+    #   ... and at the end, one row per point (one value column per coordinate):
+    #   RELAXED SURFACE SCAN RESULTS
+    #   The Calculated Surface using the 'Actual Energy'
+    #      0.90000000 -75.95882048
+    #
+    # ORCA prints the atoms in its own order ("B 0 1" comes back as (1, 0)), so
+    # they are kept as printed. The results table is the authority; a run that
+    # stopped before it (an error termination mid-scan, or one still running)
+    # falls back to the points whose optimization finished — the step box's
+    # values and that step's last FINAL SINGLE POINT ENERGY before its
+    # "OPTIMIZATION RUN DONE" — so the points it did reach are not lost.
+    _SCAN_COORD = re.compile(
+        r"^\s*(Bond|Angle|Dihedral)\s*\(([\d,\s]+)\)\s*:\s*range=\s*(-?\d+\.\d+)"
+        r"\s*\.\.\s*(-?\d+\.\d+)\s+steps\s*=\s*(\d+)")
+    _SCAN_STEP_VALUE = re.compile(
+        r"^\s*\*\s*(?:Bond|Angle|Dihedral)\s*\([\d,\s]+\)\s*:\s*(-?\d+\.\d+)\s*\*")
+    _SCAN_KIND = {"Bond": "B", "Angle": "A", "Dihedral": "D"}
+
+    def _parse_scan(self, lines, r):
+        coords = []
+        for i, ln in enumerate(lines):
+            if "Relaxed Surface Scan" not in ln or "*" not in ln:
+                continue
+            for c in lines[i + 1: i + 12]:
+                m = self._SCAN_COORD.match(c)
+                if m:
+                    coords.append({
+                        "kind": self._SCAN_KIND[m.group(1)],
+                        "atoms": [int(a) for a in m.group(2).split(",") if a.strip()],
+                        "start": float(m.group(3)), "end": float(m.group(4)),
+                        "steps": int(m.group(5))})
+                elif coords:
+                    break
+            break
+        if not coords:
+            return
+        n = len(coords)
+        points = []
+        starts = [i for i, ln in enumerate(lines) if "RELAXED SURFACE SCAN RESULTS" in ln]
+        if starts:
+            k = starts[-1]
+            at = next((j for j in range(k, min(k + 40 + n, len(lines)))
+                       if "Actual Energy" in lines[j]), None)
+            if at is not None:
+                for ln in lines[at + 1: at + 1 + 1_000_000]:
+                    toks = ln.split()
+                    if len(toks) != n + 1:
+                        break
+                    try:
+                        vals = [float(t) for t in toks]
+                    except ValueError:
+                        break
+                    points.append({"values": vals[:n], "e_eh": vals[n]})
+        if not points:
+            values, energy = None, None
+            for ln in lines:
+                if "RELAXED SURFACE SCAN STEP" in ln:
+                    values, energy = [], None
+                    continue
+                if values is not None and len(values) < n:
+                    m = self._SCAN_STEP_VALUE.match(ln)
+                    if m:
+                        values.append(float(m.group(1)))
+                        continue
+                if values is None:
+                    continue
+                m = re.search(r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)", ln)
+                if m:
+                    energy = float(m.group(1))
+                elif ("OPTIMIZATION RUN DONE" in ln and energy is not None
+                      and len(values) == n):
+                    points.append({"values": values, "e_eh": energy})
+                    values, energy = None, None
+        r.scan_coords = coords
+        if points:
+            low = min(p["e_eh"] for p in points)
+            for p in points:
+                p["de_kcal"] = (p["e_eh"] - low) * HARTREE_TO_KCAL
+        r.scan_points = points
+
+    # ---- the NBO program's printout -------------------------------------
+    # Formats measured on NBO 7.0.10 as ORCA 6.1.1 runs it (`! NBO`, closed
+    # shell, default keylist — tests/nbo/fixtures/fch2ch2f_anti_nbo7.out).
+    # An open-shell run prints its Lewis structure, E(2) table and NBO list
+    # once per spin; without a measured sample those are NOT read (P3), only
+    # the first NPA summary, which is the total density's.
+    _NBO_START = "N A T U R A L   A T O M I C   O R B I T A L"
+    _NBO_END = "returned from  NBO  program"
+    _NBO_VERSION = re.compile(r"\[NBO\s+([\d.]+)")
+    # "    C  1    0.02947      1.99999     3.94861    0.02193     5.97053"
+    _NBO_NPA = re.compile(r"^\s*([A-Z][a-z]?)\s*(\d+)\s+(-?\d+\.\d+)\s+(\d+\.\d+)"
+                          r"\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)\s*$")
+    # "      C  1      [core]2s( 1.06)2p( 2.89)3d( 0.01)4p( 0.01)"
+    _NBO_CONFIG = re.compile(r"^\s*([A-Z][a-z]?)\s*(\d+)\s+(\S.*\(.*)$")
+    # "   Total Lewis              33.82726 ( 99.492% of  34)"
+    _NBO_LEWIS = re.compile(r"^\s*(Core|Valence Lewis|Total Lewis|Valence non-Lewis|"
+                            r"Rydberg non-Lewis|Total non-Lewis)\s+(\d+\.\d+)\s*"
+                            r"\(\s*(\d+\.\d+)%\s+of\s+(\d+)\)")
+    # "   13. BD ( 1) C  1- H  4       1.99209    -0.62961  23(v),24(v)" — the
+    # label keeps NBO's own spacing ("C  1"), so it ends at the first run of
+    # spaces followed by a DECIMAL; an atom number never has a point.
+    _NBO_ORB = re.compile(r"^\s*(\d+)\.\s+([A-Za-z0-9]+\*?)\s*\(\s*(\d+)\)\s*(.+?)\s{2,}"
+                          r"(-?\d+\.\d+)\s+(-?\d+\.\d+)(?:\s+(\S.*))?$")
+    # "    7. LP ( 3) F  3            18. BD*( 1) C  1- C  2      8.33    0.94   0.079"
+    _NBO_E2 = re.compile(r"^\s*(\d+)\.\s+(.+?)\s+(\d+)\.\s+(.+?)\s+(-?\d+\.\d+)"
+                         r"\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s*$")
+    _NBO_ATOM = re.compile(r"([A-Z][a-z]?)\s*(\d+)")
+    _NBO_LABEL = re.compile(r"^([A-Za-z0-9]+\*?)\s*\(\s*(\d+)\)\s*(.*)$")
+
+    @classmethod
+    def _nbo_label(cls, kind: str, n: str, centres: str) -> tuple[str, list[int]]:
+        """NBO's "BD*( 1) C  1- C  2" as "BD*(1) C1–C2", and its centres
+        0-based. One spelling for the E(2) table and the NBO list, so a donor
+        reads the same in both."""
+        atoms = cls._NBO_ATOM.findall(centres)
+        return (f"{kind}({int(n)}) " + "–".join(el + num for el, num in atoms),
+                [int(num) - 1 for _, num in atoms])
+
+    @classmethod
+    def _nbo_label_text(cls, text: str) -> str:
+        m = cls._NBO_LABEL.match(text.strip())
+        return cls._nbo_label(*m.groups())[0] if m else " ".join(text.split())
+
+    def _parse_nbo_program(self, lines, r):
+        starts = _find_all(lines, self._NBO_START)
+        if not starts:
+            return
+        lo = starts[-1]
+        hi = next((i for i in range(lo, len(lines)) if self._NBO_END in lines[i]),
+                  len(lines))
+        block = lines[lo:hi]
+        nbo: dict = {"version": "", "open_shell": False, "atoms": [],
+                     "lewis": {}, "accepted": "", "orbitals": [], "interactions": []}
+        for ln in block[:60]:
+            m = self._NBO_VERSION.search(ln)
+            if m:
+                nbo["version"] = m.group(1)
+                break
+        nbo["open_shell"] = any("Alpha spin orbitals" in ln or "alpha spin orbitals" in ln
+                                for ln in block)
+
+        # NPA summary: the first one is the total density's in either case
+        s = next((i for i, ln in enumerate(block)
+                  if "Summary of Natural Population Analysis" in ln), None)
+        if s is not None:
+            for ln in block[s + 1:]:
+                if ln.strip().startswith("="):
+                    break
+                m = self._NBO_NPA.match(ln)
+                if m:
+                    nbo["atoms"].append({
+                        "index": int(m.group(2)) - 1, "el": m.group(1),
+                        "charge": float(m.group(3)), "core": float(m.group(4)),
+                        "valence": float(m.group(5)), "rydberg": float(m.group(6)),
+                        "total": float(m.group(7)), "config": ""})
+            c = next((i for i in range(s, len(block))
+                      if "Natural Electron Configuration" in block[i]), None)
+            if c is not None:
+                by_index = {a["index"]: a for a in nbo["atoms"]}
+                for ln in block[c + 2:]:
+                    if not ln.strip():
+                        break
+                    m = self._NBO_CONFIG.match(ln)
+                    if m and (int(m.group(2)) - 1) in by_index:
+                        by_index[int(m.group(2)) - 1]["config"] = " ".join(m.group(3).split())
+
+        if nbo["open_shell"]:
+            r.nbo_program = nbo
+            return
+
+        a = next((i for i, ln in enumerate(block)
+                  if "NATURAL BOND ORBITAL ANALYSIS:" in ln), None)
+        if a is not None:
+            for ln in block[a: a + 40]:
+                if ln.strip().startswith("Structure accepted"):
+                    nbo["accepted"] = ln.strip()
+                m = self._NBO_LEWIS.match(ln)
+                if m:
+                    key = m.group(1).lower().replace(" ", "_").replace("-", "")
+                    nbo["lewis"][key] = {"e": float(m.group(2)), "pct": float(m.group(3)),
+                                         "of": int(m.group(4))}
+                if ln.strip().startswith("(Occupancy)"):
+                    break
+
+        e2 = next((i for i, ln in enumerate(block)
+                   if "SECOND ORDER PERTURBATION THEORY ANALYSIS" in ln), None)
+        summ = next((i for i, ln in enumerate(block)
+                     if "NATURAL BOND ORBITALS (Summary)" in ln), None)
+        if e2 is not None:
+            for ln in block[e2 + 1: summ if summ is not None and summ > e2 else len(block)]:
+                m = self._NBO_E2.match(ln)
+                if m:
+                    nbo["interactions"].append({
+                        "donor": int(m.group(1)),
+                        "donor_label": self._nbo_label_text(m.group(2)),
+                        "acceptor": int(m.group(3)),
+                        "acceptor_label": self._nbo_label_text(m.group(4)),
+                        "e2_kcal": float(m.group(5)), "de_au": float(m.group(6)),
+                        "f_au": float(m.group(7))})
+
+        if summ is not None:
+            lewis = True
+            for ln in block[summ + 1:]:
+                t = ln.strip()
+                if t.startswith("------ Lewis"):
+                    lewis = True
+                    continue
+                if t.startswith("------ non-Lewis"):
+                    lewis = False
+                    continue
+                if t.startswith("$CHOOSE") or t.startswith("Total Lewis"):
+                    break
+                m = self._NBO_ORB.match(ln)
+                if not m:
+                    continue
+                label, atoms = self._nbo_label(m.group(2), m.group(3), m.group(4))
+                nbo["orbitals"].append({
+                    "index": int(m.group(1)), "type": m.group(2), "label": label,
+                    "atoms": atoms,
+                    "occ": float(m.group(5)), "energy_eh": float(m.group(6)),
+                    "lewis": lewis})
+
+        r.nbo_program = nbo
+
+    # ---- ORCA's orbital localization (%loc) ------------------------------
+    # Measured on ORCA 6.1.1 IAO-IBO runs (an SN2 reaction path, 7 points,
+    # tests/test_localization_output.py). Each LMO is printed as its Mulliken
+    # population on one atom (>= the strong threshold) or on two (>= the bond
+    # threshold); a "delocalized" one is counted on the FOUND line, but no run
+    # here had one, so its own lines are not read (P3). The "IAO PARTIAL
+    # CHARGES" block is skipped on purpose: ORCA itself warns they mean nothing
+    # unless every occupied MO was localized, and the default range leaves the
+    # cores out (bromine reads 17.7).
+    _LOC_START = "ORCA ORBITAL LOCALIZATION"
+    _LOC_FIELD = re.compile(r"^(.+?)\s*\.\.\.\s*(.+?)\s*$")
+    _LOC_FOUND = re.compile(r"^\s*(?:FOUND)?\s*-\s*(\d+)\s+(strongly local|two center bond|"
+                            r"significantly delocalized)")
+    _LOC_MO = re.compile(r"^\s*MO\s+(\d+):\s+(.*)$")
+    _LOC_PART = re.compile(r"(\d+)\s*([A-Z][a-z]?)\s*-\s*(-?\d+\.\d+)")
+
+    def _parse_localization(self, lines, r):
+        starts = _find_all(lines, self._LOC_START)
+        if not starts:
+            return
+        lo = starts[-1]
+        loc: dict = {"method": "", "range": [], "strong_threshold": None,
+                     "bond_threshold": None, "n_strong": 0, "n_bond": 0, "n_deloc": 0,
+                     "orbitals": []}
+        kind = ""
+        for ln in lines[lo + 1:]:
+            if "were stored in" in ln or "FINAL SINGLE POINT ENERGY" in ln:
+                break
+            m = self._LOC_FIELD.match(ln.strip())
+            if m:
+                key, val = m.group(1).strip(), m.group(2)
+                if key == "Localization criterion":
+                    loc["method"] = val
+                elif key == "Orbital range for localization":
+                    loc["range"] = [int(x) for x in re.findall(r"\d+", val)][:2]
+                elif key == "Threshold for strong local MOs":
+                    loc["strong_threshold"] = float(val)
+                elif key == "Threshold for bond MOs":
+                    loc["bond_threshold"] = float(val)
+                continue
+            m = self._LOC_FOUND.match(ln)
+            if m:
+                loc[{"strongly local": "n_strong", "two center bond": "n_bond",
+                     "significantly delocalized": "n_deloc"}[m.group(2)]] = int(m.group(1))
+                continue
+            s = ln.strip()
+            if s.startswith("Rather strongly localized"):
+                kind = "one"
+            elif s.startswith("Bond-like localized"):
+                kind = "two"
+            elif s.endswith(":") and not s.startswith("MO"):
+                kind = ""          # a heading this parser has no sample of
+            m = self._LOC_MO.match(ln)
+            if m and kind:
+                parts = [{"atom": int(a), "el": el, "pop": float(pop)}
+                         for a, el, pop in self._LOC_PART.findall(m.group(2))]
+                if parts:
+                    loc["orbitals"].append({"mo": int(m.group(1)), "kind": kind,
+                                            "parts": parts})
+        if loc["method"] or loc["orbitals"]:
+            loc["orbitals"].sort(key=lambda o: o["mo"])
+            r.localization = loc
+
 
 def parse_file(path: str) -> ParseResult:
     return OrcaOutParser(path).parse()
+
+
+# ORCA echoes the multiplicity in its input summary, near the top of the run.
+_MULT_RE = re.compile(r"Multiplicity\s+Mult\s+\.+\s*(\d+)")
+_MULT_SCAN_LINES = 4000
+
+
+def read_multiplicity(path) -> Optional[int]:
+    """The spin multiplicity of a finished run, read from its ``.out`` alone.
+
+    A cheap head-scan rather than a full :func:`parse_file`: the caller (the
+    orbital viewer deciding whether to offer a *spin density*) needs one integer,
+    and re-parsing a multi-megabyte output for it would be absurd. ORCA prints
+    the line in its input summary, so the scan stops early — and stops
+    unconditionally after ``_MULT_SCAN_LINES`` so a file that never contains it
+    costs a bounded read, not the whole file.
+
+    Returns None when the file is unreadable or the line is absent — "unknown",
+    which the caller must treat as *not known to be open-shell* rather than as
+    a closed shell it can assert (P2).
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i >= _MULT_SCAN_LINES:
+                    break
+                m = _MULT_RE.search(line)
+                if m:
+                    return int(m.group(1))
+    except OSError:
+        return None
+    return None

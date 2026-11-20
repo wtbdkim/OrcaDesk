@@ -30,7 +30,7 @@ from orcamgr.core.queue import (
     validate_result,
 )
 from orcamgr.core.runner import OrcaRunError
-from orcamgr.mlip.env import resolve_interpreter
+from orcamgr.mlip.env import order_envs_by_readiness, resolve_interpreter
 from orcamgr.mlip.parser import parse_mlip_result
 from orcamgr.mlip.runner import MlipRunner, parse_mace_model, write_mlip_run_files
 
@@ -124,7 +124,7 @@ def _recording_callbacks():
     logs: list = []
     updates: list = []
     cb = QueueCallbacks(
-        log=lambda msg, level: logs.append((level, msg)),
+        log=lambda msg, level, _calc="": logs.append((level, msg)),
         calc_update=lambda i, c: updates.append((i, c.state)),
     )
     return cb, logs, updates
@@ -214,6 +214,31 @@ def test_write_mlip_run_files_encodes_freq_tasks_device_and_thermo(tmp_path):
     bad = _json.loads(cp_bad.read_text(encoding="utf-8"))
     assert bad["task"] == "opt"
     assert bad["device"] == ""   # auto (resolved in the worker)
+
+
+def test_write_mlip_run_files_caps_the_worker_threads(tmp_path):
+    # The queue charges a CPU MLIP job `nprocs` cores (core/resources.py), so
+    # the worker has to keep to them: torch and the BLAS under it default to
+    # every core, which would blow the budget as soon as anything runs
+    # alongside. The cap travels in the config the worker reads.
+    import json as _json
+    _, cp = write_mlip_run_files(
+        tmp_path / "t", "t", "MACE-OFF medium", "H 0 0 0",
+        tmp_path / "t.json", threads=4)
+    assert _json.loads(cp.read_text(encoding="utf-8"))["threads"] == 4
+    # unset stays 0 = leave torch's own default alone
+    _, cp0 = write_mlip_run_files(
+        tmp_path / "t0", "t0", "MACE-OFF medium", "H 0 0 0", tmp_path / "t0.json")
+    assert _json.loads(cp0.read_text(encoding="utf-8"))["threads"] == 0
+
+
+def test_worker_sets_the_thread_env_before_importing_torch(tmp_path):
+    # _cap_threads must run before any torch import: OMP_NUM_THREADS is only
+    # read at import time, so a later call would silently do nothing.
+    from orcamgr.mlip.runner import MACE_WORKER_SCRIPT
+    body = MACE_WORKER_SCRIPT
+    assert "OMP_NUM_THREADS" in body
+    assert body.index("_cap_threads(cfg.get(\"threads\"))") < body.index("from ase.io import")
 
 
 def test_parse_mlip_result_reads_frequencies_and_thermochemistry(tmp_path):
@@ -590,6 +615,7 @@ def test_probe_env_non_dict_json_is_error_not_a_crash(monkeypatch, tmp_path):
     fake_exe.write_text("")
 
     class _Proc:
+        returncode = 0        # it RAN; what it printed is the problem
         stdout = "42\n"
         stderr = ""
 
@@ -598,3 +624,90 @@ def test_probe_env_non_dict_json_is_error_not_a_crash(monkeypatch, tmp_path):
     res = env_mod.probe_env(str(fake_exe))
     assert res["ready"] is False
     assert res["error"]
+
+
+# ---------------------------------------------------------------------------
+# Which env an "" (auto) mlip_env_id resolves to
+# ---------------------------------------------------------------------------
+# The engine receives only {id, name, python} -- readiness is a live probe
+# result held by the Bridge -- so the documented `mlip_env_id == "" -> first
+# ready env` contract is expressed as an ORDER on that list. These pin the
+# ordering; the engine's own "take envs[0]" is covered below.
+
+def _envs(*ids):
+    return [{"id": i, "name": i, "python": f"/py/{i}"} for i in ids]
+
+
+def test_a_ready_env_outranks_an_earlier_broken_one():
+    # The bug this pins: two registered envs, the FIRST one broken. The top-bar
+    # pill reads "ready" off the second, so the card unlocks -- and every MLIP
+    # calc used to route to the broken first env anyway.
+    out = order_envs_by_readiness(_envs("broken", "good"),
+                                  {"broken": "error", "good": "ready"})
+    assert [e["id"] for e in out] == ["good", "broken"]
+
+
+def test_registration_order_breaks_ties_so_one_env_is_untouched():
+    envs = _envs("a", "b", "c")
+    assert order_envs_by_readiness(envs, {k: "ready" for k in "abc"}) == envs
+    assert order_envs_by_readiness(_envs("solo"), {"solo": "error"})[0]["id"] == "solo"
+
+
+def test_an_unprobed_or_checking_env_outranks_a_failed_one_but_not_a_ready_one():
+    # "checking"/unknown is unproven, not disproven: better than a confirmed
+    # error, worse than a confirmed ready.
+    out = order_envs_by_readiness(_envs("err", "unprobed", "checking", "ready"),
+                                  {"err": "error", "checking": "checking",
+                                   "ready": "ready"})  # "unprobed" absent on purpose
+    assert [e["id"] for e in out] == ["ready", "unprobed", "checking", "err"]
+
+
+def test_nothing_is_dropped_when_every_env_failed():
+    # An all-error list must still reach the engine: it then fails with a real
+    # interpreter path and a real message, not "no MLIP environment registered".
+    out = order_envs_by_readiness(_envs("x", "y"), {"x": "error", "y": "error"})
+    assert [e["id"] for e in out] == ["x", "y"]
+
+
+def test_engine_runs_the_first_env_of_the_list_it_is_given(tmp_path):
+    # The other half of the contract: the engine takes envs[0] for an auto
+    # ("") mlip_env_id, so ordering the list is what decides the interpreter.
+    good = tmp_path / "good.exe"; good.write_text("")
+    broken = tmp_path / "broken.exe"; broken.write_text("")
+    ordered = order_envs_by_readiness(
+        [{"id": "b", "name": "b", "python": str(broken)},
+         {"id": "g", "name": "g", "python": str(good)}],
+        {"b": "error", "g": "ready"})
+    engine = QueueEngine("", str(tmp_path), mlip_envs=ordered)
+    calc = Calculation(name="m", kind="mlip_opt", xyz="H 0 0 0",
+                       config=StepConfig(kind="mlip_opt", mlip_env_id=""))
+    assert engine._resolve_mlip_python(calc) == str(good)
+
+
+# ---------------------------------------------------------------------------
+# Probing an environment that cannot start
+# ---------------------------------------------------------------------------
+
+def test_an_interpreter_that_fails_to_start_is_reported_as_such(monkeypatch, tmp_path):
+    """A venv whose base Python was uninstalled prints "No Python at ..." on
+    stderr and exits non-zero with empty stdout. Reading that as an empty
+    package list produced the confidently wrong "Missing core packages: torch,
+    ase" — sending the user off to pip install into an interpreter that cannot
+    run at all."""
+    import orcamgr.mlip.env as env_mod
+
+    fake_exe = tmp_path / "python.exe"
+    fake_exe.write_text("", encoding="utf-8")
+
+    class _Proc:
+        returncode = 103
+        stdout = ""
+        stderr = "No Python at 'C:\\gone\\python.exe'"
+
+    monkeypatch.setattr(env_mod.subprocess, "run", lambda *a, **k: _Proc())
+    probe = env_mod.probe_env(str(fake_exe))
+
+    assert probe["ready"] is False
+    assert "No Python at" in (probe["error"] or "")
+    assert probe["error"]        # not None: the payload must not fall back to
+                                 # "missing packages" for an env that never ran

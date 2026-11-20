@@ -17,6 +17,7 @@ reach them because config.py imports them at module top.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import fields as dataclass_fields
 
 import pytest
@@ -50,9 +51,6 @@ def test_load_with_missing_file_yields_defaults(settings_file, tmp_path):
     assert s.default_nprocs == 6
     assert s.default_maxcore_mb == 2400
     assert s.theme == "dark"
-    assert s.theme_variant == "shadcn"      # Liquid-Glass is opt-in
-    assert s.glass_level == "moderate"
-    assert s.wallpaper == "aurora"
     assert s.eta_mode == "conservative"
     assert s.geo_graph_mode == "all5"
     assert s.build_mode == "beginner"
@@ -132,16 +130,24 @@ def test_save_load_roundtrip_preserves_values(settings_file, tmp_path):
     assert loaded.mlip_envs == s.mlip_envs
 
 
-def test_appearance_fields_roundtrip(settings_file, tmp_path):
-    """Liquid-Glass appearance settings persist and reload verbatim."""
-    s = Settings(theme="light", theme_variant="liquidglass",
-                 glass_level="vivid", wallpaper="sunset",
-                 workspace_root=str(tmp_path / "ws"))
-    s.save()
-    loaded = Settings.load()
-    assert loaded.theme_variant == "liquidglass"
-    assert loaded.glass_level == "vivid"
-    assert loaded.wallpaper == "sunset"
+def test_retired_classic_keys_are_dropped_on_load(settings_file):
+    """A settings.json from a build that still had the classic front-end
+    carries ui_variant and the Liquid-Glass keys (theme_variant, glass_level,
+    wallpaper). They are dropped on load like any unknown key, every setting
+    beside them survives, and the next save no longer writes them (P33)."""
+    write_settings(settings_file, {
+        "ui_variant": "classic", "theme_variant": "liquidglass",
+        "glass_level": "vivid", "wallpaper": "custom",
+        "theme": "light", "eta_mode": "eager"})
+    s = Settings.load()
+    assert s.theme == "light"
+    assert s.eta_mode == "eager"
+    retired = ("ui_variant", "theme_variant", "glass_level", "wallpaper")
+    for gone in retired:
+        assert not hasattr(s, gone)
+    assert s.save()
+    data = json.loads(settings_file.read_text(encoding="utf-8"))
+    assert not set(retired) & set(data)
 
 
 def test_save_failure_does_not_raise(monkeypatch, tmp_path):
@@ -151,8 +157,32 @@ def test_save_failure_does_not_raise(monkeypatch, tmp_path):
     blocker.write_text("I am a file, not a directory", encoding="utf-8")
     monkeypatch.setattr(config_mod, "config_file",
                         lambda: blocker / "settings.json")
-    Settings().save()  # must swallow the failure, never break the app
+    assert Settings().save() is False   # swallowed, but reported
     assert blocker.read_text(encoding="utf-8").startswith("I am a file")
+
+
+def test_save_reports_success(settings_file):
+    # The caller cannot tell "written" from "silently lost" without this:
+    # Bridge.save_settings answered "Saved." to a write that never happened,
+    # and every setting was gone at the next launch.
+    assert Settings(theme="light").save() is True
+    assert '"theme": "light"' in settings_file.read_text(encoding="utf-8")
+
+
+def test_failed_save_leaves_no_tmp_file_behind(monkeypatch, tmp_path):
+    # the tmp write can succeed and only the replace fail (the file is locked,
+    # read-only, held by a virus scanner) — the intended content must not be
+    # left lying beside settings.json under a .tmp name
+    target = tmp_path / "settings.json"
+    monkeypatch.setattr(config_mod, "config_file", lambda: target)
+
+    def boom(*_a, **_kw):
+        raise OSError("locked")
+
+    monkeypatch.setattr(config_mod.os, "replace", boom)
+
+    assert Settings().save() is False
+    assert list(tmp_path.iterdir()) == []
 
 
 # ---- 3. legacy mlip_python -> mlip_envs migration --------------------------
@@ -209,7 +239,44 @@ def test_orca_is_valid_requires_existing_file(tmp_path):
         orca_path=str(tmp_path / "nope" / "orca.exe")).orca_is_valid() is False
     exe = tmp_path / "orca.exe"
     exe.write_bytes(b"fake orca binary")
+    # The POSIX branch of orca_is_valid asks os.access(X_OK), so a file written
+    # without the bit is not "something that could BE the executable" there --
+    # this test asserted the Windows answer on every platform.
+    exe.chmod(0o755)
     assert Settings(orca_path=str(exe)).orca_is_valid() is True
+
+
+def test_orca_is_valid_rejects_a_directory(tmp_path):
+    # The ORCA install FOLDER is the natural thing to pick in a browser, and
+    # exists() said yes to it: Settings showed ORCA as valid, the run pre-flight
+    # passed, and the calculation died at launch with a WinError — which locks
+    # it (P24).
+    d = tmp_path / "ORCA_6.1.1"
+    d.mkdir()
+    assert Settings(orca_path=str(d)).orca_is_valid() is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="executable extensions are a Windows rule")
+def test_orca_is_valid_rejects_a_non_executable_file(tmp_path):
+    doc = tmp_path / "EULA_ORCA.rtf"
+    doc.write_text("not a program", encoding="utf-8")
+    assert Settings(orca_path=str(doc)).orca_is_valid() is False
+
+
+def test_infinity_in_settings_file_does_not_crash_the_launch(settings_file):
+    """`Infinity` and `NaN` are valid JSON to Python's decoder, and
+    int(float("inf")) raises OverflowError — which the coercion guard did not
+    catch, so it propagated out of Settings.load -> Bridge.__init__ and the app
+    could not start at all until the file was edited by hand (P32)."""
+    settings_file.write_text(
+        '{"max_total_ram_mb": Infinity, "max_total_cores": -Infinity, '
+        '"default_nprocs": NaN}', encoding="utf-8")
+
+    s = Settings.load()   # must not raise
+
+    assert s.max_total_ram_mb == 0
+    assert s.max_total_cores == 0
+    assert s.default_nprocs == 6
 
 
 def test_mlip_env_lookup_by_id():
@@ -262,3 +329,104 @@ def test_load_drops_mlip_env_entries_without_a_string_id(settings_file):
     ]})
     s = Settings.load()
     assert [e["id"] for e in s.mlip_envs] == ["ok2"]
+
+
+def test_int_fields_survive_a_corrupted_settings_file(settings_file):
+    # P32: a hand-edited/corrupted settings.json must degrade to defaults, not
+    # crash the app. The parallel-run budgets ride into ResourceBudget.resolved(),
+    # which compares them with `>` -- a string there raises TypeError out of a
+    # pyqtSlot, and errors must be data, never exceptions across that boundary.
+    import json
+
+    settings_file.write_text(json.dumps({
+        "max_concurrent_jobs": "4",      # string that happens to parse
+        "max_total_cores": "nonsense",   # string that does not
+        "default_nprocs": None,
+    }), encoding="utf-8")
+
+    s = Settings.load()
+
+    assert s.max_concurrent_jobs == 4          # coerced
+    assert s.max_total_cores == 0              # fell back to the default
+    assert s.default_nprocs == 6
+    # and the budget it feeds can actually be resolved
+    from orcamgr.core.resources import ResourceBudget
+    assert ResourceBudget.from_settings(s).resolved().cores > 0
+
+
+# ---- ORCA discovery must not pick a same-named stranger --------------------
+
+# What makes a file runnable is the one thing about ORCA discovery that is
+# not the same on both platforms: POSIX asks the execute bit, Windows asks
+# the suffix (orca_is_valid), and orca_tool derives a sibling's name from it
+# (`orca.exe` -> `orca_2mkl.exe`). A fixture hardcoded to the POSIX shape is
+# not a lighter version of the real thing, it is a file Windows can never
+# run, so test_a_hand_picked_path_is_still_the_users_call asserted a valid
+# ORCA against a path the product correctly refuses and the suite was red on
+# the primary target for a reason that was never in the product.
+_ORCA_EXE_SUFFIX = ".exe" if os.name == "nt" else ""
+
+
+def _fake_orca(dir_path, *, with_tools: bool):
+    """An executable named `orca`, optionally with ORCA's helper tools beside
+    it — the only thing that separates an install from a namesake."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    exe = dir_path / f"orca{_ORCA_EXE_SUFFIX}"
+    exe.write_bytes(b"#!/bin/sh\n")
+    exe.chmod(0o755)
+    if with_tools:
+        for tool in ("orca_2mkl", "orca_plot"):
+            t = dir_path / f"{tool}{_ORCA_EXE_SUFFIX}"
+            t.write_bytes(b"#!/bin/sh\n")
+            t.chmod(0o755)
+    return exe
+
+
+def test_lone_executable_named_orca_is_not_an_install(tmp_path):
+    # GNOME's accessibility screen reader is also called `orca` and is on PATH
+    # by default on every Ubuntu desktop. It is a genuine executable file, so
+    # is_file() + X_OK — everything orca_is_valid can see — says yes to it.
+    stranger = _fake_orca(tmp_path / "usr_bin", with_tools=False)
+    assert config_mod._looks_like_orca(stranger) is False
+
+
+def test_install_with_its_helper_tools_is_recognized(tmp_path):
+    real = _fake_orca(tmp_path / "orca_6_1_1", with_tools=True)
+    assert config_mod._looks_like_orca(real) is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privilege on Windows")
+def test_recognition_follows_a_symlink_into_the_install(tmp_path):
+    # Linking the driver into ~/.local/bin is a normal way to put ORCA on PATH;
+    # the helper tools are beside the TARGET, never beside the link (P4).
+    real = _fake_orca(tmp_path / "orca_6_1_1", with_tools=True)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    link = bindir / "orca"
+    link.symlink_to(real)
+    assert config_mod._looks_like_orca(link) is True
+
+
+def test_autodetect_skips_a_stranger_found_on_path(tmp_path, monkeypatch):
+    """The regression: which("orca") hit the screen reader, autodetect returned
+    it, and it was persisted as orca_path — Settings then showed a healthy ORCA
+    while every calculation failed."""
+    stranger = _fake_orca(tmp_path / "usr_bin", with_tools=False)
+    monkeypatch.setattr(config_mod.shutil, "which", lambda _exe: str(stranger))
+    found = [str(c) for c in config_mod._candidate_orca_paths()]
+    assert str(stranger) not in found
+
+
+def test_autodetect_returns_a_real_install_found_on_path(tmp_path, monkeypatch):
+    real = _fake_orca(tmp_path / "orca_6_1_1", with_tools=True)
+    monkeypatch.setattr(config_mod.shutil, "which", lambda _exe: str(real))
+    assert config_mod.autodetect_orca() == str(real)
+
+
+def test_a_hand_picked_path_is_still_the_users_call(tmp_path):
+    """Discovery is strict because a wrong guess is silent. An explicit choice
+    is not second-guessed, so a trimmed or unusual install stays selectable
+    rather than becoming unconfigurable."""
+    lone = _fake_orca(tmp_path / "custom", with_tools=False)
+    assert config_mod._looks_like_orca(lone) is False
+    assert Settings(orca_path=str(lone)).orca_is_valid() is True

@@ -33,6 +33,7 @@ thread never blocks waiting on the process to die.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -41,6 +42,7 @@ from pathlib import Path
 from typing import Callable, Optional, Tuple
 
 from .procutil import process_matches, kill_tree, create_time_of
+from .tailer import FileTailer
 
 
 LogCallback = Callable[[str], None]
@@ -49,6 +51,22 @@ LogCallback = Callable[[str], None]
 _TAIL_POLL = 0.35   # seconds
 # Bound on reaping our own child after it exits (avoids a POSIX zombie).
 _REAP_TIMEOUT = 5.0
+
+# What ORCA prints when one of its programs has died. In a plain job ORCA exits
+# right after it, but inside a NumFreq the parent prints it per failed
+# displacement, "skips" that gradient and carries on — and can then never exit:
+# a CCSD(T) NumFreq whose AUTOCI died on 2 of 12 displacements spun one core
+# for 14 hours with nothing written anywhere in its folder (ORCA 6.1.1). Exit
+# is the only end the monitor knew, so it showed RUNNING all that time. The
+# run is already lost once this prints (a skipped displacement is a missing
+# Hessian column), so the watchdog below only has to decide it has stopped.
+_FATAL_MARKERS = ("error termination", "aborting the run")
+# How long the run folder may stay silent after a fatal marker before the job
+# is judged hung. Silence is measured over the whole folder, not the .out: a
+# NumFreq's .out says nothing while a displacement runs, but its _D files and
+# .last* logs keep moving.
+_HUNG_AFTER = 600.0   # seconds
+_HUNG_CHECK = 30.0    # how often the folder is looked at once a marker is seen
 
 
 class OrcaRunError(RuntimeError):
@@ -65,6 +83,14 @@ class OrcaDetached(OrcaRunError):
     """Raised when monitoring stops because the app is shutting down. The ORCA
     process is deliberately LEFT RUNNING so it can be reattached next launch —
     so the queue must NOT mark the calc finished/failed."""
+    pass
+
+
+class OrcaHung(OrcaRunError):
+    """Raised when ORCA reported a fatal error and then went silent without
+    exiting; the process tree has been killed. A real failure (FAILED), but
+    the queue appends this message to the cause it reads from the .out, so the
+    user learns ORCAdesk ended the process rather than ORCA."""
     pass
 
 
@@ -110,7 +136,18 @@ class OrcaRunner:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        cmd = [str(self.orca_path), str(input_path)]
+        # The input is named RELATIVE to the folder we are about to run in,
+        # never as an absolute path: ORCA 6 hands its argument on to its own
+        # sub-programs (orca_startup and the MPI ranks) unquoted, so one space
+        # anywhere in the path truncates it — "Error: Cannot open input file
+        # C:/.../John" and an error termination in Startup, on ORCA 6.1.1,
+        # serial and parallel alike. The default workspace lives under the
+        # user profile, so an account name with a space would otherwise break
+        # every run. cwd is that folder already, and a bare file name has no
+        # path to split; verified with a 2-rank MPI job under a folder named
+        # "h2 sp". The file name itself still may not contain a space (or an
+        # '&') — _validate_calc_name in state/store.py refuses those.
+        cmd = [str(self.orca_path), input_path.name]
         creationflags = 0
         start_new_session = False
         if sys.platform.startswith("win"):
@@ -160,22 +197,15 @@ class OrcaRunner:
 
     @staticmethod
     def end_position(output_path: Path) -> int:
-        """Current end-of-file offset of ``output_path`` as a TEXT-mode tell()
-        cookie compatible with monitor()'s seek() — NOT a byte size (os.path.
-        getsize would desync on CRLF). Used to start a reattach's tail at the
-        current EOF so the already-written output isn't re-streamed. 0 if the
-        file can't be read yet."""
-        try:
-            with open(output_path, "r", encoding="utf-8", errors="replace") as f:
-                f.seek(0, 2)
-                return f.tell()
-        except OSError:
-            return 0
+        """Text-mode tell() cookie for the current EOF of ``output_path`` — see
+        FileTailer.end_position (a reattach tails from here)."""
+        return FileTailer.end_position(output_path)
 
     # ---- monitor (worker thread, blocks) ----
     def monitor(self, output_path: Path,
                 on_line: Optional[LogCallback] = None,
-                start_pos: int = 0) -> None:
+                start_pos: int = 0,
+                on_fatal: Optional[LogCallback] = None) -> None:
         """Tail ``output_path`` from ``start_pos`` and block until the process
         exits, is cancelled, or is detached. Raises OrcaCancelled / OrcaDetached
         accordingly; returns normally when ORCA finishes on its own.
@@ -184,44 +214,51 @@ class OrcaRunner:
         at the current end of file so the output written before the app closed
         isn't re-streamed into the live log; a fresh launch leaves it 0 to read
         from the start. The full graph history is rebuilt separately by the UI
-        from the .out on disk."""
-        output_path = Path(output_path)
-        pos = int(start_pos)
-        buf = ""
+        from the .out on disk.
 
-        def _drain() -> None:
-            nonlocal pos, buf
-            try:
-                with open(output_path, "r", encoding="utf-8", errors="replace") as f:
-                    f.seek(pos)
-                    chunk = f.read()
-                    pos = f.tell()
-            except OSError:
-                return
-            if not chunk:
-                return
-            buf += chunk
-            while True:
-                nl = buf.find("\n")
-                if nl < 0:
-                    break
-                line = buf[:nl].rstrip("\r")
-                buf = buf[nl + 1:]
-                if on_line is not None:
-                    on_line(line)
+        ``on_fatal`` is called once, with ORCA's own line, when the first fatal
+        marker appears — the run is lost from then on, though the process may
+        go on for a while (or forever: see _HUNG_AFTER)."""
+        output_path = Path(output_path)
+        tail = FileTailer(output_path, start_pos)
+        # A reattach tails from EOF, so a marker printed while ORCAdesk was
+        # closed would never pass through the tail — read it off the file.
+        first = _fatal_line(output_path) if start_pos else ""
+        fatal = bool(first)
+        if fatal and on_fatal is not None:
+            on_fatal(first)
+        next_check = 0.0
+
+        def see(line: str) -> None:
+            nonlocal fatal
+            if not fatal:
+                low = line.lower()
+                fatal = any(m in low for m in _FATAL_MARKERS)
+                if fatal and on_fatal is not None:
+                    on_fatal(line.strip())
+            if on_line is not None:
+                on_line(line)
 
         while True:
-            _drain()
+            tail.drain(see)
             if self._cancel_event.is_set():
                 self._kill()
                 raise OrcaCancelled("Cancelled by user.")
             if self._detach_event.is_set():
                 raise OrcaDetached("Monitoring stopped; ORCA left running.")
             if not self._is_alive():
-                _drain()  # capture any trailing output written just before exit
-                if buf.strip() and on_line is not None:
-                    on_line(buf.rstrip("\r\n"))
+                tail.drain(see)  # capture trailing output written just before exit
+                tail.flush_tail(see)
                 break
+            if fatal and time.monotonic() >= next_check:
+                next_check = time.monotonic() + _HUNG_CHECK
+                idle = time.time() - _last_write(output_path.parent)
+                if idle >= _HUNG_AFTER:
+                    self._kill()
+                    raise OrcaHung(
+                        f"ORCA reported an error and then wrote nothing for "
+                        f"{int(idle // 60)} min without exiting; ORCAdesk "
+                        f"stopped it.")
             time.sleep(_TAIL_POLL)
 
         # reap our own child so it doesn't linger as a zombie (POSIX); harmless
@@ -255,3 +292,47 @@ class OrcaRunner:
                 proc.wait(timeout=_REAP_TIMEOUT)
             except (subprocess.TimeoutExpired, OSError, ValueError):
                 pass
+
+
+def _fatal_line(path: Path) -> str:
+    """The first line of the .out holding a fatal marker, "" when none (read
+    in binary chunks — the markers are ASCII, and a reattached .out can be
+    hundreds of MB). A chunk carries the previous one's last partial line, so
+    a marker split across two reads is still whole."""
+    needles = [m.encode() for m in _FATAL_MARKERS]
+    try:
+        with open(path, "rb") as f:
+            prev = b""
+            while True:
+                chunk = f.read(1 << 20)
+                buf = prev + chunk
+                low = buf.lower()
+                hits = [i for i in (low.find(n) for n in needles) if i >= 0]
+                if hits:
+                    at = min(hits)
+                    start = buf.rfind(b"\n", 0, at) + 1
+                    end = buf.find(b"\n", at)
+                    line = buf[start:end if end >= 0 else len(buf)]
+                    return line.decode("utf-8", "replace").strip()
+                if not chunk:
+                    return ""
+                prev = buf[buf.rfind(b"\n") + 1:]
+    except OSError:
+        return ""
+
+
+def _last_write(folder: Path) -> float:
+    """The newest mtime among the run folder's own entries (not recursive —
+    ORCA writes its scratch beside the .inp). Now when the folder cannot be
+    read, so an unreadable folder never looks idle."""
+    newest = 0.0
+    try:
+        with os.scandir(folder) as it:
+            for e in it:
+                try:
+                    newest = max(newest, e.stat().st_mtime)
+                except OSError:
+                    pass
+    except OSError:
+        return time.time()
+    return newest or time.time()

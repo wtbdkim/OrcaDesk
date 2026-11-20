@@ -389,6 +389,224 @@ ABORTING THE RUN
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Which modes ORCA marked imaginary
+# ---------------------------------------------------------------------------
+
+IMAG_ZERO_OUT = (
+    "VIBRATIONAL FREQUENCIES\n"
+    "-----------------------\n"
+    "   0:        -0.00 cm**-1 ***imaginary mode***\n"
+    "   1:      1500.00 cm**-1\n"
+    "NORMAL MODES\n"
+    "****ORCA TERMINATED NORMALLY****\n"
+)
+
+
+def test_a_marked_zero_mode_is_recorded_as_imaginary(tmp_path):
+    # the marker is the authority, not the sign: -0.0 < 0 is False
+    r = parse_file(_write_out(tmp_path, IMAG_ZERO_OUT, "z.out"))
+
+    assert r.n_imaginary == 1
+    assert r.imaginary_frequencies == [-0.0]
+
+
+def test_a_single_atom_frequency_job_keeps_its_section_and_thermochemistry(tmp_path):
+    # Shape of a real ORCA 6.1.1 `! Freq` on Cl- (CPCM water): the three modes
+    # are translations printed as 0.00 and dropped, but the section is there and
+    # the free energy is computed. validate_result relies on exactly this shape.
+    text = ("CARTESIAN COORDINATES (ANGSTROEM)\n"
+            "---------------------------------\n"
+            "  Cl     0.000000    0.000000    0.000000\n"
+            "\n"
+            "VIBRATIONAL FREQUENCIES\n"
+            "-----------------------\n"
+            "\n"
+            "Scaling factor for frequencies =  1.000000000  (already applied!)\n"
+            "\n"
+            "     0:       0.00 cm**-1\n"
+            "     1:       0.00 cm**-1\n"
+            "     2:       0.00 cm**-1\n"
+            "\n"
+            "------------\n"
+            "NORMAL MODES\n"
+            "------------\n"
+            "Total enthalpy                    ...   -460.39283660 Eh \n"
+            "Final Gibbs free energy         ...   -460.41023922 Eh\n"
+            "****ORCA TERMINATED NORMALLY****\n")
+    r = parse_file(_write_out(tmp_path, text, "cl.out"))
+
+    assert r.has_frequencies is True
+    assert r.frequencies == []
+    assert len(r.geometry) == 1
+    assert r.gibbs_eh == pytest.approx(-460.41023922)
+
+
+def test_a_negative_mode_without_the_marker_still_counts(tmp_path):
+    text = ("VIBRATIONAL FREQUENCIES\n"
+            "-----------------------\n"
+            "   0:      -350.00 cm**-1\n"
+            "   1:      1500.00 cm**-1\n"
+            "NORMAL MODES\n"
+            "****ORCA TERMINATED NORMALLY****\n")
+    r = parse_file(_write_out(tmp_path, text, "n.out"))
+
+    assert r.n_imaginary == 1
+    assert r.imaginary_frequencies == [-350.0]
+
+
+# ---------------------------------------------------------------------------
+# Unrestricted output has TWO orbital manifolds
+#
+# UKS/UHF prints "SPIN UP ORBITALS" and "SPIN DOWN ORBITALS" as separate tables
+# with a blank line between them, and each numbers from 0. Reading to the first
+# blank line stopped at the end of alpha, so an open-shell frontier came from
+# alpha alone. The rows below are the real ORCA 6.1.1 output for the OH radical
+# (UKS B3LYP/def2-SVP, mult 2), trimmed to the frontier region: the true LUMO is
+# beta #4 at -4.0376 eV, while alpha-only reported #5 at +1.5038 eV.
+# ---------------------------------------------------------------------------
+
+def _labelled(result):
+    """{label: value} over summary_rows(), which yields (label, value, category)."""
+    return {label: value for label, value, _cat in result.summary_rows()}
+
+
+UKS_ORBITALS_OUT = (
+    "ORBITAL ENERGIES\n"
+    "----------------\n"
+    "                 SPIN UP ORBITALS\n"
+    "  NO   OCC          E(Eh)            E(eV) \n"
+    "   3   1.0000      -0.400192       -10.8898 \n"
+    "   4   1.0000      -0.325086        -8.8460 \n"
+    "   5   0.0000       0.055265         1.5038 \n"
+    "\n"
+    "                 SPIN DOWN ORBITALS\n"
+    "  NO   OCC          E(Eh)            E(eV) \n"
+    "   2   1.0000      -0.432037       -11.7563 \n"
+    "   3   1.0000      -0.298066        -8.1108 \n"
+    "   4   0.0000      -0.148378        -4.0376 \n"
+    "\n"
+    "****ORCA TERMINATED NORMALLY****\n"
+)
+
+RKS_ORBITALS_OUT = (
+    "ORBITAL ENERGIES\n"
+    "----------------\n"
+    "  NO   OCC          E(Eh)            E(eV) \n"
+    "   3   2.0000      -0.400192       -10.8898 \n"
+    "   4   2.0000      -0.325086        -8.8460 \n"
+    "   5   0.0000       0.055265         1.5038 \n"
+    "\n"
+    "****ORCA TERMINATED NORMALLY****\n"
+)
+
+
+def test_unrestricted_output_parses_both_spin_manifolds(tmp_path):
+    r = parse_file(_write_out(tmp_path, UKS_ORBITALS_OUT, "uks.out"))
+
+    assert [o.spin for o in r.orbitals] == ["a", "a", "a", "b", "b", "b"]
+    assert len(r.orbitals) == 6
+
+
+def test_open_shell_frontier_orbitals_span_both_manifolds(tmp_path):
+    r = parse_file(_write_out(tmp_path, UKS_ORBITALS_OUT, "uks.out"))
+
+    # highest occupied of EITHER manifold, lowest virtual of either
+    assert (r.homo_index, r.homo_spin) == (3, "b")
+    assert (r.lumo_index, r.lumo_spin) == (4, "b")
+    assert r.homo_ev == pytest.approx(-8.1108)
+    assert r.lumo_ev == pytest.approx(-4.0376)
+    assert r.gap_ev == pytest.approx(4.0732)
+
+
+def test_restricted_output_keeps_one_unlabelled_manifold(tmp_path):
+    r = parse_file(_write_out(tmp_path, RKS_ORBITALS_OUT, "rks.out"))
+
+    assert [o.spin for o in r.orbitals] == ["", "", ""]
+    assert (r.homo_index, r.lumo_index) == (4, 5)
+    assert r.homo_spin == "" and r.lumo_spin == ""
+
+
+def test_frontier_summary_names_the_manifold_only_when_there_are_two(tmp_path):
+    uks = _labelled(parse_file(_write_out(tmp_path, UKS_ORBITALS_OUT, "uks.out")))
+    rks = _labelled(parse_file(_write_out(tmp_path, RKS_ORBITALS_OUT, "rks.out")))
+
+    assert "(beta)" in uks["LUMO"]
+    assert "(" not in rks["LUMO"]
+
+
+# ---------------------------------------------------------------------------
+# "opt" is a keyword, not a substring
+# ---------------------------------------------------------------------------
+
+def _sp_with_keywords(kw):
+    return (f"|  1> ! {kw}\n"
+            "INPUT FILE\n"
+            f"|  1> ! {kw}\n"
+            "FINAL SINGLE POINT ENERGY      -76.400000000000\n"
+            "****ORCA TERMINATED NORMALLY****\n")
+
+
+@pytest.mark.parametrize("kw", [
+    "B3LYP cc-pVDZ-F12-OptRI SP",     # shipped basis label containing "opt"
+    "B3LYP def2-SVP ExtOpt",          # shipped extra option containing "opt"
+    "HF def2-SVP NoPropFile",
+])
+def test_single_point_is_not_reported_as_an_optimization(tmp_path, kw):
+    r = parse_file(_write_out(tmp_path, _sp_with_keywords(kw), "sp.out"))
+    assert r.is_optimization is False
+
+
+@pytest.mark.parametrize("kw", ["B3LYP def2-SVP Opt", "B3LYP def2-SVP TightOpt",
+                                "B3LYP def2-SVP OptTS", "wB97X-D4 def2-TZVP VeryTightOpt"])
+def test_optimization_keywords_are_still_recognized(tmp_path, kw):
+    r = parse_file(_write_out(tmp_path, _sp_with_keywords(kw), "opt.out"))
+    assert r.is_optimization is True
+
+
+def test_optimization_without_a_keyword_is_recognized_from_the_output(tmp_path):
+    # a raw .inp can drive the optimization from a %geom block alone
+    text = (_sp_with_keywords("B3LYP def2-SVP")
+            + "*************GEOMETRY OPTIMIZATION CYCLE   1*************\n")
+    assert parse_file(_write_out(tmp_path, text, "raw.out")).is_optimization is True
+
+
+# ---------------------------------------------------------------------------
+# TD-DFT with triplets: one table, two multiplicities
+# ---------------------------------------------------------------------------
+
+TRIPLET_SPECTRUM_OUT = (
+    "         ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS\n"
+    "-----------------------------------------------------------------\n"
+    "     Transition      Energy     Energy  Wavelength fosc(D2)      D2\n"
+    "-----------------------------------------------------------------\n"
+    "  0-1A  ->  1-3A    6.939754   55972.9   178.7   0.000000000   0.00000\n"
+    "  0-1A  ->  1-1A    7.612667   61400.3   162.9   0.017915283   0.09606\n"
+    "  0-1A  ->  2-3A    8.961563   72279.9   138.4   0.000000000   0.00000\n"
+    "  0-1A  ->  3-3A    9.050064   72993.7   137.0   0.000000000   0.00000\n"
+    "  0-1A  ->  2-1A    9.513980   76735.4   130.3   0.000000000   0.00000\n"
+    "  0-1A  ->  3-1A    9.922963   80034.1   124.9   0.085262842   0.35072\n"
+    "\n"
+    "****ORCA TERMINATED NORMALLY****\n"
+)
+
+
+def test_triplet_transitions_keep_their_multiplicity(tmp_path):
+    r = parse_file(_write_out(tmp_path, TRIPLET_SPECTRUM_OUT, "td.out"))
+
+    # state numbers restart per multiplicity, so the pair identifies the state
+    assert [(t.state, t.mult) for t in r.transitions] == [
+        (1, 3), (1, 1), (2, 3), (3, 3), (2, 1), (3, 1)]
+
+
+def test_state_count_says_how_many_of_each_multiplicity(tmp_path):
+    r = parse_file(_write_out(tmp_path, TRIPLET_SPECTRUM_OUT, "td.out"))
+    rows = _labelled(r)
+
+    # "6" for `nroots 3` is not a count anyone asked for
+    assert rows["TD-DFT states"] == "3 singlet + 3 triplet"
+
+
 # real-corpus smoke test (auto-skips off this machine)
 # ---------------------------------------------------------------------------
 
@@ -518,3 +736,102 @@ def test_orca_version_row_only_when_parsed():
     assert "ORCA version" not in labels
     r.orca_version = "6.1.1"
     assert ("ORCA version", "6.1.1", "") in r.summary_rows()
+
+
+# ---------------------------------------------------------------------------
+# read_multiplicity — the head-scan used by the orbital viewer to decide
+# whether a *spin density* is worth offering, for a result that has no queue
+# entry to ask. Deliberately not a full parse: one integer, bounded read.
+# ---------------------------------------------------------------------------
+
+def _out_with_mult(mult, lead=0, tail=""):
+    head = "\n".join(f"filler line {i}" for i in range(lead))
+    body = (f"  Total Charge           Charge          ....    0\n"
+            f"  Multiplicity           Mult            ....    {mult}\n"
+            f"  Number of Electrons    NEL             ....   10\n")
+    return (head + "\n" if head else "") + body + tail
+
+
+def test_read_multiplicity_reads_the_value(tmp_path):
+    from orcamgr.core.parser import read_multiplicity
+    p = tmp_path / "a.out"
+    p.write_text(_out_with_mult(2), encoding="utf-8")
+    assert read_multiplicity(p) == 2
+
+
+def test_read_multiplicity_handles_crlf(tmp_path):
+    from orcamgr.core.parser import read_multiplicity
+    p = tmp_path / "a.out"
+    p.write_bytes(_out_with_mult(3).replace("\n", "\r\n").encode())
+    assert read_multiplicity(p) == 3
+
+
+def test_read_multiplicity_is_none_when_absent(tmp_path):
+    """None means "the file never said" — the caller must not read that as a
+    closed shell it can assert (P2)."""
+    from orcamgr.core.parser import read_multiplicity
+    p = tmp_path / "a.out"
+    p.write_text("nothing useful here\n" * 10, encoding="utf-8")
+    assert read_multiplicity(p) is None
+
+
+def test_read_multiplicity_is_none_for_a_missing_file(tmp_path):
+    from orcamgr.core.parser import read_multiplicity
+    assert read_multiplicity(tmp_path / "gone.out") is None
+
+
+def test_read_multiplicity_stops_after_the_scan_window(tmp_path):
+    """The bound is what keeps a file that never contains the line from costing
+    a full read — ORCA prints it in the input summary, near the top."""
+    from orcamgr.core.parser import read_multiplicity, _MULT_SCAN_LINES
+    p = tmp_path / "a.out"
+    p.write_text(_out_with_mult(2, lead=_MULT_SCAN_LINES + 50), encoding="utf-8")
+    assert read_multiplicity(p) is None          # past the window: not found
+
+
+def test_read_multiplicity_agrees_with_the_full_parse(tmp_path):
+    """One number, two routes — they must not drift."""
+    from orcamgr.core.parser import parse_file, read_multiplicity
+    p = tmp_path / "a.out"
+    p.write_text(_out_with_mult(4), encoding="utf-8")
+    assert read_multiplicity(p) == parse_file(str(p)).multiplicity == 4
+
+
+# ---------------------------------------------------------------------------
+# The failure diagnosis quotes the CAUSE, not the banner
+# ---------------------------------------------------------------------------
+
+def test_the_error_message_quotes_orcas_reason_not_the_abort_banner(tmp_path):
+    """ORCA prints the reason and then ".... aborting the run"; quoting the
+    matched line handed the user the second one — literally the words the
+    signature matched. Every real failure this app has seen prints its cause a
+    line or two above."""
+    text = ("[file x]: Error: Cannot open input file C:/Users/John\n"
+            "  .... aborting the run\n")
+    r = parse_file(_write_out(tmp_path, text, "e.out"))
+
+    assert "Cannot open input file" in r.error_message
+    assert "aborting the run\")" not in r.error_message
+
+
+def test_a_matched_error_line_is_still_quoted_when_it_is_the_cause(tmp_path):
+    text = "UNRECOGNIZED OR DUPLICATED KEYWORD(S) IN SIMPLE INPUT LINE\n"
+    r = parse_file(_write_out(tmp_path, text, "e.out"))
+    assert "UNRECOGNIZED" in r.error_message
+
+
+def test_the_input_echo_starts_at_the_input(tmp_path):
+    """The echo began with ORCA's framing — the banner, an 80-character "="
+    rule and "NAME = job.inp" — none of which is input text."""
+    text = ("INPUT FILE\n"
+            "=" * 80 + "\n"
+            "NAME = job.inp\n"
+            "|  1> ! B3LYP def2-SVP\n"
+            "|  2> * xyz 0 1\n"
+            "|  3> *\n"
+            "                          ****END OF INPUT****\n")
+    r = parse_file(_write_out(tmp_path, text, "i.out"))
+
+    assert r.input_block.splitlines()[0] == "! B3LYP def2-SVP"
+    assert "NAME =" not in r.input_block
+    assert "====" not in r.input_block

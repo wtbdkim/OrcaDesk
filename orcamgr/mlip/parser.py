@@ -14,11 +14,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..core.parser import ParseResult, Atom
-
-
-# 1 Hartree in eV (CODATA), to store MACE's eV energy in ParseResult.final_energy_eh.
-_EV_PER_HARTREE = 27.211386245988
+# HARTREE_TO_EV (1 Hartree in eV, CODATA) converts MACE's eV energies into the
+# Hartree fields of the shared ParseResult — single-sourced from the ORCA parser.
+from ..core.parser import ParseResult, Atom, HARTREE_TO_EV
 
 
 def parse_mlip_result(path: str) -> ParseResult:
@@ -55,7 +53,7 @@ def parse_mlip_result(path: str) -> ParseResult:
     e_ev = data.get("energy_ev")
     if e_ev is not None:
         try:
-            r.final_energy_eh = float(e_ev) / _EV_PER_HARTREE
+            r.final_energy_eh = float(e_ev) / HARTREE_TO_EV
         except (TypeError, ValueError):
             pass
 
@@ -83,7 +81,7 @@ def parse_mlip_result(path: str) -> ParseResult:
             val = data.get(jkey)
             if val is not None:
                 try:
-                    setattr(r, attr, float(val) / _EV_PER_HARTREE)
+                    setattr(r, attr, float(val) / HARTREE_TO_EV)
                 except (TypeError, ValueError):
                     pass
         for jkey, attr in (("temperature_k", "temperature_k"),

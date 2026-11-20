@@ -15,6 +15,7 @@ unit-testable against the real ethanol corpus.
 
 from __future__ import annotations
 
+import glob
 from pathlib import Path
 
 
@@ -67,7 +68,8 @@ def export_conformers(conformers_xyz: Path, dest_dir: Path, base_name: str) -> l
     conformers_xyz = Path(conformers_xyz)
     if not conformers_xyz.exists():
         raise FileNotFoundError(f"{conformers_xyz.name} not found (was the CREST run finished?)")
-    frames = split_conformer_frames(conformers_xyz.read_text(encoding="utf-8", errors="replace"))
+    frames = split_conformer_frames(
+        conformers_xyz.read_text(encoding="utf-8-sig", errors="replace"))
     if not frames:
         raise ValueError("no conformers found in the ensemble file")
     dest_dir = Path(dest_dir)
@@ -76,7 +78,7 @@ def export_conformers(conformers_xyz: Path, dest_dir: Path, base_name: str) -> l
     # count, so a re-export of a smaller ensemble ({base}_c1..c9 over an old
     # _c01.._c12) would otherwise leave the old tail (_c10.._c12) looking like
     # current conformers.
-    for stale in dest_dir.glob(f"{base_name}_c*.xyz"):
+    for stale in dest_dir.glob(f"{glob.escape(base_name)}_c*.xyz"):
         try:
             stale.unlink()
         except OSError:

@@ -23,12 +23,35 @@ import signal
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 
+from orcamgr.gui.single_instance import (
+    InstanceServer, acquire_lock, server_name, wait_and_notify,
+)
 from orcamgr.gui.window import MainWindow
+from orcamgr.paths import user_data_root
 
 
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("ORCAdesk")
+
+    # One ORCAdesk per user. Settled BEFORE the window exists: MainWindow
+    # restores the session and reattaches running jobs, which a second
+    # instance must never do (see orcamgr/gui/single_instance.py).
+    name = server_name()
+    lock = acquire_lock(user_data_root() / "instance.lock")
+    if lock is None:
+        if not wait_and_notify(name):
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                None, "ORCAdesk",
+                "ORCAdesk is already running, but its window did not respond.\n"
+                "Close it from the taskbar (or Task Manager) and start it again.")
+        return
+    # The server opens before the window is built, so a launch made while this
+    # one is still starting is answered (the window is shown once it exists).
+    window: MainWindow | None = None
+    instance_server = InstanceServer(  # noqa: F841 — kept alive with the app
+        name, lambda: window.bring_to_front() if window is not None else None)
     window = MainWindow()
     window.show()
 

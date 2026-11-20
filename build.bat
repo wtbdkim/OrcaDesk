@@ -16,9 +16,13 @@ if errorlevel 1 (
 echo [2/4] Installing / updating dependencies...
 python -m pip install --upgrade pip >nul
 python -m pip install -r requirements.txt
+if errorlevel 1 (
+    echo ERROR: dependency install failed ^(requirements.txt^).
+    exit /b 1
+)
 python -m pip install pyinstaller
 if errorlevel 1 (
-    echo ERROR: dependency install failed.
+    echo ERROR: dependency install failed ^(pyinstaller^).
     exit /b 1
 )
 

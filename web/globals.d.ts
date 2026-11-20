@@ -1,7 +1,7 @@
 /* ============================================================
-   Ambient declarations for the environment web/app.js runs in:
+   Ambient declarations for the environment the web/ scripts run in:
    Qt WebEngine's QWebChannel, the Python Bridge object, and the
-   globals shared between app.js and scf_graph.js.
+   SCFGraph namespace scf_graph.js / progress_panels.js share.
 
    Slot signatures mirror the @pyqtSlot declarations in
    orcamgr/gui/bridge.py (all slots take/return JSON *strings*;
@@ -13,9 +13,12 @@
 interface OrcaBridge {
   // about / settings
   get_about(): Promise<string>;
+  get_ui_state(key: string): Promise<string>;                  // {ok, value}: what a window kept across launches (uistate.py); value null = nothing kept
+  set_ui_state(key: string, valueJson: string): Promise<string>; // {ok} | {ok:false, error}; valueJson "null" removes the key
+  take_ui_state(key: string): Promise<string>;                 // {ok, value} | {ok:false, error}: the value, removed in the same step under the ui-state lock (the queue hand-off mailbox)
   get_settings(): Promise<string>;
   save_settings(payloadJson: string): Promise<string>;
-  set_wallpaper_image(dataUri: string): Promise<string>;   // {ok, stored} JSON; stored=false when ""/invalid/oversize (cleared)
+  set_wallpaper_image(dataUri: string): Promise<string>;   // WallpaperResult JSON: {ok, stored}; stored=false when ""/invalid/oversize (cleared)
   get_wallpaper_image(): Promise<string>;                   // bare data-URI string ("" = none)
   autodetect_orca(): Promise<string>;          // AutodetectResult JSON (mutates settings on success)
   // MLIP environments (separate from ORCA; one env per MLIP)
@@ -24,11 +27,15 @@ interface OrcaBridge {
   remove_mlip_env(id: string): Promise<string>;        // MlipStatusPayload JSON
   check_mlip(id: string): Promise<string>;             // MlipStatusPayload JSON ("" = all)
   get_mlip_status(): Promise<string>;          // MlipStatusPayload JSON
+  // one-click MLIP environment creation (venv + torch for a device + a backend)
+  get_mlip_install_options(): Promise<string>; // MlipInstallOptionsPayload JSON
+  get_mlip_install_status(): Promise<string>;  // MlipInstallPayload JSON
+  create_mlip_env(payloadJson: string): Promise<string>;  // MlipInstallPayload | {error}
+  cancel_mlip_install(): Promise<string>;      // MlipInstallPayload JSON
   // CREST (runs in WSL; separate from ORCA)
   get_crest_status(): Promise<string>;         // CrestStatusPayload JSON
   check_crest(): Promise<string>;              // CrestStatusPayload JSON (re-probe)
   install_crest(distro: string): Promise<string>;      // CrestStatusPayload JSON ("" = first distro)
-  list_crest_distros(): Promise<string>;       // {distros: string[]} JSON
   set_crest_distro(distro: string): Promise<string>;   // CrestStatusPayload JSON
   // file pickers / loaders
   pick_orca_executable(): Promise<string>;     // raw path string
@@ -38,11 +45,28 @@ interface OrcaBridge {
   load_xyz_path(path: string): Promise<string>; // LoadResult JSON
   load_inp_file(): Promise<string>;            // LoadResult JSON
   load_inp_path(path: string): Promise<string>; // LoadResult JSON
+  pick_hess_file(): Promise<string>;           // PickedFilePayload JSON (IRC InitHess read)
+  get_step_defaults(): Promise<string>;                                                   // StepConfig JSON (its defaults)
   load_choices(name: string): Promise<string>;
+  // structure screening (Build tab; both over core/structure.py — read-only)
+  check_structure(xyz: string, charge: number, multiplicity: number): Promise<string>;  // StructureCheck JSON
+  compare_structures(reactantXyz: string, productXyz: string): Promise<string>;         // AtomOrder JSON
+  // bondsJson: the drawn bonds, [[i, j], ...]; "" = perceived from the coordinates
+  apply_constraint_target(xyz: string, constraintJson: string, bondsJson: string): Promise<string>;      // ConstraintApply JSON
+  apply_constraint_targets(xyz: string, constraintsJson: string, bondsJson: string): Promise<string>;    // ConstraintApplyAll JSON
+  read_hess_modes(path: string): Promise<string>;                                      // HessModes JSON
+  displace_mode(xyz: string, path: string, index: number, amplitude: number): Promise<string>; // ModeShift JSON
+  // one vibration of a finished result, matched to the report's numbering by
+  // wavenumber: {source, freqs, geometry, n} -> VibMode JSON
+  get_vibration_mode(payloadJson: string): Promise<string>;
   // parsing
-  parse_out_file(): Promise<string>;
+  // the Results tab's one file button: picks a result file and says how to read
+  // it — {ok, path, route:"parse"|"structure"} | {ok:false, cancelled:true}
+  pick_result_file(): Promise<string>;                        // PickedResultPayload JSON
+  pick_result_folder(): Promise<string>;                      // PickedResultPayload JSON (route "parse")
   parse_out_path(path: string): Promise<string>;
   parse_calc_output(name: string): Promise<string>;
+  parse_calc_output_async(name: string): Promise<string>;     // ParsePayload | {ok:true, pending:true} while a worker parses a large output (ask again)
   build_inp_preview(calcJson: string): Promise<string>;
   // queue
   add_calc(calcJson: string): Promise<string>;
@@ -52,21 +76,66 @@ interface OrcaBridge {
   update_calc(oldName: string, calcJson: string): Promise<string>;
   get_queue(): Promise<string>;
   get_calc(name: string): Promise<string>;
+  // the queue editor (queue window): inp sets, lanes, batched edits
+  get_inp_sets(): Promise<string>;                       // InpSetsResult JSON
+  save_inp_set(setJson: string): Promise<string>;        // InpSetResult JSON (the set as stored, with its id); add or replace by id
+  delete_inp_set(id: string): Promise<string>;           // InpSetResult JSON ({ok} | {ok:false, error})
+  get_workflows(): Promise<string>;                      // WorkflowsResult JSON: the saved workflows
+  save_workflow(workflowJson: string): Promise<string>;  // WorkflowResult JSON (as stored, with its id); add or replace by id
+  delete_workflow(id: string): Promise<string>;          // WorkflowResult JSON ({ok} | {ok:false, error})
+  get_system(id: string): Promise<string>;               // SystemResult JSON (inputs with their xyz)
+  get_irc_structures(name: string): Promise<string>;     // IrcStructuresResult JSON: an IRC's end / path .xyz files (once done)
+  apply_queue_ops(opsJson: string): Promise<string>;     // QueueOp[] -> QueueOpsResult JSON: all applied or none
+  pick_xyz_files(): Promise<string>;                     // XyzFilesResult JSON: several .xyz picked at once, each read
+  read_xyz_paths(pathsJson: string): Promise<string>;    // string[] -> XyzFilesResult JSON (dropped files, each read)
+  open_queue_window(): Promise<string>;                  // OkResult JSON: show/raise the queue window
   get_log(since: number): Promise<string>;
   get_inp(name: string): Promise<string>;
   get_graph_lines(name: string): Promise<string>;
+  get_output_tail(name: string, max_lines: number): Promise<string>;
+  get_output_info(name: string): Promise<string>;
+  get_output_lines(name: string, start: number, count: number): Promise<string>;
+  find_in_output(name: string, query: string): Promise<string>;
   export_conformers(name: string): Promise<string>;
-  // 3D structure viewer (Results tab); both return {ok,title,frames:[{label,xyz,energy}]} | {ok:false,...} JSON
-  get_conformer_frames(name: string): Promise<string>;
-  browse_xyz_folder(): Promise<string>;
+  // 3D structure viewer (Results › Visual). The .xyz sets sitting with a result
+  // — the CREST ensemble, the conformers/ export, a trajectory — discovered
+  // rather than picked from a folder dialog. source is "calc:<name>"|"file:<path>"
+  list_structure_sets(source: string): Promise<string>;       // StructureSetsResult JSON
+  // frames for one of those sets: a folder of .xyz, or one (multi-frame) .xyz.
+  // FramesResult JSON; "folder" is the favorites/export destination
+  get_structure_frames(path: string): Promise<string>;
+  // every result on disk under the workspace root, queued or not (newest first)
+  list_workspace_results(): Promise<string>;                  // WorkspaceResultsResult JSON
   // viewer favorites (starred structures)
-  get_favorites(source: string): Promise<string>;            // {ok, labels[]}
-  toggle_favorite(source: string, label: string, on: boolean): Promise<string>;  // {ok, labels[]}
-  export_frames(destKind: string, dest: string, framesJson: string): Promise<string>;  // {ok, count, folder}
+  get_favorites(source: string): Promise<string>;            // FavoritesResult JSON: {ok, labels[]}
+  toggle_favorite(source: string, label: string, on: boolean): Promise<string>;  // FavoritesResult JSON: {ok, labels[]}
+  export_frames(destKind: string, dest: string, framesJson: string): Promise<string>;  // ExportResult JSON: {ok, count, folder}
+  // orbital / density cubes (orca_plot on a finished calc's .gbw). generate_cube
+  // runs on a background thread: it returns the status, the UI polls
+  // get_cube_status(), then fetches the cube once with get_cube_data() — the
+  // ~3 MB payload must never ride the poll.
+  // source is "calc:<name>" (a queued calc) or "file:<path>" (a result on disk)
+  get_plot_options(source: string): Promise<string>;         // PlotOptionsResult JSON
+  generate_cube(payloadJson: string): Promise<string>;       // CubeJob JSON; {source,kind,index,operator,grid}
+  get_cube_status(): Promise<string>;                        // CubeJob JSON
+  get_cube_data(): Promise<string>;                          // CubeDataResult JSON
+  // Hand a generated file to the user's own programs instead of drawing it
+  // in-app (P5). Refuses anything that is not a data format; failure is data.
+  open_path_external(path: string): Promise<string>;          // OkResult JSON
+  show_path_in_folder(path: string): Promise<string>;         // OkResult JSON
+  // Write a parsed geometry into the run folder as <base>_structure.xyz, so it
+  // can be handed to a program that reads files rather than payloads.
+  save_structure_xyz(source: string, xyz: string): Promise<string>;  // SavedFileResult JSON
+  // Natural-orbital analysis (NPA / NBO / E(2)), computed in process from the
+  // run's .gbw on a background thread; poll get_nbo_status, fetch the result once.
+  run_nbo_analysis(source: string): Promise<string>;         // NboJobPayload JSON
+  get_nbo_status(): Promise<string>;                          // NboJobPayload JSON
+  get_nbo_result(): Promise<string>;                          // NboResultPayload JSON
   // run / results
   get_free_energy_profile(): Promise<string>;
   check_overwrite_conflicts(): Promise<string>;
   has_existing_output(name: string): Promise<string>;
+  existing_outputs(namesJson: string): Promise<string>;      // ExistingOutputsResult JSON
   run_queue(skipNamesJson: string): Promise<string>;
   cancel_queue(): Promise<string>;
   stop_after_current(): Promise<string>;
@@ -80,7 +149,7 @@ interface OrcaBridge {
 /** Injected by Qt WebEngine when a QWebChannel is registered on the page. */
 declare var qt: { webChannelTransport: unknown };
 
-/** From qrc:///qtwebchannel/qwebchannel.js (loaded in index.html). */
+/** From qrc:///qtwebchannel/qwebchannel.js (loaded in web/next/index.html). */
 declare class QWebChannel {
   constructor(
     transport: unknown,
@@ -88,17 +157,30 @@ declare class QWebChannel {
   );
 }
 
-/* ---------- scf_graph.js public surface (window.SCFGraph) ---------- */
+/* ---------- window.SCFGraph: scf_graph.js + progress_panels.js ----------
+   One namespace, two files. scf_graph.js creates it (SCF/geo convergence
+   graph); progress_panels.js loads next and extends it in place with the
+   freq/TD-DFT/CREST step panels. */
 
 interface SCFGraphAPI {
   SCFTracker: new () => any;
   GeoTracker: new () => any;
+  /* the five below come from progress_panels.js */
   FreqTracker: new () => any;
   TddftTracker: new () => any;
   CrestTracker: new () => any;
+  IrcTracker: new () => any;
   isScfIter(line: string): boolean;
   fmtClock(sec: number): string;
   targetFor(scfConvergence: string): number;
+  /** the tier a calc is expected to run at before ORCA prints its TolE: an
+   *  explicit tier wins; else opt / opt_freq -> VeryTightSCF (1e-9, because
+   *  ORCAdesk writes TightOpt), ts_opt / ts_opt_freq / irc / neb_ts ->
+   *  TightSCF (1e-8), anything else -> NormalSCF (1e-6) -- ORCA 6.1.1 */
+  tierFor(scfConvergence: string | undefined, kind: string): string;
+  /** the SCF target in Eh: the TolE ORCA printed for the run (tracker.tolE)
+   *  once seen, else targetFor(tierFor(...)) */
+  scfTarget(tracker: any, scfConvergence?: string, kind?: string): number;
   renderSCFProgress(...args: any[]): string;
   renderSCFGraph(...args: any[]): string;
   renderGeoProgress(...args: any[]): string;
@@ -108,13 +190,13 @@ interface SCFGraphAPI {
   renderCrestProgress(...args: any[]): string;
   setEtaMode(mode: string): void;
   setGeoMode(mode: string): void;
-  SCF_TARGETS: Record<string, number>;
 }
 
 declare var SCFGraph: SCFGraphAPI;
 
-/* scf_graph.js also exports for node-based testing */
+/* both files also export for node-based testing */
 declare var module: { exports: any };
+declare function require(id: string): any;
 
 /* ---------- window entry points called from Python (window.py) ---------- */
 
@@ -123,6 +205,8 @@ interface Window {
   onInpDropped?: (path: string) => void;
   onXyzDropped?: (path: string) => void;
   onOutDropped?: (path: string) => void;
+  /* queue window only: every dropped .xyz at once (one call per drop) */
+  onXyzFilesDropped?: (paths: string[]) => void;
 }
 
 /* ---------- pragmatic DOM loosening ----------

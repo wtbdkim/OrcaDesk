@@ -13,15 +13,40 @@ Each step produces a complete .inp text given an XYZ coordinate block.
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass, field, fields as dataclass_fields, asdict
-from typing import Optional
+from pathlib import PurePosixPath, PureWindowsPath
+
+from .resources import numfreq_rank_cap
+from .structure import compare_atom_order, measure, parse_block
 
 
-# ---- defaults (match the user's established workflow) -------------------
+# ---- defaults -----------------------------------------------------------
+# A method and a basis have to be named (ORCA has no default of either). Every
+# other setting defaults to ORCA's own, and a setting at ORCA's default is not
+# written: the .inp says only what differs from what ORCA would do anyway.
+# Measured on ORCA 6.1.1 (H2O, def2-SVP), what an empty setting gets:
+#   RI        a hybrid runs RIJCOSX with def2/J chosen by ORCA ("Auxiliary
+#             Coulomb fitting basis ... AVAILABLE", COSX grid); HF and MP2 run
+#             without RI. "! ... RIJCOSX" alone gets def2/J the same way.
+#   SCF       Opt / OptTS / IRC / NEB raise it to TightSCF itself (TolE 1e-8),
+#             and the TightOpt ORCAdesk writes raises it further (TolE 1e-9,
+#             with or without Freq); SP and Freq stay at NormalSCF (TolE 1e-6).
+#   %tddft    TDA on, triplets off, 3 roots.
+#   %irc      both directions (InitHess: a numerical Hessian).
+#   %neb      8 intermediate images.
+# Kept as ORCAdesk's own on purpose (the user's call): an optimization is
+# TightOpt, and %geom / %irc MaxIter are always written (200 / 100) -- ORCA's
+# 50 / 20 run out on a floppy molecule or a long path.
 DEFAULT_FUNCTIONAL = "wB97X-D4"
 DEFAULT_BASIS_SET = "def2-TZVP"
-DEFAULT_RI = "RIJCOSX"
-DEFAULT_AUX = "def2/J"
+DEFAULT_RI = ""                 # ORCA's choice (RIJCOSX for a hybrid)
+DEFAULT_GEOM_MAXITER = 200
+DEFAULT_IRC_MAXITER = 100
+ORCA_NEB_IMAGES = 8
+ORCA_TDDFT_NROOTS = 3
+DEFAULT_AUX = "def2/J"          # written only beside an aux of the user's that is not /J
 
 
 # ORCA's simple-input parser is strict about a few functional names: it spells
@@ -64,6 +89,49 @@ def normalize_functional(name: str) -> str:
     return _FUNCTIONAL_ALIASES.get(token.lower(), token)
 
 
+# ORCA's "3c" methods (HF-3c, PBEh-3c, B97-3c, B3LYP-3c, r2SCAN-3c, wB97X-3c)
+# are COMPOSITE methods, not functionals with a free basis choice: each is a
+# functional bundled with its OWN small basis (MINIX / def2-mSVP / def2-mTZVP /
+# def2-mTZVPP / vDZP), a geometrical counterpoise correction and a dispersion
+# correction, all parameterized together against that basis. ORCA reads an
+# explicit basis on the ! line as an OVERRIDE, so appending the picker's default
+# runs a different method that still terminates normally and validates DONE —
+# silently wrong science. Measured on ORCA 6.1.1 (water, single point):
+#
+#   ! r2SCAN-3c def2-TZVP  -> "utilizes the basis: def2-TZVP",   43 bf, -76.417967 Eh
+#   ! r2SCAN-3c            -> "utilizes the basis: def2-mTZVPP", 34 bf, -76.418907 Eh
+#
+# so for these the basis set — and the auxiliary basis, which is chosen FROM it
+# — are left off and ORCA supplies its own (it picks def2-mTZVPP/J itself). The
+# RI keyword is kept: the same measurement shows "! r2SCAN-3c RIJCOSX" gives the
+# composite's basis and energy to every digit, i.e. it is inert here.
+# Methods ORCA refuses to run with an RI approximation at all. Measured on
+# 6.1.1 with the picker's default RIJCOSX: HF-3c gives "Error (ORCA_MAIN):
+# Incompatible choice for integral handling" and Native-GFN-xTB / Native-GFN2-
+# xTB give "Error: Native xTB not compatible with RI. Job aborted." — exit 55
+# in both cases, i.e. a locked FAILED calculation (P24) for a method the picker
+# offers. With no RI keyword both run normally. HF-3c is the one composite that
+# does this: r2SCAN-3c, B97-3c, PBEh-3c and wB97X-3c all accept RIJCOSX (and
+# ignore it in favour of their own settings).
+_NO_RI_METHODS = frozenset({"hf-3c", "native-gfn-xtb", "native-gfn2-xtb",
+                            "native-gfn1-xtb", "native-gfnff"})
+
+
+def method_forbids_ri(functional: str) -> bool:
+    """True when ORCA rejects any RI keyword alongside this method."""
+    return normalize_functional(functional).strip().lower() in _NO_RI_METHODS
+
+
+def is_composite_method(functional: str) -> bool:
+    """True for an ORCA composite ("3c") method, which brings its own basis.
+
+    Matched by the "-3c" suffix rather than a closed list, because the picker
+    lists are not closed enums (a method typed by hand is used verbatim) and
+    every ORCA composite is named this way.
+    """
+    return normalize_functional(functional).strip().lower().endswith("3c")
+
+
 # Double-hybrid functionals: their MP2 correlation part needs a correlation-
 # fitting ("/C") auxiliary basis. Verified to run in ORCA 6.1.1 (the others
 # from the old list — B2PLYP-D/-D3, revDSD/revDOD-PBEP86-D4, B2PLYP21,
@@ -84,6 +152,26 @@ _DOUBLE_HYBRIDS = frozenset({
 _CORRELATED_MARKERS = ("ccsd", "bccd", "cisd", "nevpt", "caspt", "mrci", "adc2")
 
 
+def _is_dlpno(functional: str) -> bool:
+    """True for a DLPNO method, which is RI-based by construction: turning RI
+    off does not give it a conventional path, it gives it no path at all."""
+    return "dlpno" in normalize_functional(functional).lower()
+
+
+def _is_ri_method(functional: str) -> bool:
+    """True for a method whose name makes it RI by itself (RI-MP2, OO-RI-MP2,
+    OO-RI-SCS-MP2, F12-RI-MP2, RI-MP3) or that ORCA only runs RI-based (ADC2).
+
+    Like a double hybrid it needs a /C set even at RI "ORCA default", and ORCA
+    6.1.1 picks none itself: "! RI-MP2 def2-SVP" aborts "RI-MP2 needs an AuxC
+    basis but none was defined!", and ADC2 aborts after the SCF ("Aux/C
+    requested but not available")."""
+    norm = normalize_functional(functional).strip().lower()
+    base = norm.split()[0] if norm else ""
+    return (base.startswith("ri-") or "-ri-" in base
+            or base.startswith("adc2"))
+
+
 def _needs_auxc(functional: str) -> bool:
     """True if the method needs a correlation-fitting (/C) aux basis: any MP2/MP3
     or coupled-cluster/multireference-PT method, or a double hybrid (the
@@ -93,6 +181,12 @@ def _needs_auxc(functional: str) -> bool:
         return True
     if any(m in norm for m in _CORRELATED_MARKERS):
         return True
+    return _is_double_hybrid(functional)
+
+
+def _is_double_hybrid(functional: str) -> bool:
+    """True for a double hybrid (a DFT method with an MP2 part)."""
+    norm = normalize_functional(functional).lower()
     base = norm.split()[0] if norm.strip() else ""   # strip a trailing " d3bj"
     return base in _DOUBLE_HYBRIDS
 
@@ -112,14 +206,30 @@ _SOLVENT_ALIASES = {
     "1,2-dichlorobenzene": "o-dichlorobenzene",
     "dma": "n,n-dimethylacetamide",
     "methyl acetate": "methyl ethanoate",
+    # its sibling was mapped and it was not: ORCA 6.1.1 rejects "ethyl acetate"
+    # in both models ("Solvent name not found") and accepts "ethyl ethanoate"
+    "ethyl acetate": "ethyl ethanoate",
     "methyl formate": "methyl methanoate",
     "liquid ammonia": "ammonia",
 }
 
 
+# ORCA's SMD library is not its CPCM library. Every name in data/solvents.json
+# was scanned against ORCA 6.1.1 in both models (88 names x 2 = 176 runs): these
+# three are the only ones CPCM knows and SMD does not — SMD aborts at startup
+# with "SMD solvent not found!" (block form) or an UNRECOGNIZED KEYWORD
+# (keyword form), which locks the calculation (P24). Names are post-alias.
+_SMD_UNSUPPORTED = frozenset({"phenol", "ammonia"})
+
+
 def normalize_solvent(name: str) -> str:
     token = (name or "").strip()
     return _SOLVENT_ALIASES.get(token.lower(), token)
+
+
+def smd_supports(solvent: str) -> bool:
+    """Whether ORCA's SMD library knows this solvent (post-alias)."""
+    return normalize_solvent(solvent).strip().lower() not in _SMD_UNSUPPORTED
 
 
 @dataclass
@@ -132,15 +242,35 @@ class Solvation:
         # double quotes would terminate the %cpcm block string early
         return normalize_solvent(self.solvent).replace('"', "")
 
+    def _check_model(self, solv: str) -> None:
+        """Refuse an SMD solvent ORCA's SMD library does not have.
+
+        Emitting it anyway produces an input ORCA aborts on at startup, and a
+        failed calculation is locked (P24) — hours after the queue accepted it.
+        Raised here, the trust boundary, so a phone/API payload fails loudly
+        too (same shape as the IRC "InitHess read" refusal).
+        """
+        if self.model.upper() == "SMD" and solv and not smd_supports(solv):
+            raise ValueError(
+                f"ORCA's SMD solvent library does not include "
+                f"'{self.solvent.strip()}'. Use CPCM for it, or pick another "
+                "solvent for SMD.")
+
     def keyword(self) -> str:
         """Simple-input keyword fragment, e.g. 'CPCM(Water)'. Empty if gas phase."""
         if not self.model:
             return ""
         solv = self._resolved()
+        self._check_model(solv)
         if not solv:
-            # CPCM alone = infinite dielectric (a valid ORCA shortcut);
-            # SMD requires a named solvent, so without one we emit nothing.
-            return "CPCM" if self.model.upper() == "CPCM" else ""
+            # CPCM alone = infinite dielectric (a valid ORCA shortcut).
+            if self.model.upper() == "CPCM":
+                return "CPCM"
+            # SMD has no such shortcut — it is parameterized per solvent. Emitting
+            # nothing ran the job in GAS PHASE and stamped it DONE, so the user
+            # got a converged number for a calculation they did not ask for.
+            raise ValueError("SMD needs a solvent. Pick one, or choose CPCM "
+                             "(which can run without a named solvent).")
         if any(ch.isspace() for ch in solv):
             # ORCA's simple-input parser splits on whitespace, so CPCM(Diethyl
             # Ether) is an INPUT ERROR; space-named solvents go through the
@@ -155,6 +285,7 @@ class Solvation:
         if not self.model:
             return ""
         solv = self._resolved()
+        self._check_model(solv)
         if not solv or not any(ch.isspace() for ch in solv):
             return ""
         if self.model.upper() == "SMD":
@@ -187,12 +318,21 @@ class StepConfig:
     functional: str = DEFAULT_FUNCTIONAL
     basis_set: str = DEFAULT_BASIS_SET
     ri_approximation: str = DEFAULT_RI
-    scf_convergence: str = "TightSCF"
+    scf_convergence: str = ""            # "" = ORCA's (Tight for Opt, Normal otherwise)
     calculation_type: str = "TightOpt"   # e.g. TightOpt / OptTS / Freq / "" for SP
     options: str = ""                    # extra simple-input keywords (user-supplied)
     maxcore_mb: int = 2400
     nprocs: int = 6
-    max_iter: int = 200                  # geometry optimiser cap
+    max_iter: int = DEFAULT_GEOM_MAXITER  # geometry optimiser cap
+    # %geom Constraints, emitted only for the kinds that optimize
+    # (CONSTRAINED_KINDS): {"kind": "C"|"B"|"A"|"D", "atoms": [0-based ints],
+    # "value": float|None}. None = hold at the starting value. Normalized by
+    # normalize_constraints() in from_dict.
+    geom_constraints: list = field(default_factory=list)
+    # %geom Scan — a relaxed surface scan, emitted only for SCAN_KINDS:
+    # {"kind": "B"|"A"|"D", "atoms": [0-based ints], "start": float,
+    # "end": float, "steps": int}. Normalized by normalize_scan() in from_dict.
+    geom_scan: list = field(default_factory=list)
     solvation: Solvation = field(default_factory=Solvation)
 
     # per-element basis/ECP (%basis newgto/newecp), applies to any kind
@@ -206,21 +346,22 @@ class StepConfig:
     nmr_jcoupling: bool = False          # add %eprnmr SSALL for J-couplings
 
     # TD-DFT block (only emitted when kind == 'tddft')
-    tddft_nroots: int = 40
-    tddft_maxdim: int = 10
-    tddft_tda: bool = False
-    tddft_triplets: bool = False
+    tddft_nroots: int = ORCA_TDDFT_NROOTS   # always written: it is what the block asks for
+    tddft_maxdim: int = 0                # 0 = ORCA's own; written only when set
+    tddft_tda: bool = True               # ORCA's default; "tda false" written when off
+    tddft_triplets: bool = False         # written only when on
     # IRC (intrinsic reaction coordinate) — starts from a TS structure and
     # follows the path downhill both ways to verify which minima it connects.
-    irc_maxiter: int = 100               # max IRC steps
+    irc_maxiter: int = DEFAULT_IRC_MAXITER  # max IRC steps
     irc_direction: str = "both"          # both | forward | backward
     irc_init_hess: str = "calc_anfreq"   # calc_anfreq | calc_numfreq | read
-    irc_hess_file: str = ""              # .hess to read when init_hess == "read"
+    irc_hess_file: str = ""              # .hess to read when init_hess == "read": a picked
+                                         # absolute path (copied in) or a run-folder name
     # NEB-TS (nudged elastic band -> transition state). The reactant goes in the
     # usual coordinate block; the PRODUCT geometry is written to a side .xyz file
     # that the %neb block points at. neb_product_xyz holds that product geometry.
     neb_product_xyz: str = ""            # product coordinates (atom order MUST match reactant)
-    neb_nimages: int = 8                 # number of images along the band
+    neb_nimages: int = ORCA_NEB_IMAGES   # images along the band (written when not 8)
     neb_preopt_ends: bool = False        # re-optimize endpoints before the band
     neb_ts_guess_xyz: str = ""           # optional TS guess geometry
 
@@ -291,19 +432,32 @@ class StepConfig:
         for f in dataclass_fields(cfg.solvation):
             if isinstance(f.default, str) and not isinstance(getattr(cfg.solvation, f.name), str):
                 setattr(cfg.solvation, f.name, f.default)
+        # Booleans are untrusted too, and they are read for TRUTHINESS — so a
+        # JSON string, which is what a phone/API payload or an older
+        # session.json can carry, turned every flag ON: "false" and "0" are both
+        # truthy strings, and the %tddft block and build_crest_argv simply
+        # believed them (`triplets true` for tddft_triplets="false", `--nci` for
+        # crest_nci="0"). It round-trips through the session file, so the wrong
+        # setting is permanent. Coerce here, at the boundary, reading the
+        # strings people actually write.
+        for f in dataclass_fields(cfg):
+            if isinstance(f.default, bool):
+                setattr(cfg, f.name, _as_bool(getattr(cfg, f.name), f.default))
         # Coerce/clamp untrusted numeric fields. A phone-API payload reaches here
         # via calc_from_dict, and these values are interpolated verbatim into
         # %pal/%maxcore/%geom/%tddft — so a string (line injection) or an absurd
         # value (resource exhaustion) must not pass through.
         cfg.nprocs = _clamp_int(cfg.nprocs, 6, 1, 1024)
         cfg.maxcore_mb = _clamp_int(cfg.maxcore_mb, 2400, 64, 1_000_000)
-        cfg.max_iter = _clamp_int(cfg.max_iter, 200, 1, 100_000)
-        cfg.neb_nimages = _clamp_int(cfg.neb_nimages, 8, 2, 200)
-        cfg.irc_maxiter = _clamp_int(cfg.irc_maxiter, 100, 1, 100_000)
-        cfg.tddft_nroots = _clamp_int(cfg.tddft_nroots, 40, 1, 10_000)
-        cfg.tddft_maxdim = _clamp_int(cfg.tddft_maxdim, 10, 1, 100_000)
+        cfg.max_iter = _clamp_int(cfg.max_iter, DEFAULT_GEOM_MAXITER, 1, 100_000)
+        cfg.neb_nimages = _clamp_int(cfg.neb_nimages, ORCA_NEB_IMAGES, 2, 200)
+        cfg.irc_maxiter = _clamp_int(cfg.irc_maxiter, DEFAULT_IRC_MAXITER, 1, 100_000)
+        cfg.tddft_nroots = _clamp_int(cfg.tddft_nroots, ORCA_TDDFT_NROOTS, 1, 10_000)
+        cfg.tddft_maxdim = _clamp_int(cfg.tddft_maxdim, 0, 0, 100_000)
         cfg.freq_temp_k = _clamp_float(cfg.freq_temp_k, 298.15, 0.0, 100_000.0)
         cfg.freq_pressure_atm = _clamp_float(cfg.freq_pressure_atm, 1.0, 0.0, 100_000.0)
+        cfg.geom_constraints = normalize_constraints(cfg.geom_constraints)
+        cfg.geom_scan = normalize_scan(cfg.geom_scan)
         # ORCA has no "MediumSCF" convergence tier — it aborts with "UNRECOGNIZED
         # OR DUPLICATED KEYWORD(S) IN SIMPLE INPUT LINE". Older sessions/calcs may
         # still carry it (it used to be offered in the picker), so map it to the
@@ -322,12 +476,33 @@ class StepConfig:
             cfg.crest_preset = ""
         if cfg.crest_solvent_model not in ("alpb", "gbsa"):
             cfg.crest_solvent_model = "alpb"
+        cfg.crest_ewin = _clamp_float(cfg.crest_ewin, 6.0, 0.0, 1000.0)
+        cfg.crest_threads = _clamp_int(cfg.crest_threads, 4, 1, 1024)
         cfg.crest_mdlen_mult = _clamp_float(cfg.crest_mdlen_mult, 0.0, 0.0, 100.0)
         cfg.crest_tstep_fs = _clamp_float(cfg.crest_tstep_fs, 0.0, 0.0, 1000.0)
         cfg.crest_tnmd_k = _clamp_float(cfg.crest_tnmd_k, 0.0, 0.0, 100_000.0)
         cfg.crest_mddump_fs = _clamp_int(cfg.crest_mddump_fs, 0, 0, 10_000_000)
         cfg.crest_vbdump_ps = _clamp_float(cfg.crest_vbdump_ps, 0.0, 0.0, 100_000.0)
         return cfg
+
+
+_FALSE_WORDS = {"false", "0", "no", "off", "none", "null", ""}
+
+
+def _as_bool(value, default: bool) -> bool:
+    """Coerce an untrusted value to a bool, reading the words people write.
+
+    A real bool passes through; a string is judged by its content, not its
+    truthiness (which is what made "false" mean True); anything else falls back
+    to the field's default rather than guessing.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in _FALSE_WORDS
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
 
 
 def _clamp_int(v, default: int, lo: int, hi: int) -> int:
@@ -350,12 +525,273 @@ def _clamp_float(v, default: float, lo: float, hi: float) -> float:
     return max(lo, min(x, hi))
 
 
-def _needs_auxj(ri: str) -> bool:
-    """True if the RI approximation needs a Coulomb-fitting (/J) aux basis."""
-    r = (ri or "").upper().replace("-", "").replace("_", "")
-    # RIJCOSX, RIJDX, RIJONX, RIJ, SPLITRIJ all fit Coulomb with /J.
-    # (RIJK needs /JK, NoRI/NORI need nothing.)
-    return any(tag in r for tag in ("RIJCOSX", "RIJDX", "RIJONX")) or r == "RIJ" or r == "SPLITRIJ"
+# ---- geometry constraints (%geom Constraints) ----------------------------
+# ORCA 6.1.1's four constraint kinds and the atoms each one names, 0-based:
+# C i (all three Cartesians of one atom), B i j, A i j k (j is the vertex),
+# D i j k l. Each may carry a target value ("{ B 0 1 1.25 C }"); without one
+# ORCA holds the starting value. Verified on 6.1.1 (H2O2, all four kinds in
+# one block): every one is echoed with a C in the redundant-coordinate table
+# and holds to the last cycle, targets included.
+CONSTRAINT_ATOMS = {"C": 1, "B": 2, "A": 3, "D": 4}
+# What a target may be, per kind: a bond in Å, an angle in degrees. A dihedral
+# is wrapped rather than clamped (-190 and 170 are the same torsion).
+_CONSTRAINT_RANGE = {"B": (0.1, 50.0), "A": (0.0, 180.0)}
+_CONSTRAINT_NOUN = {"C": "position", "B": "bond", "A": "angle", "D": "dihedral"}
+_MAX_CONSTRAINTS = 1000          # a list longer than this is a payload, not a plan
+_MAX_ATOM_INDEX = 1_000_000
+# The kinds whose run optimizes a geometry, and so the only ones a constraint
+# means anything for. Exactly the kinds build_input writes a %geom block for.
+# "general" is left out on purpose: its job line is free text, so whether it
+# optimizes at all is not knowable here — its .inp text mode takes a
+# hand-written block. IRC and NEB-TS follow a path; %geom constraints do not
+# steer either.
+CONSTRAINED_KINDS = ("opt", "ts_opt", "opt_freq", "ts_opt_freq")
+
+
+def normalize_constraints(raw) -> list:
+    """The trust boundary for ``StepConfig.geom_constraints``.
+
+    A malformed entry is DROPPED rather than repaired: an unknown kind, the
+    wrong number of atoms, an index that is not a non-negative int (a bool is
+    not one), the same atom twice, or a target that is not a finite number.
+    None of those can come out of the builder, and guessing what was meant
+    would constrain a coordinate nobody chose. A target in range is kept, one
+    out of range is clamped (a dihedral wrapped), and a repeat of a constraint
+    already listed — the same atoms in either direction — is dropped, since
+    ORCA would be handed the same coordinate twice.
+    """
+    if not isinstance(raw, list):
+        return []
+    out, seen = [], set()
+    for c in raw[:_MAX_CONSTRAINTS]:
+        if not isinstance(c, dict):
+            continue
+        kind = c.get("kind")
+        if not isinstance(kind, str):
+            continue
+        kind = kind.strip().upper()
+        n = CONSTRAINT_ATOMS.get(kind)
+        atoms = c.get("atoms")
+        if not n or not isinstance(atoms, list) or len(atoms) != n:
+            continue
+        if any(isinstance(a, bool) or not isinstance(a, int)
+               or a < 0 or a > _MAX_ATOM_INDEX for a in atoms):
+            continue
+        if len(set(atoms)) != n:
+            continue
+        key = (kind, min(tuple(atoms), tuple(reversed(atoms))))
+        if key in seen:
+            continue
+        value = c.get("value")
+        if kind == "C" or value is None or value == "":
+            value = None                 # a fixed atom has no value to target
+        else:
+            if isinstance(value, bool):
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            if kind == "D":
+                value = (value + 180.0) % 360.0 - 180.0
+            else:
+                lo, hi = _CONSTRAINT_RANGE[kind]
+                value = max(lo, min(value, hi))
+        seen.add(key)
+        out.append({"kind": kind, "atoms": list(atoms), "value": value})
+    return out
+
+
+def constraint_index_error(constraints: list, n_atoms: int,
+                           what: str = "constraint") -> str:
+    """The first constraint naming an atom the structure does not have, as a
+    sentence in the 1-based numbering the builder shows, or "" when all fit.
+    ``what`` names the list in the sentence: a scan coordinate (``"scan"``)
+    is checked by the same rule.
+
+    ORCA does not say this itself: an out-of-range index dies in the
+    optimizer's setup with "Could not make G matrix" (measured, 6.1.1) — a
+    FAILED, locked calculation (P24) whose cause the user has to guess."""
+    for c in constraints or []:
+        atoms = c.get("atoms") or []
+        if atoms and max(atoms) >= n_atoms:
+            return (f"The {_CONSTRAINT_NOUN.get(c.get('kind'), '')} {what} on "
+                    f"atom{'s' if len(atoms) > 1 else ''} "
+                    f"{'-'.join(str(a + 1) for a in atoms)} names atom "
+                    f"{max(atoms) + 1}, but the structure has {n_atoms} atoms.")
+    return ""
+
+
+# Above this an angle is a LINEAR BEND to ORCA, and a linear bend can only be
+# held where it starts: an angle constraint carrying ANY value stops in the
+# optimizer's setup with "For a linear bend you can only keep the initial value
+# of your structure as constraint!!!" when either end is past it. Measured on
+# 6.1.1 (HF/STO-3G, a Br-C-O angle walked by rigid rotation): start = value =
+# 175.0 runs; 175.5, 176, 177, 178, 179.5 and 180 all stop; a 170 start with a
+# 180 target stops too. Without a value the same 180 degree angle is held, as
+# two linear-bend components, and runs.
+LINEAR_BEND_DEG = 175.0
+
+
+def constraint_linear_warning(constraints: list, atoms=None) -> str:
+    """The first angle constraint ORCA will stop on as a linear bend, as the
+    sentence that says what to do instead, or "".
+
+    A WARNING, not a refusal: the rule is measured on one ORCA version, and
+    whether to run anyway is the user's call. It is said where it can still
+    be acted on — when the calculation is added, which the builder shows —
+    because a FAILED calculation is locked (P24).
+
+    `atoms` is the structure when it is in hand (then a valued angle that
+    STARTS past the line is caught too); without it only the target is
+    judged, which is all that can be known about a referenced geometry before
+    the run resolves it."""
+    for c in constraints or []:
+        if c.get("kind") != "A" or c.get("value") is None:
+            continue
+        lab = "-".join(str(a + 1) for a in c.get("atoms") or [])
+        hold = ("Leave its target empty to hold the angle where the coordinates "
+                "put it - move them there first with Apply if they are not.")
+        if round(float(c["value"]), 2) > LINEAR_BEND_DEG:
+            return (f"The angle constraint on atoms {lab} has a target of "
+                    f"{c['value']:.2f}°. ORCA treats an angle past "
+                    f"{LINEAR_BEND_DEG:.0f}° as a linear bend, which it can only "
+                    f"hold at its starting value - it stops before the first "
+                    f"step. {hold}")
+        if atoms is not None:
+            idx = c.get("atoms") or []
+            if len(idx) == 3 and max(idx) < len(atoms):
+                try:
+                    start = measure(atoms, idx)
+                except ValueError:
+                    continue
+                if round(start, 2) > LINEAR_BEND_DEG:
+                    return (f"The angle on atoms {lab} starts at {start:.1f}°, "
+                            f"which ORCA treats as a linear bend: it can only hold "
+                            f"it there, not take it to {c['value']:.2f}°. Leave "
+                            f"its target empty to hold it, or bend the "
+                            f"coordinates below {LINEAR_BEND_DEG:.0f}° first.")
+    return ""
+
+
+def _constraint_line(c: dict) -> str:
+    """``{ B 0 1 C }`` / ``{ B 0 1 1.2500 C }`` — a bond to four decimals (Å),
+    an angle or dihedral to two (degrees), which is finer than ORCA's own
+    convergence on either."""
+    atoms = " ".join(str(a) for a in c["atoms"])
+    v = c.get("value")
+    if v is None:
+        return f"    {{ {c['kind']} {atoms} C }}"
+    return f"    {{ {c['kind']} {atoms} {v:.4f} C }}" if c["kind"] == "B" \
+        else f"    {{ {c['kind']} {atoms} {v:.2f} C }}"
+
+
+# ---- relaxed surface scan (%geom Scan) ------------------------------------
+# "B 0 1 = 0.90, 1.10, 5" inside %geom: ORCA runs one constrained optimization
+# per point, start and end included, the scanned coordinate held at each value
+# in turn. Measured on 6.1.1 (HF/def2-SVP, water / H2O2):
+#   - Only an optimization scans. With "! HF def2-SVP" (no Opt) the same block
+#     is read and ignored — one single point, no scan, normal termination. With
+#     "Opt Freq" the frequencies are computed once, after the FIRST point only,
+#     at a geometry held off its minimum by the scan — a number that answers no
+#     question. OptTS climbs a mode, which a held coordinate fights. So: opt.
+#   - Bond in Å, angle and dihedral in degrees. A dihedral range past 180 runs
+#     (120, 240, 360 gave 240 ≡ -120 to 1e-7 Eh), so a full turn is a range,
+#     and the value is clamped, never wrapped: wrapping 360 to 0 would make a
+#     full rotation a "scan" from 0 to 0. An angle scanned to 180 runs (unlike
+#     a valued angle CONSTRAINT, which ORCA stops on as a linear bend).
+#   - steps = 1 runs the start point only; steps is clamped to 2 or more.
+#   - Four coordinates stop in input parsing: "The maximum number of
+#     scan-parameters is 3!" (exit 55). Two ran as a 2x2 grid.
+#   - A Scan and Constraints coexist in one %geom: an angle scan with a bond
+#     constraint held the bond at 0.9578 Å through all three points. A
+#     constraint on the scanned coordinate itself is overridden by the scan.
+#   - A point whose optimization does not converge ends the whole run with an
+#     error termination; ORCA does not move on to the next point.
+SCAN_KINDS = ("opt",)
+SCAN_ATOMS = {"B": 2, "A": 3, "D": 4}
+_SCAN_RANGE = {"B": (0.1, 50.0), "A": (0.0, 180.0), "D": (-360.0, 360.0)}
+_SCAN_FORMAT = {"B": "{:.4f}", "A": "{:.2f}", "D": "{:.2f}"}
+_MAX_SCAN_COORDS = 3             # ORCA's own limit (measured, above)
+_MAX_SCAN_STEPS = 1000           # a point count past this is a payload, not a plan
+
+
+def normalize_scan(raw) -> list:
+    """The trust boundary for ``StepConfig.geom_scan``.
+
+    As for constraints, a malformed entry is DROPPED rather than repaired: an
+    unknown kind (a fixed position has nothing to scan), the wrong number of
+    atoms, an index that is not a distinct non-negative int, a start or end
+    that is not a finite number, or a range that starts where it ends (every
+    point would be the same optimization). An end out of range is clamped,
+    the step count is clamped to 2..1000, a repeat of a coordinate already
+    listed is dropped, and anything past ORCA's three coordinates is cut,
+    because ORCA would refuse the whole input over it.
+    """
+    if not isinstance(raw, list):
+        return []
+    out, seen = [], set()
+    for c in raw:
+        if len(out) >= _MAX_SCAN_COORDS:
+            break
+        if not isinstance(c, dict):
+            continue
+        kind = c.get("kind")
+        if not isinstance(kind, str):
+            continue
+        kind = kind.strip().upper()
+        n = SCAN_ATOMS.get(kind)
+        atoms = c.get("atoms")
+        if not n or not isinstance(atoms, list) or len(atoms) != n:
+            continue
+        if any(isinstance(a, bool) or not isinstance(a, int)
+               or a < 0 or a > _MAX_ATOM_INDEX for a in atoms):
+            continue
+        if len(set(atoms)) != n:
+            continue
+        key = (kind, min(tuple(atoms), tuple(reversed(atoms))))
+        if key in seen:
+            continue
+        ends = []
+        for k in ("start", "end"):
+            v = c.get(k)
+            if isinstance(v, bool) or v is None or v == "":
+                break
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                break
+            if not math.isfinite(v):
+                break
+            lo, hi = _SCAN_RANGE[kind]
+            ends.append(max(lo, min(v, hi)))
+        if len(ends) != 2:
+            continue
+        # compared as _scan_line will write them: two values that print the
+        # same are the same point to ORCA
+        fmt = _SCAN_FORMAT[kind]
+        if fmt.format(ends[0]) == fmt.format(ends[1]):
+            continue
+        steps = c.get("steps")
+        if isinstance(steps, bool):
+            continue
+        steps = _clamp_int(steps, 0, 2, _MAX_SCAN_STEPS)
+        if not steps:
+            continue
+        seen.add(key)
+        out.append({"kind": kind, "atoms": list(atoms), "start": ends[0],
+                    "end": ends[1], "steps": steps})
+    return out
+
+
+def _scan_line(c: dict) -> str:
+    """``B 0 1 = 0.9000, 1.1000, 5`` — the precision of _constraint_line."""
+    atoms = " ".join(str(a) for a in c["atoms"])
+    f = _SCAN_FORMAT[c["kind"]]
+    return (f"    {c['kind']} {atoms} = {f.format(c['start'])}, "
+            f"{f.format(c['end'])}, {c['steps']}")
 
 
 def _ri_is_off(ri: str) -> bool:
@@ -368,23 +804,61 @@ def _auto_aux(cfg: "StepConfig") -> str:
     """Pick an auxiliary basis if the method needs one and the user didn't put
     an aux in extra options.
 
-    - Double hybrids / MP2 need a correlation-fitting (/C) aux as well as the
-      Coulomb (/J) one, so we add AutoAux (it generates both). The user can opt
-      out by setting the RI approximation to NoRI, in which case ORCA runs the
-      conventional (non-RI) path and we add nothing.
-    - Plain hybrids/GGAs with an RI-J method just need /J; for def2 orbital
-      bases that is the universal def2/J. Other bases are left to the user."""
+    - A double hybrid runs its MP2 part as RI-MP2 unless told NoRI, and ORCA
+      6.1.1 does not pick the /C set itself: "! B2PLYP def2-SVP" aborts with
+      "RI-MP2 needs an AuxC basis but none was defined!". So it gets AutoAux
+      (which generates /J and /C) unless RI is NoRI.
+    - MP2 and the coupled-cluster family get AutoAux only when the user turned
+      an RI on: with no RI keyword ORCA runs them conventionally (measured:
+      "! MP2 def2-SVP" runs with no aux at all).
+    - So does a method that is RI by its own name (RI-MP2, OO-RI-MP2,
+      OO-RI-SCS-MP2, F12-RI-MP2, RI-MP3) or RI-only (ADC2): at RI "ORCA
+      default" ORCA aborts for want of the /C set (6.1.1).
+    - A DLPNO method always gets it (there is no conventional DLPNO).
+    - RIJK fits exchange too and ORCA picks no /JK itself ("no AuxJK basis set
+      in ORCA_GTOInt!"), so it gets def2/JK (AutoAux off def2).
+    - The RI-J family (RIJCOSX, RI, ...) gets nothing: ORCA chooses def2/J for
+      a def2 basis itself, the same set this used to write. Except beside an
+      aux the user typed that is not a /J one (def2/JK, a /C): ORCA then picks
+      no /J and aborts "RIJ is chosen with no AuxJ basis set!" (6.1.1, "! HF
+      def2-SVP RIJCOSX def2/JK"), so def2/J goes with it."""
     opts = (cfg.options or "").upper()
     ri_raw = (cfg.ri_approximation or "").upper()
-    if "/J" in opts or "AUTOAUX" in opts or "/J" in ri_raw or "AUTOAUX" in ri_raw:
+    # "/JK" is an exchange+Coulomb set for RIJK; it is NOT an AuxJ, and ORCA
+    # under RIJCOSX then aborts with "RIJ is chosen with no AuxJ basis set!"
+    # (verified on 6.1.1 with "! HF def2-SVP RIJCOSX def2/JK"). A substring test
+    # for "/J" matched def2/JK, cc-pVTZ/JK and friends — all offered in the
+    # basis picker — and suppressed the aux that was actually needed. Match the
+    # whole token instead, so a real "/J" set still counts as user-supplied.
+    def _has_auxj(text: str) -> bool:
+        return any(tok.endswith("/J") or tok == "AUTOAUX" for tok in text.split())
+
+    if _has_auxj(opts) or _has_auxj(ri_raw):
         # user already supplied an aux — in extra options OR as the RI picker
         # choice itself ("AutoAux" is in data/ri_approximations.json, and it
         # goes on the ! line verbatim; adding another would emit a duplicated
         # keyword, which ORCA aborts on)
         return ""
 
+    if is_composite_method(cfg.functional) or method_forbids_ri(cfg.functional):
+        # the composite's own basis comes with its own fitting set; and a method
+        # that cannot use RI has nothing to fit
+        return ""
+
     if _needs_auxc(cfg.functional):
-        # double hybrid / MP2: /C (and /J) needed unless RI is off
+        # A DLPNO method is RI by construction — there IS no conventional path
+        # to fall back to, so it needs its fitting sets whatever the RI picker
+        # says. Verified on ORCA 6.1.1: "! DLPNO-CCSD(T) def2-SVP NoRI" aborts
+        # in mdci_check, and the same line plus AutoAux runs normally; plain
+        # "! MP2 def2-SVP NoRI" runs fine, which is why the NoRI escape below
+        # stays for everything else.
+        if _is_dlpno(cfg.functional):
+            return "AutoAux"
+        if _is_double_hybrid(cfg.functional) or _is_ri_method(cfg.functional):
+            # RI-MP2 is a double hybrid's default, and an RI-named method (or
+            # ADC2) is RI by itself; only NoRI takes it off
+            return "" if ri_raw.strip() == "NORI" else "AutoAux"
+        # MP2 / CC: conventional unless the user asked for an RI
         return "" if _ri_is_off(cfg.ri_approximation) else "AutoAux"
 
     basis = (cfg.basis_set or "").lower()
@@ -392,20 +866,18 @@ def _auto_aux(cfg: "StepConfig") -> str:
     if ri == "RIJK":
         # RIJK fits BOTH Coulomb and exchange, so it needs a /JK aux (not /J).
         return "def2/JK" if "def2" in basis else "AutoAux"
-    if not _needs_auxj(cfg.ri_approximation):
-        return ""
-    if "def2" in basis:
-        return DEFAULT_AUX  # def2/J
-    return ""  # unknown orbital basis: don't guess, let the user decide
+    if ri != "NORI" and "def2" in basis and any("/" in t for t in opts.split()):
+        return DEFAULT_AUX
+    return ""  # RI-J family: ORCA picks the /J set itself
 
 
 def _keyword_line(cfg: StepConfig) -> str:
     parts = [
         "!",
         normalize_functional(cfg.functional),
-        cfg.basis_set,
+        "" if is_composite_method(cfg.functional) else cfg.basis_set,
         cfg.scf_convergence,
-        cfg.ri_approximation,
+        "" if method_forbids_ri(cfg.functional) else cfg.ri_approximation,
     ]
     if cfg.calculation_type.strip():
         parts.append(cfg.calculation_type)
@@ -424,6 +896,543 @@ def _keyword_line(cfg: StepConfig) -> str:
 # Placeholder used in raw .inp text where the geometry will be injected at run
 # time (for calculations whose coordinates come from a referenced calculation).
 GEOMETRY_PLACEHOLDER = "{{GEOMETRY}}"
+# An inp set's other placeholders (state/inpsets.py), filled at run time like
+# the geometry: the calculation's charge and multiplicity, and the bare file
+# name of the Hessian the engine stages into the run folder
+# (QueueEngine._stage_template_hessian).
+CHARGE_PLACEHOLDER = "{{CHARGE}}"
+MULT_PLACEHOLDER = "{{MULT}}"
+HESS_PLACEHOLDER = "{{HESS}}"
+
+
+def render_template_values(text: str, charge: int, multiplicity: int) -> str:
+    """``text`` with {{CHARGE}} / {{MULT}} replaced by the given values."""
+    return (text.replace(CHARGE_PLACEHOLDER, str(int(charge)))
+                .replace(MULT_PLACEHOLDER, str(int(multiplicity))))
+
+
+# An inp set is a LEVEL of theory, not a job: its `!` line holds {{JOB}} where
+# the job keyword goes, and the block made from it says which job by its kind
+# (the queue editor's Type). TEMPLATE_JOB_KEYWORDS is what {{JOB}} becomes per
+# kind -- the job line the Guided builder writes for that kind (build.js
+# KINDS[].calc; TD-DFT has none, its %tddft block is the job). A kind not
+# listed has no level-only form (a General input is the user's alone; MLIP and
+# CREST run no ORCA input) and is refused, at the store's trust boundary and
+# again before launch.
+JOB_PLACEHOLDER = "{{JOB}}"
+TEMPLATE_JOB_KEYWORDS = {
+    "opt": "TightOpt", "ts_opt": "OptTS", "freq": "Freq", "ts_freq": "Freq",
+    "opt_freq": "TightOpt Freq", "ts_opt_freq": "OptTS Freq", "irc": "IRC",
+    "sp": "SP", "nmr": "NMR", "tddft": "", "neb_ts": "NEB-TS",
+}
+#: the kinds a block made from an MLIP set may run: every task the MLIP
+#: pipeline has (orcamgr/mlip; the frequency ones read freq_temp_k /
+#: freq_pressure_atm for their thermochemistry)
+MLIP_TEMPLATE_KINDS = ("mlip_opt", "mlip_sp", "mlip_freq", "mlip_opt_freq")
+#: a level block's IRC initial Hessian by default: the parent's .hess when one
+#: is found (staged into the run folder), else ORCA computes it (calc_anfreq)
+IRC_INIT_AUTO = "auto"
+_IRC_INIT_EXPLICIT = ("calc_anfreq", "calc_numfreq", "read")
+_FREQ_BLOCK_KINDS = ("freq", "ts_freq", "opt_freq", "ts_opt_freq")
+
+
+def template_job_error(kind: str) -> str:
+    """Why a {{JOB}} template cannot run as ``kind``, or ""."""
+    if kind in TEMPLATE_JOB_KEYWORDS:
+        return ""
+    return (f"An inp-set template ({JOB_PLACEHOLDER}) cannot run as a '{kind}' "
+            "calculation: its job keyword is one of "
+            + ", ".join(sorted(TEMPLATE_JOB_KEYWORDS)) + ".")
+
+
+def is_level_text(text: str) -> bool:
+    """True when {{JOB}} stands on one of the text's ``!`` lines -- an inp-set
+    LEVEL, the only raw text a block's options (its config) apply to."""
+    return any(ln.strip().startswith("!") and JOB_PLACEHOLDER in ln
+               for ln in (text or "").splitlines())
+
+
+def template_config(data, kind: str) -> StepConfig:
+    """A level block's options from a payload's config dict (StepConfig field
+    names, the trust boundary's coercion): its kind is the block's own, and
+    an IRC initial Hessian the payload does not name is IRC_INIT_AUTO, the
+    level renderer's default (StepConfig's own, calc_anfreq, is the Guided
+    builder's). An empty dict renders exactly as a level with no options."""
+    data = data if isinstance(data, dict) else {}
+    cfg = StepConfig.from_dict(data)
+    cfg.kind = kind
+    if "irc_init_hess" not in data:
+        cfg.irc_init_hess = IRC_INIT_AUTO
+    return cfg
+
+
+def _block_options(cfg, kind: str) -> StepConfig:
+    """The options a level is rendered with: ``cfg``, or none at all."""
+    if cfg is None:
+        return StepConfig(kind=kind, irc_init_hess=IRC_INIT_AUTO)
+    return cfg
+
+
+def _irc_init(cfg: StepConfig) -> str:
+    init = (cfg.irc_init_hess or "").strip().lower()
+    return init if init in _IRC_INIT_EXPLICIT else IRC_INIT_AUTO
+
+
+def _has_block(text: str, name: str) -> bool:
+    return re.search(r"^[ \t]*%" + name + r"\b", text, re.I | re.M) is not None
+
+
+def template_hess_need(text: str, kind: str, cfg=None) -> str:
+    """What a template asks of a parent's Hessian: "required" when its text
+    names {{HESS}} (none found is a refusal), "optional" when it is a {{JOB}}
+    IRC that gets ORCAdesk's own %irc block with the initial Hessian left at
+    IRC_INIT_AUTO (it reads the parent's .hess when there is one, else
+    computes the Hessian), "" otherwise -- an explicit calc_anfreq /
+    calc_numfreq computes it, an explicit read names its own file."""
+    if HESS_PLACEHOLDER in text:
+        return "required"
+    if (JOB_PLACEHOLDER in text and kind == "irc"
+            and not _has_block(text, "irc")):
+        opts = _block_options(cfg if is_level_text(text) else None, kind)
+        return "optional" if _irc_init(opts) == IRC_INIT_AUTO else ""
+    return ""
+
+
+class TemplateConflict(ValueError):
+    """A level's own text and its block's options set the same thing (or the
+    level is written so the option cannot be added to it). Refused, never
+    guessed: which of the two the user meant is not knowable here."""
+
+
+def _both(block: str, key: str, value) -> TemplateConflict:
+    return TemplateConflict(
+        f"The level's own %{block} block already sets {key}, and this block's "
+        f"options set it too ({value}). Keep it in one place: clear the "
+        f"option on the block, or take {key} out of the level's text.")
+
+
+def _tokens(line: str) -> "list[str]":
+    """The words of an input line, a ``#`` comment left out."""
+    return line.split("#", 1)[0].split()
+
+
+# Sub-blocks of %geom that close with their own `end` (ORCA 6.1.1 manual);
+# any other line holding a single word inside a block is read as one too.
+_SUB_OPENERS = frozenset({"constraints", "scan", "hybrid_hess",
+                          "modify_internal", "fragments", "frozen_atoms"})
+
+
+class _Block:
+    """Where a ``%name`` block of a text is: its first line, the line of its
+    closing ``end`` (the first line again for a block written on one line;
+    None when it is never closed), the words it holds outside its sub-blocks
+    (lower case) and the sub-blocks it has."""
+    __slots__ = ("start", "end", "single", "words", "subs")
+
+    def __init__(self, start, end, single, words, subs):
+        self.start, self.end, self.single = start, end, single
+        self.words, self.subs = words, subs
+
+
+def _find_block(lines: "list[str]", name: str) -> "_Block | None":
+    pat = re.compile(r"^[ \t]*%" + name + r"\b", re.I)
+    for i, ln in enumerate(lines):
+        if not pat.match(ln):
+            continue
+        rest = [t.lower() for t in _tokens(ln)[1:]]
+        if rest and rest[-1] == "end":
+            return _Block(i, i, True, set(rest[:-1]),
+                          {t for t in rest if t in _SUB_OPENERS})
+        words, subs, depth = set(rest), set(), 0
+        for j in range(i + 1, len(lines)):
+            toks = [t.lower() for t in _tokens(lines[j])]
+            if not toks:
+                continue
+            if toks[0] == "end":
+                if depth == 0:
+                    return _Block(i, j, False, words, subs)
+                depth -= 1
+                continue
+            if depth:
+                continue
+            words.update(toks)
+            if toks[0] in _SUB_OPENERS:
+                subs.add(toks[0])
+            if toks[-1] != "end" and (toks[0] in _SUB_OPENERS or len(toks) == 1):
+                subs.add(toks[0])
+                depth += 1
+        return _Block(i, None, False, words, subs)
+    return None
+
+
+def _add_to_block(lines: "list[str]", blk: _Block, name: str,
+                  add: "list[str]") -> None:
+    """Put ``add`` (indented block lines) into the level's own block: before
+    its closing ``end``, or -- a block written on one line -- as words before
+    the line's last ``end``."""
+    if not add:
+        return
+    if blk.end is None:
+        raise TemplateConflict(
+            f"The level's own %{name} block has no closing end, so this "
+            f"block's options cannot be added to it. Close it with end in the "
+            "level's text.")
+    if blk.single:
+        code, sep, comment = lines[blk.start].partition("#")
+        m = re.search(r"\bend\s*$", code, re.I)
+        words = " ".join(a.strip() for a in add)
+        lines[blk.start] = (code[:m.start()] + words + " " + code[m.start():]
+                            + sep + comment)
+        return
+    lines[blk.end:blk.end] = add
+
+
+def _merge_keyed(lines: "list[str]", name: str, whole: "list[str]",
+                 wants: "list[tuple]") -> "list[str]":
+    """The keyed half of a block's options merged with the level: with no
+    ``%name`` in the level, ``whole`` (the block as build_input writes it) is
+    returned for the caller to insert; otherwise each ``(key, line, value,
+    fill)`` the level's block lacks is added to it, and a key it already has
+    is a TemplateConflict -- unless ``fill`` (a line ORCAdesk adds only where
+    the level says nothing, never a choice of the user's), which is then
+    left out. Returns [] when the level's block took the lines."""
+    blk = _find_block(lines, name)
+    if blk is None:
+        return whole
+    add = []
+    for key, line, value, fill in wants:
+        if key.lower() in blk.words:
+            if not fill:
+                raise _both(name, key, value)
+            continue
+        add.append(line)
+    _add_to_block(lines, blk, name, add)
+    return []
+
+
+def _coordinate_line(lines: "list[str]") -> "int | None":
+    return next((i for i, ln in enumerate(lines)
+                 if ln.strip().startswith("*")
+                 and ln.strip()[1:].strip().lower().startswith("xyz")), None)
+
+
+_SCF_TIER = re.compile(r"^(sloppy|loose|normal|strong|tight|verytight|extreme)scf$", re.I)
+_SOLVENT_WORD = re.compile(r"^(cpcm|smd|alpb|ddcosmo|cosmors|cpcmc)\b", re.I)
+
+
+def _job_line(lines: "list[str]", kind: str, cfg: StepConfig) -> None:
+    """{{JOB}} filled on every line, and on the job's own ``!`` line the
+    block's extra keywords, SCF tier and solvation keyword appended -- each
+    only when no ``!`` line holds it already (case aside)."""
+    job = TEMPLATE_JOB_KEYWORDS[kind]
+    first = next((i for i, ln in enumerate(lines)
+                  if ln.strip().startswith("!") and JOB_PLACEHOLDER in ln), None)
+    for i, ln in enumerate(lines):
+        if JOB_PLACEHOLDER not in ln:
+            continue
+        if job:
+            lines[i] = ln.replace(JOB_PLACEHOLDER, job)
+        else:
+            lines[i] = re.sub(r"[ \t]*" + re.escape(JOB_PLACEHOLDER), "", ln)
+    if first is None:
+        return
+    # lower case -> as the level writes it (what a refusal quotes)
+    have = {t.lower(): t for ln in lines if ln.strip().startswith("!")
+            for t in _tokens(ln.strip()[1:])}
+    extra = []
+    scf = (cfg.scf_convergence or "").strip()
+    if scf:
+        tier = next((t for t in have.values() if _SCF_TIER.match(t)), "")
+        if tier and tier.lower() != scf.lower():
+            raise TemplateConflict(
+                f"The level already sets its SCF convergence ({tier}), and this "
+                f"block's options ask for {scf}. Keep it in one place: clear "
+                "the block's SCF convergence, or take it out of the level's text.")
+        extra.append(scf)
+    extra.extend(cfg.options.split())
+    if cfg.solvation.model:
+        kw = cfg.solvation.keyword()
+        own = next((t for t in have.values() if _SOLVENT_WORD.match(t)), "")
+        if own or _has_block("\n".join(lines), "cpcm"):
+            raise TemplateConflict(
+                f"The level already selects a solvent model "
+                f"({own or '%cpcm'}), and this block's options ask for "
+                f"{kw} too. Keep it in one place: set the block's solvation "
+                "to gas phase, or take it out of the level's text.")
+        extra.append(kw)
+    add = []
+    for t in extra:
+        if t and t.lower() not in have:
+            have[t.lower()] = t
+            add.append(t)
+    if add:
+        lines[first] = lines[first].rstrip() + " " + " ".join(add)
+    if lines[first].strip() == "!":
+        del lines[first]
+
+
+def _geom_options(lines: "list[str]", kind: str, cfg: StepConfig,
+                  n_atoms) -> "list[str]":
+    """%geom for an optimization: the job lines (MaxIter, Calc_Hess for a TS)
+    and the block's Constraints / Scan. Returns the whole block when the level
+    has none; otherwise adds what the level's own block lacks -- MaxIter only
+    where it has none, Calc_Hess only where it names no initial Hessian --
+    and refuses a Constraints / Scan list on both sides, or one that would go
+    into a %geom written on one line."""
+    if kind not in CONSTRAINED_KINDS:
+        return []
+    constraints = normalize_constraints(cfg.geom_constraints)
+    scan = normalize_scan(cfg.geom_scan) if kind in SCAN_KINDS else []
+    if n_atoms:
+        err = (constraint_index_error(constraints, n_atoms)
+               or constraint_index_error(scan, n_atoms, "scan"))
+        if err:
+            raise ValueError(err)
+    job = _geom_job_lines(kind, cfg.max_iter)
+    sub: "list[str]" = []
+    if constraints:
+        sub += ["  Constraints", *(_constraint_line(c) for c in constraints), "  end"]
+    if scan:
+        sub += ["  Scan", *(_scan_line(c) for c in scan), "  end"]
+    blk = _find_block(lines, "geom")
+    if blk is None:
+        return ["%geom", *job, *sub, "end"]
+    add = []
+    if "maxiter" in blk.words:
+        if cfg.max_iter != DEFAULT_GEOM_MAXITER:
+            raise _both("geom", "MaxIter", cfg.max_iter)
+    else:
+        add.append(job[0])
+    if len(job) > 1 and not {"calc_hess", "inhess"} & blk.words:
+        add.extend(job[1:])
+    for word, title, wanted in (("constraints", "Constraints", constraints),
+                                ("scan", "Scan", scan)):
+        if wanted and word in blk.subs:
+            raise TemplateConflict(
+                f"The level's own %geom block already has a {title} block, and "
+                f"this block's options add {title.lower()} too. ORCAdesk does "
+                "not merge two lists: keep them in one place (the block's "
+                "options, or the level's text).")
+    if sub and blk.single:
+        raise TemplateConflict(
+            "The level's own %geom block is written on one line, so this "
+            "block's constraints / scan cannot be added to it. Write the "
+            "level's %geom over several lines (its closing end on a line of "
+            "its own), or clear the block's constraints / scan.")
+    _add_to_block(lines, blk, "geom", add + sub)
+    return []
+
+
+def _irc_options(lines: "list[str]", cfg: StepConfig,
+                 hess_name: str) -> "list[str]":
+    """%irc: the whole block (_irc_lines, build_input's) when the level has
+    none -- the initial Hessian read from ``hess_name`` (the parent's, staged)
+    when left at IRC_INIT_AUTO and there is one, else computed; an explicit
+    choice is written as chosen. Into a level's own %irc only the options that
+    differ from the default go (auto adds nothing: the level's block decides)."""
+    init = _irc_init(cfg)
+    hess_file = (cfg.irc_hess_file or "").strip()
+    if init == IRC_INIT_AUTO:
+        eff, hess_file = ("read", hess_name) if hess_name else ("calc_anfreq", "")
+    else:
+        eff = init
+    whole = _irc_lines(StepConfig(kind="irc", irc_maxiter=cfg.irc_maxiter,
+                                  irc_direction=cfg.irc_direction,
+                                  irc_init_hess=eff, irc_hess_file=hess_file))
+    wants = []
+    if cfg.irc_maxiter != DEFAULT_IRC_MAXITER:
+        wants.append(("MaxIter", f"  MaxIter {cfg.irc_maxiter}", cfg.irc_maxiter, False))
+    direction = (cfg.irc_direction or "both").strip().lower()
+    if direction in ("forward", "backward"):
+        wants.append(("Direction", f"  Direction {direction}", direction, False))
+    if init != IRC_INIT_AUTO:
+        wants.append(("InitHess", f"  InitHess {init}", init, False))
+        if init == "read":
+            name = irc_hess_input_name(hess_file)
+            wants.append(("Hess_Filename", f'  Hess_Filename "{name}"', name, False))
+    return _merge_keyed(lines, "irc", whole, wants)
+
+
+def _freq_options(lines: "list[str]", cfg: StepConfig) -> "list[str]":
+    t_set = abs(cfg.freq_temp_k - 298.15) > 1e-6
+    p_set = abs(cfg.freq_pressure_atm - 1.0) > 1e-6
+    if not (t_set or p_set):
+        return []
+    whole = ["%freq", f"  Temp {cfg.freq_temp_k}",
+             f"  Pressure {cfg.freq_pressure_atm}", "end"]
+    wants = []
+    if t_set:
+        wants.append(("Temp", f"  Temp {cfg.freq_temp_k}", cfg.freq_temp_k, False))
+    if p_set:
+        wants.append(("Pressure", f"  Pressure {cfg.freq_pressure_atm}",
+                      cfg.freq_pressure_atm, False))
+    return _merge_keyed(lines, "freq", whole, wants)
+
+
+def _tddft_options(lines: "list[str]", cfg: StepConfig) -> "list[str]":
+    whole = ["%tddft", f"  nroots {cfg.tddft_nroots}"]
+    wants = [("nroots", f"  nroots {cfg.tddft_nroots}", cfg.tddft_nroots,
+              cfg.tddft_nroots == ORCA_TDDFT_NROOTS)]
+    if cfg.tddft_maxdim > 0:
+        whole.append(f"  maxdim {cfg.tddft_maxdim}")
+        wants.append(("maxdim", f"  maxdim {cfg.tddft_maxdim}", cfg.tddft_maxdim, False))
+    if not cfg.tddft_tda:
+        whole.append("  tda false")
+        wants.append(("tda", "  tda false", "false", False))
+    if cfg.tddft_triplets:
+        whole.append("  triplets true")
+        wants.append(("triplets", "  triplets true", "true", False))
+    whole.append("end")
+    return _merge_keyed(lines, "tddft", whole, wants)
+
+
+def _neb_options(lines: "list[str]", cfg: StepConfig) -> "list[str]":
+    whole = ["%neb", '  NEB_End_XYZFile "product.xyz"']
+    wants = [("NEB_End_XYZFile", '  NEB_End_XYZFile "product.xyz"', "product.xyz", True)]
+    if cfg.neb_nimages != ORCA_NEB_IMAGES:
+        whole.append(f"  Nimages {cfg.neb_nimages}")
+        wants.append(("Nimages", f"  Nimages {cfg.neb_nimages}", cfg.neb_nimages, False))
+    if cfg.neb_preopt_ends:
+        whole.append("  PreOpt_Ends true")
+        wants.append(("PreOpt_Ends", "  PreOpt_Ends true", "true", False))
+    if cfg.neb_ts_guess_xyz.strip():
+        whole.append('  NEB_TS_XYZFile "ts_guess.xyz"')
+        wants.append(("NEB_TS_XYZFile", '  NEB_TS_XYZFile "ts_guess.xyz"',
+                      "ts_guess.xyz", False))
+    whole.append("end")
+    return _merge_keyed(lines, "neb", whole, wants)
+
+
+def render_template_job(text: str, kind: str, hess_name: str = "",
+                        cfg=None, n_atoms=None) -> str:
+    """``text`` with {{JOB}} replaced by ``kind``'s job keyword and that kind's
+    blocks merged in, the ones build_input writes for it (through the same
+    helpers) -- never a second copy of a block the level already has.
+
+    The block's options (``cfg``, its config: StepConfig field names) apply
+    only to a LEVEL (is_level_text); the level owns its method, basis, RI,
+    %pal / %maxcore and %basis, so those fields are never read here. With no
+    options the result is what the level always rendered as.
+
+    * ``!`` line: the job keyword, then the block's SCF tier, extra keywords
+      and solvation keyword, each only when no ``!`` line holds it already.
+    * ``%cpcm`` (a solvent name with spaces), ``%geom`` (_geom_options),
+      ``%freq`` T / P, ``%tddft``, ``%irc`` (_irc_options), ``%neb``: a block
+      the level lacks is inserted whole right before the coordinate block
+      (``* xyz`` / ``* xyzfile``; at the end when there is none); into one it
+      has, only the lines it lacks go -- a key set on both sides is a
+      TemplateConflict.
+    * ``%eprnmr`` (NMR J-couplings) after the coordinate block's closing ``*``.
+
+    ``n_atoms`` (the resolved structure's) checks constraint and scan indices
+    as build_input does. A text without {{JOB}} is returned unchanged -- an
+    input written before sets were levels runs as written. ValueError for a
+    kind with no job keyword, a conflict (TemplateConflict) or an option the
+    generator refuses."""
+    if JOB_PLACEHOLDER not in text:
+        return text
+    err = template_job_error(kind)
+    if err:
+        raise ValueError(err)
+    cfg = _block_options(cfg if is_level_text(text) else None, kind)
+    lines = text.split("\n")
+    _job_line(lines, kind, cfg)
+    before: "list[str]" = []
+    solv_block = cfg.solvation.block() if cfg.solvation.model else ""
+    if solv_block:
+        before += solv_block.split("\n")
+    before += _geom_options(lines, kind, cfg, n_atoms)
+    if kind in _FREQ_BLOCK_KINDS:
+        before += _freq_options(lines, cfg)
+    if kind == "tddft":
+        before += _tddft_options(lines, cfg)
+    if kind == "irc":
+        before += _irc_options(lines, cfg, hess_name)
+    if kind == "neb_ts":
+        before += _neb_options(lines, cfg)
+    after: "list[str]" = []
+    if kind == "nmr" and cfg.nmr_jcoupling:
+        if _find_block(lines, "eprnmr") is not None:
+            raise TemplateConflict(
+                "The level already has its own %eprnmr block, and this block "
+                "asks for J-couplings too, which would be a second one. Keep "
+                "it in one place: clear J-coupling on the block, or take the "
+                "%eprnmr block out of the level's text.")
+        after = ["%eprnmr", "  Nuclei = all H { shift, ssall }",
+                 "  Nuclei = all C { shift, ssall }", "end"]
+    at = _coordinate_line(lines)
+    if before:
+        if at is None:
+            if lines and lines[-1] == "":
+                lines[-1:] = before + [""]
+            else:
+                lines.extend(before)
+        else:
+            lines[at:at] = before
+            at += len(before)
+    if after:
+        close = None
+        if at is not None and "xyzfile" not in lines[at].lower():
+            close = next((j for j in range(at + 1, len(lines))
+                          if lines[j].strip().startswith("*")), None)
+        if close is None:
+            if lines and lines[-1] == "":
+                lines[-1:] = after + [""]
+            else:
+                lines.extend(after)
+        else:
+            lines[close + 1:close + 1] = after
+    return "\n".join(lines)
+
+
+def template_option_conflicts(text: str, kind: str, cfg) -> str:
+    """Why a level block's options cannot be rendered into its level, as the
+    sentence the queue shows, or "": a key both set (TemplateConflict), a
+    %geom the constraints cannot go into, an option the generator refuses
+    (an IRC "read" with no file, an SMD solvent SMD lacks). "" for a text that
+    is not a level, and for a kind with no job keyword (template_job_error
+    says that). Shared by the store (refused when added or edited) and the
+    engine (BLOCKED before launch), so the two never disagree."""
+    if not is_level_text(text) or template_job_error(kind):
+        return ""
+    try:
+        render_template_job(text, kind, "", cfg)
+    except ValueError as e:
+        return str(e)
+    return ""
+
+
+def render_template_text(text: str, kind: str, charge: int, multiplicity: int,
+                         hess_name: str = "", cfg=None, n_atoms=None) -> str:
+    """Every placeholder of an inp-set template but the geometry
+    (render_raw_input's): {{JOB}} and its blocks with the block's options
+    (render_template_job), {{CHARGE}} / {{MULT}}, and {{HESS}} with
+    ``hess_name`` (left as it is when that is ""). The one renderer:
+    QueueEngine runs it at launch, and the queue editor's preview
+    (Bridge.build_inp_preview) shows its result."""
+    text = render_template_job(text, kind, hess_name, cfg, n_atoms)
+    text = render_template_values(text, charge, multiplicity)
+    if hess_name and HESS_PLACEHOLDER in text:
+        text = text.replace(HESS_PLACEHOLDER, hess_name)
+    return text
+
+
+def irc_hess_is_path(hess: str) -> bool:
+    """True when an IRC's .hess is a picked file (an absolute path) rather than
+    a name inside the run folder. Judged on both path syntaxes, so a Windows
+    path stored by the desktop reads as a path wherever the input is built."""
+    h = (hess or "").strip()
+    return bool(h) and (PureWindowsPath(h).is_absolute() or PurePosixPath(h).is_absolute())
+
+
+def irc_hess_input_name(hess: str) -> str:
+    """What ``Hess_Filename`` says. A picked file is copied into the run folder
+    before launch (QueueEngine._stage_irc_hessian), so the input names only the
+    file: ORCA runs with the run folder as its cwd, and a full path would carry
+    the spaces and non-ASCII characters its argument handling truncates on.
+    A plain name (typed, or from a raw input) is passed through unchanged."""
+    h = (hess or "").strip()
+    return PureWindowsPath(h).name if irc_hess_is_path(h) else h
 
 
 def _xyz_elements(xyz: str) -> list:
@@ -450,44 +1459,100 @@ def check_neb_atom_order(reactant_xyz: str, product_xyz: str) -> dict:
 
     Returns {"ok": bool, "error": str, "mismatch_index": int|None}. On success
     error is "" and mismatch_index is None.
+
+    The comparison itself lives in ``core.structure.compare_atom_order``, which
+    the Build tab's checker calls for the same verdict plus the full mismatch
+    list it tabulates (P4: one judgment, two callers). This projection is the
+    three-key gate the generator and the queue engine have always used, kept
+    exactly so — adding keys here would change what those callers see.
     """
-    # Element symbols compare case-insensitively (ORCA itself is
-    # case-insensitive, and legacy tools write "CL"): normalize to
-    # capitalized form for both the comparison and the messages.
-    r = [el.capitalize() for el in _xyz_elements(reactant_xyz)]
-    p = [el.capitalize() for el in _xyz_elements(product_xyz)]
-    if not r or not p:
-        return {"ok": False, "error": "Could not read coordinates from reactant or product.", "mismatch_index": None}
-    if len(r) != len(p):
-        return {"ok": False,
-                "error": f"Atom count differs: reactant has {len(r)}, product has {len(p)}. "
-                         f"NEB-TS needs the same atoms in both.",
-                "mismatch_index": None}
-    # composition (multiset of elements) must match
-    from collections import Counter
-    if Counter(r) != Counter(p):
-        rc = ", ".join(f"{el}{n}" for el, n in sorted(Counter(r).items()))
-        pc = ", ".join(f"{el}{n}" for el, n in sorted(Counter(p).items()))
-        return {"ok": False,
-                "error": f"Element composition differs — reactant: {rc}; product: {pc}.",
-                "mismatch_index": None}
-    # same composition: check order, report first divergence
-    for i, (a, b) in enumerate(zip(r, p)):
-        if a != b:
-            return {"ok": False,
-                    "error": f"Atom order differs at atom #{i + 1}: reactant has {a}, product has {b}. "
-                             f"The atom order must be identical in both structures "
-                             f"(tip: build the product by copying the reactant and moving atoms, "
-                             f"so the order is preserved).",
-                    "mismatch_index": i}
-    return {"ok": True, "error": "", "mismatch_index": None}
+    rich = compare_atom_order(reactant_xyz, product_xyz)
+    return {"ok": rich["ok"], "error": rich["error"],
+            "mismatch_index": rich["mismatch_index"]}
+
+
+def _geom_job_lines(kind: str, max_iter: int = DEFAULT_GEOM_MAXITER) -> "list[str]":
+    """The lines a ``%geom`` block of an optimization carries for its kind
+    alone (no constraints, no scan): the MaxIter cap, and for a TS
+    optimization the exact initial Hessian. [] for a kind that does not
+    optimize. Shared by build_input and the inp-set template renderer
+    (render_template_text), so both write the same block."""
+    if kind not in CONSTRAINED_KINDS:
+        return []
+    out = [f"  MaxIter {max_iter}"]
+    if kind in ("ts_opt", "ts_opt_freq"):
+        # OptTS follows the LOWEST mode of its initial Hessian, and the
+        # default (Almloef's model) has no negative curvature at all, so
+        # the first steps climb a mode chosen by the model, not the
+        # reaction. Calc_Hess computes the exact Hessian inside cycle 1
+        # (after the first gradient) and the first step reads it — the
+        # settings echo still prints "InHess .... Almloef's Model"; the
+        # proof is "Evaluating the initial hessian .... (read)". Measured
+        # on ORCA 6.1.1, B3LYP-D3BJ/def2-SVP, OptTS Freq, same guess:
+        # HCN<->HNC 2 cycles vs 11 without (17 s vs 25 s); malonaldehyde
+        # proton transfer 7 vs 27 (203 s vs 355 s, ~68 s of it the
+        # Hessian). Both reached the same 1-imaginary saddle — the exact
+        # Hessian buys the start, not a different answer.
+        out.append("  Calc_Hess true")
+    return out
+
+
+def _irc_lines(cfg: StepConfig) -> "list[str]":
+    """The ``%irc`` block build_input writes for an IRC (and the template
+    renderer writes for a {{JOB}} IRC), as lines."""
+    out: "list[str]" = []
+    # IRC follows the reaction path downhill from a TS in both directions.
+    # It needs an initial Hessian to know which way is "downhill" (the
+    # imaginary mode): either compute one (calc_anfreq/calc_numfreq) or read
+    # a .hess from a previous freq/TS run.
+    out.append("%irc")
+    out.append(f"  MaxIter {cfg.irc_maxiter}")
+    direction = (cfg.irc_direction or "both").strip().lower()
+    if direction in ("forward", "backward"):
+        out.append(f"  Direction {direction}")
+    # lowercased like irc_direction just above: "READ" from a phone/API
+    # payload fell through to the else branch and silently ran calc_anfreq
+    # instead — a different, and possibly far more expensive, method than
+    # the one selected, with the named .hess quietly ignored.
+    init = (cfg.irc_init_hess or "calc_anfreq").strip().lower()
+    if init == "read":
+        hess = irc_hess_input_name(cfg.irc_hess_file)
+        if not hess:
+            # Silently substituting calc_anfreq for an explicit "read"
+            # selection would run a different (and possibly far more
+            # expensive) method than the user chose. Refuse here — the
+            # trust boundary — so phone/API payloads that bypass the
+            # form check fail loudly too.
+            raise ValueError("IRC InitHess 'read' requires a .hess filename.")
+        out.append("  InitHess read")
+        out.append(f'  Hess_Filename "{hess}"')
+    else:
+        # calc_anfreq (analytic) or calc_numfreq (numerical)
+        out.append(f"  InitHess {init if init in ('calc_anfreq', 'calc_numfreq') else 'calc_anfreq'}")
+    out.append("end")
+    return out
 
 
 def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 1) -> str:
     """Return the full text of an ORCA .inp file for this step."""
+    # The input carries no comments of ORCAdesk's own: what it leaves out (a
+    # composite method's basis, an RI keyword ORCA refuses, a constraint for a
+    # kind that does not optimize) or changes (a NumFreq's ranks) is decided
+    # by the rules below and documented there, and the file is the input ORCA
+    # reads, not a place for notes the user did not write.
     lines = [_keyword_line(cfg)]
     lines.append(f"%maxcore {cfg.maxcore_mb}")
-    lines.append(f"%pal nprocs {cfg.nprocs} end")
+    # A NumFreq runs one displaced-geometry gradient per rank and deadlocks when
+    # asked for more ranks than it has displacements (resources.numfreq_rank_cap
+    # carries the measurement). The surplus ranks had no work to do, so capping
+    # costs nothing.
+    nprocs = cfg.nprocs
+    cap = numfreq_rank_cap(lines[0], len(parse_block(xyz)), nprocs)
+    if cap:
+        nprocs = cap
+    if nprocs > 1:
+        # serial is ORCA's default; "%pal nprocs 1" asks for nothing
+        lines.append(f"%pal nprocs {nprocs} end")
 
     solv_block = cfg.solvation.block()
     if solv_block:
@@ -511,13 +1576,37 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         lines.extend(basis_lines)
         lines.append("end")
 
-    if cfg.kind in ("opt", "ts_opt", "opt_freq", "ts_opt_freq"):
+    # normalized again: a StepConfig built in code never passed from_dict
+    constraints = normalize_constraints(cfg.geom_constraints)
+    if constraints and cfg.kind in CONSTRAINED_KINDS and GEOMETRY_PLACEHOLDER not in xyz:
+        # A template's coordinates arrive at run time, so its indices are
+        # checked then — this same call, with the resolved geometry.
+        err = constraint_index_error(constraints, len(parse_block(xyz)))
+        if err:
+            raise ValueError(err)
+    # (a kind that does not optimize writes no %geom block, so its constraints
+    # are simply not in the input; the builder sends none for those kinds)
+    scan = normalize_scan(cfg.geom_scan) if cfg.kind in SCAN_KINDS else []
+    if scan and GEOMETRY_PLACEHOLDER not in xyz:
+        err = constraint_index_error(scan, len(parse_block(xyz)), "scan")
+        if err:
+            raise ValueError(err)
+
+    geom = _geom_job_lines(cfg.kind, cfg.max_iter)
+    if cfg.kind in CONSTRAINED_KINDS:
+        if constraints:
+            # inside the ONE %geom block: a second %geom would be a second
+            # block for ORCA to merge, and the generator never relies on that
+            geom.append("  Constraints")
+            geom.extend(_constraint_line(c) for c in constraints)
+            geom.append("  end")
+        if scan:
+            geom.append("  Scan")
+            geom.extend(_scan_line(c) for c in scan)
+            geom.append("  end")
+    if geom:
         lines.append("%geom")
-        lines.append(f"  MaxIter {cfg.max_iter}")
-        if cfg.kind in ("ts_opt", "ts_opt_freq"):
-            # TS optimization needs a good initial Hessian; the manual computes
-            # an exact Hessian before the first step (%geom Calc_Hess true).
-            lines.append("  Calc_Hess true")
+        lines.extend(geom)
         lines.append("end")
 
     if cfg.kind in ("freq", "ts_freq", "opt_freq", "ts_opt_freq"):
@@ -530,39 +1619,20 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
             lines.append("end")
 
     if cfg.kind == "tddft":
+        # nroots always: the block is what turns TD-DFT on, and the count is
+        # its one question. The rest only when it differs from ORCA's.
         lines.append("%tddft")
         lines.append(f"  nroots {cfg.tddft_nroots}")
-        lines.append(f"  maxdim {cfg.tddft_maxdim}")
-        lines.append(f"  tda {'true' if cfg.tddft_tda else 'false'}")
-        lines.append(f"  triplets {'true' if cfg.tddft_triplets else 'false'}")
+        if cfg.tddft_maxdim > 0:
+            lines.append(f"  maxdim {cfg.tddft_maxdim}")
+        if not cfg.tddft_tda:
+            lines.append("  tda false")
+        if cfg.tddft_triplets:
+            lines.append("  triplets true")
         lines.append("end")
 
     if cfg.kind == "irc":
-        # IRC follows the reaction path downhill from a TS in both directions.
-        # It needs an initial Hessian to know which way is "downhill" (the
-        # imaginary mode): either compute one (calc_anfreq/calc_numfreq) or read
-        # a .hess from a previous freq/TS run.
-        lines.append("%irc")
-        lines.append(f"  MaxIter {cfg.irc_maxiter}")
-        direction = (cfg.irc_direction or "both").strip().lower()
-        if direction in ("forward", "backward"):
-            lines.append(f"  Direction {direction}")
-        init = (cfg.irc_init_hess or "calc_anfreq").strip()
-        if init == "read":
-            hess = cfg.irc_hess_file.strip()
-            if not hess:
-                # Silently substituting calc_anfreq for an explicit "read"
-                # selection would run a different (and possibly far more
-                # expensive) method than the user chose. Refuse here — the
-                # trust boundary — so phone/API payloads that bypass the
-                # form check fail loudly too.
-                raise ValueError("IRC InitHess 'read' requires a .hess filename.")
-            lines.append("  InitHess read")
-            lines.append(f'  Hess_Filename "{hess}"')
-        else:
-            # calc_anfreq (analytic) or calc_numfreq (numerical)
-            lines.append(f"  InitHess {init if init in ('calc_anfreq', 'calc_numfreq') else 'calc_anfreq'}")
-        lines.append("end")
+        lines.extend(_irc_lines(cfg))
 
     if cfg.kind == "neb_ts":
         # NEB-TS finds the minimum-energy path between reactant (the coordinate
@@ -572,7 +1642,8 @@ def build_input(cfg: StepConfig, xyz: str, charge: int = 0, multiplicity: int = 
         # guess, if provided, goes in "ts_guess.xyz".
         lines.append("%neb")
         lines.append('  NEB_End_XYZFile "product.xyz"')
-        lines.append(f"  Nimages {cfg.neb_nimages}")
+        if cfg.neb_nimages != ORCA_NEB_IMAGES:
+            lines.append(f"  Nimages {cfg.neb_nimages}")
         if cfg.neb_preopt_ends:
             lines.append("  PreOpt_Ends true")
         if cfg.neb_ts_guess_xyz.strip():
@@ -622,38 +1693,92 @@ def render_raw_input(raw_text: str, xyz: str) -> str:
     return raw_text
 
 
+def raw_coordinate_block(inp_text: str) -> str:
+    """Coordinate lines of the first ``* xyz charge mult ... *`` block in an
+    .inp text ('' when there is none, e.g. an ``* xyzfile`` reference). For a
+    raw calculation this is the reactant that actually runs — ``calc.xyz`` may
+    be absent (hand-pasted input) or stale against the edited text."""
+    lines = inp_text.splitlines()
+    for i, ln in enumerate(lines):
+        s = ln.strip().lower()
+        if s.startswith("*") and s[1:].strip().startswith("xyz") and "xyzfile" not in s:
+            block = []
+            for follow in lines[i + 1:]:
+                if follow.strip().startswith("*"):
+                    break
+                block.append(follow)
+            return "\n".join(block)
+    return ""
+
+
+# how far two coordinates may differ and still be the same structure, in Å
+_SAME_COORD_TOL = 1e-4
+
+
+def raw_geometry_mismatch(raw_text: str, xyz: str) -> str:
+    """The sentence that says a hand-written input's own coordinates are not
+    the ones given beside it, or "".
+
+    A raw .inp without the placeholder runs verbatim (render_raw_input), so
+    coordinates handed over with it are never read. Copying a calculation and
+    pasting new coordinates into the box kept the copied text's block, and
+    the run started from the original structure with nothing saying so. A
+    WARNING: the text is the user's own input (P26) and is what runs."""
+    if GEOMETRY_PLACEHOLDER in raw_text or not (xyz or "").strip():
+        return ""
+    runs, given = parse_block(raw_coordinate_block(raw_text)), parse_block(xyz)
+    if not runs or not given:
+        return ""
+    if len(runs) != len(given):
+        detail = f"{len(runs)} atoms in the text, {len(given)} given"
+    else:
+        diff = next((k for k, (a, b) in enumerate(zip(runs, given))
+                     if a.sym.lower() != b.sym.lower()
+                     or max(abs(a.x - b.x), abs(a.y - b.y), abs(a.z - b.z)) > _SAME_COORD_TOL),
+                    None)
+        if diff is None:
+            return ""
+        a, b = runs[diff], given[diff]
+        detail = (f"atom {diff + 1} is {a.sym} {a.x:.4f} {a.y:.4f} {a.z:.4f} in the text, "
+                  f"{b.sym} {b.x:.4f} {b.y:.4f} {b.z:.4f} given")
+    return (f"The .inp text carries its own * xyz block, and it is not the "
+            f"geometry given with it ({detail}). A hand-written input runs as "
+            f"written, so ORCA starts from the text's coordinates. Replace the "
+            f"block's lines with {GEOMETRY_PLACEHOLDER} to run the given ones.")
+
+
 # ---- convenient step presets (seed values for the GUI) ------------------
 def preset_opt() -> StepConfig:
     return StepConfig(
-        kind="opt", calculation_type="TightOpt", scf_convergence="TightSCF",
+        kind="opt", calculation_type="TightOpt",
         maxcore_mb=2400, nprocs=6,
     )
 
 
 def preset_freq() -> StepConfig:
     return StepConfig(
-        kind="freq", calculation_type="Freq", scf_convergence="VeryTightSCF",
+        kind="freq", calculation_type="Freq",
         maxcore_mb=4000, nprocs=6,
     )
 
 
 def preset_ts_opt() -> StepConfig:
     return StepConfig(
-        kind="ts_opt", calculation_type="OptTS", scf_convergence="TightSCF",
+        kind="ts_opt", calculation_type="OptTS",
         maxcore_mb=2400, nprocs=6,
     )
 
 
 def preset_ts_freq() -> StepConfig:
     return StepConfig(
-        kind="ts_freq", calculation_type="Freq", scf_convergence="VeryTightSCF",
+        kind="ts_freq", calculation_type="Freq",
         maxcore_mb=4000, nprocs=6,
     )
 
 
 def preset_irc() -> StepConfig:
     return StepConfig(
-        kind="irc", calculation_type="IRC", scf_convergence="TightSCF",
+        kind="irc", calculation_type="IRC",
         maxcore_mb=2400, nprocs=6,
     )
 
@@ -662,34 +1787,34 @@ def preset_neb_ts() -> StepConfig:
     # FREQ is appended so the converged TS is verified (exactly one imaginary
     # mode). NEB-TS itself only needs gradients.
     return StepConfig(
-        kind="neb_ts", calculation_type="NEB-TS", scf_convergence="TightSCF",
+        kind="neb_ts", calculation_type="NEB-TS",
         options="FREQ", maxcore_mb=2400, nprocs=6,
     )
 
 
 def preset_tddft() -> StepConfig:
     return StepConfig(
-        kind="tddft", calculation_type="", scf_convergence="TightSCF",
+        kind="tddft", calculation_type="",
         maxcore_mb=2400, nprocs=6,
     )
 
 
 def preset_nmr() -> StepConfig:
     return StepConfig(
-        kind="nmr", calculation_type="NMR", scf_convergence="TightSCF",
+        kind="nmr", calculation_type="NMR",
         maxcore_mb=2400, nprocs=6,
     )
 
 
 def preset_general() -> StepConfig:
     return StepConfig(
-        kind="general", calculation_type="", scf_convergence="TightSCF",
+        kind="general", calculation_type="",
         maxcore_mb=2400, nprocs=6,
     )
 
 
 def preset_sp() -> StepConfig:
     return StepConfig(
-        kind="sp", calculation_type="SP", scf_convergence="TightSCF",
+        kind="sp", calculation_type="SP",
         maxcore_mb=2400, nprocs=6,
     )
