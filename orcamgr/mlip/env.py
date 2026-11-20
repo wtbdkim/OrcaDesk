@@ -25,6 +25,8 @@ import json
 import uuid
 from pathlib import Path
 
+from ..core.procutil import no_window_flags
+
 
 # Dependencies every MLIP environment needs regardless of which backend it hosts.
 COMMON_PACKAGES = ("torch", "ase")
@@ -105,13 +107,6 @@ _PROBE = (
 )
 
 
-def _no_window_flags() -> int:
-    """Avoid a console-window flash when spawning the probe on Windows."""
-    if sys.platform.startswith("win"):
-        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return 0
-
-
 def probe_env(python_path: str, timeout: float = 30.0) -> dict:
     """
     Run the user's Python interpreter and check which MLIP packages import.
@@ -147,7 +142,7 @@ def probe_env(python_path: str, timeout: float = 30.0) -> dict:
         proc = subprocess.run(
             [path, "-c", _PROBE],
             capture_output=True, text=True, timeout=timeout,
-            creationflags=_no_window_flags(),
+            creationflags=no_window_flags(),
         )
     except subprocess.TimeoutExpired:
         base["error"] = "Environment check timed out."
@@ -156,17 +151,39 @@ def probe_env(python_path: str, timeout: float = 30.0) -> dict:
         base["error"] = f"Could not launch interpreter: {e}"
         return base
 
-    lines = (proc.stdout or "").strip().splitlines()
-    try:
-        data = json.loads(lines[-1]) if lines else {}
-    except (json.JSONDecodeError, ValueError):
-        msg = (proc.stderr or "").strip() or "Interpreter did not return a valid probe result."
+    # A non-zero exit means the interpreter never ran the probe, which is not
+    # the same thing as an interpreter without torch. A venv whose base Python
+    # was uninstalled prints "No Python at ..." on stderr and exits 103 with
+    # empty stdout, and reading that as an empty package list produced the
+    # confidently wrong "Missing core packages: torch, ase" — sending the user
+    # off to pip install into an interpreter that cannot start.
+    if proc.returncode != 0:
+        msg = ((proc.stderr or "").strip() or (proc.stdout or "").strip()
+               or f"Interpreter exited with code {proc.returncode}.")
         base["error"] = msg[:500]
         return base
-    if not isinstance(data, dict):
-        # valid JSON but not the probe's object (a wrapper script or
-        # sitecustomize printing after our line) — treat like unparseable
-        base["error"] = "Interpreter did not return a valid probe result."
+
+    # Scan BACKWARDS for the probe's own object rather than demanding it be the
+    # very last line: an atexit hook, an import-time print, a wrapper script's
+    # echo or a conda banner all print after it, and a perfectly good
+    # environment was then reported as "did not return a valid probe result".
+    # Backwards so the probe's line still wins over anything printed before it.
+    lines = (proc.stdout or "").strip().splitlines()
+    data = None
+    for ln in reversed(lines):
+        ln = ln.strip()
+        if not ln.startswith("{"):
+            continue
+        try:
+            obj = json.loads(ln)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict) and "packages" in obj:
+            data = obj
+            break
+    if data is None:
+        msg = (proc.stderr or "").strip() or "Interpreter did not return a valid probe result."
+        base["error"] = msg[:500]
         return base
 
     packages = data.get("packages", {}) or {}
@@ -245,6 +262,29 @@ def env_payload_from_probe(env_id: str, name: str, probe: dict) -> dict:
         "backends": backends, "cuda": cuda, "cuda_name": cuda_name,
         "message": message,
     }
+
+
+# Which env a calc with no explicit ``mlip_env_id`` runs in. The engine only
+# ever receives {id, name, python} from Settings -- readiness is a live probe
+# result that lives on the Bridge -- so "first ready" has to be expressed as an
+# ORDER on the list handed to the engine, which then keeps taking envs[0].
+_READINESS_RANK = {"ready": 0, "checking": 1, "error": 2}
+
+
+def order_envs_by_readiness(envs: list[dict], states: dict) -> list[dict]:
+    """Order registered envs [{id, name, python}] so a **ready** one comes
+    first, honouring the documented ``mlip_env_id == "" -> first ready env``
+    contract (`StepConfig.mlip_env_id`).
+
+    ``states`` maps env id -> probe state ("ready"/"checking"/"error"); an id
+    with no probe yet ranks with "checking" -- unproven, but not disproven.
+    The sort is **stable**, so registration order breaks ties and the common
+    single-env case is untouched. Nothing is dropped: an all-error list still
+    runs (and fails) with a real interpreter and a real error message, rather
+    than the engine's "no MLIP environment registered".
+    """
+    return sorted(envs, key=lambda e: _READINESS_RANK.get(
+        states.get(e.get("id"), "checking"), 1))
 
 
 def aggregate_status(envs: list[dict]) -> dict:

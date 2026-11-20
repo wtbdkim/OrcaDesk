@@ -17,6 +17,10 @@ const assert = require("assert");
 const path = require("path");
 
 const SCFGraph = require(path.join(__dirname, "..", "..", "web", "scf_graph.js"));
+// The freq/TD-DFT/CREST trackers live in progress_panels.js, which extends the
+// SCFGraph namespace in place (same object, require() caches it) — so this side
+// effect is what makes SCFGraph.FreqTracker & co. available here.
+require(path.join(__dirname, "..", "..", "web", "progress_panels.js"));
 
 // ---------- tiny test runner ----------
 let passed = 0;
@@ -296,29 +300,36 @@ test("geo progress jumps to 1 on the OPTIMIZATION RUN DONE / CONVERGED marker", 
 // FreqTracker (numerical displacements)
 // ============================================================
 
+// Every line below is verbatim ORCA 6.1.1 NumFreq output (HF/STO-3G water,
+// corpus run demo-par-1) — including the leading tab and the "<< ... >>"
+// wrapper. The counter has no "K / N" form at all, and the header writes its
+// figure as a SUBTRACTION (3N*2 minus the six it does not run), so reading only
+// the first number gives 18 against a real 12.
 test("freq tracker advances the displacement counter monotonically", function () {
   const f = new SCFGraph.FreqTracker();
   assert.strictEqual(f.hasData(), false);
   f.push("                       * ORCA NUMERICAL FREQUENCIES *");
   assert.strictEqual(f.active, true);
   assert.strictEqual(f.mode, "numerical");
-  f.push("Number of displacements            ...        12");
-  assert.strictEqual(f.total, 12);
-  f.push("The calculation will be done for displacement    3 /   12");
+  f.push("Number of displacements        ... 18 - 6");
+  assert.strictEqual(f.total, 12, "the header's subtraction is the real total");
+  f.push("	<< Calculating gradient on displaced geometry   3 (of  12) >>");
   assert.strictEqual(f.cur, 3);
   assert.strictEqual(f.progress(), 3 / 12);
-  f.push("The calculation will be done for displacement    6 /   12");
+  f.push("	<< Calculating gradient on displaced geometry   6 (of  12) >>");
   assert.strictEqual(f.cur, 6);
-  // a re-seen earlier displacement (log replay) must never move the counter back
-  f.push("The calculation will be done for displacement    3 /   12");
+  // -nprocs > 1 finishes displacements OUT OF ORDER (the real run prints
+  // 2, 4, 1, 3), and a log replay re-sends old lines: the counter is a
+  // high-water mark, never a last-wins assignment
+  f.push("	<< Calculating gradient on displaced geometry   3 (of  12) >>");
   assert.strictEqual(f.cur, 6);
   assert.strictEqual(f.progress(), 6 / 12);
 });
 
 test("freq progress caps at 0.999 while the last displacement runs, then 1 after VIBRATIONAL FREQUENCIES", function () {
   const f = new SCFGraph.FreqTracker();
-  f.push("Number of displacements            ...        10");
-  f.push("The calculation will be done for displacement   10 /   10");
+  f.push("Number of displacements        ... 16 - 6");
+  f.push("	<< Calculating gradient on displaced geometry  10 (of  10) >>");
   assert.strictEqual(f.cur, 10);
   assert.strictEqual(f.total, 10);
   // cur/total == 1 but progress() must stay strictly below 1 (0.999 cap):
@@ -385,6 +396,107 @@ test("uppercase boot banner activates the analytical chain and parses the nuclei
   assert.strictEqual(f.aStage, "cpscf");
 });
 
+test("derivative-integral BATCH lines turn the nuclei count into N/total", function () {
+  // real ORCA 6.1.1 shape (0-based atom indices, one atom per batch here)
+  const f = new SCFGraph.FreqTracker();
+  f.push("GEOMETRIC PERTURBATIONS (144 nuclei)");
+  assert.strictEqual(f._curSub(), "144 nuclei");   // stage just entered, nothing done
+  f.push("BATCH   0: Atoms    0 -    0 (  3 perturbations)");
+  assert.strictEqual(f._curSub(), "144 nuclei");   // batch 0 only STARTED
+  f.push("   => RI-J derivative integrals                    ... done (    18.9 sec)");
+  f.push("BATCH   1: Atoms    1 -    1 (  3 perturbations)");
+  assert.strictEqual(f._curSub(), "1/144 nuclei");
+  f.push("BATCH   2: Atoms    2 -    2 (  3 perturbations)");
+  assert.strictEqual(f._curSub(), "2/144 nuclei");
+  // a re-seen batch line never moves the count backwards
+  f.push("BATCH   1: Atoms    1 -    1 (  3 perturbations)");
+  assert.strictEqual(f._curSub(), "2/144 nuclei");
+  // leaving the stage completes it: the frozen row reads the plain total
+  f.push("                      ORCA SCF RESPONSE CALCULATION");
+  assert.strictEqual(f.aStage, "cpscf");
+  assert.strictEqual(f.subs[0], "144 nuclei");
+});
+
+test("a multi-atom batch credits its whole atom range", function () {
+  const f = new SCFGraph.FreqTracker();
+  f.push("GEOMETRIC PERTURBATIONS (12 nuclei)");
+  f.push("BATCH   0: Atoms    0 -    3 ( 12 perturbations)");
+  f.push("BATCH   1: Atoms    4 -    7 ( 12 perturbations)");
+  assert.strictEqual(f._curSub(), "4/12 nuclei");
+  f.push("BATCH   2: Atoms    8 -   11 ( 12 perturbations)");
+  assert.strictEqual(f._curSub(), "8/12 nuclei");
+});
+
+test("BATCH lines outside the integrals stage never touch the count", function () {
+  const f = new SCFGraph.FreqTracker();
+  f.push("GEOMETRIC PERTURBATIONS (6 nuclei)");
+  f.push("                      ORCA SCF RESPONSE CALCULATION");
+  f.push("BATCH   3: Atoms    3 -    3 (  3 perturbations)");
+  assert.strictEqual(f.aStage, "cpscf");
+  assert.strictEqual(f.atomsDone, 6);   // frozen complete when the stage was left
+  assert.strictEqual(f.batchIdx, -1);
+});
+
+test("an OptTS initial Hessian is drawn as the Hessian alone, not as a frequency job", function () {
+  // real ORCA 6.1.1 OptTS (Calc_Hess true) order: the Hessian runs INSIDE
+  // cycle 1 and prints a THERMOCHEMISTRY block, but no frequency table
+  const f = new SCFGraph.FreqTracker();
+  f.push("         *                GEOMETRY OPTIMIZATION CYCLE   1            *");
+  f.push("GEOMETRIC PERTURBATIONS (16 nuclei)");
+  f.push("SHARK CP-SCF DRIVER");
+  assert.strictEqual(f.prestep, true);
+  assert.strictEqual(f.title(), "Initial Hessian");
+  let html = SCFGraph.renderFreqProgress(f);
+  assert.ok(html.includes("Initial Hessian"), "titled as the Hessian");
+  assert.ok(!html.includes("Normal modes") && !html.includes("Thermochemistry"),
+            "no frequency stages listed after the Hessian");
+  f.push("SCF HESSIAN");
+  f.push("THERMOCHEMISTRY AT 298.15K");
+  assert.strictEqual(f.finished, true, "past the Hessian the pre-step is complete");
+  assert.strictEqual(f.aIdx, 2, "the chain never walks into the frequency stages");
+  f.push("         *                GEOMETRY OPTIMIZATION CYCLE   2            *");
+  assert.strictEqual(f.active, false, "the next cycle clears the panel");
+  assert.strictEqual(f.prestep, false);
+});
+
+test("an opt_freq's frequencies after convergence stay a frequency job", function () {
+  const f = new SCFGraph.FreqTracker();
+  f.push("         *                GEOMETRY OPTIMIZATION CYCLE   7            *");
+  f.push("                    ***        THE OPTIMIZATION HAS CONVERGED     ***");
+  f.push("                 *** FINAL ENERGY EVALUATION AT THE STATIONARY POINT ***");
+  f.push("GEOMETRIC PERTURBATIONS (13 nuclei)");
+  f.push("                                *** OPTIMIZATION RUN DONE ***");
+  f.push("SCF HESSIAN");
+  f.push("VIBRATIONAL FREQUENCIES");
+  assert.strictEqual(f.prestep, false);
+  assert.strictEqual(f.title(), "Analytical frequencies");
+  assert.strictEqual(f.aStage, "freq");
+});
+
+test("an IRC's InitHess is drawn as the initial Hessian, not as a frequency job", function () {
+  // real ORCA 6.1.1 IRC (InitHess calc_anfreq): the IRC header precedes the
+  // Hessian, and the walk's banner clears it
+  const f = new SCFGraph.FreqTracker();
+  f.push("                   Intrinsic Reaction Coordinate Calculation");
+  f.push("GEOMETRIC PERTURBATIONS (16 nuclei)");
+  assert.strictEqual(f.prestep, true);
+  assert.strictEqual(f.title(), "Initial Hessian");
+  const html = SCFGraph.renderFreqProgress(f);
+  assert.ok(!html.includes("Normal modes"), "no frequency stages listed");
+  f.push("SCF HESSIAN");
+  f.push("THERMOCHEMISTRY AT 298.15K");
+  assert.strictEqual(f.finished, true);
+  f.push("                              FORWARD IRC");
+  assert.strictEqual(f.active, false, "the walk clears the panel");
+});
+
+test("a Hessian recomputed in a later cycle names that cycle", function () {
+  const f = new SCFGraph.FreqTracker();
+  f.push("         *                GEOMETRY OPTIMIZATION CYCLE   5            *");
+  f.push("GEOMETRIC PERTURBATIONS (4 nuclei)");
+  assert.strictEqual(f.title(), "Hessian · optimization cycle 5");
+});
+
 // ============================================================
 // ETA: real estimator + bucket boundaries
 // ============================================================
@@ -406,7 +518,7 @@ test("geo ETA becomes available (non-stale) on a clean monotone worst-ratio seri
   assert.ok(["high", "med", "low"].indexOf(eta.conf) >= 0, "conf should be a fresh estimate, got " + eta.conf);
   assert.ok(eta.remainingSteps > 0 && eta.remainingSteps < 5, "remaining ~1 step, got " + eta.remainingSteps);
   assert.ok(eta.etaMs != null && eta.etaMs > 0 && eta.etaMs < 45000, "etaMs ~10s, got " + eta.etaMs);
-  const html = SCFGraph.renderGeoProgress(g, "");
+  const html = SCFGraph.renderGeoProgress(g);
   assert.ok(html.includes("more step"), "ETA line should render the remaining-steps text");
   assert.ok(html.includes("roughly under a minute left"), "a ~10s ETA falls in the first bucket");
 });
@@ -425,7 +537,7 @@ test("ETA bucket boundaries: 45s / 8m / 50m / 5h / 24h map to the documented coa
     [24 * 3600 * 1000, "a day or more"],
   ];
   cases.forEach(function (c) {
-    const html = SCFGraph.renderGeoProgress(geoWithStubbedEta(c[0]), "");
+    const html = SCFGraph.renderGeoProgress(geoWithStubbedEta(c[0]));
     assert.ok(
       html.includes("roughly " + c[1] + " left"),
       c[0] + " ms should render bucket '" + c[1] + "'"
@@ -434,7 +546,7 @@ test("ETA bucket boundaries: 45s / 8m / 50m / 5h / 24h map to the documented coa
 });
 
 test("ETA line omits the time bucket when etaMs is unknown but still shows remaining steps", function () {
-  const html = SCFGraph.renderGeoProgress(geoWithStubbedEta(null), "");
+  const html = SCFGraph.renderGeoProgress(geoWithStubbedEta(null));
   assert.ok(!html.includes("roughly"), "no bucket text without an etaMs");
   assert.ok(html.includes("~5 more steps"), "remaining-steps count still shown");
 });
@@ -449,7 +561,7 @@ test("renderSCFProgress returns an HTML string and never contains '100%' mid-con
     scfIterLine(1, "-100.0000000000", "-1.00e-02"),
     scfIterLine(2, "-100.0100000000", "-1.00e-05"),
   ]);
-  const html = SCFGraph.renderSCFProgress(t, "TightSCF", "");
+  const html = SCFGraph.renderSCFProgress(t, "TightSCF");
   assert.strictEqual(typeof html, "string");
   assert.ok(html.includes("SCF convergence 50%"));
   assert.ok(html.includes("width:50%"));
@@ -461,7 +573,7 @@ test("renderSCFProgress prefixes the geometry step label during an optimization"
   const t = new SCFGraph.SCFTracker();
   t.push("        *                GEOMETRY OPTIMIZATION CYCLE   3            *");
   t.push(scfIterLine(1, "-100.0000000000", "-1.00e-02"));
-  const html = SCFGraph.renderSCFProgress(t, "TightSCF", "");
+  const html = SCFGraph.renderSCFProgress(t, "TightSCF");
   assert.ok(html.includes("Geometry step 3"));
 });
 
@@ -469,7 +581,7 @@ test("renderGeoProgress never contains '100%' before convergence, and shows it o
   const g = new SCFGraph.GeoTracker();
   feed(g, geoCycleBlock(1, fiveRows("0.0140882096")));
   feed(g, geoCycleBlock(2, fiveRows("0.0050000000")));
-  const html = SCFGraph.renderGeoProgress(g, "");
+  const html = SCFGraph.renderGeoProgress(g);
   assert.strictEqual(typeof html, "string");
   assert.ok(html.includes("Optimization"));
   assert.ok(html.includes("criteria met"));
@@ -477,7 +589,7 @@ test("renderGeoProgress never contains '100%' before convergence, and shows it o
   assert.ok(!html.includes("100%"), "must not claim 100% before all criteria are met");
 
   g.push("                    ***  OPTIMIZATION RUN DONE  ***");
-  const doneHtml = SCFGraph.renderGeoProgress(g, "");
+  const doneHtml = SCFGraph.renderGeoProgress(g);
   assert.ok(doneHtml.includes("Optimization complete"));
   assert.ok(doneHtml.includes("100%"));
   assert.ok(doneHtml.includes("width:100%"));
@@ -485,8 +597,8 @@ test("renderGeoProgress never contains '100%' before convergence, and shows it o
 
 test("renderFreqProgress floors the percentage so the 0.999 cap never displays as 100%", function () {
   const f = new SCFGraph.FreqTracker();
-  f.push("Number of displacements            ...        10");
-  f.push("The calculation will be done for displacement   10 /   10");
+  f.push("Number of displacements        ... 16 - 6");
+  f.push("	<< Calculating gradient on displaced geometry  10 (of  10) >>");
   const html = SCFGraph.renderFreqProgress(f);
   assert.strictEqual(typeof html, "string");
   assert.ok(html.includes("99%"), "floor(0.999 * 100) = 99");
@@ -751,11 +863,6 @@ test("the CREST meta line carries the echoed solvent and NCI mode", function () 
             "method · solvent · NCI · cores on the meta line");
 });
 
-// ---------- summary ----------
-console.log("");
-console.log(passed + " passed, " + failed + " failed");
-if (failed > 0) process.exitCode = 1;
-
 test("geo tracker: post-opt stage reads complete after ORCA TERMINATED NORMALLY (re-seeded DONE calc)", function () {
   const g = new SCFGraph.GeoTracker();
   feed(g, geoCycleBlock(1, fiveRows("0.0140882096")));
@@ -767,3 +874,265 @@ test("geo tracker: post-opt stage reads complete after ORCA TERMINATED NORMALLY 
   g.push("                             ****ORCA TERMINATED NORMALLY****");
   assert.strictEqual(g.postDone, true, "terminated -> the post-opt stage is complete");
 });
+
+// ---------- IRC ----------
+// Real ORCA 6.1.1 IRC output (B3LYP-D3/cc-pVTZ, 16 atoms): the settings echo,
+// a converged forward walk, and a backward walk still running.
+const IRC_OUT = [
+  "                   Intrinsic Reaction Coordinate Calculation",
+  "Max. no of cycles        MaxIter    .... 40",
+  "Direction                           .... Forward and backward",
+  "         *                          FORWARD IRC                      *",
+  "Iteration    E(Eh)      dE(kcal/mol)  max(|G|)   RMS(G) ",
+  "Convergence thresholds                0.002000  0.000500            ",
+  "    0     -2807.804492   -0.767014    0.006621  0.001844",
+  "    1     -2807.804737   -0.920972    0.005764  0.001396",
+  "   12     -2807.806381   -1.952715    0.001833  0.000362",
+  "",
+  "                      ***********************HURRAY********************",
+  "                      ***            THE IRC HAS CONVERGED          ***",
+  "         *                          BACKWARD IRC                     *",
+  "Iteration    E(Eh)      dE(kcal/mol)  max(|G|)   RMS(G) ",
+  "Convergence thresholds                0.002000  0.000500            ",
+  "    0     -2807.805680   -1.512565    0.017678  0.003494",
+  "    3     -2807.821680   -11.552961    0.035104  0.007293",
+];
+
+test("irc tracker reads both directions' rows, thresholds and settings", function () {
+  const t = new SCFGraph.IrcTracker();
+  IRC_OUT.forEach(l => t.push(l));
+  assert.strictEqual(t.maxIter, 40);
+  assert.ok(t.wantF && t.wantB);
+  assert.strictEqual(t.tolMaxG, 0.002);
+  assert.strictEqual(t.tolRmsG, 0.0005);
+  assert.deepStrictEqual(t.F.pts.map(p => p.i), [0, 1, 12]);
+  assert.strictEqual(t.F.done, true, "the forward walk converged");
+  assert.deepStrictEqual(t.B.pts.map(p => p.dE), [-1.512565, -11.552961]);
+  assert.strictEqual(t.B.done, false);
+  assert.strictEqual(t.dir, "B");
+});
+
+test("irc progress: a converged forward is half, the backward counts its steps", function () {
+  const t = new SCFGraph.IrcTracker();
+  IRC_OUT.forEach(l => t.push(l));
+  assert.ok(Math.abs(t.progress() - (1 + 2 / 40) / 2) < 1e-9, String(t.progress()));
+  t.push("IRC PATH SUMMARY");
+  assert.strictEqual(t.progress(), 1);
+});
+
+test("irc rows are read only under a direction banner, and a replay does not double them", function () {
+  const t = new SCFGraph.IrcTracker();
+  // an SCF-looking five-number line before any banner is not a step
+  t.push("    0     -2807.804492   -0.767014    0.006621  0.001844");
+  assert.strictEqual(t.hasData(), false);
+  IRC_OUT.forEach(l => t.push(l));
+  IRC_OUT.forEach(l => t.push(l));
+  assert.strictEqual(t.F.pts.length, 3);
+  assert.strictEqual(t.B.pts.length, 2);
+  // an SCF iteration row has more columns and never matches
+  t.push("  1  -2807.79123456789   0.000000000000  0.00133  0.00004  0.1000  0.7000");
+  assert.strictEqual(t.B.pts.length, 2);
+});
+
+test("irc forward-only run is done when the forward walk converges", function () {
+  const t = new SCFGraph.IrcTracker();
+  ["Intrinsic Reaction Coordinate Calculation",
+   "Max. no of cycles        MaxIter    .... 100",
+   "Direction                           .... Forward",
+   "         *                          FORWARD IRC                      *",
+   "Convergence thresholds                0.002000  0.000500            ",
+   "    0     -1.0   -0.5    0.006621  0.001844",
+   "                      ***            THE IRC HAS CONVERGED          ***",
+  ].forEach(l => t.push(l));
+  assert.ok(t.wantF && !t.wantB);
+  assert.strictEqual(t.progress(), 0.99, "held under 1 until the summary");
+});
+
+test("a Hessian inside an IRC or an optimization is remembered after its chain resets", function () {
+  const irc = new SCFGraph.FreqTracker();
+  ["Intrinsic Reaction Coordinate Calculation",
+   "                 ORCA NUMERICAL FREQUENCIES",
+   "Number of displacements        ... 48 - 3",
+  ].forEach(l => irc.push(l));
+  assert.ok(irc.preHessian(), "the IRC's initial Hessian is a pre-step");
+  irc.push("         *                          FORWARD IRC                      *");
+  assert.ok(!irc.hasData(), "the chain itself is wiped");
+  assert.ok(irc.preHessian(), "but that it ran is not");
+
+  const ts = new SCFGraph.FreqTracker();
+  ts.push("*                GEOMETRY OPTIMIZATION CYCLE   1            *");
+  ts.push("GEOMETRIC PERTURBATIONS (16 nuclei)");
+  assert.ok(ts.preHessian());
+  ts.push("*                GEOMETRY OPTIMIZATION CYCLE   2            *");
+  assert.ok(ts.preHessian());
+
+  const plain = new SCFGraph.FreqTracker();
+  plain.push("                 ORCA NUMERICAL FREQUENCIES");
+  assert.ok(!plain.preHessian(), "a frequency job is not a pre-step");
+});
+
+// ---------------------------------------------------------------------------
+// GeoTracker over a relaxed surface scan: one optimization per point, every
+// point's cycles numbered from 1 again (lines as ORCA 6.1.1 prints them)
+// ---------------------------------------------------------------------------
+
+const SCAN_HEAD = [
+  "There is 1 parameter to be scanned.",
+  "There will be   3 constrained geometry optimizations.",
+];
+/** @param {number} n */
+function scanBanner(n) {
+  return ["         *               RELAXED SURFACE SCAN STEP   " + n + "               *"];
+}
+const OPT_DONE = ["                                *** OPTIMIZATION RUN DONE ***"];
+
+test("a scan point's cycles do not overwrite the previous point's chart", function () {
+  const g = new SCFGraph.GeoTracker();
+  feed(g, SCAN_HEAD);
+  feed(g, scanBanner(1));
+  feed(g, geoCycleBlock(1, fiveRows("0.0140000000"), 10));
+  feed(g, geoCycleBlock(2, fiveRows("0.0100000000"), 10));
+  feed(g, geoCycleBlock(3, fiveRows("0.0050000000"), 10));
+  feed(g, OPT_DONE);
+  feed(g, scanBanner(2));
+  feed(g, geoCycleBlock(1, fiveRows("0.0200000000"), 20));
+  assert.strictEqual(g.scanStep, 2);
+  assert.strictEqual(g.scanTotal, 3);
+  assert.strictEqual(g.steps.length, 1, "the chart is the current point's");
+  assert.strictEqual(g.steps[0].maxGrad, 0.02, "point 2's cycle 1, not point 1's");
+  assert.strictEqual(g.totalCycles(), 4, "three cycles of point 1 plus one of point 2");
+});
+
+test("a finished scan point is not the finished run", function () {
+  const g = new SCFGraph.GeoTracker();
+  feed(g, SCAN_HEAD);
+  feed(g, scanBanner(1));
+  feed(g, geoCycleBlock(1, fiveRows("0.0140000000"), 10));
+  feed(g, OPT_DONE);
+  assert.strictEqual(g.done, false);
+  const p1 = g.progress();
+  assert.ok(Math.abs(p1 - 1 / 3) < 1e-9, "one point of three, got " + p1);
+  feed(g, scanBanner(2)); feed(g, geoCycleBlock(1, fiveRows("0.0140000000"), 10)); feed(g, OPT_DONE);
+  feed(g, scanBanner(3)); feed(g, geoCycleBlock(1, fiveRows("0.0140000000"), 10));
+  assert.ok(g.progress() < 1);
+  feed(g, OPT_DONE);
+  assert.strictEqual(g.done, true, "the last point finishing is the run finishing");
+  assert.strictEqual(g.progress(), 1);
+});
+
+test("the same scan banner seen twice is not a new point", function () {
+  const g = new SCFGraph.GeoTracker();
+  feed(g, SCAN_HEAD);
+  feed(g, scanBanner(1));
+  feed(g, geoCycleBlock(1, fiveRows("0.0140000000")));
+  feed(g, scanBanner(1));
+  assert.strictEqual(g.steps.length, 1);
+});
+
+test("a scan's ETA is the points left at the mean point time, once one has finished", function () {
+  const g = new SCFGraph.GeoTracker();
+  feed(g, SCAN_HEAD);
+  feed(g, scanBanner(1));
+  feed(g, geoCycleBlock(1, fiveRows("0.0140000000"), 30));
+  assert.strictEqual(g.estimateETA(), null, "no point finished yet: nothing to go on");
+  feed(g, geoCycleBlock(2, fiveRows("0.0100000000"), 30));
+  feed(g, OPT_DONE);
+  feed(g, scanBanner(2));
+  feed(g, geoCycleBlock(1, fiveRows("0.0140000000"), 20));
+  const eta = g.estimateETA();
+  assert.ok(eta, "an estimate once point 1 has finished");
+  // point 1 took 60 s: point 3 is 60 s, point 2 has spent 20 of its 60
+  assert.strictEqual(Math.round(eta.etaMs / 1000), 100);
+  assert.strictEqual(eta.remainingSteps, null);
+  assert.strictEqual(eta.remainingPoints, 2);
+});
+
+test("an ordinary optimization is untouched by the scan bookkeeping", function () {
+  const g = new SCFGraph.GeoTracker();
+  feed(g, geoCycleBlock(1, fiveRows("0.0140000000")));
+  feed(g, geoCycleBlock(2, fiveRows("0.0100000000")));
+  assert.strictEqual(g.scanTotal, 0);
+  assert.strictEqual(g.totalCycles(), 2);
+  feed(g, OPT_DONE);
+  assert.strictEqual(g.done, true);
+});
+
+test("an empty SCF setting is the tier ORCA picks for the job", function () {
+  // measured on ORCA 6.1.1 (TolE): ORCAdesk writes TightOpt for opt /
+  // opt_freq, and TightOpt (Freq or not) runs the SCF at 1e-9; OptTS, IRC
+  // and NEB at TightSCF (1e-8); a single point, frequencies and TD-DFT stay
+  // at NormalSCF (1e-6)
+  assert.strictEqual(SCFGraph.targetFor(SCFGraph.tierFor("", "opt")), 1e-9);
+  assert.strictEqual(SCFGraph.targetFor(SCFGraph.tierFor("", "opt_freq")), 1e-9);
+  assert.strictEqual(SCFGraph.tierFor("", "ts_opt"), "TightSCF");
+  assert.strictEqual(SCFGraph.tierFor("", "ts_opt_freq"), "TightSCF");
+  assert.strictEqual(SCFGraph.tierFor("", "irc"), "TightSCF");
+  assert.strictEqual(SCFGraph.tierFor("", "neb_ts"), "TightSCF");
+  assert.strictEqual(SCFGraph.tierFor("", "freq"), "NormalSCF");
+  assert.strictEqual(SCFGraph.tierFor("", "sp"), "NormalSCF");
+  assert.strictEqual(SCFGraph.tierFor(undefined, "tddft"), "NormalSCF");
+  // a tier the user picked is the tier
+  assert.strictEqual(SCFGraph.tierFor("VeryTightSCF", "freq"), "VeryTightSCF");
+  assert.strictEqual(SCFGraph.tierFor("TightSCF", "opt"), "TightSCF");
+  assert.strictEqual(SCFGraph.targetFor(SCFGraph.tierFor("", "freq")), 1e-6);
+});
+
+// verbatim from ORCA 6.1.1 outputs: the SCF settings block's target, and the
+// geometry optimizer's own (flush-left) energy criterion, which is NOT it
+const SCF_TOLE_9 = " Energy Change          TolE            ....  1.000e-09 Eh";
+const SCF_TOLE_8 = " Energy Change          TolE            ....  1.000e-08 Eh";
+const GEO_TOLE = "Energy Change            TolE     ....  5.0000e-06 Eh";
+
+test("the SCF target is what ORCA printed in the SCF settings block", function () {
+  const t = new SCFGraph.SCFTracker();
+  assert.strictEqual(t.tolE, null);
+  // before the line: the kind's expected tier
+  assert.strictEqual(t.target("", "opt"), 1e-9);
+  assert.strictEqual(t.target("", "sp"), 1e-6);
+  // a template carrying its own TightSCF on an opt: ORCA says 1e-8
+  assert.strictEqual(t.push(SCF_TOLE_8), true, "a new target is a change to repaint");
+  assert.strictEqual(t.tolE, 1e-8);
+  assert.strictEqual(t.target("", "opt"), 1e-8);
+  // ...and it outranks even an explicit setting (the text is what ran)
+  assert.strictEqual(t.target("NormalSCF", "sp"), 1e-8);
+  assert.strictEqual(SCFGraph.scfTarget(t, "", "sp"), 1e-8);
+  assert.strictEqual(t.push(SCF_TOLE_8), false, "the same target again changes nothing");
+});
+
+test("the geometry optimizer's TolE is not the SCF target", function () {
+  const t = new SCFGraph.SCFTracker();
+  assert.strictEqual(t.push(GEO_TOLE), false);
+  assert.strictEqual(t.tolE, null);
+  assert.strictEqual(t.target("", "freq"), 1e-6);
+});
+
+test("the printed target survives new SCF blocks and optimization cycles", function () {
+  const t = new SCFGraph.SCFTracker();
+  t.push(SCF_TOLE_9);
+  t.push("   1   -76.3000000000   0.000000000000  0.01  0.02");
+  t.push("   2   -76.4000000000  -1.00e-01  0.01  0.02");
+  t.push("*** GEOMETRY OPTIMIZATION CYCLE   2 ***");      // ORCA does not reprint it per cycle
+  t.push("   1   -76.4100000000  -1.00e-03  0.01  0.02");
+  assert.strictEqual(t.tolE, 1e-9);
+  assert.strictEqual(t.target("", "sp"), 1e-9);
+  // a later job in the same output that prints its own block takes over
+  t.push(SCF_TOLE_8);
+  assert.strictEqual(t.target("", "opt"), 1e-8);
+});
+
+test("progress runs to the printed target, not the guessed one", function () {
+  const t = new SCFGraph.SCFTracker();
+  t.push(SCF_TOLE_9);
+  t.push("   1   -76.3000000000   0.000000000000  0.01  0.02");
+  t.push("   2   -76.4000000000  -1.00e-01  0.01  0.02");
+  t.push("   3   -76.4000000000  -1.00e-08  0.01  0.02");
+  // 1e-8 is met at TightSCF but only 7/8 of the way to 1e-9
+  assert.strictEqual(t.progress(1e-8), 1);
+  assert.ok(Math.abs(t.progress(t.target("", "opt")) - 7 / 8) < 1e-9);
+  assert.ok(SCFGraph.renderSCFProgress(t, "TightSCF").indexOf("88%") >= 0);
+});
+
+// ---------- summary ----------
+console.log("");
+console.log(passed + " passed, " + failed + " failed");
+if (failed > 0) process.exitCode = 1;

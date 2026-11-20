@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ORCAdesk</title>
+<!-- The design pulls Inter and JetBrains Mono from Google Fonts; this is the
+     offline copy of that link, and it has to come first -- see web/fonts/fonts.css. -->
+<link rel="stylesheet" href="../fonts/fonts.css">
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!--
+  ORCAdesk — notebook front-end, the desktop window's only UI.
+
+  Written against the Bridge (orcamgr/gui/bridge.py). The only files it
+  borrows from web/ are ../scf_graph.js and ../progress_panels.js, which are
+  pure trackers and renderers with no DOM of their own, and the bundled
+  ../fonts/ and ../vendor/ (3Dmol, loaded on first use by mvwin.js).
+
+  Markup and stylesheet are the approved design, carried over as-is: the class
+  vocabulary here IS the design's, so app.css applies to it verbatim and the
+  two can be diffed element for element (tools/uispec.py / uidiff.py).
+  See DESIGN.md §17.
+-->
+<div class="app" data-view="jobs">
+
+  <header class="topbar">
+    <div class="brand">
+      <h1>ORCAdesk</h1>
+      <span class="ver-badge" id="ver"></span>
+    </div>
+
+    <button class="studypick" id="ws-pick" type="button" title="Change the workspace folder">
+      <span class="path" id="ws-path">—</span>
+      <span aria-hidden="true" style="color:var(--muted-foreground)">▾</span>
+    </button>
+
+    <span class="sp"></span>
+    <!-- display:contents so each pill is a flex item of the top bar itself:
+         a wrapper would blockify them into one box and change their metrics -->
+    <span id="pills" style="display:contents"></span>
+
+    <div class="tools">
+      <div class="seg viewseg" role="group" aria-label="View">
+        <button type="button" data-view="jobs" aria-pressed="true">Jobs</button>
+        <button type="button" data-view="results" aria-pressed="false">Results</button>
+      </div>
+      <button class="iconbtn" id="theme-toggle" type="button"
+              aria-label="Toggle light and dark theme">☽</button>
+      <button class="btn" id="open-settings" type="button">Settings</button>
+    </div>
+  </header>
+
+  <!-- the queue, always on screen: what is running never leaves the window -->
+  <aside class="rail">
+    <div class="railscroll" id="rail"></div>
+    <div class="railfoot">
+      <div class="runrow">
+        <!-- three, small: the strip only runs the queue. Clear all is the
+             queue window's (DESIGN.md §17.2) -->
+        <button class="btn btn-xs btn-primary" id="btn-run" type="button">Run queue</button>
+        <button class="btn btn-xs btn-ghost" id="btn-stop" type="button" disabled>Stop after current</button>
+        <button class="btn btn-xs btn-danger" id="btn-cancel" type="button" disabled>Cancel</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- one cell per calculation: its structure, its chart, its output -->
+  <main class="stream" id="stream" aria-label="Calculations">
+    <div class="streaminner" id="streaminner"></div>
+  </main>
+
+  <!-- the parsed result, as a report -->
+  <div class="reswin" id="reswin" aria-label="Results"></div>
+</div>
+
+<!-- The queue window (?win=queue) draws this instead of .app: the queue
+     editor, filled by qed.js. The sheet, modal, viewer and toasts below are
+     shared by both windows. See DESIGN.md §17.6. -->
+<div class="qed" id="qed" hidden></div>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="sheet" id="settings" role="dialog" aria-modal="true" aria-label="Settings" hidden></aside>
+
+<div class="modalscrim" id="modal-scrim" hidden></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true" hidden>
+  <h2 id="modal-title">…</h2>
+  <div id="modal-body"></div>
+  <div class="modal-actions" id="modal-foot"></div>
+</div>
+<div class="modalscrim" id="mv-scrim" hidden></div>
+<div class="mvwin" id="mvwin" role="dialog" aria-modal="true" aria-labelledby="mv-title" hidden>
+  <div class="mvhead">
+    <span class="t" id="mv-title">Structure viewer</span>
+    <span class="sp"></span>
+    <div class="seg" role="group" aria-label="Viewer mode">
+      <button type="button" aria-pressed="true" data-mvmode="frames">Structures</button>
+      <button type="button" aria-pressed="false" data-mvmode="volume">Orbitals &amp; maps</button>
+    </div>
+    <button class="iconbtn" type="button" id="mv-close" aria-label="Close the viewer">×</button>
+  </div>
+  <div class="mvstage" id="mv-stage">
+    <!-- Two renderers, one stage: mol.js paints the frames (so drag, pick and
+         measure are the same here as in every other stage), 3Dmol draws the
+         isosurfaces into .mvgl and is loaded only when one is asked for.
+         .mvgl is the app's ONE WebGL box: the Visual panel draws surfaces in
+         place and borrows it by re-parenting, so it lives here but does not
+         belong to this window. See volumeView in mvwin.js. -->
+    <canvas class="molcv" id="mv-canvas" data-interactive="1"
+      aria-label="Structure viewer. Drag to turn, Shift+drag to move, scroll to zoom; click
+        an atom or bond for its numbers, right-drag between two atoms to measure; 1 to 4
+        change the display type, H hides hydrogens, L labels the atoms, 0 resets."></canvas>
+    <div class="mvgl" id="mv-gl" hidden></div>
+    <div class="mvlegend" id="mv-legend"></div>
+    <span class="vizcap" id="mv-cap"></span>
+  </div>
+  <div class="mvbar" id="mv-frames">
+    <button class="btn btn-sm btn-ghost" type="button" id="mv-prev" aria-label="Previous frame">‹</button>
+    <span class="mvcount" id="mv-count">—</span>
+    <button class="btn btn-sm btn-ghost" type="button" id="mv-next" aria-label="Next frame">›</button>
+    <span class="sp"></span>
+    <button class="btn btn-sm" type="button" id="mv-fav" aria-pressed="false">☆ Favourite <kbd>F</kbd></button>
+    <button class="btn btn-sm btn-ghost" type="button" id="mv-favonly" aria-pressed="false">Favourites only</button>
+    <button class="btn btn-sm btn-ghost" type="button" id="mv-export">Export favourites…</button>
+    <button class="btn btn-sm btn-ghost" type="button" id="mv-copyxyz">Copy .xyz</button>
+    <button class="btn btn-sm btn-ghost" type="button" id="mv-display">Display</button>
+  </div>
+  <div class="mvbar" id="mv-volume" hidden>
+    <label class="lb" for="mv-vol">Surface</label>
+    <select id="mv-vol"><option>…</option></select>
+    <label class="lb" for="mv-iso">Isovalue</label>
+    <input id="mv-iso" class="mono" type="number" value="0.0500" step="0.005" min="0.0001" style="width:96px">
+    <span class="sp"></span>
+    <span class="mvramp" id="mv-ramp" aria-hidden="true" hidden></span>
+    <span class="hint" id="mv-ramphint" style="margin:0" hidden>− &nbsp; 0 &nbsp; +</span>
+    <button class="btn btn-sm" type="button" id="mv-plot">Plot</button>
+  </div>
+</div>
+
+<div class="toastwrap" id="toastwrap" aria-live="polite"></div>
+
+<!-- Borrowed as-is: pure convergence trackers and chart/step renderers, no DOM
+     of their own. progress_panels.js assigns onto the SCFGraph namespace that
+     scf_graph.js publishes, so it must load immediately after it. -->
+<script src="../scf_graph.js"></script>
+<script src="../progress_panels.js"></script>
+
+<script src="mol.js"></script>
+<script src="charts.js"></script>
+<script src="boot.js"></script>
+<script src="rail.js"></script>
+<script src="build.js"></script>
+<script src="stream.js"></script>
+<script src="viewer.js"></script>
+<script src="mvwin.js"></script>
+<script src="results.js"></script>
+<script src="settings.js"></script>
+<script src="qed.js"></script>
+</body>
+</html>

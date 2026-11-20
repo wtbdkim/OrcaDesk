@@ -247,6 +247,29 @@ def test_build_crest_argv_preset_and_model_reject_bad_values():
     assert argv[argv.index("--alpb") + 1] == "thf"          # bad model -> default alpb
 
 
+def test_build_crest_argv_ewin_and_threads_are_clamped():
+    # from_dict is the trust boundary for the two headline numeric knobs too:
+    # they ride the CLI verbatim (-T / --ewin), so an absurd value must be
+    # clamped rather than passed through.
+    cfg = StepConfig.from_dict({"kind": "crest_conf", "crest_threads": 999999,
+                                "crest_ewin": "1e9"})
+    assert cfg.crest_threads == 1024 and cfg.crest_ewin == 1000.0
+    argv = build_crest_argv(cfg, 0, 1)
+    assert argv[argv.index("-T") + 1] == "1024"
+    assert argv[argv.index("--ewin") + 1] == "1000"
+
+
+def test_build_crest_argv_keeps_the_flag_when_a_value_is_junk():
+    # A non-numeric value degrades to the field default and the flag STAYS —
+    # dropping -T entirely would silently ignore the user's thread setting.
+    cfg = StepConfig.from_dict({"kind": "crest_conf", "crest_threads": "abc",
+                                "crest_ewin": None})
+    assert cfg.crest_threads == 4 and cfg.crest_ewin == 6.0
+    argv = build_crest_argv(cfg, 0, 1)
+    assert argv[argv.index("-T") + 1] == "4"
+    assert argv[argv.index("--ewin") + 1] == "6"
+
+
 # ---------------------------------------------------------------------------
 # 4. validate_result for crest_conf (P25 / P6)
 # ---------------------------------------------------------------------------
@@ -304,7 +327,7 @@ class _FakeCrestRunner:
     detached WSL script would produce, with no wsl.exe involved."""
     written_empty = False   # class flag to force a no-conformer (failed) run
 
-    def __init__(self, distro, crest_bin):
+    def __init__(self, distro):
         self.distro = distro
 
     def cancel(self): pass
@@ -330,7 +353,7 @@ class _FakeCrestRunner:
 
 def _recording_callbacks():
     logs, updates = [], []
-    cb = QueueCallbacks(log=lambda m, l: logs.append((l, m)),
+    cb = QueueCallbacks(log=lambda m, l, _calc="": logs.append((l, m)),
                         calc_update=lambda i, c: updates.append((i, c.state)))
     return cb, logs, updates
 
@@ -496,3 +519,140 @@ def test_corrupt_mid_file_frame_does_not_swallow_following_frames(tmp_path):
     assert energy == -155.1 and len(atoms) == 3
     split = split_conformer_frames(corrupt_then_valid)
     assert len(split) == 1 and split[0].startswith("3\n")
+
+
+# ---- the REAL CrestRunner tail loop (no WSL) --------------------------------
+# Every other CREST test replaces the runner with a fake, so the real monitor
+# never runs. That is how a missing import and two references to a deleted
+# helper survived in it: a NameError in front of the user, green tests behind.
+
+def test_crest_runner_reports_the_end_of_a_file(tmp_path):
+    out = tmp_path / "job.out"
+    out.write_text("one\ntwo\n", encoding="utf-8")
+    assert crest_runner_mod.CrestRunner("Ubuntu").end_position(out) > 0
+
+
+def test_crest_monitor_tails_to_the_rc_marker(tmp_path):
+    # The .rc marker is already there, so the loop drains the output once and
+    # returns the exit code -- exercising FileTailer end to end.
+    out = tmp_path / "job.out"
+    out.write_text("CREST line one\nCREST line two\n", encoding="utf-8")
+    (tmp_path / "job.crest.rc").write_text("0\n", encoding="utf-8")
+    seen: list = []
+
+    rc = crest_runner_mod.CrestRunner("Ubuntu").monitor(out, "job", on_line=seen.append)
+
+    assert rc == 0
+    assert "CREST line one" in seen and "CREST line two" in seen
+
+
+def test_crest_monitor_gives_up_when_the_job_is_definitively_gone(tmp_path, monkeypatch):
+    # The safety net: no .rc marker and WSL says the process is gone. This is
+    # the branch that still called a helper deleted in a refactor.
+    out = tmp_path / "job.out"
+    out.write_text("partial line without a newline", encoding="utf-8")
+    monkeypatch.setattr(crest_runner_mod, "_LIVENESS_EVERY", 0.0)
+    runner = crest_runner_mod.CrestRunner("Ubuntu")
+    monkeypatch.setattr(runner, "_liveness", lambda: False)
+    seen: list = []
+
+    rc = runner.monitor(out, "job", on_line=seen.append)
+
+    assert rc is None                                   # no marker to read
+    assert seen == ["partial line without a newline"]   # flushed, not swallowed
+
+
+# ---------------------------------------------------------------------------
+# A re-run must not inherit the previous attempt's files
+#
+# Folders are never deleted and a name can be reused, so a second attempt in the
+# same folder found the first one's ensemble and .out still there. The ensemble
+# was parsed as this run's result (the Results tab showed the previous
+# molecule, and the real diagnosis was replaced by "CREST did not report normal
+# termination"); the .out was replayed into the live log as this run's output,
+# and once the detached script truncated it the tailer's position was past the
+# new EOF and the first real lines were lost. The ORCA runner opens its .out "w"
+# before launching and the MLIP runner unlinks its stale JSON — this is the same
+# rule, applied to the one backend that was missing it.
+# ---------------------------------------------------------------------------
+
+def test_launch_clears_the_previous_attempts_output_and_ensemble(tmp_path, monkeypatch):
+    import orcamgr.crest.runner as runner_mod
+
+    d = tmp_path / "conf"
+    d.mkdir()
+    out = d / "conf.out"
+    stale = {
+        out: "OLD RUN line 1\nOLD RUN line 2\n",
+        d / "crest_conformers.xyz": "3\n -1.0\nO 0 0 0\nH 0 0 1\nH 0 1 0\n",
+        d / "crest_best.xyz": "3\n -1.0\nO 0 0 0\nH 0 0 1\nH 0 1 0\n",
+        d / "crest.energies": "1 -1.0\n",
+        d / "conf.crest.rc": "0\n",
+        d / "conf.crest.pid": "1234\n",
+    }
+    for p, text in stale.items():
+        p.write_text(text, encoding="utf-8")
+    script = d / "run_crest.sh"
+    script.write_text("#!/bin/bash\n", encoding="utf-8")
+
+    # the launch itself is a WSL round-trip; only the cleanup is under test
+    monkeypatch.setattr(runner_mod, "run_bash",
+                        lambda *a, **k: (0, "4242\n", ""))
+    monkeypatch.setattr(runner_mod.CrestRunner, "_read_start_time",
+                        lambda self, pid: 1, raising=False)
+
+    runner = runner_mod.CrestRunner("Ubuntu")
+    try:
+        runner.launch(script, "conf", out)
+    except Exception:
+        pass          # the WSL half is stubbed; the files are the assertion
+
+    for p in stale:
+        assert not p.exists(), f"{p.name} survived the relaunch"
+
+
+def test_a_wsl_failure_is_data_not_an_exception(monkeypatch):
+    """run_bash's siblings in the same module already catch OSError. Anything
+    escaping here lands in CrestRunner._liveness, whose whole purpose is that a
+    single transient wsl.exe failure must not abandon a healthy run — an
+    exception walks straight past that guard and FAILS (locking, P24) a job that
+    is still running fine in WSL."""
+    import subprocess
+    import orcamgr.crest.wsl as wsl_mod
+
+    def boom(*_a, **_kw):
+        raise OSError(1450, "Insufficient system resources")
+
+    monkeypatch.setattr(wsl_mod.subprocess, "run", boom)
+    rc, out, err = wsl_mod.run_bash("Ubuntu", "true")
+
+    assert rc != 0 and out == ""
+    assert "wsl-error" in err
+
+
+# ---------------------------------------------------------------------------
+# Conformer energies: a Fortran exponent, and a real 0.0
+# ---------------------------------------------------------------------------
+
+def test_a_fortran_exponent_is_read_as_a_number():
+    from orcamgr.crest.parser import _first_float
+
+    assert _first_float("  -0.765D+02  ") == pytest.approx(-76.5)
+    assert _first_float("  -76.5  ") == pytest.approx(-76.5)
+    assert _first_float("  no numbers here  ") is None
+
+
+def test_an_energy_of_exactly_zero_is_a_value_not_a_missing_one(tmp_path):
+    """`if best.energy_eh:` treated 0.0 as absent, so the result came back with
+    no final energy at all."""
+    from orcamgr.crest.parser import parse_crest_result
+
+    d = tmp_path / "z"
+    d.mkdir()
+    (d / "crest_conformers.xyz").write_text(
+        "2\n        0.00000000\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n",
+        encoding="utf-8")
+    (d / "z.out").write_text("CREST terminated normally.\n", encoding="utf-8")
+    r = parse_crest_result(str(d / "z.out"))
+
+    assert r.final_energy_eh == 0.0

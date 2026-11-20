@@ -8,7 +8,8 @@ justified in the commit body and, if it sticks, recorded here.
 
 Companion document: [`DESIGN.md`](DESIGN.md) (visual/UX principles).
 [`CLAUDE.md`](CLAUDE.md) remains the operational guide (architecture map,
-commands, workflow mechanics); this file is the *why* behind it. Where the two
+commands, workflow mechanics), with the per-subsystem detail in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); this file is the *why* behind it. Where the two
 overlap, this file is the norm and CLAUDE.md is the summary.
 
 **How to amend.** The same way this project has always grown its rules
@@ -93,16 +94,58 @@ Any fact the system needs twice is defined once and derived everywhere else:
 When the same judgment must be made from two code paths, extract it to one
 function *before* the second caller exists, not after they diverge.
 
-### P5 — Orchestrate; never bundle, never install
+### P5 — The user never needs a terminal: orchestrate, never bundle, never import
+
+ORCAdesk exists so that ORCA and the tools around it can be driven end to end
+**without a command line**. That purpose governs the rest of this principle:
+what gets shelled out, what gets computed in process, and what gets handed to
+another program are all answered by which of them leaves the user with a
+terminal open.
 
 ORCAdesk does not do the chemistry. External scientific toolchains — the ORCA
-executable, and equally the MLIP stack (PyTorch/mace/ASE) — are the user's
-own installations, invoked by shelling out. ORCAdesk never installs them,
-never imports them into its own process, and never bundles them. Core
-`requirements.txt` stays minimal (PyQt6 + PyQt6-WebEngine + psutil); optional
-features carry
-their own requirements file and degrade gracefully when absent (P17). Even
-ORCA itself is required only when a non-MLIP calc will actually run.
+executable, the MLIP stack (PyTorch/mace/ASE), the CREST binary — are invoked
+by **shelling out**: never bundled into the build, never imported into
+ORCAdesk's own process, and never installed *into* an environment the user
+manages.
+
+ORCAdesk **may provision a private copy** of a toolchain where that is fully
+scriptable — CREST's static binary into a WSL distro (`crest/installer.py`), a
+dedicated venv for an MLIP (`mlip/installer.py`). This is a convenience over
+the same shell-out boundary, not an exception to it: the copy lives in
+ORCAdesk's own writable space (`user_data_root()`, P18), the user's own
+interpreters and PATH are untouched, and the copy is reached by exactly the
+path a hand-built one would be. What is *not* scriptable stays the user's job
+and is named as a prerequisite rather than attempted — a WSL distro, a base
+Python interpreter — as is anything needing a compiler or an interactive
+session. ORCA is never provisioned: it is licensed, and its installer is
+interactive.
+
+**When a job could go either way, the terminal decides.** Analysing a result is
+ORCAdesk's own work; only *producing* one is a toolchain's — the line falls
+around what generates a wavefunction (an SCF, a gradient, a dynamics step),
+never around arithmetic on one that already exists. `core/parser.py` reads
+energies out of a `.out`, `core/plot.py` turns a `.gbw` into a cube, and `nbo/`
+computes natural orbitals from the converged wavefunction ORCA already wrote.
+Doing that last one the "orchestrating" way would mean shelling out to NBO's
+`gennbo` (separately licensed) or to PySCF/JANPA (a Python environment or a JRE
+the user has to install first) — a command line and a purchase where there was
+none. In process it is a click. What stays forbidden is unchanged: ORCAdesk
+runs no SCF of its own.
+
+**Handing work to another GUI is CLI-independence, not a retreat from it.**
+Launching Avogadro on a file ORCAdesk generated is a click; naming the file and
+leaving the user to find and open it is homework. So an external program is
+*launched*, never merely mentioned — and never in place of the in-app path,
+which is what keeps the common case from needing a second program at all. The
+user chooses which one a click goes to; ORCAdesk does not choose for them.
+
+Core `requirements.txt` stays minimal (PyQt6 + PyQt6-WebEngine + psutil +
+numpy). numpy was admitted for `nbo/`, and only after confirming the
+reconstruction needs **no integral library** — which would have pulled a
+compiled chemistry stack into the build and made this a toolchain by the back
+door. Optional features carry their own requirements file and degrade
+gracefully when absent (P17). Even ORCA itself is required only when a non-MLIP
+calc will actually run.
 
 ### P6 — Failure is data, and stays inside its blast radius
 
@@ -273,15 +316,23 @@ queue itself never dies.
 
 ### P24 — DONE is frozen; FAILED is locked; only CANCELLED re-runs
 
-A DONE calc is never recomputed (recomputing wastes hours and overwrites a
-good result on disk). A calc that fails is **locked at the moment of
-failure** — terminally inert, in the spirit of the MLIP-card lock (D41,
-§13.3): it cannot be edited, re-run, or reordered, never re-enters the run
-loop, and never appears in the overwrite/keep-existing decision. Its only
-interactions are read-only diagnosis (state badge, failure message, its
-on-disk output — P28) and **removal**. A failed result must never be
-promoted to DONE (P2, P25); retrying means building a new calculation, not
-resurrecting the failed one. CANCELLED calcs (a deliberate user stop — P22,
+A DONE calc is never recomputed **implicitly** (recomputing wastes hours
+and overwrites a good result on disk). A calc that fails is **locked at the
+moment of failure** — terminally inert, in the spirit of the MLIP-card lock
+(D41, §13.3): it cannot be edited or reordered, never re-enters the run
+loop on its own, and never appears in the overwrite/keep-existing decision.
+Its interactions are read-only diagnosis (state badge, failure message, its
+on-disk output — P28), **removal**, and the one explicit way back below. A
+failed result must never be promoted to DONE (P2, P25).
+
+The one explicit way back from either is putting a set (a level or MLIP
+settings) on a finished or failed block in the queue editor: an overwrite
+warning names it, and only on confirmation does the store's `rerun_calc`
+return it to PENDING with the new set, marked so that its old output is
+overwritten when it runs and is never offered or given keep-existing. What a
+failed one held BLOCKED goes back to PENDING with it. Undo restores the old
+row (and those blocked rows) only until the rerun starts; what already ran
+after it keeps its own results. CANCELLED calcs (a deliberate user stop — P22,
 not a failure) remain editable and do re-run. Only `EDITABLE_STATES`
 (pending/cancelled/blocked) may be edited or reordered, and the UI derives
 its affordances from the same rule (D64). Frozen results are reconstructed
@@ -289,8 +340,14 @@ lazily (parse-on-miss), never eagerly at startup.
 
 **Removal never touches disk.** The × control stays available in every
 state except RUNNING, but it is strictly a queue-list operation — ORCAdesk
-never deletes a calculation's workspace folder (already true of every code
-path: the app contains no file-deletion code; this makes it binding). For
+never deletes a calculation's workspace folder, and nothing on the removal
+path touches the filesystem at all. (The app is not free of file deletion in
+general: a run clears what the PREVIOUS attempt in that folder left behind —
+the MLIP worker's `vib/` scratch and stale result JSON, CREST's markers and
+ensemble, the WSL scratch directory — and the MLIP installer removes a
+half-built environment of its own before retrying that name. All of those
+delete work this app produced and is about to replace; none of them is
+reachable from ×, and no code path deletes a finished result.) For
 PENDING that is a plain removal (nothing on disk yet); removing a
 DONE/FAILED row deletes only the queue entry — the on-disk results survive,
 the unique name is freed for reuse, and calculations that referenced the
@@ -345,13 +402,14 @@ diverge (the historical failure mode of the frozen-snapshot design was a
 mid-run add that would never execute; the live walk makes it execute in
 the same run). What mutations must respect while the run flag is set:
 only `EDITABLE_STATES` rows may be added/removed/edited/reordered; the
-engine's in-flight calc (state RUNNING, plus `active_name` for the
-picked-but-not-yet-stamped window) is untouchable; `clear` still raises;
+engine's in-flight calcs (state RUNNING, plus `active_names` for the
+picked-but-not-yet-stamped window) are untouchable; `clear` still raises;
 and reference integrity is enforced at the mutation (no dangling reference
 in a mid-run add/edit, no removal/rename of a referenced parent) because
 the pre-run screen (`find_dangling_reference`) never sees a mid-run
 mutation — an unresolvable reference would FAIL (and lock, P24) the
-dependent instead of being refused up front.
+dependent instead of being refused up front. When more than one calc runs
+at a time, the same walk admits by budget instead of one-at-a-time (P57).
 
 ---
 
@@ -375,10 +433,13 @@ just the manual.
 
 Always emit `D3BJ` (or `D4`) as a separate keyword — never bare or combined
 `-D3` (ambiguous between damping schemes, and ORCA rejects combined tokens).
-`_auto_aux` adds an aux basis only in the verified cases (RI-J + def2 family
-→ `def2/J`; double hybrids/MP2 → `AutoAux`; RIJK → `def2/JK` for def2 bases,
-`AutoAux` otherwise); if the user set one, or RI is off, or an RI-J basis is
-unknown: add nothing — don't guess, let the user decide.
+`_auto_aux` adds an aux basis only where ORCA 6.1.1 aborts without one:
+double hybrids → `AutoAux` unless RI is NoRI (RI-MP2 is their default and ORCA
+picks no /C); DLPNO → `AutoAux`; MP2/CC → `AutoAux` only under an RI the user
+chose; RIJK → `def2/JK` for def2 bases, `AutoAux` otherwise; `def2/J` beside a
+non-/J aux the user typed. The RI-J family gets nothing, because ORCA picks
+def2/J itself. If the user set one, or nothing aborts without it: add nothing
+— don't guess, let the user decide.
 
 ---
 
@@ -391,8 +452,10 @@ item-by-item rather than losing the queue; a broken `data/*.json` empties
 only that list. Writes are best-effort (a save failure must never break the
 running app) and the session file is replaced atomically (tmp +
 `os.replace`). Every queue mutation autosaves (`_bump_and_save`). The session
-payload carries a `schema` version for future migrations. (Known gap:
-`Settings.save` is not yet atomic — Appendix A.)
+payload carries a `schema` version for future migrations. `Settings.save`
+uses the same tmp + `os.replace` (A1, since 0.4.3-beta) and now *reports*
+whether the write landed — swallowing the error is right, but telling the
+caller nothing let the UI answer "Saved." to a write that never happened.
 
 ### P33 — Validate at the shared choke point; allowlist settings
 
@@ -400,7 +463,18 @@ Client input is validated where all clients converge — `calc_from_dict` —
 because a guard in the desktop JS is bypassed by the phone/HTTP path. Calc
 names become on-disk folder names, so they are checked for path-dangerous
 characters, `..`, and Windows reserved names (Unicode, e.g. Korean, is
-allowed). Settings accept only allowlisted keys (on save and on load) and
+allowed), for control characters and lone surrogates, and for a length
+Windows can actually use; `kind` is validated against the known set for the
+same reason (it chooses the pipeline, not a label) — the first two reach `mkdir` (a localized WinError)
+or the session encoder (a `UnicodeEncodeError` that used to poison autosave
+for the life of the app), and neither is typeable in the desktop's own field:
+they arrive through the phone/HTTP path, which is exactly why the check lives
+here. A calc name is *also* the `.inp` file name ORCA is invoked with, so for an
+ORCA-backed kind a space or `&` is refused too — ORCA splits its own argument on whitespace, and
+the run it then fails is locked (P24). What the backend cannot be *made* to
+accept is refused at the boundary; what it can, is accommodated instead (the
+run folder may contain spaces, because the runner names the input relative to
+it). Settings accept only allowlisted keys (on save and on load) and
 allowlisted enum values on the bridge save path; values already on disk are
 trusted at load time. The front-end validates too, but for message quality —
 the shared layer is the security boundary.
@@ -420,7 +494,15 @@ resolved in 0.4.3-beta).
 
 The loopback auth-bypass applies only when the server is actually bound to
 loopback — on a LAN bind, a same-host proxy makes every request look like
-127.0.0.1, so every `/api` call needs the PIN. Token comparison is
+127.0.0.1, so every `/api` call needs the PIN. **A declared proxy revokes it on
+a loopback bind too** (`create_app(..., proxied=True)`): nginx and cloudflared
+forward *from* 127.0.0.1, so there the bind stops being evidence about the
+client and the exemption would be off for everyone who can reach the proxy.
+The answer is to drop the exemption, never to move the decision onto
+`X-Forwarded-For` — a header whose authority depends on how the proxy merges a
+client-supplied one and on which element the ASGI layer reads. With no proxy
+declared, uvicorn's proxy-header handling is disabled so the address checked is
+the real socket peer. Token comparison is
 `hmac.compare_digest`; `/api/ping` reports validity without revealing the
 token; the PIN is generated once per app launch (at `QueueStore`
 construction) and lives for the whole app session, across server
@@ -449,10 +531,22 @@ under the lock before publishing (a probe result for a removed env is
 dropped). (Known tensions: session-save I/O under the store lock — accepted;
 see Appendix A.)
 
+**Never call a sibling method that takes a lock you already hold.** The
+Bridge's locks are plain `threading.Lock`, so this deadlocks — and it
+deadlocks on Qt's UI thread, which means the window stops responding rather
+than one call failing. The shape is inviting: a "busy" branch wants to hand
+back the status slot's payload (`return self.get_x_status()`) from inside
+`with self._x_lock`. Snapshot the state under the lock and serialize it
+after releasing, keeping any check-and-set inside a single acquisition.
+It hides well — the branch only runs on a *second* click during a running
+job — so `tests/test_no_lock_reentry.py` walks the AST for it (P56).
+
 ### P38 — Background threads are named daemons
 
 Long-running helpers run as `daemon=True` threads with identifying names
-(`orcadesk-run`, `orcadesk-server`) so they never block process exit and are
+(`orcadesk-run`, `orcadesk-server`, `orcadesk-job-<calc>`, and the Bridge's
+`orcadesk-mlip-probe` / `-mlip-install` / `-crest-probe` / `-crest-install` /
+`-cube` workers) so they never block process exit and are
 identifiable in diagnostics.
 
 ---
@@ -496,8 +590,9 @@ its buffer at 5000 → the newest 4000 lines plus up to 500 older `[web] `
 console-capture lines retained preferentially (still a hard ~4500 bound;
 without the exemption a single ORCA run's stdout would evict every front-end
 error before it was read) — and a derived view that must outlive the
-buffer (graph history on reattach) is rebuilt from the `.out` on disk
-(`get_graph_lines`), never from the capped stream. When the document is
+buffer (on reattach: the convergence graph AND the freq/TD-DFT/CREST step
+panels) is rebuilt from the `.out` on disk (`get_graph_lines`), never from
+the capped stream. When the document is
 hidden, DOM/SVG work is skipped
 entirely and catches up from the counters later. Handlers: index-parameter
 interactions use inline `onclick` globals; interactions that must capture a
@@ -515,21 +610,29 @@ front-end-only artifacts (double modals), not the security boundary.
 ### P45 — Results gating lives on the front-end
 
 The backend always sends the whole `ParseResult` plus two gating flags; what
-to show per calc kind is decided in `renderResultSections`/`renderSummary`,
-and the payload is cached (`_resultExtras`) so the "Show all" toggle
-re-renders with **no re-fetch**. Specialty sections are present-only — they
+to show per calc kind is decided in the report (`web/next/results.js`), and
+the payload on screen is kept so the "Show all" toggle re-renders with **no
+re-fetch**. Specialty sections are present-only — they
 exist only for their kind, so presence is the gate.
 
-### P46 — Stream-parsing and progress logic live in `scf_graph.js`
+### P46 — Stream-parsing and progress logic live in the `SCFGraph` modules
 
 Log-line parsing, progress tracking, and ETA estimation — the logic-dense,
-regression-prone part — live in a separate module shared by desktop and
-mobile: DOM-free trackers (unit-testable in node, push-based, idempotent by
+regression-prone part — live outside the page's own scripts, in modules shared
+by desktop and mobile: DOM-free trackers (unit-testable in node, push-based, idempotent by
 keying steps on the real cycle number so re-fed lines overwrite instead of
-inflating) plus pure functions returning HTML/SVG strings. `app.js` only
-pushes lines and inserts the returned strings. One-shot static SVG over a
-finished payload may stay in `app.js`. Every regex/heuristic in this module
+inflating) plus pure functions returning HTML/SVG strings. The page only
+pushes lines and draws from what the trackers hold (the notebook draws its own
+charts in the design's vocabulary, `web/next/charts.js`, reading the trackers
+as parsers). One-shot static SVG over a finished payload may stay in the page. Every regex/heuristic in these modules
 carries its real-output validation evidence in a comment (P3).
+
+They are two files behind **one namespace**: `scf_graph.js` (SCF + geometry
+convergence graph, the half the mobile PWA loads on its own) and
+`progress_panels.js` (freq / TD-DFT / CREST step panels), which extends the
+namespace in place and therefore loads right after it. Callers only ever see
+`SCFGraph.*`. Split further only along a seam this real — these two halves
+share a single helper.
 
 ### P47 — Mirror backend state rules; the failed response never overwrites the mirror
 
@@ -572,7 +675,7 @@ roughly 200–300 accumulated lines or a natural boundary.
 
 If a change touches anything a document describes, that document is updated
 in the **same commit** — `CHANGELOG.md` (any user-visible change),
-`CLAUDE.md` (architecture/invariants/conventions), `README.md`
+`CLAUDE.md` / `docs/ARCHITECTURE.md` (architecture/invariants/conventions), `README.md`
 (commands/features), the `*_KR.md` procedure docs, and now `PRINCIPLES.md` /
 `DESIGN.md` (when a principle is added, amended, or deliberately deviated
 from). The pre-commit documentation check is mandatory every time, even when
@@ -611,9 +714,13 @@ rules:
   `config`, `procutil`, and the HTTP API via `fastapi.testclient`. The Qt
   bridge/window are thin adapters and are exercised manually — the logic
   under them is what the suite pins.
-- **Tests cite the contract they pin** (a principle ID in the docstring) and
-  are named for the invariant (`test_failed_calc_never_reruns`), so a red
-  test tells you *which rule* broke.
+- **Tests say what they pin**, in a name that reads as the invariant
+  (`test_failed_calc_never_reruns`), so a red test tells you *which rule*
+  broke. Where the rule is a principle, the docstring cites its ID; where it
+  is a MEASURED fact about a backend — ORCA rejecting `HF-3c` with an RI
+  keyword, a `.out` mixing UTF-8 with the ANSI code page — the docstring
+  carries the measurement instead, since that is the thing a future reader
+  would otherwise have to re-derive (P3).
 - **A red test is a bug** — in the test or in the product. Never weaken a
   test to make wrong behavior pass; a product bug found by a test is fixed
   (or tracked in Appendix A with the test marked `xfail(reason=…)`).
@@ -623,10 +730,119 @@ rules:
   corpus validation remains the primary evidence for parser heuristics).
 - **Isolated**: never write to the real `%APPDATA%` — path functions are
   monkeypatched to tmp dirs.
-- Run the suite before any commit touching Python or `scf_graph.js` (~3 s).
+- Run the suite before any commit touching Python or the `SCFGraph` modules
+  (`scf_graph.js` / `progress_panels.js`) (~3 s).
 
 *(Adopted 2026-07-03 with the initial 234-test suite — which found and led to
 the fix of three real boundary bugs on its first run.)*
+
+---
+
+### P57 — Parallelism is admission, never rewriting
+
+Several calculations may run at once, and the limit is a **budget**, not a
+lane count: each calculation declares what it will occupy (ORCA `%pal
+nprocs`, CREST `-T`, the MLIP worker's thread cap) and the dispatcher
+starts it only while those cores — and its estimated memory — still fit
+inside the user's budget (`core/resources.py`). So "two 8-core jobs" and
+"four 4-core jobs" are the same setting, expressed by the calculations
+themselves. ORCAdesk never edits a calculation to make it fit: a raw
+`.inp` owns its `%pal`, and rewriting it to hit a lane count would break
+the verbatim rule (P26) precisely where the user was most explicit. The
+cost is therefore *read* from what will actually execute — a raw input's
+own text, not the hidden form field.
+
+The one number ORCAdesk *does* change is a **generated** input's `%pal nprocs`
+when the run is a numerical frequency asking for more processes than it has
+displacements. ORCA runs one displaced-geometry gradient per process and hangs
+after the last one when given more — measured on 6.1.1: CO2 (12 displacements)
+at `nprocs 15` wrote every gradient and then spun on a single core with no MPI
+children left, while the same input at `nprocs 12` finished in 38 s. That is not
+a budget edit and costs no wall-clock, because the surplus processes had no
+displacement to work on. The cap is visible in the `.inp`'s own `%pal` line
+(it used to carry a `#` note too — see A26). A hand-written `.inp` is still
+never touched: the engine logs the ceiling and runs the text as typed
+(`core/resources.numfreq_rank_cap`).
+
+Three consequences the sequential engine got for free and the dispatcher
+must now state outright:
+
+* **Dependencies are deferred, not failed.** A REFERENCE calc whose parent
+  may still become DONE is passed over and re-examined later; queue order
+  no longer guarantees the parent ran first. "May still become DONE" is
+  about what *this run* will do, not the parent's current state alone: a
+  **CANCELLED** parent re-runs (P24), and a parent picked but not yet
+  stamped RUNNING is mid-launch — reading either as final admits the
+  dependent alongside its own parent, where geometry resolution FAILS it,
+  and FAILED is locked. A parent that genuinely cannot succeed
+  (FAILED/BLOCKED, missing, or itself) is *not* deferred — it must reach
+  its existing, precise error (P28) rather than hang.
+* **Nothing starves and nothing deadlocks.** A calculation larger than the
+  whole budget runs alone once nothing else is in flight (logged, P2);
+  when every remaining row waits on a reference that can never complete,
+  the rows are stamped BLOCKED instead of spinning.
+* **A resource ORCAdesk cannot measure gets a lane, not a number.** An MLIP
+  job on CUDA is charged one core, and there is no budget figure for video
+  memory — the only process that can ask torch what the card has is the user's
+  own worker. So GPU work is serialized: one at a time, CPU jobs unaffected.
+  Only an *explicit* GPU choice counts; the auto device is resolved inside the
+  worker, and guessing would serialize CPU jobs for nothing.
+* **An estimate is not a promise; ask the machine.** Cores are declared and
+  exact, memory is estimated — and the estimates are wrong in both directions
+  (ORCA may exceed its `%maxcore`; CREST takes a fraction of what it is
+  charged). So before a *second* job is admitted the real free memory is
+  checked, with a reserve left for everything else. The first job always
+  starts regardless: a guard that can stall the queue outright is worse than
+  the oversubscription it prevents.
+* **Memory is a first-class limit.** ORCA's `%maxcore` is *per core*, so
+  a 6-core job at 2400 MB reserves 14.4 GB: a core-only budget would let
+  two of them push a 32 GB machine into swap and make parallel slower than
+  sequential. Cores are declared and exact; memory is an estimate, and is
+  labelled as one.
+
+Because their output interleaves in one log buffer, every line a job
+produces carries its calculation's name (`LogLine.calc`) — the raw ORCA
+tail has no name of its own, and without the tag neither the log nor the
+convergence graphs could be separated per job.
+
+### P58 — The platform is detected; only the choice within it is a setting
+
+ORCAdesk asks the user for things only it cannot know. Which operating system it
+is running on is not one of them, so there is no Windows/Linux switch anywhere in
+Settings — `sys.platform` is authoritative, no machine is both, and a control
+whose only possible states are "right" and "wrong" hands the user a way to break
+the app and calls it configurability.
+
+The distinction that matters is between the **transport** and the **target**.
+CREST is the worked example (`orcamgr/crest/shell.py`): CREST has no native
+Windows build, so on Windows it is reached through WSL and on Linux it runs
+directly. That is the transport — detected. *Which* WSL distro, or which of the
+one place a local machine offers, is the target — a setting
+(`Settings.crest_distro`), because ORCAdesk genuinely cannot know which of
+several the user means. When a transport offers exactly one target, the picker
+is hidden rather than shown with a single entry (D2: a control with one value is
+a label pretending to be a choice).
+
+Two obligations follow:
+
+* **A platform difference is confined to one module, not sprinkled through the
+  callers.** `shell.py` names the three things that actually differ — how a
+  command runs, how a path is spelled inside that shell, whether a scratch
+  directory pays for itself — and `env.py` / `installer.py` / `runner.py` are
+  written once against it. Two parallel implementations drift, and the one that
+  drifts is always the platform the developer is not sitting at; that is why
+  `tests/test_crest_transport.py` renders **both** generated scripts from either
+  machine.
+* **What is missing is named as it is on THIS machine.** "Install WSL" is
+  useless advice on a box that has no WSL to install, and a card titled
+  "CREST (WSL)" on Linux describes a machine the user is not at. Every such
+  sentence is chosen from the live transport, not written once for the
+  developer's own platform (P2).
+
+A platform ORCAdesk cannot serve is refused where the user clicks, not where it
+would eventually break: the CREST installer declines on macOS with where to get
+a real build, rather than downloading a Linux binary that would fail at its
+first launch.
 
 ---
 
@@ -660,3 +876,7 @@ tradeoff, kept), or **stale-doc** (the description, not the code, is wrong).
 | A20 | A Korean phrase survived in the `state/store.py` module docstring ("길 1" design) — canonical code comments are English | P54 | resolved (0.4.3-beta) |
 | A21 | Code predated the amended P24 (FAILED-locked): `EDITABLE_STATES` still included `failed`, `run_all` re-ran FAILED calcs, `check_overwrite_conflicts` offered keep-existing for a failed `.out` (which the skip path then stamped DONE — A7), and the front-end `isEditableState` mirrored the old rule; BLOCKED sat outside `EDITABLE_STATES`, which would have stranded dependents after their failed parent's removal | P24 | resolved (0.4.3-beta — failure lock implemented end-to-end: store, engine, conflict check, UI affordances, BLOCKED editability; × removal stays available in every non-RUNNING state and remains queue-list-only) |
 | A22 | If a keep-existing fallback run (the skip path discarding an invalid kept result and running fresh) fails *before* ORCA launches (e.g. geometry resolution), `_failure_reason` may read the stale on-disk `.out` and mask the real pre-launch cause | P28, P2 | resolved (0.4.3-beta — `_failure_reason` consults the `.out` only after this attempt actually launched or adopted ORCA; a pre-launch failure keeps the engine's own error, with regression tests) |
+| A23 | `mlip_env_id == ""` is documented as *first **ready** env* (`StepConfig.mlip_env_id`, `web/types.js`, CLAUDE.md) but `_resolve_mlip_python` took `mlip_envs[0]` — the first **registered** env. Readiness is a live probe result held by the Bridge and was never plumbed to the engine, so with two envs whose first is broken, every MLIP calc routed to the broken one while the pill read "ready" off the other | P2, D2 | resolved (0.7.0-beta — the Bridge orders the list it hands the engine by last-known readiness (`order_envs_by_readiness`, Qt-free and unit-tested); the engine still takes `envs[0]`, so the contract now holds end to end) |
+| A24 | P5 read *"never installs them"*, but `crest/installer.py` has downloaded and installed the CREST binary since 0.5.0-beta — the principle was stale the day it shipped, and the MLIP env installer widened the gap | P5, P2 | resolved (0.7.0-beta — stale-doc: P5 rewritten as *never bundle, never import*, with provisioning a **private** copy allowed where fully scriptable and the un-scriptable step named as a prerequisite instead) |
+| A25 | P5 opened *"ORCAdesk does not do the chemistry"* and fixed the core dependencies at *PyQt6 + PyQt6-WebEngine + psutil*; `orcamgr/nbo/` (0.8.0-beta) computes natural-orbital analysis in ORCAdesk's own process and needs numpy to do it. Read literally the principle forbade the package outright — and it stated a mechanism (*shell out*) without the purpose that mechanism serves, so it could not settle the case either way | P5 | resolved (0.8.0-beta — P5 rewritten around its actual purpose, *the user never needs a terminal*: the boundary falls around **producing** a wavefunction, not arithmetic on one ORCA already wrote (which `parser.py`/`plot.py` have always done), and shelling `nbo/` out to `gennbo`/PySCF/JANPA would have *added* a command line and a licence. numpy admitted only after confirming the reconstruction needs no integral library, so no compiled chemistry stack enters the build) |
+| A26 | P2 asked that what the generator drops or changes be *reported, not swallowed*, and `build_input` did it with `#` comment lines in the `.inp` (a composite method's dropped basis, an RI keyword ORCA refuses, a NumFreq rank cap, constraints on a kind that does not optimize, a linear-bend warning). The user asked for every such line to go: the `.inp` is ORCA's input and the text they read and edit, not a place for notes they did not write | P2 | accepted (the rules stay and are documented in CLAUDE.md; the %pal line shows a cap; a constraint ORCA will stop on is warned about at add time instead) |

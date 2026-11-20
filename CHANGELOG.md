@@ -3,6 +3,2068 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.11.2] — 2026-11-20
+
+### Added
+- **Add a step before a block.** A selected block that has not run yet
+  shows a small + on its incoming arrow; press it (or drop a level on it)
+  to put a step in front of it — an Opt before an SP, a Preopt before the
+  first step. The new step takes over what the block started from (the
+  previous step, its structure — an IRC end too — and an approval gate on
+  that connection), and the block then runs on its result. Before an IRC's
+  `_F` / `_B` pair it adds one step per end. Ctrl+Z undoes it.
+- **The + slot opens an add menu.** Pressing + beside a block no longer
+  opens the whole builder: a small menu offers the level (the one the block
+  before runs at, else the one you used last), the natural next step as the
+  main button (Enter), every other step type (O / T / F / I / S for Opt,
+  OptTS, Freq, IRC, SP), an MLIP pre-optimization, the copied and saved
+  workflows, and *Manual build…* (M) for the full builder. Adding Opt → Freq
+  to a row is now two clicks.
+- **Saved workflows.** Copied steps can be kept by name (*+ Save copied*
+  under the new *Workflows* group of the library, or *Save as workflow…* in a
+  block's inspector) and put on any row again: click one with rows
+  selected, drag it onto a + slot, or pick it from the add menu. Kept in
+  `workflows.json` beside the inp sets.
+- **Several rows at once.** Ctrl+click row names to select several: one
+  Ctrl+V (or one click on a saved workflow) fills every empty one, and one
+  charge / multiplicity goes on all of them. Dropped `.xyz` files arrive
+  selected, so a drop of five structures followed by one click queues the
+  same steps on all five.
+- **Charge and multiplicity from the file.** A dropped or picked `.xyz`
+  whose comment line says `charge=1 mult=2` (or `Charge: -1 Multiplicity:
+  2`, or xtb's `uhf=1`) starts its row with them.
+- *+ system* takes several `.xyz` files at once, by the same rules as a drop.
+- **Pick the structure after an IRC on its energy profile.** Adding any step
+  after an IRC (the + menu, a dropped level, a pasted or saved workflow) now
+  asks which structure it starts from: a small graph of the whole IRC path
+  (backward end → TS → forward end, from ORCA's `_IRC_Full_trj.xyz`) where
+  you click or drag to a point — or type its number, the frame number in
+  `_IRC_Full_trj.xyz` — and see the structure there. Choose *One point* or
+  *Both ends*, then confirm with the one button, which names what it does
+  (*Add at point 50*, *Add at both ends*). A point at an end queues `_F` /
+  `_B` (read from the end-point file when it runs); any other point copies
+  its coordinates in (`_P<k>`); both ends make the usual `_F` / `_B` pair. Before the IRC has run only the ends are offered.
+  ← / → step the point from anywhere in the window (Shift+← / → by 10).
+  A block's geometry list has the same picker (*a point on its path…*), and
+  a workflow can now be pasted after an IRC (once per end picked).
+
+### Changed
+- **A level dropped on a finished or failed calculation runs it again.**
+  Dropping a level or MLIP set on a done or failed block, or clicking one
+  while such a block is selected, is now an overwrite. A warning names the
+  block and says its output will be overwritten. *Overwrite* puts the set on
+  it and turns it back to pending, and Undo restores the old result until it
+  starts. For a failed one, the steps it blocked go back to pending too and
+  run after it, in the same run if the queue is running. The Run-time
+  overwrite question no longer asks about it again, and its old output is
+  never kept in place of the new run.
+- **An IRC's own "final geometry" is no longer offered.** The geometry list
+  listed "ref → <IRC>" besides its two ends, which looked like a third
+  structure; on real outputs it is the TS the IRC started from. A block that
+  already uses it keeps it.
+- **Remove takes one calculation of a stack.** Remove… (or Delete) on a
+  stack such as an IRC's `_F` / `_B` ends takes only the selected member
+  (and what hangs off it); the other stays. To remove a whole stack, drag a
+  band over it (*Remove all 2…*); several blocks selected by a drag or
+  Ctrl+click now have *Remove all…* too, and Delete takes them all.
+- **A stack shows how many it holds.** It is drawn as one card per
+  calculation (up to four), and its count sits at the bottom right instead of
+  where a block shows its run order, so a stack of 2 no longer reads as
+  run-order 2.
+- **A block's border shows its state.** In the queue window a block's border
+  takes its status light's colour — grey pending, green done, amber running
+  (with a soft glow), red failed — so a running queue can be read at a
+  glance; the selected block is marked by an outer ring instead. In a stack
+  each card is one calculation and takes that calculation's colour (an
+  IRC's `_F` done and `_B` running show green and amber).
+- **New steps are named `<system>_<Job>`.** The queue window names a step it
+  adds after its system and its job as ORCA's keyword reads it —
+  `mol_Opt`, `mol_OptTS`, `mol_FreqTS`, `mol_IRC`, `mol_SP` (then `mol_SP2`),
+  `mol_Preopt` for MLIP — instead of `mol-opt`; an IRC's ends are `_F` /
+  `_B`, a point on its path `_P<k>`, a duplicate `<name>_copy`. Existing
+  calculations keep their names.
+
+### Fixed
+- A click on a block in the queue window was sometimes ignored while the
+  queue ran: the window redrew itself between the press and the release.
+  It now waits for the release.
+- The test suite can no longer overwrite your queue: it runs against a
+  throwaway user-data folder (a failed test once left a run behind that
+  saved its rows over the real `session.json`).
+
+### Removed
+- **A dropped `.xyz` no longer queues a single point.** The *Dropped .xyz*
+  panel under the inp sets (*Run* a level as a single point or a workflow,
+  *name +* suffix) is gone, and with it the backend's `add_xyz_systems` slot.
+  A `.xyz` dropped on the queue window — or on the main window, which then
+  opens the queue window — becomes a row holding the structure, named after
+  the file, with nothing queued: build its steps on the row's + slot, or
+  paste a copied workflow into it. Several files dropped at once are one
+  undoable batch, and a file that cannot start a row is listed with the
+  reason, as before.
+
+## [0.11.1] — 2026-11-19
+
+### Changed
+- **Inp sets are levels of theory, not jobs.** An ORCA set is a whole input
+  with `{{JOB}}` on its `!` line where the job keyword goes; the block made
+  from it says which job it runs with a **Type** select (Optimization, TS
+  optimization, Frequencies, TS frequencies, Opt + Freq, TS Opt + Freq, IRC,
+  Single point, NMR), and ORCAdesk fills `{{JOB}}` (TightOpt, OptTS, Freq,
+  TightOpt Freq, OptTS Freq, IRC, SP, NMR) and adds the block that job needs,
+  exactly as the Guided builder writes it: `%geom MaxIter 200` for an
+  optimization (plus `Calc_Hess true` for a TS one), `%irc MaxIter 100` with
+  `InitHess read` of the previous step's `.hess` when it left one, else
+  `InitHess calc_anfreq`. A level that already has its own `%irc` block gets
+  nothing added; one with its own `%geom` gets only what it lacks (see
+  *Fixed*). The library shows *ORCA levels* and *MLIP*
+  instead of one group per job type; a level dropped on the + slot starts as
+  the natural next step (Opt, then Freq; OptTS, then TS Freq, then IRC, then
+  SP); dropping one on a block changes its level and keeps its type; the
+  inspector shows the input rendered for the chosen type.
+- **Your inp sets are converted once.** The existing `inp_sets.json` is
+  copied to `inp_sets.v1.json` beside it (an existing copy is never
+  overwritten); each ORCA set's job keyword becomes `{{JOB}}`, the
+  `%geom` / `%irc` block ORCAdesk now adds is removed where it is the one
+  ORCAdesk seeded (anything you wrote stays), and sets left with the same text
+  are merged — the five seeded `wB97X-D4 / def2-TZVP` sets become one level.
+  Calculations already in the queue keep their input as it is.
+
+### Added
+- **A level block runs with its own options.** A block made from an ORCA
+  level now carries the settings the Guided builder has — constraints and a
+  relaxed scan, MaxIter, IRC max points / direction / initial Hessian
+  (*auto* = the previous step's `.hess`, analytic, numerical, or a `.hess`
+  you load), Freq temperature and pressure, NMR J-couplings, TD-DFT and
+  NEB-TS settings, extra keywords, solvation and SCF convergence — and
+  ORCAdesk merges them into the level's input exactly as the Guided builder
+  writes them, never a second copy of a block the level already has. A block
+  with no options runs exactly as before. Options that clash with the level
+  (both set MaxIter, both list constraints, a solvent model on both sides, a
+  different SCF tier, constraints for a `%geom` the level writes on one line)
+  are refused when the block is added or edited, with a message naming the
+  block and setting, and the preview shows the input that will run.
+  Constraint and scan atom numbers are checked against the block's structure
+  when it is added. **TD-DFT and NEB-TS** blocks can now be made from a
+  level, and an MLIP set's block can run **MLIP SP, Freq and Opt + Freq**,
+  not only the pre-optimization.
+- **Copy a workflow and run it on other structures.** In the queue window,
+  drag a box on the empty canvas (or Ctrl+click) to select blocks of one row,
+  press Ctrl+C (or *Copy workflow*; *Copy the row* for all of it), and Ctrl+V
+  pastes the same steps — types, levels, gates and connections — after a
+  block, into an empty row, or, with nothing selected, onto new rows from
+  `.xyz` files you pick (one row per file, steps named after it). One undoable
+  change.
+- **Dropped `.xyz` files can run a whole workflow.** The drop recipe's *Run*
+  offers an ORCA level as a single point, the copied workflow, or the
+  workflow of any row; dropped on either window, each file becomes a row
+  running it.
+- **The queue window does everything the old queue did.** *Edit options in
+  the builder* on a level's block opens the builder in **Level mode**: the
+  Type, geometry, structure stage (constraints and scan picked on it, *Apply*
+  / *Apply all*, push along a mode, the structure check) and every per-job
+  block, with the level's name and text (read-only, another level can be
+  picked) in place of Method / Resources / Per-element basis; coordinates
+  moved there become the block's own, never the row's. A manual build on the
+  + slot can start from a level too (*Level* beside *Guided* / *.inp text*),
+  and a draft kept from an earlier new calculation is offered (*Use the
+  draft*). The block's sub-label names its options (`1 constraint · MaxIter
+  300`). New in the inspector: *Duplicate*, *Show folder*, *↑ Earlier* / *↓
+  Later* (Alt+←/→; never past what it depends on), renaming one
+  calculation (what runs after it follows), *Remove only this* (what hangs
+  off it stays, blocked until given another geometry), a geometry list with
+  every calculation, and, once it has run, the `.inp` its folder holds. Every
+  row has a structures panel (its caption on the canvas, or *Structures…*):
+  add from a file or paste coordinates, view, check, remove; *+ system* can
+  paste coordinates. *Clear finished* in the top bar. A copied workflow keeps
+  a level block's options and is refused on a structure with fewer atoms
+  than its constraints name.
+- **Adds to a running queue ask before overwriting.** Dropping a set or an
+  `.xyz`, pasting a workflow, copying a row and *Duplicate* ask, as the
+  builder does, when a name's folder already holds output; the names they
+  make step around such folders (`w-opt-2` taken on disk → `w-opt-3`).
+
+### Fixed
+- **Queue window: the builder is the New calculation it was in the main
+  window.** It opened squeezed into the inspector column (Mult. on a row of
+  its own, a narrow stage); it now opens over the lanes and the inspector as
+  the same cell at the same width, scrolling inside, with the library beside
+  it -- Level mode in the same frame. Its title is *New calculation* again,
+  with where it goes (*after mol-opt in mol*) beside it.
+- **Queue window: "New calculation after X" takes X's geometry.** It could
+  open on an older draft's reference (the first calculation in the list)
+  under X's title; the builder now keeps the seed it was opened with. A new
+  step is named like the editor names one, the row's name and the kind's
+  suffix (`mol-opt2`, not `mol-calc`), and the name follows the Type while
+  you have not typed your own (`mol-opt2` → `mol-freq`).
+- **Guided builder: an IRC's Direction was always "both".** The push along
+  a mode's own *Direction* toggle was found first by label, so the IRC's
+  select was never read; and the IRC's own *Load .hess…* did nothing (the
+  push-along-a-mode button above set the IRC's Hessian file instead).
+- **Queue window: a pasted .inp block in a row could not go back to the
+  builder** once saved; it now opens in the builder like any other.
+- **A level with its own `%geom` block no longer drops ORCAdesk's lines.** It
+  used to win whole, so a TS optimization from it lost `Calc_Hess true` and an
+  optimization its `MaxIter 200` cap; now only the lines it lacks are added
+  (its own `MaxIter` stays), also into a `%geom` written on one line.
+- **RI-MP2 and the other RI methods run again at RI "ORCA default".**
+  RI-MP2, OO-RI-MP2, OO-RI-SCS-MP2, F12-RI-MP2, RI-MP3 and ADC2 got no
+  correlation auxiliary basis, and ORCA stopped ("RI-MP2 needs an AuxC basis",
+  or after the SCF "Aux/C requested but not available"). They now get
+  `AutoAux` unless RI is set to NoRI, like a double hybrid. Plain MP2, MP3
+  and coupled cluster still run conventionally without one.
+- **Queue window: blocks made before inp sets became levels no longer show
+  as edited.** Their text was the old per-step set's (`TightOpt`, its
+  `%geom` block), so after the sets were converted every such block was drawn
+  amber with `*` although nothing had changed. A block now counts as
+  unmodified when its text converts to its set's level, and finds its set
+  when the conversion merged it into another or renamed it `name (Freq)`.
+  Editing a block's text still marks it.
+- **Ctrl+Z never takes away a calculation that has run.** Undoing the addition
+  of a block after it had finished removed the finished calculation from the
+  queue without a word. Such an undo is now refused with the reason (Remove…
+  takes a finished row off the list); the same holds for undoing a paste, a
+  copied row or dropped structures.
+- **Undoing a move or a removal works after the queue changed elsewhere.**
+  It re-orders the queue as it is now (rows added since, by a drop, the other
+  window or a run, keep their places) instead of failing.
+- **Approving a step while the queue runs keeps "keep existing results".** A
+  step you had chosen to keep re-ran when approved mid-run and overwrote its
+  output.
+- **Editing an MLIP set's text in a block resets a setting the text no longer
+  names** to its default (it kept the old device or environment).
+- **Undoing a level change on a Guided MLIP block restores its settings**
+  (model, device, cores), not only its text.
+- **A step that reads a Hessian or an IRC end point it cannot get is held,
+  not failed.** A template that names `{{HESS}}` (or an IRC level whose own
+  `%irc` block reads a Hessian) is refused when it has no previous step and no
+  geometry source to take it from, and a step starting from an IRC end point
+  of a calculation that is not an IRC is refused when it is added. At run
+  time a missing Hessian or IRC end file now stops the step as *blocked*
+  (editable, tried again on the next Run) instead of *failed*, which locked it.
+- **The queue no longer stalls for a second at an approval gate.** Deciding
+  whether a gate after a frequency calculation passes by itself read the
+  frequency output while holding the queue; it now uses what the finished
+  calculation already established.
+- **A dropped `.xyz` whose first line counts fewer atoms than it holds is
+  refused** with the reason, instead of silently losing the extra atoms
+  (both windows, and picked files for a workflow).
+- **An inp set with a misspelled placeholder is refused when saved** (e.g.
+  `{{Job}}`, `{{GEOM}}`): only `{{GEOMETRY}}`, `{{JOB}}`, `{{CHARGE}}`,
+  `{{MULT}}` and `{{HESS}}` are filled in, and anything else reached ORCA as
+  written. Sets already saved are kept.
+- **Queue window: the Run button is enabled when only cancelled calculations
+  remain** (they run again), in the queue window as in the main window.
+- **Queue window: renaming a row and then editing in the same inspector
+  applies the edit.** The template, geometry, Type, charge, Approve and
+  Remove acted on the old names and were refused.
+- **Queue window: a chain whose calculations run at different charges or
+  multiplicities is not silently made one.** Adding a step to it asks first;
+  the row takes the selected block's charge and multiplicity, each
+  calculation keeps its own, the inspector shows a calculation's own values
+  when they differ from its row's (and edits them on that calculation), and
+  changing the row's charge or multiplicity changes only the calculations that
+  had the row's old value.
+- **Queue window: a step queued before the calculation it hangs off is drawn
+  after it**, and making a system of that chain keeps that order (the
+  connection was drawn backwards).
+- **Queue window: a stack whose members are not all editable has its template
+  read-only** (every edit of it was refused).
+- **Queue window: the inspector shows the stack member you picked**, also when
+  you pick another while the previous one is still being drawn.
+- **Queue window: Alt+↑ / Alt+↓ on a row's grip keeps the keyboard there**, so
+  the next press moves the row again.
+- **A message handed from the main window to the queue window is taken
+  exactly once.** The take is now one step on the backend, so two overlapping
+  looks cannot both act on it and one written meanwhile is never lost.
+- **Dropping several `.xyz` files on the main window queues all of them**, not
+  just the first.
+- **Settings saved in one window are no longer overwritten by the other
+  window's stale copy.** Each window re-reads its settings when it comes to
+  the front, when Settings opens and before Run checks the ORCA path, and the
+  Settings sheet saves only the fields changed on it.
+- **The SCF progress bar and target line use the convergence target ORCA
+  prints for the run (TolE)**, so an inp set with its own SCF keyword shows
+  the right target; before that line arrives the expected target follows ORCA
+  6.1.1: 1e-9 for TightOpt (opt, opt + freq), 1e-8 for OptTS / IRC / NEB,
+  1e-6 otherwise.
+- **The main window's queue strip redraws only when something it shows
+  changes**: keyboard focus stays on a row and clicks are no longer lost.
+- **Open file… with an `.xyz` opens it in the 3D viewer.**
+- **F5 / Ctrl+R in the queue window asks before discarding an unsaved inp-set
+  draft.**
+- **Shutdown problems are logged with their error text.**
+- **Queue window: calculations that use another's geometry are drawn as its
+  next step.** A TS with the Freq and IRC built from it (by geometry
+  reference, outside the editor) now share one row, TS → Freq with the IRC
+  branching below, instead of three loose rows; adding a step to any of them
+  makes the whole chain one system. Edges and the dashed line to the + slot
+  meet blocks at their middle instead of near the top.
+
+## [0.11.0] — 2026-11-18
+
+### Changed
+- **Generated inputs now leave ORCA's defaults to ORCA.** A new calculation's
+  `.inp` names the method and basis and only what you change: no `RIJCOSX` or
+  `def2/J` (ORCA 6.1.1 picks both itself for a hybrid), no SCF tier, and no
+  `%tddft maxdim/tda/triplets` or `%neb Nimages` at ORCA's own values. The
+  builders start from ORCA's defaults: RI and SCF convergence read *ORCA
+  default*, frequencies no longer switch to `VeryTightSCF` (also when
+  converting Guided to `.inp` text), TD-DFT 3 roots with TDA (was 40 roots,
+  full TD-DFT). An optimization stays `TightOpt`, and the optimizer and IRC
+  MaxIter (200 / 100) are still written. Note what ORCA's
+  own SCF default means: an optimization (written `TightOpt`, with or without
+  Freq) converges the SCF to TolE 1e-9, a TS search, IRC or NEB runs TightSCF
+  (1e-8), and a single point, frequencies and TD-DFT run NormalSCF (1e-6);
+  pick a tier to change that. `%pal` is left out of a serial run. Kept on purpose:
+  `AutoAux` for double hybrids and DLPNO, `def2/JK` under RIJK, `Calc_Hess` for
+  TS optimizations, the analytic initial Hessian for IRC, and NEB-TS's `FREQ`
+  (in Extra keywords). Calculations already in the queue keep their settings.
+  The SCF progress bar now aims at the tier ORCA actually uses.
+- **The notebook's structure viewers keep the bonds the run started with.**
+  Every structure a calculation produced (trajectory frames, scan points, the
+  final geometry, the Jobs thumbnail) is drawn with its input's bonds, so a
+  scan that pulls two atoms together no longer closes a ring on screen and a
+  stretched bond no longer disappears. Without an input (a result folder, or a
+  geometry taken from another calculation) a set's first frame gives the bonds.
+  The builder's stage does the same across its own moves (a constraint's
+  *Apply*, *Apply all*, a push along a mode); coordinates you type or paste
+  are bonded by distance as before.
+- **A larger structure viewer in the notebook builder.** The stage shared a
+  260px-tall row with the coordinates box; it now has a row of its own under
+  the box, the form's full width and up to 676px tall, directly above
+  Constraints.
+  The pop-out viewer now fills the window rather than stopping at 1040 x 760.
+- **One molecule picture in the notebook report, not two.** The Structure
+  section and the Visual panel drew the same molecule side by side; the
+  structure is now the Visual panel's first tile, *Structure*, ahead of the
+  trajectory and the Orbitals / Electron density / ESP map tiles, and the
+  report opens on it. Clicking an atom or a bond still gives its numbers there,
+  and a mode picked on the spectrum moves on that tile. The panel now spans
+  the full width of the report.
+- **ORCAdesk's own natural-orbital analysis and the reaction profile are
+  hidden for now in the notebook report.**
+  Their backends are unchanged; the NBO program's results from a `! NBO` run
+  are not affected.
+
+### Added
+- **Queue editor backend: steps that run after one another, approval gates
+  and saved input sets.** A calculation can now run *after* another one,
+  independently of where its geometry comes from; if that one fails it is
+  skipped (blocked), as with a geometry reference. The link can wait for your
+  approval: the calculation then waits once its predecessor is done, the rest
+  of the queue keeps running, and a run with only waiting steps left simply
+  ends. After a frequency calculation the wait can pass by itself when the
+  number of imaginary modes is the expected one (one for a TS, none
+  otherwise). A step can start from either end of an IRC (its forward or
+  backward end point). Saved input sets, one per step type and seeded from
+  ORCAdesk's defaults at your default cores and memory, fill in the charge,
+  multiplicity and the Hessian of the step before (copied into the run folder;
+  a missing one stops the step before ORCA starts). Molecules (lanes) are kept
+  with the queue across restarts. The queue window opens as a window of its
+  own; dropping several `.xyz` files on it adds one molecule and one
+  calculation per file, and refuses a clashing name, a name ORCA cannot run
+  or a multi-structure file with the reason, file by file.
+- **The queue gets a window of its own: a graph you build the queue in.**
+  *Open queue* (the queue rail's header) opens it. Each molecule is a row of
+  steps left to right; a step is a block with its state, its run order and the
+  input set it came from, and a stack of blocks where one step becomes several
+  (an SP after an IRC runs from both ends). Drag an input set from the library
+  on the left onto the + after a block to add the next step, or onto a block to
+  swap its template (asked the first time); click the + for the Guided builder,
+  which now lives in this window. Click a connection to make the next step wait
+  for your approval, let it pass by itself after a frequency calculation with
+  the expected number of imaginary modes, or approve it. The inspector on the
+  right renames a molecule (every calculation name follows), sets charge and
+  multiplicity, picks the geometry (the structure, or any earlier step's
+  result, an IRC's forward or backward end included), edits the template and
+  saves it as a new set. Drag a row's grip to move it, Ctrl-drop or click to
+  copy it; Delete removes a block and the steps after it; Ctrl+Z undoes.
+  Dropped `.xyz` files become molecules with a single point from the set and
+  name suffix chosen under the library. The main window's queue rail is now
+  its status: rows take you to the calculation's output or report, and *New
+  from this* opens the queue window's builder. Dropping an `.out` on the main
+  window opens it in Results again, an `.xyz` queues it, an `.inp` opens it in
+  the builder.
+- **The main window's queue rail is a narrow status strip.** About 256px wide
+  instead of 600, so Jobs and Results get the room: each calculation is its
+  state dot and name (hover for its kind, state and last message), a running
+  one with a thin progress bar, and a click shows its output or report.
+  Running / Queued / Finished keep their counts and Finished still folds. The
+  run controls are Run queue, Stop after current and Cancel in one row; *Clear
+  all*, the Finished group's *Clear* and the *New calculation* stub at the end
+  of Jobs are gone from the main window (building and clearing are the queue
+  window's). Opened files keep their place, with an × to take one off the list.
+- **A finished calculation takes a next step in the queue window.** Selecting
+  any block, done or failed included, shows the + after it, so a Freq goes
+  after a finished OptTS and an SP after a finished IRC (as a forward/backward
+  pair). A calculation on its own row becomes the first block of a new
+  molecule row for that; only its place in the editor changes, never what it
+  ran or produced, and Ctrl+Z puts it back. The new block is selected once it
+  exists (it was sometimes left unselected), a block whose earlier step failed
+  shows as blocked straight away, a block that waits for a calculation in
+  another row says so and has its own *Approve*, the geometry list offers every
+  member of an earlier stack, the Freq-level warning also compares a step built
+  with the Guided builder, an MLIP or CREST block shows the settings it runs
+  instead of an ORCA input it never runs, removing the last block of a row
+  removes the row (undoable), and an empty queue says how to start one.
+- **The queue window edits the inp sets.** With nothing selected the inspector
+  is the set editor (it replaces the help text): a set is a whole ORCA input
+  with `{{GEOMETRY}}` where the coordinates go (and `{{CHARGE}}`, `{{MULT}}`,
+  `{{HESS}}`), an MLIP set its setting lines. Click a set in the library to
+  open it (a click still applies it to a selected block of its kind); *+ New*
+  beside each kind starts from ORCAdesk's default input for it. Save, Save as
+  new, Duplicate, Delete and *Import .inp…* (coordinates in the file are
+  replaced by the placeholders only if you say so); the kind is read from the
+  job line and a text that reads as another kind says it will move group. A
+  missing name or `{{GEOMETRY}}`, or a name another set of the kind has, is
+  refused in the editor with the reason. Blocks keep the text they were made
+  with: after a save, the blocks of that set that have not run are offered the
+  new text once (Ctrl+Z undoes). Switching away from unsaved edits asks first.
+- **A 2-D relaxed surface scan is drawn as its grid in the notebook report.**
+  Each point sits where its two coordinates put it, and its size is its energy
+  (area in proportion to ΔE). The highest point is red and the lowest blue, and
+  the key under the plot names both with their ΔE and coordinates. Hovering a
+  point shows its number, coordinates, ΔE and energy; the arrow keys move along
+  the grid. Points a stopped scan never reached show as small rings. The table
+  of every point stays under the plot. A scan over three or more coordinates is
+  still listed only.
+- **An IRC or NEB-TS energy profile reads point by point.** In the notebook
+  report, hovering the *Reaction path* chart shows the nearest point's step (or
+  image) number, its ΔE in kcal/mol and its energy in Eh; ←/→/Home/End step
+  through the points from the keyboard.
+- **A half-typed new calculation is no longer lost when the builder closes
+  (notebook UI).** Everything in the form is kept as a draft and restored the
+  next time *New calculation* opens, including after a restart: every field of
+  the DFT, MLIP and CREST forms, Guided or .inp text, the coordinates, and the
+  constraint and scan rows. Adding the calculation to the queue clears the
+  draft. The new *Start over* button in the builder's bar clears it on purpose.
+  Editing a queued calculation never touches the draft.
+- **Settings asks before dropping unsaved changes (notebook UI).** Closing
+  the sheet with edits not yet saved (×, Escape, clicking outside, or
+  reloading with F5) asks once: *Save*, *Discard* or *Cancel*. Only real
+  differences from the saved settings count, so changing a field and changing
+  it back does not ask. A failed save keeps the sheet open with its error.
+- **The rail's Opened files list survives a restart.** Results opened with
+  *Open file…* / *Open folder…* used to vanish when ORCAdesk closed; they now
+  stay in the list until you close them there (up to 50). Only the list is
+  kept: a file is read again when you click it.
+- **NBOs drawn in 3D.** A `! NBO` run leaves its natural bond orbitals in a
+  `.nbo` file beside the output, and the notebook's Visual panel now has an
+  **NBOs** tile listing them by the program's own names (`BD(1) C1–C2`,
+  `LP(3) F3`, `BD*(1) C1–C2`, … with their occupancies). Picking one plots it
+  with orca_plot — about a second — and draws its lobes on the stage, with the
+  same isovalue and grid controls as a molecular orbital.
+- **The NBO program's results now show in the notebook report.** An ORCA
+  run with `! NBO` prints NBO 7's analysis into its `.out`, and the report
+  showed none of it — only ORCAdesk's own *Compute natural orbitals* button.
+  Three sections now read it from the output: **natural populations** (the
+  Lewis/non-Lewis electron accounting, then each atom's natural charge,
+  core/valence/Rydberg split and electron configuration), **donor → acceptor**
+  (the second-order E(2) table, largest first, the top 20 with the rest under
+  *Show all*) and **bond orbitals** (the Lewis structure NBO found and its
+  antibonds; Rydberg orbitals under *Show all*). They are titled as the NBO
+  program's numbers and kept apart from ORCAdesk's own analysis. Read from
+  closed-shell NBO 7.0 output; an open-shell run shows its total-density
+  populations only, and points to the Output pane for each spin's tables.
+- **Localized orbitals (IAO-IBO and the rest of `%loc`) in the notebook
+  report.** A run that localizes its orbitals prints what each one sits on,
+  and the report now shows it as a *Localized orbitals* section: the method
+  and MO range, how many came out one-centre (lone pair / core) and
+  two-centre (bond), and every orbital with its atoms' shares. Opened step by
+  step along a reaction path, the share moving between two atoms is where the
+  electrons go. ORCA's *IAO partial charges* are left out on purpose — ORCA
+  warns they mean nothing unless every occupied orbital was localized, which
+  the default range is not.
+
+### Removed
+- **The classic front-end.** The tabbed window (Build / Queue / Log / Results)
+  is gone; the notebook layout is now the only UI and opens on every launch.
+  With it go the **Interface** switch in Settings (classic / notebook) and the
+  **Appearance** card's Liquid-Glass style, intensity and wallpapers, which only
+  the classic window drew. Light/dark stays the top bar's toggle. A settings
+  file from an earlier version still loads; the retired settings are ignored
+  and dropped at the next save. Dropping files on the window works again in
+  the notebook (see *Added*: an `.out` opens in Results, an `.xyz` is queued,
+  an `.inp` opens in the builder). Not carried over from the classic window:
+  the *Opening structures and maps* setting that sent a Visual row to your own
+  program (use *Show in folder*), and the automatic lowering of the isovalue for a spread-out orbital (the
+  viewer opens at the cube's own isovalue; type another in its isovalue field).
+
+### Fixed
+- **A long run's Jobs cell no longer forgets what it is after a restart.**
+  Reopening ORCAdesk rebuilt a running or finished cell from only the last
+  part of its output. A 2D scan 61 points in came back without *scan point
+  61/100*, with a cycle count of the recent points only, and with the time
+  left for one point instead of the whole scan. A long IRC could lose the
+  start of its path the same way. The whole run outline (every point, cycle,
+  wall time and stage) is now kept, and only the bulky SCF rows are trimmed.
+- **A large output no longer freezes the window (notebook UI).** Rebuilding a
+  cell's history from a 157 MB output took 33 s on the UI thread. It now takes
+  about 4 s, in the background, while the cell says *reading the output…*; a
+  second read takes in only what was appended. Parsing a finished output that
+  size for the Jobs thumbnail or the report took another 20 s on the UI
+  thread, at every launch; it now runs in the background too (the report says
+  *Reading the output of …* meanwhile), and its result is reused until the
+  file changes.
+- **Applying an angle that is already at 180° no longer fails.** An angle
+  Applied to 180° lies on a straight line, and applying that target again (or
+  *Apply all* with it among the targets) stopped with "no plane to open in"
+  though nothing had to move. A straight angle bent to another value now turns
+  in the plane of the nearest atom off the line.
+- **A constraint's Apply no longer refuses an angle as "in a ring" after an
+  earlier Apply.** Which side of the molecule turns was decided from the
+  coordinates' distances, so two atoms an Apply brought close read as a bond
+  and closed a ring the molecule does not have. It is now decided from the
+  bonds the builder's stage draws.
+- **A relaxed surface scan's progress now reads as a scan in the Jobs view.**
+  Each scan point is its own optimization, and its cycles count from 1
+  again, so the convergence chart drew every point on top of the last one
+  (ten points as one 41-cycle curve) and the first point to converge read
+  100% with the rest still to run. The chart now shows the point being
+  optimized, the cell says *scan point 3/10* and counts the cycles of the
+  whole run, progress and the time left are over all the points, and a
+  finished scan reopened later rebuilds the same way.
+
+## [0.10.7] — 2026-10-26
+
+### Added
+- **Apply all constraint targets at once.** In the notebook builder, once two
+  constraints have targets an *Apply all* button sits beside *Add*. One
+  *Apply* at a time undid its neighbours where targets share atoms — three
+  angles about one carbon set to 120° never read 120/120/120 together — so
+  the same rigid turns are now taken in rounds until every target holds
+  (to 0.01°). A set that cannot hold together, such as three angles about
+  one atom adding up past 360°, is refused with the coordinate furthest off.
+  One Ctrl+Z undoes it.
+
+### Fixed
+- **Coordinates pasted into a copied `.inp text` calculation now run.** A
+  hand-written `.inp` runs as written, so when its text carried its own
+  `* xyz` block, coordinates put in the builder's box beside it were saved
+  and never used: an OptTS copied into two optimizations with the IRC
+  endpoints pasted in ran the TS guess twice, and nothing said so. While the
+  text carries a block, the box now *is* that block — it opens on the
+  coordinates that will run, an edit or *Load .xyz* in the box rewrites the
+  block, and an edit in the text redraws the box — and a line under the box
+  says which of the two ways the text takes its geometry. A calculation whose
+  stored coordinates still differ from its text's (one added from the phone,
+  or saved before this fix) is warned about when it is added and again in
+  the log just before ORCA starts.
+- **A running IRC cell switches to its path once the walk begins.** The
+  initial Hessian an IRC computes first is a frequency run, and its
+  *Numerical frequencies* panel kept the cell for the rest of the job; the
+  panel now shows only until the first IRC step.
+- **A running row's bar in the queue rail is the whole job's progress.** It
+  read only the stage running now, so a TS optimization's bar filled when its
+  initial Hessian finished, emptied when the optimization began, and could
+  read full mid-search. The phases a kind runs (initial Hessian,
+  optimization or IRC walk, final frequencies) are now equal shares of one
+  bar, full only when ORCA reports the job finished.
+- **The builder's charge/multiplicity badge no longer calls a valid odd-charge
+  structure impossible.** It took the charge off an electron count that
+  already included it, so every structure with a charge of ±1, ±3, …
+  read *impossible* when it was consistent, and the reverse. The checks
+  listed above it were right all along.
+
+## [0.10.6] — 2026-10-26
+
+### Added
+- **Watch a vibration.** In the notebook report, click a band on the
+  vibrational spectrum (or press Enter on the keyboard cursor) and that mode
+  moves on the Structure stage; each imaginary mode also gets a button under
+  the spectrum. A bar above the stage steps to the neighbouring modes, plays
+  and pauses, sets the swing (how far the most-moved atom travels, Å) and
+  goes back to the still structure (*Show structure*, or Esc). Paused, each
+  atom carries an arrow showing which way it moves; with the system's
+  reduced-motion setting on, a mode opens paused. The vectors come from the
+  `.hess` beside the result, or from the output's own NORMAL MODES table when
+  there is no `.hess` (or it belongs to another Hessian), and are matched to
+  the report's mode numbers by wavenumber, not by position. New bridge slot
+  `get_vibration_mode`; Qt-free `orcamgr/core/normalmodes.py`.
+- **MLIP and CREST calculations in the notebook builder.** The builder's
+  first control is now `DFT | MLIP | CREST`. MLIP builds any of the four
+  tasks (optimization, single point, frequencies, opt + frequencies) with the
+  MACE model, environment, device — GPU only when a ready environment sees
+  one, with a note on what *CPU threads* means on each device — threads,
+  charge/multiplicity and, for the frequency tasks, temperature and pressure.
+  CREST builds a conformer search with method, search speed, energy window,
+  threads, solvent model and solvent, NCI mode, a target distribution where
+  there is more than one, and the MD/MTD settings under *Advanced*. Both take
+  coordinates (drawn on the stage and checked as for ORCA) or another
+  calculation's geometry, and *edit* on an MLIP or CREST row now opens it on
+  its own form instead of as an ORCA "General" calculation. A backend never
+  set up has no button (*+ More backends…* opens Settings); one set up but not
+  ready opens locked, saying why.
+
+- **Relaxed surface scans, picked on the structure.** The notebook builder's
+  constraint panel has a *Constrain | Scan* switch. In *Scan*, a drag across
+  2, 3 or 4 atoms (or Ctrl+click and *Scan*, or typed atom numbers) picks the
+  bond, angle or dihedral to walk. It starts at the value the coordinates
+  have now; give it an end and a number of steps, and the row shows the step
+  size that implies. It is written as ORCA's `%geom Scan` beside any
+  constraints, which still hold. Only an *Optimization* scans: ORCA ignores
+  a scan in a single point and runs the frequencies of an Opt + Freq after
+  the first point only, so on other types *Scan* is greyed out and says why.
+  A scan naming an atom the structure does not have is refused when it is
+  added.
+- **A scan's result.** The report draws ΔE (kcal/mol, against the lowest
+  point) along the scanned coordinate, marks the highest point, and lists
+  every point. A scan that stopped part-way keeps the points it finished and
+  says how many are missing. A 2-D or 3-D scan (hand-written in the .inp) is
+  listed rather than drawn. In *Visual*, *Scan points* steps through each
+  point's optimized structure in order, with its energy. The numbered
+  per-point `.xyz` copies ORCA writes are no longer listed one by one.
+  Opening an optimization trajectory now shows each frame's energy too.
+
+### Fixed
+- **An MLIP or CREST result no longer shows an ORCA input.** The notebook
+  report's Input pane generated an ORCA `.inp` for a calculation that ORCA
+  never ran; it and the Natural-orbitals section (there is no wavefunction)
+  are now left out for those results.
+- A finished relaxed scan is no longer taken as a plain optimization's
+  result (or the reverse) when existing results are kept on Run: the scan's
+  geometry is its last point, held there, not a minimum.
+
+## [0.10.5] — 2026-10-26
+
+### Added
+- **Push a structure along a vibrational mode.** In the notebook builder,
+  *Load .hess…* beside *Load .xyz…* reads a frequency run's Hessian and lists
+  every mode, imaginary ones marked and the first preselected. Pick a
+  direction and how far the most-moved atom should go (Å, slider or number),
+  watch it on the stage, then *Apply* it to the coordinates — Ctrl+Z undoes
+  it. The standard way off a saddle point before re-optimizing; an empty box
+  takes the Hessian's own geometry, and coordinates for other atoms are
+  refused.
+
+## [0.10.4] — 2026-10-26
+
+### Added
+- **Geometry constraints, picked on the structure.** The notebook builder
+  draws the structure beside its coordinates as you type. For an optimization
+  (Opt, Opt + Freq, TS Opt, TS Opt + Freq), drag across 2, 3 or 4 atoms — or
+  Ctrl+click them in order and press *Add* — to hold a bond, an angle or a
+  dihedral, fix a selected atom's position, or type the atom numbers. Each constraint holds its starting value or takes a
+  target, and is written into the `%geom` block as ORCA `Constraints`. A
+  constraint naming an atom the structure does not have is refused when it is
+  added, rather than failing in ORCA's setup. An angle target ORCA cannot
+  take is warned about when the calculation is added, and noted in the
+  `.inp`: past 175° an angle is a linear bend to ORCA, which it will only hold
+  where it starts — a 180° target stopped the run in setup even when the
+  coordinates were already at 180°. Leave the target empty to hold it.
+  - **Apply** moves the coordinates to a constraint's target before the run,
+    so you can see the structure you are asking for. The smaller side of the
+    bond moves as one piece — a hydroxyl turned to 120° takes its hydrogen
+    with it — and a ring bond is refused rather than bent. Only the moved
+    atoms' numbers change in the box, and Ctrl+Z there undoes it.
+
+### Changed
+- **A running IRC shows its path.** The cell used to draw the convergence of
+  the last single SCF; it now draws the energy profile as it is walked — ΔE
+  against the TS, backward to the left and forward to the right — with each
+  direction's steps, current ΔE and how far max|G| and RMS(G) still are from
+  their thresholds (ORCA needs both under), and a progress bar from MaxIter. A reopened or reattached IRC
+  rebuilds the path from its `.out`.
+- **A generated `.inp` no longer carries ORCAdesk's own `#` comments.** The
+  notes that explained a composite method's missing basis, a dropped RI
+  keyword, a capped NumFreq process count or left-out constraints are gone;
+  what they described still happens. A constraint ORCA will stop on is warned
+  about when the calculation is added instead.
+- **The notebook preview's structure viewer draws like Avogadro2, and shows
+  which atom is in front.** Lit spheres and shaded sticks at Avogadro's
+  ball-and-stick proportions (0.3 × the van der Waals radius on 0.1 Å sticks,
+  so hydrogen is a ball, not a dot), and three depth cues where there were
+  none: mild perspective, depth fog and a dark rim on every atom and bond.
+  - A **Display** menu on every stage: ball and stick, sticks, space-filling
+    or wireframe; hydrogens on or off; atom labels (element, or `C12` as the
+    pick panel names it); and **double and triple bonds** drawn from the run's
+    own Mayer bond orders, with a delocalized bond as one solid and one dashed
+    stick. One setting for the whole app, remembered; keys 1–4, H, L.
+  - **Zoom and move**: the wheel zooms in the pop-out viewer (Ctrl+wheel or a
+    touchpad pinch in the report, which still scrolls), Shift+drag or a
+    middle-drag moves the structure, 0 puts the view back. A drag now turns it
+    the way the hand moves — the near side follows the cursor — and it can be
+    turned all the way over.
+
+### Fixed
+- Clicking a finished calculation in the queue now shows its controls —
+  results, duplicate, folder, remove — like any other row. It used to jump
+  to the Results view, leaving those controls behind the small arrow alone.
+  In the Results view a click still opens that calculation's report.
+- Finished calculations can be removed from the queue while it is running —
+  one at a time or with the Finished group's *Clear*. Removing one never
+  touched its files, but the queue refused it until the whole run ended. A
+  finished calculation that a calculation still to finish takes its geometry
+  from stays, as before.
+- A stage chain in a notebook cell (analytical or numerical frequencies,
+  TD-DFT, a conformer search) printed its title twice — once in the pane head
+  and once above the stages. It is said once now. The reaction profile's
+  species rows likewise label Coefficient / Calculation on a stage's first row
+  only.
+- The notebook preview's builder started a new IRC at `MaxIter 40` instead of
+  100, and a new TD-DFT at `nroots 10` / `maxdim 1` instead of 40 / 10. It
+  kept its own copies of the defaults and they had drifted from the
+  backend's; it now takes every default from the backend
+  (`get_step_defaults`), so they cannot drift again.
+- A running calculation's Output pane in the notebook preview no longer pulls
+  you back to the bottom every second. It follows new output only while you
+  are at the end; scroll up and it stays on the line you are reading, and a
+  **↓ Latest · N new** button on the pane jumps back and resumes following.
+  Text selected in the pane survives a refresh, and a finished run's pane
+  shows ORCA's closing lines instead of stopping up to a second short.
+- A new optimization built in the notebook preview was written with
+  `MaxIter 1`, so it stopped after one cycle: the field started at 0 and the
+  input generator raised it to its minimum. It starts at 200, the default.
+
+## [0.10.3] — 2026-10-22
+
+### Added
+- **The notebook report's Output shows the whole file, with Find.** It used to
+  show the last 2000 lines, scrolled to the end. It now opens at the first line
+  and scrolls through the entire `.out` — a 1-million-line, 52 MB output scrolls
+  as easily as a small one, because only the lines on screen are drawn — with a
+  visible scrollbar and *↑ Top* / *↓ End*. **Find** (or Ctrl+F) marks every
+  match on screen, highlights the current one, counts them (`12 of 23`) and
+  steps with Enter / Shift+Enter or *Prev* / *Next*; case is ignored.
+
+### Changed
+- **Less explanatory text in the notebook preview.** The sentences that
+  explained a control the control already shows are gone: the empty queue
+  reads *Nothing queued yet.*, the builder lost its mode and per-element-basis
+  explanations and the "joins the queue" subtitle, an empty Results window
+  reads *No result open.*, and the report dropped the summary's "This is a
+  geometry optimization…" line and the Structure / Visual section
+  descriptions. The summary's run time reads *time* instead of *took*, and the
+  Input / Output headers no longer repeat the file names (the Output header
+  keeps its size and line count). The Type list drops its parenthetical
+  glosses: *NEB-TS*, *IRC* and *General*.
+- **The notebook preview's top bar shows ORCA, MLIP and CREST.** All three
+  pills are always there, each with its state (ready / checking… / error /
+  not set) and a tooltip naming what was found, so what this machine can run
+  is visible without opening Settings. They update on their own once a probe
+  finishes or an environment is added.
+- **CREST in the notebook preview's Settings.** The preview's Settings sheet
+  had no CREST section at all, so it could only be installed or pointed at a
+  WSL distribution from the classic window. It now has the same card: each
+  distribution with whether CREST is in it (version and path), the
+  distribution picker, *Install CREST* and *Re-check*.
+- **An IRC's starting Hessian is loaded, not typed.** The notebook builder's
+  `.hess file` text field is now a **Load .hess…** button, like *Load .xyz…*:
+  pick the `.hess` a TS frequency run left behind (from any folder) and
+  Initial Hessian switches to *read* by itself. The file is copied into the
+  IRC's run folder when it starts, so the Hessian is not computed a second
+  time and nothing has to be copied by hand. Saving with *read* and no file
+  loaded is refused with a sentence saying so.
+- **Only one ORCAdesk runs at a time.** Starting it again while it is open
+  brings the open window to the front (restoring it if it was minimized)
+  instead of opening a second one. Two instances restored the same queue,
+  reattached the same running ORCA job and overwrote each other's saved
+  session, so a calculation could be launched twice into one folder.
+- **The free-energy profile is now the Reaction profile, and it reads every
+  thermodynamic quantity, not only ΔG.** The table gives each stage's ΔE, ΔE₀
+  (E + ZPE), ΔU, ΔH, TΔS, ΔS and ΔG side by side, so a step can be read as
+  enthalpy- or entropy-driven (ΔG = ΔH − TΔS is on one line); the level diagram
+  is drawn on whichever of them you pick. ΔS is in cal/(mol·K) or J/(mol·K),
+  from ORCA's entropy term over its temperature. The table's Δ can be taken
+  against the reference stage or **per step**, against the stage before. A
+  column appears only when some stage has a value on it, quantities are never
+  mixed (a species that cannot supply one leaves that cell blank and says why),
+  and species whose thermochemistry was computed at different temperatures are
+  flagged.
+
+### Fixed
+- **An ORCA run that died but never exited no longer shows RUNNING forever.**
+  Inside a NumFreq, ORCA prints `error termination` for a failed displacement,
+  skips it and carries on — and can then spin on one core without ever
+  exiting: two CCSD(T) frequency jobs whose AUTOCI died on a displacement sat
+  at RUNNING for 14 hours with nothing written in their folders. The monitor
+  only knew the process's exit. It now watches for ORCA's fatal markers
+  (`error termination`, `aborting the run`) and, once one has appeared, ends
+  the job when nothing in its run folder has been written for 10 minutes. The
+  calculation is FAILED with the cause read from the `.out` plus a note that
+  ORCAdesk stopped the process. A reattach after a restart reads the marker off
+  the file, since it tails from the end. A silent folder without a marker is
+  never treated as a hang: a long CCSD(T) step is silent too.
+  From the moment the marker appears, the calculation reads as **failed
+  while it stays in the running group**: its process still holds cores and
+  Stop still reaches it, so it is not finished. The badge says failed, the
+  dot is red, the row shows ORCA's error line and the progress bar is gone,
+  in both the notebook preview and the classic queue
+  (`CalcSummary.faulted`).
+- **An opened file can be closed again, and a row's controls stay open.**
+  The notebook preview's queue rail is redrawn every second, and each redraw
+  folded every row that had been unfolded with ▸ — so the controls under a
+  row vanished before they could be clicked, and an opened file's *close*
+  could not be reached at all. Unfolded rows now stay unfolded.
+- **The queue no longer disappears when the preview window is narrowed.**
+  Below 1320px the queue rail used to be hidden outright, taking the run
+  controls and the opened files with it. It now narrows instead, and in a very
+  narrow window (below 760px) it moves above the calculations while the top
+  bar wraps onto a second line.
+- **A TS optimization no longer looks like it turned into a frequency job.**
+  `ts_opt` computes an exact Hessian inside its first cycle (`Calc_Hess true`),
+  and that Hessian prints the same banners an analytical frequency run does —
+  so the cell switched to an "Analytical frequencies" panel listing
+  Frequencies, Normal modes, IR spectrum and Thermochemistry, none of which
+  were coming. A Hessian that starts inside an optimization cycle is now
+  titled **Initial Hessian** (or names its cycle, for a recomputed one) and
+  lists only its own three stages; the panel still clears when the next cycle
+  starts. An `opt_freq`'s frequencies after convergence are unchanged. An
+  `irc`'s InitHess Hessian is drawn the same way, and a run reattached after
+  a restart keeps the distinction (the markers now survive the output filter
+  the panel is rebuilt from).
+- **A result opened from disk shows its output.** In the notebook report, a
+  `.out` opened with *Open file…* from outside the workspace parsed correctly
+  but its Output pane read "No output on disk." — the file was looked for under
+  the workspace by name instead of in its own folder. Its Input pane now also
+  shows the real `.inp` from that folder rather than the echo inside the `.out`.
+- **Changing the Type in the notebook builder now changes the job.** The
+  calculation type carried over from the previous Type, so a new calculation
+  switched from Optimization to Opt + Freq kept `TightOpt` on its keyword line:
+  ORCA optimized, never computed a Hessian, and the run was marked FAILED. The
+  calculation type now follows the Type (as in the classic UI); SCF convergence
+  and extra keywords follow it only while they still hold the old Type's default.
+- **Guided → .inp text converts the form.** The notebook builder opened an empty
+  editor, so everything filled in on the form was lost. The editor now starts
+  with the input the form generates — what *Preview .inp* shows — with a
+  `{{GEOMETRY}}` placeholder when no coordinates are given yet.
+- **A re-run calculation no longer shows the previous molecule's surface.**
+  Re-running a name rewrites its `.gbw` but leaves its `cubes/` folder, and a
+  cube was reused whenever a file of that name existed — so a density plotted
+  before the re-run (a pyridine, in the report) was drawn over the new molecule
+  (a phenol) and marked *ready*. A cube older than the `.gbw` is now regenerated,
+  and is no longer listed as already on disk.
+- **A frequency job on a single atom or monatomic ion no longer fails.** An atom
+  has nothing to vibrate — its three modes are translations, which ORCA prints
+  as 0.00 cm⁻¹ — so the frequency table came back empty and the run was marked
+  FAILED ("No vibrational frequencies"), even though ORCA had computed its
+  translational thermochemistry. That left an ion like Cl⁻ with no way to get
+  the Gibbs free energy the reaction-profile card asks for, and the card's own
+  advice was to run exactly that job. A one-atom structure with a frequency
+  section is now accepted; a molecule whose output has no modes still fails.
+- **The free-energy profile is a reaction now, not a list.** It used to plot
+  every finished frequency calculation in the workspace in *queue order* and
+  print differences between them — which is not a profile: unrelated molecules
+  on one axis, and a ΔG between two things that are not the same matter. You
+  build the reaction instead. Each **stage** is a point on the coordinate and
+  holds the species standing there, each with the **stoichiometric coefficient**
+  it is taken with; the stage's energy is the weighted sum, and the profile is
+  every stage against the one you pick as zero. `A + 2 B → P` is two stages and
+  three rows.
+  - It is drawn as a **level diagram** — a flat bar per stage joined by a thin
+    line — because a stage is a state, not a sample of something continuous.
+    The old line sloped between two molecules and invited the reading that
+    something happens along it.
+  - **It says when the two sides are not the same matter.** Each stage's
+    composition and charge are summed with its coefficients and compared against
+    the reference: drop the `2 B` from the example above and it says
+    *"Products does not hold the same matter as Reactants: +4 O. The difference
+    between them is not a reaction energy."* Reported, never enforced —
+    comparing a fragment against a whole is something people do on purpose.
+  - A stage with an empty row has **no** energy rather than a partial sum: a
+    reaction nobody has finished writing down should not produce a number.
+  - **Every finished calculation can stand in it**, not only those with
+    frequencies. A chloride ion has no vibrations to compute, so the old filter
+    removed exactly the species that cannot have them — and `CoCl₄²⁻ + 6 H₂O →
+    Co(H₂O)₆²⁺ + 4 Cl⁻` needs that Cl⁻. Which energy the stages are summed on is
+    a **choice** (Gibbs free energy or electronic energy) because the two cannot
+    be added together; a species that has no thermochemistry says so in the
+    picker, the stages holding it read as a dash rather than a number on a mixed
+    basis, and the section says both ways out — run a frequency calculation for
+    it (a single atom still gets its translational and electronic terms), or
+    switch the basis.
+
+## [0.10.2] — 2026-09-16
+
+### Changed
+- **The Visual strip lists the surfaces too, and asks before computing one.**
+  It used to show only the `.xyz` sets in the run folder; the orbitals, the
+  electron density, the spin density and the ESP map were reachable only from
+  inside the pop-out viewer, and the viewer was never handed the orbital list,
+  so it could draw a density but never an orbital. They now sit in the same
+  strip as the structures — as **kinds**: one *Orbitals* tile reading
+  its orbital count, with the orbitals themselves in the list beside it,
+  each with its energy. A cube already on disk opens at once. One that is not
+  costs an orca_plot run over the wavefunction, so the click asks first —
+  naming the grid and what the wait actually is (an orbital is about a second,
+  an ESP map a few minutes, because it is two cubes on one grid).
+  A single-point run with no `.xyz` beside it is no longer an empty Visual
+  section: the strip carries its surfaces and the stage says what it is missing.
+- **The vibrational spectrum reads out on the band instead of under it.** The
+  list of every mode that used to sit below the chart is gone — for a real
+  molecule that is a hundred-odd rows of one number each, the chart transcribed,
+  and it pushed every section after it off the screen. Point at a band for its
+  mode number and exact wavenumber (imaginary modes say so); the arrow keys step
+  through them, so the numbers are reachable without a pointer. The whole plot is
+  the hit target and the nearest band wins — a band is 1.6px wide, which no
+  hit-target rule can save.
+
+### Fixed
+- **The axis marker in the corner is the control for the axis views.** It used
+  to be a button that cycled *View down x -> y -> z*, which asks you to know
+  which way you are already facing and to press up to three times to get where
+  you meant. The marker was already there, stating the orientation; pressing
+  the arm you want is now the whole gesture, and it is one press. The button is
+  gone, and the marker is on the report's Structure stage as well as the Visual
+  one. Without a pointer, x, y and z do the same thing while the stage has
+  focus.
+- **Every molecular orbital can be plotted, not ten of them.** The Orbitals
+  tile offered a window of HOMO-4 to LUMO+4, which is a guess about which
+  orbital the question is about — a ligand-field argument wants the metal d set
+  wherever it fell, a charge-transfer one wants the donor lone pair, neither is
+  necessarily in that window. The list now holds the whole manifold (both
+  manifolds for an open-shell run, alpha and beta kept apart and named), and
+  the tile counts them instead of naming its ends. Nothing extra is computed:
+  orca_plot still runs only for the orbital actually clicked.
+- **Turning a structure no longer resizes it.** The view was fitted to how wide
+  the molecule happened to look from the current angle, recomputed every frame —
+  so dragging an elongated one made it pump in and out (measured on triflic
+  anhydride: a carbon went 21.1px end-on to 33.8px broadside over one turn,
+  a 1.6× swing). The fit is to the molecule's bounding sphere, which a rotation
+  cannot change, and the margin is the outermost atom's actual ball rather than
+  a constant generous enough for any element. Checked over 312 orientations:
+  one scale, distances preserved to 1e-15, nothing clipped at any angle.
+- **Atoms are drawn at their own size.** Every structure here — the cell
+  thumbnails, the report's Structure stage, the pop-out viewer — sizes a ball
+  by the element's covalent radius, so hydrogen comes out at 41% of a carbon
+  and oxygen slightly under one. Two things stopped that from being visible:
+  the radius table covered 24 elements and sent everything else to a single
+  fallback *larger than iodine*, and a flat 2.5px minimum clamped every small
+  atom to the same size whenever the molecule was large against its box —
+  which is every cell thumbnail of a real molecule. The table is now the
+  published covalent radii (Cordero 2008) from H to Pu, and the only floor left
+  is that a ball is never thinner than the stick it sits on.
+- **A finished run's thumbnail shows the structure it finished on.** The
+  geometry was cached under the calculation's name the first time it was drawn,
+  so a calculation watched from queued to done kept the coordinates it was
+  handed while the caption under it changed to *final* — the optimized
+  structure appeared only after a reload.
+- **A failed calculation says why where you are reading it.** The reason used
+  to be a red box under the queue row and nowhere else — four failures filled
+  the rail and pushed the queue itself off the screen, while the cell that
+  *was* the calculation carried the same sentence squeezed into its fact line.
+  The rail row now carries a one-line ⚠ summary like every other state, and the
+  reason itself sits at the top of the cell body, where the design puts it.
+- **The fact line under a cell was outside the card's padding**, so “opt ·
+  charge 0 · mult 1” sat flush against the border with the message repeated
+  after it. It is inside the body now, and states facts only.
+- **The section outline no longer has a strip of the report showing above it.**
+  A sticky bar sticks to the scrollport's *padding* edge, so the report's own
+  20px of top padding was a band the outline could never cover and a table
+  header stayed legible, half cut off, over the chips. The padding moved onto
+  the bar.
+- **The input echo printed its first line twice.** For a result whose `.inp` is
+  gone, the pane is rebuilt from what the parser read out of the `.out` — and
+  the keyword summary was being prepended to a block that already contained it.
+- **Atoms are numbered from one everywhere.** ORCA indexes its Mayer and NMR
+  tables from zero, and those numbers were passed through beside geometry,
+  Mulliken and Löwdin tables numbered from one — so one water molecule wore two
+  numberings on one screen, and *Mayer bond orders*, which says “also on any
+  bond you click in Structure”, listed `0-O – 1-H` for the bond the viewer
+  labels `O1 – H2`. Every table now reads `1 O – 2 H`.
+- **The notebook preview is drawn in the typefaces it was designed in.** The
+  approved design asks for **Inter** and **JetBrains Mono**; it pulls them from
+  Google Fonts, which an offline desktop app cannot do, and no copy shipped —
+  so every word in the preview was drawn in whatever Windows substituted (Segoe
+  UI Variable, and Consolas for anything monospaced). Both faces are now
+  carried with the app (~172 KB, latin + latin-ext, SIL OFL). The difference is
+  largest exactly where it was noticed: the queue rail's 10–11px muted labels —
+  a row's method line, its status message, the state badge, the group headings —
+  are set in a face with a smaller x-height than the one they were spaced for,
+  so they read fainter and left more air inside boxes whose padding never
+  changed. The element-by-element check against the design could not see it: a
+  computed `font-family` is the list that was *declared*, identical on both
+  sides, so a substitution is invisible to it. It now measures the face that
+  actually renders, and says which side fell through to nothing.
+- **The notebook opens at the width its layout is drawn for.** The window came
+  up at 1100px for both front-ends, and the notebook's stylesheet folds the
+  queue rail away entirely below 1320 — so the preview's default state was a
+  layout the design never shows: no rail, cells at full width. It now opens at
+  1680×1000, clamped to the screen it lands on, and grows if it is switched to
+  from the classic window. A display genuinely too narrow still gets the
+  collapsed layout, which is what that layout is for.
+- **The queue rail's finished group, and a place for files opened from
+  elsewhere.** Three things the design draws were missing from it. *Finished*
+  was labelled “Done” and could only be emptied by clearing the whole queue —
+  it now carries its own **Clear**, which takes the finished rows out of the
+  list and touches no file on disk. A finished row shows what it found
+  (`0 imaginary · G −1268.19844 Eh · 1h 38m`) instead of dropping its message
+  as noise, so it is two lines of answer rather than two lines of name. And a
+  result opened from outside the workspace now stays in the rail under **Opened
+  files**, with the folder it came from, rather than being reachable only while
+  it happens to be on screen — the group's header is also the rail's *Open
+  file…*.
+- **A queue row can be reordered from the keyboard again, and copied.** The
+  rail's rows expand into the design's own controls now, in its wording:
+  **↑ earlier / ↓ later**, *results*, *duplicate*, *folder*, *remove*. The
+  reorder pair is the point — dragging was the only way to move a calculation,
+  which is no way at all without a mouse; the buttons walk the row's own group
+  and go quiet at its ends. *duplicate* puts the setup back as a new queued row
+  under a free name, whatever the original became, which is what you want after
+  a run that failed for a reason you have since fixed. Two controls the design
+  draws are deliberately not here and the code says why: *requeue* on a failed
+  row would contradict a rule this app does keep (a failed calculation is locked
+  at the moment it failed — build a new one), and *stop* on a single row would
+  have to stop every job in flight.
+- **An 11-pixel divider that should not have been there.** `.seg .sep` is the
+  rule that separates two *groups* inside one segmented control — the design
+  uses it once, in the builder's `DFT | MLIP | CREST · Beginner | Expert`. Two
+  had been put between the two buttons of a two-button control (the Jobs/Results
+  switch and the viewer's mode switch), where there are no groups to divide and
+  where a 1px rule plus 8px of margin plus one more gap made both controls 11px
+  wider than the design draws them. The element-by-element check could not see
+  it: it compares the *properties* of 121 named elements, and an extra child
+  changes none of them. It now also audits every class combination on both pages
+  for the box-model and type metrics the shared stylesheet fixes, which is how
+  this was found, and reports a height difference beside it without counting it.
+- **The Structure stage and the Visual panel beside it end level again.** On a
+  display scaled above 100% the Structure stage grew a little every time
+  anything resized — a molecule viewer sizes its own bitmap from its own box
+  each frame, and in flow that bitmap becomes the box's own input, so at 125%
+  each pass multiplied the height by 1.25 while the Visual panel next to it
+  stayed put. The drawing surfaces are now out of flow, and the observer that
+  triggers a redraw watches the stage rather than the canvas it is about to
+  resize. Both halves, because either one alone leaves the loop a step from
+  closing. Every stage is affected — cell thumbnails, the report, the pop-out
+  viewer — and none of it was visible at exactly 100%.
+- **The Results toolbar is the design's again: Output | Visual, and no second
+  picker.** The queue rail chooses the result — in either view — and anything
+  not in it comes in through *Open file… / Open folder…*, which is also what
+  gives it a row under **Opened files** with the folder it came from. The
+  toolbar's `Result` dropdown listed the queue *and* a scan of the workspace:
+  the same job done twice, the copy that could not say where an entry came from,
+  and a disk walk on every entry to the tab. *Output / Visual* takes its place
+  and does not switch a mode — Visual is one of the report's sections, so the
+  pair jumps to it the way the outline chips do, and *Show all* (which is
+  Output's) goes away while Visual is being read.
+- **“New from this” on a finished calculation.** Starts a new one already
+  pointed at this run's optimized geometry — taken by reference, so the engine
+  resolves it when the new calculation actually runs and it is the structure as
+  it finally was. The same handoff opt → freq has always used; it just had no
+  button.
+- **An orbital or an ESP map is drawn where you picked it.** Clicking one in
+  the Visual panel used to open the pop-out viewer on top of the report you were
+  reading — the answer arriving somewhere other than where the question was
+  asked. It now appears in the panel's own stage, and the window is what you
+  open when you want it big with the isovalue beside it (and *Open in viewer*
+  now follows whatever the stage is showing, surface or structure). Underneath,
+  the isosurface renderer became one shared thing instead of the viewer's
+  private one: there is still exactly one WebGL context in the app, and the box
+  holding it moves to whichever stage is drawing — a browser keeps only a
+  handful of contexts alive and drops the oldest without asking, and the panel's
+  stage is rebuilt on every report render.
+- **The isovalue is back, and the grid is now yours too.** Both lived in the
+  pop-out viewer while that window was the only thing that could draw a volume;
+  with surfaces drawn in the Visual panel they sat somewhere you had to go to
+  say how to draw what was already on screen. They are under the list now, in
+  the column that already answers *which one*. **Isovalue** re-meshes what is
+  in memory — instant, no ORCA — and an **ESP map** also gets its colour
+  half-width, which is the other half of reading the picture. **Grid** (40³ /
+  60³ / 80³) is a different kind of knob and behaves like one: it is a fresh
+  orca_plot run, so it asks before it spends, and every *ready* mark on screen
+  is re-answered for the grid you chose, because the same orbital at 40 and at
+  80 are two different files. The choice is remembered per KIND — an orbital at
+  80³ is a second, an ESP map at 80³ is minutes, so one number for both would be
+  wrong twice.
+- **A kind with one instance no longer gets a list of one.** An ESP map is one
+  map; picking that tile used to draw a single-row list beside an otherwise
+  empty column. The column says there is nothing to step through and carries
+  the controls instead, the surface is drawn straight away when it is already on
+  disk, and when it is not there is a button that says what it will cost — a
+  tile press is not permission to spend an orca_plot run.
+- **A running optimization shows all five criteria again, and the SCF going on
+  inside it.** The cell's chart had been reduced to one line — the worst
+  criterion — which says how far off you are but never which of the five is
+  holding it up, and that is the question. All five are back, each drawn as a
+  multiple of *its own* tolerance so they share one dashed **limit** line and
+  the "3/5 met" count is readable straight off the picture, in the five colours
+  the design reserves for them. And the two convergences a running cell has are
+  a **toggle** above the chart — *Optimization* / *Current SCF*. An optimization
+  is an SCF per cycle, and the chart used to switch away from the SCF the moment
+  the first cycle landed, leaving the thing actually happening with no picture
+  at all while the output pane filled with its iterations. They are the same
+  question at two scales, so one chart shows whichever you asked for rather than
+  two half-height ones fighting for the column; the toggle appears only once
+  there are two things to switch between.
+- **The convergence axis stopped printing the same decade twice.** Its
+  gridlines were five evenly spaced lines labelled with a *rounded* exponent,
+  so a range of about three decades drew `1e3` twice and skipped a value that
+  was really on the axis. Gridlines land on whole decades now, and the goal line
+  says what it is (`limit` for a geometry, `target` for an SCF).
+- **The chart and the output beside it end level.** The chart was drawn at 52%
+  of its own width, so on a wide window it ran past the output pane, whose log
+  box tops out at 425px — the further you widened, the further out of step the
+  two columns got. The height is fixed at 270 with the budget written down next
+  to it: 345px of content, 383 with the pane head, against the 463 the output
+  column can give.
+- **A cell's structure turns under the pointer.** The thumbnail was drawn once
+  and left as a picture, which made it the one stage in the window that did not
+  respond to a drag; it is a real stage now, with the same axis marker and
+  keyboard axes as every other.
+
+## [0.10.1] — 2026-09-11
+
+### Added
+- **The notebook preview's last ten design elements.** Everything the approved
+  design draws is now in the front-end; the element-by-element check that used
+  to carry a list of exceptions carries an empty one.
+  - **A pop-out 3D viewer.** A trajectory, a CREST ensemble or a folder of
+    exported conformers opens in its own window: walk it with ‹ › or the arrow
+    keys, star the frames worth keeping (**F**), show only those, export them
+    as `.xyz`, or copy the frame on screen. Its second half draws **orbitals,
+    the electron density, the spin density and an ESP map** as isosurfaces,
+    with the isovalue editable without re-plotting.
+    - Two renderers on one stage: structures use the same painter as every
+      other stage here, so drag, click and right-drag-to-measure behave
+      identically; the volume half uses the vendored 3Dmol, fetched on the
+      first surface rather than at boot. A machine with no WebGL can still
+      walk a trajectory, and says so if a surface is asked for.
+    - Reachable from a cell's thumbnail, the report's Structure section, and
+      the Visual panel — which used to hand the folder to the operating system
+      and now opens the set that is actually on screen.
+  - **MLIP environments in Settings.** One row per registered environment with
+    what it carries (which backends import, CPU or which GPU, which Python),
+    build a new one, register an existing interpreter, remove, re-check.
+    Building reports its steps and can be cancelled.
+  - **The appearance style and glass intensity**, saved from the notebook so
+    the choice does not depend on which front-end you are in. The notebook
+    itself draws flat; the classic window renders the styles.
+  - **The builder says what is wrong with a structure before it costs hours**:
+    atoms on top of each other, a multiplicity the electron count cannot
+    produce, coordinates that are really in Bohr — with the formula, electron
+    count and fragment count beside them.
+  - **NEB endpoints as two slots.** The reactant is the geometry above, the
+    product loads into its own slot, and *Compare endpoints* answers whether
+    both carry the same atoms in the same order — a reordered atom makes the
+    band meaningless, and it used to be found by ORCA.
+  - **Per-element basis / ECP overrides** (`%basis newgto` / `newecp`) as rows
+    you add and remove.
+  - **Insertable blocks for a hand-written `.inp`** — `{{GEOMETRY}}` and the
+    common `%`-blocks, at the cursor.
+
+### Changed
+- The design check runs in **three passes** and 116 landmarks rather than 79:
+  the window at rest, a result section, and the overlays — the viewer, the
+  settings sheet and the builder's conditional blocks, both sides opened to the
+  same state first. The second pass exists because a chrome-only list read
+  `DIFFERENCES: 0` over a report of unstyled markup; the third exists because a
+  list that stops at the window at rest cannot see a single overlay.
+- The Interface card names what the preview is still missing, which is now only
+  the MLIP and CREST *calculation kinds* and the Liquid-Glass rendering.
+
+### Security
+- **The phone-sync PIN can no longer be switched off by putting a reverse proxy
+  in front of it.** The loopback exemption assumed a loopback bind meant a
+  loopback *client*; an nginx or a tunnel forwards from 127.0.0.1, so every
+  request it relayed would have worn a loopback address and skipped the PIN —
+  for whoever could reach the proxy. `create_app(..., proxied=True)` (and
+  `ServerController(..., proxied=True)`, `ORCADESK_PROXIED=1` for the standalone
+  server) turns the exemption off outright and lets uvicorn read
+  `X-Forwarded-For`, so the client address is reported honestly while deciding
+  nothing. Where no proxy is declared, uvicorn's default-on proxy-header
+  handling is now **off**: the address the PIN check reads is the real socket
+  peer, never a header, and never the `FORWARDED_ALLOW_IPS` environment
+  variable ORCAdesk does not own. No shipped configuration changes behaviour —
+  the desktop still binds the LAN and asks for the PIN.
+
+## [0.10.0] — 2026-09-10
+
+### Added
+- **A second front-end, opt-in from Settings → Interface.** ORCAdesk can now
+  open in a **notebook layout**: one window instead of five tabs, with the
+  queue as a permanent 600px rail beside whatever you are doing.
+  - The rail groups the queue by what a row is *doing* — running, queued, done
+    — and a row opens **into the builder in place**: the form is no longer a
+    tab you go to and come back from.
+  - Beside it, one **cell per calculation**: its convergence chart, its output
+    tail and its facts together. The classic UI asks you to pick a job and then
+    pick a view of it (Raw or Graph, one at a time, one job at a time); here
+    you read down the run.
+  - Results is a **report**: the summary, a grid of what the parser found, the
+    input that run read beside the output it produced, and the free-energy
+    profile last.
+  - It is a **preview** and it is **off by default**. Upgrading changes
+    nothing; the classic tabbed UI is untouched, and the switch back sits at
+    the bottom of Settings in both front-ends. Saving it swaps the window
+    immediately — a running calculation keeps running, because the queue lives
+    in Python and only the page is replaced.
+  - It is a separate application over the same Bridge, not a re-skin: its own
+    markup, its own stylesheet, its own logic in `web/next/`, sharing no ids or
+    classes with `web/`. The two files it does borrow — the convergence
+    trackers and the chart renderers — own no DOM.
+  - It is the approved design rather than an interpretation of it: the design
+    is in the repo (`design/notebook-reference.html`), its stylesheet IS
+    `web/next/app.css`, and `tools/uispec.py` + `tools/uidiff.py` render both
+    and print the number of differences — 79 landmarks × 23 computed
+    properties, currently 0.
+  - Not in it yet, and named on its own Interface card rather than silently
+    missing: the MLIP and CREST builders and their setup, the 3D viewer and the
+    Visual tab, the natural-orbital analysis, and the Liquid-Glass appearance
+    variants.
+
+## [0.9.1-beta] — 2026-09-05
+
+### Added
+- **ORCAdesk runs on Linux, CREST included.** Everything but CREST was already
+  portable — settings and workspaces follow the XDG base directories, ORCA is
+  launched with `setsid` rather than a Windows process group, files open with
+  `xdg-open`. CREST was the exception: it has no native Windows build, so
+  ORCAdesk had only ever learned to reach it *through WSL*, and on a machine
+  that IS Linux there is no `wsl.exe` to call — a natively installed `crest`
+  could not be used at all.
+  - The transport is now one decision in one place (`orcamgr/crest/shell.py`):
+    a WSL distro on Windows, this machine on Linux. The probe, the installer,
+    the detached launch, the process-group kill and the reattach-after-restart
+    are one implementation for both.
+  - **It is detected, never configured.** There is no Windows/Linux switch,
+    because no machine is both and the platform already knows the answer — a
+    setting like that could only ever be set wrong. What you do pick is *which*
+    target, and on Linux there is exactly one, so **Settings → CREST** drops the
+    distribution picker and says what it found instead.
+  - Locally the run happens in the calculation's own folder rather than an ext4
+    scratch directory: the scratch exists because CREST's many-small-file I/O is
+    5–300× slower over WSL's 9P mount, and there is no such mount here. Nothing
+    is copied, and what CREST leaves behind (`--keepdir`, a crashed run's
+    trajectories) stays where you can look at it. The `rm -rf` that cleans the
+    scratch up is not generated at all in this shape — there, it would be
+    pointing at your results.
+  - `crest` already on your PATH (a distribution package, conda-forge) is found
+    by the same login-shell probe, so a machine that has it needs no install.
+    ORCAdesk can still fetch the static binary into `~/.local`. macOS is refused
+    up front with where to get a real build, rather than downloading a Linux
+    binary that would fail at its first launch.
+- **ORCA is found on Linux the way it is on Windows.** Auto-detection scanned
+  two fixed paths (`/usr/local/orca`, `/opt/orca`); an ORCA for Linux is a
+  tarball you extract where you like, keeping its version in the directory name,
+  so it now scans `/opt`, `/usr/local` and your home directory for a directory
+  that mentions ORCA — the same rule the Windows branch has always used. A
+  configured path is also checked for the execute bit, because a tarball
+  extracted without its modes is a file that exists and cannot run, and that
+  failure would otherwise arrive as a locked FAILED calculation.
+
+  Running from source is what works today (`pip install -r requirements.txt &&
+  python main.py`); there is no packaged Linux build, and the packaging scripts
+  (`build.bat`, `build.spec`, `installer.iss`) remain Windows-only.
+
+### Fixed
+- **A failed MLIP environment kept its name for good.** Every way a create can
+  die left a directory ORCAdesk then read as a finished environment: not its to
+  delete, so the name was refused from then on — including `MACE`, the one the
+  card fills in. Two of those are easy to reach on Linux. `python -m venv` fails
+  outright on Debian and Ubuntu until `python3.N-venv` is installed, because
+  ensurepip lives in that package rather than the standard library — and venv
+  links `bin/python` *before* it fails, so the wreckage has a working
+  interpreter and nothing else. Get past that and the backend step is next: a
+  Python newer than a backend's wheels sends pip into a source build that fails,
+  2.5 GB of torch later. An environment now counts as finished when it is
+  **registered** — Settings records it only after the install returns ok, so a
+  directory under `mlip_envs/` that Settings does not know about never
+  completed. An unregistered env that nonetheless holds an MLIP backend is still
+  left alone, so a settings file that degraded to defaults (P32) cannot make a
+  working 6 GB environment deletable by the next same-named create.
+- **Only one Python was ever offered to build an MLIP environment with.**
+  Detection asked `which python3`, which names the distribution's default and
+  nothing else, so a second interpreter installed alongside it — by pyenv, uv,
+  conda or a PPA — could not be chosen. Windows never had the gap: the `py`
+  launcher enumerates every install. It is not a corner case, because the newest
+  Python is regularly ahead of the wheels a backend needs: Ubuntu 26.04 ships
+  only 3.14, MACE's matscipy has no 3.14 wheel yet, and the picker offered
+  nothing else to try. Each version is now asked for by name as well.
+- **On a GNOME desktop, ORCA auto-detection found the screen reader.** GNOME's
+  accessibility tool is also called `orca` and is on PATH by default on every
+  Ubuntu install, so `shutil.which("orca")` — the first place detection looks —
+  returned `/usr/bin/orca` before any real install was considered. It is a
+  genuine executable file, so it passed the execute-bit check, was saved as
+  `orca_path`, and **Settings reported a healthy ORCA while every calculation
+  failed**. Windows never saw this: there the name is `orca.exe`. Detection now
+  asks a candidate to prove itself by having ORCA's own helper tools beside it
+  (`orca_2mkl`, `orca_plot` — the two the app already reaches for through
+  `orca_tool`, so this demands nothing an install did not already owe), and
+  resolves symlinks first, because linking the driver into `~/.local/bin` is a
+  normal way to put ORCA on PATH and the tools sit beside the target, not
+  beside the link. Only detection is strict: a path you pick by hand is still
+  judged on its own, so a trimmed or unusual install stays selectable instead
+  of becoming unconfigurable.
+- **Every dropdown opened as a white slab on a dark theme.** QtWebEngine does
+  not paint a `<select>`'s list with the page's CSS — it hands the options to a
+  native Qt widget drawn from the Qt palette, which is the system's, not the
+  app's. On Linux that is a white popup over a dark window, covering whatever
+  sits under it (most visible on **Settings → MLIP**'s *Base Python*, but every
+  picker in the app had it), and no stylesheet reaches inside a native popup.
+  So the app no longer opens one: the `<select>` stays in the DOM and stays the
+  value, the option list and the event target, while a styled trigger and list
+  are drawn beside it. Nothing that reads or writes a picker changed —
+  `sel.value`, `sel.options`, the refills, and the inline `onchange` handlers
+  all still mean what they did — and the list is now a page element, so it
+  follows the theme, scrolls, and cannot be clipped by the panel it sits in.
+  Keyboard use matches the control it replaces: Enter/Space to open, arrows,
+  Home/End, Escape, and type-ahead.
+- **A settings test asserted the Windows answer on every platform.** The check
+  that a plain file counts as a possible ORCA executable wrote the file without
+  its execute bit, which is exactly what the POSIX branch of `orca_is_valid`
+  refuses — so the suite could not go green on the platform this release adds
+  support for.
+- **The ORCA discovery tests built a file Windows cannot run.** The fixture
+  for "an executable named `orca`" wrote it with no suffix, which is the
+  POSIX shape and only that: on Windows `orca_is_valid` asks for one of
+  `.exe`/`.bat`/`.cmd`/`.com`, and `orca_tool` derives a helper's name from it
+  (`orca.exe` beside `orca_2mkl.exe`). So the check that a hand-picked path is
+  still the user's call asserted a healthy ORCA against a path the product is
+  right to refuse, and the suite was red on the primary target for a reason
+  that was never in the product. The fixture now builds whichever shape the
+  platform running the test can actually execute — the mirror of the
+  POSIX-side fix above.
+- **A comma in a calculation's name killed every 3c run.** ORCA collects its
+  gCP helper's output through a `cmd.exe` redirection it does not quote —
+  `otool_gcp "<name>.gcp.in.tmp" ... > <name>.gcp.out` — and cmd ends a
+  redirection target at a space, a tab, a `,`, a `;` or an `=`. So under a name
+  like `(S,S)mol` the correction was written to a file called `(S`, ORCA never
+  found the output it had just asked for, and the run died with *Calculation of
+  the gCP correction failed!* — after the SCF was already paid for, and into a
+  FAILED calculation, which is locked. Only the composite methods that carry
+  gCP reach it (r2SCAN-3c, B97-3c, HF-3c, PBEh-3c, an explicit `! GCP(...)`),
+  which is why a naming style that had run for months could break the first
+  time one was chosen. Those three characters join the space and `&` already
+  refused for ORCA-backed calculations; `(`, `)` and `'` still run and stay
+  allowed. Stereochemistry is the obvious casualty, so the message names the
+  characters rather than asking you to guess which one it meant.
+- **Tightening that rule no longer deletes your history.** A name is checked
+  again when the queue is restored at launch, and an entry that fails is
+  dropped — so the calculations that hit the bug above would have vanished from
+  the queue on the next start, taking the record of what failed with them. The
+  ORCA rule says *a new run of this would fail*, not *this path is dangerous*,
+  so it is no longer applied to a name that is already on disk. Everything that
+  protects the filesystem still is.
+- **A structure preview coming back on screen drew into nothing.** Every
+  return to the Build tab logged a pair of
+  `GL_INVALID_FRAMEBUFFER_OPERATION: Framebuffer is incomplete: Attachment has
+  zero size` errors per panel. 3Dmol runs its own window-resize listener, which
+  shrinks a hidden panel's canvas to 0×0; the guard that stops a viewer drawing
+  while hidden looks at the *container*, which is visible and sized again by the
+  time the panel is restored, so the redraw that repaints the card colour for
+  the current theme sailed past it and drew into a zero-size framebuffer. The
+  canvas is now synced to its container before the colour is set rather than
+  after, so both redraws land on real pixels. Wasted GPU work and a console the
+  real warnings drown in — and, on some drivers, a step toward a lost context.
+
+## [0.9.0-beta] — 2026-09-05
+
+### Added
+- **Natural bond orbital analysis, computed by ORCAdesk itself — no NBO
+  licence needed.** Natural population analysis and the
+  donor–acceptor tables people actually want from an NBO run are reachable from
+  ORCA only through the separately licensed NBO program. The methods are
+  published, and everything they need — the overlap, density and Fock matrices —
+  follows from the wavefunction a finished run already left in its `.gbw`. So
+  ORCAdesk carries its own implementation: the layer that recovers those
+  matrices, and on top of it **natural atomic orbitals and NPA charges**.
+  - **NPA is the charge you can quote.** Mulliken and Löwdin charges drift with
+    the basis set, sometimes absurdly: on one water molecule across five basis
+    sets, Löwdin's oxygen moves by 1.03 electrons and at def2-QZVP comes out
+    *positive*. NPA moves by 0.06 over the same span, and finds polarity the
+    others understate — sulfuric acid's sulfur at +2.47 where Mulliken says
+    +1.06, oxygen in water at −0.89 where Mulliken says −0.29.
+  - **Natural bond orbitals and the second-order donor–acceptor table** — the
+    part of an NBO run people actually quote. ORCAdesk finds the Lewis
+    structure in the density (cores, lone pairs, bonds with their `sp2.48`
+    hybrids and polarities, antibonds), then puts a kcal/mol on every
+    delocalization the Lewis structure leaves out. Formamide's amide resonance,
+    LP(N) → π\*(C=O), comes out at **63.7 kcal/mol** (literature: 55–65);
+    benzene's π → π\* at 32.3, six times by symmetry; the nitrogen lone pair
+    holding 1.73 electrons with the missing 0.27 found sitting in π\*. A
+    delocalized system is handled by lowering the occupancy threshold until a
+    complete structure appears (a Kekulé benzene at 1.60), and one that never
+    completes — a substituted ring hydrogen-bonded to an acid — is reported as
+    such rather than papered over. Open shells get one Lewis structure per spin.
+  - **Wiberg bond orders and natural electron configurations** come with it.
+    Dinitrogen reads 3.03, aspirin's two carbonyls 1.81 and 1.71, its aromatic
+    ring 1.44–1.47, its acid O–H 0.69. The configurations show where the
+    electrons actually sit — `O [core] 2s( 1.75) 2p( 5.12)` — which is how you
+    see a formally d⁷ cobalt(II) holding 7.7 d electrons because its ammine
+    ligands are donating.
+  - **Analysis is retroactive, and costs nothing the second time.** The input
+    is the `.gbw` every run already writes, so this applies to calculations you
+    finished months ago, with nothing to re-run. The answer is kept beside the
+    run — aspirin takes 2.7 s the first time and 4 ms after that — and is
+    discarded rather than reused if you re-run the calculation into the same
+    folder. Checked on real output up to 1644 basis functions.
+  - Installing from source picks up a fourth package, and the packaged Windows
+    build grows by roughly 15 MB. Nothing needs an integral library, so no
+    compiled chemistry stack comes with it.
+  - **On the Results tab.** Output mode gains a *Natural bond orbital analysis*
+    card under the population sections. It opens as one button — the work is
+    seconds on most molecules, computed in the background with the rest of the
+    tab usable — and renders in place: NPA charges with each atom's natural
+    electron configuration and valence, the Wiberg bond orders, the Lewis
+    structure with every orbital's occupancy, energy and hybrids, and the
+    second-order table, strongest interaction first. An open-shell result
+    gets one Lewis structure and one table per spin. A result with no
+    wavefunction file, or from a run that did not converge, says so.
+  - **Every natural bond orbital can be drawn in 3D.** The Lewis table has a
+    *View* button per orbital; it opens the same viewer as the canonical
+    orbitals, with the whole Lewis structure as the list to step through,
+    and follows the *Opening structures and maps* setting like every other
+    3D row. `orca_plot` cannot draw these — it plots only what the `.gbw`
+    holds — so ORCAdesk evaluates the orbital on the grid itself, on the
+    same box orca_plot uses, and writes an ordinary cube beside the run
+    (`cubes/{name}.nbo7a.g60.cube`). The evaluator was checked against
+    orca_plot's own cubes on a water molecule turned off every symmetry axis
+    so that every f and g component contributes: it reproduces them to the
+    five digits orca_plot prints, which pinned two things ORCA's Molden files
+    do not document (the g normalization and the sign of the f(±3), g(±3),
+    g(±4) components). A cube from an older analysis is regenerated rather
+    than shown under a new label. About a second on a small molecule, three
+    on 1,600 basis functions.
+
+  The numbers are ORCAdesk's own and are not claimed to match the NBO program
+  digit for digit; the weighted orthogonalization at the heart of the method
+  is not specified to the last detail in the literature, and the card says so.
+
+## [0.8.0-beta] — 2026-09-04
+
+### Added
+- **Open a result by its folder.** The Results tab's picker row gains *Open
+  folder…* beside *Open file…*: point it at a run folder and ORCAdesk finds
+  the result inside it — its own `{name}.out` / `{name}.mlip.json`, or, for a
+  run ORCA wrote by hand, the `.out` the folder holds (the newest, if
+  several). A folder with nothing to read is refused with a sentence that
+  says what would have worked. Until now the only way in was to know which
+  file the parser reads and pick that.
+- **Electrostatic potential maps.** The Results tab gains an **Electrostatic
+  potential map** section of its own, directly under *Final geometry*: the
+  electron-density surface coloured by the molecule's electrostatic potential —
+  red where it is negative (electron-rich, where an electrophile approaches),
+  blue where it is positive. It is the picture you reach for to say where
+  something attacks, and it used to mean exporting cubes into another program.
+  *View ESP map in 3D* opens it on its own, with the frame list put away: it is
+  one figure, not another level to click through.
+  - It is drawn from **two** grids, not one: the density gives the surface, the
+    potential gives the colour, and both are computed on the same box so the
+    colour can be sampled per surface vertex. ORCAdesk generates and caches both.
+  - **Two independent knobs.** The isovalue slider moves the density surface the
+    map is painted on — it opens at 0.002 e/bohr³, the van-der-Waals-like
+    contour, which is where a potential is a statement about *approach*. A
+    second slider sets the colour scale, opening at the conventional ±0.05 a.u.
+    Both redraw what is already loaded, with no recomputation.
+  - **It says what it costs before you click.** The potential is a Coulomb sum
+    over the whole density at every grid point: measured at **49 s** on a
+    52-atom molecule at 40³ and ~2.8 min at 60³, where an orbital is 0.17 s. So
+    the ESP map keeps its own, coarser default grid (the potential is smooth and
+    long-ranged, so it loses little), the list marks it as taking minutes, and
+    the progress card says which of the two grids is being computed. The finer
+    grids stay available — they are just no longer the silent default.
+  - Offered for any finished ORCA run that can already plot its electron
+    density; both come from the same SCF density.
+- **You can see the structure you are about to run, on the Build tab.** Loading
+  an `.xyz` now draws it in 3D right under the loader, with a one-line census
+  beside it (`C8H10N4O2 · 24 atoms · 102 electrons · 1 fragment`). Until now the
+  molecule was a line of text until the job was over.
+- **The mistakes that cost a whole run are caught in the form, not by ORCA.**
+  Under the preview, a screening panel reports what it finds and nothing more —
+  it never edits your structure:
+  - **A multiplicity the electron count cannot produce.** An even number of
+    electrons cannot have an even multiplicity, and ORCA aborts on it at the
+    first SCF step. The message says how many electrons the formula and charge
+    actually give and which multiplicity is nearest.
+  - **Atoms on top of each other** — the same atom pasted twice, or a pair far
+    closer than any bond between those elements (the threshold clears a real
+    C≡C triple bond, so a short bond is never flagged).
+  - **Coordinates in Bohr.** They read as a molecule with no bonds at all; the
+    warning names that cause rather than leaving you with an empty-looking
+    structure.
+  - **Disconnected fragments**, with their sizes — correct for a complex, a
+    sign of a truncated file otherwise. It is a warning, not an error: it never
+    blocks the queue.
+  - Every finding highlights the atoms it is about, in the preview.
+- **The NEB endpoint pair has its own card, and you can see both structures.**
+  *NEB endpoints* sits next to *Geometry source* and holds the product loader,
+  the verdict and the comparison:
+  - A **matched / atom mismatch** badge replaces the old one-line note, and a
+    table lists **every** atom that differs — not only the first one — so a
+    single swap is distinguishable from a whole shifted block at a glance.
+  - The two structures are drawn **side by side** in one scene (or overlaid,
+    with the product ghosted). They rotate together, and hovering an atom names
+    it in *both* — the check that is impossible to do by eye. Mismatching atoms
+    are marked in red in both structures.
+  - The verdict is now taken by the same code the input generator's gate uses,
+    so the badge and the queue can never disagree.
+  - With the reactant taken from another calculation the card says the order can
+    only be checked when that geometry arrives, instead of judging a stale block.
+
+ORCAdesk shows you a structure; it does not edit one. Building and modifying
+molecules is what a molecular editor is for — Avogadro2 and its peers do it
+properly, and a second-rate editor next to a good one helps nobody. Load the
+`.xyz` your editor wrote and ORCAdesk will tell you what is in it.
+
+- **Open structures and maps in your own program, or find them on disk.** The
+  Visual tab has always drawn things in ORCAdesk. Now Settings → *Opening
+  structures and maps* lets you send them to whatever this PC already opens the
+  file with — Avogadro, VMD, ChimeraX, Jmol — and the Results header gains
+  **Show in folder**, which reveals the folder ORCA actually wrote the run to.
+  - **Nothing to set up.** It follows the file associations you already have;
+    there is no viewer path to configure. ORCAdesk does not name a file and
+    leave you to find it — it opens it.
+  - **Choosing your own program never means getting less.** ORCAdesk runs
+    orca_plot, computes the same cube at the same grid, opens on the same
+    orbital (the HOMO). Only the last step differs. The button says *Plot* when
+    there is still work to do and *Open* when there is not, exactly as before.
+  - **An ESP map is shown, not opened** — it is two cubes, a density surface
+    coloured by a potential, and no single-file open reconstructs that. Both are
+    revealed in their folder, potential selected, so your viewer can combine
+    them its own way.
+  - The built-in viewer stays the default, and stays the path that needs no
+    second program at all.
+
+### Changed
+- **A backend you have never set up no longer takes up room.** MLIP and CREST
+  appear on the Build tab's backend toggle — and in the top bar — only once you
+  have actually set them up: an MLIP environment registered, or CREST found in
+  (or a distro chosen for) WSL. If you run ORCA and nothing else, the Build tab
+  now opens on `DFT | Beginner Expert` and the top bar carries one status pill,
+  instead of two dead buttons and two "not set" pills for toolchains you may
+  never install.
+  - **Nothing becomes unreachable.** A `+ More backends…` chip sits on the
+    toggle whenever a backend is hidden and goes straight to Settings, where the
+    MLIP and CREST sections are always present — that is where a backend is set
+    up, and the CREST installer already lived there.
+  - **A broken setup still shows itself.** Visibility follows what *you* did, not
+    what the probe found: a registered MLIP environment that fails to import, or
+    a chosen distro without CREST, stays visible and locked with its reason, the
+    way it always has. Hiding is for "never adopted", locking for "adopted but
+    not ready" (DESIGN.md D41 scope clause, amended here).
+  - A backend also stays visible while the queue still holds one of its
+    calculations, so an `mlip_*` or `crest_*` row can never become uneditable
+    because its backend went quiet — including one that arrived from a phone or
+    a restored session.
+- **The Results tab reads one result two ways: `Output` and `Visual`.** Output is
+  what the parser extracted — the summary and every table, chart and section it
+  builds. Visual is everything that can be *drawn* from the same result. The
+  picker and the file button are shared, so switching modes never changes which
+  calculation you are looking at.
+  - **Visual finds what there is to show; it does not ask.** It lists the
+    structure the result ends on, every `.xyz` set sitting in the run folder —
+    the CREST ensemble, the per-conformer `conformers/` export, an optimization
+    trajectory, a starred `favorites/` folder — and, when there is a `.gbw`
+    beside the output, the orbital browser and the ESP map. One row each, one
+    button each; everything opens the same 3D viewer.
+  - This replaced *Browse .xyz…*, a folder picker that asked you to know where
+    ORCAdesk had put things. There is now **one** *Open file…* button, and it
+    takes a `.xyz` as readily as an `.out`: a structure file goes straight to
+    Visual, an output to Output. A file opened from outside the workspace also
+    keeps its place in the picker now, instead of losing it on the next entry to
+    the tab.
+- **Plotting happens under the button, not behind an empty viewer.** *Plot* on
+  the ESP map row becomes **Plotting… 1:23** and runs orca_plot in place; the
+  viewer opens only once there is a finished figure to draw. Before, the modal
+  covered the whole window for the minutes an ESP map takes, with nothing on the
+  stage and nothing else reachable. The row also marks whether the cubes are
+  already on disk (a filled dot), so a map you have already plotted opens
+  straight away and says so before the click.
+  - The same is true of the orbital browser: it opens onto the HOMO already
+    plotted. Stepping to another level *inside* the viewer still draws its
+    progress on the stage, which is the right place for it — the stage is
+    already on screen and something has to say why it has not changed yet.
+- **A folder of structures with no `.xyz` of its own reads its `conformers/`
+  subfolder.** Pointing the viewer at a finished CREST run means the
+  per-conformer export; the caller no longer has to know that.
+- The *View in 3D* buttons on the Output tab's orbital and conformer cards are
+  gone, and the ESP map is no longer a section there — those are Visual's rows
+  now. *Export as .xyz* stays with the conformer table: it writes files, it does
+  not draw.
+- The NEB product loader, its status and its verdict moved out of *Method &
+  options* into the new *NEB endpoints* card; **Images** and **Endpoint
+  pre-optimization** stay with the method, since they are band parameters.
+
+### Fixed
+- **File dialogs open at your workspace.** The Results tab's *Open file…* and
+  the Build tab's *Load .inp* used to start wherever Qt happened to be last —
+  the install directory on a fresh session — so reaching a result meant
+  navigating back to the workspace by hand every time, even though nearly
+  everything worth opening is a run folder under it. All three loaders now
+  share one rule (*Load .xyz* already followed it). A workspace that has gone
+  away — an unplugged drive, a folder moved between sessions — is deliberately
+  not passed on: Qt would take the missing path as the starting point and open
+  on an empty view, which is worse than no hint, so the dialog falls back to
+  its own default. The ORCA-executable and MLIP-interpreter pickers are
+  untouched: those live in an install tree, not the workspace.
+- **The front-end test runner could report a red test as green.** The summary
+  block in `tests/web/scf_graph.test.js` — the line count *and* the
+  `process.exitCode = 1` — had drifted into the middle of the file, with one
+  test appended after it. That test's result was left out of the count (40 PASS
+  lines, "39 passed") and, worse, it ran *after* the exit code was decided, so a
+  failure in it exited 0 and passed a pre-commit check. The summary now sits at
+  the end of the file, verified by deliberately breaking that last test and
+  confirming the runner exits 1.
+- **A stale test stub hid a live API change.** `store.start_run` gained a
+  `precheck` argument (the re-screen for a dangling reference, run inside the
+  lock so a calculation added between check and start cannot slip through), but
+  the phone-API tests still stubbed the old one-argument form, so
+  `/api/run` raised `TypeError` under test. The stubs now mirror the real
+  signature, and the all-MLIP test asserts the screen is actually handed over.
+- **The freq progress tests pinned a log format ORCA does not print.** They fed
+  `"The calculation will be done for displacement K / N"` — a string that
+  appears in none of the ~297 real ORCA 6.1.1 outputs in the validation corpus.
+  The tracker had already been corrected to the real
+  `"<< Calculating gradient on displaced geometry K (of N) >>"` (and to the
+  header's `18 - 6` subtraction form), leaving the tests red against correct
+  code. They now use verbatim lines from a real NumFreq run, including the
+  out-of-order arrival that makes the counter a high-water mark.
+- **The `web/` type check is clean again (0 errors, was 14).** Nine casts to
+  `HTMLSelectElement`/`HTMLInputElement` predated the `ORCAFormElement` lookup
+  shim and now conflicted with it, while every one of those sites only reads
+  `.value` / `.options` / `.innerHTML`, which the shim already provides — the
+  casts are gone. `readCalcName` was called without its `kind` argument from the
+  DFT card (harmless by accident: the fallback treats an absent kind as ORCA,
+  which the DFT card always is) and is now passed explicitly and documented. The
+  `WorkspaceResult` / `WorkspaceResultsResult` payloads reached `web/` without
+  their mirrors in `web/types.js` (P41); both are now there.
+- **The overwrite warning before a run actually appears.** Clicking *Run queue*
+  with results already on disk is supposed to ask — Cancel / Keep existing /
+  Overwrite. The check behind it was never reachable from the UI (the Bridge
+  method had no `@pyqtSlot`, so QWebChannel did not expose it, and the call site
+  swallowed the failure), so every run overwrote earlier results in silence.
+  Found while auditing the slot surface for the Results-tab work; it had been
+  that way since the first release. A test now pins **every** `bridge.X` the
+  front-end calls to a real slot, so this class of silent breakage cannot
+  return.
+- **A numerical frequency no longer hangs forever when it is given more
+  processes than it has displacements.** ORCA splits a `NumFreq` over its
+  displaced geometries, one gradient per process. Ask for more processes than
+  there are displacements and it computes every gradient, then stops dead: on
+  ORCA 6.1.1, CO2 (3 atoms, 12 displacements) at `%pal nprocs 15` finished all
+  12 in twenty seconds and then span on a single core for as long as it was
+  left running — no output, no error, and the calculation sitting at *Running*
+  because the process really was alive. The same input at `nprocs 12` finished
+  in 38 seconds. ORCAdesk now knows the ceiling (`6N - 6`) and caps a generated
+  input's `%pal nprocs` to it, writing the reason into the `.inp` as a comment
+  rather than quietly changing the number you typed in the form. Nothing is
+  lost by the cap — the surplus processes had no displacement to work on, so
+  the run takes exactly as long. A **hand-written** input is left exactly as
+  written, as always: the Log tab says what the ceiling is and the job runs as
+  typed.
+- **The 3D viewers no longer draw into hidden panels.** 3Dmol.js redraws every
+  viewer it has ever created on each window resize, whether or not it is on
+  screen, and a viewer in a hidden panel has a zero-sized canvas — so resizing
+  the window filled the console with `GL_INVALID_FRAMEBUFFER_OPERATION` from
+  all three viewers (the Results-tab modal and the two Build-tab previews) and
+  spent GPU work on frames nobody could see. Closing the 3D viewer did the same
+  thing once more, because it hid the window before releasing the scene.
+- **A space in the path to your workspace no longer fails every ORCA job.**
+  ORCA hands the input path it is given on to its own sub-programs without
+  quoting it, so one space truncated it: *Error: Cannot open input file
+  C:/Users/John*, an error termination in Startup, and a calculation left in
+  the locked FAILED state — every job, serial and parallel alike. Since the
+  default workspace sits under your Windows account folder, a **user name with
+  a space in it broke ORCAdesk completely**. ORCA is now started from inside
+  the job's own folder and given only the file name, which has no path to
+  split. A space (or `&`) in the **calculation name** is a different matter —
+  it is the file name itself, and ORCA splits its own argument on whitespace —
+  so those are now refused as you type them, alongside the characters Windows
+  already disallows. MLIP and CREST calculations are unaffected: their names are
+  not passed through anything that splits on spaces.
+- **A calculation added while the last job is running now runs in that same
+  run**, instead of sitting at *Pending* while the queue reports *Queue
+  finished.* The dispatcher stopped scanning as soon as every row it already
+  knew about had been handled — which is true the moment the final job starts —
+  so anything you queued, edited or re-pointed during that window was simply
+  never looked at again. With the default one-job-at-a-time queue this was the
+  ordinary case of lining the next calculation up behind the running one.
+- **Composite methods (`r2SCAN-3c`, `B97-3c`, `HF-3c`, `PBEh-3c`, `B3LYP-3c`,
+  `wB97X-3c`) now run as themselves.** A 3c method is a functional bundled with
+  its own small basis set, its own counterpoise correction and a dispersion
+  correction fitted to that combination — and ORCA reads a basis set on the
+  keyword line as an override. ORCAdesk always wrote one, so picking
+  `r2SCAN-3c` quietly ran r2SCAN in the basis-set picker's basis instead: a job
+  that finishes normally, passes validation and reports a different energy
+  (water, single point: 43 basis functions and −76.417967 Eh, against
+  def2-mTZVPP's 34 and −76.418907 Eh). The basis and auxiliary basis are now
+  left to the method, and the generated `.inp` carries a line saying so.
+- **Re-running a name whose folder holds an older run of a different molecule
+  no longer aborts.** ORCA picks up an orbital file (`<name>.gbw`) left in the
+  folder as its starting guess without being asked, and refuses to start when
+  the atoms do not match — *Input geometry does not match current geometry* —
+  which failed the calculation, and a failed calculation is locked, so the same
+  name could never be run again. Result folders are never deleted, so this hit
+  the flows the overwrite prompt explicitly offers: reusing a removed
+  calculation's name, or pointing one at a different `.xyz`. Such a file is now
+  renamed aside (to `<name>.gbw.bak`) with a line in the log. One from the same
+  structure is kept — that is a free warm start for a re-run — and so is one
+  your own raw input asks for with `MOREAD`.
+
+- **The results of an unrestricted (open-shell) calculation are right.** Only the
+  spin-up orbitals were being read, so for a radical the reported LUMO and the
+  HOMO–LUMO gap came from half the picture — for the OH radical, a LUMO at
+  +1.50 eV and a 10.35 eV gap, where across both sets the frontier pair is
+  spin-down #3 (−8.11 eV) and spin-down #4 (−4.04 eV) — a 4.07 eV gap. Both manifolds are now read, the frontier pair is taken across
+  both, the table gains a spin column, and the 3D viewer plots the orbital you
+  picked rather than the same-numbered one from the other set.
+- **A TD-DFT run with triplets no longer reports twice as many states as you
+  asked for.** Singlet and triplet transitions share one table and their state
+  numbers restart, so `nroots 3` was summarized as "6 states" with two rows
+  called state 2. The summary now reads "3 singlet + 3 triplet".
+- **A single point is no longer labelled an optimization that did not converge**
+  — the check looked for "opt" anywhere in the keyword line, which the basis
+  label `cc-pVDZ-F12-OptRI` and the option `ExtOpt` both contain.
+- **Solvent selections ORCA would refuse are caught.** All 88 solvents were run
+  against ORCA in both models: `Ethyl Acetate` needed a different spelling (it
+  failed in both), and `Phenol`, `Ammonia` and `Liquid Ammonia` are CPCM-only —
+  picking them with SMD aborted the run at startup, which locks the calculation.
+  The Build tab now says so while you are still choosing.
+- **Methods that cannot use an RI approximation no longer fail on the default
+  one.** `HF-3c` and the Native-GFN-xTB methods are refused by ORCA outright
+  with RIJCOSX; the RI selection is left off for them and the input says why.
+  A `/JK` auxiliary basis typed into *Extra options* no longer suppresses the
+  `/J` set the run actually needs.
+- **The Log tab shows Korean (and any non-ASCII) paths correctly.** ORCA writes
+  its own text as UTF-8 but echoes paths in the Windows code page; the whole
+  file was read as UTF-8, so every line naming your workspace or calculation
+  arrived as a row of replacement characters. The same fix reaches the Results
+  tab, the restored log after a restart, the MLIP installer's Python detection
+  (an interpreter under a Hangul folder was silently dropped from the list) and
+  a failed install's error message.
+- **A long burst of output no longer freezes the log or delays Stop.** Draining
+  a few megabytes took tens of seconds and the cancel signal was only checked
+  between drains; 8 MB now takes 0.2 s instead of 47 s.
+- **The numerical-frequency progress panel advances again** — it was watching
+  for a line ORCA does not print, so it sat at "displacement 0/18" (against a
+  real total of 12) until the run was over.
+- **ORCAdesk starts even when its settings or session file is damaged.** A
+  `null` calculation list, or `Infinity` in settings.json, crashed every launch
+  until the file was deleted by hand.
+- **Settings that could not be written say so.** A read-only or locked
+  settings.json was answered with "Saved." and everything was gone at the next
+  launch. The ORCA path is also checked properly now — the install *folder*, or
+  any file in it, used to pass as a valid executable.
+- **A resumed run no longer overwrites earlier results without asking.** When
+  ORCAdesk reopens onto a job that is still running it continues the queue, and
+  that path never showed the overwrite prompt because nobody is there to answer
+  it — existing results are kept instead, and the log says which.
+- **A reference to a calculation that is no longer in the queue blocks the
+  dependent instead of failing it**, so it can be re-pointed rather than rebuilt.
+- **Re-running a CREST search starts clean.** The previous attempt's ensemble
+  was read as the new run's result (the Results tab showed the old molecule) and
+  its log was replayed as the new run's output.
+- **A calculation queued while another is running is no longer charged the wrong
+  number of cores.** `%pal nprocs=2` (with an equals sign) was read as "no
+  declaration", a commented-out `PAL8` was counted, and where a raw input
+  declares the count twice, ORCAdesk now takes the last one — as ORCA does.
+- **An .inp saved with a byte-order mark runs.** The invisible marker survived
+  into the file ORCAdesk wrote and ORCA refused every run of that calculation.
+- **Loading a multi-structure .xyz takes the first structure**, instead of
+  merging every frame of an ensemble or trajectory into one impossible molecule.
+- Smaller fixes: an environment install that was cancelled or failed no longer
+  blocks its own name forever, and closing the app during one stops it rather
+  than leaving pip downloading; an environment whose interpreter cannot start is
+  reported as such instead of "missing packages"; a phone can no longer queue a
+  calculation with no geometry, and a calculation whose name contains an
+  apostrophe can be removed from the phone; the queue's drag-and-drop says why a
+  reorder was refused; *Clear all* explains itself during a run; the Stop
+  confirmation describes what stopping actually does (the rest of the queue stays
+  queued); *Stop after current* is available for a run started from the phone;
+  the 3D viewer reports a display that cannot render instead of opening an empty
+  window; and starred-structure export no longer overwrites files whose names
+  differ only outside ASCII.
+
+- **A frequency job that never computed a Hessian is no longer reported as
+  finished.** The "no imaginary modes" rule is satisfied by an empty frequency
+  table, so such a run was stamped *Done* with no frequencies and no
+  thermochemistry — while an optimization that never optimized correctly fails.
+  A zero-valued imaginary mode is also named in the message now, instead of
+  "1 imaginary frequency (cm⁻¹: none)".
+- **A calculation whose parent finished is no longer blocked because its
+  grandparent failed.** A finished result is frozen and self-sufficient; the
+  chain now stops there.
+- **`InitHess read` works in Expert mode.** A hand-written IRC input asking to
+  read a `.hess` never had it staged from the referenced calculation's folder —
+  the one thing that guard exists for — so ORCA started without it and died.
+- **A DLPNO calculation with RI switched off no longer aborts.** DLPNO is
+  RI-based by construction, so it needs its fitting basis whatever the RI
+  picker says; conventional MP2 keeps the old behaviour, which is correct for
+  it. (Verified against ORCA 6.1.1 both ways.)
+- **When ORCA aborts, ORCAdesk quotes the reason rather than the word
+  "aborting".** The failure line it showed was the banner ORCA prints after the
+  cause — so *Error: Cannot open input file …* was replaced by *.... aborting
+  the run*. The input echo on the Results tab also starts at your input now,
+  not at ORCA's banner and 80-character rule.
+- **A run can no longer start with a reference the check would have refused.**
+  The pre-run screen and the start are one step now, so a calculation added in
+  between (another window, a phone) cannot slip past both.
+- **A calculation type the queue does not know is refused when it is added**,
+  rather than being run as a plain ORCA job with default settings.
+- **A calculation cannot use its own geometry as its input** — it passed every
+  check and then failed at run time, which locks it.
+- **A star that could not be saved says so** instead of lighting up and being
+  gone at the next launch; the same for settings written to an unusable
+  `%APPDATA%`, which no longer stops ORCAdesk from starting at all.
+- **Killing a run also kills the ranks it left behind.** If ORCA's own process
+  died first, its MPI workers survived with nothing left to stop them.
+- **The MLIP environment check no longer calls a working environment broken**
+  because something printed a line after its report, and an environment named
+  after a Windows device (`nul`, `COM1`) is refused with a sentence rather than
+  a raw system error.
+- **The window says when its own interface could not be loaded**, instead of
+  leaving Chromium's error page on screen; and the messages from a failed
+  shutdown now reach the log, where the packaged build can actually show them.
+- Smaller fixes: a run type this build does not list survives an edit instead of
+  being blanked (which turned an optimization into a single point); the raw
+  editor reads charge and multiplicity from `* int` / `* gzmt` inputs too;
+  changing the type in Expert no longer stores settings belonging to the
+  previous one; opening a calculation for editing asks before discarding
+  unsaved raw input; the Results picker follows a dropped file instead of naming
+  a different result; a locked CREST card looks locked; an *edit* button that
+  cannot open anything is disabled with the reason; the default cores/memory
+  fields are range-checked like the budgets beside them; and a keep-existing
+  check no longer discards a matching result just because it could not see the
+  geometry to compare.
+
+## [0.7.0-beta] — 2026-08-28
+
+### Added
+- **The Results tab lists every result in your workspace, not just the queue.**
+  The picker now has two groups — *In the queue* and *In the workspace* — so a
+  calculation you cleared from the queue, or one from last week, is one click
+  away instead of a trip through a file dialog. Run folders were always kept;
+  they just were not reachable. Everything a listed result offers works the
+  same, including the 3D viewer below. The scan runs when you open the tab.
+  - **Open .out is now Open file…**, and its dialog offers what ORCAdesk can
+    actually read — an ORCA `.out`, an MLIP result, a CREST search — rather
+    than naming only one of the three.
+- **Molecular orbitals and electron density can now be viewed in 3D, from the
+  Results tab.** The *Orbital energies* card gained a **View in 3D** button: it
+  opens the structure viewer on the HOMO, with every parsed level in a list
+  down the side (labelled *HOMO*, *LUMO−1*, … with its energy) plus the
+  calculation's **electron density** — and its **spin density** when the
+  calculation is open-shell. Positive and negative lobes are drawn as a
+  blue/red pair; a density, being positive everywhere, gets a single surface.
+  - **It runs on calculations you have already finished** — and on results that
+    were never in the queue at all, including ones ORCA produced outside
+    ORCAdesk. The surfaces are generated by ORCA's own `orca_plot` from the
+    job's `.gbw` wavefunction, so nothing is re-computed and no job is re-run.
+    One orbital takes about **0.2 s** on a 52-atom molecule, an electron
+    density about **10 s**.
+  - **The viewer opens at an isovalue that actually shows the orbital.** The
+    textbook 0.05 is right for a small molecule and useless for a large one:
+    a big molecule's frontier orbital is spread over many centres, so its peak
+    amplitude is far lower and a 0.05 surface is a few invisible specks. On a
+    144-atom host molecule the viewer looked like it had failed. It now fits
+    the opening level to the data (the surface enclosing 90% of the orbital's
+    probability) and uses the conventional value only as a ceiling — so small
+    molecules look exactly as before, and large ones finally show something.
+  - **A *Plotting…* notice covers the wait.** Generating a surface shells out
+    to ORCA, which is a fraction of a second for an orbital but around half a
+    minute for an electron density on a large molecule — during which the
+    viewer used to sit empty and look broken. Surfaces already on disk still
+    open instantly, with no notice.
+  - **The isovalue slider is instant.** Moving it re-draws the surface from the
+    data already loaded, with no recalculation — so finding the level that shows
+    what you mean is a drag, not a wait. A grid selector (40³ / 60³ / 80³) is
+    there for the rarer case where the sampling itself is too coarse.
+  - Generated surfaces are kept in a `cubes/` folder inside the run, so
+    reopening an orbital you have already looked at is immediate.
+  - Requires the calculation's `.gbw` **and** ORCA's `.densities` files to still
+    be in the run folder; if they are missing, the viewer says so plainly
+    instead of failing silently.
+- **An MLIP environment can now be created with one click, for CPU or GPU.**
+  *Settings → MLIP environments* gained a **Create** button: pick a backend
+  (MACE / SevenNet) and a device, and ORCAdesk builds a private virtual
+  environment, installs PyTorch for that device, installs the backend, and
+  registers the result — no shell, no conda, no pip commands to copy. The
+  environment lands in `%APPDATA%\ORCAdesk\mlip_envs\` and is probed like any
+  other, so the *MLIP ready* indicator turns green on its own when it finishes.
+  - **CPU (~150 MB) and GPU/CUDA (~2.5 GB) are separate, explicit choices**, and
+    the size is on the button before you press it. Picking GPU on a machine with
+    no NVIDIA GPU says so first, rather than after the download.
+  - **The CUDA build is matched to your actual graphics card.** A PyTorch wheel
+    only carries kernels for the GPU generations its CUDA version knew about,
+    and picking one too old fails *late and confusingly*: it installs, imports,
+    reports your GPU as available, and then dies on the first calculation with
+    `CUDA error: no kernel image is available for execution on the device`.
+    ORCAdesk now reads the card's compute capability before downloading and
+    fetches the right build (an RTX 50-series card gets CUDA 12.8 wheels, not
+    12.4), and the card names the build and the GPU it matched.
+  - The base Python it builds on is **auto-detected**; if none is found (or none
+    in the range PyTorch publishes wheels for) the button is disabled and says
+    why — creating one is the single step ORCAdesk cannot do for you, the same
+    way a WSL distribution is for CREST.
+  - It takes minutes, so there is a live step counter and a **Cancel** button;
+    pip's full output goes to the Log tab.
+  - **A name that would break Windows' path limit is refused before the
+    download, not after it.** PyTorch nests files 189 characters deep, which
+    leaves about 18 characters for the environment name on a default Windows
+    install; overflowing it used to surface as an opaque `OSError` at the very
+    end of a completed download. The check says how many characters to cut, and
+    lifts entirely if Win32 long paths are enabled.
+  - Registering an environment you built yourself still works exactly as before.
+- **The queue can run several calculations at once.** Settings → *Parallel runs*
+  takes a **core budget** and a **memory budget**, and starts as many
+  calculations as fit in them, in queue order — the next one the moment one
+  finishes. (*Run at once* is there if you also want a hard cap on the job
+  count; leave it at 0 and the budgets decide.) Admission is by budget, not by
+  lanes: each
+  calculation declares what it occupies (ORCA `%pal nprocs`, CREST `-T`, the
+  MLIP thread cap) and starts only while it still fits — so *two 8-core jobs*
+  and *four 4-core jobs* are the same setting, decided by the calculations
+  themselves. ORCAdesk never rewrites a calculation to make it fit; a raw `.inp`
+  keeps its own `%pal`, and its cost is read from that text. Both budgets
+  default to **auto** (physical cores / 75% of installed RAM) and *Run at once*
+  defaults to **1**, so nothing changes until you raise it.
+  - A calculation that references another now **waits** for its parent instead
+    of failing when it happens to be picked first — sequential running got
+    that for free.
+  - Memory is budgeted because ORCA's `%maxcore` is **per core**: a 6-core job
+    at 2400 MB reserves 14.4 GB, and two of those would push a 32 GB machine
+    into swap.
+  - A calculation larger than the whole budget still runs, on its own, rather
+    than waiting forever.
+  - An MLIP calculation now keeps to the cores it was charged: its worker set
+    no thread limit, so torch took **every** core on the machine — invisible
+    while jobs ran one at a time, a blown budget the moment two do. The MLIP
+    build card gains a **CPU threads** field (seeded from the *nprocs* default)
+    so that number is yours to set; a GPU run is charged one core but is not
+    throttled to one thread.
+  - **Cancel** stops every job in flight; **Stop after current** lets the
+    running ones finish and starts no more.
+  - **The machine's real free memory is checked before a second job starts.**
+    The memory budget is spent against estimates, and they are wrong both ways:
+    ORCA's `%maxcore` is a guideline it *may exceed*, while a CREST search is
+    charged far more than it takes (measured: ~20&nbsp;MB for a small molecule,
+    at any thread count). A mixed queue is where that matters most, so the
+    budget is no longer the only defence — the first job always starts, but
+    adding to it also requires the memory to actually be there. CREST's estimate
+    now follows its thread count instead of a flat 2&nbsp;GB it never used.
+  - **One GPU calculation at a time.** An MLIP job set to *GPU (CUDA)* is
+    charged a single core, so the core budget alone would put a dozen of them on
+    one card — where they run out of video memory rather than queueing. GPU work
+    gets a lane of its own; CPU calculations still run alongside it.
+  - Every log line records which calculation produced it, so interleaved output
+    can be told apart: the Log tab gains a **job filter**, the convergence graph
+    a **job picker** — both one button per job, so switching is a single click —
+    and the queue a live *4 running / 16 of 16 cores* readout.
+    A single-job run looks exactly as it did — the filter and picker only appear
+    once a second calculation has produced output.
+- **A two-stage run keeps both of its graphs.** An `opt_freq` optimizes and
+  then runs frequencies, and the moment the Hessian started the frequency
+  stepper took the Graph tab over — the optimization curve it had just
+  finished was gone for the rest of the run. The graph now has a view
+  toggle per stage the job actually ran — *Optimization* / *Frequencies* (or
+  *TD-DFT* / *Conformers*) / *Current SCF* — so either half is one click
+  away. It still opens on the live edge of the run, and a job with only one
+  view (a plain frequency job, a CREST search) shows no toggle at all.
+- **An analytical frequency run now counts its nuclei as it goes.** The
+  *Derivative integrals* step — the long one, hours on a large molecule —
+  showed only the molecule's size (*144 nuclei*), so there was no way to tell
+  a run one nucleus in from one nearly finished. It now reads
+  *135/144 nuclei*, counted from ORCA's own per-batch progress, and settles
+  back to the plain total once the step completes.
+
+### Fixed
+- **Clicking a long-running button a second time no longer freezes the whole
+  window.** *Create MLIP environment* and *Install CREST* both answered a
+  second click by asking their own status slot for a progress report — while
+  already holding that slot's lock. The lock is not reentrant and the caller is
+  the interface thread, so instead of the click being ignored, ORCAdesk stopped
+  responding entirely until it was killed. Both now report progress without
+  re-entering, and a test walks the code for the same shape so it cannot come
+  back. (Found while building the 3D orbital viewer, which had been written the
+  same way.)
+- **The Log tab's job buttons no longer sit there doing nothing on the Graph
+  tab.** The job *filter* belongs to the raw log — it hides lines — but it
+  stayed on screen in Graph mode, where it looks exactly like the graph's own
+  job picker and clicking it changed nothing at all. It is now shown only in
+  Raw mode. (The graph's picker is the strip inside the panel, labelled
+  *Showing*, and it lists only calculations that actually have a curve — so a
+  job that merely logged *already done – skipping* never appears there.)
+- **Restarting no longer loses a running job's progress panel.** Reopening
+  ORCAdesk while a calculation runs reattaches to it, but the Graph tab came
+  back **empty** for a frequency or TD-DFT run: only the optimization curve
+  was rebuilt from the output file, and a phase chain's next banner can be
+  hours away on a large molecule, so there was nothing to show until then.
+  The frequency and TD-DFT step panels are now rebuilt from the output too —
+  stage, nuclei counted so far, method and cores — and this applies to any
+  ORCA calculation, not only the optimization kinds. Per-stage times stay
+  blank for a rebuilt panel: the history is replayed in one burst, so those
+  clocks would be fiction.
+- **The Raw log comes back too.** Reopening ORCAdesk on a job that had been
+  running for hours showed a single line — *reattaching to ORCA still
+  running* — because the log is a live tail of the output file, and the tail
+  starts where the app came back. The last 500 lines of that job's output
+  are now put back at the top of the Raw tab, dimmed and fenced by
+  *── restored history · NAME.out · last 500 lines ──* and *── live output
+  continues below ──*, so recovered text is never mistaken for what is
+  happening now. It is read straight off the file — nothing is re-streamed
+  through the log buffer, so it cannot push out the rest of the log — it
+  follows the job filter like any other line, and only a job ORCAdesk
+  actually reattached to gets it.
+- **The MLIP card now says what *CPU threads* does for the device you picked.**
+  The one field has two jobs and the device decides which apply, which the
+  screen never said: it always caps the worker's threads, but it is only what
+  the queue reserves off the GPU — an explicit **GPU (CUDA)** job is charged one
+  core and takes the single GPU lane instead. Next to *Device: GPU*, a
+  *CPU threads: 6* therefore read as either a no-op or six reserved cores, and
+  it is neither: the threads still cap the real CPU-side work (neighbour lists,
+  the optimizer, the finite-difference steps of a frequency run). A line under
+  the row now spells this out per device, including that **Auto** is charged as
+  a CPU job — ORCAdesk cannot know what the worker will pick, so taking the GPU
+  lane needs an explicit GPU choice.
+- **An MLIP calculation now runs in an environment that actually works.** With
+  more than one environment registered, every MLIP job went to the **first
+  registered** one — even when that environment was broken and the green *MLIP
+  ready* indicator was reporting a **different**, working one. The result was a
+  queue that failed every MLIP job while the top bar said it was ready. The
+  first *ready* environment is now the one that runs, as documented; ties keep
+  registration order, so a single-environment setup is unchanged. (Registering
+  several environments is the normal case — MACE and SevenNet pin conflicting
+  dependencies and cannot share one.)
+- ***Install CREST* no longer offers a click that can only fail.** With WSL
+  present but **no Linux distribution installed**, the button stayed live;
+  pressing it reported nothing but a line in the Log tab, so the install simply
+  appeared to do nothing. Creating a distribution needs a Linux account and is
+  the one step ORCAdesk cannot script, so the button now **disables** when there
+  is nothing to install into — and says why on hover. When an install does run,
+  its outcome is reported where the click happened: the reason a failure failed
+  ("`xz` missing", "download failed") now reaches the Settings card and a toast
+  instead of only the log.
+- **CREST could not run at all.** A refactor moved the output-tailing loop into
+  a shared helper but left `crest/runner.py` without the import, so every CREST
+  conformer search died immediately with an internal error — and two references
+  to the deleted local helper survived in the give-up branch. Every CREST test
+  replaces the runner with a fake, so nothing failed. Both are fixed, the real
+  tail loop is now exercised by tests, and a new check walks every module for
+  names that are read but never bound.
+- **A locked MLIP/CREST build card is now fully inert.** The card greys out and
+  says why when its toolchain isn't ready, but only a hand-listed subset of its
+  fields was actually disabled: CREST's entire *Advanced settings* block
+  (preset, NCI mode, solvent model, every MD/MTD number, all five toggles) and
+  both cards' *geometry source* radio buttons stayed live under the grey, so
+  they could be changed on a card that refuses to accept the calculation. Every
+  control inside a locked card is disabled now, and the lock reads the card's
+  own controls instead of a hand-maintained id list that could drift again.
+
+- **The CREST energy window and thread count are now validated like every other
+  numeric option.** They were the only two `crest_*` numbers that skipped the
+  trust boundary: an out-of-range value rode straight onto the command line
+  (`-T 999999`), and a non-numeric one made the flag vanish entirely — so the
+  setting was silently ignored instead of applied. Both are now coerced and
+  clamped (energy window ≤ 1000 kcal/mol, threads ≤ 1024), and a junk value
+  falls back to the default *with the flag still emitted*.
+
+- **Editing an MLIP/CREST calculation no longer offers the calc itself as its
+  geometry reference.** The DFT card already excluded the calc being edited from
+  the reference dropdown; the MLIP and CREST cards now share that logic (the
+  three geometry-source selectors are one implementation), so a self-reference
+  can no longer be picked during an in-place edit.
+
+### Removed
+- **The "~N s / SCF cycle" pace figure is gone from the Log tab.** It sat in
+  the progress panel restating what the graph beside it already showed, and a
+  per-cycle average is the least useful of the timings on that panel — the
+  measured per-step rate and the ETA stay.
+- The unused `list_crest_distros` bridge slot (the Settings distro picker is
+  populated from `get_crest_status()`).
+
 ## [0.6.0-beta] — 2026-07-25
 
 ### Removed

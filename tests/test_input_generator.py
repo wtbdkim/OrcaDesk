@@ -20,7 +20,10 @@ import re
 
 import pytest
 
+from orcamgr.core.structure import parse_block
+
 from orcamgr.core.input_generator import (
+    constraint_linear_warning,
     DEFAULT_AUX,
     GEOMETRY_PLACEHOLDER,
     Solvation,
@@ -29,8 +32,13 @@ from orcamgr.core.input_generator import (
     build_input,
     build_input_template,
     check_neb_atom_order,
+    is_composite_method,
+    method_forbids_ri,
     normalize_functional,
+    smd_supports,
     render_raw_input,
+    raw_coordinate_block,
+    raw_geometry_mismatch,
 )
 
 
@@ -46,6 +54,140 @@ def _keyword_line(text: str) -> str:
     first = text.splitlines()[0]
     assert first.startswith("!"), f"expected keyword line, got {first!r}"
     return first
+
+
+# ---------------------------------------------------------------------------
+# Composite ("3c") methods bring their own basis
+#
+# ORCA takes an explicit basis on the ! line as an override, so emitting the
+# picker's default alongside r2SCAN-3c runs plain r2SCAN/def2-TZVP instead —
+# it terminates normally and validates DONE, so nothing else catches it.
+# Measured on ORCA 6.1.1 (water, single point): with def2-TZVP appended, 43
+# basis functions and -76.417967 Eh; without, def2-mTZVPP and -76.418907 Eh.
+# ---------------------------------------------------------------------------
+
+def test_composite_methods_are_recognized():
+    for name in ("HF-3c", "B97-3c", "r2SCAN-3c", "PBEh-3c", "B3LYP-3c", "wB97X-3c"):
+        assert is_composite_method(name), name
+    for name in ("B3LYP", "wB97X-D4", "PBE0", "B97-D3", "CAM-B3LYP", "M06-2X", ""):
+        assert not is_composite_method(name), name
+
+
+@pytest.mark.parametrize("functional", ["r2SCAN-3c", "HF-3c", "wB97X-3c"])
+def test_composite_method_keeps_its_own_basis(functional):
+    cfg = StepConfig(kind="sp", functional=functional, basis_set="def2-TZVP")
+    line = _keyword_line(build_input(cfg, WATER_XYZ))
+
+    assert functional in line
+    assert "def2-TZVP" not in line       # the picker's basis is NOT an override
+    assert DEFAULT_AUX not in line       # nor is an aux chosen from that basis
+
+
+def test_the_input_carries_no_comments_of_its_own():
+    """The .inp is what ORCA reads: what the generator leaves out or changes
+    is decided by its rules, not narrated in the file. A composite method's
+    dropped basis, an RI ORCA refuses, a capped NumFreq and constraints on a
+    kind that does not optimize all used to write a `#` note here."""
+    for cfg in (StepConfig(kind="sp", functional="r2SCAN-3c", basis_set="def2-TZVP"),
+                StepConfig(kind="sp", functional="HF-3c", ri_approximation="RIJCOSX"),
+                StepConfig(kind="freq", calculation_type="NumFreq", nprocs=15),
+                StepConfig.from_dict({"kind": "sp", "geom_constraints": [
+                    {"kind": "B", "atoms": [0, 1]}]})):
+        text = build_input(cfg, WATER_XYZ)
+    assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+
+
+def test_non_composite_functional_gets_its_basis_and_orca_picks_the_aux():
+    # ORCA 6.1.1 runs a hybrid as RIJCOSX with def2/J chosen by itself
+    # ("Auxiliary Coulomb fitting basis ... AVAILABLE", with or without the
+    # RIJCOSX keyword), so neither is written
+    cfg = StepConfig(kind="sp", functional="B3LYP", basis_set="def2-TZVP",
+                     calculation_type="SP")
+    text = build_input(cfg, WATER_XYZ)
+
+    assert _keyword_line(text) == "! B3LYP def2-TZVP SP"
+    assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+
+
+# ---------------------------------------------------------------------------
+# What ORCA refuses to run — measured, not assumed
+#
+# Every entry in data/solvents.json was run against ORCA 6.1.1 in both models
+# (88 names x 2). Exactly five combinations fail, and all five are here.
+# ---------------------------------------------------------------------------
+
+def test_ethyl_acetate_uses_the_spelling_orca_accepts():
+    # "Ethyl Acetate" is "Solvent name not found" in BOTH models; its sibling
+    # "Methyl Acetate" was mapped and this one was not
+    cfg = StepConfig(kind="sp", solvation=Solvation("CPCM", "Ethyl Acetate"))
+    assert 'solvent "ethyl ethanoate"' in build_input(cfg, WATER_XYZ)
+
+
+@pytest.mark.parametrize("solvent", ["Phenol", "Ammonia", "Liquid Ammonia"])
+def test_smd_refuses_solvents_only_cpcm_has(solvent):
+    # SMD aborts at startup on these ("SMD solvent not found!"), which leaves
+    # the calculation FAILED — and FAILED is locked (P24). Refuse up front.
+    assert smd_supports(solvent) is False
+    with pytest.raises(ValueError) as e:
+        build_input(StepConfig(kind="sp", solvation=Solvation("SMD", solvent)),
+                    WATER_XYZ)
+    assert "SMD" in str(e.value)
+
+
+@pytest.mark.parametrize("solvent", ["Phenol", "Ammonia", "Liquid Ammonia"])
+def test_cpcm_still_accepts_them(solvent):
+    text = build_input(StepConfig(kind="sp", solvation=Solvation("CPCM", solvent)),
+                       WATER_XYZ)
+    assert "CPCM" in text
+
+
+@pytest.mark.parametrize("solvent", ["Water", "Ethanol", "Toluene", "DMSO"])
+def test_ordinary_solvents_work_in_both_models(solvent):
+    for model in ("CPCM", "SMD"):
+        build_input(StepConfig(kind="sp", solvation=Solvation(model, solvent)),
+                    WATER_XYZ)   # must not raise
+
+
+def test_a_jk_aux_does_not_suppress_the_coulomb_aux():
+    """def2/JK fits Coulomb AND exchange for RIJK; it is not an AuxJ. Under
+    RIJCOSX, ORCA aborts with "RIJ is chosen with no AuxJ basis set!" — the
+    substring test for "/J" matched "/JK" and dropped the aux that was needed."""
+    cfg = StepConfig(kind="sp", functional="HF", basis_set="def2-SVP",
+                     ri_approximation="RIJCOSX", options="def2/JK")
+    line = _keyword_line(build_input(cfg, WATER_XYZ))
+
+    assert DEFAULT_AUX in line      # def2/J is still added
+    assert "def2/JK" in line        # ...and what the user typed is untouched
+
+
+def test_a_real_coulomb_aux_still_counts_as_user_supplied():
+    cfg = StepConfig(kind="sp", functional="HF", basis_set="def2-SVP",
+                     ri_approximation="RIJCOSX", options="def2/J")
+    assert _keyword_line(build_input(cfg, WATER_XYZ)).count("def2/J") == 1
+
+
+@pytest.mark.parametrize("functional", ["HF-3c", "Native-GFN2-xTB", "Native-GFN-xTB"])
+def test_methods_that_cannot_use_ri_get_no_ri_keyword(functional):
+    """ORCA 6.1.1 refuses these outright with the picker's default RIJCOSX —
+    "Incompatible choice for integral handling" / "Native xTB not compatible
+    with RI", exit 55 — and runs them fine with no RI keyword at all."""
+    assert method_forbids_ri(functional) is True
+    cfg = StepConfig(kind="sp", functional=functional, ri_approximation="RIJCOSX")
+    text = build_input(cfg, WATER_XYZ)
+    line = _keyword_line(text)
+
+    assert "RIJCOSX" not in line
+    assert DEFAULT_AUX not in line
+
+
+@pytest.mark.parametrize("functional", ["r2SCAN-3c", "B97-3c", "PBEh-3c", "wB97X-3c",
+                                        "B3LYP", "wB97X-D4"])
+def test_methods_that_accept_ri_keep_it(functional):
+    # HF-3c is the one composite ORCA refuses RI for; the others take RIJCOSX
+    # and simply use their own settings (same energy to every digit)
+    assert method_forbids_ri(functional) is False
+    cfg = StepConfig(kind="sp", functional=functional, ri_approximation="RIJCOSX")
+    assert "RIJCOSX" in _keyword_line(build_input(cfg, WATER_XYZ))
 
 
 # ---------------------------------------------------------------------------
@@ -116,12 +258,34 @@ def test_build_input_never_emits_bare_dash_d3():
 # _auto_aux (P31)
 # ---------------------------------------------------------------------------
 
-def test_auto_aux_rij_with_def2_basis_gets_def2j():
+def test_auto_aux_leaves_the_coulomb_set_to_orca():
+    # an RIJCOSX the user picked gets def2/J from ORCA itself (measured)
     cfg = StepConfig(functional="wB97X-D4", basis_set="def2-TZVP",
                      ri_approximation="RIJCOSX")
-    assert _auto_aux(cfg) == DEFAULT_AUX == "def2/J"
-    # and it lands on the keyword line of the generated input
-    assert "def2/J" in _keyword_line(build_input(cfg, WATER_XYZ))
+    assert _auto_aux(cfg) == ""
+    assert "def2/J" not in _keyword_line(build_input(cfg, WATER_XYZ))
+
+
+def test_a_jk_aux_without_an_ri_keyword_still_gets_the_coulomb_aux():
+    # with an aux of its own ORCA picks no /J: "! wB97X-D4 def2-SVP def2/JK"
+    # aborts "no AuxJ basis set in ORCA_GTOInt!" (6.1.1), so def2/J goes along
+    cfg = StepConfig(kind="sp", functional="wB97X-D4", basis_set="def2-SVP",
+                     options="def2/JK")
+    line = _keyword_line(build_input(cfg, WATER_XYZ))
+    assert DEFAULT_AUX in line.split() and "def2/JK" in line.split()
+
+
+def test_a_double_hybrid_gets_its_correlation_aux_at_orca_default_ri():
+    # "! B2PLYP def2-SVP" aborts in 6.1.1: "RI-MP2 needs an AuxC basis but
+    # none was defined!" -- RI-MP2 is a double hybrid's default
+    assert _auto_aux(StepConfig(functional="B2PLYP", basis_set="def2-SVP")) == "AutoAux"
+    assert _auto_aux(StepConfig(functional="B2PLYP", basis_set="def2-SVP",
+                                ri_approximation="NoRI")) == ""
+
+
+def test_mp2_at_orca_default_ri_runs_conventionally_without_an_aux():
+    # "! MP2 def2-SVP" runs normally with no aux at all (6.1.1)
+    assert _auto_aux(StepConfig(functional="MP2", basis_set="def2-SVP")) == ""
 
 
 def test_auto_aux_double_hybrid_and_mp2_get_autoaux():
@@ -215,6 +379,40 @@ def test_render_raw_input_substitutes_geometry_placeholder():
 def test_render_raw_input_without_placeholder_is_verbatim():
     raw = "! B3LYP def2-SVP\n* xyz 0 1\nO 0.0 0.0 0.0\n*\n"
     assert render_raw_input(raw, WATER_XYZ) == raw
+
+
+# A raw .inp without the placeholder runs verbatim, so coordinates stored
+# beside it are never read. A copied OptTS with IRC endpoints pasted into the
+# box ran the TS guess twice, and both "endpoint" optimizations found the
+# product.
+COPIED_RAW = ("! wB97X-D4 def2-TZVPD TightSCF\r\n! TightOpt\r\n* xyz -1 1\r\n"
+              "C   -1.98813587   0.60625775  -0.05575346\r\n"
+              "  O  -3.32185239   1.29118693   0.10000000\r\n*\r\n")
+
+
+def test_the_raw_coordinate_block_is_the_star_xyz_body():
+    assert raw_coordinate_block(COPIED_RAW).split() == [
+        "C", "-1.98813587", "0.60625775", "-0.05575346",
+        "O", "-3.32185239", "1.29118693", "0.10000000"]
+    assert raw_coordinate_block("! SP\n* xyzfile 0 1 a.xyz\n") == ""
+
+
+def test_a_raw_block_that_is_not_the_given_geometry_is_named():
+    given = "C -1.94876904 0.67578152 0.28832747\nO -3.32185239 1.29118693 0.1"
+    msg = raw_geometry_mismatch(COPIED_RAW, given)
+    assert "atom 1" in msg and "-1.9881" in msg and "-1.9488" in msg
+    assert GEOMETRY_PLACEHOLDER in msg            # says how to run the given one
+    assert "2 atoms in the text, 3 given" in raw_geometry_mismatch(
+        COPIED_RAW, given + "\nH 0 0 0")
+
+
+def test_a_raw_block_that_is_the_given_geometry_says_nothing():
+    same = "C -1.98813587 0.60625775 -0.05575346\nO -3.32185239 1.29118693 0.1"
+    assert raw_geometry_mismatch(COPIED_RAW, same) == ""
+    # nothing given, or the box fills the text: nothing to compare
+    assert raw_geometry_mismatch(COPIED_RAW, "") == ""
+    tmpl = f"! SP\n* xyz 0 1\n{GEOMETRY_PLACEHOLDER}\n*\n"
+    assert raw_geometry_mismatch(tmpl, "H 9 9 9") == ""
 
 
 def test_build_input_template_embeds_placeholder_for_references():
@@ -486,3 +684,533 @@ def test_clamp_int_infinite_value_degrades_to_default():
                                 "maxcore_mb": float("-inf")})
     assert cfg.nprocs == StepConfig().nprocs
     assert cfg.maxcore_mb == StepConfig().maxcore_mb
+
+
+# ---------------------------------------------------------------------------
+# DLPNO is RI by construction
+#
+# Turning RI off does not give a DLPNO method a conventional path, it gives it
+# no path at all. Measured on ORCA 6.1.1: "! DLPNO-CCSD(T) def2-SVP NoRI"
+# aborts in mdci_check; the same line plus AutoAux runs normally; and plain
+# "! MP2 def2-SVP NoRI" runs fine, which is why the NoRI escape stays for
+# everything else.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("functional", ["DLPNO-CCSD(T)", "DLPNO-CCSD", "DLPNO-MP2"])
+def test_dlpno_gets_an_aux_even_with_ri_switched_off(functional):
+    cfg = StepConfig(kind="sp", functional=functional, basis_set="def2-SVP",
+                     ri_approximation="NoRI")
+    assert "AutoAux" in _keyword_line(build_input(cfg, WATER_XYZ))
+
+
+# An RI-named method (or RI-only ADC2) is RI by itself: at RI "ORCA default"
+# ORCA 6.1.1 aborts "RI-MP2 needs an AuxC basis but none was defined!" (ADC2:
+# "Aux/C requested but not available" after the SCF), so it gets AutoAux unless
+# RI is NoRI -- the same rule as a double hybrid.
+_RI_METHODS = ["RI-MP2", "OO-RI-MP2", "OO-RI-SCS-MP2", "F12-RI-MP2", "RI-MP3",
+               "ADC2", "ri-mp2"]
+
+
+@pytest.mark.parametrize("functional", _RI_METHODS)
+def test_an_ri_method_gets_autoaux_at_orca_default_ri(functional):
+    cfg = StepConfig(kind="sp", functional=functional, basis_set="def2-SVP")
+    assert _auto_aux(cfg) == "AutoAux"
+    line = _keyword_line(build_input(cfg, WATER_XYZ))
+    assert line.split().count("AutoAux") == 1
+
+
+@pytest.mark.parametrize("functional", _RI_METHODS)
+def test_an_ri_method_under_an_rij_keyword_gets_autoaux(functional):
+    cfg = StepConfig(kind="sp", functional=functional, basis_set="def2-SVP",
+                     ri_approximation="RIJCOSX")
+    assert _auto_aux(cfg) == "AutoAux"
+
+
+@pytest.mark.parametrize("functional", _RI_METHODS)
+def test_an_ri_method_honours_nori(functional):
+    cfg = StepConfig(kind="sp", functional=functional, basis_set="def2-SVP",
+                     ri_approximation="NoRI")
+    assert _auto_aux(cfg) == ""
+
+
+@pytest.mark.parametrize("functional", ["MP2", "SCS-MP2", "MP3", "SCS-MP3",
+                                        "F12-MP2", "CCSD(T)"])
+def test_a_conventional_method_at_orca_default_ri_stays_without_an_aux(functional):
+    # the RI-name rule must not catch the conventional spellings
+    cfg = StepConfig(kind="sp", functional=functional, basis_set="def2-SVP")
+    assert _auto_aux(cfg) == ""
+
+
+def test_a_conventional_correlated_method_still_honours_nori():
+    cfg = StepConfig(kind="sp", functional="MP2", basis_set="def2-SVP",
+                     ri_approximation="NoRI")
+    assert "AutoAux" not in _keyword_line(build_input(cfg, WATER_XYZ))
+
+
+# ---- a numerical frequency never gets more ranks than it has displacements ---
+# Measured on ORCA 6.1.1: CO2 (3 atoms, 12 displacements) with %pal nprocs 15
+# wrote every displacement gradient and then spun on one core forever; the same
+# input at nprocs 12 finished in 38 s. The surplus ranks had nothing to compute,
+# so the cap costs no wall-clock at all.
+
+def _pal_line(text: str) -> str:
+    return next(ln for ln in text.splitlines() if ln.startswith("%pal"))
+
+
+def test_numfreq_caps_the_ranks_at_the_displacement_count():
+    cfg = StepConfig(kind="freq", calculation_type="NumFreq", nprocs=15)
+    text = build_input(cfg, WATER_XYZ)          # 3 atoms -> 12 displacements
+
+    assert _pal_line(text) == "%pal nprocs 12 end"
+
+
+def test_a_request_that_already_fits_is_left_exactly_as_asked():
+    for nprocs in (6, 12):
+        cfg = StepConfig(kind="freq", calculation_type="NumFreq", nprocs=nprocs)
+        text = build_input(cfg, WATER_XYZ)
+        assert _pal_line(text) == f"%pal nprocs {nprocs} end"
+        assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+
+
+def test_a_serial_run_writes_no_pal_block():
+    # serial is ORCA's default: "%pal nprocs 1" asks for nothing
+    text = build_input(StepConfig(kind="sp", nprocs=1), WATER_XYZ)
+    assert "%pal" not in text
+
+
+def test_an_analytic_freq_is_never_capped():
+    # No displacements, no ceiling — capping it would cost real parallelism.
+    cfg = StepConfig(kind="freq", calculation_type="Freq", nprocs=64)
+    text = build_input(cfg, WATER_XYZ)
+
+    assert _pal_line(text) == "%pal nprocs 64 end"
+    assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+
+
+def test_numfreq_asked_for_in_the_extra_options_is_capped_too():
+    # The keyword can arrive from the options field rather than the picker; the
+    # cap reads the composed keyword line, so both spellings reach it (P4).
+    cfg = StepConfig(kind="sp", calculation_type="", options="NumFreq", nprocs=15)
+    assert _pal_line(build_input(cfg, WATER_XYZ)) == "%pal nprocs 12 end"
+
+
+def test_irc_picked_hess_path_is_written_as_its_file_name():
+    # a .hess loaded through the picker is stored as a full path and copied
+    # into the run folder at launch; the input names only the file, since ORCA
+    # runs in that folder and truncates arguments at a space
+    for path in (r"D:\Calc Work\ts freq\TS2.hess", "/home/u/runs/TS2.hess"):
+        cfg = StepConfig(kind="irc", irc_init_hess="read", irc_hess_file=path)
+        text = build_input(cfg, "H 0 0 0\nH 0 0 0.74", 0, 1)
+        assert 'Hess_Filename "TS2.hess"' in text, path
+        assert "Calc Work" not in text and "/home/u" not in text
+
+
+# ---------------------------------------------------------------------------
+# %geom Constraints
+#
+# Verified on ORCA 6.1.1 (H2O2, HF/STO-3G, all four kinds in one block): the
+# syntax below is echoed with a C in the redundant-coordinate table and every
+# coordinate holds to the last cycle, targets included (B 1.45, D -100.00).
+# An index past the last atom dies in setup with "Could not make G matrix",
+# which is why build_input refuses one first (P26).
+# ---------------------------------------------------------------------------
+
+H2O2_XYZ = (
+    "O   0.000   0.700  -0.050\n"
+    "O   0.000  -0.700  -0.050\n"
+    "H   0.800   0.900   0.500\n"
+    "H  -0.800  -0.900   0.500"
+)
+
+
+def _geom_block(text: str) -> str:
+    lines = text.splitlines()
+    start = lines.index("%geom")
+    end = start + lines[start:].index("end")
+    return "\n".join(lines[start:end + 1])
+
+
+def test_constraints_are_written_inside_the_one_geom_block():
+    cfg = StepConfig.from_dict({"kind": "ts_opt", "max_iter": 150, "geom_constraints": [
+        {"kind": "B", "atoms": [0, 1], "value": None},
+        {"kind": "B", "atoms": [0, 2], "value": 1.25},
+        {"kind": "A", "atoms": [2, 0, 1], "value": 104.5},
+        {"kind": "D", "atoms": [2, 0, 1, 3], "value": 120},
+        {"kind": "C", "atoms": [3], "value": None},
+    ]})
+    text = build_input(cfg, H2O2_XYZ)
+    assert text.count("%geom") == 1
+    assert _geom_block(text) == (
+        "%geom\n"
+        "  MaxIter 150\n"
+        "  Calc_Hess true\n"
+        "  Constraints\n"
+        "    { B 0 1 C }\n"
+        "    { B 0 2 1.2500 C }\n"
+        "    { A 2 0 1 104.50 C }\n"
+        "    { D 2 0 1 3 120.00 C }\n"
+        "    { C 3 C }\n"
+        "  end\n"
+        "end")
+
+
+def test_no_constraints_leaves_the_geom_block_as_it_was():
+    text = build_input(StepConfig(kind="opt", max_iter=200), WATER_XYZ)
+    assert _geom_block(text) == "%geom\n  MaxIter 200\nend"
+
+
+@pytest.mark.parametrize("kind", ["opt", "opt_freq", "ts_opt", "ts_opt_freq"])
+def test_every_optimizing_kind_carries_its_constraints(kind):
+    cfg = StepConfig.from_dict({"kind": kind, "geom_constraints": [
+        {"kind": "B", "atoms": [0, 1]}]})
+    assert "    { B 0 1 C }" in build_input(cfg, WATER_XYZ)
+
+
+@pytest.mark.parametrize("kind", ["freq", "sp", "irc", "general", "tddft", "nmr"])
+def test_a_kind_that_does_not_optimize_leaves_its_constraints_out(kind):
+    cfg = StepConfig.from_dict({"kind": kind, "geom_constraints": [
+        {"kind": "B", "atoms": [0, 1]}]})
+    text = build_input(cfg, WATER_XYZ)
+    assert "Constraints" not in text
+    assert "{ B" not in text
+    assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+
+
+def test_an_index_past_the_last_atom_is_refused_with_its_number():
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_constraints": [
+        {"kind": "B", "atoms": [0, 1]}, {"kind": "A", "atoms": [0, 1, 3]}]})
+    with pytest.raises(ValueError, match=r"atom 4, but the structure has 3 atoms"):
+        build_input(cfg, WATER_XYZ)
+
+
+# Three atoms on a straight line (Br-C-O at exactly 180 degrees), the SN2-like
+# arrangement that first hit the rule, and the same three bent to 170.
+LINE_XYZ = ("C 0.0 0.0 0.0\n"
+            "Br 0.0 0.0 2.0\n"
+            "O 0.0 0.0 -1.6\n"
+            "H 1.0 0.3 0.0")
+BENT_XYZ = ("C 0.0 0.0 0.0\n"
+            "Br 0.0 0.0 2.0\n"
+            "O 0.2778 0.0 -1.5757\n"
+            "H 1.0 0.3 0.0")
+
+
+def _angle(value):
+    return StepConfig.from_dict({"kind": "opt", "geom_constraints": [
+        {"kind": "A", "atoms": [1, 0, 2], "value": value}]})
+
+
+def test_a_valued_angle_on_a_straight_line_is_warned_about():
+    """ORCA 6.1.1 takes an angle past 175 degrees as a linear bend and stops
+    in setup ("For a linear bend you can only keep the initial value") when
+    the constraint carries ANY value - even the 180.00 the coordinates
+    already have. Measured; this is the run that failed. Said when the calc
+    is added (store.constraint_warning), not refused, and not written into
+    the input, which is still the constraint as asked."""
+    cons = _angle(180.0).geom_constraints
+    line = parse_block(LINE_XYZ)
+    assert re.search(r"linear bend.*Leave its target empty",
+                     constraint_linear_warning(cons, line))
+    assert "starts at 180" in constraint_linear_warning(
+        _angle(120.0).geom_constraints, line)
+    text = build_input(_angle(180.0), LINE_XYZ)
+    assert "    { A 1 0 2 180.00 C }" in text
+    assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+
+
+def test_a_target_past_175_is_warned_about_wherever_it_starts():
+    # a 170 start with a 180 target stopped too (measured)
+    bent = parse_block(BENT_XYZ)
+    assert re.search(r"target of 180\.00°.*Leave its target empty",
+                     constraint_linear_warning(_angle(180.0).geom_constraints, bent))
+    assert "target of 175.50" in constraint_linear_warning(
+        _angle(175.5).geom_constraints, bent)
+
+
+def test_the_line_held_without_a_value_and_175_carry_no_warning():
+    held = build_input(_angle(None), LINE_XYZ)
+    assert "    { A 1 0 2 C }" in held           # measured: runs, as two L(...) parts
+    assert not constraint_linear_warning(_angle(None).geom_constraints,
+                                         parse_block(LINE_XYZ))
+    assert not constraint_linear_warning(_angle(175.0).geom_constraints,
+                                         parse_block(BENT_XYZ))
+
+
+def test_a_referenced_geometry_is_judged_by_its_target_alone():
+    # no coordinates before the run, so only the target can be asked about
+    assert "target of 180.00" in constraint_linear_warning(_angle(180.0).geom_constraints)
+    assert not constraint_linear_warning(_angle(120.0).geom_constraints)
+
+
+def test_a_template_defers_the_index_check_to_the_resolved_geometry():
+    # a referenced geometry is not known until run time; the engine calls
+    # build_input again with it, and that call checks
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_constraints": [
+        {"kind": "D", "atoms": [0, 1, 2, 9]}]})
+    text = build_input_template(cfg, 0, 1, use_placeholder=True)
+    assert "    { D 0 1 2 9 C }" in text
+    with pytest.raises(ValueError):
+        build_input(cfg, WATER_XYZ)
+
+
+@pytest.mark.parametrize("bad", [
+    {"kind": "X", "atoms": [0, 1]},                 # unknown kind
+    {"kind": "B", "atoms": [0]},                    # wrong count
+    {"kind": "A", "atoms": [0, 1]},
+    {"kind": "D", "atoms": [0, 1, 2, 3, 4]},
+    {"kind": "B", "atoms": [0, -1]},                # negative
+    {"kind": "B", "atoms": [0, 1.0]},               # not an int
+    {"kind": "B", "atoms": [0, "1"]},
+    {"kind": "B", "atoms": [True, 1]},              # a bool is not an index
+    {"kind": "B", "atoms": [2, 2]},                 # the same atom twice
+    {"kind": "B", "atoms": "0 1"},
+    {"kind": "B", "atoms": [0, 1], "value": float("nan")},
+    {"kind": "B", "atoms": [0, 1], "value": float("inf")},
+    {"kind": "B", "atoms": [0, 1], "value": "1.2\n* xyz 0 1"},   # line injection
+    {"kind": "B", "atoms": [0, 1], "value": True},
+    {"kind": ["B"], "atoms": [0, 1]},
+    "B 0 1",
+    None,
+])
+def test_a_malformed_constraint_is_dropped_at_the_boundary(bad):
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_constraints": [
+        bad, {"kind": "C", "atoms": [2]}]})
+    assert cfg.geom_constraints == [{"kind": "C", "atoms": [2], "value": None}]
+
+
+def test_constraint_values_are_normalized_at_the_boundary():
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_constraints": [
+        {"kind": " b ", "atoms": [0, 1], "value": "1.5"},   # case, numeric string
+        {"kind": "B", "atoms": [1, 2], "value": 0.0},       # clamped up
+        {"kind": "A", "atoms": [0, 1, 2], "value": 200},    # clamped to 180
+        {"kind": "D", "atoms": [0, 1, 2, 3], "value": -190},  # wrapped, not clamped
+        {"kind": "C", "atoms": [3], "value": 2.0},          # a position has no value
+        {"kind": "D", "atoms": [1, 2, 3, 4], "value": ""},  # empty = hold
+    ]})
+    assert cfg.geom_constraints == [
+        {"kind": "B", "atoms": [0, 1], "value": 1.5},
+        {"kind": "B", "atoms": [1, 2], "value": 0.1},
+        {"kind": "A", "atoms": [0, 1, 2], "value": 180.0},
+        {"kind": "D", "atoms": [0, 1, 2, 3], "value": 170.0},
+        {"kind": "C", "atoms": [3], "value": None},
+        {"kind": "D", "atoms": [1, 2, 3, 4], "value": None},
+    ]
+
+
+def test_a_constraint_named_twice_in_either_direction_is_kept_once():
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_constraints": [
+        {"kind": "A", "atoms": [0, 1, 2], "value": 100},
+        {"kind": "A", "atoms": [2, 1, 0], "value": 110},    # the same angle
+        {"kind": "A", "atoms": [1, 0, 2]},                  # a different one
+    ]})
+    assert [c["atoms"] for c in cfg.geom_constraints] == [[0, 1, 2], [1, 0, 2]]
+    assert cfg.geom_constraints[0]["value"] == 100.0
+
+
+def test_constraints_that_are_not_a_list_degrade_to_none():
+    for junk in ("{ B 0 1 C }", 3, {"kind": "B"}, None):
+        assert StepConfig.from_dict({"geom_constraints": junk}).geom_constraints == []
+
+
+def test_constraints_survive_the_config_round_trip():
+    cons = [{"kind": "B", "atoms": [0, 1], "value": 1.25},
+            {"kind": "C", "atoms": [2], "value": None}]
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_constraints": cons})
+    again = StepConfig.from_dict(cfg.to_dict())
+    assert again.geom_constraints == cons
+    assert again.to_dict() == cfg.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# %geom Scan — a relaxed surface scan
+#
+# Measured on ORCA 6.1.1 (HF/def2-SVP; water, H2O2): the line below scans a
+# bond from 0.90 to 1.10 Å in 5 points (0.05 Å apart, ends included); a Scan
+# and Constraints share the one %geom block (an angle scan held a bond
+# constraint at 0.9578 Å through every point); only an Opt scans (an SP reads
+# the block and ignores it; Opt Freq computes frequencies after point 1 only);
+# four coordinates stop in input parsing ("maximum number of scan-parameters
+# is 3"); a dihedral range past 180 runs (120, 240, 360).
+# ---------------------------------------------------------------------------
+
+from orcamgr.core.input_generator import SCAN_KINDS, normalize_scan  # noqa: E402
+
+
+def test_a_scan_is_written_inside_the_one_geom_block_after_its_constraints():
+    cfg = StepConfig.from_dict({
+        "kind": "opt", "max_iter": 150,
+        "geom_constraints": [{"kind": "B", "atoms": [0, 2]}],
+        "geom_scan": [{"kind": "A", "atoms": [1, 0, 2], "start": 100,
+                       "end": 120, "steps": 3}]})
+    text = build_input(cfg, WATER_XYZ)
+    assert text.count("%geom") == 1
+    assert _geom_block(text) == (
+        "%geom\n"
+        "  MaxIter 150\n"
+        "  Constraints\n"
+        "    { B 0 2 C }\n"
+        "  end\n"
+        "  Scan\n"
+        "    A 1 0 2 = 100.00, 120.00, 3\n"
+        "  end\n"
+        "end")
+
+
+def test_a_bond_scan_is_written_in_angstrom_to_four_decimals():
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_scan": [
+        {"kind": "B", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": 5}]})
+    assert "    B 0 1 = 0.9000, 1.1000, 5" in build_input(cfg, WATER_XYZ)
+
+
+def test_a_two_dimensional_scan_writes_both_coordinates():
+    # measured: ran as a 2 x 2 grid, one results column per coordinate
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_scan": [
+        {"kind": "B", "atoms": [0, 1], "start": 0.95, "end": 1.05, "steps": 2},
+        {"kind": "A", "atoms": [1, 0, 2], "start": 100, "end": 110, "steps": 2}]})
+    block = _geom_block(build_input(cfg, WATER_XYZ))
+    assert "    B 0 1 = 0.9500, 1.0500, 2\n    A 1 0 2 = 100.00, 110.00, 2" in block
+
+
+def test_only_an_optimization_scans():
+    assert SCAN_KINDS == ("opt",)
+    scan = [{"kind": "B", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": 5}]
+    for kind in ("opt_freq", "ts_opt", "ts_opt_freq", "freq", "sp", "irc", "general"):
+        text = build_input(StepConfig.from_dict({"kind": kind, "geom_scan": scan}), WATER_XYZ)
+        assert "Scan" not in text, kind
+        # nothing is said about the scan left out, either (the input carries
+        # no comments of ORCAdesk's own)
+        assert not [ln for ln in text.splitlines() if ln.startswith("#")]
+
+
+def test_a_scan_index_past_the_last_atom_is_refused_with_its_number():
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_scan": [
+        {"kind": "B", "atoms": [0, 3], "start": 0.9, "end": 1.1, "steps": 5}]})
+    with pytest.raises(ValueError, match=r"bond scan on atoms 1-4 names atom 4, but "
+                                         r"the structure has 3 atoms"):
+        build_input(cfg, WATER_XYZ)
+    # a template's coordinates arrive at run time, and are checked then
+    assert "B 0 3 =" in build_input_template(cfg, 0, 1, use_placeholder=True)
+
+
+@pytest.mark.parametrize("bad", [
+    {"kind": "C", "atoms": [0], "start": 0, "end": 1, "steps": 3},      # nothing to scan
+    {"kind": "X", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": 3},
+    {"kind": "B", "atoms": [0, 1, 2], "start": 0.9, "end": 1.1, "steps": 3},
+    {"kind": "B", "atoms": [0, 0], "start": 0.9, "end": 1.1, "steps": 3},
+    {"kind": "B", "atoms": [0, True], "start": 0.9, "end": 1.1, "steps": 3},
+    {"kind": "B", "atoms": [0, -1], "start": 0.9, "end": 1.1, "steps": 3},
+    {"kind": "B", "atoms": [0, 1], "start": None, "end": 1.1, "steps": 3},
+    {"kind": "B", "atoms": [0, 1], "start": 0.9, "end": "far", "steps": 3},
+    {"kind": "B", "atoms": [0, 1], "start": 0.9, "end": float("nan"), "steps": 3},
+    {"kind": "B", "atoms": [0, 1], "start": 1.0, "end": 1.00001, "steps": 3},  # one point
+    {"kind": "B", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": "many"},
+    {"kind": "B", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": True},
+    "B 0 1 = 0.9, 1.1, 5",
+])
+def test_a_malformed_scan_is_dropped_at_the_boundary(bad):
+    assert StepConfig.from_dict({"kind": "opt", "geom_scan": [bad]}).geom_scan == []
+
+
+def test_scan_values_are_clamped_never_wrapped():
+    got = normalize_scan([
+        {"kind": "b", "atoms": [0, 1], "start": 0.0, "end": 99, "steps": 1},
+        {"kind": "A", "atoms": [1, 0, 2], "start": -5, "end": 200, "steps": 5000},
+        {"kind": "D", "atoms": [2, 0, 1, 3], "start": 0, "end": 720, "steps": "37"},
+    ])
+    assert got == [
+        {"kind": "B", "atoms": [0, 1], "start": 0.1, "end": 50.0, "steps": 2},
+        {"kind": "A", "atoms": [1, 0, 2], "start": 0.0, "end": 180.0, "steps": 1000},
+        # a full turn is a range: wrapped, 360 would be 0 and the scan nothing
+        {"kind": "D", "atoms": [2, 0, 1, 3], "start": 0.0, "end": 360.0, "steps": 37},
+    ]
+
+
+def test_a_scan_named_twice_or_past_orcas_three_is_cut():
+    one = {"kind": "B", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": 3}
+    same = dict(one, atoms=[1, 0])
+    assert len(normalize_scan([one, same])) == 1
+    four = [{"kind": "B", "atoms": [0, k], "start": 0.9, "end": 1.1, "steps": 2}
+            for k in range(1, 5)]
+    assert len(normalize_scan(four)) == 3
+
+
+def test_scans_that_are_not_a_list_degrade_to_none():
+    for junk in ("B 0 1 = 0.9, 1.1, 5", 3, {"kind": "B"}, None):
+        assert StepConfig.from_dict({"geom_scan": junk}).geom_scan == []
+
+
+def test_a_scan_survives_the_config_round_trip():
+    scan = [{"kind": "D", "atoms": [2, 0, 1, 3], "start": 60.0, "end": 180.0, "steps": 3}]
+    cfg = StepConfig.from_dict({"kind": "opt", "geom_scan": scan})
+    again = StepConfig.from_dict(cfg.to_dict())
+    assert again.geom_scan == scan
+    assert again.to_dict() == cfg.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# A setting at ORCA's own default is not written
+#
+# Measured on ORCA 6.1.1 (H2O, def2-SVP) with each keyword left out: a hybrid
+# runs RIJCOSX + def2/J; Opt raises the SCF to TightSCF (TolE 1e-8) and the
+# TightOpt ORCAdesk writes to TolE 1e-9, SP and Freq stay at NormalSCF; %tddft TDA on, triplets off, 3 roots; %neb 8
+# intermediate images. Kept as ORCAdesk's own on purpose: TightOpt, and the
+# %geom / %irc MaxIter (200 / 100, always written; ORCA's are 50 / 20).
+# ---------------------------------------------------------------------------
+
+def test_a_default_optimization_is_tightopt_with_its_maxiter():
+    text = build_input(StepConfig(kind="opt", nprocs=4, maxcore_mb=3000), WATER_XYZ)
+    assert text.splitlines()[:3] == [
+        "! wB97X-D4 def2-TZVP TightOpt", "%maxcore 3000", "%pal nprocs 4 end"]
+    assert _block(text, "%geom") == "%geom\n  MaxIter 200\nend"
+
+
+@pytest.mark.parametrize("kind,calc", [("freq", "Freq"), ("ts_freq", "Freq"),
+                                       ("sp", "SP"), ("opt_freq", "Opt Freq")])
+def test_no_scf_tier_or_ri_is_written_by_default(kind, calc):
+    line = _keyword_line(build_input(StepConfig(kind=kind, calculation_type=calc), WATER_XYZ))
+    assert line == f"! wB97X-D4 def2-TZVP {calc}"
+
+
+def test_a_geom_maxiter_is_always_written():
+    # also at ORCA's own 50: the cap is shown, not implied
+    assert "  MaxIter 50" in build_input(StepConfig(kind="opt", max_iter=50), WATER_XYZ)
+    assert "  MaxIter 120" in build_input(StepConfig(kind="opt", max_iter=120), WATER_XYZ)
+
+
+def test_the_tddft_block_asks_only_what_differs():
+    text = build_input(StepConfig(kind="tddft", calculation_type=""), WATER_XYZ)
+    assert _block(text, "%tddft") == "%tddft\n  nroots 3\nend"
+    full = build_input(StepConfig(kind="tddft", calculation_type="", tddft_nroots=20,
+                                  tddft_maxdim=8, tddft_tda=False,
+                                  tddft_triplets=True), WATER_XYZ)
+    assert _block(full, "%tddft") == (
+        "%tddft\n  nroots 20\n  maxdim 8\n  tda false\n  triplets true\nend")
+
+
+def test_irc_writes_its_maxiter_and_neb_its_images_only_off_orcas():
+    irc = build_input(StepConfig(kind="irc", calculation_type="IRC"), WATER_XYZ)
+    assert "  MaxIter 100" in _block(irc, "%irc")
+    assert "  MaxIter 60" in build_input(
+        StepConfig(kind="irc", calculation_type="IRC", irc_maxiter=60), WATER_XYZ)
+    neb = build_input(StepConfig(kind="neb_ts", calculation_type="NEB-TS",
+                                 neb_product_xyz=WATER_XYZ), WATER_XYZ)
+    assert "Nimages" not in _block(neb, "%neb")
+    assert "  Nimages 12" in build_input(
+        StepConfig(kind="neb_ts", calculation_type="NEB-TS", neb_nimages=12,
+                   neb_product_xyz=WATER_XYZ), WATER_XYZ)
+
+
+def test_stored_older_settings_still_write_what_they_asked_for():
+    # a calculation saved under the old defaults keeps its choices
+    cfg = StepConfig.from_dict({"kind": "freq", "calculation_type": "Freq",
+                                "scf_convergence": "VeryTightSCF",
+                                "ri_approximation": "RIJCOSX"})
+    assert _keyword_line(build_input(cfg, WATER_XYZ)) == (
+        "! wB97X-D4 def2-TZVP VeryTightSCF RIJCOSX Freq")
+
+
+def _block(text: str, head: str) -> str:
+    lines = text.splitlines()
+    start = lines.index(head)
+    end = start + lines[start:].index("end")
+    return "\n".join(lines[start:end + 1])

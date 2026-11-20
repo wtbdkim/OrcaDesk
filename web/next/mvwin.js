@@ -1,0 +1,809 @@
+// @ts-check
+"use strict";
+/* ============================================================
+   ORCAdesk notebook front-end — the pop-out 3D viewer.
+
+   The inline stages (a cell's thumbnail, the report's Structure section, the
+   Visual panel) are small on purpose: they sit inside a reading column. This is
+   where a structure gets the window — and it is the only place that can show
+   what an inline canvas cannot:
+
+     · a TRAJECTORY walked frame by frame, with the frames worth keeping
+       starred and exported as .xyz;
+     · an ISOSURFACE — an orbital, the electron density, an ESP map — which is
+       a volume, not a set of atoms.
+
+   Two renderers, because those are two different problems:
+
+     frames  ->  mol.js, the same painter as every other stage here, so drag,
+                 click and right-drag-to-measure behave identically in the big
+                 window and the small one.
+     volume  ->  3Dmol (../vendor/3Dmol-min.js, the bundled copy),
+                 loaded on FIRST USE only. Marching cubes in the notebook's own
+                 painter would be a second implementation of something already
+                 in the repo, and nothing here needs WebGL until an isosurface
+                 is asked for — a machine with no GL context can still walk a
+                 trajectory.
+
+   Everything it shows comes from the bridge: list_structure_sets /
+   get_structure_frames for the frames, get_favorites / toggle_favorite /
+   export_frames for the stars, get_plot_options / generate_cube /
+   get_cube_status / get_cube_data for the surfaces.
+   ============================================================ */
+
+(function () {
+
+  /** the mol.js stage, created once the window first opens @type {any} */
+  let _stage = null;
+  /** its Display menu, made with the stage @type {any} */
+  let _menu = null;
+  /** @type {any[]} frames of the open set */
+  let _frames = [];
+  /** what every frame's bonds are drawn from: the calculation's input, else
+   *  the set's first frame @type {(any[]|null)[]} */
+  let _bondRefs = [];
+  let _idx = 0;
+  /** starred labels for _source @type {Set<string>} */
+  let _favs = new Set();
+  let _favOnly = false;
+  let _source = "";
+  /** how export_frames addresses the destination: ["calc", name] / ["folder", path] */
+  let _dest = ["folder", ""];
+  let _mode = "frames";
+  /** what returns focus when the window closes @type {any} */
+  let _return = null;
+  /** the plot picks built from get_plot_options + the parse's orbital list */
+  let _picks = [];
+  let _opts = null;
+  /** the in-flight (or settled) get_plot_options for _source; see volumeReady */
+  let _volReady = null;
+  /** the parse's orbital list for the open result, which is what lets the
+   *  Surface picker say HOMO and mean the orbital the PARSER called the HOMO
+   *  @type {any[]} */
+  let _orbitals = [];
+  /** the NBO program's orbitals for the Surface picker @type {any[]} */
+  let _nbos = [];
+
+  const q = (id) => /** @type {any} */ (NB.$(id));
+
+  /** A CSS custom property's value, for a colour 3Dmol takes as a string.
+   *  @param {string} name @param {string} fallback */
+  function token(name, fallback) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name);
+    return (v || "").trim() || fallback;
+  }
+
+  // ---------------------------------------------------------------- the shell
+
+  function isOpen() { return !q("mvwin").hidden; }
+
+  /** @param {KeyboardEvent} e */
+  function onKey(e) {
+    if (!isOpen()) return;
+    if (e.key === "Escape") { close(); e.preventDefault(); return; }
+    if (_mode !== "frames") return;
+    // In volume mode a "frame" is not a thing on screen, and F starring
+    // whatever structure was last shown would star something invisible.
+    if (e.key === "ArrowLeft") { step(-1); e.preventDefault(); }
+    else if (e.key === "ArrowRight") { step(1); e.preventDefault(); }
+    else if (e.key === "f" || e.key === "F") {
+      if (/** @type {any} */ (e.target).tagName === "INPUT") return;
+      e.preventDefault(); toggleFav();
+    }
+  }
+
+  function close() {
+    // Release the GPU's buffers before the container is hidden: a render into a
+    // display:none box draws into a 0x0 framebuffer, which leaves the old scene
+    // on the card instead of clearing it.
+    _vol.release();
+    if (_menu) _menu.close();
+    q("mvwin").hidden = true;
+    q("mv-scrim").hidden = true;
+    document.removeEventListener("keydown", onKey);
+    _frames = [];
+    // the Visual panel takes the box back if it was showing a surface -- the
+    // window borrowed the one renderer there is, and a panel left with an empty
+    // stage would read as the pick having been lost
+    if (NB.viewer && NB.viewer.reclaimSurface) NB.viewer.reclaimSurface();
+    if (_return && _return.focus) _return.focus();
+  }
+
+  /** @param {string} m "frames" | "volume" */
+  function setMode(m) {
+    _mode = m;
+    const vol = m === "volume";
+    q("mv-frames").hidden = vol;
+    q("mv-volume").hidden = !vol;
+    q("mv-canvas").hidden = vol;
+    q("mv-legend").hidden = vol;
+    // the box is shared with the Visual panel and may be parented there, so
+    // this takes it back rather than assuming it is already here
+    if (vol) {
+      if (_menu) _menu.close();        // the menu belongs to the atom painter
+      _vol.adopt(q("mv-stage"));
+    } else q("mv-gl").hidden = true;
+    document.querySelectorAll("[data-mvmode]").forEach(b =>
+      b.setAttribute("aria-pressed", String(/** @type {any} */ (b).dataset.mvmode === m)));
+    if (!vol && _stage) _stage.repaint();
+    if (vol) volumeReady();
+  }
+
+  // ---------------------------------------------------------------- frames
+
+  /** Elements on screen, not a periodic table. @param {any[]} atoms */
+  function legend(atoms) {
+    const seen = [];
+    atoms.forEach(a => { if (seen.indexOf(a.el) < 0) seen.push(a.el); });
+    q("mv-legend").innerHTML = seen.slice(0, 8).map(el =>
+      `<span><i style="background:${MOL.color(el)}${
+        el === "H" ? ";outline:1px solid var(--border)" : ""}"></i>${NB.esc(el)}</span>`).join("");
+  }
+
+  /** The frames the walker may land on — every frame, or only the starred ones.
+   *  @returns {number[]} */
+  function visible() {
+    const all = _frames.map((f, i) => i);
+    if (!_favOnly) return all;
+    return all.filter(i => _favs.has(_frames[i].label));
+  }
+
+  /** @param {number} d */
+  function step(d) {
+    const vis = visible();
+    if (!vis.length) return;
+    let at = vis.indexOf(_idx);
+    at = at < 0 ? 0 : (at + d + vis.length) % vis.length;
+    show(vis[at]);
+  }
+
+  /** @param {number} i */
+  function show(i) {
+    const f = _frames[i];
+    if (!f || !_stage) return;
+    _idx = i;
+    const atoms = MOL.parseXyz(f.xyz);
+    _stage.setAtoms(atoms, { bondsFrom: _bondRefs });
+    legend(atoms);
+    const vis = visible();
+    const at = vis.indexOf(i);
+    q("mv-count").textContent = _frames.length
+      ? `frame ${at >= 0 ? at + 1 : i + 1} of ${vis.length}`
+        + (_favOnly ? " starred" : "")
+      : "no frames";
+    // energies are only comparable inside one set, so the caption is relative
+    const es = _frames.map(x => x.energy).filter(e => e != null);
+    const e0 = es.length ? Math.min(...es) : null;
+    const de = (f.energy != null && e0 != null)
+      ? ` · ΔE ${((f.energy - e0) * 627.5094740631).toFixed(2)} kcal/mol` : "";
+    q("mv-cap").textContent = `${f.label} · ${atoms.length} atoms${de}`;
+    syncFav();
+  }
+
+  function syncFav() {
+    const f = _frames[_idx];
+    const on = !!(f && _favs.has(f.label));
+    const b = q("mv-fav");
+    b.setAttribute("aria-pressed", String(on));
+    b.innerHTML = (on ? "★" : "☆") + " Favourite <kbd>F</kbd>";
+    q("mv-favonly").setAttribute("aria-pressed", String(_favOnly));
+  }
+
+  async function toggleFav() {
+    const f = _frames[_idx];
+    if (!f) return;
+    const on = !_favs.has(f.label);
+    if (on) _favs.add(f.label); else _favs.delete(f.label);
+    syncFav();                                     // the star IS the feedback
+    const r = await NB.call("toggle_favorite", _source, f.label, on);
+    if (r && r.labels) _favs = new Set(r.labels);
+    // A star that could not be written must say so: otherwise someone works
+    // through a whole ensemble and finds every star gone at the next launch.
+    if (r && r.ok === false && r.error) NB.fail(r.error);
+    // Unstarring the last favourite while "favourites only" is on leaves the
+    // walker with nothing to walk, so the filter lets itself go.
+    if (_favOnly && !_frames.some(x => _favs.has(x.label))) _favOnly = false;
+    syncFav();
+    show(_idx);
+  }
+
+  // ---------------------------------------------------------------- volume
+
+  /** Load 3Dmol once, on the first surface. @returns {Promise<any>} */
+  function load3Dmol() {
+    const have = window["$3Dmol"] || window["3Dmol"];
+    if (have) return Promise.resolve(have);
+    return new Promise(res => {
+      const s = document.createElement("script");
+      s.src = "../vendor/3Dmol-min.js";
+      s.onload = () => res(window["$3Dmol"] || window["3Dmol"] || null);
+      s.onerror = () => res(null);
+      document.head.appendChild(s);
+    });
+  }
+
+  /** What this result can be drawn as. Built from the backend's own answer —
+   *  which kinds the wavefunction supports — and the parse's orbital list, so
+   *  HOMO means the orbital the parser called the HOMO rather than one this
+   *  file counted out again (P4).
+   *  @param {any[]} orbitals @param {any} opts PlotOptionsResult */
+  /** What a fresh plot of each kind costs, so the place that ASKS before
+   *  spending it does not have to invent a number. Measured on ORCA 6.1.1,
+   *  52 atoms / 987 basis functions: one MO at 60 = 0.17 s, an SCF density
+   *  9.9 s, an ESP map 49 s at 40 and ~2.8 min at 60 (it is two cubes, and it
+   *  scales with the basis as well as the grid). */
+  const COST = {
+    mo: "about a second", eldens: "a few seconds",
+    spindens: "a few seconds", esp: "a few minutes",
+    // an NBO is plotted exactly like an MO, from the .nbo file
+    pnbo: "about a second",
+  };
+  /** What else is worth knowing before spending it, for the question that asks.
+   *  Only the ESP has anything to add, and it is the one that costs enough to
+   *  be worth saying: the surface and the colour on it are two separate cubes
+   *  on one grid, and the potential is a Coulomb sum at every point of it. */
+  const COST_WHY = {
+    esp: " — it is two cubes on one grid, not one, and the potential is a sum "
+         + "over every nucleus at every point",
+  };
+
+  /** @param {any[]} orbitals the parse's MO list
+   *  @param {any} opts PlotOptionsResult
+   *  @param {any[]} [nbos] the NBO program's orbitals, from the parse
+   *    (ParsePayload.nbo_program.orbitals) -- the .nbo file holds them in the
+   *    same order, so NBO k is the file's orbital k-1 */
+  function picksFor(orbitals, opts, nbos) {
+    const kinds = opts.kinds || [];
+    const out = [];
+    if (kinds.indexOf("mo") >= 0 && orbitals && orbitals.length) {
+      // EVERY orbital the parse read, not a window around the frontier. A
+      // window is a guess about which orbital the question is about, and it is
+      // wrong often enough to matter: a ligand-field argument wants the metal d
+      // set wherever it fell, a charge-transfer one wants the donor lone pair,
+      // and a core hole is nowhere near the HOMO. The rows cost nothing —
+      // they are list entries, and orca_plot only runs for the one clicked.
+      //
+      // Manifolds are still kept apart: an unrestricted run prints two, both
+      // indexed from 0, so the spin rides along as `operator` (0 alpha, 1 beta)
+      // rather than one of them being dropped. That is also the cube's name.
+      const spins = [];
+      orbitals.forEach(o => {
+        const sp = o.spin || "";
+        if (spins.indexOf(sp) < 0) spins.push(sp);
+      });
+      spins.forEach(sp => {
+        const man = orbitals.filter(o => (o.spin || "") === sp);
+        const op = sp === "b" ? 1 : 0;
+        const tag = spins.length > 1 ? (sp === "b" ? "β " : "α ") : "";
+        // the frontier comes from the parse, never recounted here (P4) — and
+        // for an open-shell run it is the pair across BOTH manifolds, so the
+        // other one legitimately has neither and its orbitals go by index
+        const homo = man.filter(o => o.frontier === "homo")[0];
+        const lumo = man.filter(o => o.frontier === "lumo")[0];
+        man.forEach(o => {
+          let name = "#" + o.idx;
+          if (homo && o.idx <= homo.idx) {
+            name = o.idx === homo.idx ? "HOMO" : "HOMO−" + (homo.idx - o.idx);
+          } else if (lumo && o.idx >= lumo.idx) {
+            name = o.idx === lumo.idx ? "LUMO" : "LUMO+" + (o.idx - lumo.idx);
+          }
+          // `short` names it in the one-cell-wide list; `label` in the picker,
+          // where there is a line to spare for the index and the energy
+          out.push({ kind: "mo", index: o.idx, operator: op, ev: o.ev,
+                     short: tag + name,
+                     label: `${tag}${name} (${o.idx}, ${o.ev.toFixed(2)} eV)` });
+        });
+      });
+    }
+    if (kinds.indexOf("eldens") >= 0)
+      out.push({ kind: "eldens", index: 0, operator: 0,
+                 label: "Electron density", short: "Electron density" });
+    if (kinds.indexOf("spindens") >= 0)
+      out.push({ kind: "spindens", index: 0, operator: 0,
+                 label: "Spin density", short: "Spin density" });
+    if (kinds.indexOf("esp") >= 0)
+      out.push({ kind: "esp", index: 0, operator: 0,
+                 label: "Electrostatic potential", short: "ESP map" });
+    // Every NBO the program listed, in its own order and under its own name.
+    // The column beside a name is the occupancy rather than an energy: it is
+    // what says a Lewis orbital from an antibond at a glance.
+    if (kinds.indexOf("pnbo") >= 0 && nbos && nbos.length) {
+      nbos.forEach(o => out.push({
+        kind: "pnbo", index: o.index - 1, operator: 0,
+        short: `${o.index}. ${o.label}`, v: o.occ.toFixed(3),
+        label: `NBO ${o.index} · ${o.label} (${o.occ.toFixed(3)} e)` }));
+    }
+    return out;
+  }
+
+  /** What this result can be drawn AS, without opening the viewer: the same
+   *  picks the Surface selector holds, each marked with whether its cube is
+   *  already on disk. The Visual section lists these beside the .xyz sets, so
+   *  both live behind one definition of what a pick is and what its file is
+   *  called (P4) — a second copy of the naming rule is how a plot and its
+   *  "already generated" mark come to disagree.
+   *  @param {string} source @param {any[]} orbitals */
+  async function surfaces(source, orbitals, nbos) {
+    const o = await NB.call("get_plot_options", source);
+    if (!o || !o.ok || !o.has_gbw) {
+      return { ok: false, picks: [],
+               error: (o && o.error)
+                 || "No .gbw beside this result — there is no wavefunction to plot from." };
+    }
+    // opts rides back with the picks: the panel draws the surface itself now,
+    // and plotting one needs the same options this call already fetched. A
+    // second get_plot_options would be a second answer to one question (P4).
+    return { ok: true, opts: o,
+      picks: picksFor(orbitals || [], o, nbos || []).map(p => Object.assign({},
+        p, { ready: cached(o, p), grid: gridFor(o, p.kind),
+             cost: COST[p.kind] || "a moment", why: COST_WHY[p.kind] || "" })) };
+  }
+
+  /** Fill the Surface picker once the options are known. Returns the promise so
+   *  a caller that wants to plot straight away can wait for the list (opening
+   *  on a pick does). Asked once per result: the guard is the promise, not
+   *  `_opts`, which is only set when the reply lands. */
+  function volumeReady() {
+    if (_volReady) return _volReady;                // already asked
+    const sel = q("mv-vol");
+    sel.innerHTML = `<option>reading the wavefunction…</option>`;
+    _volReady = NB.call("get_plot_options", _source).then(o => {
+      _opts = o || { ok: false };
+      if (!_opts.ok || !_opts.has_gbw) {
+        sel.innerHTML = `<option value="">nothing to plot</option>`;
+        q("mv-cap").textContent = _opts.error
+          || "No .gbw beside this result — there is no wavefunction to plot from.";
+        q("mv-plot").disabled = true;
+        return;
+      }
+      _picks = picksFor(_orbitals, _opts, _nbos);
+      if (!_picks.length) {
+        sel.innerHTML = `<option value="">nothing to plot</option>`;
+        q("mv-plot").disabled = true;
+        return;
+      }
+      sel.innerHTML = _picks.map((p, i) => {
+        const ready = cached(_opts, p);
+        return `<option value="${i}">${NB.esc(p.label)}${ready ? " — ready" : ""}</option>`;
+      }).join("");
+      q("mv-plot").disabled = false;
+      showRamp();
+      q("mv-cap").textContent =
+        "Pick a surface and press Plot. Anything marked “ready” is already on disk.";
+    });
+    return _volReady;
+  }
+
+  /** orca_plot's own filename for a pick, so "ready" and the fetch that follows
+   *  it can never disagree about which file they mean.
+   *  @param {any} p @param {number} [grid] */
+  function cubeName(opts, p, grid) {
+    const g = grid || gridFor(opts, p.kind);
+    const b = opts.base;
+    // an ESP is named after the DENSITY it came from: water.scfp.esp.cube
+    // an NBO is kept apart from the MO orca_plot names it as (core/plot.py)
+    const stem = p.kind === "mo"
+      ? `${b}.mo${p.index}${p.operator ? "b" : "a"}`
+      : p.kind === "pnbo" ? `${b}.pnbo${p.index}${p.operator ? "b" : "a"}`
+      : (p.kind === "esp" ? `${b}.scfp.esp` : `${b}.${p.kind}`);
+    return `${stem}.g${g}.cube`;
+  }
+  /** @param {string} kind */
+  function gridFor(opts, kind) {
+    return kind === "esp" ? (opts.esp_grid || opts.default_grid) : opts.default_grid;
+  }
+  /** Is this pick already on disk at this grid? The grid is a parameter because
+   *  it is a CHOICE: the same orbital at 40 and at 80 are two different files,
+   *  and "ready" has to mean the one that would actually be drawn.
+   *  @param {any} opts @param {any} p @param {number} [grid] */
+  function cached(opts, p, grid) {
+    const g = grid || gridFor(opts, p.kind);
+    const names = p.kind === "esp"
+      ? [cubeName(opts, { kind: "eldens", index: 0, operator: 0 }, g),
+         cubeName(opts, p, g)]
+      : [cubeName(opts, p, g)];
+    return names.every(n => (opts.cached || []).indexOf(n) >= 0);
+  }
+
+  /** One isosurface renderer, and one WebGL context, for the whole app.
+
+      Two stages ask it to draw: the Visual panel's, which shows what you picked
+      where you picked it, and the pop-out window's, which is the same picture
+      with the isovalue beside it. They share the renderer rather than each
+      having one, for two reasons. A browser keeps only a handful of WebGL
+      contexts alive and drops the oldest without asking, and the Visual panel's
+      stage is destroyed and rebuilt on every report render — a viewer per stage
+      would be a new context every repaint. And "which cube, at which grid, under
+      which name, and is it already on disk" is exactly the rule that goes wrong
+      the second time it is written (P4): an ESP cube is named after the DENSITY
+      it came from, and a second copy of that fact is how a "ready" mark and the
+      file a fetch looks for come to disagree.
+
+      So the BOX moves. adopt(stage) re-parents #mv-gl, which Chromium does
+      without losing the context, and whichever stage holds it is the one
+      drawing.
+   */
+  function volumeView() {
+    /** @type {any} */ let gl = null;
+    /** @type {any} */ let volData = null;
+    /** @type {any} */ let espData = null;
+    let signed = true, title = "", iso = 0.05, espRange = 0.05;
+    /** bumped on every request; a reply for an older one is dropped */
+    let seq = 0;
+    /** where progress and the finished caption go — the holder sets it */
+    let report = (/** @type {string} */ _t) => {};
+
+    /** Move the GL box into a stage and take ownership of it. The box itself is
+     *  #mv-gl, which lives in index.html and is never re-created; only its
+     *  parent changes. @param {HTMLElement} stage */
+    function adopt(stage) {
+      const box = q("mv-gl");
+      if (box.parentElement !== stage) stage.appendChild(box);
+      box.hidden = false;
+      if (gl) gl.resize();
+      return box;
+    }
+
+    /** Run orca_plot for one request and read the cube back.
+     *  @param {string} source @param {any} part @param {number} grid
+     *  @param {number} mySeq @param {string} wait @param {any} opts */
+    async function fetchCube(source, part, grid, mySeq, wait, opts) {
+      const payload = JSON.stringify({ source: source, kind: part.kind,
+        index: part.index, operator: part.operator, grid: grid });
+      const mine = (j) => !!j && j.kind === part.kind && j.index === part.index
+        && j.operator === part.operator && j.grid === grid;
+      let job = null;
+      for (;;) {
+        job = await NB.call("generate_cube", payload);
+        if (mySeq !== seq) return null;
+        if (mine(job)) break;
+        // the backend serializes orca_plot — one folder, one fixed output name
+        report(wait + " — waiting for the previous plot…");
+        await new Promise(r => setTimeout(r, 250));
+        if (mySeq !== seq) return null;
+      }
+      while (job && job.state === "running") {
+        report(`${wait} — ${job.seconds ? job.seconds.toFixed(0) + "s" : "working"}…`);
+        await new Promise(r => setTimeout(r, 250));
+        if (mySeq !== seq) return null;
+        job = await NB.call("get_cube_status");
+      }
+      if (!job || job.state !== "done" || !mine(job)) {
+        NB.fail((job && job.error) || "orca_plot could not produce that surface.");
+        return null;
+      }
+      const data = await NB.call("get_cube_data");
+      if (mySeq !== seq) return null;
+      if (!data || !data.ok) {
+        NB.fail((data && data.error) || "Could not read the cube file.");
+        return null;
+      }
+      const n = cubeName(opts, part, grid);
+      if ((opts.cached || []).indexOf(n) < 0) opts.cached.push(n);
+      return data;
+    }
+
+    /** Draw one surface into the stage that currently holds the box.
+     *  @param {string} source @param {any} p one pick @param {any} opts
+     *  @param {(text: string) => void} [say] where to report progress
+     *  @param {number} [gridChoice] a grid other than this kind's default
+     *  @returns {Promise<boolean>} true when something was drawn */
+    async function plot(source, p, opts, say, gridChoice) {
+      if (!p || !opts) return false;
+      if (say) report = say;
+      const $3Dmol = await load3Dmol();
+      if (!$3Dmol) {
+        NB.fail("The 3D renderer could not be loaded, so a surface cannot be drawn.");
+        return false;
+      }
+      if (!gl) {
+        const bg = token("--stage", "");
+        try {
+          gl = $3Dmol.createViewer(q("mv-gl"), bg ? { backgroundColor: bg } : {});
+        } catch (e) { gl = null; }
+        if (!gl) {
+          // a remote desktop, a VM, a blocklisted GPU: the frames half still works
+          NB.fail("3D rendering is unavailable on this display — the graphics "
+                  + "driver would not provide a WebGL context.");
+          return false;
+        }
+      }
+      gl.resize();
+      espRange = opts.esp_range || espRange;
+      const mySeq = ++seq;
+      const grid = gridChoice || gridFor(opts, p.kind);
+      if (p.kind === "esp") {
+        // Two fields on ONE grid: the density gives the surface, the potential
+        // colours it per vertex. Different grids would be two different boxes.
+        const dens = await fetchCube(source, { kind: "eldens", index: 0, operator: 0 },
+                                     grid, mySeq, "ESP map — density surface", opts);
+        if (!dens) return false;
+        const esp = await fetchCube(source, p, grid, mySeq, "ESP map — potential", opts);
+        if (!esp) return false;
+        signed = false;
+        title = "ESP map";
+        gl.clear();
+        gl.addModel(dens.text, "cube");
+        gl.setStyle({}, { stick: { radius: 0.1 }, sphere: { scale: 0.18 } });
+        volData = new $3Dmol.VolumeData(dens.text, "cube");
+        espData = new $3Dmol.VolumeData(esp.text, "cube");
+        // the ESP convention (~0.002 e/bohr³, the van-der-Waals-like contour),
+        // not a fitted level: a total density's 0.002 surface is the same
+        // physical surface in every molecule
+        iso = opts.esp_surface_iso || 0.002;
+      } else {
+        const data = await fetchCube(source, p, grid, mySeq, p.label, opts);
+        if (!data) return false;
+        espData = null;
+        signed = data.signed !== false;
+        title = data.title || p.label;
+        gl.clear();
+        gl.addModel(data.text, "cube");
+        gl.setStyle({}, { stick: { radius: 0.1 }, sphere: { scale: 0.18 } });
+        volData = new $3Dmol.VolumeData(data.text, "cube");
+        iso = data.isovalue || 0.05;
+      }
+      draw(true);
+      return true;
+    }
+
+    /** Re-mesh what is already in memory. No backend call — which is the whole
+     *  reason a coarse grid is enough to steer the isovalue by hand.
+     *  @param {boolean} zoom */
+    function draw(zoom) {
+      const $3Dmol = window["$3Dmol"] || window["3Dmol"];
+      if (!gl || !volData || !$3Dmol) return;
+      gl.removeAllShapes();
+      // smoothness = Laplacian smoothing of the marching-cubes output: the knob
+      // that makes a 40³ sampling look like a surface. Raising the GRID instead
+      // costs cube-of-the-number bytes for detail an isosurface cannot show.
+      const common = { opacity: 0.88, smoothness: 8 };
+      if (espData) {
+        gl.addIsosurface(volData, Object.assign({
+          isoval: iso,
+          voldata: espData,
+          volscheme: new $3Dmol.Gradient.CustomLinear(-espRange, espRange,
+            [token("--esp-neg", "#f2555a"), token("--esp-mid", "#f5f5f5"),
+             token("--esp-pos", "#4f86f7")]),
+        }, common));
+        report(`ESP map · density surface ${iso.toFixed(4)} e/bohr³`
+          + ` · scale ±${espRange.toFixed(3)} a.u. · red −, blue +`);
+      } else if (signed) {
+        gl.addIsosurface(volData, Object.assign({ isoval: iso, color: token("--orb-pos", "#4f86f7") }, common));
+        gl.addIsosurface(volData, Object.assign({ isoval: -iso, color: token("--orb-neg", "#f2555a") }, common));
+        report(`${title} · isovalue ${iso.toFixed(4)} a.u. · blue +, red −`);
+      } else {
+        gl.addIsosurface(volData, Object.assign({ isoval: iso, color: token("--orb-dens", "#5eead4") }, common));
+        report(`${title} · isovalue ${iso.toFixed(4)} a.u.`);
+      }
+      if (zoom) gl.zoomTo();
+      gl.render();
+    }
+
+    /** Put the box back where it lives, before something re-renders the stage
+     *  it was borrowed into. The Visual panel's stage is destroyed and rebuilt
+     *  on every report render, and this box holds the app's only WebGL context
+     *  -- going out with that innerHTML would take the renderer with it. */
+    function park() {
+      const box = q("mv-gl"), home = q("mv-stage");
+      if (box && home && box.parentElement !== home) home.appendChild(box);
+      if (box) box.hidden = true;
+    }
+
+    return {
+      adopt: adopt,
+      park: park,
+      plot: plot,
+      redraw: draw,
+      /** Release the GPU's buffers before the box is hidden: a render into a
+       *  display:none box draws into a 0x0 framebuffer, which leaves the old
+       *  scene on the card instead of clearing it. */
+      release() {
+        if (gl) { try { gl.clear(); gl.render(); } catch (e) { /* context lost */ } }
+        volData = null; espData = null;
+        seq++;
+      },
+      /** @param {number} v */
+      setIso(v) { iso = v; draw(false); },
+      iso: () => iso,
+      /** The ESP colour half-width, in a.u. Only an ESP map has one, and it is
+       *  the other half of reading the picture: the surface says where, the
+       *  scale says how much. @param {number} v */
+      setEspRange(v) { espRange = v; draw(false); },
+      espRange: () => espRange,
+      isEsp: () => !!espData,
+      hasData: () => !!volData,
+    };
+  }
+
+  /** The one renderer. Built once, never rebuilt. */
+  const _vol = volumeView();
+
+  /** The pop-out's Plot button: the picker here chooses, the shared renderer
+   *  draws, and the caption below the stage is where it reports. */
+  async function plot() {
+    const p = _picks[Number(q("mv-vol").value)];
+    if (!p) return;
+    _vol.adopt(q("mv-stage"));
+    q("mv-plot").disabled = true;
+    try {
+      const ok = await _vol.plot(_source, p, _opts, t => { q("mv-cap").textContent = t; });
+      if (ok) q("mv-iso").value = _vol.iso().toFixed(4);
+      showRamp();
+    } finally {
+      q("mv-plot").disabled = false;
+    }
+  }
+
+  /** The ramp is the ESP legend; it means nothing beside a signed orbital, and
+   *  a legend that is always on screen is a legend nobody reads. */
+  function showRamp() {
+    const p = _picks[Number(q("mv-vol").value)];
+    const esp = !!(p && p.kind === "esp");
+    q("mv-ramp").hidden = !esp;
+    q("mv-ramphint").hidden = !esp;
+  }
+
+  // ---------------------------------------------------------------- opening
+
+  /** Open the viewer.
+   *  @param {{source: string, title?: string, path?: string, file?: string, orbitals?: any[],
+   *           nbos?: any[], mode?: string, pick?: any}} o
+   *    source  how the backend addresses this result: "calc:<name>" or "file:<path>"
+   *    path    one structure set to open on; otherwise the first one found
+   *    file    one .xyz (or folder of them) to open as THE set, without
+   *            looking for others beside it -- a structure picked with Open
+   *            file..., which need not be one the folder listing offers
+   *    mode    "frames" (default) or "volume"
+   *    pick    a surface to draw at once ({kind, index, operator}); implies
+   *            volume mode. The caller has already decided whether this is
+   *            worth the wait — asking again here would be asking twice. */
+  async function open(o) {
+    const src = o.source || "";
+    if (!src) return;
+    _return = document.activeElement;
+    _source = src;
+    _opts = null;
+    _volReady = null;
+    _picks = [];
+    _orbitals = o.orbitals || [];
+    _nbos = o.nbos || [];
+    q("mv-title").textContent = o.title || "Structure viewer";
+    q("mv-scrim").hidden = false;
+    q("mvwin").hidden = false;
+    document.addEventListener("keydown", onKey);
+    q("mv-close").focus();
+
+    // this stage owns its window, so the wheel is its own and zooms bare
+    if (!_stage) {
+      _stage = MOL.mount(q("mv-canvas"), { wheel: "plain" });
+      _menu = MOL.displayMenu(q("mv-display"), q("mv-stage"), _stage);
+    } else _stage.repaint();
+
+    setMode((o.mode === "volume" || o.pick) ? "volume" : "frames");
+    // Opening ON a surface: wait for the picker to be filled, then select the
+    // one asked for and run it. Selecting by identity, not by position — the
+    // list is built from the wavefunction and the caller cannot know its order.
+    if (o.pick) {
+      volumeReady().then(() => {
+        const i = _picks.findIndex(x => x.kind === o.pick.kind
+          && x.index === o.pick.index && x.operator === o.pick.operator);
+        if (i < 0) { NB.fail("That surface is not available for this wavefunction."); return; }
+        q("mv-vol").value = String(i);
+        showRamp();
+        plot();
+      });
+    }
+
+    // export_frames addresses a queued calculation by name and anything else by
+    // folder — the two land in different places, so the prefix is not decoration
+    _dest = src.indexOf("calc:") === 0
+      ? ["calc", src.slice(5)] : ["folder", ""];
+
+    q("mv-count").textContent = "reading…";
+    _frames = [];
+    _favs = new Set();
+    _favOnly = false;
+
+    _bondRefs = [];
+    const [r, input] = await Promise.all([
+      o.file ? Promise.resolve({ ok: true, sets: [{ path: o.file }] })
+             : NB.call("list_structure_sets", src),
+      NB.inputAtoms(src)]);
+    const sets = (r && r.ok && r.sets) ? r.sets : [];
+    const set = (o.path && sets.filter(s => s.path === o.path)[0]) || sets[0];
+    if (!set) {
+      q("mv-count").textContent = "no structures";
+      // in volume mode the caption belongs to the surface; a single-point run
+      // legitimately has no .xyz beside it and is still worth plotting
+      if (_mode === "frames") {
+        q("mv-cap").textContent =
+          "Nothing in this result's folder can be drawn yet — a trajectory, a CREST "
+          + "ensemble or exported conformers appear here as the run writes them.";
+      }
+      return;
+    }
+    const fr = await NB.call("get_structure_frames", set.path);
+    _frames = (fr && fr.ok && fr.frames) ? fr.frames : [];
+    _bondRefs = [input, _frames.length ? MOL.parseXyz(_frames[0].xyz) : null];
+    if (_dest[0] === "folder") _dest[1] = (fr && fr.folder) || set.path;
+    if (!_frames.length) {
+      q("mv-count").textContent = "no frames";
+      if (_mode === "frames") {
+        q("mv-cap").textContent = (fr && fr.error) || "No .xyz structures there.";
+      }
+      return;
+    }
+    const f = await NB.call("get_favorites", src);
+    _favs = new Set((f && f.labels) || []);
+    // the LAST frame: a trajectory's point is where it ended up, and a
+    // CREST ensemble is written best-first, so its last is its worst — the
+    // arrows walk back from there either way
+    if (_mode === "frames") show(_frames.length - 1);
+    else _idx = _frames.length - 1;   // ready for a switch back to frames
+  }
+
+  // ---------------------------------------------------------------- wiring
+
+  function init() {
+    q("mv-scrim").addEventListener("click", close);
+    q("mv-close").addEventListener("click", close);
+    document.querySelectorAll("[data-mvmode]").forEach(b =>
+      b.addEventListener("click", () => setMode(/** @type {any} */ (b).dataset.mvmode)));
+
+    q("mv-prev").addEventListener("click", () => step(-1));
+    q("mv-next").addEventListener("click", () => step(1));
+    q("mv-fav").addEventListener("click", toggleFav);
+
+    q("mv-favonly").addEventListener("click", () => {
+      const any = _frames.some(f => _favs.has(f.label));
+      if (!_favOnly && !any) { NB.toast("No favourites yet — star a structure first (F)."); return; }
+      _favOnly = !_favOnly;
+      syncFav();
+      if (_favOnly && !_favs.has(_frames[_idx].label)) {
+        const vis = visible();
+        if (vis.length) show(vis[0]);
+      } else show(_idx);
+    });
+
+    q("mv-export").addEventListener("click", async () => {
+      const picked = _frames.filter(f => _favs.has(f.label))
+        .map(f => ({ label: f.label, xyz: f.xyz }));
+      if (!picked.length) { NB.toast("No favourites to export — star some first (F)."); return; }
+      const r = await NB.call("export_frames", _dest[0], _dest[1], JSON.stringify(picked));
+      if (!r || !r.ok) { NB.fail((r && r.error) || "Could not export the favourites."); return; }
+      NB.toast(`Exported ${r.count} favourite${r.count === 1 ? "" : "s"} to ${r.folder}`, "ok");
+    });
+
+    q("mv-copyxyz").addEventListener("click", async () => {
+      const f = _frames[_idx];
+      if (!f) return;
+      const text = `${MOL.parseXyz(f.xyz).length}\n${f.label}\n${f.xyz.trim()}\n`;
+      try {
+        await navigator.clipboard.writeText(text);
+        NB.toast("Copied as .xyz.", "ok");
+      } catch (e) { NB.fail("The clipboard refused the copy."); }
+    });
+
+    q("mv-vol").addEventListener("change", showRamp);
+    q("mv-plot").addEventListener("click", plot);
+    q("mv-iso").addEventListener("change", () => {
+      const v = parseFloat(q("mv-iso").value);
+      if (!isFinite(v) || v <= 0) { q("mv-iso").value = _vol.iso().toFixed(4); return; }
+      _vol.setIso(v);
+    });
+  }
+
+  NB.mv = { init: init, open: open, close: close, isOpen: isOpen,
+            surfaces: surfaces,
+            /** The shared isosurface renderer, for the Visual panel: it adopts
+             *  the box into its own stage and draws there. One renderer, one
+             *  WebGL context; see volumeView. */
+            vol: _vol,
+            /** Is a pick already on disk at this grid? The panel asks before
+             *  spending an orca_plot run, and the grid is part of the question.
+             *  @param {any} opts @param {any} p @param {number} [grid] */
+            readyAt(opts, p, grid) { return cached(opts, p, grid); },
+            /** This kind's default grid. @param {any} opts @param {string} kind */
+            gridFor: gridFor };
+})();

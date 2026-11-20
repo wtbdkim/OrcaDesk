@@ -1,0 +1,373 @@
+"""What the UI replays from disk after a reattach: the .out line filter behind
+get_graph_lines, and the tail behind get_output_tail.
+
+A run reattached in a new session streams only what ORCA writes from that
+moment on, so both the Graph panel and the Raw log are rebuilt from the file.
+The filter's regexes are a MIRROR of the tracker regexes in web/scf_graph.js
+and web/progress_panels.js: a marker the live stream would have fed a tracker
+but the filter drops is a panel that silently stays empty for hours (that is
+exactly how a restart mid-Hessian lost its frequency stepper). The samples
+below are verbatim lines from real ORCA 6.1.1 output.
+
+Imports gui/bridge.py for its module-level patterns and its tail reader only
+(no Bridge instance, no Qt objects); skipped where PyQt6 is not installed.
+"""
+import pytest
+
+pytest.importorskip("PyQt6")
+
+from orcamgr.gui.bridge import (  # noqa: E402
+    _PHASE_GRAPH, _G_META, _G_POST, _G_CYCLE, tail_lines, _LOG_TAIL_MAX,
+)
+
+
+ANALYTICAL_FREQ_LINES = [
+    "GEOMETRIC PERTURBATIONS (144 nuclei)",          # boots the chain (_G_POST)
+    "ORCA SCF RESPONSE CALCULATION",
+    "                              SCF HESSIAN",
+    "VIBRATIONAL FREQUENCIES",
+]
+PHASE_LINES = [
+    "BATCH 135: Atoms  135 -  135 (  3 perturbations)",
+    "BATCH   0: Atoms    0 -    3 ( 12 perturbations)",
+    "Number of perturbations            ...    432",
+    "    12 /  432 done",
+    "                              NORMAL MODES",
+    "                              IR SPECTRUM",
+    "THERMOCHEMISTRY AT 298.15K",
+    "ORCA NUMERICAL FREQUENCIES",
+    # Verbatim from a real ORCA 6.1.1 NumFreq run (HF/STO-3G, water). The
+    # header writes the total as a SUBTRACTION, and the per-displacement line
+    # says "displaced geometry K (of N)" — there is no "displacement K / N"
+    # anywhere in ORCA's output, which is why the numerical-frequency panel
+    # never advanced.
+    "Number of displacements        ... 18 - 6",
+    "	<< Calculating gradient on displaced geometry   1 (of  12) >>",
+    "	<< Calculating gradient on displaced geometry  12 (of  12) >>",
+    "                       TD-DFT XC SETUP",
+    "               RPA-DIAGONALIZATION",
+    "                     TD-DFT/TDA EXCITED STATES",
+    "         ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS",
+    "Number of roots to be determined            ...   10",
+    "****Iteration 3****",
+    "                             ****ORCA TERMINATED NORMALLY****",
+]
+META_LINES = [
+    "|  1> ! wB97X-D4 def2-TZVP TightSCF RIJCOSX TightOpt Freq",
+    "|  3> %pal nprocs 15 end",
+]
+
+
+@pytest.mark.parametrize("line", ANALYTICAL_FREQ_LINES)
+def test_stage_banners_survive_the_filter(line):
+    # these boot/advance the chain and are kept by the post-opt branch
+    assert _G_POST.search(line), line
+
+
+@pytest.mark.parametrize("line", PHASE_LINES)
+def test_phase_counters_survive_the_filter(line):
+    assert _PHASE_GRAPH.search(line), line
+
+
+@pytest.mark.parametrize("line", META_LINES)
+def test_echoed_method_and_cores_survive_the_filter(line):
+    assert _G_META.match(line), line
+
+
+def test_the_reset_marker_is_kept_for_the_phase_chain():
+    # a pre-step Hessian (ts_opt Calc_Hess, IRC InitHess) must be able to CLEAR
+    # its chain on the next cycle, exactly as it does live
+    assert _G_CYCLE.search("*** GEOMETRY OPTIMIZATION CYCLE   7 ***")
+
+
+@pytest.mark.parametrize("line", [
+    # verbatim from real ORCA 6.1.1 OptTS / opt+freq / IRC outputs
+    "                   Intrinsic Reaction Coordinate Calculation",
+    "                 *** FINAL ENERGY EVALUATION AT THE STATIONARY POINT ***",
+])
+def test_the_pre_step_context_survives_the_filter(line):
+    # a reattached ts_opt / irc must still draw its Hessian as a pre-step
+    # rather than as a frequency job
+    assert _PHASE_GRAPH.search(line), line
+
+
+def test_ordinary_output_is_not_dragged_in():
+    # the filter is a whitelist: bulk output (this is 78k lines on a real run)
+    # must not ride along, or the payload stops being bounded
+    for line in [
+        "  0 C     6.0000    0    12.011    1.234567    2.345678    3.456789",
+        "Total Energy       :         -232.12345678 Eh           -6316.40 eV",
+        "                    Basis set information",
+        "  Sum of atomic charges                 :   -0.0000000",
+    ]:
+        assert not _PHASE_GRAPH.search(line), line
+        assert not _G_META.match(line), line
+
+
+# ---------------------------------------------------------------------------
+# get_output_tail's reader: the Raw log's restored history after a reattach
+# ---------------------------------------------------------------------------
+
+
+def _write(tmp_path, text, name="run.out"):
+    p = tmp_path / name
+    p.write_bytes(text.encode("utf-8"))
+    return p
+
+
+def test_tail_returns_the_last_lines_in_order(tmp_path):
+    p = _write(tmp_path, "".join(f"line {i}\n" for i in range(100)))
+    lines, more = tail_lines(p, 10)
+    assert lines == [f"line {i}" for i in range(90, 100)]
+    assert more is True          # 90 lines precede them
+
+
+def test_a_short_file_comes_back_whole_and_says_so(tmp_path):
+    p = _write(tmp_path, "one\ntwo\nthree\n")
+    lines, more = tail_lines(p, 500)
+    assert lines == ["one", "two", "three"]
+    assert more is False         # nothing was left out, so the marker says so
+
+
+def test_crlf_output_loses_its_carriage_returns(tmp_path):
+    # ORCA on Windows writes CRLF; the log lines must not carry a stray CR
+    p = _write(tmp_path, "a\r\nb\r\nc\r\n")
+    lines, _ = tail_lines(p, 500)
+    assert lines == ["a", "b", "c"]
+
+
+def test_a_file_past_the_block_size_drops_the_partial_first_line(tmp_path):
+    # 5 lines * 400 bytes/line = a 2000-byte block over a much longer file, so
+    # the read starts mid-line — that fragment must never reach the log
+    body = "".join(f"{i:06d} " + "x" * 90 + "\n" for i in range(500))
+    p = _write(tmp_path, body)
+    lines, more = tail_lines(p, 5)
+    assert lines == [f"{i:06d} " + "x" * 90 for i in range(495, 500)]
+    assert more is True
+
+
+def test_empty_file_yields_nothing(tmp_path):
+    lines, more = tail_lines(_write(tmp_path, ""), 100)
+    assert lines == []
+    assert more is False
+
+
+def test_line_count_is_clamped_to_a_sane_range(tmp_path):
+    p = _write(tmp_path, "".join(f"line {i}\n" for i in range(5000)))
+    assert len(tail_lines(p, 0)[0]) == 1                 # 0/None -> at least one
+    assert len(tail_lines(p, -20)[0]) == 1
+    assert len(tail_lines(p, 10 ** 6)[0]) == _LOG_TAIL_MAX
+
+
+def test_a_result_opened_from_disk_reads_its_own_folder(tmp_path):
+    """The notebook's Output pane addresses an opened file as ``file:<path>``.
+    Resolving it by stem under the workspace looked in a folder that does not
+    exist, and the pane read "No output on disk." beside a parsed summary."""
+    from types import SimpleNamespace
+    from orcamgr.gui.bridge import Bridge
+    run = tmp_path / "Part A" / "001A_pyridine_opt"
+    run.mkdir(parents=True)
+    out = run / "001A_pyridine_opt.out"
+    out.write_text("****ORCA TERMINATED NORMALLY****\n", encoding="utf-8")
+    stub = SimpleNamespace()   # the file: route never touches the store
+    assert Bridge._result_file(stub, f"file:{out}", ".out") == out
+    assert Bridge._result_file(stub, f"file:{out}", ".inp") == run / "001A_pyridine_opt.inp"
+    mlip = run / "m.mlip.json"
+    assert Bridge._result_file(stub, f"file:{mlip}", ".out") == run / "m.out"
+
+
+# An IRC's path, as ORCA 6.1.1 prints it (a real B3LYP-D3/cc-pVTZ run): the
+# replay filter has to keep exactly what web/progress_panels.js IrcTracker
+# reads, or a reopened IRC cell draws the last SCF instead of the path.
+IRC_KEEP = [
+    "                   Intrinsic Reaction Coordinate Calculation",
+    "Max. no of cycles        MaxIter    .... 40",
+    "Direction                           .... Forward and backward",
+    "         *                          FORWARD IRC                      *",
+    "Convergence thresholds                0.002000  0.000500            ",
+    "    0     -2807.804492   -0.767014    0.006621  0.001844",
+    "    3     -2807.821680   -11.552961    0.035104  0.007293",
+    "                      ***            THE IRC HAS CONVERGED          ***",
+    "         *                          BACKWARD IRC                     *",
+]
+IRC_DROP = [
+    # an SCF iteration row: same leading shape, more columns
+    "  1  -2807.79123456789   0.000000000000  0.00133  0.00004  0.1000  0.7000",
+    # orbital energies: an index and three numbers
+    "   0   2.0000    -482.523391   -13130.1045",
+    "Iteration    E(Eh)      dE(kcal/mol)  max(|G|)   RMS(G) ",
+]
+
+
+@pytest.mark.parametrize("line", IRC_KEEP)
+def test_the_replay_filter_keeps_an_ircs_path(line):
+    from orcamgr.gui.bridge import _IRC_GRAPH, _IRC_ROW
+    assert _IRC_GRAPH.search(line) or _IRC_ROW.match(line), line
+
+
+@pytest.mark.parametrize("line", IRC_DROP)
+def test_the_replay_filter_leaves_look_alikes_out(line):
+    from orcamgr.gui.bridge import _IRC_GRAPH, _IRC_ROW
+    assert not (_IRC_GRAPH.search(line) or _IRC_ROW.match(line)), line
+
+
+# ---------------------------------------------------------------------------
+# A relaxed surface scan: one optimization per point, each point's cycles
+# counted from 1 again. The tracker tells the points apart by ORCA's banners
+# and learns how many there are from the header at the top of the file, so
+# both have to survive a replay whose curve window the last points' SCF rows
+# have long since filled (a real 10-point scan: 459 cycles, 23 MB).
+# ---------------------------------------------------------------------------
+
+def _scan_out(tmp_path, points=4, cycles=3, scf_rows=400):
+    from orcamgr.gui.bridge import graph_lines_of  # noqa: F401  (import check)
+    out = ["There is 1 parameter to be scanned.",
+           "There will be   %d constrained geometry optimizations." % points]
+    for p in range(1, points + 1):
+        out.append("         *               RELAXED SURFACE SCAN STEP  %2d               *" % p)
+        for c in range(1, cycles + 1):
+            out.append("        *                GEOMETRY OPTIMIZATION CYCLE   %d            *" % c)
+            out += ["  %d   -2095.%09d   -1.0e-05  4.97e-03  2.50e-02" % (k, k)
+                    for k in range(1, scf_rows + 1)]
+            out.append("Time for complete geometry iter:     12.500 sec")
+        out.append("                                *** OPTIMIZATION RUN DONE ***")
+    return _write(tmp_path, "\n".join(out) + "\n")
+
+
+def test_a_scans_header_and_point_banners_survive_the_replay(tmp_path):
+    from orcamgr.gui.bridge import graph_lines_of
+    lines = graph_lines_of(_scan_out(tmp_path))
+    assert any("There will be   4 constrained" in ln for ln in lines)
+    assert sum("RELAXED SURFACE SCAN STEP" in ln for ln in lines) == 4
+    # every cycle of every point, with its wall time, so the cycle count and
+    # the per-point time cover the whole run and not only the last points
+    assert sum("GEOMETRY OPTIMIZATION CYCLE" in ln for ln in lines) == 12
+    assert sum("Time for complete geometry iter" in ln for ln in lines) == 12
+    # and in file order: the header first, point 1's banner before point 2's
+    head = next(i for i, ln in enumerate(lines) if "There will be" in ln)
+    b1 = next(i for i, ln in enumerate(lines) if "SCAN STEP   1" in ln)
+    b2 = next(i for i, ln in enumerate(lines) if "SCAN STEP   2" in ln)
+    assert head < b1 < b2
+
+
+def test_a_long_optimization_keeps_every_cycle_but_only_recent_scf_rows(tmp_path):
+    from orcamgr.gui.bridge import graph_lines_of, _GRAPH_LINES_MAX
+    out = []
+    for c in range(1, 4):
+        out.append("        *                GEOMETRY OPTIMIZATION CYCLE   %d            *" % c)
+        out += ["  %d   -2095.%09d   -1.0e-05  4.97e-03  2.50e-02" % (k, k) for k in range(1, 1200)]
+        out.append("Time for complete geometry iter:     %d.000 sec" % (10 + c))
+    lines = graph_lines_of(_write(tmp_path, "\n".join(out) + "\n"))
+    # the skeleton is whole: every cycle and its wall time, cycle 1's included
+    # (the old last-2000-lines window dropped it, and the step timing with it)
+    assert sum("GEOMETRY OPTIMIZATION CYCLE" in ln for ln in lines) == 3
+    assert any("iter:     11.000" in ln for ln in lines)
+    # the bulk is windowed: SCF rows only from the recent end
+    rows = [ln for ln in lines if ln.lstrip()[:1].isdigit()]
+    assert len(rows) == _GRAPH_LINES_MAX
+    assert rows[-1].lstrip().startswith("1199 ")
+
+
+def test_a_long_scan_keeps_its_header_and_every_point(tmp_path):
+    # the real failure: a 2D scan 61 points and 2809 cycles in. Each cycle is
+    # two skeleton lines, so the old 2000-line window had dropped the header
+    # and points 1-35, and the cell forgot it was a scan
+    from orcamgr.gui.bridge import graph_lines_of
+    lines = graph_lines_of(_scan_out(tmp_path, points=61, cycles=46, scf_rows=3))
+    assert any("There will be   61 constrained" in ln for ln in lines)
+    assert sum("RELAXED SURFACE SCAN STEP" in ln for ln in lines) == 61
+    assert sum("GEOMETRY OPTIMIZATION CYCLE" in ln for ln in lines) == 61 * 46
+    assert sum("Time for complete geometry iter" in ln for ln in lines) == 61 * 46
+
+
+# Every line a tracker reads has to get past the byte-level prefilter in
+# core/replay.py, which decodes only the lines holding one of its fixed words.
+# A pattern whose word is missing there drops its lines silently.
+GEO_TABLE_LINES = [
+    # verbatim from a real ORCA 6.1.1 relaxed scan
+    "          ----------------------|Geometry convergence|-------------------------",
+    "          Energy change      -0.0011239464            0.0000010000      NO",
+    "          RMS gradient        0.0067227982            0.0000300000      NO",
+    "          MAX gradient        0.0558546848            0.0001000000      NO",
+    "          RMS step            0.0143673943            0.0006000000      NO",
+    "          MAX step            0.0642281876            0.0010000000      NO",
+    "                                *** OPTIMIZATION RUN DONE ***",
+    "                     ***               HURRAY                   ***",
+    "                    ***        THE OPTIMIZATION HAS CONVERGED     ***",
+    "        *                GEOMETRY OPTIMIZATION CYCLE   7            *",
+    "Time for complete geometry iter:     12.500 sec",
+    "         *               RELAXED SURFACE SCAN STEP  61               *",
+    "There will be  100 constrained geometry optimizations.",
+    "  1  -2807.79123456789   0.000000000000  0.00133  0.00004  0.1000  0.7000",
+]
+CREST_LINES = [
+    " CREGEN> E lowest :   -45.12345",
+    "    123 structures remain within     6.00 kcal/mol window",
+    " ---------------------",
+    " Meta-Dynamics Iteration 1",
+    " Starting meta-MD   1 (14 MTDs)",
+    "*MTD   3 completed successfully ...        1 min, 22.931 sec",
+    " CREST terminated normally.",
+    " Change in topology detected!",
+    " safety termination of CREST",
+    " number of unique conformers for further calc          52",
+    " Initial Geometry Optimization",
+    "|                 iMTD-GC SAMPLING                 |",
+    " Additional regular MDs on lowest 4 conformer(s)",
+    " Final Geometry Optimization",
+]
+
+
+@pytest.mark.parametrize("line", ANALYTICAL_FREQ_LINES + PHASE_LINES + META_LINES
+                         + IRC_KEEP + GEO_TABLE_LINES + [
+    "                   Intrinsic Reaction Coordinate Calculation",
+    "                 *** FINAL ENERGY EVALUATION AT THE STATIONARY POINT ***",
+])
+def test_every_tracker_line_passes_the_byte_prefilter(line):
+    from orcamgr.core.replay import candidate_starts
+    assert candidate_starts(line.encode("utf-8")) == [0], line
+
+
+@pytest.mark.parametrize("line", [ln for ln in CREST_LINES if ln.strip(" -")])
+def test_crest_markers_pass_the_byte_prefilter(line):
+    from orcamgr.core.replay import candidate_starts
+    from orcamgr.gui.bridge import _CREST_GRAPH
+    if _CREST_GRAPH.search(line):
+        assert candidate_starts(line.encode("utf-8")) == [0], line
+
+
+# The SCF settings block's target (web/scf_graph.js TOLE_RE): a reseeded graph
+# must run its SCF bar to what ORCA printed, not to the tier guessed from the
+# kind. Verbatim from ORCA 6.1.1; the flush-left line is the geometry
+# optimizer's own energy criterion, which the SCF tracker ignores.
+SCF_TOLE = " Energy Change          TolE            ....  1.000e-09 Eh"
+GEO_TOLE = "Energy Change            TolE     ....  5.0000e-06 Eh"
+
+
+def test_the_scf_target_line_passes_the_byte_prefilter():
+    from orcamgr.core.replay import candidate_starts
+    assert candidate_starts(SCF_TOLE.encode("utf-8")) == [0]
+
+
+def test_the_replay_keeps_each_scf_target_and_not_the_optimizers(tmp_path):
+    from orcamgr.core.replay import graph_lines_of
+    p = _write(tmp_path, "\n".join([
+        "Convergence Tolerances:", GEO_TOLE, "",
+        "Convergence Tolerance:", SCF_TOLE,
+        " DIIS Error             TolErr          ....  5.000e-07",
+        "   1   -76.3000000000   0.000000000000  0.01  0.02",
+        "   2   -76.4000000000  -1.00e-01  0.01  0.02",
+    ]) + "\n")
+    lines = graph_lines_of(p)
+    assert SCF_TOLE in lines
+    assert GEO_TOLE not in lines
+    assert lines.index(SCF_TOLE) < lines.index("   2   -76.4000000000  -1.00e-01  0.01  0.02")
+
+
+def test_the_scan_fixture_replays_its_scf_targets():
+    # a real relaxed scan: one SCF settings block per point, all at 1e-8
+    import pathlib
+    from orcamgr.core.replay import graph_lines_of
+    out = pathlib.Path(__file__).parent / "scan" / "fixtures" / "h2o_angle_scan.out"
+    kept = [ln for ln in graph_lines_of(out) if "TolE" in ln]
+    assert kept and all(ln.startswith(" Energy Change") and "1.000e-08" in ln for ln in kept)

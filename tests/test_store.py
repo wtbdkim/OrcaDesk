@@ -26,10 +26,13 @@ import pytest
 
 import orcamgr.state.store as store_mod
 from orcamgr.core.queue import CalcState, Calculation, GeometrySource
+from orcamgr.core.queue import KNOWN_KINDS
 from orcamgr.state.store import (
     EDITABLE_STATES,
     QueueStore,
     calc_from_dict,
+    constraint_warning,
+    raw_geometry_warning,
     calc_from_session_dict,
     calc_to_dict,
     calc_to_session_dict,
@@ -115,6 +118,60 @@ def test_empty_name_rejected():
         make_calc("")
     with pytest.raises(ValueError):
         make_calc("   ")  # whitespace-only strips to empty
+
+
+# A calc name is also the .inp file name ORCA is invoked with, and ORCA 6
+# splits its own argument on whitespace before handing it to orca_startup: a
+# space or an "&" gives "Cannot open input file <first word>" / "no input
+# files" and an error termination in Startup — every run of that calculation,
+# serial and parallel alike, and a failed calc is locked (P24). The FOLDER may
+# hold spaces: OrcaRunner.launch names the input relative to it.
+#
+# ",", ";" and "=" are refused for a different reason. ORCA collects its gCP
+# helper's output through a cmd.exe redirection it does not quote
+# ("otool_gcp <name>.gcp.in.tmp ... > <name>.gcp.out"), and cmd ends a
+# redirection target at those delimiters: under "(S,S)mol" the result lands in
+# a file called "(S", ORCA never finds <name>.gcp.out, and every gCP-carrying
+# composite method (r2SCAN-3c, B97-3c, HF-3c, PBEh-3c, ! GCP(...)) dies with
+# "Calculation of the gCP correction failed!" once the SCF is already paid for.
+# "(", ")" and "\'" survive that parse and stay legal.
+
+@pytest.mark.parametrize("name", ["water opt", "a&b", "two  spaces", "tab\tname",
+                                  "a,b", "a=b", "a;b", "(S,S)mol"])
+def test_name_orca_cannot_open_rejected(name):
+    with pytest.raises(ValueError):
+        make_calc(name)
+
+
+@pytest.mark.parametrize("name", ["water_opt", "water-opt", "a(b)", "a\'b"])
+def test_name_orca_can_open_accepted(name):
+    assert make_calc(name).name == name
+
+
+@pytest.mark.parametrize("name", ["(S,S)mol", "a;b", "a=b"])
+def test_a_name_already_on_disk_survives_a_tightened_orca_rule(name):
+    """Session restore must not evict calcs whose names predate a tightening of
+    the ORCA rule. The rule says "a new run of this would fail", not "this path
+    is dangerous" — enforcing it retroactively would delete the user's record of
+    an already finished or failed run (load_session drops entries that fail
+    validation). Path-safety rules still apply on restore; only this one bends.
+    """
+    c = calc_from_session_dict({"name": name, "kind": "sp", "xyz": "H 0 0 0",
+                                "config": {"kind": "sp"}, "state": "failed"})
+    assert c.name == name
+    with pytest.raises(ValueError):          # ...but a NEW one is still refused
+        make_calc(name)
+
+
+@pytest.mark.parametrize("kind", ["mlip_opt", "mlip_sp", "crest_conf"])
+def test_the_orca_name_rule_does_not_reach_the_other_backends(kind):
+    # The MLIP and CREST pipelines pass the name as a subprocess argv element /
+    # a shell-quoted variable, so a space is genuinely fine there. Refusing it
+    # for every kind would also DROP such a calculation from the queue at the
+    # next launch, since load_session skips entries that fail validation.
+    c = calc_from_dict({"name": "water opt", "kind": kind, "xyz": "H 0 0 0",
+                        "config": {"kind": kind}})
+    assert c.name == "water opt"
 
 
 def test_unicode_korean_name_allowed():
@@ -324,17 +381,31 @@ def test_non_editable_states_immune_while_running(store):
     add_with_state(store, "done", CalcState.DONE)
     add_with_state(store, "dead", CalcState.FAILED)
     store.set_running(True)
+    # finished rows are never EDITED (DONE is frozen, FAILED locked, P24) ...
     for name in ("hot", "done", "dead"):
         with pytest.raises(ValueError):
-            store.remove(name)
-        with pytest.raises(ValueError):
             store.replace(name, make_calc(name))
-    store.set_running(False)
-    # idle-time semantics unchanged: anything but RUNNING can be removed
-    assert store.remove("done") is True
-    assert store.remove("dead") is True
+    # ... but they leave the list mid-run like any other row that is not in
+    # flight: removal touches no file, and a long run left them untidyable
     with pytest.raises(ValueError):
         store.remove("hot")
+    assert store.remove("done") is True
+    assert store.remove("dead") is True
+    store.set_running(False)
+    with pytest.raises(ValueError):
+        store.remove("hot")
+
+
+def test_a_finished_parent_a_running_child_reads_stays_mid_run(store):
+    # the reference check still holds a DONE parent while something that has
+    # not finished reads its geometry
+    add_with_state(store, "parent", CalcState.DONE)
+    add_with_state(store, "child", CalcState.RUNNING)
+    store.get("child").geometry_source = "reference"
+    store.get("child").ref_name = "parent"
+    store.set_running(True)
+    with pytest.raises(ValueError, match="references its geometry"):
+        store.remove("parent")
 
 
 def test_mid_run_add_or_edit_with_dangling_reference_refused(store):
@@ -375,7 +446,8 @@ def test_mid_run_mutation_of_engine_active_calc_refused(store):
     store.set_running(True)
 
     class _Engine:
-        active_name = "picked"   # what QueueEngine.active_name exposes at pick
+        # what QueueEngine.active_names exposes for a picked-but-not-stamped calc
+        active_names = {"picked"}
     store._engine = _Engine()
     with pytest.raises(ValueError):
         store.remove("picked")
@@ -497,6 +569,36 @@ def test_valid_json_non_dict_session_degrades_to_empty_queue(session_root, conte
     store = QueueStore()
     store.load_session()  # must not raise
     assert store.names() == []
+
+
+@pytest.mark.parametrize("value", ["null", "42", "true"])
+def test_session_with_a_non_list_calculations_value_degrades(session_root, value):
+    # the top level was guarded but the value under "calculations" was not:
+    # null/a number is not iterable, and the TypeError propagated out of
+    # MainWindow.__init__ — the app would not start until the file was deleted
+    (session_root / "session.json").write_text(
+        '{"schema": 1, "calculations": %s}' % value, encoding="utf-8")
+    store = QueueStore()
+    store.load_session()   # must not raise
+    assert store.names() == []
+
+
+def test_session_save_survives_a_string_no_encoder_will_take(session_root):
+    """json.loads turns the escape "\\ud800" into a lone surrogate, which
+    cannot be encoded to UTF-8. That is a ValueError, so it escaped
+    save_session's OSError guard and propagated out of _bump_and_save — and the
+    calc was already in the list, so EVERY later mutation raised too and the
+    session was never written again."""
+    store = QueueStore()
+    store.add(make_calc("first"))
+    poison = make_calc("second")
+    poison.message = "done \ud800"          # not a name: names are refused these
+
+    store.add(poison)                       # must not raise
+    store.add(make_calc("third"))           # ...and the store must still work
+
+    assert store.names() == ["first", "second", "third"]
+    assert not (session_root / "session.json.tmp").exists()
 
 
 def test_corrupt_session_entry_skipped_others_restored(session_root):
@@ -782,10 +884,28 @@ def test_calc_from_dict_infinite_charge_is_valueerror():
 
 
 def test_calc_from_dict_non_string_passthrough_fields_degrade():
-    c = calc_from_dict({"name": "x", "kind": 7, "xyz": 1,
+    c = calc_from_dict({"name": "x", "kind": "sp", "xyz": 1,
                         "ref_name": ["a"], "raw_text": {"t": 1}})
-    assert isinstance(c.kind, str)
     assert c.xyz == "" and c.ref_name == "" and c.raw_text == ""
+
+
+@pytest.mark.parametrize("kind", [7, "", "__bogus__", "Opt", None, ["opt"]])
+def test_an_unknown_kind_is_refused_rather_than_degraded(kind):
+    """`kind` is not a pass-through string like ref_name: it selects the
+    PIPELINE (ORCA / the MLIP worker / CREST), the per-kind validation and what
+    the Results tab shows. Coercing it to a string let an arbitrary HTTP payload
+    queue a calculation that ran through the ORCA runner with default settings,
+    that no validation rule could judge, and that the Build tab could not open.
+    """
+    with pytest.raises(ValueError, match="[Uu]nknown calculation type"):
+        calc_from_dict({"name": "x", "kind": kind, "xyz": "H 0 0 0",
+                        "config": {"kind": "sp"}})
+
+
+@pytest.mark.parametrize("kind", sorted(KNOWN_KINDS))
+def test_every_known_kind_is_accepted(kind):
+    assert calc_from_dict({"name": "x", "kind": kind, "xyz": "H 0 0 0",
+                           "config": {"kind": kind}}).kind == kind
 
 
 # ---- session restore: wrong-typed runtime fields + name dedup (P32) ----------
@@ -844,3 +964,97 @@ def test_find_dangling_reference_skips_locked_states():
     assert store_mod.find_dangling_reference([dead, ok]) is None
     pending = make_calc("pend", geometry_source="reference", ref_name="gone", xyz="")
     assert store_mod.find_dangling_reference([pending, ok]) is not None
+
+
+# ---- geometry constraints at the choke point ----------------------------
+
+_WATER = ("O 0.0 0.0 0.1173\n"
+          "H 0.0 0.7572 -0.4692\n"
+          "H 0.0 -0.7572 -0.4692")
+
+
+def test_constraints_round_trip_through_the_session_file():
+    cons = [{"kind": "A", "atoms": [1, 0, 2], "value": 104.5},
+            {"kind": "C", "atoms": [0], "value": None}]
+    c = make_calc("w", kind="opt", xyz=_WATER,
+                  config={"kind": "opt", "geom_constraints": cons})
+    back = calc_from_session_dict(json.loads(json.dumps(calc_to_session_dict(c))))
+    assert back.config.geom_constraints == cons
+
+
+def test_a_constraint_past_the_coordinates_is_refused_when_added():
+    # refused at the choke point, not at launch: by then the calc would be
+    # FAILED and locked (P24) for a typo
+    with pytest.raises(ValueError, match="atom 4, but the structure has 3"):
+        make_calc("w", kind="opt", xyz=_WATER, config={
+            "kind": "opt", "geom_constraints": [{"kind": "B", "atoms": [0, 3]}]})
+
+
+def test_a_linear_bend_with_a_value_is_added_with_a_warning():
+    # the calc that failed: Br-C-O at 180 with a 180.00 target. ORCA stops in
+    # setup, but whether to run it anyway is the user's call - the queue takes
+    # it and says why it will stop
+    line = "C 0 0 0\nBr 0 0 2.0\nO 0 0 -1.6\nH 1.0 0.3 0"
+    c = make_calc("l", kind="opt", xyz=line, config={"kind": "opt", "geom_constraints": [
+        {"kind": "A", "atoms": [1, 0, 2], "value": 180.0}]})
+    assert "linear bend" in constraint_warning(c)
+    # held without a value there is nothing to say
+    h = make_calc("h", kind="opt", xyz=line, config={"kind": "opt", "geom_constraints": [
+        {"kind": "A", "atoms": [1, 0, 2], "value": None}]})
+    assert constraint_warning(h) == ""
+    # a referenced geometry: the target alone decides
+    r = make_calc("r", kind="opt", geometry_source="reference", ref_name="p", xyz="",
+                  config={"kind": "opt", "geom_constraints": [
+                      {"kind": "A", "atoms": [1, 0, 2], "value": 180.0}]})
+    assert "target of 180.00" in constraint_warning(r)
+
+
+def test_a_raw_calc_whose_text_is_not_its_coordinates_is_added_with_a_warning():
+    # a copied raw OptTS with an IRC endpoint pasted into the box: the box's
+    # coordinates were stored and the text's ran
+    text = "! HF def2-SVP Opt\n* xyz 0 1\nH 0 0 0\nH 0 0 0.74\n*\n"
+    c = make_calc("c", kind="opt", is_raw=True, raw_text=text, xyz="H 0 0 0\nH 0 0 0.9")
+    assert "atom 2" in raw_geometry_warning(c)
+    same = make_calc("s", kind="opt", is_raw=True, raw_text=text, xyz="H 0 0 0\nH 0 0 0.74")
+    assert raw_geometry_warning(same) == ""
+    # a guided calc builds its input from xyz, so there is nothing to disagree
+    assert raw_geometry_warning(make_calc("g", kind="opt", xyz="H 0 0 0.9")) == ""
+
+
+def test_the_add_time_check_applies_only_where_it_can_and_should():
+    bad = {"geom_constraints": [{"kind": "B", "atoms": [0, 3]}]}
+    # a referenced geometry is checked at run time, by build_input
+    make_calc("r", kind="opt", geometry_source="reference", ref_name="p", xyz="",
+              config=dict(bad, kind="opt"))
+    # a raw calc's input is its text; the config's constraints are not used
+    make_calc("x", kind="opt", xyz=_WATER, is_raw=True, raw_text="! Opt",
+              config=dict(bad, kind="opt"))
+    # a kind that does not optimize never writes them
+    make_calc("f", kind="freq", xyz=_WATER, config=dict(bad, kind="freq"))
+    # and a restore never evicts an entry for a rule a NEW run obeys
+    d = calc_to_session_dict(make_calc("s", kind="opt", xyz=_WATER))
+    d["config"]["geom_constraints"] = bad["geom_constraints"]
+    assert calc_from_session_dict(d).config.geom_constraints[0]["atoms"] == [0, 3]
+
+
+# ---- a relaxed surface scan at the choke point -----------------------------
+
+_SCAN = [{"kind": "B", "atoms": [0, 1], "start": 0.9, "end": 1.1, "steps": 5}]
+
+
+def test_a_scan_round_trips_through_the_session_file_and_the_wire():
+    c = make_calc("w", kind="opt", xyz=_WATER, config={"kind": "opt", "geom_scan": _SCAN})
+    back = calc_from_session_dict(json.loads(json.dumps(calc_to_session_dict(c))))
+    assert back.config.geom_scan == _SCAN
+    # the full dict get_calc hands the builder for an edit IS this one
+    assert calc_to_session_dict(c)["config"]["geom_scan"] == _SCAN
+
+
+def test_a_scan_past_the_coordinates_is_refused_when_added():
+    with pytest.raises(ValueError, match="bond scan on atoms 1-4 names atom 4, "
+                                         "but the structure has 3"):
+        make_calc("w", kind="opt", xyz=_WATER, config={"kind": "opt", "geom_scan": [
+            dict(_SCAN[0], atoms=[0, 3])]})
+    # a kind that cannot scan never writes it, so it is not judged either
+    make_calc("f", kind="opt_freq", xyz=_WATER, config={"kind": "opt_freq", "geom_scan": [
+        dict(_SCAN[0], atoms=[0, 3])]})
