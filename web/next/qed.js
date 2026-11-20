@@ -806,6 +806,21 @@
     if (occ(c, r)) { r = P.row + 1; while (occ(c, r) || occ(c - 1, r)) r += 1; }
     return { lane: L, parent: P, c: c, r: r, branch: r !== P.row, key: L.key + "@" + c + "," + r };
   }
+  /** The slot BEFORE the selected block (insertBefore): a step that takes
+   *  its place in the chain -- what it ran after and the structure it
+   *  started from -- the block then running after the new step, on its
+   *  result. Only before a block that can still change: a started one keeps
+   *  what it ran (P24). `parent` is what it hangs off now (null first in
+   *  its row), so the add menu suggests as it does after it.
+   *  @param {any} M */
+  function beforeSlotOf(M) {
+    const B = _sel && _sel.t === "node" ? M.lanes.flatMap((/** @type {any} */ L) => L.nodes)
+      .find((/** @type {any} */ n) => n.key === _sel.key) : null;
+    if (!B || !B.editable) return null;
+    const A = M.nodeOf.get(upOf(B.members[0]));
+    return { lane: B.lane, parent: A && A.lane === B.lane && A !== B ? A : null, before: B,
+             c: B.col, r: B.row, branch: false, key: B.lane.key + "<" + B.key };
+  }
 
   // ------------------------------------------------------------ render
 
@@ -1156,6 +1171,20 @@
       </div>`);
     });
 
+    // the + before the selected block, on its incoming side: in the gap
+    // after what it hangs off, or on its left edge first in a row (the row's
+    // grip is left of that gap)
+    const before = beforeSlotOf(M);
+    if (before) {
+      const B = before.before;
+      const cx = B.col > 0 ? X(B.col) - (COLW - W) / 2 : X(B.col);
+      const what = "Add a step before " + B.short;
+      parts.push(`<button class="qe-ins" type="button" data-a="ghost" data-slot="${esc(before.key)}"
+        style="left:${cx - 9}px; top:${Y(before.lane, B.row) + H / 2 - 9}px"
+        aria-label="${esc(what + ": press for the add menu, or drop a level here. It takes " + B.short + "'s structure, and " + B.short + " then starts from its result.")}"
+        title="${esc(what + ". It takes its structure and what it ran after; " + B.short + " then runs on its result. Click for the add menu, or drop a level here.")}">+</button>`);
+    }
+
     if (!M.lanes.length) {
       // the empty queue says how a row starts, where the rows would be
       parts.push(`<div class="qe-empty" style="top:${top + 24}px">
@@ -1173,7 +1202,7 @@
       const back = /** @type {HTMLElement|null} */ (host.querySelector(`[data-a="grip"][data-lane="${CSS.escape(gripKey)}"]`));
       if (back) back.focus({ preventScroll: true });
     }
-    host._ghosts = ghosts;
+    host._ghosts = before ? ghosts.concat([before]) : ghosts;
     host._rects = rects;
     host._laneTops = M.lanes.map((/** @type {any} */ L) => L.top).concat([top]);
     scroller.scrollLeft = keep[0]; scroller.scrollTop = keep[1];
@@ -2685,6 +2714,7 @@
    *  @param {any} g the slot @param {any} set @param {string} [want] */
   async function addFromSet(g, set, want) {
     if (!g || !set) return;
+    if (g.before) { await insertBefore(g, set, want); return; }
     let P = g.parent;
     let pre = { ops: /** @type {any[]} */ ([]), inv: /** @type {any[]} */ ([]) };
     let sys = g.lane.sys;
@@ -2750,6 +2780,94 @@
     const ops = pre.ops.concat(adds, [order]);
     const inv = fresh.map(n => ({ op: "remove_calc", name: n })).concat(pre.inv);
     await applySel(ops, inv, "the new " + (TYPE_LABEL[kind] || KIND_LABEL[kind] || kind), { t: "node", key: "s:" + sys.id + "/" + nodeId, m: 0 });
+  }
+
+  /** A step put BEFORE block B (its before slot, beforeSlotOf). Each member
+   *  of B gets one, named as a step the editor adds is (B's tail kept: _F /
+   *  _B), that takes the member's place in the chain: what it ran after,
+   *  the approval gate on that connection, the structure it started from (a
+   *  reference with its end, or its own coordinates) and its charge and
+   *  multiplicity. The member then runs after the new step, on its final
+   *  geometry. B and what hangs off it move one column right -- every block
+   *  of the row from B's column on, when one of them would land on a block
+   *  that stays -- and the new block takes B's cell. One batch: Ctrl+Z
+   *  undoes it while B has not started.
+   *  @param {any} g the before slot @param {any} set @param {string} [want] */
+  async function insertBefore(g, set, want) {
+    const B = g.before, L = g.lane;
+    if (!B.editable) { NB.fail(`${B.short} has started: a step goes before a calculation that has not.`); return; }
+    let pre = { ops: /** @type {any[]} */ ([]), inv: /** @type {any[]} */ ([]) };
+    let sys = L.sys;
+    if (!sys) {
+      // a standalone chain becomes a row first, each block where it is drawn
+      const a = await adopt(B);
+      if (!a) return;
+      pre = a; sys = a.sys;
+    }
+    const names = B.members.map((/** @type {any} */ c) => c.name);
+    await fullCalcs(names);
+    const full = names.map((/** @type {string} */ nm) => { const f = _full.get(nm); return f && f.calc ? f.calc : null; });
+    const lost = names.filter((/** @type {string} */ nm, /** @type {number} */ i) => !full[i]);
+    if (lost.length) { NB.fail(`Could not read ${lost.join(", ")}.`); return; }
+    const kind = set.kind === "MLIP" ? "mlip_opt" : want || "opt";
+    const root = String(sys.name || "") + SEP + (SUFFIX[kind] || "step");
+    const tails = B.members.map((/** @type {any} */ c) => (B.stack ? tailOf(c.name) : ""));
+    const named = await avoidDisk(extra => {
+      const taken = new Set(NB.queue.map((/** @type {any} */ c) => lower(c.name)));
+      extra.forEach(x => taken.add(x));
+      let base = root;
+      for (let i = 2; tails.some((/** @type {string} */ t) => taken.has(lower(base + t))); i++) base = root + i;
+      return { names: tails.map((/** @type {string} */ t) => base + t) };
+    });
+    if (!(await guardOverwrite(named.names))) return;
+    const fresh = named.names;
+
+    // B and what hangs off it move one column right; the whole row from B's
+    // column on when one of them would land on a block that stays
+    const down = new Set([B]);
+    for (let grew = true; grew;) {
+      grew = false;
+      L.edges.forEach((/** @type {any} */ e) => { if (down.has(e.from) && !down.has(e.to)) { down.add(e.to); grew = true; } });
+    }
+    const stay = L.nodes.filter((/** @type {any} */ n) => !down.has(n));
+    const hit = [...down].some(n => stay.some((/** @type {any} */ s) => s.col === n.col + 1 && s.row === n.row));
+    const moved = hit ? L.nodes.filter((/** @type {any} */ n) => n.col >= B.col) : [...down];
+
+    const nodeId = newId("n");
+    /** @type {any[]} */ const shift = [], back = [], adds = [], links = [], unlink = [];
+    moved.forEach((/** @type {any} */ n) => n.members.forEach((/** @type {any} */ c) => {
+      shift.push({ op: "place_calc", name: c.name, place: { col: n.col + 1 } });
+      back.push({ op: "place_calc", name: c.name, place: { col: n.col } });
+    }));
+    B.members.forEach((/** @type {any} */ c, /** @type {number} */ i) => {
+      const f = full[i];
+      const byRef = f.geometry_source === "reference";
+      adds.push({ op: "add_calc", calc: {
+        name: fresh[i], kind: kind, charge: int(c.charge), multiplicity: int(c.multiplicity) || 1,
+        geometry_source: byRef ? "reference" : "direct", xyz: byRef ? "" : String(f.xyz || ""),
+        ref_name: byRef ? String(f.ref_name || "") : "", ref_point: byRef ? String(f.ref_point || "") : "",
+        is_raw: true, raw_text: set.text, set_name: set.name, set_id: set.id,
+        system: sys.id, node: nodeId, col: B.col, row: B.row, after: String(f.after || ""),
+        // the gate was on the connection into B: it stays on that connection
+        gate: f.gate === "approval" ? "approval" : "auto", auto_pass: f.auto_pass !== false, approved: !!f.approved,
+        config: {}, state: "pending", message: "",
+      } });
+      links.push({ op: "update_calc", name: c.name, calc: {
+        after: fresh[i], geometry_source: "reference", ref_name: fresh[i], ref_point: "", xyz: "",
+        gate: "auto", auto_pass: true, approved: false } });
+      unlink.push({ op: "update_calc", name: c.name, calc: {
+        after: String(f.after || ""), geometry_source: byRef ? "reference" : "direct",
+        ref_name: String(f.ref_name || ""), ref_point: String(f.ref_point || ""), xyz: byRef ? "" : String(f.xyz || ""),
+        gate: f.gate === "approval" ? "approval" : "auto", auto_pass: f.auto_pass !== false, approved: !!f.approved } });
+    });
+    // the new steps run just before B's
+    const cur = NB.queue.map((/** @type {any} */ c) => c.name);
+    const order = cur.slice();
+    order.splice(Math.min(...names.map((/** @type {string} */ nm) => cur.indexOf(nm))), 0, ...fresh);
+    const ops = pre.ops.concat(shift, adds, links, [{ op: "order", names: order }]);
+    const inv = unlink.concat(fresh.map((/** @type {string} */ n) => ({ op: "remove_calc", name: n })), back, pre.inv);
+    await applySel(ops, inv, "the new " + (TYPE_LABEL[kind] || KIND_LABEL[kind] || kind) + " before " + B.short,
+                   { t: "node", key: "s:" + sys.id + "/" + nodeId, m: 0 });
   }
 
   /** The builder, hosted over the lanes and the inspector (#qe-build). @param {string} target "" for a new one
@@ -2850,10 +2968,14 @@
   function openAddMenu(g, anchor) {
     closeAddMenu();
     const P = g.parent;
+    // before a block (insertBefore): a level and its step only -- a workflow
+    // or a manual build goes after a block, not into a chain
+    const B = g.before || null;
     const levels = _sets.filter(s => s.kind === "ORCA");
     const mlips = _sets.filter(s => s.kind === "MLIP");
     const kinds = typeKinds();
-    let sugg = nextKind(P ? P.kind : "");
+    // what goes before a step is most often the optimization it starts from
+    let sugg = B ? "opt" : nextKind(P ? P.kind : "");
     if (kinds.indexOf(sugg) < 0) sugg = kinds[0] || "";
     const lv = menuLevel(P, levels);
     const keys = menuKeys(P);
@@ -2863,15 +2985,17 @@
     const noWf = P && P.stack
       ? P.short + " is " + P.members.length + " calculations: a workflow pastes after one calculation"
       : "";
-    const isIrc = !!P && !P.stack && P.kind === "irc";
+    const isIrc = !B && !!P && !P.stack && P.kind === "irc";
     const wfBtn = (/** @type {string} */ attr, /** @type {string} */ label, /** @type {string} */ title) =>
       `<button class="btn btn-sm btn-ghost" type="button" ${attr}${noWf ? ` disabled title="${esc(noWf)}"` : ` title="${esc(title)}"`}>${esc(label)}</button>`;
     const el = NB.el("div", "qe-addmenu");
     el.id = "qe-addmenu";
     el.setAttribute("role", "dialog");
-    el.setAttribute("aria-label", "Add a step " + (P ? "after " + P.short : "to " + g.lane.name));
+    el.setAttribute("aria-label", "Add a step " + (B ? "before " + B.short : P ? "after " + P.short : "to " + g.lane.name));
     el.innerHTML = `
-      <div class="qe-amhead">${P ? "After <b>" + esc(P.short) + "</b>" : "First step of <b>" + esc(g.lane.name) + "</b>"}</div>
+      <div class="qe-amhead">${B ? "Before <b>" + esc(B.short) + "</b>" : P ? "After <b>" + esc(P.short) + "</b>" : "First step of <b>" + esc(g.lane.name) + "</b>"}</div>
+      ${B ? `<p class="qe-note">It starts from ${esc(B.short)}'s structure${P ? ", after " + esc(P.short) : ""}; ${
+          esc(B.short)} then runs on its result.</p>` : ""}
       ${isIrc ? `<p class="qe-note">Which structure it starts from (an end, both, or a point on the path) is asked next.</p>` : ""}
       ${levels.length && kinds.length ? `
         <label class="qe-rlab">level <select class="qe-select" data-f="level" aria-label="The level the step runs at">${
@@ -2883,10 +3007,10 @@
         : `<p class="qe-note">No ORCA level yet: + New under ORCA levels makes one.</p>`}
       ${mlips.length ? `<div class="qe-amrow">${mlips.map(s =>
           `<button class="btn btn-sm btn-ghost" type="button" data-mlip="${esc(s.id)}" title="An MLIP pre-optimization with this set">Preopt · ${esc(s.name)}</button>`).join("")}</div>` : ""}
-      ${_clip || _wfs.length ? `<div class="qe-amrow"><span class="qe-note">workflow</span>${
+      ${!B && (_clip || _wfs.length) ? `<div class="qe-amrow"><span class="qe-note">workflow</span>${
           _clip ? wfBtn('data-wfclip="1"', "copied", wfSummary(_clip)) : ""}${
           _wfs.map(w => wfBtn(`data-wfid="${esc(w.id)}"`, w.name, wfSummary(w))).join("")}</div>` : ""}
-      <button class="btn btn-sm btn-ghost qe-amman" type="button" data-manual="1">Manual build…<kbd>M</kbd></button>`;
+      ${B ? "" : `<button class="btn btn-sm btn-ghost qe-amman" type="button" data-manual="1">Manual build…<kbd>M</kbd></button>`}`;
     NB.$("qed").appendChild(el);
     // beside the slot, kept inside the window
     const r = anchor.getBoundingClientRect();
@@ -2919,7 +3043,7 @@
       if (ev.key === "Enter" && t.tagName === "SELECT" && sugg) { ev.preventDefault(); menuAdd(level(), sugg); return; }
       if (t.tagName === "SELECT") return;      // its letters pick a level
       const k = ev.key.toLowerCase();
-      if (k === "m") { ev.preventDefault(); menuManual(); return; }
+      if (k === "m" && !B) { ev.preventDefault(); menuManual(); return; }
       const kind = keys[k];
       if (kind && kinds.indexOf(kind) >= 0 && levels.length) { ev.preventDefault(); menuAdd(level(), kind); }
     });
@@ -2942,7 +3066,7 @@
     _menu.el.remove();
     _menu = null;
     if (refocus) {
-      const b = /** @type {HTMLElement|null} */ (NB.$("qe-graph").querySelector(`.qe-gbtn[data-slot="${CSS.escape(key)}"]`));
+      const b = /** @type {HTMLElement|null} */ (NB.$("qe-graph").querySelector(`[data-a="ghost"][data-slot="${CSS.escape(key)}"]`));
       if (b) b.focus({ preventScroll: true });
     }
   }
@@ -4153,7 +4277,7 @@
       if (ok.ghost && !_ghostHot) { _ghostHot = true; ok.ghost.setAttribute("data-hot", "1"); }
     });
     g.addEventListener("dragleave", (/** @type {DragEvent} */ ev) => {
-      const gh = /** @type {HTMLElement} */ (ev.target).closest(".qe-ghost");
+      const gh = /** @type {HTMLElement} */ (ev.target).closest(".qe-ghost, .qe-ins");
       if (gh && _ghostHot && !gh.contains(/** @type {Node} */ (ev.relatedTarget))) {
         _ghostHot = false; gh.removeAttribute("data-hot");
       }
@@ -4193,6 +4317,12 @@
     const set = _drag && _drag.t === "set" ? _sets.find(s => s.id === _drag.id) : null;
     const wf = _drag && _drag.t === "wf" ? _wfs.find(w => w.id === _drag.id) : null;
     if (!set && !wf) return null;
+    // the + before a block takes a set (a workflow goes after a block)
+    const ins = t.closest(".qe-ins");
+    if (ins) {
+      const slot = set ? (NB.$("qe-graph")._ghosts || []).find((/** @type {any} */ x) => x.key === ins.getAttribute("data-slot")) : null;
+      return slot ? { ghost: ins, slot: slot } : null;
+    }
     const gh = t.closest(".qe-ghost");
     if (gh) {
       // a slot the Guided builder has claimed takes no set: two blocks would share it
@@ -4222,6 +4352,7 @@
     g.querySelectorAll(".qe-ghost").forEach((/** @type {HTMLElement} */ gh) => {
       if (!gh.hasAttribute("data-picking")) gh.setAttribute("data-drop", "1");
     });
+    if (set) g.querySelectorAll(".qe-ins").forEach((/** @type {HTMLElement} */ b) => b.setAttribute("data-drop", "1"));
     const b = NB.$("qe-sets").querySelector(set ? `[data-id="${CSS.escape(set.id)}"]` : `[data-wf="${CSS.escape(String(_drag.id))}"]`);
     if (b) b.setAttribute("data-dragging", "1");
   }
