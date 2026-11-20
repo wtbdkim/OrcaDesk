@@ -519,6 +519,8 @@ class ParsePayload(TypedDict, total=False):
     show_elec: bool                           # gates electronic-structure sections
     transitions: "list[TransitionPayload]"
     frequencies: "list[float]"                # cm^-1, negatives = imaginary
+    ir_intensities: "list[float]"             # km/mol, one per frequencies entry
+                                              # (0 = no IR row); [] = no IR table
     n_imaginary: int
     mulliken: "list[tuple[str, float]]"
     loewdin: "list[tuple[str, float]]"        # Loewdin atomic charges

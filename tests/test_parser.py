@@ -456,6 +456,175 @@ def test_a_negative_mode_without_the_marker_still_counts(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# IR intensities, aligned with `frequencies` by ORCA's mode number
+#
+# The IR SPECTRUM table numbers modes as the frequency table does and starts at
+# the first mode ORCA counts as a vibration; an imaginary mode has no row. The
+# excerpts are real ORCA 6.1.1 output (HF/def2-SVP for CO2 and linear H2O,
+# the HCN -> HNC transition state and ethanol from the demo set), the ethanol
+# one trimmed to its first three vibrations in both tables.
+# ---------------------------------------------------------------------------
+
+_IR_HEAD = (
+    "\n-----------\n"
+    "IR SPECTRUM\n"
+    "-----------\n"
+    "\n"
+    " Mode   freq       eps      Int      T**2         TX        TY        TZ\n"
+    "       cm**-1   L/(mol*cm) km/mol    a.u.\n"
+    "----------------------------------------------------------------------------\n"
+)
+
+
+def _vib_table(rows: str) -> str:
+    return ("-----------------------\n"
+            "VIBRATIONAL FREQUENCIES\n"
+            "-----------------------\n"
+            "\n"
+            "Scaling factor for frequencies =  1.000000000  (already applied!)\n"
+            "\n" + rows + "\n\n"
+            "------------\n"
+            "NORMAL MODES\n"
+            "------------\n")
+
+
+ETHANOL_IR_OUT = _vib_table(
+    "     0:       0.00 cm**-1\n"
+    "     1:       0.00 cm**-1\n"
+    "     2:       0.00 cm**-1\n"
+    "     3:       0.00 cm**-1\n"
+    "     4:       0.00 cm**-1\n"
+    "     5:       0.00 cm**-1\n"
+    "     6:     258.22 cm**-1\n"
+    "     7:     293.39 cm**-1\n"
+    "     8:     418.84 cm**-1\n"
+) + _IR_HEAD + (
+    "  6:    258.22   0.007869   39.77  0.009510  ( 0.000037 -0.000066 -0.097522)\n"
+    "  7:    293.39   0.016904   85.43  0.017980  ( 0.000067 -0.000087 -0.134089)\n"
+    "  8:    418.84   0.002128   10.76  0.001586  ( 0.024666  0.031264 -0.000008)\n"
+    "\n"
+    "****ORCA TERMINATED NORMALLY****\n"
+)
+
+CO2_IR_OUT = _vib_table(
+    "     0:       0.00 cm**-1\n"
+    "     1:       0.00 cm**-1\n"
+    "     2:       0.00 cm**-1\n"
+    "     3:       0.00 cm**-1\n"
+    "     4:       0.00 cm**-1\n"
+    "     5:     821.97 cm**-1\n"
+    "     6:     821.97 cm**-1\n"
+    "     7:    1421.31 cm**-1\n"
+    "     8:    2393.40 cm**-1\n"
+) + _IR_HEAD + (
+    "  5:    821.97   0.014754   74.56  0.005601  (-0.073823  0.012311  0.000000)\n"
+    "  6:    821.97   0.014754   74.56  0.005601  ( 0.012311  0.073823 -0.000000)\n"
+    "  7:   1421.31   0.000000    0.00  0.000000  (-0.000000  0.000000 -0.000000)\n"
+    "  8:   2393.40   0.209920  1060.85  0.027371  ( 0.000000  0.000000 -0.165440)\n"
+    "\n"
+    "****ORCA TERMINATED NORMALLY****\n"
+)
+
+HCN_TS_IR_OUT = _vib_table(
+    "     0:       0.00 cm**-1\n"
+    "     1:       0.00 cm**-1\n"
+    "     2:       0.00 cm**-1\n"
+    "     3:       0.00 cm**-1\n"
+    "     4:       0.00 cm**-1\n"
+    "     5:       0.00 cm**-1\n"
+    "     6:   -1123.43 cm**-1  ***imaginary mode***\n"
+    "     7:    2055.84 cm**-1\n"
+    "     8:    2629.38 cm**-1\n"
+) + _IR_HEAD + (
+    "  7:   2055.84   0.001804    9.12  0.000274  ( 0.004127  0.016027 -0.000000)\n"
+    "  8:   2629.38   0.028238  142.70  0.003351  (-0.009192  0.057157 -0.000000)\n"
+    "\n"
+    "****ORCA TERMINATED NORMALLY****\n"
+)
+
+LINEAR_H2O_IR_OUT = _vib_table(
+    "     0:       0.00 cm**-1\n"
+    "     1:       0.00 cm**-1\n"
+    "     2:       0.00 cm**-1\n"
+    "     3:       0.00 cm**-1\n"
+    "     4:       0.00 cm**-1\n"
+    "     5:   -1556.31 cm**-1  ***imaginary mode***\n"
+    "     6:   -1556.31 cm**-1  ***imaginary mode***\n"
+    "     7:    3945.81 cm**-1\n"
+    "     8:    4342.42 cm**-1\n"
+) + _IR_HEAD + (
+    "  7:   3945.81   0.000000    0.00  0.000000  (-0.000000 -0.000000 -0.000000)\n"
+    "  8:   4342.42   0.170735  862.82  0.012270  (-0.000000  0.000000  0.110769)\n"
+    "\n"
+    "****ORCA TERMINATED NORMALLY****\n"
+)
+
+
+def test_ir_intensities_of_a_nonlinear_molecule_start_at_mode_6(tmp_path):
+    r = parse_file(_write_out(tmp_path, ETHANOL_IR_OUT, "etoh.out"))
+
+    assert r.frequencies == pytest.approx([258.22, 293.39, 418.84])
+    assert r.ir_intensities == pytest.approx([39.77, 85.43, 10.76])
+
+
+def test_ir_intensities_of_a_linear_molecule_start_at_mode_5(tmp_path):
+    # five zero modes, so the first vibration is mode 5; the IR-inactive
+    # symmetric stretch is a real row reading 0.00
+    r = parse_file(_write_out(tmp_path, CO2_IR_OUT, "co2.out"))
+
+    assert r.frequencies == pytest.approx([821.97, 821.97, 1421.31, 2393.40])
+    assert r.ir_intensities == pytest.approx([74.56, 74.56, 0.0, 1060.85])
+
+
+def test_an_imaginary_mode_has_no_ir_row_and_reads_zero(tmp_path):
+    r = parse_file(_write_out(tmp_path, HCN_TS_IR_OUT, "ts.out"))
+
+    assert r.frequencies == pytest.approx([-1123.43, 2055.84, 2629.38])
+    # aligned by mode number: position would have put 9.12 on the imaginary mode
+    assert r.ir_intensities == pytest.approx([0.0, 9.12, 142.70])
+
+
+def test_imaginary_modes_of_a_linear_structure_read_zero(tmp_path):
+    r = parse_file(_write_out(tmp_path, LINEAR_H2O_IR_OUT, "h2o.out"))
+
+    assert r.n_imaginary == 2
+    assert r.ir_intensities == pytest.approx([0.0, 0.0, 0.0, 862.82])
+
+
+def test_no_ir_table_gives_no_intensities(tmp_path):
+    r = parse_file(_write_out(tmp_path, FREQ_OUT))
+
+    assert r.frequencies
+    assert r.ir_intensities == []
+
+
+def test_ir_intensities_come_from_the_table_of_the_last_frequency_block(tmp_path):
+    # an OptTS's Calc_Hess prints a frequency block of its own first; the
+    # table read is the one after the block the frequencies came from
+    earlier = HCN_TS_IR_OUT.replace("9.12", "1.11").replace("142.70", "2.22")
+    earlier = earlier.replace("****ORCA TERMINATED NORMALLY****\n", "")
+    r = parse_file(_write_out(tmp_path, earlier + HCN_TS_IR_OUT, "two.out"))
+
+    assert r.ir_intensities == pytest.approx([0.0, 9.12, 142.70])
+
+
+def test_an_earlier_blocks_ir_table_is_not_borrowed(tmp_path):
+    no_table_after = HCN_TS_IR_OUT.split("\n-----------\nIR SPECTRUM")[0]
+    r = parse_file(_write_out(tmp_path, HCN_TS_IR_OUT + no_table_after, "late.out"))
+
+    assert len(r.frequencies) == 3
+    assert r.ir_intensities == []
+
+
+def test_a_truncated_ir_table_keeps_the_rows_it_has(tmp_path):
+    # a run killed mid-table (P27): the rows printed count, the rest read 0
+    cut = CO2_IR_OUT.split("  7:   1421.31")[0]
+    r = parse_file(_write_out(tmp_path, cut, "cut.out"))
+
+    assert r.ir_intensities == pytest.approx([74.56, 74.56, 0.0, 0.0])
+
+
+# ---------------------------------------------------------------------------
 # Unrestricted output has TWO orbital manifolds
 #
 # UKS/UHF prints "SPIN UP ORBITALS" and "SPIN DOWN ORBITALS" as separate tables
@@ -626,6 +795,61 @@ def test_corpus_smoke_real_outputs_parse_without_exception():
         assert isinstance(r, ParseResult), path
         assert isinstance(r.terminated_normally, bool), path
         assert r.filename == path.name
+
+
+# The two real corpora the suite names (this one, and test_normalmodes.py's).
+_IR_CORPORA = [c for c in (_CORPUS, pathlib.Path(r"D:\11_ComputationalChem\Orca\Orcadesk"))
+               if c.is_dir()]
+
+
+def _ir_rows_after_last_frequency_block(path: pathlib.Path) -> "list[tuple[float, float]] | None":
+    """(freq, Int) of each row of the IR table after the last frequency block,
+    read here independently of the parser; None when there is no such table."""
+    lines = path.read_bytes().decode("utf-8", "replace").splitlines()
+    vf = [i for i, ln in enumerate(lines) if "VIBRATIONAL FREQUENCIES" in ln]
+    if not vf:
+        return None
+    at = next((i for i in range(vf[-1], len(lines))
+               if lines[i].strip() == "IR SPECTRUM"), None)
+    if at is None:
+        return None
+    rows = []
+    for j, ln in enumerate(lines[at + 1:]):
+        t = ln.split()
+        if t and t[0].endswith(":") and t[0][:-1].isdigit():
+            rows.append((float(t[1]), float(t[3])))
+        elif rows or j > 8:
+            break
+    return rows
+
+
+@pytest.mark.skipif(not _IR_CORPORA,
+                    reason="real ORCA output corpus not present on this machine")
+def test_corpus_ir_intensities_line_up_with_their_modes():
+    """Every frequency run in the corpus: one intensity per mode, and the IR
+    table's rows land, in order, on the modes with the same wavenumber; any
+    mode left without a row is an imaginary one reading 0."""
+    seen = 0
+    for path in sorted(p for c in _IR_CORPORA for p in c.rglob("*.out")):
+        if b"VIBRATIONAL FREQUENCIES" not in path.read_bytes():
+            continue
+        r = parse_file(str(path))
+        rows = _ir_rows_after_last_frequency_block(path)
+        if rows is None:
+            assert r.ir_intensities == [], path
+            continue
+        assert len(r.ir_intensities) == len(r.frequencies), path
+        k = 0
+        for f, inten in zip(r.frequencies, r.ir_intensities):
+            if k < len(rows) and abs(rows[k][0] - f) < 0.006:
+                assert inten == pytest.approx(rows[k][1]), path
+                k += 1
+            else:
+                assert inten == 0.0 and f in r.imaginary_frequencies, path
+        assert k == len(rows), path
+        seen += 1
+    if not seen:
+        pytest.skip("no frequency run with an IR table in the corpus")
 
 
 # ---------------------------------------------------------------------------

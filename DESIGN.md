@@ -1444,7 +1444,10 @@ because a browser keeps only a handful alive and drops the oldest without
 asking, and because the panel's stage is destroyed and rebuilt on every report
 render — so the *box* moves between the two stages instead (`adopt`), and
 anything that is about to re-render a stage sends it home first (`park`). A
-context lost with an `innerHTML` would take every later surface with it.
+context lost with an `innerHTML` would take every later surface with it. The
+box goes in *under* the stage's own overlays — right after its atom canvas,
+where it sits at home — so the caption (isovalue, which colour is which sign)
+and *Open in viewer* stay on top of a surface; appended last, it covered both.
 
 Drawing it there brings its controls with it. The reference's panel has none,
 because its surface is a picture of one and a picture needs no isovalue; a real
@@ -1559,7 +1562,13 @@ labels stay at least an arm apart — and it is sized for a pointer (a 28px
 target, the desktop minimum), with hover changing the arm so it reads as
 pressable. And it needs a keyboard route, since nothing drawn can be tabbed to:
 the stage already takes focus for its arrow keys, so x, y and z ride there and
-are named in the canvas's own label.
+are named in the canvas's own label. A marker in a corner the stage also
+writes in (a cell thumbnail's *final · 9 atoms*, the Visual panel's and the
+pop-out's caption) keeps **all** of itself above the caption — an arm can point
+straight down, so the room it needs is the arm and its label, not the origin's
+height. The stage says where its caption starts; how far the marker reaches is
+the painter's to know, and asking the caller for it is how the thumbnail's
+labels came to sit on its caption.
 
 **17.4g A list of instances is not the place to guess which one matters.** The
 orbital list offered HOMO−4 … LUMO+4 — a window chosen on the theory that the
@@ -1610,9 +1619,29 @@ the PROJECTED extent re-zooms on every frame of a drag: an elongated molecule
 seen end-on is narrow and gets magnified, seen broadside it is wide and shrinks,
 so the structure breathes under the cursor and nothing on screen has a stable
 size to judge by. Fit to a rotation-INVARIANT quantity instead — the bounding
-sphere about the centroid — and the scale is a property of the molecule rather
+sphere — and the scale is a property of the molecule rather
 than of where you happen to be standing. It costs a little fill in the flattest
 orientation, which is the right trade: the picture stops arguing with the hand.
+
+**Invariant is not the same as generous.** The sphere is the *smallest* one
+holding the atoms (it is also the point the structure turns about), not the
+one about the centroid, which leans toward whichever end has more atoms —
+ethanol's hydrogens cost a tenth of the frame. The room each atom needs is its
+own ball at its own depth under the perspective, not the largest ball in the
+molecule charged to the hydrogen on the rim. The edge left around the sphere
+is a share of the stage (4% of its shorter side, within 6–18 px), not a fixed
+18 px that was 5% of the pop-out and a quarter of the IRC picker's 148 px
+preview. And the floor is for structures with nothing to fit: a lone atom or
+H₂ is not blown up into one disc, but a triatomic is drawn at its own size —
+the old 1 Å floor on the radius had fitted HCN's 0.73 Å sphere as 1 Å. HCN's
+transition state in the IRC picker went from 48% of the preview's height to
+69%, a cell thumbnail's ethanol from 55% of its width to 70%, and across water
+to a C16 chain, four stage sizes and 37 orientations no atom touches the edge.
+The surface view
+(3Dmol) answers to the same rule: its `zoomTo` would not fit a sphere under
+5 Å, which drew ethanol at two fifths of the panel, so before each fit it is
+told the radius the atoms need with their spheres on (1 Å at least), and the
+surface's box is counted on top.
 
 **A structure is the one the run ended on.** Geometry cached under a
 calculation's name, read once, is the geometry it was *handed* — and a run's
@@ -1660,7 +1689,14 @@ never turn a molecule over), Shift+drag or a middle-drag moves it, and the
 wheel zooms about the cursor — but **only where the stage owns its window**.
 In the report the wheel belongs to the page, since a stage that took it would
 trap the reader halfway down a long result, so there it is Ctrl+wheel, which is
-also what a touchpad pinch sends.
+also what a touchpad pinch sends. **One wheel rule for every 3D view, whoever
+paints it**: the surface view is 3Dmol's picture but not 3Dmol's wheel. Left
+to its own handler, a notch moved the camera a third of the way in (×1.44,
+measured), toward-you zoomed in where every atom stage zooms out, and it took
+the wheel in
+the report too — scrolling down the page over an orbital dived into it. It now
+zooms by the atom stages' step (9% a notch), in their direction, under the same
+window rule.
 
 **17.4d Say a failure once, and number an atom once.** Two content rules the
 report and the stream kept breaking in opposite directions.
@@ -1833,6 +1869,11 @@ where one is made (a deliberate move from the report, at the user's call).
 a mode is, not what it does, and the question a frequency result is opened
 for — is this imaginary mode the reaction coordinate, or a methyl rotor that
 a tighter optimization would remove? — is answered by seeing the atoms move.
+The spectrum is the IR spectrum: a band stands at its IR intensity (ORCA's
+*IR SPECTRUM* table) against the strongest one, and its label gives the
+km/mol. An imaginary mode, which ORCA lists without an intensity, is drawn
+full height in red all the same, since it is the band a TS result is opened
+for; an output without the table draws every band one height, as before.
 So a band on the vibrational spectrum is also a control: **clicking it, or
 Enter on the keyboard cursor, shows that mode moving on the Visual panel's
 Structure tile**, and the imaginary modes — the ones people come for, on the
@@ -2037,7 +2078,9 @@ columns:
   per calculation: a stack's front card is its first member's, each back
   card the next one's, while the dot is the block's overall state — so a
   running queue reads from across the canvas, and a selected block is an
-  outer ring that never hides it — its run
+  outer ring that never hides it — its name (too long for the card, the
+  system part gives way to `…` and the job part stays: `glyc…_Freq`; the
+  whole name and `kind / set` on hover), its run
   order, and `kind / set` (amber with `*` once its template differs from the
   set; a block made from a set before sets were levels is compared by what
   its text converts to, so the conversion alone never marks it). A **stack** (several calculations sharing a node, e.g. an SP after an

@@ -182,6 +182,11 @@ class ParseResult:
     # --- frequencies / thermochemistry ---
     has_frequencies: bool = False
     frequencies: list[float] = field(default_factory=list)
+    # IR intensity (km/mol) of each entry in `frequencies`, index for index,
+    # from ORCA's "IR SPECTRUM" table. A mode the table has no row for gets 0:
+    # ORCA 6.1.1 lists no imaginary mode there. Empty when the run printed no
+    # table (an MLIP or CREST result, a run without one).
+    ir_intensities: list[float] = field(default_factory=list)
     # The subset ORCA itself marked "***imaginary mode***". Kept separately
     # because the marker is the authority, not the sign: ORCA prints a
     # numerically-zero mode as "-0.00", and -0.0 < 0 is False in IEEE
@@ -781,18 +786,21 @@ class OrcaOutParser:
         r.has_frequencies = True
         start = idxs[-1]
         freqs: list[float] = []
+        modes: list[int] = []      # ORCA's own number of each entry in freqs
         imag_vals: list[float] = []
         n_imag = 0
         for ln in lines[start:]:
-            m = re.match(r"\s*\d+:\s*(-?\d+\.\d+)\s*cm\*\*-1", ln)
+            m = re.match(r"\s*(\d+):\s*(-?\d+\.\d+)\s*cm\*\*-1", ln)
             if m:
-                val = float(m.group(1))
+                val = float(m.group(2))
                 if "imaginary" in ln.lower():
                     n_imag += 1
                     freqs.append(val)
+                    modes.append(int(m.group(1)))
                     imag_vals.append(val)
                 elif abs(val) > 1e-6:
                     freqs.append(val)
+                    modes.append(int(m.group(1)))
             elif "NORMAL MODES" in ln and freqs:
                 break
         # a mode can be negative without the marker (older/partial output), so
@@ -806,6 +814,45 @@ class OrcaOutParser:
         r.frequencies = freqs
         r.imaginary_frequencies = imag_vals
         r.n_imaginary = n_imag
+        r.ir_intensities = self._ir_intensities(lines, start, modes)
+
+    # one row of the IR SPECTRUM table: "  6:    258.22   0.007869   39.77 ..."
+    _IR_ROW = re.compile(r"\s*(\d+):\s+-?\d+\.\d+\s")
+
+    def _ir_intensities(self, lines, start, modes) -> list[float]:
+        """The IR intensity of each mode numbered in `modes`, from the first
+        "IR SPECTRUM" table after `start` (the frequency block the modes were
+        read from, so an earlier frequency calculation's table is never used).
+
+        Aligned by ORCA's MODE NUMBER, never by position: the table numbers
+        modes as the frequency table does and starts at the first one ORCA
+        counts as a vibration. Measured on ORCA 6.1.1: 6 for a nonlinear
+        molecule (ethanol, 21 rows), 5 for a linear one (CO2, 4 rows), and an
+        imaginary mode has no row at all -- the HCN TS lists modes 7-8 under its
+        imaginary mode 6, and linear H2O lists 7-8 under its two imaginary
+        bends 5-6. A mode without a row therefore reads 0. The Int column is
+        found by its header, not assumed. [] when there is no such table."""
+        at = next((i for i in range(start, len(lines))
+                   if lines[i].strip() == "IR SPECTRUM"), None)
+        if at is None:
+            return []
+        head = _find_header(lines, at + 1, 6,
+                            lambda ln: ln.split()[:1] == ["Mode"])
+        if head is None or "Int" not in lines[head].split():
+            return []
+        col = lines[head].split().index("Int")   # "6:" sits under "Mode"
+        first = _find_header(lines, head + 1, 4,
+                             lambda ln: self._IR_ROW.match(ln) is not None)
+        by_mode: dict[int, float] = {}
+        for ln in lines[first:] if first is not None else []:
+            m = self._IR_ROW.match(ln)
+            if m is None:
+                break
+            try:
+                by_mode[int(m.group(1))] = float(ln.split()[col])
+            except (IndexError, ValueError):
+                break
+        return [by_mode.get(n, 0.0) for n in modes]
 
     def _parse_thermochemistry(self, lines, r):
         _scan_scalars(lines, r, {

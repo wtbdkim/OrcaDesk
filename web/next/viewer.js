@@ -393,10 +393,11 @@
     _onStructure = false;
     _selectTile = null;
     // .vizcap writes the frame's name in this stage's bottom-left corner, which
-    // is where the axis marker goes — so the marker sits above it. A pick is
+    // is where the axis marker goes — so the marker sits above it (gizmoBottom:
+    // the caption's top edge, 10px up and one 15px line). A pick is
     // read only on the Structure tile: a trajectory frame's atom 3 is not the
     // parse's atom 3 once anything has moved.
-    _viz = MOL.mount(q("vcanvas"), { gizmoBottom: 60,
+    _viz = MOL.mount(q("vcanvas"), { gizmoBottom: 26,
       onPick: (/** @type {any} */ p) => { if (_onStructure) showPick(q("vstage"), p, _sd); } });
     _vizMenu = MOL.displayMenu(q("vdisp"), q("vdisp").parentElement, _viz);
 

@@ -699,6 +699,20 @@
   /** A stack member's tail as a new step's name ends: _F of Ltyr_SP_F (and of
    *  an older Ltyr-sp-F). @param {string} s */
   const tailOf = (s) => SEP + s.slice(stem(s).length + 1);
+  /** A block's name for its card: the system part, which gives way to an
+   *  ellipsis, and the job part after it, which always shows -- a name too
+   *  long for the card reads "glyc…_Freq", not "glycine_Fr…". The split is
+   *  the row's system name when the name starts with it, else the last
+   *  separator. @param {string} name @param {string} sys */
+  function nameHtml(name, sys) {
+    let i = -1;
+    if (sys && name.length > sys.length + 1 && name.slice(0, sys.length).toLowerCase() === sys.toLowerCase()
+        && (name[sys.length] === SEP || name[sys.length] === "-")) i = sys.length;
+    else if (stem(name) !== name) i = stem(name).length;
+    if (i <= 0) return `<span class="qe-nm">${esc(name)}</span>`;
+    return `<span class="qe-nm" data-split="1"><span class="qe-stem">${esc(name.slice(0, i))}</span><span class="qe-tail">${
+      esc(name.slice(i))}</span></span>`;
+  }
 
   /** Pending calculations that cannot run because something above them, on
    *  the `after` or the geometry chain, has failed or is blocked: drawn as
@@ -1121,9 +1135,10 @@
         ${Array.from({ length: backs }, (_, i) => `<div class="qe-back" data-depth="${backs - i}" data-edge="${edge(backs - i)}"></div>`).join("")}
         <div class="qe-card"${sel ? ' data-sel="1"' : ""} data-st="${n.state}" data-edge="${edge(0)}">
           <button type="button" class="qe-pick" data-a="node" data-k="${esc(n.key)}"
-            aria-label="${esc(aria)}"${n.stack ? ` aria-expanded="${!!open}"` : ""}>
+            aria-label="${esc(aria)}"${n.stack ? ` aria-expanded="${!!open}"` : ""}
+            title="${esc(n.name + "\n" + (KIND_LABEL[n.kind] || n.kind) + " / " + setName)}">
             <span class="qe-line"><span class="qe-dot" data-st="${n.state}"></span>
-              <span class="qe-nm">${esc(n.name)}</span>
+              ${nameHtml(n.name, L.sys ? L.name : "")}
               ${n.stack ? "" : `<span class="qe-ord" aria-label="Run order ${n.first}">${n.first}</span>`}</span>
             ${n.stack
               ? `<span class="qe-line qe-line2">${sub}<span class="qe-ord" data-stack="1" aria-label="${n.members.length} calculations">${n.members.length}</span></span>`
@@ -1132,7 +1147,8 @@
           ${open ? `<div class="qe-pop" role="list">${n.members.map((/** @type {any} */ c, /** @type {number} */ i) =>
               `<button type="button" class="qe-prow" role="listitem" data-a="member" data-k="${esc(n.key)}" data-m="${i}"${
                 (_sel.m || 0) === i ? ' data-on="1"' : ""}
-                aria-label="Select ${esc(c.name)}, run order ${M.idx.get(c.name) + 1}"><span class="qe-nm">${esc(c.name)}</span><span
+                aria-label="Select ${esc(c.name)}, run order ${M.idx.get(c.name) + 1}" title="${esc(c.name)}">${
+                  nameHtml(c.name, L.sys ? L.name : "")}<span
                 class="qe-ord">${M.idx.get(c.name) + 1}</span></button>`).join("")}</div>` : ""}
         </div>
         ${words.length ? `<span class="qe-opts" aria-hidden="true">${esc(words.join(" · "))}</span>` : ""}

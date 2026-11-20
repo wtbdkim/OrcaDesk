@@ -432,13 +432,52 @@
     let seq = 0;
     /** where progress and the finished caption go — the holder sets it */
     let report = (/** @type {string} */ _t) => {};
+    /** the atoms' spheres, as a share of the van der Waals radius */
+    const ATOM_SCALE = 0.18;
+    /** the atoms' style, made fresh for each model: never one object shared */
+    const atomStyle = () => ({ stick: { radius: 0.1 }, sphere: { scale: ATOM_SCALE } });
+
+    /** Fit the camera to what was just drawn. zoomTo fits a sphere through the
+     *  atom CENTRES and the corners of each surface's box, but never one under
+     *  `minimumZoomToDistance` Å in radius -- 5 by default, which drew ethanol
+     *  (2 Å) at two fifths of the panel and HCN smaller still. That floor is
+     *  set, per fit, to what the atoms need with the spheres drawn on them
+     *  (from the middle of their box, where zoomTo centres), 2% over for the
+     *  perspective at 3Dmol's 20° field; the surface's box is counted on top.
+     *  zoomTo then puts the sphere's diameter edge to edge across the height,
+     *  so it is backed off 5%: the edge mol.js leaves. */
+    function fit() {
+      const atoms = gl.selectedAtoms({});
+      let r = 1;
+      if (atoms.length) {
+        const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+        atoms.forEach((/** @type {any} */ a) => [a.x, a.y, a.z].forEach((v, k) => {
+          lo[k] = Math.min(lo[k], v); hi[k] = Math.max(hi[k], v);
+        }));
+        const c = lo.map((v, k) => (v + hi[k]) / 2);
+        atoms.forEach((/** @type {any} */ a) => {
+          r = Math.max(r, Math.hypot(a.x - c[0], a.y - c[1], a.z - c[2])
+                          + ATOM_SCALE * MOL.radius(a.elem));
+        });
+      }
+      gl.getConfig().minimumZoomToDistance = r * 1.02;
+      gl.zoomTo();
+      gl.zoom(0.95);
+    }
 
     /** Move the GL box into a stage and take ownership of it. The box itself is
      *  #mv-gl, which lives in index.html and is never re-created; only its
-     *  parent changes. @param {HTMLElement} stage */
+     *  parent changes. It goes right after the stage's atom canvas, which is
+     *  where index.html keeps it at home: under whatever the stage draws over
+     *  its picture -- the caption, the buttons. Appended last, it covered them,
+     *  and a surface in the Visual panel showed neither its caption (isovalue,
+     *  sign colours) nor Open in viewer. @param {HTMLElement} stage */
     function adopt(stage) {
       const box = q("mv-gl");
-      if (box.parentElement !== stage) stage.appendChild(box);
+      const cv = stage.querySelector("canvas.molcv");
+      if (box.parentElement !== stage || box.previousElementSibling !== cv) {
+        stage.insertBefore(box, cv ? cv.nextSibling : stage.firstChild);
+      }
       box.hidden = false;
       if (gl) gl.resize();
       return box;
@@ -507,6 +546,21 @@
                   + "driver would not provide a WebGL context.");
           return false;
         }
+        // The wheel is MOL.wheelZoom's, as on every atom stage: zoom bare only
+        // where the box is home in the pop-out, which owns its window; in the
+        // Visual panel the wheel scrolls the report and Ctrl+wheel zooms.
+        // 3Dmol's own handler sits on its canvas inside the box, so a capturing
+        // listener here stops the event before it arrives -- that handler moved
+        // the camera a third of the way in per notch, the other way round from
+        // the atom stages, and took the wheel even in the report.
+        const box = q("mv-gl");
+        box.addEventListener("wheel", (/** @type {WheelEvent} */ e) => {
+          e.stopPropagation();
+          const f = MOL.wheelZoom(e, box.parentElement === q("mv-stage"));
+          if (!f) return;
+          e.preventDefault();
+          gl.zoom(f);
+        }, { capture: true, passive: false });
       }
       gl.resize();
       espRange = opts.esp_range || espRange;
@@ -524,7 +578,7 @@
         title = "ESP map";
         gl.clear();
         gl.addModel(dens.text, "cube");
-        gl.setStyle({}, { stick: { radius: 0.1 }, sphere: { scale: 0.18 } });
+        gl.setStyle({}, atomStyle());
         volData = new $3Dmol.VolumeData(dens.text, "cube");
         espData = new $3Dmol.VolumeData(esp.text, "cube");
         // the ESP convention (~0.002 e/bohr³, the van-der-Waals-like contour),
@@ -539,7 +593,7 @@
         title = data.title || p.label;
         gl.clear();
         gl.addModel(data.text, "cube");
-        gl.setStyle({}, { stick: { radius: 0.1 }, sphere: { scale: 0.18 } });
+        gl.setStyle({}, atomStyle());
         volData = new $3Dmol.VolumeData(data.text, "cube");
         iso = data.isovalue || 0.05;
       }
@@ -576,7 +630,7 @@
         gl.addIsosurface(volData, Object.assign({ isoval: iso, color: token("--orb-dens", "#5eead4") }, common));
         report(`${title} · isovalue ${iso.toFixed(4)} a.u.`);
       }
-      if (zoom) gl.zoomTo();
+      if (zoom) fit();
       gl.render();
     }
 
@@ -674,9 +728,10 @@
     document.addEventListener("keydown", onKey);
     q("mv-close").focus();
 
-    // this stage owns its window, so the wheel is its own and zooms bare
+    // this stage owns its window, so the wheel is its own and zooms bare; its
+    // caption (#mv-cap, a .vizcap) starts 26px up, and the marker stays above it
     if (!_stage) {
-      _stage = MOL.mount(q("mv-canvas"), { wheel: "plain" });
+      _stage = MOL.mount(q("mv-canvas"), { wheel: "plain", gizmoBottom: 26 });
       _menu = MOL.displayMenu(q("mv-display"), q("mv-stage"), _stage);
     } else _stage.repaint();
 

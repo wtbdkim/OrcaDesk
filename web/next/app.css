@@ -1531,6 +1531,12 @@ html[data-win="queue"] .app{display:none;}
 .qe-dot[data-st="blocked"],.qe-dot[data-st="cancelled"]{border-color:var(--qe-faint);}
 .qe-nm{flex:1 1 auto; min-width:0; font-size:13px; font-weight:500;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+/* a name split into its system part and its job part (qed.js nameHtml): the
+   system part gives way first, down to a couple of letters, so the job part
+   ("_Freq", "_Opt_F") stays readable on a 140px card */
+.qe-nm[data-split]{display:flex;}
+.qe-stem{flex:0 100000 auto; min-width:1.6em; overflow:hidden; text-overflow:ellipsis;}
+.qe-tail{flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;}
 .qe-ord{flex:0 0 auto; font-size:11px; font-variant-numeric:tabular-nums; color:var(--qe-dim);}
 .qe-ord[data-stack]{min-width:18px; height:18px; line-height:18px; text-align:center;
   border-radius:var(--radius-pill); background:var(--accent);

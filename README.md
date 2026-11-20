@@ -215,8 +215,9 @@ A finished calculation opens as a report, read two ways: **Output** and
 - **Output** is what the parser read: the summary, final geometry (*Copy
   .xyz*), orbital energies (HOMO / LUMO), Mulliken and Löwdin charges, Mayer
   bond orders, dipole moment, rotational constants, the SCF energy
-  decomposition, frequencies (imaginary modes flagged, any one animated) and
-  full thermochemistry, TD-DFT transitions with a UV-Vis plot, NMR
+  decomposition, frequencies as an IR spectrum (imaginary modes flagged, any
+  one animated) and full thermochemistry, TD-DFT transitions with a UV-Vis
+  plot, NMR
   shieldings, the NEB path and scan surfaces. *Show all* reveals every section
   regardless of type, and the whole `.out` is there with Find.
 - A **reaction profile** is built from finished calculations (stages of

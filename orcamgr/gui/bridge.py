@@ -1427,6 +1427,7 @@ class Bridge(QObject):
                     for t in r.transitions
                 ],
                 frequencies=r.frequencies,
+                ir_intensities=r.ir_intensities,
                 n_imaginary=r.n_imaginary,
                 mulliken=r.mulliken_charges,
                 nmr=[

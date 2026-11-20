@@ -620,6 +620,8 @@
  * @property {boolean} [show_elec]               gates electronic-structure sections
  * @property {TransitionPayload[]} [transitions]
  * @property {number[]} [frequencies]            cm^-1, negatives = imaginary
+ * @property {number[]} [ir_intensities]         km/mol, one per frequencies entry
+ *                                              (0 = no IR row); [] = no IR table
  * @property {number} [n_imaginary]
  * @property {[string, number][]} [mulliken]
  * @property {[string, number][]} [loewdin]

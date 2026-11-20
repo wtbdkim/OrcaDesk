@@ -291,7 +291,12 @@ localStorage) and is set from `MOL.displayMenu` — the *Display* popover — or
 keys on a focused stage (1–4, H, L, +/−, 0). The orientation is a rotation
 matrix turned about the screen's axes; Shift/middle-drag pans; the wheel zooms
 only on a stage mounted with `wheel: "plain"` (the pop-out), elsewhere
-Ctrl+wheel, so the report still scrolls. It keeps **two** radius tables with two
+Ctrl+wheel, so the report still scrolls. That rule and its step are one
+function, `MOL.wheelZoom(e, plain)` (a notch arrives as deltaY 60, 9%), and the
+3Dmol surface view reads it too: `volumeView` puts a capturing wheel listener
+on `#mv-gl` that stops the event before 3Dmol's own handler on its canvas
+(×1.44 a notch measured, reversed, and bare even in the report) and calls
+`gl.zoom(f)` — bare only while the box is home in `#mv-stage`. It keeps **two** radius tables with two
 fallbacks, which is the thing to keep straight: the covalent table (Cordero
 2008, H–Pu) decides what is bonded to what (an unknown element guesses
 GENEROUSLY — a missed bond draws a molecule as dust), and the van der Waals
@@ -309,7 +314,7 @@ with a reference neither happens, at the price that a bond a run really breaks
 stays drawn. The builder keeps its box's bonds across the moves it makes
 itself (Apply, Apply all, a push — `showGeom(true)`) and across a re-render
 (the reference is `st.bondRef`, not the stage's), and reads what the user
-types or pastes by distance again. The ball's one floor is `stickPx * 0.62`,
+types or pastes by distance again. The ball's one floor is `stickPx * KNOB` (0.62),
 stated against the stick width rather than as a pixel count: a flat 2.5px
 minimum clamps the SMALL atoms first, so it erased the H-vs-C distinction
 exactly where the molecule is large against its box — every cell thumbnail of a
@@ -317,13 +322,31 @@ real molecule. The **axis marker** in a stage's bottom-left corner is drawn by t
 same file and IS the control for the axis views — the old *View down x/y/z*
 button is gone. The arm's LABEL is the target (two arms nearly edge-on cross at
 the origin), `gizmoArms()` is the one speller of where an arm is so the drawn
-one and the clicked one cannot disagree, `opts.gizmoBottom` lifts it clear of a
-stage that writes in that corner (the Visual stage's `.vizcap` does), and x/y/z
+one and the clicked one cannot disagree, `opts.gizmoBottom` is where a stage
+that writes in that corner has its caption start, in px up from the bottom
+(the cell thumbnail's `.cap` 24, the Visual stage's and the pop-out's
+`.vizcap` 26), and the whole marker keeps above it — the origin sits
+`GIZMO.ox` (40) higher, room for an arm pointing straight down plus its label.
+It used to be the origin's own height, so the thumbnail's 26 put x's label on
+*final · N atoms*. And x/y/z
 on the focused canvas are the keyboard route, since nothing drawn can be
 tabbed to. The view scale is fitted to the molecule's BOUNDING SPHERE, not
 to its projected extent — the projected one is recomputed every frame, so a drag
 re-zoomed continuously (1.6x between end-on and broadside on a Tf2O-shaped
-molecule). DESIGN.md §17.4e.
+molecule). The sphere is the smallest one holding the atom centres
+(`enclose`, Bădoiu–Clarkson, never worse than the centroid's — it is also
+the pivot), and `fitReach` is the farthest any ball is drawn from the centre
+in any orientation, `max (r·sinθ + b)·D/(D − r·cosθ)` per ball size, cached on
+the scene per display type; the edge around it is 4% of the shorter side
+within 6–18 px (`PAD_*`), and the only floors (`SPAN_FLOOR` 0.3 Å,
+`REACH_FLOOR` 1 Å) are for a lone atom or H₂. The 3Dmol surface view fits
+in `volumeView`'s `fit()`: `zoomTo` counts atom centres and each surface's
+box corners but never fits under `minimumZoomToDistance` (default 5 Å, which
+drew a small molecule at two fifths of the panel), so that config value is
+set before each fit to the atoms' own reach with their spheres (≥ 1 Å, +2%
+for the perspective), then `gl.zoom(0.95)` leaves the edge; its box is
+adopted right after the stage's atom canvas so the caption and buttons stay
+above it. DESIGN.md §17.4e.
 
 The builder seeds a new calculation from **`get_step_defaults`** (StepConfig's
 own defaults) and from no literal of its own: its copies had drifted — MaxIter
@@ -1273,7 +1296,12 @@ The `core/` pipeline:
 - `parser.py` — `parse_file()` → `ParseResult` (energies + SCF energy
   decomposition, geometry, orbitals/HOMO-LUMO, Mulliken & Löwdin charges, Mayer
   population (bond orders + valences), dipole moment, rotational constants,
-  frequencies, full thermochemistry (U/H/G/ZPE/T·S/temp/pressure), TD-DFT
+  frequencies with their IR intensities (`ir_intensities`, km/mol, one per
+  `frequencies` entry, from the `IR SPECTRUM` table after the last frequency
+  block, matched by ORCA's mode number — the table starts at mode 6, or 5 for a
+  linear molecule, and on ORCA 6.1.1 has no row for an imaginary mode, which
+  therefore reads 0; `[]` when there is no table, and the report then draws
+  every band at one height), full thermochemistry (U/H/G/ZPE/T·S/temp/pressure), TD-DFT
   transitions + excited-state composition, NMR, NEB/IRC path — both print a
   `PATH SUMMARY` table; `neb_path_kind` records which, so the report titles
   an IRC profile as an IRC — and a relaxed surface scan: `scan_coords` from

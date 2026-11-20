@@ -400,12 +400,10 @@ var MOL = {};
     const cache = !orders && !given;
     if (cache) { const hit = _scenes.get(atoms); if (hit) return hit; }
     const bs = given || bonds(atoms);
-    let cx = 0, cy = 0, cz = 0;
-    atoms.forEach(a => { cx += a.x; cy += a.y; cz += a.z; });
-    const n = atoms.length || 1;
-    cx /= n; cy /= n; cz /= n;
-    let span = 1;
-    atoms.forEach(a => { span = Math.max(span, Math.hypot(a.x - cx, a.y - cy, a.z - cz)); });
+    const [cx, cy, cz, r] = enclose(atoms);
+    // each atom's distance from the centre, which is what the fit reads
+    const dist = atoms.map(a => Math.hypot(a.x - cx, a.y - cy, a.z - cz));
+    const span = Math.max(SPAN_FLOOR, r);
     const nb = atoms.map(() => []);
     bs.forEach(([i, j]) => { nb[i].push(j); nb[j].push(i); });
     const ord = new Map();
@@ -418,9 +416,81 @@ var MOL = {};
       const order = o == null ? 1 : classify(o);
       return { i: i, j: j, n: order, off: order > 1 ? planeDir(atoms, nb, i, j) : null };
     });
-    const sc = { bonds: info, cx: cx, cy: cy, cz: cz, span: span, hasOrders: ord.size > 0 };
+    const sc = { bonds: info, cx: cx, cy: cy, cz: cz, span: span, dist: dist,
+                 reach: {}, hasOrders: ord.size > 0 };
     if (cache) _scenes.set(atoms, sc);
     return sc;
+  }
+
+  /** The centre and radius of the smallest sphere holding every atom centre:
+   *  the point the structure turns about, and the sphere its scale is fitted
+   *  to. It was the centroid, which sits toward whichever end has more atoms
+   *  -- ethanol's hydrogens pulled it 0.2 Å off, a 2.25 Å sphere where 2.04
+   *  holds every atom, and that tenth of the frame went to empty space on one
+   *  side. Bădoiu–Clarkson: from any atom, step 1/(k+1) of the way toward the
+   *  farthest; on the structures measured (water to a C16 chain) 2000 steps
+   *  land within 0.1% of the optimum. The steps are budgeted by atom count so
+   *  a protein costs a moment, and the centroid is kept whenever it is still
+   *  the smaller sphere, so this can only ever tighten the fit.
+   *  @param {any[]} atoms @returns {number[]} [cx, cy, cz, r] */
+  function enclose(atoms) {
+    const n = atoms.length;
+    if (!n) return [0, 0, 0, 0];
+    /** the farthest atom from a point, and its distance @param {number} x
+     *  @param {number} y @param {number} z @returns {[number, number]} */
+    const far = (x, y, z) => {
+      let at = 0, d2 = -1;
+      for (let i = 0; i < n; i++) {
+        const a = atoms[i], d = (a.x - x) ** 2 + (a.y - y) ** 2 + (a.z - z) ** 2;
+        if (d > d2) { d2 = d; at = i; }
+      }
+      return [at, Math.sqrt(d2)];
+    };
+    let cx = 0, cy = 0, cz = 0;
+    atoms.forEach(a => { cx += a.x; cy += a.y; cz += a.z; });
+    cx /= n; cy /= n; cz /= n;
+    const r0 = far(cx, cy, cz)[1];
+    let bx = atoms[0].x, by = atoms[0].y, bz = atoms[0].z;
+    const steps = Math.max(64, Math.min(2000, Math.floor(2e6 / n)));
+    for (let k = 1; k <= steps; k++) {
+      const a = atoms[far(bx, by, bz)[0]], t = 1 / (k + 1);
+      bx += (a.x - bx) * t; by += (a.y - by) * t; bz += (a.z - bz) * t;
+    }
+    const r1 = far(bx, by, bz)[1];
+    return r1 < r0 ? [bx, by, bz, r1] : [cx, cy, cz, r0];
+  }
+
+  /** How far from the stage centre, in Å at scale 1, any atom's ball can reach
+   *  in ANY orientation -- the number the scale is fitted to, so a turn never
+   *  pushes an atom out of the frame (DESIGN.md §17.4e). An atom r from the
+   *  centre at angle θ to the view axis is drawn r·sinθ out with its ball b
+   *  around it, both magnified by the perspective at its depth: the bound is
+   *  the largest (r·sinθ + b)·D/(D − r·cosθ). It used to be (span + the
+   *  largest ball) · D/√(D² − span²), which charges the outermost atom -- a
+   *  hydrogen, as a rule -- for the biggest ball in the molecule and leaves the
+   *  ball's own magnification out. Per ball size only the outermost atom
+   *  counts (the bound rises with r), so this is a handful of curves however
+   *  big the structure. Cached on the scene per display type.
+   *  @param {any[]} atoms @param {any} sc scene() @param {string} style */
+  function fitReach(atoms, sc, style) {
+    if (sc.reach[style] != null) return sc.reach[style];
+    const st = STYLES[style] || STYLES.ball;
+    const D = sc.span * PERSPECTIVE;
+    /** a ball radius -> the distance of the farthest atom wearing it @type {Map<number, number>} */
+    const rim = new Map();
+    atoms.forEach((a, i) => {
+      // render()'s floor: a ball is never thinner than its stick
+      const b = Math.max(st.atom(a.el), 2 * st.bond * KNOB);
+      rim.set(b, Math.max(rim.get(b) || 0, sc.dist[i] || 0));
+    });
+    let reach = REACH_FLOOR;
+    rim.forEach((r, b) => {
+      for (let deg = 0; deg <= 90; deg++) {
+        const t = (deg * Math.PI) / 180;
+        reach = Math.max(reach, ((r * Math.sin(t) + b) * D) / (D - r * Math.cos(t)));
+      }
+    });
+    return (sc.reach[style] = reach);
   }
 
   // ---------------------------------------------------------------- painting
@@ -434,6 +504,21 @@ var MOL = {};
   /** How much a far atom fades toward the stage colour: the farthest one keeps
    *  40% of its own colour, the nearest all of it. */
   const FOG = 0.6;
+  /* The fit (fitReach). Its floors are the only numbers in it, and they are
+     for structures with no extent to fit: the bounding radius never drops
+     under SPAN_FLOOR Å (below any bond's half-length -- H2's is 0.37 -- so
+     only a lone atom has one), and the reach never under REACH_FLOOR Å, so a
+     lone atom or H2 is not blown up into one disc filling the stage. It was
+     a 1 Å floor on the radius alone, which drew every triatomic smaller than
+     its own size called for: HCN's 0.73 Å sphere was fitted as 1 Å. */
+  const SPAN_FLOOR = 0.3, REACH_FLOOR = 1.0;
+  /** The empty edge around the fitted sphere: 4% of the stage's shorter side,
+   *  within 6–18 px. A fixed 18 px was 5% of the pop-out but a quarter of the
+   *  IRC picker's 148 px preview, and the molecule paid for it. */
+  const PAD_SHARE = 0.04, PAD_MIN = 6, PAD_MAX = 18;
+  /** A ball's floor, as a share of its stick's width: never thinner than the
+   *  stick it sits on (render's radOf; fitReach allows for it). */
+  const KNOB = 0.62;
 
   /** Project, sort and paint. Returns the screen positions and radii, which is
    *  what picking and measuring are done against — the projection is computed
@@ -475,15 +560,13 @@ var MOL = {};
     // The scale is fitted to the molecule's BOUNDING SPHERE, not to how wide it
     // happens to look from here (DESIGN.md §17.4e). A rotation preserves
     // distance from the centre, so this number does not change while you turn
-    // the structure. `ball` is the room the outermost sphere needs, and `kfit`
-    // the most the perspective can push a point on that sphere outward —
-    // max r·sinθ·D/(D − r·cosθ) is D/√(D² − r²), exact rather than generous.
+    // the structure; fitReach is the farthest any ball can be drawn from the
+    // centre in any orientation, perspective included.
     const span = sc.span;
     const D = span * PERSPECTIVE;
-    let ball = st.bond;
-    atoms.forEach(a => { ball = Math.max(ball, st.atom(a.el)); });
-    const kfit = D / Math.sqrt(D * D - span * span);
-    const s = ((Math.min(W, H) / 2 - 18) / ((span + ball) * kfit)) * (view.zoom || 1);
+    const short = Math.min(W, H);
+    const pad = Math.min(PAD_MAX, Math.max(PAD_MIN, PAD_SHARE * short));
+    const s = ((short / 2 - pad) / fitReach(atoms, sc, DISPLAY.style)) * (view.zoom || 1);
     const ox = W / 2 + (view.panX || 0), oy = H / 2 + (view.panY || 0);
 
     /** a model-space point to the screen: {X, Y, z, k}, k the perspective
@@ -510,7 +593,7 @@ var MOL = {};
     const radOf = (p) => {
       if (wire) return 3;
       if (fill) return Math.max(1.5, st.atom(p.el) * s * p.k);
-      return Math.max(stickPx * 0.62 * p.k, st.atom(p.el) * s * p.k);
+      return Math.max(stickPx * KNOB * p.k, st.atom(p.el) * s * p.k);
     };
     const rad = (el, p) => radOf(p || { el: el, k: 1 });
 
@@ -846,16 +929,24 @@ var MOL = {};
     { name: "y", yaw: 0, pitch: Math.PI / 2, v: [0, 1, 0], tint: "--crit-rmsg" },
     { name: "z", yaw: 0, pitch: 0, v: [0, 0, 1], tint: "--crit-de" },
   ];
+  /* ox is the origin's distance from the left edge and from the bottom of
+     whatever it must stay above: an arm pointing straight down ends arm + lab
+     = 32 px below the origin with its label's lower half under that, 37 px,
+     so 40 keeps every orientation clear. */
   const GIZMO = { ox: 40, arm: 24, lab: 8, hit: 14 };
 
   /** Where each axis arm's tip lands, in canvas pixels, for a given rotation.
    *  One function so the arm that is drawn and the arm that is clicked cannot
    *  disagree — the same reason the cube name has one speller.
    *  @param {number} H canvas css height @param {number[]} R
-   *  @param {number} [bottom] px from the bottom edge — a stage with a caption
-   *  down there says so, or the marker would be drawn over the writing */
+   *  @param {number} [bottom] the band along the bottom edge the marker keeps
+   *  out of, in px: a caption's top edge, measured from the bottom. It was the
+   *  origin's own height, so a stage that passed its caption's height (26)
+   *  put the origin there and every arm that pointed down -- x, in the
+   *  opening view -- landed its label on the writing. The marker's reach is
+   *  this file's business, so the caller states only where its caption is. */
   function gizmoArms(H, R, bottom) {
-    const oy = H - (bottom || GIZMO.ox);
+    const oy = H - (bottom || 0) - GIZMO.ox;
     return AXES.map((ax, i) => {
       const [x0, y0, z0] = ax.v;
       const x1 = R[0] * x0 + R[1] * y0 + R[2] * z0;
@@ -884,6 +975,25 @@ var MOL = {};
   }
 
   const ZOOM_MIN = 0.25, ZOOM_MAX = 25;
+  /** Zoom per pixel of wheel travel: a notch reaches ORCAdesk's page as
+   *  deltaY 60, so 9% per notch, turning the wheel toward you zooming out. */
+  const WHEEL_ZOOM = 0.0015;
+
+  /** One wheel event's zoom factor, or 0 when the wheel is the page's: the one
+   *  wheel rule for every 3D view, whichever library paints it. In a report
+   *  the wheel scrolls -- a stage that took it would trap the reader halfway
+   *  down -- and Ctrl+wheel, which is also what a touchpad pinch sends, zooms;
+   *  a stage that owns its window (`plain`) zooms on a bare wheel. The 3Dmol
+   *  surface view reads this too (mvwin.js): left to its own handler it moved
+   *  the camera a third of the way in per notch (x1.44, measured), the other
+   *  way round from here, and took the wheel even in the report.
+   *  @param {WheelEvent} e @param {boolean} plain */
+  MOL.wheelZoom = function (e, plain) {
+    if (!plain && !e.ctrlKey && !e.metaKey) return 0;
+    const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    return Math.exp(-dy * WHEEL_ZOOM);
+  };
+
   /* A shown normal mode: one swing there and back in VIB_PERIOD_MS, the same
      for every mode -- a real one is picoseconds, so any rate is a convention,
      and one rate lets two modes be compared by their shape alone. Paused, the
@@ -915,8 +1025,9 @@ var MOL = {};
    *    one atom is still a click. With it, Ctrl+click builds a selection of up
    *    to four atoms that survives the Ctrl key; onSelect hears every change,
    *    takePicks() or Enter hands it over. Without it, nothing here changes.
-   *    gizmoBottom lifts the axis marker clear of whatever the stage draws in
-   *    its bottom-left corner. wheel "plain" zooms on a bare wheel — for a stage
+   *    gizmoBottom is where the stage's own caption starts, in px up from the
+   *    bottom edge: the axis marker keeps all of itself above it. wheel
+   *    "plain" zooms on a bare wheel — for a stage
    *    that owns its window; anywhere else the wheel scrolls the page, as it
    *    must in a report, and Ctrl+wheel (a touchpad pinch) zooms. labels false
    *    keeps atom labels off a stage too small for them, the cell thumbnail. */
@@ -1263,13 +1374,11 @@ var MOL = {};
     });
 
     canvas.addEventListener("wheel", e => {
-      // in a report the wheel is the page's: a stage that took it would trap
-      // the reader halfway down. Ctrl+wheel is also what a touchpad pinch sends.
-      if (opts.wheel !== "plain" && !e.ctrlKey && !e.metaKey) return;
+      const f = MOL.wheelZoom(e, opts.wheel === "plain");
+      if (!f) return;
       e.preventDefault();
-      const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
       const p = local(e);
-      zoomBy(Math.exp(-dy * 0.0015), p.x, p.y);
+      zoomBy(f, p.x, p.y);
     }, { passive: false });
 
     if (!canvas.hasAttribute("tabindex")) canvas.setAttribute("tabindex", "0");

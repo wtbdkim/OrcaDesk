@@ -5,6 +5,37 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **The vibrational spectrum in the report is an IR spectrum.** Each band
+  now stands at its IR intensity, read from ORCA's IR SPECTRUM table and
+  scaled to the strongest band, and pointing at a band (or stepping with the
+  arrow keys) also gives the intensity in km/mol. Bands used to be all one
+  height. An imaginary mode, which ORCA lists without an intensity, is still
+  drawn full height in red. Results without the table look as before.
+
+### Fixed
+- **A long block name in the queue window keeps its job part.** A name too
+  long for its block used to lose its end (`glycine_Fr…`); now the molecule
+  part gives way instead (`glyc…_Freq`), and hovering a block shows its
+  whole name with its type and level.
+- **Structures fill their frame.** The structure views fit the smallest
+  sphere around the atoms and leave an edge in proportion to the view, so a
+  small molecule is drawn up to about 1.45x larger. The difference shows most
+  in the IRC structure picker and the cell thumbnails, and a molecule still
+  never leaves the frame when turned.
+- **Orbital and density surfaces open fitted to the molecule.** They were
+  drawn as if every molecule were at least 5 Å across, which left a small one
+  tiny in the Visual panel and the pop-out viewer. In the Visual panel a
+  surface no longer covers its caption (isovalue, which colour is which sign)
+  or *Open in viewer*.
+- **The mouse wheel over a surface zooms in small steps,** and in the same
+  direction as over a structure. One notch used to jump almost 1.5x the other
+  way. In the report the wheel scrolls the page over a surface, as over a
+  structure; Ctrl+wheel zooms.
+- **The x/y/z axis marker stays clear of the caption** under a cell
+  thumbnail, in the Visual panel and in the pop-out viewer, whichever way the
+  molecule is turned.
+
 ## [0.11.2] — 2026-11-20
 
 ### Added
