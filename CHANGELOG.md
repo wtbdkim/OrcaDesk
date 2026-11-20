@@ -49,14 +49,15 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   a workflow can now be pasted after an IRC (once per end picked).
 
 ### Changed
-- **A level dropped on a finished calculation runs it again.** Dropping a
-  level or MLIP set on a done block, or clicking one while a done block is
-  selected, is now an overwrite. A warning names the block and says its
-  output will be overwritten. *Overwrite* puts the set on it and turns it back
-  to pending, and Undo restores the finished result until it starts. The
-  Run-time overwrite question no longer asks about it again, and its old
-  output is never kept in place of the new run. A failed calculation stays
-  locked.
+- **A level dropped on a finished or failed calculation runs it again.**
+  Dropping a level or MLIP set on a done or failed block, or clicking one
+  while such a block is selected, is now an overwrite. A warning names the
+  block and says its output will be overwritten. *Overwrite* puts the set on
+  it and turns it back to pending, and Undo restores the old result until it
+  starts. For a failed one, the steps it blocked go back to pending too and
+  run after it, in the same run if the queue is running. The Run-time
+  overwrite question no longer asks about it again, and its old output is
+  never kept in place of the new run.
 - **An IRC's own "final geometry" is no longer offered.** The geometry list
   listed "ref → <IRC>" besides its two ends, which looked like a third
   structure; on real outputs it is the TS the IRC started from. A block that

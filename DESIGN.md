@@ -2016,10 +2016,11 @@ columns:
   change, and otherwise opens the set in the **set editor** (marked in the
   library by a left bar). The first replacement is confirmed (§13.1) and said
   to be asked once; later ones apply at once. A set dropped on, or clicked
-  onto, a **finished** block is an overwrite and is asked every time: the
-  warning names it and says its output is overwritten. *Overwrite* (danger)
-  puts the set on it and returns it to pending (P24's one way back). Undo
-  restores it until it starts. Delete on a focused set removes
+  onto, a **finished or failed** block is an overwrite and is asked every
+  time: the warning names it (and which members failed, in a mixed stack),
+  says its output is overwritten, and says what it blocked goes back to
+  pending. *Overwrite* (danger) puts the set on it and returns it to pending
+  (P24's one way back). Undo restores it until it starts. Delete on a focused set removes
   it from the library (confirmed). Under them, **Workflows**: copied
   workflows kept by name (*+ Save copied*, locked with its reason until
   something is copied; *Save as workflow…* in a block's inspector). A click

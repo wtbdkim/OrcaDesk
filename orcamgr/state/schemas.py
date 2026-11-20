@@ -97,7 +97,7 @@ class CalcFull(TypedDict):
     approved: bool
     ref_point: str
     set_name: str
-    rerun: bool               # put back from DONE by rerun_calc (never kept)
+    rerun: bool               # put back from DONE/FAILED by rerun_calc (never kept)
 
 
 # ---- queue snapshot / log ---------------------------------------------------
