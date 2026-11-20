@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: ORCA itself
+    url: https://www.faccts.de/orca/
+    about: Questions about ORCA's methods, keywords or licensing belong to the ORCA developers.

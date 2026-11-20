@@ -1,0 +1,25 @@
+name: Feature idea
+description: A workflow that is slow, awkward or missing
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: The workflow
+      description: |
+        The calculations you are trying to get through, for example
+        "TS → IRC → Opt/Freq of both ends, for 20 related molecules".
+    validations:
+      required: true
+  - type: textarea
+    id: pain
+    attributes:
+      label: Where it gets in the way
+      description: What takes too many steps now, or cannot be done at all.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: Optional. Any idea of how it could work.

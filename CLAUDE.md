@@ -171,7 +171,7 @@ Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
 - **The version is single-sourced from `APP_VERSION` (`orcamgr/paths.py`).**
   Window title and the UI badge/About (via `get_about()`) derive from it —
   **never hardcode a version string in `web/`**. To release, bump `APP_VERSION`,
-  the `CHANGELOG.md` / `README.md` prose, **and** `installer.iss`'s
+  the `CHANGELOG.md` / `README.md` / `README.ko.md` prose, **and** `installer.iss`'s
   `MyAppVersion` / `MyAppVersionFull` (Inno Setup cannot read `paths.py`).
 - Bridge slots and API endpoints exchange **JSON strings**, typically
   `{"ok": bool, ...}` or `{"error": "..."}`; errors are returned as data, never
@@ -266,7 +266,8 @@ that are stale — include those updates in the same commit:
   layout, or the git workflow). **Keep it short**: detail goes in
   `docs/ARCHITECTURE.md`, not here.
 - `README.md` — update when commands, install steps, requirements, or user-facing
-  features described there change.
+  features described there change; `README.ko.md` is its shorter Korean
+  counterpart and follows it (screenshots live in `docs/images/`).
 - `PRINCIPLES.md` / `DESIGN.md` — update when the change introduces or amends a
   convention/principle, deliberately deviates from one (if the deviation is
   kept, record it in the appendix with a disposition), or resolves a deviation
