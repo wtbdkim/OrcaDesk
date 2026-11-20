@@ -1,281 +1,309 @@
-# ORCAdesk
+<p align="center">
+  <img src="docs/images/logo.png" width="112" alt="ORCAdesk logo">
+</p>
 
-A desktop GUI for building, queuing, running, and parsing ORCA computational
-chemistry jobs. PyQt6 + QWebEngine front-end (shadcn-style dark **or light** UI),
-Python core.
+<h1 align="center">ORCAdesk</h1>
 
-> **Status: 0.11.2** (`0.11.2`). Desktop app: build → queue → run →
-> parse, validated against real ORCA 6.1.1 output. A running calculation
-> **survives closing the app** and is reattached on the next launch; the UI ships
-> with both a **dark and a light theme**; and the convergence graph shows **live progress for optimizations and frequency runs**
-> (numerical *and* analytical/CP-SCF). Beyond ORCA, you can **pre-optimize a
-> structure with a MACE model (MLIP)** in your own Python environment, and run a
-> **CREST conformer search** — both hand their geometries off to ORCA
-> jobs through the normal reference mechanism. Results open in an **in-app 3D
-> structure viewer** where conformers can be flipped through and starred. The
-> queue can **run several calculations at once**, admitted against a core and
-> memory budget you set — so the next one starts the moment one finishes. Run
-> from source, or build a
-> standalone Windows app with `build.bat`. Since 0.11.0 the queue has its own
-> window: a **queue editor** with one row per molecule, steps chained block by
-> block (Opt → Freq → IRC → SP, approval gates, saved inp sets and workflows), and `.xyz`
-> files dropped onto it turned into rows in one go. A **+** beside a block adds
-> the next step (or a step in front of it), an **IRC's end structures are picked
-> on its energy profile**, and a finished or failed step **runs again with a new
-> level** after an overwrite warning. The main window keeps Jobs and Results. (Phone-sync is in development and not
-> part of this build.) See [CHANGELOG.md](CHANGELOG.md) for details.
+<p align="center">
+  <b>A desktop app for building, queuing, running and reading
+  <a href="https://www.faccts.de/orca/">ORCA</a> calculations.</b><br>
+  Chain a whole study (TS → IRC → end-point Opt / Freq → SP) over many
+  molecules at once, watch every job converge live, and read the results
+  without leaving the app.
+</p>
 
-## Requirements
+<p align="center">
+  <a href="https://github.com/wtbdkim/OrcaDesk/releases"><img alt="Release" src="https://img.shields.io/github/v/release/wtbdkim/OrcaDesk?include_prereleases&label=release"></a>
+  <img alt="Platforms: Windows, Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-informational">
+  <img alt="ORCA 6" src="https://img.shields.io/badge/ORCA-6.x-orange">
+  <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-green"></a>
+</p>
 
-- Python 3.10+
-- ORCA 6.x installed (the app calls your `orca` executable)
-- Windows 10/11 is the tested platform and the only packaged one; Linux runs
-  from source (macOS is untested)
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#features">Features</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="README.ko.md">한국어</a>
+</p>
 
-## Install & run (development)
+<p align="center">
+  <img src="docs/images/queue-window.png" alt="The queue window: one row per molecule, each a chain of calculation steps" width="100%">
+</p>
+
+> **Status: 0.11.2** (`0.11.2`, beta), validated against real ORCA 6.1.1
+> output. ORCAdesk is an independent project, not affiliated with the ORCA
+> developers or FACCTs, and it does not include ORCA: it drives the `orca` you
+> install yourself (free for academic use).
+
+## Why ORCAdesk
+
+- **Whole workflows, many molecules.** Each molecule is a row of steps in the
+  queue window. Drop a batch of `.xyz` files, press **+** for the next step,
+  copy a chain onto every row, and hold the expensive steps until you approve
+  them.
+- **Built for transition-state work.** After an IRC, pick the structure to go
+  on from on the IRC's own energy profile: either end, both ends at once, or
+  any point along the path.
+- **Runs you can walk away from.** Several jobs run at once within the cores
+  and memory you allow, each as soon as what it depends on has finished.
+  Closing the app never kills an ORCA or CREST job; it is reattached on the next
+  launch. A failure holds back only the steps that depend on it.
+- **Live progress.** SCF and all five optimization criteria as they converge,
+  stage panels for frequency and TD-DFT runs, and time estimates that say how
+  sure they are.
+- **Results you can read.** Energies, orbitals, charges, bond orders,
+  frequencies, thermochemistry, UV-Vis, NMR and reaction profiles, plus
+  orbitals, densities and ESP maps in 3D and a natural bond orbital analysis
+  computed by ORCAdesk itself (no NBO licence needed).
+- **Inputs ORCA takes the first time.** Structures are screened before they
+  cost a run (impossible multiplicities, overlapping atoms, coordinates in
+  Bohr), and the generated `.inp` writes only what differs from ORCA's own
+  defaults.
+- **Beyond DFT.** Pre-optimize with a MACE machine-learned potential, or run a
+  CREST conformer search, and hand the geometry on to ORCA in the same queue.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Main window](docs/images/main-window.png) | ![IRC structure picker](docs/images/irc-picker.png) |
+| **Main window**: the queue strip, and every job as a cell with its live convergence and output. | **After an IRC**: choose the structure to continue from on the IRC's energy profile. |
+| ![Results](docs/images/results.png) | ![3D viewer](docs/images/viewer.png) |
+| **Results**: what the parser read for that calculation type, with spectra and thermochemistry. | **3D**: orbitals, densities and ESP maps from the finished wavefunction. |
+
+## Install
+
+You need **ORCA 6.x** ([faccts.de/orca](https://www.faccts.de/orca/), free for
+academic use). ORCAdesk looks for it on first launch; if it is not found, point
+**Settings → ORCA executable** at your `orca.exe` (or `orca` on Linux).
+
+**Windows installer.** Download `ORCAdesk-<version>-Setup.exe` from
+[Releases](https://github.com/wtbdkim/OrcaDesk/releases) and run it. Settings
+and workspaces are kept per user in `%APPDATA%\ORCAdesk`, so they survive
+updates.
+
+**From source (Windows or Linux)**, with Python 3.10+:
 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/wtbdkim/OrcaDesk.git
+cd OrcaDesk
+pip install -r requirements.txt   # PyQt6, PyQt6-WebEngine, psutil, numpy
 python main.py
 ```
 
-On first launch the app tries to auto-detect ORCA. If it can't, open the
-**Settings** (the gear in the top bar) and point it at your `orca.exe`.
+Windows 10/11 is the tested platform and the only packaged one. Linux runs from
+source, CREST included. macOS is untested.
 
-## How it works
+## Quick start
 
-The main window is one notebook-style layout: a narrow status strip of the
-queue on the left (each calculation's state and name; a click shows its output
-or report), every calculation as a cell in **Jobs** (its structure, its live
-convergence and its output side by side), and a finished one as a report in
-**Results**. The queue is built and edited in a **queue window** of its own
-(*Open queue*): each molecule is a row of steps, and the builder described
-below opens there. (The older tabbed interface was removed; the sections below
-describe what each part does.)
+1. Launch ORCAdesk and open **Settings** (the gear in the top bar): check the
+   ORCA path, your workspace folder, and how many cores and how much memory
+   the queue may use.
+2. Press **Open queue** and drop your `.xyz` files on the window: one row per
+   molecule. A comment line such as `charge=1 mult=2` sets the charge and
+   multiplicity.
+3. Press **+** beside a row. The menu suggests the next step (Enter adds it)
+   and the level to run it at, so Opt → Freq is two clicks. Ctrl+C / Ctrl+V
+   copies a chain onto other rows.
+4. Press **Run**. Follow the jobs under **Jobs** in the main window; a finished
+   one opens as a report in **Results**.
 
-- **Build**: create one calculation at a time, picking the execution backend
-  first — **DFT** (ORCA), **MLIP** (MACE pre-optimization, see below), or
-  **CREST** (conformer search, see below); MLIP and CREST show up only once you
-  have set them up, so a plain ORCA install sees DFT alone. DFT has two
-  sub-modes: **Guided** (a form) and **.inp text** (edit the full input).
-  Switching Guided → .inp text converts your current form into a generated
-  `.inp` you can keep editing; the reverse conversion doesn't exist (raw text
-  can't become a form again), so switching back asks before discarding the
-  editor text. Opened from the queue window's + slot, the builder can also
-  start from a saved **level** (see *Queue window* below). Give the
-  calculation a unique name (used as its folder), pick the type, set
-  charge/multiplicity, choose a geometry source, configure the method, and add
-  it to the queue.
-  - **Geometry source** is either an `.xyz` file, or a **reference** to another
-    queued calculation — in which case that calculation's optimized geometry is
-    injected automatically at run time.
-  - A loaded `.xyz` is **drawn in 3D right there**, with its formula and atom /
-    electron count beside it, and is **screened before it can cost you hours**:
-    a spin multiplicity the electron count cannot produce (ORCA aborts on that
-    at the first SCF step), atoms sitting on top of each other, coordinates
-    that are really in Bohr, disconnected fragments. Findings are reported and
-    the atoms they name are highlighted — your structure is never edited for
-    you.
-  - **NEB-TS** gets its own *NEB endpoints* card: load the product `.xyz` and
-    see both structures side by side (or overlaid) in a single scene, hover an
-    atom to name it in *both*, and get a **matched / atom mismatch** badge with
-    a table of every atom that differs. (Build the product in your molecular
-    editor by copying the reactant and moving atoms — that never reorders
-    anything. ORCAdesk shows and checks structures; it does not edit them.)
-  - Calculation types: **Opt, Opt + Freq, TS Opt, TS Opt + Freq, Freq, TS Freq**
-    (expects one imaginary mode), **NEB-TS** (find a TS), **IRC** (verify a TS),
-    **TDDFT, NMR, SP**, and **General** (any). Freq variants accept a
-    temperature/pressure (the `%freq` block is emitted only when they differ from
-    298.15 K / 1.0 atm).
-  - **Method fields** (functional / basis / solvent) are searchable
-    comboboxes: type to filter the grouped list, or enter any value not in the
-    list (e.g. a LibXC functional or a custom basis) — it's used verbatim.
-  - **.inp text** mode lets you hand-edit the full input for anything the
-    form doesn't cover (e.g. per-element basis/ECP via `%basis newgto/newecp`,
-    `%plots`, custom blocks). Use `{{GEOMETRY}}` where coordinates go.
-- **MLIP calculations**: relax a structure, get a single-point energy, or run a
-  **frequency / relax-then-frequency** job with full ideal-gas thermochemistry,
-  all with a **MACE** model (MLIP) — fast, and a relaxed structure is a good starting
-  geometry for the DFT job. It runs in a dedicated Python environment
-  (PyTorch + mace-torch + ASE) managed under **Settings → MLIP environments**:
-  press **Create** and ORCAdesk builds one for you — pick **CPU** (~150 MB) or
-  **GPU/CUDA** (~2.5 GB) and it makes a private virtual environment, installs
-  PyTorch for that device, installs the backend, and registers the result. It
-  needs a Python already on your machine to build on (auto-detected; install one
-  from python.org if there is none). You can equally register an environment you
-  built yourself — ORCAdesk only ever shells out to it, and never installs into
-  a Python you manage. MLIP appears in the builder only once you have
-  registered an environment — until then the button and its status pill are not
-  shown, and `+ More backends…` on the build toggle takes you here to set one
-  up. Once registered, the card stays **locked until a MACE environment is
-  ready**, with the reason in place. An `mlip_opt`/`mlip_sp` calculation joins the same queue,
-  and an optimized geometry can be referenced by a downstream ORCA calculation
-  just like an opt→freq handoff.
-- **CREST conformer search**: explore low-energy conformers with the xTB
-  tight-binding methods. CREST has no native Windows build, so on Windows
-  ORCAdesk runs its Linux binary through **WSL** — pick a distribution under
-  **Settings → CREST** and ORCAdesk can install the (statically-linked) binary
-  into it for you; the one manual prerequisite is having a WSL distro. On Linux
-  the same binary runs directly, with nothing in between: ORCAdesk finds a
-  `crest` already on your PATH, or installs one into `~/.local` for you, and
-  **Settings → CREST** has no distribution to pick. A `crest_conf` job joins the
-  same queue (it runs detached and survives the app closing, like an ORCA run);
-  its finished ensemble is listed (read-only) in its report. Follow-up
-  calculations reference the search from their geometry source in the
-  builder and run on the **lowest-energy conformer**; every conformer is also
-  exported as its own `.xyz` under the run's `conformers/` subfolder for manual
-  follow-ups. Like MLIP, CREST appears in the builder only once it is set up
-  — CREST found in a distro, or a distro chosen here — and until then reached
-  through `+ More backends…`; after that the card stays **locked until a distro
-  with CREST is ready**.
+Levels of theory are kept as **inp sets**: a whole ORCA input with `{{JOB}}`
+where the job keyword goes, so one level serves every step type. They are
+edited in the queue window's library.
 
-  > **WSL memory note:** a CREST run is I/O-heavy, and by default WSL2 keeps
-  > every byte it caches — its `Vmmem WSL` process can balloon to many GB
-  > (up to 50 % of your RAM) and **not give the memory back** after the run.
-  > That is WSL's design, not a leak in CREST or ORCAdesk. To make WSL return
-  > cached memory when idle, create `C:\Users\<you>\.wslconfig` containing:
-  >
-  > ```ini
-  > [experimental]
-  > autoMemoryReclaim=gradual
-  > ```
-  >
-  > and run `wsl --shutdown` once while **no CREST job is running** (it would
-  > kill the job). Optionally add `memory=8GB` under a `[wsl2]` section to cap
-  > the VM outright.
-- **Queue window** (*Open queue*): one **row per molecule**, its steps chained
-  left to right as blocks (Opt → Freq → IRC → SP …), each drawn in its state's
-  colour.
-  - **Rows**: drop `.xyz` files onto the window (several at once) and each
-    becomes a row, with its charge / multiplicity read from the comment line
-    when it says so (`charge=1 mult=2`). Ctrl+click row names to select
-    several: one paste or one charge then goes on all of them.
-  - **Inp sets**: the library holds your ORCA **levels** (a whole input with
-    `{{JOB}}` where the job keyword goes, so one level serves every step type)
-    and MLIP sets. Drop one on a block to change its level (its type stays),
-    or click one while a block is selected.
-  - **Adding steps**: the **+** beside a block opens a small menu: the
-    natural next step (Enter), every other step type, an MLIP
-    pre-optimization, your workflows, and *Manual build…* for the full
-    builder. A selected block that has not run yet also shows a **+** on its
-    incoming arrow, which puts a step in front of it (between two blocks,
-    too). New steps are named `<row>_<Job>` (`mol_Opt`, `mol_FreqTS`, …).
-  - **After an IRC**, adding a step first shows the IRC's **energy profile**:
-    take its forward or backward end, any point along the path, or both ends
-    at once (an `_F` / `_B` pair drawn as one stacked block). ← / → step
-    through the points.
-  - A connection can wait for your **approval** before the next step runs.
-    A row's steps can be copied (Ctrl+C) and pasted onto other rows
-    (Ctrl+V), or kept by name as a **workflow**. Ctrl+Z undoes.
-  - The queue is **live**: steps can be added, edited and reordered while it
-    runs. A finished step is frozen and a failed one locked, but putting a
-    new level on either **runs it again** after an overwrite warning (its old
-    output is replaced; a failed step's blocked follow-ups run after it).
-    Removing a step only takes it off the queue; its folder stays on disk.
-- **Queue**: a calculation runs as soon as what it depends on has finished,
-  and **several run at once** within the budget set in Settings (calculations
-  at once, total cores, total memory). If one fails, anything that depends on
-  it (directly or transitively) is skipped (blocked); unrelated calculations
-  continue. Each calculation gets its own folder `{workspace}/{name}/`. The
-  queue **autosaves and is restored on the next launch**; you can **Cancel**
-  (kill the running job) or **Stop after current** (graceful drain), and
-  irreversible actions ask for confirmation first.
+## Features
+
+### Queue window
+
+*Open queue* opens the queue as a graph: one **row per molecule**, its steps
+chained left to right as blocks (Opt → Freq → IRC → SP …), each drawn in its
+state's colour.
+
+- **Rows**: drop `.xyz` files onto the window (several at once) and each
+  becomes a row, with its charge and multiplicity read from the comment line
+  when it gives them. Ctrl+click row names to select several: one paste or one
+  charge then goes on all of them.
+- **Inp sets**: the library holds your ORCA **levels** and MLIP sets. Drop one
+  on a block to change its level (its type stays), or click one while a block
+  is selected.
+- **Adding steps**: the **+** beside a block opens a small menu: the natural
+  next step (Enter), every other step type, an MLIP pre-optimization, your
+  workflows, and *Manual build…* for the full builder. A selected block that
+  has not run yet also shows a **+** on its incoming arrow, which puts a step
+  in front of it (between two blocks, too). New steps are named
+  `<row>_<Job>` (`mol_Opt`, `mol_FreqTS`, …).
+- **After an IRC**, adding a step first shows the IRC's **energy profile**:
+  take its forward or backward end, any point along the path, or both ends at
+  once (an `_F` / `_B` pair drawn as one stacked block). ← / → step through
+  the points.
+- A connection can wait for your **approval** before the next step runs. A
+  row's steps can be copied (Ctrl+C) and pasted onto other rows (Ctrl+V), or
+  kept by name as a **workflow**. Ctrl+Z undoes.
+- The queue is **live**: steps can be added, edited and reordered while it
+  runs. A finished step is frozen and a failed one locked, but putting a new
+  level on either **runs it again** after an overwrite warning (its old output
+  is replaced; a failed step's blocked follow-ups run after it). Removing a
+  step only takes it off the queue; its folder stays on disk.
+
+### Building a calculation
+
+The builder makes one calculation at a time, starting from the backend:
+**DFT** (ORCA), **MLIP** or **CREST** (MLIP and CREST appear once they are set
+up, so a plain ORCA install sees DFT alone).
+
+- DFT has two modes: **Guided** (a form) and **.inp text** (the full input).
+  Guided → .inp text converts the form into a generated `.inp` you can keep
+  editing; the way back asks before discarding the text. Opened from the
+  queue window's + slot, the builder can also start from a saved **level**.
+- **Calculation types**: Opt, Opt + Freq, TS Opt, TS Opt + Freq, Freq, TS Freq
+  (expects one imaginary mode), NEB-TS, IRC, TDDFT, NMR, SP and General.
+  Freq variants take a temperature and pressure.
+- **Geometry** comes from an `.xyz` file or from another queued calculation,
+  whose final geometry is put in at run time.
+- A loaded structure is **drawn in 3D** with its formula and electron count,
+  and **screened before it can cost you hours**: a multiplicity the electron
+  count cannot have, atoms on top of each other, coordinates that are really
+  in Bohr, disconnected fragments. Findings name and highlight the atoms; your
+  structure is never edited for you.
+- **Constraints and relaxed surface scans** are picked on the structure;
+  a structure can be pushed along a vibrational mode.
+- **NEB-TS** gets an endpoints card: both structures side by side or overlaid,
+  hover an atom to name it in both, and a matched / mismatch badge.
+- **Method fields** (functional, basis, solvent) are searchable lists that
+  also take any value not listed (a LibXC functional, a custom basis).
+  **.inp text** covers anything the form does not (per-element basis or ECP,
+  `%plots`, custom blocks); `{{GEOMETRY}}` marks where the coordinates go.
+
+### Running
+
+- A calculation runs as soon as what it depends on has finished, and
+  **several run at once** within the budget in Settings (calculations at
+  once, total cores, total memory). If one fails, everything that depends on
+  it is skipped (blocked) and unrelated work continues.
+- Each calculation gets its own folder, `{workspace}/{name}/`. The queue
+  **autosaves** and is restored on the next launch. **Cancel** kills the
+  running jobs; **Stop after current** lets them finish. Irreversible actions
+  ask first.
 - **Survives closing the app**: ORCA is launched detached and writes its own
-  `.out`, so closing ORCAdesk leaves the running job going. On the next launch a
-  still-running job is **reattached live** (its graph history rebuilt from the
-  `.out`); a job that finished while you were away is read back from disk.
-- **Log**: live ORCA stdout + events, plus a **convergence graph** view — SCF
-  (|ΔE| per cycle) and, for optimizations, all five convergence criteria with a
-  progress bar. The progress reads from the real ORCA timing, so the accurate
-  signals (step, criteria met, per-step rate) lead and the inherently-uncertain
-  time is shown as an honest order-of-magnitude estimate, not false precision.
-  **Frequency and TD-DFT runs get their own live stage panel** — a HUD-style
-  phase chain over ORCA's real pipeline (analytical Hessian: integrals →
-  CP-SCF with a perturbation counter → Hessian → modes → thermochemistry;
-  TD-DFT: setup → diagonalization with an iteration counter → states →
-  spectra); numerical frequencies keep a displacement progress bar with an
-  ETA. A "jump to latest" button keeps long runs readable.
-- **Theme**: toggle **dark / light** from the top bar (☀/☽); the choice is
-  remembered across launches.
-- **Results**: one selected result, read two ways — **Output** and **Visual**.
-  - **Output** is what the parser extracted: the per-calculation summary, final
-    geometry (with *Copy .xyz*), orbital energies (HOMO/LUMO), Mulliken &
-    Löwdin charges, Mayer bond orders/valences, dipole moment, rotational
-    constants, SCF energy decomposition, frequencies (with imaginary-mode
-    warnings) and full thermochemistry, TD-DFT transitions + a UV-Vis plot and
-    the excited-state composition, NMR shieldings, and the NEB path. Sections
-    are shown for the relevant calculation type; a **`Show all`** toggle reveals
-    everything regardless of type. A **reaction profile** is built from the finished calculations —
-    stages of species with stoichiometric coefficients — and gives ΔE, ΔE₀, ΔU,
-    ΔH, TΔS, ΔS and ΔG per stage, with a level diagram on any one of them.
-    A **Natural bond orbital analysis** card runs ORCAdesk's own NPA/NBO on
-    the finished run's wavefunction — no NBO licence — and shows NPA charges
-    with electron configurations, Wiberg bond orders, the Lewis structure with
-    its hybrids, and the second-order donor → acceptor table (kcal/mol).
-    Every orbital in the Lewis table has a *View* button that draws it in 3D
-    — ORCAdesk evaluates the orbital on the grid itself, since `orca_plot`
-    only draws canonical orbitals.
-  - **Visual** is everything that can be *drawn* from the same result, and it
-    finds it for you: the structure, any `.xyz` set sitting in the run folder
-    (the CREST ensemble, the per-conformer `conformers/` export, an optimization
-    trajectory), the **molecular orbitals and electron density**, and the
-    **electrostatic potential map**. No folder picker — the section lists what is
-    there. Each row opens the built-in **3D viewer**: flip through structures
-    with the **← / →** keys, **star** the ones worth keeping (the **F** key —
-    starred structures persist, can be stepped through on their own, and
-    exported to a `favorites/` folder).
-  - **Show in folder** in the report header reveals the folder ORCA wrote the
-    run to, for opening a file in your own program (Avogadro, VMD, ChimeraX).
-  - Surfaces are generated from the finished job's wavefunction — nothing is
-    re-run — and changing the isovalue re-draws instantly. The ESP map is the one
-    plot that costs minutes rather than seconds (the potential is a Coulomb sum
-    at every grid point), so its row says so, marks whether it is already on
-    disk, and does the plotting **under the button** — the rest of the report stays
-    usable while it runs, and the viewer opens onto a finished figure.
-  - The queue strip is the picker: a finished calculation's row opens its
-    report. *Open file…* reads a result from anywhere on disk — an ORCA
-    `.out`, an MLIP result, a CREST search — and lists it under the strip's
-    *Opened files* (kept across launches); an `.xyz` opens in the 3D viewer.
-    *Open folder…* takes a run folder instead and finds
-    the result inside it — including a run ORCA wrote by hand, whose `.out`
-    is not named after the folder. Both pickers, and the builder's
-    *Load .xyz* / *Load .inp*, open **at your workspace** rather than wherever
-    the last dialog happened to be.
-- **Settings**: ORCA executable path, **MLIP environments** (create one for CPU
-  or GPU in a click, or register your own MACE-capable Python interpreters;
-  backends are auto-detected), workspace folder,
-  per-step defaults (nprocs / maxcore), **how much of the machine the queue
-  may use** (calculations at once, total cores, total memory; 0 = auto), and
-  two live-graph options — the optimization time-estimate mode and what the
-  optimization graph plots.
+  `.out`, so closing ORCAdesk leaves the job running. On the next launch a
+  running job is **reattached live** (its graph rebuilt from the `.out`); one
+  that finished meanwhile is read back from disk.
 
-## Build a standalone Windows app
+### Live progress
+
+Every job is a cell in **Jobs** with its structure, live convergence and
+output side by side.
+
+- **SCF** (|ΔE| per cycle) and, for optimizations, all five convergence
+  criteria with a progress bar. The accurate signals (step, criteria met, rate
+  per step) lead; the time left is shown as an order-of-magnitude estimate.
+- **Frequency and TD-DFT runs** get a stage panel over ORCA's real pipeline
+  (analytical Hessian: integrals → CP-SCF with a perturbation counter →
+  Hessian → modes → thermochemistry; TD-DFT: setup → diagonalization →
+  states → spectra). Numerical frequencies show a displacement bar with an ETA.
+- A running IRC draws its path as it goes, and a relaxed surface scan shows
+  its progress point by point.
+
+### Results
+
+A finished calculation opens as a report, read two ways: **Output** and
+**Visual**.
+
+- **Output** is what the parser read: the summary, final geometry (*Copy
+  .xyz*), orbital energies (HOMO / LUMO), Mulliken and Löwdin charges, Mayer
+  bond orders, dipole moment, rotational constants, the SCF energy
+  decomposition, frequencies (imaginary modes flagged, any one animated) and
+  full thermochemistry, TD-DFT transitions with a UV-Vis plot, NMR
+  shieldings, the NEB path and scan surfaces. *Show all* reveals every section
+  regardless of type, and the whole `.out` is there with Find.
+- A **reaction profile** is built from finished calculations (stages of
+  species with stoichiometric coefficients) and gives ΔE, ΔE₀, ΔU, ΔH, TΔS, ΔS
+  and ΔG per stage, with a level diagram.
+- **Natural bond orbital analysis**: ORCAdesk's own NPA / NBO on the finished
+  wavefunction, with NPA charges and configurations, Wiberg bond orders, the
+  Lewis structure with its hybrids, and the second-order donor → acceptor
+  table. Any orbital in it can be drawn in 3D.
+- **Visual** lists everything that can be drawn from the result: the
+  structure, any `.xyz` set in the run folder (an optimization trajectory, a
+  CREST ensemble), **molecular orbitals and electron density**, and the
+  **electrostatic potential map**. Each opens in the **3D viewer**: step
+  through structures with ← / →, star the ones worth keeping (F), and export
+  them.
+- Surfaces come from the finished wavefunction (nothing is re-run), and the
+  isovalue redraws instantly. *Show in folder* opens the run folder for your
+  own programs (Avogadro, VMD, ChimeraX).
+- *Open file…* / *Open folder…* read a result from anywhere on disk: an ORCA
+  `.out`, an MLIP result, a CREST search, or a run ORCA wrote by hand.
+
+### MLIP (MACE) and CREST
+
+- **MLIP**: relax a structure, get a single-point energy, or run a frequency
+  job with full ideal-gas thermochemistry with a **MACE** model. A relaxed
+  structure is a good start for the DFT job. Under **Settings → MLIP
+  environments**, *Create* builds a private Python environment for **CPU**
+  (~150 MB) or **GPU / CUDA** (~2.5 GB) on a Python already on your machine,
+  or you register one you built yourself. ORCAdesk only ever runs it; it never
+  installs into a Python you manage.
+- **CREST conformer search** with the xTB methods. On Windows it runs CREST's
+  Linux binary through **WSL** (pick a distribution under **Settings → CREST**;
+  ORCAdesk can install the binary into it); on Linux it runs directly. A
+  search survives the app closing like an ORCA run; follow-up calculations
+  start from the **lowest-energy conformer**, and every conformer is exported
+  as its own `.xyz`.
+
+<details>
+<summary><b>WSL memory note</b> (CREST on Windows)</summary>
+
+A CREST run is I/O-heavy, and by default WSL2 keeps every byte it caches: its
+`Vmmem WSL` process can grow to many GB (up to 50 % of your RAM) and not give
+the memory back after the run. That is WSL's design, not a leak in CREST or
+ORCAdesk. To make WSL return cached memory when idle, create
+`C:\Users\<you>\.wslconfig` containing:
+
+```ini
+[experimental]
+autoMemoryReclaim=gradual
+```
+
+and run `wsl --shutdown` once while **no CREST job is running** (it would kill
+the job). Optionally add `memory=8GB` under a `[wsl2]` section to cap the VM
+outright.
+</details>
+
+### Settings and themes
+
+ORCA executable, workspace folder, MLIP environments, CREST, per-step defaults
+(nprocs / maxcore), **how much of the machine the queue may use**
+(calculations at once, total cores, total memory; 0 = auto), and the live
+graph's options. A **dark and a light theme** are a click apart (☀ / ☽ in the
+top bar).
+
+## Limitations
+
+- ORCAdesk is **beta**. Parsers and input generation are checked against real
+  ORCA 6.1.1 output; other ORCA versions may print differently.
+- The natural bond orbital analysis is ORCAdesk's own implementation of the
+  published methods, not the NBO program. Its numbers are its own: small
+  differences from NBO 7 are expected and are not claimed away.
+- Phone sync is in development and is not part of the packaged app.
+
+## Build the Windows app yourself
 
 ```bat
 build.bat
 ```
 
-This installs dependencies + PyInstaller, then produces `dist\ORCAdesk\`
-containing `ORCAdesk.exe` and its runtime files.
+This installs the dependencies and PyInstaller, then produces `dist\ORCAdesk\`
+with `ORCAdesk.exe` and its runtime files. Zip the **whole** folder to pass it
+on (QtWebEngine's Chromium runtime lives beside the `.exe`; expect
+~150–250 MB). The installer is made from it with Inno Setup
+([INSTALLER_GUIDE_KR.md](INSTALLER_GUIDE_KR.md)).
 
-### Distributing to a friend
-
-1. Run `build.bat` on a Windows machine.
-2. Zip the **entire** `dist\ORCAdesk\` folder (not just the .exe — the
-   QtWebEngine/Chromium runtime lives beside it).
-3. Send the zip. The friend unzips and runs `ORCAdesk.exe`.
-4. They still need ORCA installed; they set its path in **Settings**
-   on first launch (or it auto-detects).
-
-Notes:
-- Use the **folder** (onedir) build, not a single .exe — QtWebEngine is
-  unreliable when compressed into one file.
-- The app folder is large (~150–250 MB) because it bundles Chromium. That's
-  expected; compress before sending.
-- Settings and workspaces are stored per-user in `%APPDATA%\ORCAdesk`,
-  not inside the app folder, so they survive updates.
-
-## Project layout
+<details>
+<summary><b>Project layout</b></summary>
 
 ```
 main.py                       entry point
@@ -313,13 +341,15 @@ web/                          trackers it borrows (scf_graph.js, progress_panels
 data/                         ORCA option lists (functionals, basis sets, ...)
 ```
 
-## Notes
+Option lists in `data/*.json` come from the ORCA 6.1.1 manual. How the code is
+organised, and why, is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+</details>
 
-- Option lists in `data/*.json` are sourced from the ORCA 6.1.1 manual.
-- The parser was validated against a set of real ORCA 6.1.1 outputs
-  (geometry opt, frequency, TD-DFT, NTO) covering normal termination,
-  convergence, HOMO/LUMO, imaginary-frequency detection, and absorption
-  spectra.
+## Contributing
+
+Bug reports, ORCA outputs that parse wrongly, and ideas are welcome: see
+[CONTRIBUTING.md](CONTRIBUTING.md). Development rules live in
+[PRINCIPLES.md](PRINCIPLES.md) (code) and [DESIGN.md](DESIGN.md) (UI).
 
 ## Contributors
 
@@ -328,13 +358,13 @@ output files for developing the optimization-time estimator.
 
 ## License
 
-MIT License — Copyright (c) 2026 Taewoo Kim (Korea Science Academy of KAIST).
-See the `LICENSE` file for details.
+MIT License, Copyright (c) 2026 Taewoo Kim (Korea Science Academy of KAIST).
+See [LICENSE](LICENSE).
 
 Third-party files ship with the app under their own terms:
 
-- **Inter** and **JetBrains Mono** — the two typefaces the notebook front-end is
-  drawn in, carried rather than fetched because the app runs offline.
-  `web/fonts/`, SIL Open Font License 1.1 (full text in `web/fonts/OFL.txt`).
-- **3Dmol.js** 2.4.2 — the isosurface renderer. `web/vendor/`, see that file's
-  own header and the upstream project for its terms.
+- **Inter** and **JetBrains Mono**, the two typefaces the UI is drawn in,
+  carried rather than fetched because the app runs offline. `web/fonts/`, SIL
+  Open Font License 1.1 (full text in `web/fonts/OFL.txt`).
+- **3Dmol.js** 2.4.2, the 3D renderer. `web/vendor/`, see that file's own
+  header and the upstream project for its terms.
