@@ -42,9 +42,9 @@ your own, modified builds of the same Qt version.
 
 Corresponding source
 --------------------
-  - ORCAdesk 0.11.3, including build.spec, build.bat, requirements-build.txt
+  - ORCAdesk 0.11.4, including build.spec, build.bat, requirements-build.txt
     and installer.iss (the scripts that build this program and this
-    installer): https://github.com/wtbdkim/OrcaDesk/tree/v0.11.3
+    installer): https://github.com/wtbdkim/OrcaDesk/tree/v0.11.4
   - PyQt6 6.11.0 and PyQt6-WebEngine 6.11.0 (source distributions):
     https://pypi.org/project/PyQt6/6.11.0/#files
     https://pypi.org/project/PyQt6-WebEngine/6.11.0/#files

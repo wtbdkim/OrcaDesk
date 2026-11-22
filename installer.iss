@@ -29,8 +29,8 @@
 #define MyAppName "ORCAdesk"
 ; Keep these two in sync with APP_VERSION (orcamgr/paths.py) at every release
 ; — Inno Setup can't read Python, so this is the one hand-synced version copy.
-#define MyAppVersion "0.11.3"
-#define MyAppVersionFull "0.11.3-beta"
+#define MyAppVersion "0.11.4"
+#define MyAppVersionFull "0.11.4-beta"
 #define MyAppPublisher "Taewoo Kim"
 #define MyAppURL "https://github.com/wtbdkim/OrcaDesk"
 #define MyAppExeName "ORCAdesk.exe"

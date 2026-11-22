@@ -3,7 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.11.4] — 2026-11-23
 
 ### Added
 - **CREST in the queue window.** The inp-set library has a CREST group next
