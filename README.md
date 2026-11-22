@@ -33,9 +33,9 @@
 </p>
 
 > **Status: 0.11.3** (`0.11.3`, beta), validated against real ORCA 6.1.1
-> output. ORCAdesk is an independent project, not affiliated with the ORCA
-> developers or FACCTs, and it does not include ORCA: it drives the `orca` you
-> install yourself (free for academic use).
+> output. ORCAdesk is an independent, personal project, not affiliated with
+> the ORCA developers, FACCTs or any institution, and it does not include ORCA:
+> it drives the `orca` you install yourself (free for academic use).
 
 ## Why ORCAdesk
 
@@ -54,9 +54,8 @@
   stage panels for frequency and TD-DFT runs, and time estimates that say how
   sure they are.
 - **Results you can read.** Energies, orbitals, charges, bond orders,
-  frequencies, thermochemistry, UV-Vis, NMR and reaction profiles, plus
-  orbitals, densities and ESP maps in 3D and a natural bond orbital analysis
-  computed by ORCAdesk itself (no NBO licence needed).
+  frequencies, thermochemistry, UV-Vis and NMR, plus orbitals, densities and
+  ESP maps in 3D.
 - **Inputs ORCA takes the first time.** Structures are screened before they
   cost a run (impossible multiplicities, overlapping atoms, coordinates in
   Bohr), and the generated `.inp` writes only what differs from ORCA's own
@@ -220,13 +219,6 @@ A finished calculation opens as a report, read two ways: **Output** and
   plot, NMR
   shieldings, the NEB path and scan surfaces. *Show all* reveals every section
   regardless of type, and the whole `.out` is there with Find.
-- A **reaction profile** is built from finished calculations (stages of
-  species with stoichiometric coefficients) and gives ΔE, ΔE₀, ΔU, ΔH, TΔS, ΔS
-  and ΔG per stage, with a level diagram.
-- **Natural bond orbital analysis**: ORCAdesk's own NPA / NBO on the finished
-  wavefunction, with NPA charges and configurations, Wiberg bond orders, the
-  Lewis structure with its hybrids, and the second-order donor → acceptor
-  table. Any orbital in it can be drawn in 3D.
 - **Visual** lists everything that can be drawn from the result: the
   structure, any `.xyz` set in the run folder (an optimization trajectory, a
   CREST ensemble), **molecular orbitals and electron density**, and the
@@ -286,9 +278,6 @@ top bar).
 
 - ORCAdesk is **beta**. Parsers and input generation are checked against real
   ORCA 6.1.1 output; other ORCA versions may print differently.
-- The natural bond orbital analysis is ORCAdesk's own implementation of the
-  published methods, not the NBO program. Its numbers are its own: small
-  differences from NBO 7 are expected and are not claimed away.
 - Phone sync is in development and is not part of the packaged app.
 
 ## Build the Windows app yourself
@@ -359,8 +348,8 @@ output files for developing the optimization-time estimator.
 
 ## License
 
-MIT License, Copyright (c) 2026 Taewoo Kim (Korea Science Academy of KAIST).
-See [LICENSE](LICENSE).
+MIT License, Copyright (c) 2026 Taewoo Kim. See [LICENSE](LICENSE).
+ORCAdesk is a personal project; no institution makes, endorses or supports it.
 
 Third-party files ship with the app under their own terms:
 
