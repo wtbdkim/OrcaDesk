@@ -1424,7 +1424,14 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   one card, and there is no number ORCAdesk can put on video memory. Only an
   explicit `mlip_device == "cuda"` counts — `""` (auto) is resolved inside the
   worker, the only place that can ask torch. `max_jobs` defaults to **1** — the classic sequential
-  queue — so nothing changes until the user raises it.
+  queue — so nothing changes until the user raises it. **The budget is live,
+  like the queue (P29):** saving any of the three limits in Settings while a
+  run goes on hands the running engine the new budget (`save_settings` →
+  `QueueStore.update_run_budget` → `QueueEngine.set_budget`, under the
+  store's lock, waking the dispatcher). Running jobs keep what they reserved;
+  a lower budget only holds back what has not started. Before this, a run
+  started at one job at a time stayed one at a time after the limit was
+  raised, until it was stopped and started again.
 - **Every log line carries the calc that produced it** (`LogLine.calc`, `""` =
   engine-level). With jobs interleaving into one buffer the raw ORCA tail has no
   name of its own, so the tag is what lets the per-job graphs

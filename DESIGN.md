@@ -2174,7 +2174,10 @@ columns:
   its text converts to, so the conversion alone never marks it). A **stack** (several calculations sharing a node, e.g. an SP after an
   IRC is `_F` and `_B`) is drawn as one card per calculation (the front one
   and a back card 5px behind it for each other member, at most three — past
-  that the count tells), shows its count bottom right, at the end of the
+  that the count tells; each card's border is its calculation's state, and
+  past three the last back card stands for all the rest, in their most
+  pressing state, so a few finished members never turn the whole stack
+  green), shows its count bottom right, at the end of the
   `kind / set` line — never top right, where a block shows its run order —
   and unfolds a member list; once some of its members are **filtered** the
   count reads `passed/total` (`3/10`), and a filtered member is faint in the

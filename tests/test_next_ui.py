@@ -669,8 +669,13 @@ def test_a_stack_removes_one_member_and_draws_one_card_each():
     assert "requestRemove(pick)" in _function_body(src, "wireKeys")
     draw = _function_body(src, "renderCanvas")
     assert "Math.min(n.members.length - 1, MAX_BACKS)" in draw
-    # each card's border is its own calculation's state: front = member 0
-    assert "const edge = (/** @type {number} */ i) => calcState(n.members[i]);" in draw
+    # each card's border is its own calculation's state: front = member 0 --
+    # except the last back card of a stack with more members than cards,
+    # which stands for all the rest (their most pressing state), so the first
+    # few finishing never turns every card green
+    assert "calcState(n.members[i])" in draw
+    assert "i === backs && n.members.length - 1 > MAX_BACKS" in draw
+    assert "nodeState({ members: n.members.slice(i) })" in draw
     assert 'data-depth="${backs - i}" data-edge="${edge(backs - i)}"' in draw
     assert 'data-st="${n.state}" data-edge="${edge(0)}"' in draw
     assert "n.members.map(calcState)" in _function_body(src, "nodeState")

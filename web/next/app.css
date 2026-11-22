@@ -703,6 +703,8 @@ td .ok{color:var(--ok);} td .warn{color:var(--warn);} td .err{color:var(--err);}
   background:var(--code-bg); border-radius:var(--radius-sm);
   padding:10px 12px; margin:0 0 18px;
 }
+/* a long list is capped (NB.nameList): its "… and N more" line */
+.modal .names .names-more{color:var(--muted-foreground);}
 .modal-actions{display:flex; gap:8px; justify-content:flex-end;}
 
 /* ---------------------------- stub cell ---------------------------- */

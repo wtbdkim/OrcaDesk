@@ -490,3 +490,63 @@ def test_a_row_that_fits_still_starts(tmp_path):
     for t in threads:
         t.join(10)
     assert harness.calls == ["ok"]
+
+
+# ---- the budget is live, like the queue (P29) ---------------------------------
+
+def test_raising_the_job_limit_mid_run_lets_the_next_job_start(tmp_path):
+    # A run started one at a time used to stay one at a time after the user
+    # raised the limit in Settings, until it was stopped and started again.
+    # Here "a" raises it while it runs; "b" must then start beside it, or the
+    # barrier times out and "a" fails.
+    harness = EngineHarness(tmp_path, budget=ResourceBudget(max_jobs=1))
+    gate = threading.Barrier(2, timeout=10)
+
+    def _raise_then_wait(_c):
+        harness.engine.set_budget(_wide(2))
+        gate.wait()
+
+    harness.behaviors["a"] = _raise_then_wait
+    harness.behaviors["b"] = lambda _c: gate.wait()
+    a, b = make_calc("a"), make_calc("b")
+
+    harness.engine.run_all([a, b])
+
+    assert (a.state, b.state) == (CalcState.DONE, CalcState.DONE)
+    assert harness.engine.resource_usage()["max_jobs"] == 2
+
+
+def test_a_new_budget_decides_admission_from_then_on(tmp_path):
+    # Jobs already running keep their slots; the new limit only decides what
+    # may start beside them -- lower holds the next one back, higher lets it in.
+    harness = EngineHarness(tmp_path, budget=_wide(2))
+    engine = harness.engine
+    engine._slots["running"] = queue_mod._JobSlot(name="running", cores=1, ram_mb=1)
+    nxt = queue_mod._JobSlot(name="next", cores=1, ram_mb=1)
+    assert engine._fits(nxt)
+
+    engine.set_budget(ResourceBudget(max_jobs=1, cores=4096, ram_mb=4_000_000))
+    assert not engine._fits(nxt)
+    assert "running" in engine._slots          # nothing running was touched
+
+    engine.set_budget(_wide(2))
+    assert engine._fits(nxt)
+
+
+def test_the_store_hands_a_new_budget_only_to_a_running_engine():
+    from orcamgr.state.store import QueueStore
+    store = QueueStore()
+    assert store.update_run_budget(ResourceBudget(max_jobs=3)) is False
+
+    got = []
+
+    class _Engine:
+        def set_budget(self, budget):
+            got.append(budget)
+
+    store._running, store._engine = True, _Engine()
+    try:
+        assert store.update_run_budget(ResourceBudget(max_jobs=3)) is True
+    finally:
+        store._running, store._engine = False, None
+    assert [b.max_jobs for b in got] == [3]

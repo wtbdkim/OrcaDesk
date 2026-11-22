@@ -30,6 +30,19 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   conformers)*). Before the search has run, a number has to be typed.
 
 ### Fixed
+- **Raising the parallel-run limits in Settings applies to the run in
+  progress.** A run started one job at a time kept running one at a time after
+  *Max concurrent jobs* (or the core / memory budget) was raised, until it was
+  stopped and started again; the new limits now take effect at once. Jobs
+  already running keep their share, and a lower limit only holds back what
+  has not started.
+- **Long name lists in the queue window's dialogs are capped.** Updating an
+  inp set made from dozens of blocks listed every one of them and ran the
+  dialog off the screen; a list now shows its first rows and "… and N more".
+- **A large stack no longer looks finished when its first members are.** A
+  stack draws at most four cards; once its first four calculations were done
+  every card was green although the rest had not run. The last back card now
+  stands for all the remaining members, in their most pressing state.
 - **A calculation whose folder you moved by hand is found again.** Sorting
   finished runs into folders of your own (`{workspace}/project/series/{name}/`)
   left every one of them unreadable: no results, no `.inp`, and an IRC's

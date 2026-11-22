@@ -2429,6 +2429,19 @@ class QueueEngine:
         t.start()
         return True
 
+    def set_budget(self, budget: "ResourceBudget") -> None:
+        """Take a new admission budget while the run goes on (the Settings
+        sheet saved new limits). The queue is live (P29), and its limits are
+        too: a run started at one job at a time used to keep running one at a
+        time after the user raised the limit, until it was stopped and started
+        again. Jobs already running keep what they reserved; a lower budget
+        only means nothing new starts until they fit under it. The dispatcher
+        re-reads the budget on its next scan (it polls _slot_cv)."""
+        resolved = budget.resolved()
+        with self._slot_cv:
+            self.budget = resolved
+            self._slot_cv.notify_all()
+
     def resource_usage(self) -> dict:
         """What the in-flight jobs have reserved, against the budget. Read by
         the store for the queue snapshot (duck-typed, so the store never imports

@@ -608,7 +608,7 @@
       NB.modalRaw("Existing output",
         `<p>The workspace already holds output for ${k === 1 ? "this name" : k + " of these names"}. The queue is
           running, so ${k === 1 ? "it starts" : "they start"} at once and overwrite${k === 1 ? "s" : ""} it:</p>
-         <div class="names">${hits.slice(0, 12).map(esc).join("<br>")}${k > 12 ? "<br>…" : ""}</div>`,
+         <div class="names">${NB.nameList(hits.map(esc))}</div>`,
         [{ label: "Cancel", cls: "btn-ghost", focus: true, act: () => res(false) },
          { label: "Overwrite", cls: "btn-danger", act: () => res(true) }]);
     });
@@ -1239,7 +1239,12 @@
       // away from the run order a block shows top right, so "2" calculations
       // never reads as run order 2
       const backs = n.stack ? Math.min(n.members.length - 1, MAX_BACKS) : 0;
-      const edge = (/** @type {number} */ i) => calcState(n.members[i]);
+      // ...except that, when there are more members than cards, the last back
+      // card stands for ALL the rest and takes their most pressing state
+      // (nodeState's order): otherwise the first four of 80 finishing turned
+      // every card green while 76 had not run
+      const edge = (/** @type {number} */ i) => i === backs && n.members.length - 1 > MAX_BACKS
+        ? nodeState({ members: n.members.slice(i) }) : calcState(n.members[i]);
       // a stack whose members are partly filtered counts what passed: 3/10
       const cut = n.members.filter((/** @type {any} */ c) => calcState(c) === "filtered").length;
       const count = cut ? (n.members.length - cut) + "/" + n.members.length : String(n.members.length);
@@ -2537,13 +2542,14 @@
     const label = (/** @type {any} */ c) => esc(c.name) + (failed && failed < k ? " (" + c.state + ")" : "");
     NB.modalRaw(one ? `Overwrite a ${word} calculation?` : `Overwrite ${word} calculations?`,
       `<p>${one ? esc(names[0]) + " has " + word + "." : "These have " + word + ":"}</p>
-       ${one ? "" : `<div class="names">${again.map(label).join("<br>")}</div>`}
+       ${one ? "" : `<div class="names">${NB.nameList(again.map(label))}</div>`}
        <p>Putting the ${what} ${esc(set.name)} on ${them} runs ${them} again: ${
          one ? "it goes" : "they go"} back to pending, and the output in ${one ? "its folder" : "their folders"} is
          overwritten when ${one ? "it runs" : "they run"}${NB.running ? " (the queue is running, so at once)" : ""}.${
          freed ? " What was blocked by " + them + " goes back to pending too." : ""}${
          kids ? " What already ran after " + them + " keeps its own results." : ""}${
-         rest.length ? " " + esc(rest.join(", ")) + (rest.length === 1 ? " has" : " have")
+         rest.length ? " " + esc(rest.length > 4 ? rest.slice(0, 3).join(", ") + " and " + (rest.length - 3) + " more"
+             : rest.join(", ")) + (rest.length === 1 ? " has" : " have")
            + " not run yet and " + (rest.length === 1 ? "takes" : "take") + " the " + what + " too." : ""}</p>`,
       [{ label: "Cancel", cls: "btn-ghost", focus: true },
        { label: "Overwrite", cls: "btn-danger", act: go }]);
@@ -2807,7 +2813,7 @@
     NB.modalRaw(`Also update ${k} pending block${k === 1 ? "" : "s"}?`,
       `<p>${k === 1 ? "One block that has not run was" : k + " blocks that have not run were"} made from
         "${esc(old.name)}" and still ${k === 1 ? "has" : "have"} the text it had then:</p>
-       <div class="names">${names.map(esc).join("<br>")}</div>
+       <div class="names">${NB.nameList(names.map(esc))}</div>
        <p>Blocks keep their text unless you update them. Blocks that have run never change. Ctrl+Z undoes the update.</p>`,
       [{ label: "Keep their text", cls: "btn-ghost" },
        { label: `Update ${k}`, cls: "btn-primary", focus: true, act: () => {
@@ -4363,7 +4369,7 @@
     }
     if (refused.length) {
       NB.modalRaw(`${refused.length} row${refused.length === 1 ? " was" : "s were"} left as ${refused.length === 1 ? "it was" : "they were"}`,
-        `<div class="names">${refused.map(x => `${esc(x.row)} — ${esc(x.reason)}`).join("<br>")}</div>`);
+        `<div class="names">${NB.nameList(refused.map(x => `${esc(x.row)} — ${esc(x.reason)}`))}</div>`);
     }
     return ok;
   }
@@ -4444,8 +4450,8 @@
     }
     if (p.refused.length) {
       NB.modalRaw(`${p.refused.length} file${p.refused.length === 1 ? " was" : "s were"} not added`,
-        `<div class="names">${p.refused.map(x =>
-          `${esc(String(x.file).split(/[\\/]/).pop())} — ${esc(x.reason)}`).join("<br>")}</div>`);
+        `<div class="names">${NB.nameList(p.refused.map(x =>
+          `${esc(String(x.file).split(/[\\/]/).pop())} — ${esc(x.reason)}`))}</div>`);
     }
     return ok;
   }

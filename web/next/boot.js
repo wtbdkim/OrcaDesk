@@ -55,6 +55,18 @@ var NB = {};
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   };
+  /** The inside of a modal's `.names` list: one row per line, capped so a
+   *  batch of a few hundred calculations does not run the dialog off the
+   *  screen -- the first `max` rows, then "… and N more". Rows are HTML the
+   *  caller has already escaped (some carry a state or a reason).
+   *  @param {string[]} rows @param {number} [max] @returns {string} */
+  NB.nameList = function (rows, max) {
+    const cap = max || 12;
+    if (rows.length <= cap) return rows.join("<br>");
+    // one row shown in place of "… and 1 more" would take the same line
+    const shown = rows.slice(0, cap - 1);
+    return shown.join("<br>") + `<br><span class="names-more">… and ${rows.length - shown.length} more</span>`;
+  };
   /** @param {string} id @returns {any} */
   NB.$ = function (id) { return document.getElementById(id); };
   /** @param {string} tag @param {string} [cls] @param {string} [html] */

@@ -443,7 +443,7 @@
         NB.modalRaw("Existing output",
           `<p>These calculations already have output on disk. Running them again
              overwrites it.</p><div class="names">${
-             chk.conflicts.map(n => NB.esc(n)).join("<br>")}</div>`,
+             NB.nameList(chk.conflicts.map(n => NB.esc(n)))}</div>`,
           [{ label: "Cancel", cls: "btn-ghost", act: () => res(false) },
            { label: "Skip them", act: () => { skip = chk.conflicts; res(true); } },
            { label: "Overwrite", cls: "btn-danger", act: () => res(true) }]);

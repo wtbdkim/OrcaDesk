@@ -2198,6 +2198,18 @@ class QueueStore:
         self.append_log("Will stop after the current job finishes...", "info")
         return True
 
+    def update_run_budget(self, budget) -> bool:
+        """Hand the running engine a new admission budget (core/resources.
+        ResourceBudget), so a limit changed in Settings applies to the run in
+        progress, not only to the next one. Returns False if nothing runs."""
+        with self._lock:
+            if not self._running or self._engine is None:
+                return False
+            engine = self._engine
+        # outside the lock, like cancel_run: the engine takes it itself
+        engine.set_budget(budget)
+        return True
+
     def pause_run(self) -> bool:
         """Stop processing the queue WITHOUT killing the in-flight ORCA — used on
         app shutdown so the running calculation survives (its detached ORCA keeps
