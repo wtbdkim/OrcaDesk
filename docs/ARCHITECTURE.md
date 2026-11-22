@@ -2363,6 +2363,109 @@ never called under it (P37). The setting is `Settings.draw2d_python` (""
 difference is the venv layout (`venv_python`), a `sys.platform` branch (P58).
 The phone server is unaffected.
 
+### The orbital overlay (MO lobes on the 2D drawing)
+
+The 2D pane can draw one molecular orbital **under its bonds, the textbook
+way**: per atom a pair of p lobes (or an s circle) sized by how much of the
+orbital sits there and coloured by phase — not a projected isosurface. It
+needs no RDKit itself; it rides on the pane, so without the add-on the pane
+behaves as before.
+
+**The math (`orcamgr/nbo/molobes.py`, Qt-free numpy).** From the
+`Wavefunction` the NBO tiles already read (`nbo/source.py`: `.gbw` →
+`orca_2mkl -molden`, reused while newer than the `.gbw`):
+
+- **share** — Löwdin: `c' = S^1/2 c`; `c^T S c = 1` makes `Σ c'^2 = 1`
+  exactly, and the squares summed over an atom's functions are its share,
+  split into `s_share` / `p_share` / `d_share` (d **and higher**: folded into
+  the share, never drawn as a lobe). Mulliken was rejected: one orbital's
+  Mulliken shares can be negative or exceed 1, and a negative lobe size is not
+  a thing.
+- **p** — the principal axis of the atom's p shells' coefficient vectors
+  `v_k = (c'_px, c'_py, c'_pz)` (top eigenvector of `Σ v_k v_kᵀ`), pointed the
+  way the largest shell points, length `sqrt(p_share)`; the orbital is
+  positive on the `+p` side. A plain sum was rejected: split-valence inner and
+  outer p shells can carry opposite signs and cancel. **p order:** Molden
+  writes px, py, pz even in a spherical file; the reader stores them as
+  `m = +1, −1, 0` (`_spherical_m(1)`), and `grid.real_solid_harmonics` maps
+  `+1 → x, −1 → y, 0 → z` with no p sign flip — the table pinned against
+  orca_plot's cubes to 5e-6 (`tests/test_nbo_grid.py`). `molobes.P_AXIS` is
+  that mapping.
+- **s** — `sqrt(s_share)`, signed by the atom's largest s coefficient (a
+  valence orbital's core-like and valence-like s functions can nearly cancel
+  in a sum).
+- **Phase of the functions, not of the raw numbers (measured).** ORCA writes
+  some contractions with every coefficient negative — def2-SVP nitrogen's
+  inner p shell on the formamide fixture is (−2.19, −1.75, −0.81) — so that
+  function is −|φ| everywhere and a positive coefficient on it is a
+  *negative* lobe. Before the fix formamide's π2 and π3* came out with N's
+  lobe inverted. Each function's phase is the sign of
+  `Σ_i c_i a_i^−(l+3)/2` (the integral of `R(r)·r^(l+2)`, which a 2s-like
+  contraction's outer lobe dominates), multiplied into `c'` before any sign
+  or direction is read.
+
+Checked by `tests/test_molobes.py`: constructed wavefunctions (an H2-like pair
+with a real overlap — shares ½/½, bonding same sign, antibonding opposite; a
+p-only atom whose p follows its coefficient axis and flips with it; opposite-
+sign split p shells; a d share folded in), real ORCA 6.1.1 Molden files
+(water's HOMO is the out-of-plane O p, also in the rotated-off-axis fixture;
+N2's πu are perpendicular and in phase, its πg* out of phase; formamide's three
+π orbitals are the allyl-like π1 / π2 / π3* with every p perpendicular to the
+plane), and the orbital's own value on a grid (`grid.orbital_values`): positive
+0.5 Bohr out along `+p`, negative along `−p`, on every p-dominated atom; an s
+circle's sign equals the spherical average of the orbital 0.6 Bohr out (past a
+2s-like node — at the nucleus a valence σ can carry the core's opposite sign)
+for every occupied orbital of five fixtures. The overall phase of an MO is
+arbitrary (it may flip between runs); within one orbital it is consistent.
+
+**Slot and caching.** `get_mo_lobes(source, spin, index)` → `MoLobesPayload`
+(`{ok, state, spin, index, energy_ev, occupation, norm, atoms: [{share, s, p,
+s_share, p_share, d_share}], elements, coords}`; `index < 0` returns the
+orbital list instead, named by the parser's frontier rule). The first call for
+a result starts a background build — reuse the NBO set's `Wavefunction` when
+`_nbo_sets` holds this result at this `.gbw` mtime, else `wavefunction_for`
+(no second `orca_2mkl` while the Molden file is current), then
+`MoLobeSet.from_wavefunction` forms `S^1/2` (the one O(n³) step: ~1 s at 485
+basis functions) — and answers `state: "running"`; the front-end calls again
+every 300 ms. One `MoLobeSet` is kept (`_lobe`, keyed by folder/base and the
+`.gbw` mtime, under `_lobe_lock`, held only for the dict access); every
+orbital after that is one matrix-vector product answered inline. A call for
+another result while a build runs answers "running" and starts its own once
+that one lands. Errors are data (no `.gbw`, `orca_2mkl` missing, a non-square
+C, an orbital the file does not have).
+
+**Drawing (`NB.draw2d.core.lobeShapes`, per frame).** The pane fetches each
+orbital once and caches it (32 entries); the projection is the only per-frame
+work. Atoms with `share ≥` the threshold (2 % by default, the pane's
+*Lobes from* field) are drawn, hidden hydrogens included. A p-dominated atom
+gets two lobes, each a prolate spheroid (length `L` atom-to-tip, width
+`0.62 L`) centred `L/2` out along `±p̂`, projected orthographically with the
+same `R` as the bonds — its outline is an ellipse with semi-axes `b` and
+`√(a²t² + b²u_z²)`, so edge-on the pair meets at the atom and face-on both
+shrink to discs on it. `L = 1.3 Å · √(share / largest share of this
+orbital)` — area ∝ share, scaled per orbital so a delocalised orbital's 10 %
+atoms are not specks beside a lone pair's 95 %. An s-dominated atom gets a
+circle (radius `0.7 Å · √(share / largest)`) in its sign's colour; a
+**d-block** atom whose share is mostly d gets a dashed ring and the note names
+it. A main-group atom's d functions are polarisation: on the real wB97X-3c
+TS the 2–5 % carbons beside the HOMO's nodes are ~70 % "d" in Löwdin's split
+(a neighbour's tail), so they are drawn by s and p like any other. Every shape
+of every atom is painted back to front by its centre's depth, so the nearer
+lobe hides the farther. Fills are `--orb-pos` / `--orb-neg` mixed 42 % with
+white and opaque (a translucent fill would mix the two phases into a third
+colour face-on), stroked in the token colour; the tokens are read from the
+page once per mount and written into the SVG as literal colours, so Copy /
+Save SVG / PNG carry the lobes. `molInput` never sees them: Save MOL is the
+structure only.
+
+**When it applies.** Only to the structure the wavefunction belongs to: the
+Orbital select is enabled only while the stage holds the Structure tile's
+final geometry (`ctx.onStructure`), and the fetched payload's `elements` /
+`coords` must match the stage's atoms (same order, ≤ 0.05 Å,
+`core.sameStructure`) before anything is drawn. A frame of a set, a result
+without a `.gbw` (the reason `NB.mv.surfaces` gives) or without an orbital
+list disable the select with the reason in its tooltip and the note.
+
 ## CREST environment (a WSL-backed third backend)
 
 `orcamgr/crest/` is a dedicated package, kept **out of** the ORCA pipeline in

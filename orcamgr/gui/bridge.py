@@ -81,7 +81,7 @@ from ..state.schemas import (
     LogTailResult, OutputInfoResult, OutputLinesResult, OutputFindResult,
     MlipStatusPayload, MlipInstallPayload, MlipInstallOptionsPayload,
     Draw2dStatusPayload, Draw2dInstallPayload, Draw2dPerceptionPayload,
-    Draw2dSaveResult,
+    Draw2dSaveResult, MoLobesPayload,
     MutationResult, NboJobPayload, NboResultPayload, NmrPayload, OkResult,
     OrbitalPayload, SavedFileResult,
     ParsePayload, QrResult, ScanCoordPayload, ScanPointPayload,
@@ -223,6 +223,15 @@ class Bridge(QObject):
         # request for another result rebuilds it (seconds), never caches it
         # to disk. Guarded by _nbo_lock, held only for the dict access.
         self._nbo_sets: dict = {}
+        # The 2D drawing's orbital overlay (orcamgr/nbo/molobes.py): ONE
+        # wavefunction plus its S^1/2, keyed by folder/base and the .gbw's
+        # mtime, built on a background thread the first time an orbital of
+        # it is asked for; every orbital after that is a matrix-vector
+        # product answered inline. Guarded by its own lock, held only for
+        # the dict access.
+        self._lobe_lock = threading.Lock()
+        self._lobe: dict = {"key": None, "mtime": 0.0, "state": "idle",
+                            "error": "", "set": None}
         # Live CREST status (a probe of every target: WSL distros on Windows,
         # this machine on Linux). Like MLIP the probe is slow (it runs
         # `crest --version`), so it runs in a background thread and the UI polls
@@ -2780,6 +2789,94 @@ class Bridge(QObject):
         built = orbital_set_for(orca_path, run_dir, base)
         self._remember_nbo_set(run_dir, base, built)
         return built
+
+    # --- the 2D drawing's orbital overlay (orcamgr/nbo/molobes.py) ---
+    @pyqtSlot(str, str, int, result=str)
+    def get_mo_lobes(self, source: str, spin: str, index: int) -> str:
+        """Per-atom lobes of one MO -- {ok, state: "done", atoms: [{share, s,
+        p, s_share, p_share, d_share}], elements, coords, ...} -- for the 2D
+        drawing to draw under its bonds. ``source`` addresses a result as the
+        plot slots do; ``spin`` is "alpha"/"beta" (or the parse's ""/"a"/"b");
+        ``index < 0`` returns the orbital list instead of one orbital.
+
+        The wavefunction comes from the same .gbw -> Molden conversion the NBO
+        tiles use (nbo/source.py: reused, not re-run, while it is newer than
+        the .gbw), or straight from the NBO set already in memory when that
+        is this result's. Reading it and forming S^1/2 can take seconds, so
+        the first call starts a background build and answers state
+        "running"; the front-end calls again until it is "done". Errors are
+        data, never raised."""
+        from ..nbo.molobes import MoLobeSet
+        from ..nbo.source import wavefunction_for
+        from ..nbo.wavefunction import WavefunctionError
+
+        def fail(msg: str) -> str:
+            return json.dumps(MoLobesPayload(ok=False, state="error", error=msg))
+
+        run_dir, base, _open_shell, err = self._plot_source(str(source or ""))
+        if err:
+            return fail(err)
+        try:
+            mtime = (run_dir / f"{base}.gbw").stat().st_mtime
+        except OSError:
+            return fail(f"There is no {base}.gbw beside this result, so there is "
+                        "no wavefunction to draw orbitals from.")
+        key = (str(run_dir), base)
+        start = False
+        with self._lobe_lock:
+            cur = self._lobe
+            mine = cur.get("key") == key and cur.get("mtime") == mtime
+            if mine:
+                state, lset, error = cur["state"], cur.get("set"), cur.get("error", "")
+            elif cur.get("state") == "running":
+                # another result's build is in flight: ask again once it is done
+                state, lset, error = "running", None, ""
+            else:
+                self._lobe = {"key": key, "mtime": mtime, "state": "running",
+                              "error": "", "set": None}
+                state, lset, error, start = "running", None, "", True
+        if start:
+            orca_path = self.settings.orca_path
+
+            def _worker() -> None:
+                try:
+                    with self._nbo_lock:
+                        kept = self._nbo_sets.get(key)
+                    wf = (kept.wavefunction if kept is not None
+                          and kept.source_mtime == mtime
+                          else wavefunction_for(orca_path, run_dir, base))
+                    built, failure = MoLobeSet.from_wavefunction(wf, mtime), ""
+                except WavefunctionError as e:
+                    built, failure = None, str(e)
+                except Exception as e:          # a crash must still answer the UI
+                    built, failure = None, str(e) or type(e).__name__
+                if failure:
+                    self.store.append_log(
+                        f"Orbital lobes for {base}: {failure}", "err")
+                with self._lobe_lock:
+                    if self._lobe.get("key") == key and self._lobe.get("mtime") == mtime:
+                        self._lobe.update({"state": "error" if failure else "done",
+                                           "error": failure, "set": built})
+
+            threading.Thread(target=_worker, daemon=True,
+                             name="orcadesk-mo-lobes").start()
+        if state == "running":
+            return json.dumps(MoLobesPayload(ok=True, state="running"))
+        if state == "error" or lset is None:
+            return fail(error or "The wavefunction could not be read.")
+        try:
+            if int(index) < 0:
+                return json.dumps(MoLobesPayload(
+                    ok=True, state="done", orbitals=lset.orbital_list(),
+                    elements=lset.elements(), coords=lset.coordinates_angstrom()))
+            r = lset.lobes(spin, int(index))
+        except WavefunctionError as e:
+            return fail(str(e))
+        return json.dumps(MoLobesPayload(
+            ok=True, state="done", spin=r["spin"], index=r["index"],
+            energy_ev=r["energy_ev"], occupation=r["occupation"], norm=r["norm"],
+            atoms=r["atoms"], elements=lset.elements(),
+            coords=lset.coordinates_angstrom()))
 
     @pyqtSlot(result=str)
     def get_nbo_status(self) -> str:

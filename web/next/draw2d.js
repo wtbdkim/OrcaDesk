@@ -132,8 +132,12 @@
    *  @param {{bonds: number[][], charges?: number[], radicals?: number[],
    *           stereocentres?: number[]}} per RDKit's perception
    *  @param {{R: number[], c: number[]}} view mol.js's matrix and centre
-   *  @param {{threshold?: number, allH?: boolean}} [opts]
-   *  @returns {{atoms: any[], bonds: any[], radius: number, endOn: number}}
+   *  @param {{threshold?: number, allH?: boolean, lobes?: any[]|null,
+   *           lobeMin?: number}} [opts] lobes: MoLobeAtomPayload per stage
+   *    atom (the orbital overlay, lobeShapes), drawn on hidden H too -- a σ
+   *    orbital's share on a hydrogen is part of the orbital
+   *  @returns {{atoms: any[], bonds: any[], radius: number, endOn: number,
+   *             lobes: {shapes: any[], reach: number}|null}}
    *    atoms: the shown atoms, in a new order ({src, el, x, y, z, charge,
    *    radical, label}); bonds index into that list ({a, b, order, stereo,
    *    theta}), anchor-first when stereo is set; radius: the bounding radius
@@ -193,7 +197,9 @@
         at.label = at.el + (hidden ? "H" + (hidden > 1 ? hidden : "") : "");
       }
     });
-    return { atoms: out, bonds: ob, radius: radius, endOn: endOn };
+    const lobes = o.lobes && o.lobes.length
+      ? lobeShapes(atoms, o.lobes, view, { min: o.lobeMin }) : null;
+    return { atoms: out, bonds: ob, radius: radius, endOn: endOn, lobes: lobes };
   }
 
   /** The drawing as the MOL writer's input (orcamgr/draw2d/molfile.py):
@@ -206,6 +212,132 @@
                                    charge: a.charge, radical: a.radical })),
       bonds: lay.bonds.map(b => ({ a: b.a, b: b.b, order: b.order, stereo: b.stereo })),
     };
+  }
+
+  // ------------------------------------------------ the orbital overlay (pure)
+  //
+  // A chosen MO drawn the textbook way, under the bonds: on every atom with
+  // at least LOBE_MIN of the orbital (orcamgr/nbo/molobes.py: Löwdin shares),
+  // a pair of lobes along the atom's p vector -- the + side in --orb-pos, the
+  // other in --orb-neg -- or, where s outweighs p, one circle in its sign's
+  // colour; a d-block atom whose share is mostly d gets a dashed ring (its
+  // shape is not a p pair, and drawing one would be a claim). On a main-group
+  // atom the d functions are polarisation, and in a small share they can
+  // outweigh s and p (measured: 2-5 % carbons beside a π node, d ~70 % of
+  // it) -- that is a neighbour's tail, not d chemistry, so such an atom is
+  // drawn by its s and p like any other. Sizes go as √share, scaled per
+  // orbital so its largest share gets LOBE_LEN (a lobe's AREA goes as the
+  // share; one constant for every orbital would leave a delocalised one's
+  // 10 % atoms as specks beside a lone pair's 95 %). Each lobe is a prolate spheroid (semi-axes
+  // a = L/2 along p, b = LOBE_WIDTH·L/2 across), centred L/2 out from the
+  // atom, projected orthographically into the same view as the bonds: its
+  // outline is an ellipse with semi-axes b and √(a²·t² + b²·u_z²), t the
+  // in-screen length of the unit axis u. Edge-on the two lobes meet at the
+  // atom; face-on (u along the view axis) both shrink to circles of radius b
+  // on the atom, and the nearer one is drawn last -- a π orbital seen from
+  // above reads as one disc in the front lobe's colour. Every lobe of every
+  // atom is drawn back to front by its centre's depth.
+
+  /** Lobe length (atom to tip), Å, of the orbital's largest share; the rest
+   *  go as √(share / largest). About a bond length, as textbooks draw them. */
+  const LOBE_LEN = 1.3;
+  /** A lobe's width over its length. */
+  const LOBE_WIDTH = 0.62;
+  /** An s circle's (or a d ring's) radius at the largest share, Å. */
+  const S_RADIUS = 0.7;
+  /** Elements whose d shell is valence (groups 3-12): only these get the
+   *  "mostly d" ring. */
+  const D_BLOCK = new Set(("Sc Ti V Cr Mn Fe Co Ni Cu Zn Y Zr Nb Mo Tc Ru Rh Pd Ag Cd "
+    + "La Hf Ta W Re Os Ir Pt Au Hg Ac Rf Db Sg Bh Hs Mt Ds Rg Cn").split(" "));
+  /** Default share below which an atom gets no lobe (2 %). */
+  const LOBE_MIN = 0.02;
+
+  /** The overlay's shapes for one orientation, in view-space Å, back to front.
+   *  @param {{el?: string, x: number, y: number, z: number}[]} atoms the stage's atoms
+   *  @param {any[]} lobes MoLobeAtomPayload per atom, same order
+   *  @param {{R: number[], c: number[]}} view
+   *  @param {{min?: number}} [opts]
+   *  @returns {{shapes: any[], reach: number}} shapes: {kind: "lobe"|"s"|"d",
+   *    atom, sign (+1 / −1, 0 for "d"), x, y, z, rx, ry, angle (degrees,
+   *    counter-clockwise from +x, y up)}; reach: the farthest any shape gets
+   *    from the centre, which does not change as the structure turns. */
+  function lobeShapes(atoms, lobes, view, opts) {
+    const o = opts || {};
+    const min = o.min != null ? o.min : LOBE_MIN;
+    const R = view.R;
+    const v = viewCoords(atoms, R, view.c);
+    /** @type {any[]} */
+    const shapes = [];
+    let reach = 0;
+    const drawn = (/** @type {any} */ lb, /** @type {number} */ i) =>
+      !!lb && i < atoms.length && lb.share >= min;
+    const top = (lobes || []).reduce((m, lb, i) => drawn(lb, i) ? Math.max(m, lb.share) : m, 0);
+    (lobes || []).forEach((lb, i) => {
+      if (!drawn(lb, i)) return;
+      const p = v[i];
+      const r0 = Math.hypot(p[0], p[1], p[2]);
+      const root = Math.sqrt(lb.share / top);
+      const pv = lb.p || [0, 0, 0];
+      const pn = Math.hypot(pv[0], pv[1], pv[2]);
+      const round = (/** @type {string} */ kind, /** @type {number} */ sign) => {
+        const r = S_RADIUS * root;
+        shapes.push({ kind: kind, atom: i, sign: sign, x: p[0], y: p[1], z: p[2],
+                      rx: r, ry: r, angle: 0 });
+        reach = Math.max(reach, r0 + r);
+      };
+      if (D_BLOCK.has(String(atoms[i].el || ""))
+          && (lb.d_share || 0) > (lb.s_share || 0) + (lb.p_share || 0)) { round("d", 0); return; }
+      if ((lb.s_share || 0) >= (lb.p_share || 0) || !(pn > 1e-9)) {
+        round("s", lb.s < 0 ? -1 : 1);
+        return;
+      }
+      const u0 = pv[0] / pn, u1 = pv[1] / pn, u2 = pv[2] / pn;
+      const u = [R[0] * u0 + R[1] * u1 + R[2] * u2,
+                 R[3] * u0 + R[4] * u1 + R[5] * u2,
+                 R[6] * u0 + R[7] * u1 + R[8] * u2];
+      const L = LOBE_LEN * root, a = L / 2, b = LOBE_WIDTH * L / 2;
+      const t = Math.hypot(u[0], u[1]);
+      const A = Math.sqrt(a * a * t * t + b * b * u[2] * u[2]);
+      const angle = t > 1e-9 ? Math.atan2(u[1], u[0]) * 180 / Math.PI : 0;
+      [1, -1].forEach(sg => shapes.push({
+        kind: "lobe", atom: i, sign: sg,
+        x: p[0] + sg * u[0] * a, y: p[1] + sg * u[1] * a, z: p[2] + sg * u[2] * a,
+        rx: Math.max(A, b), ry: b, angle: angle }));
+      reach = Math.max(reach, r0 + L);
+    });
+    shapes.sort((s, t) => s.z - t.z);
+    return { shapes: shapes, reach: reach };
+  }
+
+  /** Is the structure on the stage the one the wavefunction belongs to? Same
+   *  atom count, elements and order, every atom within `tol` Å.
+   *  @param {{el: string, x: number, y: number, z: number}[]} atoms
+   *  @param {string[]} elements @param {number[][]} coords Å
+   *  @param {number} [tol] */
+  function sameStructure(atoms, elements, coords, tol) {
+    const t = tol != null ? tol : 0.05;
+    if (!atoms || !elements || !coords || atoms.length !== elements.length
+        || atoms.length !== coords.length) return false;
+    return atoms.every((a, i) => {
+      const c = coords[i];
+      return String(a.el).toLowerCase() === String(elements[i]).toLowerCase()
+        && Math.hypot(a.x - c[0], a.y - c[1], a.z - c[2]) <= t;
+    });
+  }
+
+  /** A colour mixed toward white: the lobes' fill, so a front lobe HIDES the
+   *  one behind it (a translucent fill would mix the two phases into a third
+   *  colour face-on) while still reading as a light wash on the white paper.
+   *  @param {string} hex "#rrggbb" or "#rgb" @param {number} f colour fraction */
+  function tint(hex, f) {
+    let h = String(hex || "").trim().replace(/^#/, "");
+    if (/^[0-9a-f]{3}$/i.test(h)) h = h.split("").map(ch => ch + ch).join("");
+    if (!/^[0-9a-f]{6}$/i.test(h)) return hex;
+    const mix = (/** @type {number} */ k) => {
+      const c = parseInt(h.slice(k, k + 2), 16);
+      return Math.round(255 - (255 - c) * f).toString(16).padStart(2, "0");
+    };
+    return "#" + mix(0) + mix(2) + mix(4);
   }
 
   /** @param {string} s */
@@ -227,11 +359,33 @@
    *  while the structure turns (the live preview: the drawing must not jump in
    *  scale on every frame); "tight" crops to the ink (what is saved).
    *  @param {any} lay layout()
-   *  @param {{frame?: string, background?: string, ink?: string}} [opts]
+   *  The orbital overlay (lay.lobes), when there is one, goes first -- under
+   *  the bonds -- in `pos` / `neg` (the --orb-pos / --orb-neg tokens).
+   *  @param {{frame?: string, background?: string, ink?: string,
+   *           pos?: string, neg?: string}} [opts]
    *  @returns {string} */
   function toSvg(lay, opts) {
     const o = opts || {};
     const ink = o.ink || "#111111";
+    const shapes = (lay.lobes && lay.lobes.shapes) || [];
+    let under = "";
+    if (shapes.length) {
+      /** @type {Record<string, string>} */
+      const col = { "1": o.pos || "#4f86f7", "-1": o.neg || "#f2555a" };
+      under = `<g stroke-width="1.2" data-layer="orbital">` + shapes.map(sh => {
+        const X = sh.x * PX, Y = -sh.y * PX;
+        if (sh.kind === "d") {
+          return `<circle cx="${f1(X)}" cy="${f1(Y)}" r="${f1(sh.rx * PX)}" fill="none"`
+            + ` stroke="#8a8f98" stroke-dasharray="3 2"/>`;
+        }
+        const c = col[String(sh.sign)];
+        const paint = ` fill="${tint(c, 0.42)}" stroke="${c}" data-sign="${sh.sign > 0 ? "+" : "-"}"`;
+        if (sh.kind === "s") return `<circle cx="${f1(X)}" cy="${f1(Y)}" r="${f1(sh.rx * PX)}"${paint}/>`;
+        // screen y points down, so a counter-clockwise view angle is negative
+        return `<ellipse cx="${f1(X)}" cy="${f1(Y)}" rx="${f1(sh.rx * PX)}" ry="${f1(sh.ry * PX)}"`
+          + ` transform="rotate(${f1(-sh.angle)} ${f1(X)} ${f1(Y)})"${paint}/>`;
+      }).join("") + `</g>`;
+    }
     const font = 13;
     const pts = lay.atoms.map(a => [a.x * PX, -a.y * PX]);
     // how far a bond stops short of a label: half its width, roughly
@@ -317,7 +471,7 @@
     // the frame
     let x0, y0, x1, y1;
     if (o.frame === "sphere") {
-      const r = Math.max(lay.radius, 1) * PX + 16;
+      const r = Math.max(lay.radius, lay.lobes ? lay.lobes.reach : 0, 1) * PX + 16;
       x0 = -r; y0 = -r; x1 = r; y1 = r;
     } else {
       x0 = Infinity; y0 = Infinity; x1 = -Infinity; y1 = -Infinity;
@@ -326,6 +480,11 @@
         x0 = Math.min(x0, p[0] - m); y0 = Math.min(y0, p[1] - m);
         x1 = Math.max(x1, p[0] + m); y1 = Math.max(y1, p[1] + m);
       });
+      shapes.forEach(sh => {
+        const X = sh.x * PX, Y = -sh.y * PX, m = Math.max(sh.rx, sh.ry) * PX + 1;
+        x0 = Math.min(x0, X - m); y0 = Math.min(y0, Y - m);
+        x1 = Math.max(x1, X + m); y1 = Math.max(y1, Y + m);
+      });
       if (!isFinite(x0)) { x0 = -10; y0 = -10; x1 = 10; y1 = 10; }
       x0 -= 12; y0 -= 12; x1 += 12; y1 += 12;
     }
@@ -333,7 +492,7 @@
     const bg = o.background
       ? `<rect x="${f1(x0)}" y="${f1(y0)}" width="${f1(w)}" height="${f1(h)}" fill="${o.background}"/>` : "";
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${f1(x0)} ${f1(y0)} ${f1(w)} ${f1(h)}"`
-      + ` width="${Math.round(w)}" height="${Math.round(h)}">${bg}`
+      + ` width="${Math.round(w)}" height="${Math.round(h)}">${bg}${under}`
       + `<g stroke="${ink}" stroke-width="1.5" stroke-linecap="round" fill="none">`
       + parts.filter(s => s.indexOf("<text") < 0).join("") + `</g>`
       + `<g fill="${ink}" font-family="Arial, Helvetica, sans-serif" font-size="${font}"`
@@ -344,7 +503,10 @@
   const core = { THRESHOLD: THRESHOLD, END_ON: END_ON, viewCoords: viewCoords, neighbours: neighbours,
                  visibleAtoms: visibleAtoms, outOfPlane: outOfPlane,
                  anchorFirst: anchorFirst, stereoFlag: stereoFlag, layout: layout,
-                 molInput: molInput, toSvg: toSvg, chargeText: chargeText };
+                 molInput: molInput, toSvg: toSvg, chargeText: chargeText,
+                 LOBE_LEN: LOBE_LEN, LOBE_WIDTH: LOBE_WIDTH, S_RADIUS: S_RADIUS,
+                 LOBE_MIN: LOBE_MIN, D_BLOCK: D_BLOCK, lobeShapes: lobeShapes,
+                 sameStructure: sameStructure, tint: tint };
 
   // ---------------------------------------------------------------- the panel
 
@@ -355,8 +517,39 @@
    *  the same structure re-mounted by a report re-render -- draws at once.
    *  @type {Map<string, any>} */
   const _cache = new Map();
-  /** The user's choices, kept for the session across panes. */
-  const _prefs = { threshold: THRESHOLD, allH: false };
+  /** The user's choices, kept for the session across panes. lobeMin is in
+   *  percent of the orbital (the overlay's share threshold). */
+  const _prefs = { threshold: THRESHOLD, allH: false, lobeMin: LOBE_MIN * 100 };
+  /** get_mo_lobes answers per result and orbital: fetched once, drawn every
+   *  frame from here (the projection is the only per-frame work).
+   *  @type {Map<string, any>} */
+  const _lobeCache = new Map();
+
+  /** The Orbital select's options: per manifold, the frontier window
+   *  (HOMO−4 … LUMO+4) first, then every other orbital -- the names, values
+   *  and order the Orbitals tile uses (its picks: {index, operator, short,
+   *  label}). @param {any[]} picks @returns {string} */
+  function moOptions(picks) {
+    const near = /^(α |β )?(HOMO(−[1-4])?|LUMO(\+[1-4])?)$/;
+    /** @type {Record<string, any[][]>} */
+    const groups = {};
+    /** @type {string[]} */
+    const order = [];
+    (picks || []).forEach(p => {
+      const op = String(p.operator || 0);
+      if (!groups[op]) { groups[op] = [[], []]; order.push(op); }
+      groups[op][near.test(p.short || "") ? 0 : 1].push(p);
+    });
+    const tag = (/** @type {string} */ op) => order.length > 1 ? (op === "1" ? "β " : "α ") : "";
+    const opt = (/** @type {any} */ p) =>
+      `<option value="${p.operator || 0}:${p.index}">${esc(p.label || p.short)}</option>`;
+    return `<option value="">None</option>` + order.map(op =>
+      (groups[op][0].length ? `<optgroup label="${tag(op)}near the frontier">${
+        groups[op][0].map(opt).join("")}</optgroup>` : "")
+      + (groups[op][1].length ? `<optgroup label="${tag(op)}${groups[op][0].length
+        ? "other orbitals" : "orbitals"}">${groups[op][1].map(opt).join("")}</optgroup>` : "")
+    ).join("");
+  }
 
   /** @param {any[]} atoms @param {number|null} charge */
   function keyOf(atoms, charge) {
@@ -367,7 +560,11 @@
   /** Mount the 2D half into `host`, following `stage` (a MOL.mount stage).
    *  @param {HTMLElement} host
    *  @param {any} stage
-   *  @param {{source: string, name: string}} ctx
+   *  @param {{source: string, name: string, orbitals?: any[], wfReason?: string,
+   *           onStructure?: () => boolean}} ctx orbitals: the Orbitals tile's
+   *    MO picks (the overlay's choices); wfReason: why there are none (no
+   *    .gbw); onStructure: whether the stage holds the run's final geometry
+   *    -- the only structure its wavefunction belongs to
    *  @returns {{destroy: () => void, refresh: () => void}} */
   function mount(host, stage, ctx) {
     let alive = true;
@@ -379,6 +576,18 @@
     let lastSvg = "";
     /** @type {any} */ let lastLay = null;
     let pollTimer = 0;
+    // the orbital overlay: the pick, its lobes once fetched, and what stops it
+    /** @type {{op: number, index: number, label: string, key: string}|null} */
+    let mo = null;
+    /** @type {any} */ let lobeData = null;
+    let lobeErr = "";
+    let lobeBusy = false;
+    let locked = true;                   // the bar's lock (add-on not ready)
+    /** @type {any[]|null} */ let fitAtoms = null;   // atoms lobeData was checked against
+    let fits = false;
+    const css = getComputedStyle(document.documentElement);
+    const colours = { pos: css.getPropertyValue("--orb-pos").trim() || "#4f86f7",
+                      neg: css.getPropertyValue("--orb-neg").trim() || "#f2555a" };
 
     host.innerHTML = `
       <div class="d2paper" data-d="paper" role="img" aria-label="2D drawing"></div>
@@ -396,6 +605,14 @@
         <button class="btn btn-sm btn-ghost" type="button" data-d="png">Save PNG</button>
         <button class="btn btn-sm btn-ghost" type="button" data-d="mol">Save MOL</button>
       </div>
+      <div class="d2bar" data-d="mobar">
+        <label class="d2ctl">Orbital
+          <select class="d2sel" data-d="mo" aria-label="Molecular orbital drawn as lobes under the bonds">${
+            moOptions(ctx.orbitals || [])}</select></label>
+        <label class="d2ctl" title="An atom with less of the orbital than this gets no lobe">Lobes from
+          <input type="number" class="mono d2num" min="0.5" max="50" step="0.5" data-d="lmin"
+            value="${_prefs.lobeMin}" aria-label="Smallest share of the orbital an atom needs for a lobe, percent">%</label>
+      </div>
       <p class="d2note" data-d="note"></p>`;
     const q = (k) => /** @type {any} */ (host.querySelector(`[data-d="${k}"]`));
 
@@ -411,6 +628,99 @@
     function lockBar(on) {
       q("bar").querySelectorAll("input,button").forEach(
         (/** @type {any} */ el) => { el.disabled = on; });
+      locked = on;
+      syncMo();
+    }
+
+    /** Why the orbital overlay cannot be drawn here, or "" when it can.
+     *  @returns {string} */
+    function moReason() {
+      if (!ctx.orbitals || !ctx.orbitals.length) {
+        return ctx.wfReason
+          || "This result lists no molecular orbitals, so there is none to draw.";
+      }
+      if (ctx.onStructure && !ctx.onStructure()) {
+        return "Orbitals belong to the run's final geometry — open 2D structure from "
+          + "the Structure tile to draw one on it.";
+      }
+      return "";
+    }
+
+    /** The Orbital controls' enabled state, after the bar's lock and the
+     *  structure on the stage. */
+    function syncMo() {
+      const why = moReason();
+      const sel = q("mo");
+      sel.disabled = locked || !!why;
+      sel.title = why || "Draw a molecular orbital as lobes under the bonds";
+      q("lmin").disabled = locked || !!why || !mo;
+    }
+
+    /** The lobes to draw on these atoms, or null (none picked, not here, not
+     *  fetched yet, or not this structure). @param {any[]} atoms */
+    function activeLobes(atoms) {
+      if (!mo || !lobeData || moReason()) return null;
+      if (fitAtoms !== atoms) {
+        fitAtoms = atoms;
+        fits = sameStructure(atoms, lobeData.elements, lobeData.coords, 0.05);
+        paintNote();
+      }
+      return fits ? lobeData.atoms : null;
+    }
+
+    /** Fetch one orbital's lobes (once per result and orbital).
+     *  @param {number} op 0 alpha, 1 beta @param {number} index */
+    async function loadLobes(op, index) {
+      const key = mo ? mo.key : "";
+      lobeData = null; lobeErr = ""; fitAtoms = null;
+      const hit = _lobeCache.get(key);
+      if (hit) { lobeData = hit; paintNote(); lastSvg = ""; schedule(); return; }
+      lobeBusy = true;
+      paintNote(); lastSvg = ""; schedule();
+      const spin = op ? "beta" : "alpha";
+      let r = await NB.call("get_mo_lobes", ctx.source, spin, index);
+      while (alive && mo && mo.key === key && r && r.ok && r.state === "running") {
+        await new Promise(res => setTimeout(res, 300));
+        r = await NB.call("get_mo_lobes", ctx.source, spin, index);
+      }
+      if (!alive || !mo || mo.key !== key) return;    // the pick moved on
+      lobeBusy = false;
+      if (!r || !r.ok || r.state !== "done" || !r.atoms) {
+        lobeErr = (r && r.error) || "The orbital could not be read.";
+      } else {
+        _lobeCache.set(key, r);
+        if (_lobeCache.size > 32) _lobeCache.delete(_lobeCache.keys().next().value);
+        lobeData = r;
+      }
+      paintNote(); lastSvg = ""; schedule();
+    }
+
+    /** The overlay's line in the note: what is drawn and at what scale, or
+     *  why nothing is. @returns {{text: string, warn: boolean}} */
+    function lobeNote() {
+      if (!mo) return { text: "", warn: false };
+      const why = moReason();
+      if (why) return { text: why, warn: true };
+      if (lobeBusy) return { text: `Reading the wavefunction for ${mo.label}…`, warn: false };
+      if (lobeErr) return { text: `${mo.label}: ${lobeErr}`, warn: true };
+      if (!lobeData) return { text: "", warn: false };
+      if (fitAtoms && !fits) {
+        return { text: `${mo.label}: the wavefunction's geometry is not the structure drawn `
+          + "here, so its lobes are not drawn on it.", warn: true };
+      }
+      const min = _prefs.lobeMin / 100;
+      const els = lobeData.elements || [];
+      const dAtoms = (lobeData.atoms || []).map((/** @type {any} */ a, /** @type {number} */ i) =>
+        a.share >= min && D_BLOCK.has(els[i]) && a.d_share > a.s_share + a.p_share
+          ? els[i] + (i + 1) : "")
+        .filter(Boolean);
+      return { text: `${mo.label} (${Number(lobeData.energy_ev).toFixed(2)} eV): lobes on atoms `
+        + `holding at least ${_prefs.lobeMin} % of the orbital, sized by √share (the largest `
+        + `share's lobes ${LOBE_LEN} Å long); blue and red `
+        + "are its two phases (which is which is arbitrary for the orbital as a whole)."
+        + (dAtoms.length ? ` Mostly d on ${dAtoms.slice(0, 6).join(", ")}${
+          dAtoms.length > 6 ? "…" : ""} (dashed ring).` : "")
+        + " Copy / Save SVG / PNG include the lobes; Save MOL leaves them out.", warn: false };
     }
 
     /** What is needed, in place of the drawing (D41: the tile stays, says
@@ -491,8 +801,10 @@
       const endOn = lastLay && lastLay.endOn
         ? "A bond at a stereocentre points almost straight at you — turn the structure a "
           + "little so the wedges read unambiguously." : "";
-      q("note").textContent = [how, per.note || "", endOn].filter(Boolean).join(" ");
-      q("note").classList.toggle("warn", per.method !== "bonds" || !!per.note || !!endOn);
+      const ln = lobeNote();
+      q("note").textContent = [how, per.note || "", endOn, ln.text].filter(Boolean).join(" ");
+      q("note").classList.toggle("warn", per.method !== "bonds" || !!per.note || !!endOn
+                                         || ln.warn);
     }
 
     /** Draw on the next animation frame -- a drag repaints the 3D stage on
@@ -508,9 +820,10 @@
       if (!v || v.atoms !== perAtoms) { follow(); return; }
       const wasEndOn = !!(lastLay && lastLay.endOn);
       lastLay = layout(perAtoms, per, { R: v.R, c: [v.cx, v.cy, v.cz] },
-                       { threshold: _prefs.threshold, allH: _prefs.allH });
+                       { threshold: _prefs.threshold, allH: _prefs.allH,
+                         lobes: activeLobes(perAtoms), lobeMin: _prefs.lobeMin / 100 });
       if (!!lastLay.endOn !== wasEndOn) paintNote();
-      const svg = toSvg(lastLay, { frame: "sphere" });
+      const svg = toSvg(lastLay, { frame: "sphere", pos: colours.pos, neg: colours.neg });
       if (svg === lastSvg) return;
       lastSvg = svg;
       q("paper").classList.remove("need");
@@ -522,9 +835,30 @@
       if (!alive || !_status || _status.state !== "ready") return;
       const v = stage.view();
       if (!v || !v.atoms || !v.atoms.length) return;
-      if (v.atoms !== perAtoms) { perceive(v.atoms); return; }
+      if (v.atoms !== perAtoms) { syncMo(); perceive(v.atoms); return; }
       schedule();
     }
+
+    q("mo").addEventListener("change", () => {
+      const val = String(q("mo").value || "");
+      if (!val) {
+        mo = null; lobeData = null; lobeErr = ""; lobeBusy = false;
+        syncMo(); paintNote(); lastSvg = ""; schedule();
+        return;
+      }
+      const [op, index] = val.split(":").map(Number);
+      const opt = q("mo").selectedOptions[0];
+      const label = opt ? String(opt.textContent || "").replace(/\s*\(.*$/, "") : val;
+      mo = { op: op, index: index, label: label, key: ctx.source + "|" + val };
+      syncMo();
+      loadLobes(op, index);
+    });
+    q("lmin").addEventListener("change", () => {
+      const v = Number(q("lmin").value);
+      if (!(v > 0) || v > 100) { q("lmin").value = String(_prefs.lobeMin); return; }
+      _prefs.lobeMin = v;
+      paintNote(); lastSvg = ""; schedule();
+    });
 
     q("thr").addEventListener("input", () => {
       _prefs.threshold = Number(q("thr").value);
@@ -546,7 +880,8 @@
 
     /** The drawing as it would be saved: cropped, on white. */
     function exportSvg() {
-      return lastLay ? toSvg(lastLay, { frame: "tight", background: "#ffffff" }) : "";
+      return lastLay ? toSvg(lastLay, { frame: "tight", background: "#ffffff",
+                                        pos: colours.pos, neg: colours.neg }) : "";
     }
     /** @param {string} svg @returns {Promise<string>} */
     function toPng(svg) {

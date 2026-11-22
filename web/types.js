@@ -494,6 +494,47 @@
  */
 
 /**
+ * Mirror of the Python MoLobeAtomPayload: one atom's part of one MO
+ * (orcamgr/nbo/molobes.py), for the 2D drawing's orbital overlay.
+ * @typedef {Object} MoLobeAtomPayload
+ * @property {number} share     Löwdin share of the orbital (all atoms sum to 1)
+ * @property {number} s         sqrt(s_share), signed by the largest s coefficient
+ * @property {number[]} p       [x, y, z], length sqrt(p_share); + side = + phase
+ * @property {number} s_share
+ * @property {number} p_share
+ * @property {number} d_share   d and higher: in `share`, never drawn as a lobe
+ */
+
+/**
+ * Mirror of the Python MoListEntryPayload: one orbital of the wavefunction.
+ * @typedef {Object} MoListEntryPayload
+ * @property {number} index
+ * @property {""|"a"|"b"} spin
+ * @property {number} ev
+ * @property {number} occ
+ * @property {string} label     "HOMO", "LUMO+1", "α HOMO", "#12"
+ * @property {"homo"|"lumo"|""} frontier
+ */
+
+/**
+ * Mirror of the Python MoLobesPayload: get_mo_lobes(source, spin, index).
+ * State "running" = the wavefunction is being read; call again.
+ * @typedef {Object} MoLobesPayload
+ * @property {boolean} [ok]
+ * @property {"running"|"done"|"error"} [state]
+ * @property {string} [error]
+ * @property {"alpha"|"beta"} [spin]
+ * @property {number} [index]
+ * @property {number} [energy_ev]
+ * @property {number} [occupation]
+ * @property {number} [norm]
+ * @property {MoLobeAtomPayload[]} [atoms]
+ * @property {string[]} [elements]       the geometry the orbitals belong to
+ * @property {number[][]} [coords]       in Å, same atom order
+ * @property {MoListEntryPayload[]} [orbitals]   only when index < 0
+ */
+
+/**
  * Mirror of the Python Draw2dSaveResult: draw2d_save().
  * @typedef {Object} Draw2dSaveResult
  * @property {boolean} ok

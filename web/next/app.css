@@ -1868,3 +1868,10 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 /* the Settings card's interpreter line (DESIGN.md §17.4r) */
 .d2env{font-family:var(--font-mono); font-size:11px; color:var(--muted-foreground);
   overflow-wrap:anywhere;}
+
+/* the 2D drawing's orbital overlay (DESIGN.md §17.4x): the Orbital select on
+   the pane's second control row. The lobes themselves are drawn in the SVG
+   from --orb-pos / --orb-neg, not styled here. Not a reference landmark. */
+.d2sel{max-width:24ch; font-size:12px; padding:4px 6px; min-height:28px;
+  background:var(--input-bg); border:1px solid var(--input); border-radius:var(--radius-sm);}
+.d2sel:disabled{opacity:.6; cursor:not-allowed;}

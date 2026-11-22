@@ -2107,6 +2107,33 @@ deletes nothing from disk. Not a reference landmark: the mockup has no 2D tile
 and no such card, so no uispec role moves; the new rules are one named block at
 the bottom of `app.css`.
 
+**The orbital overlay.** Under `.d2bar` a second `.d2bar` row carries
+**Orbital** — a `.d2sel` select: *None* (default), then, per manifold (α / β
+optgroups for an open-shell run), *near the frontier* (HOMO−4 … LUMO+4) and
+*other orbitals*, each named exactly as the Orbitals tile names it (its own
+picks: `HOMO (81, −8.37 eV)`) — and **Lobes from** *n* % (a `.d2num`,
+default 2: an atom with less of the orbital gets no lobe). Picked, the
+orbital is drawn on the paper **under the bonds**, following every turn: per
+atom a pair of lobes along its p direction, the + side in `--orb-pos`, the
+other in `--orb-neg` (fills mixed toward white and opaque, stroked in the
+token: the front lobe hides the back one, so a π orbital seen face-on reads as
+one disc of the front lobe's colour); an s-dominated atom a circle in its
+sign's colour; a d-block atom that is mostly d a dashed grey ring. Sizes go
+as √share, the orbital's largest share drawn about a bond length. The
+`.d2note` adds one sentence: *HOMO (−8.37 eV): lobes on atoms holding at least
+2 % of the orbital, sized by √share (the largest share's lobes 1.3 Å long);
+blue and red are its two phases (which is which is arbitrary for the orbital as
+a whole). Copy / Save SVG / PNG include the lobes; Save MOL leaves them out.*
+— and *Reading the wavefunction for HOMO…* while it loads. Disabled states
+say why, in the select's tooltip and (with an orbital picked) the note in
+`--warn`: no `.gbw` (*No .gbw beside this result — there is no wavefunction to
+plot from.*); a frame or conformer on the stage (*Orbitals belong to the run's
+final geometry — open 2D structure from the Structure tile to draw one on
+it.*); a wavefunction whose geometry is not the one drawn. With the add-on not
+set up the pane is as before (the paper says what is needed) and the select is
+disabled with the rest. One new rule (`.d2sel`) in a named block at the bottom
+of `app.css`; not a reference landmark.
+
 **17.5 It is the only front-end.** The classic window and the switch between
 the two are removed (unreleased), and with them the Settings sheet's Interface
 card (the switch) and Appearance card (the Liquid-Glass style and its intensity

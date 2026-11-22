@@ -244,5 +244,129 @@ test("a bond at a stereocentre pointing at the viewer is flagged end-on", () => 
   assert.strictEqual(fine.endOn, 0);
 });
 
+// ---------------------------------------------------------------- orbital lobes
+
+/** one atom's lobe payload: a pure p orbital along `p` */
+const pLobe = (p, share) => ({ share: share == null ? 1 : share, s: 0, p: p,
+                               s_share: 0, p_share: share == null ? 1 : share, d_share: 0 });
+const ONE = [{ el: "C", x: 0, y: 0, z: 0 }];
+
+test("a p vector along +x draws its positive lobe to the right", () => {
+  const r = D.lobeShapes(ONE, [pLobe([1, 0, 0])], { R: I, c: [0, 0, 0] });
+  assert.strictEqual(r.shapes.length, 2);
+  const pos = r.shapes.filter(s => s.sign === 1)[0], neg = r.shapes.filter(s => s.sign === -1)[0];
+  assert.ok(pos.x > 0 && close(pos.y, 0) && neg.x < 0);
+  // edge-on, the two lobes meet at the atom: centre L/2 out, semi-axis L/2
+  assert.ok(close(pos.x, D.LOBE_LEN / 2) && close(pos.rx, D.LOBE_LEN / 2));
+  assert.ok(close(pos.ry, D.LOBE_WIDTH * D.LOBE_LEN / 2));
+  // and in the SVG the + ellipse is on the right of the screen
+  const lay = D.layout(ONE, { bonds: [] }, { R: I, c: [0, 0, 0] }, { lobes: [pLobe([1, 0, 0])] });
+  const svg = D.toSvg(lay, { frame: "tight" });
+  const m = /<ellipse cx="([-\d.]+)"[^>]*data-sign="\+"/.exec(svg);
+  assert.ok(m && Number(m[1]) > 0, svg);
+});
+
+test("a p vector toward the viewer draws a near-circle, the positive lobe on top", () => {
+  const r = D.lobeShapes(ONE, [pLobe([0, 0, 1])], { R: I, c: [0, 0, 0] });
+  const top = r.shapes[r.shapes.length - 1];
+  assert.strictEqual(top.sign, 1);
+  assert.ok(close(top.rx, top.ry, 1e-9) && close(top.x, 0) && close(top.y, 0));
+  const away = D.lobeShapes(ONE, [pLobe([0, 0, -1])], { R: I, c: [0, 0, 0] });
+  assert.strictEqual(away.shapes[away.shapes.length - 1].sign, -1);
+  // the SVG paints in that order: the last orbital shape is the + one
+  const svg = D.toSvg(D.layout(ONE, { bonds: [] }, { R: I, c: [0, 0, 0] },
+                               { lobes: [pLobe([0, 0, 1])] }), { frame: "tight" });
+  const signs = (svg.match(/data-sign="([+-])"/g) || []).map(x => x.slice(-2, -1));
+  assert.deepStrictEqual(signs, ["-", "+"]);
+});
+
+test("the lobes follow the view matrix", () => {
+  // 90° about y sends +x away from the viewer: the + lobe goes to the back
+  const r = D.lobeShapes(ONE, [pLobe([1, 0, 0])], { R: rotY(Math.PI / 2), c: [0, 0, 0] });
+  assert.strictEqual(r.shapes[r.shapes.length - 1].sign, -1);
+  assert.ok(close(r.shapes[0].rx, r.shapes[0].ry, 1e-9));
+  // 90° about x sends +y toward the viewer
+  const s = D.lobeShapes(ONE, [pLobe([0, 1, 0])], { R: rotX(Math.PI / 2), c: [0, 0, 0] });
+  assert.strictEqual(s.shapes[s.shapes.length - 1].sign, 1);
+  // a general view: the + lobe's centre is R·p̂ · L/2 from the atom, and the
+  // ellipse lies along the projected axis
+  const R = [0.36, 0.48, -0.8, -0.8, 0.6, 0, 0.48, 0.64, 0.6];
+  const t = D.lobeShapes(ONE, [pLobe([0, 0, 2])], { R: R, c: [0, 0, 0] });
+  const pos = t.shapes.filter(x => x.sign === 1)[0];
+  const a = D.LOBE_LEN / 2;
+  assert.ok(close(pos.x, -0.8 * a, 1e-9) && close(pos.y, 0) && close(pos.z, 0.6 * a, 1e-9));
+  assert.ok(close(pos.angle, 180));
+  const b = D.LOBE_WIDTH * a;
+  assert.ok(close(pos.rx, Math.sqrt(a * a * 0.64 + b * b * 0.36), 1e-9));
+});
+
+test("sizes go as √share, small shares get nothing, s and d atoms get circles", () => {
+  const four = [{ el: "C", x: 0, y: 0, z: 0 }, { el: "C", x: 3, y: 0, z: 0 },
+                { el: "Fe", x: -3, y: 0, z: 0 }, { el: "H", x: 0, y: 3, z: 0 }];
+  const lobes = [pLobe([1, 0, 0], 0.64), pLobe([1, 0, 0], 0.16),
+                 { share: 0.25, s: 0.1, p: [0, 0, 0.1], s_share: 0.01, p_share: 0.01, d_share: 0.23 },
+                 { share: 0.01, s: -0.1, p: [0, 0, 0], s_share: 0.01, p_share: 0, d_share: 0 }];
+  const r = D.lobeShapes(four, lobes, { R: I, c: [0, 0, 0] });
+  const big = r.shapes.filter(s => s.atom === 0 && s.sign === 1)[0];
+  const small = r.shapes.filter(s => s.atom === 1 && s.sign === 1)[0];
+  assert.ok(close(big.rx / small.rx, 2, 1e-9));
+  assert.strictEqual(r.shapes.filter(s => s.atom === 3).length, 0);    // below 2 %
+  const d = r.shapes.filter(s => s.atom === 2);
+  assert.strictEqual(d.length, 1);
+  assert.strictEqual(d[0].kind, "d");
+  assert.ok(close(d[0].rx, D.S_RADIUS * Math.sqrt(0.25 / 0.64)));
+  // the same H atom above a lower threshold: an s circle in its sign
+  const s = D.lobeShapes(four, lobes, { R: I, c: [0, 0, 0] }, { min: 0.005 })
+    .shapes.filter(x => x.atom === 3);
+  assert.strictEqual(s.length, 1);
+  assert.strictEqual(s[0].kind, "s");
+  assert.strictEqual(s[0].sign, -1);
+  // reach: the frame's radius grows to the farthest lobe tip
+  assert.ok(close(r.reach, 3 + D.LOBE_LEN * 0.5, 1e-9));
+  // the largest share gets LOBE_LEN whatever it is: sizes are per orbital
+  assert.ok(close(big.rx, D.LOBE_LEN / 2, 1e-9));
+  // a main-group atom whose small share is mostly d (polarisation, a
+  // neighbour's tail) is drawn by its p, not ringed
+  const c = D.lobeShapes([{ el: "C", x: 0, y: 0, z: 0 }],
+    [{ share: 0.03, s: 0, p: [1, 0, 0], s_share: 0, p_share: 0.008, d_share: 0.022 }],
+    { R: I, c: [0, 0, 0] }).shapes;
+  assert.deepStrictEqual(plain(c.map(x => x.kind)), ["lobe", "lobe"]);
+});
+
+test("lobes are drawn under the bonds, inside the saved crop, and never in the MOL", () => {
+  const at = [{ el: "C", x: 0, y: 0, z: 0 }, { el: "C", x: 1.34, y: 0, z: 0 }];
+  const lobes = [pLobe([0, 1, 0], 0.5), pLobe([0, 1, 0], 0.5)];
+  const lay = D.layout(at, { bonds: [[0, 1, 2]] }, { R: I, c: [0.67, 0, 0] }, { lobes: lobes });
+  const svg = D.toSvg(lay, { frame: "tight", background: "#ffffff", pos: "#4f86f7", neg: "#f2555a" });
+  assert.ok(svg.indexOf('data-layer="orbital"') < svg.indexOf('<g stroke="#111111"'));
+  assert.ok(svg.indexOf('stroke="#4f86f7"') > 0 && svg.indexOf('stroke="#f2555a"') > 0);
+  // the crop holds the lobe tips: LOBE_LEN above the bond
+  const vb = /viewBox="([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+)"/.exec(svg);
+  assert.ok(vb && Number(vb[2]) < -D.LOBE_LEN * 24);
+  const plainSvg = D.toSvg(D.layout(at, { bonds: [[0, 1, 2]] }, { R: I, c: [0.67, 0, 0] }),
+                           { frame: "tight" });
+  assert.ok(plainSvg.indexOf("data-layer") < 0);
+  const mol = plain(D.molInput(lay, "x"));
+  assert.deepStrictEqual(Object.keys(mol).sort(), ["atoms", "bonds", "title"]);
+  // the live frame (bounding sphere) also makes room for them
+  const sphere = D.toSvg(lay, { frame: "sphere" });
+  const sb = /viewBox="([-\d.]+)/.exec(sphere);
+  assert.ok(sb && Number(sb[1]) <= -(0.67 + D.LOBE_LEN) * 24);
+});
+
+test("sameStructure: same elements, order and positions within tolerance", () => {
+  const at = [{ el: "O", x: 0, y: 0, z: 0 }, { el: "H", x: 0.96, y: 0, z: 0 }];
+  assert.ok(D.sameStructure(at, ["O", "H"], [[0, 0, 0], [0.97, 0, 0]]));
+  assert.ok(!D.sameStructure(at, ["O", "H"], [[0, 0, 0], [1.2, 0, 0]]));
+  assert.ok(!D.sameStructure(at, ["H", "O"], [[0, 0, 0], [0.96, 0, 0]]));
+  assert.ok(!D.sameStructure(at, ["O"], [[0, 0, 0]]));
+});
+
+test("tint mixes toward white and leaves non-hex colours alone", () => {
+  assert.strictEqual(D.tint("#000000", 0.5), "#808080");
+  assert.strictEqual(D.tint("#fff", 0.3), "#ffffff");
+  assert.strictEqual(D.tint("rgb(1,2,3)", 0.5), "rgb(1,2,3)");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -23,6 +23,18 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   orders (a transition state, a metal complex, a charge that does not fit),
   the drawing shows the connectivity with single bonds and says so. The total
   charge is the calculation's own and can be changed beside the drawing.
+- **Molecular orbitals on the 2D drawing, the textbook way.** The 2D
+  structure pane has an **Orbital** choice (None by default; the run's
+  orbitals named as the Orbitals tile names them, HOMO and LUMO first). Picked,
+  the orbital is drawn under the bonds and turns with the structure: on each
+  atom holding at least 2 % of it (adjustable), a pair of p lobes in the two
+  phase colours, an s circle where s dominates, sized by the square root of the
+  atom's share — a π orbital seen from above reads as one disc. The shares and
+  directions come from the run's own `.gbw` (Löwdin populations of that
+  orbital), with no extra calculation; Copy / Save SVG / Save PNG include the
+  lobes, Save MOL does not. It applies to the run's final geometry only — on a
+  trajectory frame or conformer, or without a `.gbw`, the choice is disabled
+  and says why.
 
 ### Changed
 - **The conformer picker's count starts empty.** It assumed 5; empty now

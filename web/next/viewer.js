@@ -74,6 +74,9 @@
   /** The 2D drawing beside the stage while the "2D structure" tile is
    *  pressed (draw2d.js), else null. @type {any} */
   let _d2 = null;
+  /** Why the result has no orbitals to draw (surfaces()'s error: no .gbw),
+   *  for the 2D drawing's Orbital select to say. */
+  let _surfErr = "";
 
   /** Elements present, for the legend — a key to colours that are actually on
    *  screen, rather than a periodic table. @param {any[]} atoms */
@@ -417,6 +420,7 @@
     _input = input;
     const sets = (r && r.ok && r.sets) ? r.sets : [];
     const picks = (surf && surf.ok && surf.picks) ? surf.picks : [];
+    _surfErr = (surf && !surf.ok && surf.error) || "";
     _opts = (surf && surf.opts) || null;
     _source = source;
     _surfPick = null;
@@ -531,7 +535,15 @@
     const host = NB.el("div", "viz2d");
     host.setAttribute("data-v", "v2d");
     stage.appendChild(host);
-    _d2 = NB.draw2d.mount(host, _viz, { source: source, name: title(source) });
+    // the orbital overlay offers the Orbitals tile's own picks (one naming
+    // rule, P4), and only while the stage holds the run's final geometry --
+    // the one structure its wavefunction belongs to
+    const orb = tiles.filter(t => t.picks && t.picks.length && t.picks[0].kind === "mo")[0];
+    _d2 = NB.draw2d.mount(host, _viz, {
+      source: source, name: title(source),
+      orbitals: orb ? orb.picks : [],
+      wfReason: _surfErr || (orb ? "" : "This result lists no molecular orbitals."),
+      onStructure: () => _onStructure });
     if (_viz) _viz.repaint();
   }
 

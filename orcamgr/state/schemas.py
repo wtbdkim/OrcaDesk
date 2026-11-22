@@ -345,6 +345,46 @@ class Draw2dPerceptionPayload(TypedDict, total=False):
     charge_from: str          # "calculation" | "output" | "request" | "default"
 
 
+class MoLobeAtomPayload(TypedDict):
+    """One atom's part of one molecular orbital (orcamgr/nbo/molobes.py):
+    the 2D drawing's orbital overlay draws a lobe pair along `p` (or an s
+    circle) sized by sqrt(share)."""
+    share: float              # Löwdin share of the orbital (all atoms sum to 1)
+    s: float                  # sqrt(s_share), signed by the largest s coefficient
+    p: "list[float]"          # [x, y, z], length sqrt(p_share); + side = + phase
+    s_share: float
+    p_share: float
+    d_share: float            # d and higher: in `share`, never drawn as a lobe
+
+
+class MoListEntryPayload(TypedDict):
+    """One orbital of the wavefunction, named as the Orbitals tile names it."""
+    index: int
+    spin: str                 # "" restricted, else "a" / "b" (the parse's spelling)
+    ev: float
+    occ: float
+    label: str                # "HOMO", "LUMO+1", "α HOMO", "#12"
+    frontier: str             # "homo" | "lumo" | ""
+
+
+class MoLobesPayload(TypedDict, total=False):
+    """Bridge.get_mo_lobes(source, spin, index). The wavefunction is read on a
+    background thread the first time (state "running": call again); after
+    that every orbital answers at once. index < 0 asks for the list only."""
+    ok: bool
+    state: str                # "running" | "done" | "error"
+    error: str
+    spin: str                 # "alpha" | "beta"
+    index: int
+    energy_ev: float
+    occupation: float
+    norm: float               # sum of the shares (1 to rounding)
+    atoms: "list[MoLobeAtomPayload]"
+    elements: "list[str]"     # the geometry the orbitals belong to ...
+    coords: "list[list[float]]"   # ... in Å, same atom order
+    orbitals: "list[MoListEntryPayload]"   # only when index < 0
+
+
 class CrestDistroPayload(TypedDict):
     """One TARGET probed for CREST (backs the "CREST ready" indicator). A target
     is a WSL distro on Windows and the single pseudo-target "local" elsewhere --
