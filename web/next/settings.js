@@ -29,6 +29,8 @@
   let _d2Timer = null;
   /** a Create was started from this sheet: report how it ended, once */
   let _d2Watch = false;
+  /** the remote-devices poll, same lifetime as the MLIP one @type {any} */
+  let _devTimer = null;
 
   /** @param {string} label @param {string} key @param {string} [kind] @param {string} [hint] */
   function row(label, key, kind, hint) {
@@ -65,6 +67,8 @@
     _crestTimer = null;
     clearInterval(_d2Timer);
     _d2Timer = null;
+    clearInterval(_devTimer);
+    _devTimer = null;
   }
 
   function render() {
@@ -126,6 +130,22 @@
           <div class="field-row" style="margin-top:10px">
             ${row("Total cores", "max_total_cores", "number", `0 = auto (${s.auto_cores || "?"} here)`)}
             ${row("Total memory (MB)", "max_total_ram_mb", "number", `0 = auto (${s.auto_ram_mb || "?"} MB here)`)}
+          </div>
+        </div>
+
+        <div class="scard">
+          <div class="scard-title">Compute devices</div>
+          <p class="scard-desc">Other computers the queue can send ORCA calculations to — a cloud
+            VM or a Linux PC you reach over SSH. They are the hosts in your SSH config
+            (<span class="mono" data-a="d-config"></span>): set one up there first, so that
+            <span class="mono">ssh</span> logs in to it without asking for a password, and install
+            ORCA on it. A calculation that does not fit on this machine goes to the first device
+            with room; its whole folder comes back here before it counts as done.</p>
+          <div data-a="devs"><p class="hint" style="margin:0">Checking…</p></div>
+          <div class="btn-group" style="margin-top:10px;align-items:center">
+            <button class="btn btn-sm btn-ghost" type="button" data-a="d-detect">Find devices</button>
+            <span class="sp" style="flex:1"></span>
+            <span class="hint" style="margin:0" data-a="d-state"></span>
           </div>
         </div>
 
@@ -332,10 +352,111 @@
       paintD2(host, await NB.call("cancel_draw2d_install"));
     });
     loadD2(host);
+    // --- remote compute devices (act at once, like the CREST card)
+    q('[data-a="d-detect"]').addEventListener("click", async () => {
+      paintDevices(host, await NB.call("detect_devices"));
+    });
+    loadDevices(host);
 
     // what "unsaved" is measured against: the form exactly as it was drawn
     // from the saved settings
     _baseline = collect(host);
+  }
+
+  // ------------------------------------------------------- remote devices
+
+  /** Paint once, then poll while the sheet is open: a probe is an SSH call
+   *  per device and finishes after the click that started it.
+   *  @param {HTMLElement} host */
+  async function loadDevices(host) {
+    paintDevices(host, await NB.call("get_devices"));
+    clearInterval(_devTimer);
+    _devTimer = setInterval(async () => {
+      if (NB.$("settings").hidden) { clearInterval(_devTimer); _devTimer = null; return; }
+      const box = host.querySelector('[data-a="devs"]');
+      // never repaint under the user's cursor: a number being typed would
+      // lose its focus and its half-typed value
+      if (box && box.contains(document.activeElement)) return;
+      paintDevices(host, await NB.call("get_devices"));
+    }, 1500);
+  }
+
+  /** One line saying what a device is, from its probe. @param {any} d */
+  function deviceLine(d) {
+    if (d.state === "unknown") return "Not checked yet — Find devices checks it.";
+    if (d.state === "checking") return "Checking…";
+    if (d.state !== "ready") return "";
+    const gb = d.mem_total_mb ? Math.round(d.mem_total_mb / 1024) + " GB" : "";
+    return [d.os, d.cores ? d.cores + " cores" : "", gb,
+            d.orca_version ? "ORCA " + d.orca_version : "ORCA found",
+            d.has_mpi ? "" : "no MPI: 1-core calculations only"].filter(Boolean).join(" · ");
+  }
+
+  /** @param {HTMLElement} host @param {any} st DevicesPayload */
+  function paintDevices(host, st) {
+    const q = (sel) => /** @type {any} */ (host.querySelector(sel));
+    const box = q('[data-a="devs"]');
+    if (!box || !st) return;
+    if (st.error) { box.innerHTML = `<div class="finding err">${NB.esc(st.error)}</div>`; return; }
+    q('[data-a="d-config"]').textContent = st.config_path || "~/.ssh/config";
+    q('[data-a="d-state"]').textContent = st.save_error || "";
+    if (!st.ssh) {
+      box.innerHTML = `<p class="hint" style="margin:0">No OpenSSH client found on this machine.
+        On Windows it is an optional feature: Settings → Apps → Optional features → OpenSSH Client.</p>`;
+      return;
+    }
+    const devs = st.devices || [];
+    if (!devs.length) {
+      box.innerHTML = `<p class="hint" style="margin:0">No hosts in your SSH config yet. Add one
+        (a Host entry with its address, user and key), then press Find devices.</p>`;
+      return;
+    }
+    box.innerHTML = devs.map((/** @type {any} */ d) => {
+      const cls = d.state === "ready" ? "done" : d.state === "error" ? "failed"
+        : d.state === "checking" ? "running" : "";
+      const word = d.state === "ready" ? "ready" : d.state === "error" ? "unusable"
+        : d.state === "checking" ? "checking" : "not checked";
+      const num = (/** @type {string} */ f, /** @type {string} */ label, /** @type {number} */ v,
+                   /** @type {string} */ tip) =>
+        `<label title="${NB.esc(tip)}">${label}<input class="mono" type="number" min="0"
+           data-f="${f}" value="${v}"></label>`;
+      return `<div class="envrow devrow" data-dev="${NB.esc(d.alias)}">
+        <div><div class="n">${NB.esc(d.alias)}</div>
+          <div class="d">${NB.esc(deviceLine(d))}</div>
+          ${d.in_config ? `<div class="ctl">
+            <label><input type="checkbox" data-f="enabled"${d.enabled ? " checked" : ""}> Use</label>
+            ${num("max_jobs", "at once", d.max_jobs, "Calculations at once on this device; 0 = as many as its cores allow")}
+            ${num("cores", "cores", d.cores_cap, "Cores the queue may use there; 0 = all it has")}
+            ${num("ram_mb", "memory (MB)", d.ram_cap_mb, "Memory the queue may use there; 0 = 75% of it")}
+          </div>` : ""}</div>
+        <span class="sp"></span>
+        <span class="badge ${cls}">${word}</span>
+        ${d.in_config ? "" : `<button class="btn btn-sm btn-ghost" type="button" data-a="d-remove">Remove</button>`}
+      </div>` + (d.state === "error" && d.message
+        ? `<div class="finding err" style="margin:-4px 0 8px">${NB.esc(d.message)}</div>` : "")
+        + (d.cleanup_pending
+        ? `<p class="hint" style="margin:-4px 0 8px">${d.cleanup_pending} cancelled
+            calculation${d.cleanup_pending === 1 ? "" : "s"} to tidy up there when it is back.</p>` : "");
+    }).join("");
+    box.querySelectorAll(".devrow").forEach((/** @type {any} */ rowEl) => {
+      const alias = rowEl.dataset.dev;
+      rowEl.querySelectorAll("[data-f]").forEach((/** @type {any} */ inp) => {
+        inp.addEventListener("change", async () => {
+          /** @type {Record<string, any>} */ const patch = { alias: alias };
+          const f = inp.dataset.f;
+          if (f === "enabled") patch.enabled = !!inp.checked;
+          else { const n = parseInt(inp.value, 10); patch[f] = isFinite(n) && n > 0 ? n : 0; }
+          const r = await NB.call("set_remote_device", JSON.stringify(patch));
+          if (r && r.error) { NB.fail(r.error); return; }
+          /** @type {any} */ (document.activeElement || { blur() {} }).blur();
+          paintDevices(host, r);
+        });
+      });
+      const rm = rowEl.querySelector('[data-a="d-remove"]');
+      if (rm) rm.addEventListener("click", async () => {
+        paintDevices(host, await NB.call("remove_remote_device", alias));
+      });
+    });
   }
 
   // ---------------------------------------------------------------- CREST

@@ -47,6 +47,8 @@
  * @property {string} crest_method      crest* kinds: tight-binding method; "" otherwise
  * @property {boolean} faulted          running only: ORCA reported a fatal error
  *                                      but its process is still alive
+ * @property {boolean} disconnected     running only: its remote device stopped
+ *                                      answering -- the orange "Disconnected" box
  * @property {string} system            queue editor lane (system id); "" = standalone
  * @property {string} node              node id within the lane; stack members share it
  * @property {number} col               grid column of the node
@@ -84,6 +86,56 @@
  * @property {number} ram_budget_mb     the run's memory budget
  * @property {number} jobs              calculations in flight
  * @property {number} max_jobs          how many may be in flight at once
+ * @property {DeviceUsage[]} devices    each enabled remote device's own pool (the
+ *                                      figures above are this machine's); [] idle
+ */
+
+/**
+ * One remote device's share of a run. Mirror of state/schemas.py DeviceUsage.
+ * @typedef {Object} DeviceUsage
+ * @property {string} id                the ~/.ssh/config Host alias
+ * @property {number} cores_used
+ * @property {number} cores_budget
+ * @property {number} ram_used_mb
+ * @property {number} ram_budget_mb
+ * @property {number} jobs
+ * @property {number} max_jobs
+ * @property {boolean} online           false: off, unreachable, or a job lost contact
+ */
+
+/**
+ * One remote device (Bridge.get_devices). Mirror of state/schemas.py DevicePayload.
+ * @typedef {Object} DevicePayload
+ * @property {string} alias
+ * @property {"unknown"|"checking"|"ready"|"error"} state
+ * @property {string} message           plain-language reason when not ready
+ * @property {string} os
+ * @property {number} cores
+ * @property {number} mem_total_mb
+ * @property {number} mem_avail_mb
+ * @property {string} orca_path
+ * @property {string} orca_version      "" when the install folder does not say
+ * @property {boolean} has_mpi
+ * @property {boolean} has_setsid
+ * @property {string} workdir
+ * @property {number} free_disk_mb
+ * @property {boolean} in_config        still a Host in ~/.ssh/config
+ * @property {number} cleanup_pending   remote jobs a cancel left to tidy up there
+ * @property {boolean} enabled
+ * @property {number} max_jobs          0 = as many as its cores allow
+ * @property {number} cores_cap         0 = the probed cores
+ * @property {number} ram_cap_mb        0 = 75% of the probed memory
+ * @property {string} orca_path_setting "" = find it
+ * @property {string} workdir_setting
+ */
+
+/**
+ * Bridge.get_devices / detect_devices / set_remote_device / remove_remote_device.
+ * @typedef {Object} DevicesPayload
+ * @property {boolean} ssh              an OpenSSH client is on this machine
+ * @property {string} config_path
+ * @property {DevicePayload[]} devices
+ * @property {string} save_error        "" = the settings change was written
  */
 
 /**
@@ -277,6 +329,8 @@
  * @property {boolean} rerun        put back from DONE / FAILED by rerun_calc (its old output is overwritten, never kept)
  * @property {string} run_dir       the folder it ran in, relative to the workspace ("sys/name" or "name"),
  *           recorded when it first started; "" = not started. Read-only: add_calc / update_calc ignore it
+ * @property {string} device        where it ran: "" this machine, else a ~/.ssh/config Host alias. Read-only
+ * @property {string} remote_dir    the absolute folder of that launch on the device; "" locally. Read-only
  */
 
 /**

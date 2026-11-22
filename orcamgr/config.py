@@ -166,6 +166,13 @@ class Settings:
     # created under user_data_root), never part of ORCAdesk's own runtime;
     # readiness is probed in orcamgr/draw2d/env.py, not stored here.
     draw2d_python: str = ""
+    # Remote compute devices (orcamgr/remote/, docs/REMOTE_DEVICES_DESIGN_KR.md):
+    # one dict per ~/.ssh/config Host alias the user chose to use --
+    # {"alias", "enabled", "max_jobs", "cores", "ram_mb", "orca_path",
+    # "workdir"}. Which devices exist is detected from the SSH config, never
+    # stored here (P58); only the choice within it and its caps are. Shape
+    # enforced by remote.devices.normalize_devices on load and on save.
+    remote_devices: list = field(default_factory=list)
     workspace_root: str = ""
     # default compute resources (used to seed the GUI)
     default_nprocs: int = 6
@@ -271,6 +278,11 @@ class Settings:
                 and isinstance(e.get("python"), str)
                 and isinstance(e.get("name", ""), str)
             ]
+
+        # remote_devices feeds the queue engine's device pools at every run:
+        # a wrong shape from a hand-edited file must degrade, not crash (P32)
+        from .remote.devices import normalize_devices
+        s.remote_devices = normalize_devices(s.remote_devices)
 
         # fill in sensible defaults on first run
         if not s.orca_path:

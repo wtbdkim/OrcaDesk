@@ -85,7 +85,7 @@
   const FREQ_KINDS = ["freq", "ts_freq", "opt_freq", "ts_opt_freq"];
   const ST_LABEL = { done: "done", running: "running", waiting: "waiting for approval",
                      pending: "pending", failed: "failed", blocked: "blocked", cancelled: "cancelled",
-                     filtered: "filtered" };
+                     filtered: "filtered", disconnected: "disconnected" };
   /** the graph fields: where a block is drawn and what its incoming edge
    *  carries (its gate, and the energy condition filter_de / filter_top) */
   const PLACE_KEYS = ["system", "node", "col", "row", "after", "gate", "auto_pass",
@@ -848,6 +848,8 @@
    *  failed, a pending one that can never run is blocked, one held at its
    *  gate is waiting. @param {any} c */
   const calcState = (c) => c.state === "running" && c.faulted ? "failed"
+    // its remote device stopped answering: the orange box (design D7)
+    : c.state === "running" && c.disconnected ? "disconnected"
     : c.state === "pending" && _doomed.has(c.name) ? "blocked"
     : c.state === "pending" && _sieved.has(c.name) ? "filtered"
     : c.state === "pending" && c.waiting ? "waiting" : c.state;
@@ -855,7 +857,9 @@
   /** A block's state: the most pressing of its members'. @param {any} n */
   function nodeState(n) {
     const st = n.members.map(calcState);
-    for (const s of ["running", "failed", "waiting", "blocked", "pending", "cancelled"]) {
+    // a lost connection is the one to see first: it is the state that asks
+    // the user to look (is the device still on?)
+    for (const s of ["disconnected", "running", "failed", "waiting", "blocked", "pending", "cancelled"]) {
       if (st.indexOf(s) >= 0) return s;
     }
     // finished: done when anything passed, filtered when nothing did
@@ -1669,7 +1673,8 @@
             + (_sel.all ? "All of them are selected, so Remove takes them all."
                         : "Remove takes the selected one; drag over the block to take them all.")}</span>
         <button class="btn btn-sm btn-danger" type="button" data-a="remove"${
-          (_sel.all ? n.state === "running" : c.state === "running") ? " disabled" : ""}>${
+          (_sel.all ? n.state === "running" || n.state === "disconnected"
+                    : c.state === "running") ? " disabled" : ""}>${
           n.stack && _sel.all ? "Remove all " + n.members.length + "…" : "Remove…"}</button>
       </div>
       ${workflowButtons(true)}`;
@@ -2483,7 +2488,8 @@
       <div class="qe-saveas">
         <span class="qe-note"></span>
         <button class="btn btn-sm btn-danger" type="button" data-a="remove"${
-          nodes.some((/** @type {any} */ n) => n.state === "running") ? " disabled" : ""}>Remove all…</button>
+          nodes.some((/** @type {any} */ n) => n.state === "running" || n.state === "disconnected")
+            ? " disabled" : ""}>Remove all…</button>
       </div>
       <p class="hint">Copy workflow (Ctrl+C) keeps these steps (their types, levels, gates and connections) without the structure. Paste it after a block, into an empty row, or onto new .xyz rows (Ctrl+V). Delete removes them all. Ctrl+click adds or drops a block; Escape clears.</p>`;
     wireWorkflowButtons(host, nodes, L);

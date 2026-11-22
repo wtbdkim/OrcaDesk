@@ -25,9 +25,10 @@ from pathlib import Path
 from typing import Optional
 
 from ..core.queue import (
-    GATES, KNOWN_KINDS, REF_POINTS, Calculation, CalcState, GeometrySource,
-    QueueEngine, QueueCallbacks, gate_waiting, is_ref_point, ref_point_problem,
-    result_from_output, template_hess_problem, validate_result,
+    CLEANUP_PENDING_MESSAGE, GATES, KNOWN_KINDS, REF_POINTS, Calculation,
+    CalcState, GeometrySource, QueueEngine, QueueCallbacks, gate_waiting,
+    is_ref_point, ref_point_problem, result_from_output, template_hess_problem,
+    validate_result,
 )
 from ..core.input_generator import (CONSTRAINED_KINDS, JOB_PLACEHOLDER,
                                     SCAN_KINDS, StepConfig,
@@ -40,6 +41,7 @@ from ..core.structure import parse_block
 from ..core.runner import OrcaRunError
 from ..core import rundir
 from ..core.rundir import folder_name_problem, restored_run_dir
+from ..remote.ssh import valid_alias
 from ..core.procutil import process_matches
 from ..paths import data_dir, user_data_root
 # Wire-payload shapes (plain dicts at runtime; see schemas.py for the mirror
@@ -260,6 +262,8 @@ def calc_to_dict(c: Calculation, waiting: bool = False) -> CalcSummary:
         # only while the process lives: once the calc leaves RUNNING its state
         # says everything, and the flag is not reset on the way out
         faulted=bool(c.faulted) and c.state == CalcState.RUNNING,
+        # the device stopped answering (remote/, design D7): only while it runs
+        disconnected=bool(c.disconnected) and c.state == CalcState.RUNNING,
         # the queue editor's graph (core.queue.Calculation)
         system=c.system,
         node=c.node,
@@ -856,6 +860,8 @@ def calc_to_session_dict(c: Calculation) -> CalcFull:
         filter_top=int(c.filter_top or 0),
         rerun=bool(c.rerun),
         run_dir=c.run_dir or "",
+        device=c.device or "",
+        remote_dir=c.remote_dir or "",
     )
 
 
@@ -895,7 +901,41 @@ def calc_from_session_dict(d: dict) -> Calculation:
     # the workspace named after the calc (restored_run_dir); calc_from_dict
     # never reads it, so no client can point a calc's run at another path
     c.run_dir = restored_run_dir(d.get("run_dir"), c.name)
+    # where it ran (remote/): restored here only, like run_dir. A device is a
+    # Host alias ssh can take as an argument, a remote folder an absolute
+    # POSIX path; anything else reads as "this machine".
+    dev = d.get("device")
+    rdir = d.get("remote_dir")
+    c.device = dev if isinstance(dev, str) and valid_alias(dev) else ""
+    c.remote_dir = (rdir if c.device and isinstance(rdir, str) and rdir.startswith("/")
+                    else "")
     return c
+
+
+def _clean_cleanup_entry(e) -> "Optional[dict]":
+    """One remote clean-up entry in its exact shape, or None (the trust
+    boundary for a hand-edited session.json: the alias goes to ssh as an
+    argument, the folder into an rm -rf behind remote/runner's guard)."""
+    if not isinstance(e, dict):
+        return None
+    dev, rdir, name = e.get("device"), e.get("remote_dir"), e.get("calc_name")
+    if not (isinstance(dev, str) and valid_alias(dev)):
+        return None
+    if not (isinstance(rdir, str) and rdir.startswith("/")):
+        return None
+    pid, ct = e.get("pid"), e.get("create_time")
+    try:
+        pid = int(pid) if pid is not None and not isinstance(pid, bool) else None
+    except (TypeError, ValueError, OverflowError):
+        pid = None
+    try:
+        ct = float(ct) if ct is not None and not isinstance(ct, bool) else None
+    except (TypeError, ValueError, OverflowError):
+        ct = None
+    at = e.get("launched_at")
+    return {"device": dev, "pid": pid, "create_time": ct, "remote_dir": rdir,
+            "calc_name": name if isinstance(name, str) else "",
+            "launched_at": at if isinstance(at, str) else ""}
 
 
 def _ran_in_the_old_layout(c: Calculation) -> bool:
@@ -1014,6 +1054,13 @@ def reconcile_calcs(calcs: "list[Calculation]") -> None:
     """
     for c in calcs:
         if c.state == CalcState.RUNNING:
+            if c.device:
+                # A job on a remote device is left RUNNING untouched: judging
+                # it means an SSH call (seconds, or a timeout for a device
+                # that is off) and this runs on the UI thread before the window
+                # paints. The engine's reattach judges it in the background,
+                # fetching the folder first (remote/runner.py, design §7).
+                continue
             # CREST runs in WSL (Linux pid), so psutil can't judge it — use the
             # WSL-aware check. Everything else (ORCA) uses psutil process_matches.
             if c.kind.startswith("crest"):
@@ -1058,6 +1105,11 @@ class QueueStore:
         # the queue editor's lanes (system_from_dict dicts), in lane order;
         # persisted beside the calculations in session.json
         self._systems: list[dict] = []
+        # remote jobs a cancel could not reach (orcamgr/remote/, design §6.3):
+        # [{device, pid, create_time, remote_dir, calc_name, launched_at}],
+        # persisted in the session, settled when the device is back
+        self._remote_cleanup: list[dict] = []
+        self._settling: set = set()
         self._running = False
         # monotonically increasing version, bumped on every mutation so clients
         # can cheaply poll "did anything change?"
@@ -1271,7 +1323,7 @@ class QueueStore:
         client reads the limits from the settings payload instead. Duck-typed so
         the store never imports the engine."""
         idle = RunResources(cores_used=0, cores_budget=0, ram_used_mb=0,
-                            ram_budget_mb=0, jobs=0, max_jobs=0)
+                            ram_budget_mb=0, jobs=0, max_jobs=0, devices=[])
         eng = self._engine
         if eng is None:
             return idle
@@ -1663,7 +1715,8 @@ class QueueStore:
         the rest); state and result are not carried."""
         merged = {k: v for k, v in calc_to_session_dict(current).items()
                   if k not in ("state", "message", "output_path", "pid",
-                               "create_time", "rerun", "run_dir")}
+                               "create_time", "rerun", "run_dir",
+                               "device", "remote_dir")}
         merged.update(patch)
         if "kind" in patch and "config" not in patch and isinstance(
                 merged.get("config"), dict):
@@ -2269,6 +2322,7 @@ class QueueStore:
                 "schema": SESSION_SCHEMA,
                 "calculations": [calc_to_session_dict(c) for c in self._calcs],
                 "systems": copy.deepcopy(self._systems),
+                "remote_cleanup": copy.deepcopy(self._remote_cleanup),
             }
         try:
             path = _session_file()
@@ -2351,6 +2405,12 @@ class QueueStore:
         for c in restored:
             if c.system and c.system not in ids:
                 c.system = ""
+        raw_cleanup = data.get("remote_cleanup")
+        if not isinstance(raw_cleanup, list):
+            raw_cleanup = []
+        cleanup = [e for e in map(_clean_cleanup_entry, raw_cleanup) if e is not None]
+        with self._lock:
+            self._remote_cleanup = cleanup
         if not restored and not systems:
             return
         reconcile_calcs(restored)
@@ -2358,6 +2418,77 @@ class QueueStore:
             self._calcs = restored
             self._systems = systems
             self._version += 1
+
+    # ---- remote clean-up list (orcamgr/remote/, design §6.3) ----
+    def add_remote_cleanup(self, entry: dict) -> None:
+        """Remember a remote job a cancel could not reach. One entry per
+        remote folder (each launch has its own)."""
+        e = _clean_cleanup_entry(entry)
+        if e is None:
+            return
+        with self._lock:
+            self._remote_cleanup = [x for x in self._remote_cleanup
+                                    if x["remote_dir"] != e["remote_dir"]] + [e]
+            self._bump_and_save()
+
+    def remote_cleanup_entries(self, alias: str = "") -> "list[dict]":
+        with self._lock:
+            return [dict(e) for e in self._remote_cleanup
+                    if not alias or e["device"] == alias]
+
+    def forget_remote_device(self, alias: str) -> None:
+        """The device is gone from the SSH config or the settings: its entries
+        can never be settled, so they are dropped (design §6.3 step 5), and a
+        calc still saying so goes back to the plain cancel message."""
+        with self._lock:
+            gone = {e["calc_name"] for e in self._remote_cleanup if e["device"] == alias}
+            if not gone:
+                return
+            self._remote_cleanup = [e for e in self._remote_cleanup
+                                    if e["device"] != alias]
+            for c in self._calcs:
+                if c.name in gone and c.message == CLEANUP_PENDING_MESSAGE:
+                    c.message = "Cancelled by user."
+            self._bump_and_save()
+
+    def settle_remote_cleanup(self, alias: str, transport, workdir: str,
+                              workspace_root: str) -> int:
+        """Settle every entry for ``alias`` on a device found reachable again:
+        the remote process is stopped if it is still the recorded one; a calc
+        not re-run since (still CANCELLED, same remote folder) gets its whole
+        folder back first; the remote copy is deleted last. Runs the SSH calls
+        outside the lock, on the caller's (background) thread -- never the UI
+        thread. Returns how many entries were settled."""
+        from ..remote.runner import process_cleanup
+        with self._lock:
+            if alias in self._settling:
+                return 0
+            self._settling.add(alias)
+            todo = [dict(e) for e in self._remote_cleanup if e["device"] == alias]
+        done = 0
+        try:
+            for e in todo:
+                with self._lock:
+                    calc = self.get(e["calc_name"])
+                    same = (calc is not None and calc.state == CalcState.CANCELLED
+                            and calc.remote_dir == e["remote_dir"])
+                    local = (rundir.run_folder(workspace_root, calc,
+                                               self.system_name(calc.system))
+                             if same else None)
+                if not process_cleanup(transport, e, workdir, local):
+                    continue
+                done += 1
+                with self._lock:
+                    self._remote_cleanup = [x for x in self._remote_cleanup
+                                            if x["remote_dir"] != e["remote_dir"]]
+                    calc = self.get(e["calc_name"])
+                    if calc is not None and calc.message == CLEANUP_PENDING_MESSAGE:
+                        calc.message = "Cancelled by user."
+                    self._bump_and_save()
+        finally:
+            with self._lock:
+                self._settling.discard(alias)
+        return done
 
     def rerun_names(self) -> "set[str]":
         """The rows rerun_calc put back that have not started (is_rerun)."""
@@ -2434,7 +2565,11 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
                         skip_names: "set[str] | None" = None,
                         mlip_envs: "list | None" = None,
                         crest_distro: str = "",
-                        budget=None):
+                        budget=None,
+                        device_entries: "list | None" = None,
+                        transport=None,
+                        device_info=None,
+                        device_probe=None):
     """
     Returns a zero-arg factory that builds a QueueEngine whose callbacks feed
     the given store (log buffer + version bumps). Used by start_run().
@@ -2449,6 +2584,10 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
     budget: a core/resources.ResourceBudget capping how many calculations run at
     once and how many cores / how much memory they may occupy together. None =
     the default one-at-a-time queue.
+    device_entries / transport / device_info / device_probe: the remote
+    devices (orcamgr/remote/) -- Settings.remote_devices, the SSH transport,
+    the latest probe per alias and a blocking re-probe. None = this machine
+    only.
 
     Every run entry point builds its engine here (the Run button, the startup
     resume, the phone's /api/run), so this is where a calc the user moved on
@@ -2465,6 +2604,7 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
         cb = QueueCallbacks(
             log=lambda msg, level, calc="": store.append_log(msg, level, calc),
             calc_update=lambda i, c: store.touch(),
+            remote_cleanup=store.add_remote_cleanup,
         )
         # the store's own lock doubles as the engine's queue lock: run_all
         # walks the store's live list (start_run), so the walk's pick step and
@@ -2477,5 +2617,7 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
         return QueueEngine(orca_path, workspace_root, cb, skip_names=keep,
                            mlip_envs=envs, crest_distro=crest_pref,
                            queue_lock=store._lock, budget=budget,
-                           system_names=store.system_name)
+                           system_names=store.system_name,
+                           device_entries=device_entries, transport=transport,
+                           device_info=device_info, device_probe=device_probe)
     return factory

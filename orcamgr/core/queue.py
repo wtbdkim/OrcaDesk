@@ -78,6 +78,11 @@ from .parser import parse_file, ParseResult
 from .procutil import process_matches
 from .rundir import planned_run_dir, result_folder, run_dir_of, run_folder
 from .xyzutil import as_xyz_file
+import logging
+from ..remote.devices import resolve_device
+from ..remote.runner import (RemoteCancelUnreachable, RemoteOrcaRunner,
+                             RemoteUnavailable, launch_stamp, remote_dir_for,
+                             remote_safe_name)
 
 
 # How long the dispatcher sleeps between re-scans while it waits for a job to
@@ -161,6 +166,19 @@ class Calculation:
     # ran. "" = not started yet: the folder follows the system's current name.
     # Persisted in the session; never read from a client (calc_from_dict).
     run_dir: str = ""
+    # where it runs (orcamgr/remote/): "" = this machine, else the ~/.ssh/config
+    # Host alias of a remote device. Recorded by the engine when the calc
+    # starts -- with it, pid/create_time name the REMOTE process (its /proc
+    # start time) -- and remote_dir is the absolute folder of that launch on
+    # the device ({workdir}/{run_dir}.{stamp}). Persisted in the session (a
+    # reattach needs both); never read from a client (calc_from_dict).
+    device: str = ""
+    remote_dir: str = ""
+    # set while RUNNING when the device has stopped answering (two syncs in a
+    # row could not reach it): the row
+    # shows the orange "Disconnected" box (design D7). Not persisted: a
+    # reattach judges it again.
+    disconnected: bool = False
 
     # ---- the queue editor's graph (all default to "standalone, as today") ----
     # system: the lane (one molecule) this calc belongs to, a QueueStore system
@@ -206,6 +224,11 @@ class QueueCallbacks:
     # filter and the per-job convergence graphs both key off it).
     log: Callable[..., None] = lambda msg, level, calc="": None
     calc_update: Callable[[int, "Calculation"], None] = lambda i, c: None
+    # remote devices (orcamgr/remote/): a cancel that could not reach its
+    # device leaves this entry for the store's clean-up list; a device found
+    # reachable again during a run is reported so that list can be settled
+    remote_cleanup: Callable[[dict], None] = lambda entry: None
+    device_reachable: Callable[[str], None] = lambda alias: None
 
 
 @dataclass
@@ -222,6 +245,9 @@ class _JobSlot:
     gpu: bool = False
     runner: object = None
     orca_launched: bool = False
+    # where it runs: "" = this machine, else a remote device's alias. Each
+    # device is its own admission pool (_fits sums only its own slots).
+    device: str = ""
 
 
 def _xyz_from_geometry(result: ParseResult) -> str:
@@ -425,6 +451,33 @@ def has_filter(calc) -> bool:
     """Whether the edge into ``calc`` carries an energy condition."""
     return (getattr(calc, "filter_de", None) is not None
             or int(getattr(calc, "filter_top", 0) or 0) > 0)
+
+
+_remote_log = logging.getLogger("orcamgr.remote")
+
+# What a calc cancelled on a device that could not be reached says until the
+# store's clean-up list has settled its remote job (design §6.3). The store
+# puts the plain "Cancelled by user." back when it is done.
+CLEANUP_PENDING_MESSAGE = ("Cancelled — the compute device could not be reached; "
+                           "its remote job is tidied up when the device is back.")
+
+# A drive-letter path in a hand-written input (%moinp "D:/x.gbw"): a file on
+# THIS machine that a remote device does not have.
+_DRIVE_PATH_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]")
+
+
+def remote_capable(calc, run_dir: str) -> bool:
+    """Whether ``calc`` may run on a remote device at all (design §2): an
+    ORCA kind (MLIP and CREST need their own environments, which only this
+    machine has), no GPU, no local absolute path in a raw input, and a run
+    folder the transport carries safely (``run_dir`` is the folder it runs
+    in, relative to the workspace). Anything else runs here."""
+    kind = getattr(calc, "kind", "") or ""
+    if kind.startswith(("mlip", "crest")) or uses_gpu(calc):
+        return False
+    if getattr(calc, "is_raw", False) and _DRIVE_PATH_RE.search(calc.raw_text or ""):
+        return False
+    return remote_safe_name(run_dir) and remote_safe_name(calc.name)
 # ref_point -> the file ORCA writes for that IRC end, beside {ref}.out
 _IRC_END_FILES = {"irc_f": "_IRC_F.xyz", "irc_b": "_IRC_B.xyz"}
 # The kinds whose run can write those end files: an IRC, and a "general" calc
@@ -711,6 +764,9 @@ def find_parent_hessian(calc: "Calculation", by_name: "dict",
 class QueueEngine:
     """Runs a list of Calculations in order, resolving geometry references."""
 
+    # seconds between re-probes of the remote devices during a run (design §5)
+    DEVICE_WATCH = 60.0
+
     def __init__(self, orca_path: str, workspace_root: str,
                  callbacks: Optional[QueueCallbacks] = None,
                  skip_names: Optional[set] = None,
@@ -718,7 +774,11 @@ class QueueEngine:
                  crest_distro: str = "",
                  queue_lock=None,
                  budget: "Optional[ResourceBudget]" = None,
-                 system_names: "Optional[Callable[[str], str]]" = None):
+                 system_names: "Optional[Callable[[str], str]]" = None,
+                 device_entries: "Optional[list]" = None,
+                 transport=None,
+                 device_info: "Optional[Callable[[str], object]]" = None,
+                 device_probe: "Optional[Callable[[dict], object]]" = None):
         self.orca_path = orca_path
         # One OrcaRunner per JOB, not per engine: with several calculations in
         # flight each needs its own process handle and its own cancel/detach
@@ -777,6 +837,26 @@ class QueueEngine:
         # CPU/RAM admission limits, resolved against this machine at construction
         # (0 = auto). max_jobs 1 is the classic one-at-a-time queue.
         self.budget = (budget or ResourceBudget()).resolved()
+        # Remote devices (orcamgr/remote/, design §5): the enabled settings
+        # entries, in the order the user listed them -- which is the order a
+        # job that does not fit here is offered to them. Each is resolved
+        # against its latest probe (device_info) into a RemoteDevice with its
+        # own budget; device_probe re-probes one during the run (the watch
+        # thread, every DEVICE_WATCH seconds), so a device that comes on
+        # mid-run starts taking jobs and one that drops off stops.
+        self._transport = transport
+        self._device_entries = [dict(e) for e in (device_entries or [])
+                                if e.get("enabled")] if transport is not None else []
+        self._device_info = device_info or (lambda alias: None)
+        self._device_probe = device_probe
+        self._devices: dict = {
+            e["alias"]: resolve_device(e, self._device_info(e["alias"]))
+            for e in self._device_entries}
+        # rows to offer again (a device could not take them: RemoteUnavailable)
+        self._unsee: "set[int]" = set()
+        # where _pick_ready placed a row, for _start_job (name -> device)
+        self._placed: "dict[str, str]" = {}
+        self._watch_stop = threading.Event()
         # In-flight jobs by calc name -> _JobSlot (its reserved cores/RAM and its
         # backend runner). Guarded by _queue_lock; _slot_cv wakes the dispatcher
         # when a job finishes and its budget comes back.
@@ -824,6 +904,30 @@ class QueueEngine:
         can reach it, and replay a stop that landed before it existed."""
         self._job.runner = runner
         self._forward_pending_signals(runner)
+        return runner
+
+    def _remote_runner(self, calc: Calculation, index: int, device: str):
+        """A RemoteOrcaRunner for ``calc`` on ``device``, wired to the row:
+        the disconnected flag (design D7) and a fetch that keeps failing
+        (§6.4) reach the queue as calc updates. A device no longer configured
+        (a reattach after the user removed it) still gets a runner: it can
+        watch and fetch, but with no workdir it never deletes (the guard)."""
+        dev = self._devices.get(device)
+        runner = RemoteOrcaRunner(self._transport, device,
+                                  dev.orca_path if dev else "",
+                                  dev.workdir if dev else "",
+                                  calc.remote_dir)
+
+        def flag(lost: bool) -> None:
+            calc.disconnected = lost
+            self.cb.calc_update(index, calc)
+
+        def notice(msg: str) -> None:
+            calc.message = msg
+            self.cb.calc_update(index, calc)
+
+        runner.on_disconnect = flag
+        runner.on_notice = notice
         return runner
 
     def _live_runners(self) -> list:
@@ -1086,6 +1190,23 @@ class QueueEngine:
         if calc.state == CalcState.RUNNING and calc.output_path:
             out_path = Path(calc.output_path)
 
+        # A job left running on a remote device: its liveness is a question
+        # for the device, never for psutil here. The remote runner's monitor
+        # asks at once -- alive: tail on; dead (it ended while ORCAdesk was
+        # closed): fetch the folder, and the judgment below reads it; no
+        # answer: keep it RUNNING, try again, show "Disconnected".
+        if calc.state == CalcState.RUNNING and calc.device:
+            runner = self._use_runner(self._remote_runner(calc, index, calc.device))
+            runner.adopt(calc.pid, calc.create_time)
+            self._orca_launched = True
+            calc.output_path = str(out_path)
+            self.cb.log(f"[{calc.name}] reattaching to ORCA still running...",
+                        "info", calc.name)
+            self.cb.calc_update(index, calc)
+            start_pos = runner.end_position(out_path)
+            self._monitor_and_finish(calc, index, out_path, start_pos=start_pos)
+            return
+
         # Reattach path: this calc was left RUNNING by a previous session and its
         # ORCA process is genuinely still alive — don't relaunch, just resume
         # monitoring the live process and tailing its .out.
@@ -1173,7 +1294,21 @@ class QueueEngine:
         self._stage_irc_hessian(calc, calc_dir, text)
 
         self.cb.log(f"[{calc.name}] ({calc.kind}) running ORCA...", "info", calc.name)
-        runner = self._use_runner(self._orca_runner_factory())
+        device = self._job.device
+        if device:
+            # its remote folder is decided and recorded (persisted with the
+            # calc_update) before anything is started there, so a launch the
+            # app closes on is found again (design §6.2)
+            dev = self._devices.get(device)
+            calc.device = device
+            calc.remote_dir = remote_dir_for(dev.workdir if dev else "",
+                                             calc.run_dir, launch_stamp())
+            self.cb.calc_update(index, calc)
+            runner = self._use_runner(self._remote_runner(calc, index, device))
+        else:
+            calc.device = ""
+            calc.remote_dir = ""
+            runner = self._use_runner(self._orca_runner_factory())
         pid, create_time = runner.launch(inp_path, out_path)
         # From here the .out on disk is THIS attempt's output — a failure
         # diagnosis may trust it (see _failure_reason).
@@ -2059,12 +2194,60 @@ class QueueEngine:
         # `seen` maps id() -> the object itself: the value pins the object so a
         # removed row's id can't be recycled onto a new row mid-run.
         seen: dict[int, Calculation] = {}
+        watch = None
+        if self._device_entries and self._device_probe is not None:
+            self._watch_stop.clear()
+            watch = threading.Thread(target=self._watch_devices, daemon=True,
+                                     name="orcadesk-device-watch")
+            watch.start()
         try:
             self._run_walk(calcs, seen)
         finally:
+            self._watch_stop.set()
             with self._queue_lock:
                 self._active_names.clear()
                 self._slots.clear()
+
+    def _watch_devices(self) -> None:
+        """Re-probe the enabled remote devices while the run lasts: at once for
+        those not online at the start, then all of them every DEVICE_WATCH
+        seconds. A probe that finds a device ready re-resolves its budget (a
+        device off at the start had none) and reports it reachable, so the
+        store can settle its clean-up list (design §6.3)."""
+        first = True
+        while not self._watch_stop.is_set():
+            for entry in list(self._device_entries):
+                alias = entry["alias"]
+                with self._queue_lock:
+                    dev = self._devices.get(alias)
+                if first and dev is not None and dev.online:
+                    continue
+                try:
+                    info = self._device_probe(entry)
+                except Exception:
+                    info = None
+                if self._watch_stop.is_set():
+                    return
+                fresh = resolve_device(entry, info)
+                with self._slot_cv:
+                    self._devices[alias] = fresh
+                    self._slot_cv.notify_all()
+                if fresh.online:
+                    try:
+                        self.cb.device_reachable(alias)
+                    except Exception:
+                        pass
+            first = False
+            self._watch_stop.wait(self.DEVICE_WATCH)
+
+    def _device_offline(self, alias: str) -> None:
+        """A device failed to take a job: no more jobs for it until the watch
+        thread finds it ready again (design §5)."""
+        with self._slot_cv:
+            dev = self._devices.get(alias)
+            if dev is not None:
+                dev.online = False
+            self._slot_cv.notify_all()
 
     def _run_walk(self, calcs: list[Calculation], seen: dict) -> None:
         """One pass over the live queue, running up to `budget.max_jobs`
@@ -2098,6 +2281,12 @@ class QueueEngine:
                 with self._slot_cv:
                     if self._should_stop(calcs):
                         break
+                    if self._unsee:
+                        # a device could not take these (RemoteUnavailable):
+                        # offer them again, to wherever has room now
+                        for cid in self._unsee:
+                            seen.pop(cid, None)
+                        self._unsee.clear()
                     self._to_load = {}
                     picked = self._pick_ready(calcs, seen)
                     if picked is None and self._to_load:
@@ -2197,8 +2386,12 @@ class QueueEngine:
             if self._gate_holds(c):
                 continue
             if ignore_budget:
+                self._placed[c.name] = (c.device if c.state == CalcState.RUNNING
+                                        else "")
                 return j, c
-            if self._fits(self._slot_for(c)):
+            where = self._place(c)
+            if where is not None:
+                self._placed[c.name] = where
                 return j, c
         return None
 
@@ -2269,23 +2462,26 @@ class QueueEngine:
                         ram_mb=estimated_ram_mb(calc), gpu=uses_gpu(calc))
 
     def _fits(self, slot: "_JobSlot") -> bool:
-        """Does `slot` fit alongside what is already running? Caller holds the
-        lock. Jobs, cores and estimated memory are all hard limits; see
+        """Does `slot` fit alongside what is already running ON ITS DEVICE
+        (slot.device: "" = this machine)? Caller holds the lock. Jobs, cores
+        and estimated memory are all hard limits, per device; see
         core/resources.py for how a calculation's cost is read."""
-        if len(self._slots) >= self.budget.max_jobs:
+        if slot.device:
+            return self._fits_remote(slot)
+        local = [s for s in self._slots.values() if not s.device]
+        if len(local) >= self.budget.max_jobs:
             return False
         # One GPU job at a time. A CUDA job is charged a single core (its CPU
         # use is marginal), so the core budget would happily admit a dozen of
         # them onto one card — where they do not queue politely, they run out of
         # VRAM. There is no budget number for video memory: ORCAdesk cannot see
         # inside the user's torch, so the honest limit is a lane.
-        if slot.gpu and any(s.gpu for s in self._slots.values()):
+        if slot.gpu and any(s.gpu for s in local):
             return False
 
-        if sum(s.cores for s in self._slots.values()) + slot.cores > self.budget.cores:
+        if sum(s.cores for s in local) + slot.cores > self.budget.cores:
             return False
-        if (sum(s.ram_mb for s in self._slots.values()) + slot.ram_mb
-                > self.budget.ram_mb):
+        if sum(s.ram_mb for s in local) + slot.ram_mb > self.budget.ram_mb:
             return False
         # The memory budget is spent against ESTIMATES, and they are wrong in
         # both directions (core/resources.py): ORCA may exceed its %maxcore,
@@ -2294,11 +2490,55 @@ class QueueEngine:
         # when nothing is in flight — the first job must always be able to
         # start, whatever the memory situation, or the queue could stall
         # outright.
-        if self._slots:
+        if local:
             headroom = ram_headroom_mb()
             if headroom and slot.ram_mb > headroom:
                 return False
         return True
+
+    def _fits_remote(self, slot: "_JobSlot") -> bool:
+        """The remote half of _fits: the device must be online, carry MPI for a
+        parallel job, and have room in its own budget; free memory is the
+        device's last probed MemAvailable, asked only when it already runs
+        something (the same rule as ram_headroom_mb here)."""
+        dev = self._devices.get(slot.device)
+        if dev is None or not dev.online:
+            return False
+        if slot.cores > 1 and not dev.has_mpi:
+            return False
+        mine = [s for s in self._slots.values() if s.device == slot.device]
+        b = dev.budget
+        if len(mine) >= b.max_jobs:
+            return False
+        if sum(s.cores for s in mine) + slot.cores > b.cores:
+            return False
+        if sum(s.ram_mb for s in mine) + slot.ram_mb > b.ram_mb:
+            return False
+        if mine and dev.mem_avail_mb:
+            if slot.ram_mb > max(0, dev.mem_avail_mb - 2048):
+                return False
+        return True
+
+    def _place(self, calc: Calculation) -> "Optional[str]":
+        """Where ``calc`` would run now: "" (this machine), a device alias, or
+        None when nowhere has room. This machine first, then the devices in
+        the user's order (design §5). A RUNNING row with a device is a job
+        already there to reattach: it goes back to its device whatever that
+        device's state, or the job would be orphaned. Caller holds the lock."""
+        if calc.state == CalcState.RUNNING:
+            if calc.device:
+                return calc.device
+            return "" if self._fits(self._slot_for(calc)) else None
+        slot = self._slot_for(calc)
+        if self._fits(slot):
+            return ""
+        if self._devices and remote_capable(
+                calc, run_dir_of(calc, self._system_name(calc))):
+            for alias in self._devices:
+                slot.device = alias
+                if self._fits(slot):
+                    return alias
+        return None
 
     def _release(self, name: str) -> None:
         """Drop a picked-but-not-started row's claim on the in-flight set."""
@@ -2382,6 +2622,10 @@ class QueueEngine:
         on to the rows behind it."""
         slot = self._slot_for(calc)
         with self._slot_cv:
+            slot.device = self._placed.pop(calc.name, "")
+            # a remote job to reattach holds its slot whatever its device says
+            # (it is already running there): never waited on, never requeued
+            forced = calc.state == CalcState.RUNNING and bool(slot.device)
             # _pick_ready already admitted this row — but its RAM test consults
             # the machine's live free memory, which can drop between the pick
             # and here. Waiting it out parked the dispatcher on this one row
@@ -2391,7 +2635,7 @@ class QueueEngine:
             # something is in flight that will free room, and re-offer the row
             # to the scan instead of holding it.
             waited = 0.0
-            while self._slots and not self._fits(slot):
+            while not forced and self._slots and not self._fits(slot):
                 if self._stop_pending():
                     break
                 if waited >= _REFIT_GIVE_UP:
@@ -2404,7 +2648,8 @@ class QueueEngine:
                 self._active_names.discard(calc.name)
                 self._slot_cv.notify_all()
                 return False
-            if not self._fits(slot) and self.budget.max_jobs > 1:
+            if (not forced and not slot.device and not self._fits(slot)
+                    and self.budget.max_jobs > 1):
                 self.cb.log(
                     f"[{calc.name}] needs {slot.cores} core(s) / "
                     f"{slot.ram_mb} MB — more than the whole budget "
@@ -2447,13 +2692,32 @@ class QueueEngine:
         the store for the queue snapshot (duck-typed, so the store never imports
         the engine)."""
         with self._queue_lock:
+            local = [s for s in self._slots.values() if not s.device]
+            devices = []
+            for alias, dev in self._devices.items():
+                mine = [s for s in self._slots.values() if s.device == alias]
+                lost = any(getattr(self._by_name.get(s.name), "disconnected", False)
+                           for s in mine)
+                devices.append({
+                    "id": alias,
+                    "cores_used": sum(s.cores for s in mine),
+                    "cores_budget": dev.budget.cores,
+                    "ram_used_mb": sum(s.ram_mb for s in mine),
+                    "ram_budget_mb": dev.budget.ram_mb,
+                    "jobs": len(mine),
+                    "max_jobs": dev.budget.max_jobs,
+                    "online": bool(dev.online) and not lost,
+                })
             return {
-                "cores_used": sum(s.cores for s in self._slots.values()),
+                # this machine (the figures the rail always showed)
+                "cores_used": sum(s.cores for s in local),
                 "cores_budget": self.budget.cores,
-                "ram_used_mb": sum(s.ram_mb for s in self._slots.values()),
+                "ram_used_mb": sum(s.ram_mb for s in local),
                 "ram_budget_mb": self.budget.ram_mb,
-                "jobs": len(self._slots),
+                "jobs": len(local),
                 "max_jobs": self.budget.max_jobs,
+                # each enabled remote device, in the user's order
+                "devices": devices,
             }
 
     def _stop_pending(self) -> bool:
@@ -2711,6 +2975,27 @@ class QueueEngine:
                 self._run_crest_calc(calc, i)
             else:
                 self._run_calc(calc, i)
+        except RemoteUnavailable as e:
+            # The device could not take it (upload or start failed on the
+            # transport): not the calculation's failure. The device is offline
+            # until the watch finds it ready, and the row goes back to PENDING
+            # and is offered again -- here or on another device (design §5).
+            self._device_offline(calc.device or self._job.device)
+            calc.state = CalcState.PENDING
+            calc.message = ""
+            calc.pid = None
+            calc.create_time = None
+            calc.device = ""
+            calc.remote_dir = ""
+            calc.disconnected = False
+            if not had_run_dir:
+                calc.run_dir = ""
+            with self._slot_cv:
+                self._unsee.add(id(calc))
+                self._slot_cv.notify_all()
+            _remote_log.warning("%s not started remotely: %s", calc.name, e)
+            self.cb.calc_update(i, calc)
+            return True
         except OrcaDetached:
             # app shutdown mid-calc: leave THIS calc RUNNING (its ORCA keeps
             # going headless; pid is persisted) and stop processing so it can
@@ -2731,7 +3016,7 @@ class QueueEngine:
                 self.cb.log(f"[{calc.name}] left running in the background.",
                             "info", calc.name)
             return False
-        except OrcaCancelled:
+        except OrcaCancelled as e_cancel:
             # user stopped the run mid-calc: mark THIS calc CANCELLED (not
             # FAILED) and do NOT block its dependents. The remaining PENDING
             # calcs are left as-is — the top-of-loop cancel guard breaks out
@@ -2740,6 +3025,13 @@ class QueueEngine:
             calc.message = "Cancelled by user."
             calc.pid = None
             calc.create_time = None
+            calc.disconnected = False
+            if isinstance(e_cancel, RemoteCancelUnreachable):
+                # the device could not be reached: cancelled here all the
+                # same, and its remote job is settled when it is back
+                # (design §6.3) -- said, because it may still be running
+                calc.message = CLEANUP_PENDING_MESSAGE
+                self.cb.remote_cleanup(e_cancel.entry)
             self.cb.log(f"[{calc.name}] cancelled.", "info", calc.name)
             self.cb.calc_update(i, calc)
         except OrcaFiltered as e:

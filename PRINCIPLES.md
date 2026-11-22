@@ -781,6 +781,14 @@ the verbatim rule (P26) precisely where the user was most explicit. The
 cost is therefore *read* from what will actually execute — a raw input's
 own text, not the hidden form field.
 
+With remote devices (`orcamgr/remote/`) the budget is **one pool per device**:
+this machine's (the settings above) and each enabled SSH device's own (its
+caps, else what its probe found). A calculation is admitted to the first pool
+it fits — this machine first, then the devices in the user's order — and only
+its own pool's slots count against it. The cost is read the same way
+everywhere; a device never rewrites `%pal` either, it only declines a
+parallel job when it has no MPI.
+
 The one number ORCAdesk *does* change is a **generated** input's `%pal nprocs`
 when the run is a numerical frequency asking for more processes than it has
 displacements. ORCA runs one displaced-geometry gradient per process and hangs

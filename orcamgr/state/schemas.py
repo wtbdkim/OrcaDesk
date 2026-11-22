@@ -54,6 +54,9 @@ class CalcSummary(TypedDict):
     # RUNNING only: ORCA printed a fatal marker but its process is still alive
     # — the run is lost, the row stays among the running ones
     faulted: bool
+    # RUNNING only: its remote device stopped answering (orcamgr/remote/) --
+    # the orange "Disconnected" box (design D7)
+    disconnected: bool
     # the queue editor's graph (core.queue.Calculation; all default to
     # "standalone, as today")
     system: str               # lane (system id); "" = a standalone calc
@@ -112,6 +115,11 @@ class CalcFull(TypedDict):
     # started. Session restore checks it (restored_run_dir); calc_from_dict
     # never reads it, so a client cannot set it.
     run_dir: str
+    # where it ran (orcamgr/remote/): "" = this machine, else a Host alias;
+    # remote_dir the absolute folder of that launch on the device. Recorded
+    # by the engine, restored from the session only, like run_dir.
+    device: str
+    remote_dir: str
 
 
 # ---- queue snapshot / log ---------------------------------------------------
@@ -200,6 +208,58 @@ class RunResources(TypedDict):
     ram_budget_mb: int
     jobs: int
     max_jobs: int
+    # the figures above are THIS machine's; each enabled remote device has
+    # its own pool (orcamgr/remote/, design §5), in the user's order
+    devices: "list[DeviceUsage]"
+
+
+class DeviceUsage(TypedDict):
+    """One remote device's share of a run (RunResources.devices)."""
+    id: str                   # the ~/.ssh/config Host alias
+    cores_used: int
+    cores_budget: int
+    ram_used_mb: int
+    ram_budget_mb: int
+    jobs: int
+    max_jobs: int
+    online: bool              # False: off, unreachable, or a job lost contact
+
+
+# ---- remote devices (desktop bridge) ------------------------------------------
+
+class DevicePayload(TypedDict):
+    """One remote device (Bridge.get_devices): its latest probe merged with
+    its settings entry. Detected from ~/.ssh/config, never typed in (P58)."""
+    alias: str                # the Host alias
+    state: str                # "unknown" | "checking" | "ready" | "error"
+    message: str              # plain-language reason when not ready
+    os: str
+    cores: int                # probed (physical where it can tell)
+    mem_total_mb: int
+    mem_avail_mb: int
+    orca_path: str            # where ORCA was found (or the path set)
+    orca_version: str         # from the install folder's name; "" unknown
+    has_mpi: bool             # mpirun present: parallel jobs may go there
+    has_setsid: bool
+    workdir: str              # the run folder on the device, resolved
+    free_disk_mb: int
+    in_config: bool           # still a Host in ~/.ssh/config
+    cleanup_pending: int      # remote jobs a cancel left to tidy up there
+    # the settings entry (Settings.remote_devices)
+    enabled: bool
+    max_jobs: int             # 0 = as many as its cores allow
+    cores_cap: int            # 0 = the probed cores
+    ram_cap_mb: int           # 0 = 75% of the probed memory
+    orca_path_setting: str    # "" = find it
+    workdir_setting: str
+
+
+class DevicesPayload(TypedDict):
+    """Bridge.get_devices / detect_devices / set_remote_device."""
+    ssh: bool                 # an OpenSSH client is on this machine
+    config_path: str          # the ~/.ssh/config read
+    devices: "list[DevicePayload]"
+    save_error: str           # "" = the settings change was written
 
 
 # ---- settings / about (desktop bridge) --------------------------------------

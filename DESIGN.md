@@ -451,11 +451,12 @@ are the desktop's; mobile drift is tracked in B6.
 | `--info` | `#a1a1aa` | `#52525b` | neutral log info |
 | `--orca` | `#71717a` | `#52525b` | raw ORCA output lines |
 | `--raw` | `#c084fc` | `#0f766e` (teal) | raw/MLIP special modes |
+| `--lost` | `#fb923c` | `#ea580c` | a job on a remote device that stopped answering ("Disconnected") — neither running (amber) nor failed (red); defined in the named *remote devices* block at the bottom of `app.css` |
 
 Each semantic color also carries **tint tokens** on the §11.19 alpha ladder
 (`--ok-tint`/`--ok-tint-strong`, `--warn-tint`/`--warn-tint-bg`,
 `--err-tint`/`--err-tint-bg`/`--err-tint-hover`/`--err-outline`,
-`--raw-tint`), redefined per theme next to their base colors — components
+`--raw-tint`, `--lost-tint`), redefined per theme next to their base colors — components
 consume the tint token, never a hand-mixed rgba (D13).
 
 ### Chart criterion series (`--crit-*`)

@@ -337,9 +337,11 @@
     // a running calc ORCA has already failed (its process lives on -- see the
     // rail's row()) reads as failed here too
     const lost = c.state === "running" && !!c.faulted;
+    // its remote device stopped answering: the orange chip (design D7)
+    const away = c.state === "running" && !lost && !!c.disconnected;
     const badge = q(".acts .badge");
-    badge.textContent = lost ? "failed" : c.state;
-    badge.className = "badge " + (lost ? "failed" : c.state);
+    badge.textContent = lost ? "failed" : away ? "disconnected" : c.state;
+    badge.className = "badge " + (lost ? "failed" : away ? "lost" : c.state);
 
     el.className = "cell" + (lost ? " dead" : c.state === "running" ? " live"
                            : c.state === "failed" ? " dead" : "");

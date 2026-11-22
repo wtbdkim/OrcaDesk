@@ -97,7 +97,12 @@ from ..state.schemas import (
     InpSetsResult, InpSetResult, SystemResult, QueueOpsResult,
     XyzFilesResult, WorkflowsResult, WorkflowResult,
     IrcStructureFile, IrcStructuresResult,
+    DevicePayload, DevicesPayload,
 )
+from ..remote.devices import (DEFAULT_WORKDIR, DeviceInfo, DeviceMonitor,
+                              default_ssh_config, normalize_device,
+                              normalize_devices, parse_ssh_config)
+from ..remote.ssh import SshTransport
 
 # Ceiling on the workspace scan behind the Results picker. Generous next to any
 # real workspace, and the point is only that a pathological folder cannot turn a
@@ -117,6 +122,31 @@ _CREST_ENSEMBLE = {"crest_conformers.xyz", "crest_best.xyz"}
 _LOG_TAIL_MAX = 2000
 _LOG_TAIL_BYTES_PER_LINE = 400
 _LOG_TAIL_MAX_BYTES = 4 << 20
+
+
+_REMOTE_LOG_DONE = False
+
+
+def _install_remote_log() -> None:
+    """Send the ``orcamgr.remote`` logger (transport detail the UI never
+    shows, design D6) to a rotating ``remote.log`` in the user data folder,
+    once per process. Best-effort: no log is better than no app."""
+    global _REMOTE_LOG_DONE
+    if _REMOTE_LOG_DONE:
+        return
+    _REMOTE_LOG_DONE = True
+    import logging
+    from logging.handlers import RotatingFileHandler
+    try:
+        h = RotatingFileHandler(str(user_data_root() / "remote.log"),
+                                maxBytes=1 << 20, backupCount=2, encoding="utf-8")
+    except OSError:
+        return
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    lg = logging.getLogger("orcamgr.remote")
+    lg.addHandler(h)
+    lg.setLevel(logging.INFO)
+    lg.propagate = False
 
 
 def _bond_pairs(bonds_json: str):
@@ -201,6 +231,18 @@ class Bridge(QObject):
                                          "gpu": False, "gpu_name": "",
                                          "cuda_index": "", "backends": []}
         self._start_mlip_install_probe()
+        # Remote compute devices (orcamgr/remote/): the ~/.ssh/config hosts,
+        # probed on daemon threads; the Settings card polls get_devices(). A
+        # probe that finds a device ready settles the clean-up list a cancel
+        # left there. The enabled ones are probed now, so the first run
+        # already knows which are up.
+        _install_remote_log()
+        self._remote_transport = SshTransport()
+        self._remote = DeviceMonitor(self._remote_transport,
+                                     on_ready=self._remote_device_ready)
+        enabled = [d for d in self.settings.remote_devices if d.get("enabled")]
+        if enabled and self._remote_transport.available():
+            self._remote.refresh(enabled)
         # Orbital / density cubes for the Results-tab 3D viewer. orca_plot runs
         # from ~0.2 s (one MO) to ~10 s (an SCF density) on a mid-sized system —
         # short, but not short enough to block Qt's UI thread — so it follows the
@@ -1177,6 +1219,137 @@ class Bridge(QObject):
 
         threading.Thread(target=_worker, daemon=True,
                          name="orcadesk-crest-install").start()
+
+    # ---------------------------------------------------- remote devices
+    def _remote_device_ready(self, alias: str, info: DeviceInfo) -> None:
+        """A probe found ``alias`` ready (probe thread): settle the remote
+        jobs a cancel could not reach there (design §6.3)."""
+        if self.store.remote_cleanup_entries(alias):
+            self.store.settle_remote_cleanup(alias, self._remote_transport,
+                                             info.workdir,
+                                             self.settings.workspace_root)
+
+    def _probe_device_now(self, entry: dict):
+        """Blocking re-probe for the engine's device watch (its own thread)."""
+        self._remote.refresh([entry], wait=True)
+        return self._remote.get(entry.get("alias", ""))
+
+    def _device_args(self) -> dict:
+        """The remote-device half of make_engine_factory's arguments."""
+        if not self._remote_transport.available():
+            return {}
+        return dict(device_entries=list(self.settings.remote_devices),
+                    transport=self._remote_transport,
+                    device_info=self._remote.get,
+                    device_probe=self._probe_device_now)
+
+    def _devices_payload(self, save_error: str = "") -> str:
+        aliases = parse_ssh_config()
+        conf = {d["alias"]: d for d in self.settings.remote_devices}
+        snap = self._remote.snapshot()
+        # a device gone from the SSH config can never be reached again: its
+        # clean-up entries are dropped (design §6.3 step 5)
+        for e in self.store.remote_cleanup_entries():
+            if e["device"] not in aliases:
+                self.store.forget_remote_device(e["device"])
+        pending: dict = {}
+        for e in self.store.remote_cleanup_entries():
+            pending[e["device"]] = pending.get(e["device"], 0) + 1
+        rows = []
+        for alias in aliases + [a for a in conf if a not in aliases]:
+            entry = conf.get(alias) or normalize_device({"alias": alias})
+            info = snap.get(alias) or DeviceInfo(alias=alias, state="unknown")
+            p = info.to_payload()
+            if alias not in aliases:
+                p["state"] = "error"
+                p["message"] = "No longer a Host in your SSH config."
+            rows.append(DevicePayload(
+                alias=alias, state=p["state"], message=p["message"], os=p["os"],
+                cores=p["cores"], mem_total_mb=p["mem_total_mb"],
+                mem_avail_mb=p["mem_avail_mb"], orca_path=p["orca_path"],
+                orca_version=p["orca_version"], has_mpi=p["has_mpi"],
+                has_setsid=p["has_setsid"], workdir=p["workdir"],
+                free_disk_mb=p["free_disk_mb"], in_config=alias in aliases,
+                cleanup_pending=pending.get(alias, 0),
+                enabled=entry["enabled"], max_jobs=entry["max_jobs"],
+                cores_cap=entry["cores"], ram_cap_mb=entry["ram_mb"],
+                orca_path_setting=entry["orca_path"],
+                workdir_setting=entry["workdir"]))
+        return json.dumps(DevicesPayload(
+            ssh=self._remote_transport.available(),
+            config_path=str(default_ssh_config()), devices=rows,
+            save_error=save_error))
+
+    @pyqtSlot(result=str)
+    def get_devices(self) -> str:
+        try:
+            return self._devices_payload()
+        except Exception as e:      # a slot may not raise (P6)
+            return json.dumps(ErrorPayload(error=str(e)))
+
+    @pyqtSlot(result=str)
+    def detect_devices(self) -> str:
+        """Re-read ~/.ssh/config and probe every host in it (background)."""
+        try:
+            if self._remote_transport.available():
+                conf = {d["alias"]: d for d in self.settings.remote_devices}
+                self._remote.refresh(
+                    [conf.get(a) or {"alias": a, "workdir": DEFAULT_WORKDIR,
+                                     "orca_path": ""} for a in parse_ssh_config()])
+            return self._devices_payload()
+        except Exception as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+
+    @pyqtSlot(str, result=str)
+    def set_remote_device(self, payload_json: str) -> str:
+        """Change one device's settings entry ({alias, enabled?, max_jobs?,
+        cores?, ram_mb?, orca_path?, workdir?}); keys left out keep their
+        value. Applies at once (no Save), like the CREST card -- and to the
+        next run: a run in progress keeps the pools it started with."""
+        try:
+            data = json.loads(payload_json or "{}")
+            if not isinstance(data, dict):
+                raise ValueError("expected an object")
+            alias = data.get("alias")
+            current = next((d for d in self.settings.remote_devices
+                            if d["alias"] == alias), None)
+            base = dict(current) if current else {"alias": alias}
+            base.update({k: v for k, v in data.items()
+                         if k in ("enabled", "max_jobs", "cores", "ram_mb",
+                                  "orca_path", "workdir")})
+            entry = normalize_device(base)
+            if entry is None:
+                raise ValueError("Not a usable SSH host name.")
+            others = [d for d in self.settings.remote_devices if d["alias"] != alias]
+            self.settings.remote_devices = normalize_devices(others + [entry])
+            saved = self.settings.save()
+            # where ORCA or the runs live changed: what the probe said is stale
+            if (current is None or entry["orca_path"] != current["orca_path"]
+                    or entry["workdir"] != current["workdir"]
+                    or (entry["enabled"] and not current["enabled"])):
+                if self._remote_transport.available():
+                    self._remote.refresh([entry])
+            return self._devices_payload(
+                "" if saved else
+                f"Settings could not be written to {config_file()}.")
+        except (json.JSONDecodeError, ValueError, TypeError, AttributeError) as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+
+    @pyqtSlot(str, result=str)
+    def remove_remote_device(self, alias: str) -> str:
+        """Forget a device's settings entry and its clean-up list (design §6.3
+        step 5). Nothing on the device is touched."""
+        try:
+            self.settings.remote_devices = [d for d in self.settings.remote_devices
+                                            if d["alias"] != alias]
+            saved = self.settings.save()
+            self.store.forget_remote_device(alias)
+            self._remote.forget(alias)
+            return self._devices_payload(
+                "" if saved else
+                f"Settings could not be written to {config_file()}.")
+        except Exception as e:
+            return json.dumps(ErrorPayload(error=str(e)))
 
     @pyqtSlot(result=str)
     def get_crest_status(self) -> str:
@@ -3141,7 +3314,8 @@ class Bridge(QObject):
                                       self.settings.workspace_root, skip_names,
                                       mlip_envs=self._mlip_envs_for_run(),
                                       crest_distro=self.settings.crest_distro,
-                                      budget=self._budget())
+                                      budget=self._budget(),
+                                      **self._device_args())
         try:
             # the reference screen runs inside start_run's lock, against the
             # live list — see start_run(precheck=...)
@@ -3209,7 +3383,8 @@ class Bridge(QObject):
                                       self.settings.workspace_root, keep,
                                       mlip_envs=self._mlip_envs_for_run(),
                                       crest_distro=self.settings.crest_distro,
-                                      budget=self._budget())
+                                      budget=self._budget(),
+                                      **self._device_args())
         # The other screen the Run button applies. A reference whose parent is
         # gone cannot be refused here — the running job must still be
         # reattached — so it is reported, and the engine blocks that row rather

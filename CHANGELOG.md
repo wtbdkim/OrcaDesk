@@ -6,6 +6,16 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Remote compute devices over SSH (in development, not yet tried against a
+  real device).** Settings › *Compute devices* lists the hosts in your SSH
+  config (you set them up there yourself); switch one on and the queue sends
+  ORCA calculations that do not fit on this machine to it, each device with
+  its own core / memory / job limits. The whole run folder comes back before
+  a calculation counts as done, and the copy on the device is deleted only
+  after every file has been checked. A device that stops answering shows its
+  calculations in an orange **Disconnected** box; a cancel while it is away
+  is applied at once and its remote job is tidied up when the device is back.
+  Linux devices only; MLIP, CREST and GPU calculations stay on this machine.
 - **2D structure drawing, in exactly the 3D view's orientation (an add-on).**
   Results › Visual has a **2D structure** tile: the stage splits, the 3D view
   on one side and a ChemDraw-style drawing of the same structure on the other,

@@ -1938,6 +1938,72 @@ Front-end side: `web/next/build.js` owns the builder's structure check
 (`check_structure`, findings as `.finding` rows) and the NEB endpoint comparison
 (*Compare endpoints*, over `compare_structures`).
 
+## Remote devices (orcamgr/remote/)
+
+Status: phase 1 implemented against a fake transport only — **not yet run
+against a real SSH host**. The full design, with the user's decisions, is
+`docs/REMOTE_DEVICES_DESIGN_KR.md`; this section is what the code does.
+
+**Which devices exist is detected, not configured (P58).** `devices.parse_ssh_config`
+reads the `Host` aliases of `~/.ssh/config` (following `Include`, skipping
+patterns, refusing an alias ssh could read as an option). The user sets SSH up
+themselves; `Settings.remote_devices` holds only the choice within it — use it
+or not, and its caps (`max_jobs` / `cores` / `ram_mb`, 0 = from the probe),
+an ORCA path and a run folder (`~/orcadesk-runs`). `devices.probe` is one
+`ssh -o BatchMode=yes <alias> sh -s` call running `PROBE_SCRIPT` (OS, cores,
+memory, ORCA — accepted only beside its own `orca_2mkl`, as locally —
+`mpirun`, `setsid`, free disk); a failure becomes a plain sentence
+(`_plain_failure`). `DeviceMonitor` runs probes on daemon threads for the
+bridge to poll (`get_devices` / `detect_devices` / `set_remote_device` /
+`remove_remote_device`).
+
+**Transport** (`ssh.py`): the system OpenSSH client (System32's on Windows),
+`BatchMode=yes` always, every result a `RunResult` (never raised, P6);
+`unreachable` marks a transport failure, which is an *unknown*, not a "no".
+Win32-OpenSSH has no ControlMaster, so each call is a full handshake: one
+short call per job every `SYNC_EVERY` (10 s), nothing held open between.
+
+**Placement** (`core/queue.py`): one admission pool per device (P57).
+`_place` tries this machine first, then each enabled device in the user's
+order; a remote pool needs the device online, MPI for a parallel job, and
+room in its own budget (`_fits_remote`). `remote_capable` keeps MLIP, CREST,
+GPU jobs, raw inputs with a drive-letter path and run folders sftp could
+glob or garble (`runner.remote_safe_name`) on this machine. A RUNNING row
+with a device is a job to reattach there — always admitted to its device. A
+`RemoteUnavailable` (upload/start failed) is not the calc's failure: the
+device goes offline, the row goes back to PENDING and is offered again
+(`_unsee`). `_watch_devices` re-probes every `DEVICE_WATCH` s during a run.
+The live-budget change (`set_budget`) is not wired per pool yet: a device's
+caps changed mid-run apply to the next run.
+
+**Running** (`runner.RemoteOrcaRunner`, `OrcaRunner`'s verbs): the run folder
+is prepared locally exactly as for a local run, then its top-level files
+(minus the old `.out` and `.bak` files) go to `{workdir}/{run_dir}.{stamp}` —
+a new remote folder per launch, recorded in `calc.remote_dir` (with
+`calc.device`) *before* ORCA starts. ORCA starts under `setsid` by absolute
+path; pid and `/proc` start time identify it. Every 10 s one ssh call answers
+both "is the recorded process alive" and "what has the remote `.out` gained"
+(only the new bytes from the local file's size, base64, capped at 4 MB a
+sync); they are appended to the local `.out`, so every local reader sees an
+ordinary growing file, ten seconds behind. No stream: a live `tail -F` per
+job was dropped as network use the user did not want for a view that is
+fine ten seconds late. Two unknown answers in a row set
+`calc.disconnected` (not persisted) — the orange box, D7. When the process
+ends — whatever way — `fetch_and_verify` brings the **whole** remote folder
+into a staging folder, checks every name and size, moves it into the run
+folder, and only then `safe_remove` deletes the remote copy behind a local
+path guard and a remote `realpath` check. The engine judges the result from
+the local files.
+
+**Cancel while away / restart.** A cancel that cannot reach the device is
+CANCELLED at once with `CLEANUP_PENDING_MESSAGE`; its entry goes on the
+store's `remote_cleanup` list (persisted in the session). A probe that finds
+the device ready settles it (`store.settle_remote_cleanup`): kill only if
+pid *and* start time match, fetch + verify only if the calc was not re-run
+since, delete last. `reconcile_calcs` never judges a remote RUNNING calc on
+the UI thread; the engine's reattach does, fetching first. Transport detail
+goes to `remote.log` in the user data folder, never to the shared log (D6).
+
 ## Optional phone-sync server
 
 `orcamgr/server/` is a thin FastAPI layer (`app.py`) over `QueueStore`, started/stopped

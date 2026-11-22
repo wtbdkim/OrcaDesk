@@ -119,6 +119,7 @@ testable). Where to look, by area (each is a section of `docs/ARCHITECTURE.md`):
 | MLIP | `mlip/` | User's own env runs the worker; one env per MLIP; import-probe readiness. |
 | CREST | `crest/` (`shell.py` = transport) | WSL distro on Windows, `"local"` elsewhere; detected, never configured. |
 | 2D drawing (add-on) | `draw2d/`, `web/next/draw2d.js` | RDKit only in the user's own env (worker via `python -c`, once per structure); projection/stereo/SVG in JS per redraw; never bundled. |
+| Remote devices | `remote/` (`ssh.py`, `devices.py`, `runner.py`) | `~/.ssh/config` hosts, detected; one pool per device; whole folder back + verified before DONE. |
 | Cubes / viewer | `core/plot.py`, `cube.py`, `molview.py`, `web/next/mvwin.js` | orca_plot driven by verified menu sequences; grid-qualified cube names. |
 | NBO | `nbo/` | ORCAdesk's own reimplementation — never presented as NBO-program-compatible (P5, A25). |
 | Text encoding | `textio.py` | ORCA `.out` on Windows is mixed UTF-8 / ANSI; decode process output via `decode_process_output`. |
@@ -179,6 +180,10 @@ Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
   is *waiting* — left PENDING, never BLOCKED, and never keeps a run alive.
 - **Closing the app never kills an ORCA/CREST job** (detach + reattach on next
   launch); MLIP is the exception (stamped CANCELLED on shutdown).
+- **A remote job is DONE only after its whole folder is back and verified**
+  (`calc.device` / `remote_dir`, persisted, never read from a client); the
+  remote copy is deleted only after that, behind a path guard. A device that
+  stops answering is `disconnected` (RUNNING, slot held), never FAILED.
 - Keep-existing ("skip") adopts an old output only if it validates, matches the
   calc's atoms, and contains the kind's defining section; a stale `{name}.gbw`
   is renamed aside (never deleted) when the structure changed.

@@ -96,7 +96,8 @@
 
   /** The dot's state class: what the row is doing, or that it is raw input. */
   function dotClass(c) {
-    if (c.state === "running") return c.faulted ? "failed" : "running";
+    // a job on a remote device that stopped answering: orange (design D7)
+    if (c.state === "running") return c.faulted ? "failed" : c.disconnected ? "lost" : "running";
     if (c.state === "done") return "done";
     if (c.state === "failed") return "failed";
     if (c.state === "blocked") return "blocked";
@@ -111,6 +112,8 @@
    *  @param {any} c @param {boolean} lost */
   function describe(c, lost) {
     const what = lost ? "failed (ORCA reported an error; its process is still running)"
+      : c.state === "running" && c.disconnected
+        ? "disconnected (its compute device stopped answering; ORCAdesk keeps trying)"
       : c.state === "pending" && c.waiting ? "waiting for approval" : c.state;
     return [c.name, c.meta || c.kind, what, c.message].filter(Boolean).join(" · ");
   }
@@ -180,7 +183,7 @@
     const rows = NB.queue.map(c => {
       const lost = c.state === "running" && !!c.faulted;
       const frac = lost ? null : progressOf(c);
-      return [c.name, c.state, !!c.faulted, !!c.waiting, c.kind, c.meta, c.message, !!c.is_raw,
+      return [c.name, c.state, !!c.faulted, !!c.disconnected, !!c.waiting, c.kind, c.meta, c.message, !!c.is_raw,
               frac == null ? null : Math.floor(frac * 100)];
     });
     const res = NB.running && NB.resources ? NB.resources : null;
@@ -403,6 +406,16 @@
               "What the run's budget sets aside for the running jobs, not what they use: ORCA %maxcore × cores, 3 GB an MLIP job, 128 MB per CREST thread (a search uses far less; under WSL its real use is inside the WSL VM). Before a second job starts, the machine's free memory is checked too.")
       + `<div class="meter wide"><div class="res-line"><span>Running</span>
            <span>${r.jobs} of ${r.max_jobs || "as many as fit"}</span></div></div>`;
+    // each enabled remote device's own pool, by its SSH host name: what is
+    // reserved there, and "Disconnected" when it stopped answering (D7)
+    (r.devices || []).forEach((/** @type {any} */ d) => {
+      const pct = d.cores_budget > 0 ? Math.min(100, Math.round((d.cores_used / d.cores_budget) * 100)) : 0;
+      box.insertAdjacentHTML("beforeend", `<div class="meter wide" title="${NB.esc(
+          "Remote device " + d.id + ": cores the jobs running there declared, against its own budget.")}">
+        <div class="res-line"><span>${NB.esc(d.id)}${d.online ? "" : '<span class="lost">Disconnected</span>'}</span>
+          <span>${d.jobs} job${d.jobs === 1 ? "" : "s"} · ${d.cores_used} / ${d.cores_budget} cores</span></div>
+        <div class="res-bar"><span style="width:${pct}%"></span></div></div>`);
+    });
     return box;
   }
 

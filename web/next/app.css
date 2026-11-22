@@ -1875,3 +1875,30 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 .d2sel{max-width:24ch; font-size:12px; padding:4px 6px; min-height:28px;
   background:var(--input-bg); border:1px solid var(--input); border-radius:var(--radius-sm);}
 .d2sel:disabled{opacity:.6; cursor:not-allowed;}
+/* ============================ remote devices ============================
+   A deliberate addition to the reference (DESIGN.md §8, §17; design D7 of
+   docs/REMOTE_DEVICES_DESIGN_KR.md): an orange for "Disconnected" -- a job on
+   a remote device that stopped answering. It must read apart from the amber
+   of running/waiting (--warn) and the red of failed (--err): it is neither
+   running nor failed, ORCAdesk simply cannot tell. The tint follows the 15%
+   rule of the other state tints. The reference has no remote devices, so no
+   landmark the spec diff compares changes (tools/uidiff.py needs no skip). */
+:root { --lost:#fb923c; --lost-tint:rgba(251,146,60,.15); }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) { --lost:#ea580c; --lost-tint:rgba(234,88,12,.15); }
+}
+:root[data-theme="light"] { --lost:#ea580c; --lost-tint:rgba(234,88,12,.15); }
+.badge.lost{background:var(--lost-tint); color:var(--lost);}
+/* the queue window's card: orange edge, no running glow (whether it still
+   runs is exactly what is unknown) */
+:is(.qe-card,.qe-back)[data-edge="disconnected"]{border-color:var(--lost); box-shadow:none;}
+.qe-dot[data-st="disconnected"]{background:var(--lost); border-color:var(--lost);}
+/* the rail: a row's dot and state word, and a device's meter line */
+.qmain .d.lost{background:var(--lost); border-color:var(--lost);}
+.meter .res-line .lost{color:var(--lost); margin-left:6px;}
+/* Settings: the compute-devices card */
+.devrow .ctl{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:6px;}
+.devrow .ctl label{font-size:12px; color:var(--muted-foreground); display:inline-flex;
+  align-items:center; gap:6px;}
+.devrow .ctl input[type="number"]{width:7ch;}
+.devrow .ctl input[type="checkbox"]{width:15px; height:15px; accent-color:var(--foreground); margin:0;}
