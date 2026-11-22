@@ -182,7 +182,10 @@ up, so a plain ORCA install sees DFT alone).
   **several run at once** within the budget in Settings (calculations at
   once, total cores, total memory). If one fails, everything that depends on
   it is skipped (blocked) and unrelated work continues.
-- Each calculation gets its own folder, `{workspace}/{name}/`. The queue
+- Each calculation gets its own folder: `{workspace}/{system}/{name}/` for a
+  step of a row (system) in the queue window, `{workspace}/{name}/` for a
+  calculation on its own. A calculation stays in the folder it first ran in,
+  even if its row is renamed later. The queue
   **autosaves** and is restored on the next launch. **Cancel** kills the
   running jobs; **Stop after current** lets them finish. Irreversible actions
   ask first.

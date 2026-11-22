@@ -61,6 +61,7 @@ from ..core.replay import (  # noqa: F401  (the patterns: tests read them here)
     _IRC_GRAPH, _IRC_ROW, _PHASE_GRAPH, _G_META,
 )
 from ..core.resources import ResourceBudget, auto_cores, auto_ram_mb
+from ..core.rundir import RESERVED_NAMES, holds_output, names_with_output
 from ..state.store import (
     QueueStore, QueueOpError, calc_from_dict, calc_to_session_dict, is_rerun,
     make_engine_factory, load_choice_groups, queue_needs_orca,
@@ -151,11 +152,9 @@ def tail_lines(path, max_lines: int) -> "tuple[list[str], bool]":
 
 # Windows refuses these as file or directory names whatever the extension, and
 # "nul" is worse than refused: it is a path that always exists and cannot be
-# listed. Mirrors _RESERVED_NAMES in state/store.py, which guards calc names for
-# the same reason.
-_WINDOWS_DEVICE_NAMES = {"con", "prn", "aux", "nul",
-                         *(f"com{i}" for i in range(1, 10)),
-                         *(f"lpt{i}" for i in range(1, 10))}
+# listed. The folder rule's own set (core/rundir.py), which guards calc and
+# system names for the same reason.
+_WINDOWS_DEVICE_NAMES = RESERVED_NAMES
 
 
 class Bridge(QObject):
@@ -1221,7 +1220,9 @@ class Bridge(QObject):
         the queue — so the Results tab's picker can open any of them in a click
         instead of sending the user through a file dialog.
 
-        A run folder is ORCAdesk's own unit (``{workspace}/{name}/``), and those
+        A run folder is ORCAdesk's own unit (``{workspace}/{name}/``, or
+        ``{workspace}/{system}/{name}/`` for a calc in a system, so the scan
+        reads one level into each folder too), and those
         folders **survive removal from the queue** — that is exactly why this is
         worth listing: last week's calculation, or one cleared from the queue, is
         still on disk and still interpretable. Each entry names the artifact the
@@ -1245,24 +1246,37 @@ class Bridge(QObject):
                 results=[], root=str(root)))
         queued = {c.name.casefold() for c in self.store.list()}
         found: list[tuple[float, dict]] = []
+
+        def take(entry: Path) -> None:
+            found_artifact = result_artifact(entry)
+            if found_artifact is None:
+                return              # a folder with no result is not a result
+            artifact, kind = found_artifact
+            try:
+                mtime = artifact.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            name = entry.name
+            found.append((mtime, {"name": name, "path": str(artifact),
+                                  "queued": name.casefold() in queued,
+                                  "kind": kind}))
+
         try:
             for entry in root.iterdir():
                 if len(found) >= _WORKSPACE_SCAN_MAX:
                     break
                 if not entry.is_dir():
                     continue
-                name = entry.name
-                found_artifact = result_artifact(entry)
-                if found_artifact is None:
-                    continue        # a folder with no result is not a result
-                artifact, kind = found_artifact
+                take(entry)
+                # a system's folder holds its calculations' run folders
                 try:
-                    mtime = artifact.stat().st_mtime
+                    inner = [e for e in entry.iterdir() if e.is_dir()]
                 except OSError:
-                    mtime = 0.0
-                found.append((mtime, {"name": name, "path": str(artifact),
-                                      "queued": name.casefold() in queued,
-                                      "kind": kind}))
+                    continue
+                for sub in inner:
+                    if len(found) >= _WORKSPACE_SCAN_MAX:
+                        break
+                    take(sub)
         except OSError as e:
             return json.dumps(WorkspaceResultsResult(
                 ok=False, error=str(e), results=[], root=str(root)))
@@ -1522,7 +1536,8 @@ class Bridge(QObject):
                                 geometry_source=src,
                                 ref_name=str(d.get("ref_name", "") or ""))
         found, _ = find_parent_hessian(probe, SimpleNamespace(get=self.store.get),
-                                       Path(self.settings.workspace_root))
+                                       Path(self.settings.workspace_root),
+                                       self.store.system_name)
         if found is not None:
             return found.name
         parents = [probe.after] + ([probe.ref_name] if src == GeometrySource.REFERENCE else [])
@@ -1809,11 +1824,15 @@ class Bridge(QObject):
         DIFFERENT workspace than the currently-configured one — parse_calc_output
         already resolves through output_path, so the .inp viewer, graph reseed
         and conformer export must too, or the same calc renders its result but
-        fails these three), else {current workspace}/{name}."""
+        fails these three), else the folder recorded when it started, else the
+        one it would get now ({workspace}/{system}/{name}/ or
+        {workspace}/{name}/, core/rundir.py). A name not in the queue is looked
+        for where a standalone calc of that name runs."""
+        ws = Path(self.settings.workspace_root)
         calc = self.store.get(name)
-        if calc is not None and calc.output_path:
-            return Path(calc.output_path).parent
-        return Path(self.settings.workspace_root) / name
+        if calc is None:
+            return ws / name
+        return self.store.result_folder(calc, ws)
 
     def _result_file(self, name: str, suffix: str) -> Path:
         """``{base}{suffix}`` for a calc NAME or a ``file:<path>`` result.
@@ -1945,7 +1964,7 @@ class Bridge(QObject):
     @pyqtSlot(str, result=str)
     def export_conformers(self, name: str) -> str:
         """Split a finished CREST search's ensemble into per-conformer .xyz files
-        under {workspace}/{name}/conformers/ ({name}_c1.xyz = the best conformer,
+        under its run folder's conformers/ ({name}_c1.xyz = the best conformer,
         …). No file dialog — the files land next to the run, in a conformers/
         subfolder. Returns {ok, count, folder} or {ok:false, error}."""
         from ..crest.export import export_conformers as _export
@@ -2386,6 +2405,23 @@ class Bridge(QObject):
         return json.dumps(OkResult(ok=bool(res.get("ok")),
                                    error=str(res.get("error") or "")))
 
+    @pyqtSlot(str, result=str)
+    def show_calc_folder(self, name: str) -> str:
+        """The queue editor's *Show folder*: a queued calculation's run folder
+        in the file manager -- its output file selected when it has one, else
+        the folder it ran in (or will run in), which the backend resolves
+        (core/rundir.py) so the page never builds a workspace path itself.
+        A folder that does not exist yet is refused with a reason."""
+        calc = self.store.get(str(name or ""))
+        if calc is None:
+            return json.dumps(OkResult(ok=False, error=f"No calculation named '{name}'."))
+        if calc.output_path and Path(calc.output_path).exists():
+            return self.show_path_in_folder(calc.output_path)
+        folder = self._calc_run_dir(calc.name)
+        if not folder.is_dir():
+            return json.dumps(OkResult(ok=False, error=f"{calc.name} has no folder yet."))
+        return self.show_path_in_folder(str(folder))
+
     @pyqtSlot(str, str, result=str)
     def save_structure_xyz(self, source: str, xyz: str) -> str:
         """Write a parsed geometry into the run folder as ``<base>_structure.xyz``.
@@ -2496,8 +2532,13 @@ class Bridge(QObject):
         for c in self.store.list():
             if c.state in skip or is_rerun(c):
                 continue
-            d = ws / c.name
-            if (d / f"{c.name}.out").exists() or (d / f"{c.name}.mlip.json").exists():
+            # the folder it will run in: the one recorded when it started, else
+            # the one its system's name gives now (core/rundir.py) -- the
+            # folder the engine's keep-existing reads, so the question and the
+            # answer are about the same output. A {workspace}/{name}/ from
+            # before system folders is not where a calc in a system runs, so
+            # running it cannot overwrite that one.
+            if holds_output(self.store.run_folder(c, ws), c.name):
                 out.add(c.name)
         return out
 
@@ -2531,10 +2572,13 @@ class Bridge(QObject):
             return json.dumps(ExistsResult(ok=False, error=str(e), exists=False))
 
     def _holds_output(self, name: str) -> bool:
-        """Whether {workspace}/{name}/ holds a result artifact: {name}.out, or
-        the MLIP worker's {name}.mlip.json (has_existing_output's rule)."""
-        d = Path(self.settings.workspace_root) / name
-        return (d / f"{name}.out").exists() or (d / f"{name}.mlip.json").exists()
+        """Whether the workspace already holds a result artifact ({name}.out,
+        or the MLIP worker's {name}.mlip.json) for a NEW calc called `name`:
+        in {workspace}/{name}/, or in a {workspace}/{folder}/{name}/ -- the
+        folder of a system, current or left by a removed row. Which system the
+        new calc will run under is not known here, so every place it could
+        land counts (core.rundir.names_with_output)."""
+        return bool(names_with_output(self.settings.workspace_root, [name]))
 
     @pyqtSlot(str, result=str)
     def existing_outputs(self, names_json: str) -> str:
@@ -2544,18 +2588,17 @@ class Bridge(QObject):
         builder (a dropped set, a paste, a row copy, a dropped .xyz) ask here
         before they land in a running queue, and its free-name search skips
         such names. A name that is not a plain folder name (empty, a path) is
-        simply not listed."""
+        simply not listed. Where a name counts as holding output is
+        _holds_output's rule, read with one listing of the workspace for all
+        the names at once."""
         try:
             names = json.loads(names_json or "[]")
             if not isinstance(names, list):
                 raise ValueError("expected a list of calculation names")
-            existing: list[str] = []
-            for n in names[:10_000]:
-                if (not isinstance(n, str) or not n.strip() or n in existing
-                        or Path(n).name != n or n in (".", "..")):
-                    continue
-                if self._holds_output(n):
-                    existing.append(n)
+            plain = [n for n in names[:10_000]
+                     if isinstance(n, str) and n.strip() and Path(n).name == n
+                     and n not in (".", "..")]
+            existing = names_with_output(self.settings.workspace_root, plain)
             return json.dumps(ExistingOutputsResult(ok=True, existing=existing))
         except Exception as e:   # a slot may not raise
             return json.dumps(ExistingOutputsResult(ok=False, error=str(e), existing=[]))

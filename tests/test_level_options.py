@@ -362,10 +362,16 @@ def test_options_ride_the_session_and_a_schema_1_level_block_has_none(store, tmp
         "w-opt", config={"geom_constraints": [BOND], "options": "D3BJ"})}])
     store.save_session()
     saved = json.loads((tmp_path / "session.json").read_text(encoding="utf-8"))
-    assert saved["schema"] == 2
+    assert saved["schema"] == 3                # 2: options; 3: recorded run folders
     again = QueueStore()
     again.load_session()
     assert again.get("w-opt").config.geom_constraints and again.get("w-opt").config.options == "D3BJ"
+    # a schema-2 file (before run folders were recorded) has its options too
+    saved["schema"] = 2
+    (tmp_path / "session.json").write_text(json.dumps(saved), encoding="utf-8")
+    two = QueueStore()
+    two.load_session()
+    assert two.get("w-opt").config.geom_constraints and two.get("w-opt").config.options == "D3BJ"
     # the same file as a schema-1 build wrote it: a level block's config was
     # never read then, so it is no options now (and an IRC's Hessian "auto")
     saved["schema"] = 1

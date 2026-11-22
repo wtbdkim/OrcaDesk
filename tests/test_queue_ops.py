@@ -8,8 +8,8 @@
   always did;
 * apply_ops applies a batch atomically — one refused operation and nothing
   changes — through the single mutations' own rules;
-* a system rename renames its lane and re-points references, and is refused
-  once the lane has started;
+* a system rename renames its lane's calcs that have not started and
+  re-points references; a started calc keeps its name and its folder;
 * xyz_file_entries: a dropped / picked .xyz gives one structure (and the
   charge / multiplicity its comment line states), or why not.
 
@@ -366,11 +366,36 @@ def test_a_rename_renames_the_lane_and_repoints_its_references(store):
     assert store.get_system("s1")["name"] == "water"
 
 
-def test_a_rename_is_refused_once_the_lane_has_started(store):
+def test_a_rename_after_the_lane_has_started_moves_only_what_has_not(store):
+    """A started calc keeps its name (P24, and other calcs name it) and the
+    folder recorded when it started (core/rundir.py); what has not started is
+    renamed and runs under the new name. It used to be refused outright, when a
+    calc's folder was its name alone."""
+    store.apply_ops([sys_op(name="mol"), calc_op("mol-opt"), calc_op("mol-cx"),
+                     calc_op("mol-sp", after="mol-opt", geometry_source="reference",
+                             ref_name="mol-opt")])
+    done = store.get("mol-opt")
+    done.state, done.run_dir = CalcState.DONE, "mol/mol-opt"
+    cancelled = store.get("mol-cx")
+    cancelled.state, cancelled.run_dir = CalcState.CANCELLED, "mol/mol-cx"
+    store.apply_ops([{"op": "update_system", "id": "s1", "patch": {"name": "w"}}])
+    assert store.names() == ["mol-opt", "mol-cx", "w-sp"]
+    assert store.get("mol-opt") is done and done.run_dir == "mol/mol-opt"
+    assert store.get("mol-cx").run_dir == "mol/mol-cx"        # it ran: it stays
+    sp = store.get("w-sp")
+    assert (sp.after, sp.ref_name, sp.run_dir) == ("mol-opt", "mol-opt", "")
+
+
+def test_a_rename_is_refused_while_a_calc_it_would_rename_is_about_to_run(store):
     store.apply_ops([sys_op(name="mol"), calc_op("mol-opt"), calc_op("mol-sp")])
-    store.get("mol-opt").state = CalcState.DONE
-    with pytest.raises(QueueOpError, match="cannot be renamed"):
-        store.apply_ops([{"op": "update_system", "id": "s1", "patch": {"name": "w"}}])
+    store.set_running(True)
+    store._engine = type("E", (), {"active_names": {"mol-sp"}})()
+    try:
+        with pytest.raises(QueueOpError, match="about to run"):
+            store.apply_ops([{"op": "update_system", "id": "s1", "patch": {"name": "w"}}])
+    finally:
+        store._engine = None
+        store.set_running(False)
     assert store.names() == ["mol-opt", "mol-sp"]
 
 

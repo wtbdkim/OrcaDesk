@@ -71,7 +71,7 @@ class CalcSummary(TypedDict):
 
 
 class CalcFull(TypedDict):
-    """Full-fidelity form — mirror of store.calc_to_session_dict (26 keys)."""
+    """Full-fidelity form — mirror of store.calc_to_session_dict (27 keys)."""
     name: str
     kind: str
     config: dict              # StepConfig.to_dict(), {} when absent
@@ -98,6 +98,11 @@ class CalcFull(TypedDict):
     ref_point: str
     set_name: str
     rerun: bool               # put back from DONE/FAILED by rerun_calc (never kept)
+    # the folder it ran in, relative to the workspace ("{system}/{name}" or
+    # "{name}", core/rundir.py), recorded when it first started; "" = not
+    # started. Session restore checks it (restored_run_dir); calc_from_dict
+    # never reads it, so a client cannot set it.
+    run_dir: str
 
 
 # ---- queue snapshot / log ---------------------------------------------------

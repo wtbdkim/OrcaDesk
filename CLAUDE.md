@@ -142,8 +142,13 @@ testable). Where to look, by area (each is a section of `docs/ARCHITECTURE.md`):
 ### Queue invariants (don't break these)
 
 Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
-- **Calc `name`** is unique case-insensitively and is the on-disk folder
-  `{workspace}/{name}/`. ORCA-backed kinds also refuse space, `&`, `,`, `;`,
+- **Calc `name`** is unique case-insensitively and names its run folder:
+  `{workspace}/{system name}/{name}/` in a system, `{workspace}/{name}/`
+  standalone (`core/rundir.py`, the one helper). The folder is recorded when
+  the calc first starts (`run_dir`) and wins from then on: a system rename or
+  a move never moves a calc that has run, re-runs reuse it, and nothing on
+  disk is ever moved. A system name is its folder verbatim (unsafe = refused).
+  ORCA-backed kinds also refuse space, `&`, `,`, `;`,
   `=` — but that rule is **not** applied on session restore.
 - **`kind` is a closed set** (`KNOWN_KINDS`); `mlip*` / `crest*` route outside
   the ORCA pipeline.

@@ -35,7 +35,8 @@ The one exception to "framework-free" is `test_log_replay.py`, which imports
 only (no Bridge instance) to pin the filter against the tracker regexes it
 mirrors; it skips without PyQt6. `test_queue_slots.py` imports it too and
 calls the queue editor's slots **unbound on a stub `self`** (no Qt application,
-no probes) to pin their JSON envelopes. The Qt bridge/window layers
+no probes) to pin their JSON envelopes, and `test_run_folders.py` does the same
+for the slots that resolve a calc's run folder. The Qt bridge/window layers
 are otherwise thin adapters and are exercised manually. Tests that read the real ORCA output
 corpus auto-skip when the corpus directory is absent, so the suite is green on any
 machine. **No test touches the user's own data folder**: `tests/conftest.py`
@@ -524,7 +525,8 @@ checks against a direct `xyz` (as for a guided calc), refuses options the
 level cannot take (`template_option_conflicts`, the message prefixed with the
 calc name: a key both set, constraints into a one-line `%geom`, an IRC
 `read` without a file, an SMD solvent SMD lacks), and `constraint_warning`
-judges its constraints too. `session.json` is **schema 2**: a schema-1 file's
+judges its constraints too. `session.json` is **schema 3** (3 records each
+calc's run folder, see *Queue semantics*): a schema-1 file's
 level blocks had a config nobody chose as options (it was never read), so
 `load_session` reads it as none (`template_config({}, kind)`) and the block
 renders exactly as before. Also refused for a new payload
@@ -543,7 +545,9 @@ rebuilt).
 **Systems** (the lanes) live in the store beside the calculations,
 `{id, name, charge, multiplicity, inputs: [{label, xyz}]}` (`system_from_dict`:
 the name obeys the calc-name rules because it is the prefix of every calc name
-in the lane; an input's `.xyz` header is stripped to a coordinate block), are
+in the lane and, verbatim, the folder the lane's calcs run in — an unsafe one
+is refused, never mapped, see *Queue semantics*; an input's `.xyz` header is
+stripped to a coordinate block), are
 persisted under `"systems"` in `session.json` and restored on load (each
 re-validated; a corrupt or duplicate one skipped alone; a calc whose lane did
 not come back becomes standalone; a session without the key loads as before).
@@ -619,10 +623,18 @@ is not reset to PENDING. The op works on a batch-private copy (so a refused
 batch leaves the row where it was); at commit the placement is written back
 onto the **same** row object, because the engine tracks rows by identity and
 may hold this one (running, or finished and already seen).
-`update_system` with a new name renames every calc of the lane whose name
-starts with the old one (`new + rest`) and re-points every editable calc's
-`ref_name` / `after` at the new names — refused once any calc of the lane is
-RUNNING / DONE / FAILED (its name is its folder) or held by the engine; charge
+`update_system` with a new name renames every calc of the lane that has **not
+started** and whose name starts with the old one (`new + rest`), and re-points
+every editable calc's `ref_name` / `after` at the new names; those run under
+the new name's folder when they start. A calc that has started
+(`_has_started`: RUNNING / DONE / FAILED, or one carrying a recorded run folder
+— a CANCELLED one, a `rerun_calc` row) keeps its name and the folder it ran
+in, under the old name: P24 freezes it, others name it, and nothing on disk is
+moved (a job may be running there). Until run folders were recorded the rename
+was refused outright once any calc of the lane had started, because a calc's
+name alone was its folder. Refused while the engine holds a calc it would
+rename. The editor's name field is editable in every state, and its tooltip
+says which calcs follow (`renameTip` in `qed.js`); charge
 / multiplicity propagate to the lane's editable calcs that had the lane's OLD
 value, each field on its own (each touched calc is an edit: a new object,
 PENDING again) — a calc set apart on purpose (a triplet SP in a singlet row)
@@ -1020,7 +1032,8 @@ the ORCA parser). Keep the heuristic OFF the queued path: workspace folders
 survive removal, so a calc reusing a removed CREST calc's name would otherwise
 parse as a conformer search.
 
-**`list_workspace_results`** scans `{workspace}/*/` for `{name}.mlip.json`
+**`list_workspace_results`** scans `{workspace}/*/` and, for a system's
+calcs, `{workspace}/*/*/` for `{name}.mlip.json`
 else `{name}.out` (newest first, capped at `_WORKSPACE_SCAN_MAX`; the folder
 convention itself is `orcamgr/resultfolder.py` `result_artifact`, shared with
 the folder picker below). The workspace result picker that listed them went
@@ -1151,7 +1164,8 @@ The `core/` pipeline:
   `_prepare_neb_side_files` reads the rendered text (a level NEB-TS without
   `neb_product_xyz` is BLOCKED, not FAILED). The `.hess` is found by
   `find_parent_hessian` (the `after` parent's folder, `{after}.hess`, else the
-  geometry reference's, `{ref}.hess`) and copied into the run folder; a text
+  geometry reference's, `{ref}.hess` — each parent's own result folder, in
+  its own system's folder) and copied into the run folder; a text
   that names `{{HESS}}` itself needs one (none is an `OrcaBlocked` before
   launch, naming where it looked: the row is BLOCKED — editable, re-tried on
   the next Run — not FAILED), a `{{JOB}}` IRC does not. The raw IRC
@@ -1392,7 +1406,9 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   confirmed in the UI first (`bridge.has_existing_output`; the queue editor's
   adds that bypass the builder — a dropped set, a paste, a row copy, a
   duplicate — ask `existing_outputs(names_json)` → `{ok, existing}`,
-  the same rule for many names, which its free-name search also skips) — the
+  the same rule for many names, which its free-name search also skips; a new
+  name counts output in `{workspace}/{name}/` or in any system folder, since
+  where it will run is not known yet — see the run-folder bullet) — the
   Run-click overwrite modal never sees it, and the engine's keep-existing set is
   fixed at run start, so it would otherwise overwrite silently. The
   keep-existing answers from the Run-click modal are pinned to the ROWS they
@@ -1406,8 +1422,72 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   a free-text field the way a functional name is (P30) — an unknown one used to
   be taken verbatim from an HTTP payload and run through the ORCA runner with
   default settings.
-- **Calculation `name` is unique and is used as the on-disk folder name**
-  (`{workspace}/{name}/`). Uniqueness is enforced in the store,
+- **A calculation runs in its own folder, and a system's calculations run
+  under the system's folder** (`orcamgr/core/rundir.py`, the one place the
+  rule lives): `{workspace}/{system name}/{name}/` for a calc whose `system`
+  names a lane, `{workspace}/{name}/` for a standalone one. (Up to 0.11.3 every
+  calc ran in `{workspace}/{name}/`: 20 molecules x 6 steps was 120 folders
+  side by side.)
+  - **The folder is decided when the calc first starts, and recorded**
+    (`Calculation.run_dir`, relative to the workspace, `/`-separated): the
+    engine's `_claim_run_folder` sets it at the RUNNING stamp of every backend
+    (ORCA, MLIP, CREST) and when keep-existing adopts an output, from the
+    system's name **at that moment** (`QueueEngine(system_names=...)`, wired to
+    `QueueStore.system_name` by `make_engine_factory`, so a rename made while
+    the queue runs is followed by every calc not yet started). From then on
+    the record wins: `run_folder` = recorded, else planned from the current
+    system name; `result_folder` (where files are READ: references, `.hess`,
+    IRC end points, the report's slots via `_calc_run_dir`, the IRC picker) =
+    `output_path`'s folder first, then `run_folder`. A system renamed or a
+    block moved to another row (`place_calc`) therefore never moves a calc
+    that has run, and **nothing on disk is ever moved or renamed for it** (a
+    job may be running there) — the same rule as removal. A calc BLOCKED by a
+    pre-launch check (`OrcaBlocked`: nothing ran) hands back a folder that
+    attempt claimed, so it follows its system like any unstarted calc.
+  - **A re-run runs where the calc ran**: a CANCELLED calc keeps `run_dir`
+    (an edit under the same name carries it, `_replace_in`; a rename drops it,
+    a new name being a new folder), and `rerun_calc` copies it onto the rebuilt
+    row — the overwrite warning was about the output in THAT folder.
+  - **The record is never taken from a client**: `calc_from_dict` does not
+    read it (like `rerun`); `calc_from_session_dict` restores it only through
+    `restored_run_dir` — `name` or `{folder}/{name}`, each part passing the
+    folder rule, so it is always inside the workspace and named after the calc.
+    It rides `calc_to_session_dict` (`CalcFull.run_dir`, read-only for the
+    page).
+  - **`session.json` schema 3.** A calc of an older file that has run (done,
+    failed, cancelled or running, or holding an `output_path`, or a pending
+    `rerun_calc` row) ran in `{workspace}/{name}/`, and `load_session` records
+    exactly that, so it is found, reattached and re-run there whatever system
+    it belongs to now; one that has not run follows today's layout.
+  - **A system name is its folder, verbatim, and an unsafe one is refused,
+    never mapped.** It already obeyed the calc-name rules (`system_from_dict`
+    → `_validate_calc_name`), whose path-safety part now lives in
+    `rundir.folder_name_problem` for both: separators and `: * ? " < > |`,
+    control characters and lone surrogates, > 120 characters, `..`, a trailing
+    dot **or space** (measured on Windows 11: `mkdir("aux ")` makes `aux`, and
+    the path built from the name then opens nothing), and the Windows device
+    names whatever the extension — `con .txt` included, and the superscript
+    `COM¹²³` / `LPT¹²³` Windows reads as digits. Mapping was rejected because
+    the user finds the folder by the name they see, and two names could map
+    to one folder (`a:b` / `a_b`), which a refusal cannot. Restoring relaxes
+    only ORCA's rule (a space is fine in a folder). `system_folder` still
+    checks, so a name that bypassed validation runs in the workspace root.
+  - **Overwrite and keep-existing look where the calc runs.**
+    `_overwrite_conflicts` (the Run modal and the startup resume) and the
+    engine's `_try_keep_existing` read the calc's `run_folder`; a
+    `{workspace}/{name}/` from before system folders under a calc that is now in a
+    system is neither a conflict nor kept — running the calc cannot overwrite
+    it, and it is not this calc's output. For a name NOT in the queue yet
+    (`has_existing_output`, `existing_outputs`: the builder's and the queue
+    editor's mid-run guard and free-name search) the system it will run under
+    is not known, so `rundir.names_with_output` counts output in
+    `{workspace}/{name}/` or in any `{workspace}/{folder}/{name}/` (one listing
+    of the workspace and of each folder for all names).
+  - A system folder may share its name with a standalone calc's folder; the
+    files cannot collide (a run folder holds `{name}.*` and a few fixed names,
+    a system folder holds run folders named after their calcs).
+- **Calculation `name` is unique and names its run folder** (above).
+  Uniqueness is enforced in the store,
   **case-insensitively** — Windows resolves `water` and `Water` to the same
   folder, so accepting both would share one `.out` between two calcs. The
   invariant holds on every entry path: `add`/`replace` **and session
@@ -1440,7 +1520,9 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   (`QueueStore._bump_and_save`) and is restored on startup (`load_session`). A
   `RUNNING` calc persists its detached ORCA's `(pid, create_time)` **and its
   output path** (recorded at launch — without it the finished-while-closed →
-  DONE judgment below has nothing to read). On the next
+  DONE judgment below has nothing to read), and its run folder (`run_dir`,
+  recorded at the RUNNING stamp: the reattach tails that folder, never the
+  one its system's name gives now; ORCA and CREST alike). On the next
   launch, `reconcile_calcs` checks that identity: still alive → stays `RUNNING`
   and is **reattached** (`OrcaRunner.adopt` + `monitor`, continuing the queue).
   The monitor tails from the **current EOF** — replaying hours of output
@@ -1478,7 +1560,8 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   structure automatically. `ref_point` picks another geometry of the
   reference: `irc_f` / `irc_b` read the `{ref}_IRC_F.xyz` / `{ref}_IRC_B.xyz`
   ORCA writes beside an IRC's `.out` (the IRC's `output_path` folder, else
-  `{workspace}/{ref}`); a missing file is an `OrcaBlocked` saying which end
+  its recorded run folder — in its own system's folder, whatever the
+  dependent's); a missing file is an `OrcaBlocked` saying which end
   point and which file — the IRC finished, it just did not run that way — so
   the row is BLOCKED (editable), not FAILED. A `ref_point` on a parent whose
   kind writes no IRC ends is refused when it is added (Queue store above).
@@ -2359,8 +2442,13 @@ that starts with one.
 (the OS file association) and `show_in_folder(path)` (reveal it, selected).
 Bridge slots `open_path_external` / `show_path_in_folder` are thin wrappers;
 both return `OkResult` and log the refusal, because a missing association is a
-normal thing for a user to have (P6). The notebook calls only
-`show_path_in_folder` (the report's folder button).
+normal thing for a user to have (P6). The notebook calls
+`show_path_in_folder` (the report's folder button) and, from the queue
+editor's *Show folder*, `show_calc_folder(name)`: the backend resolves a queued
+calc's folder (its output selected, else its run folder; one that does not
+exist yet is refused with a reason), so the page never assembles a workspace
+path — a system's calcs run in its own folder, and one that ran keeps where it
+ran.
 
 P5 governs the shape: an external program is **launched, never merely named** —
 telling the user which file to open is the command line by another route. So

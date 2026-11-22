@@ -2230,8 +2230,10 @@ columns:
   `_F` / `_B` / `_P<k>`, a copy `<name>_copy`. Older hyphen names still read
   as stacks. A redraw (a poll while the queue runs) waits while a mouse button
   is down, so a click is never lost to the block being redrawn under it.
-- **Inspector** (right) — for a block: the system name (renames the lane, and
-  every calculation name follows; read-only once the lane has started), charge
+- **Inspector** (right) — for a block: the system name (renames the lane:
+  every calculation that has not run follows, its folder too; one that has
+  run keeps its name and the folder it ran in, and the tooltip says so once
+  the lane has started), charge
   and multiplicity (the system's; a calculation set apart shows its own, says
   so, and those fields then change it alone — a system's recharge moves only
   the calculations that had its old value), the geometry (the system's structures, or any ancestor's

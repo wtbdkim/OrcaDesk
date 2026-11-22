@@ -33,9 +33,13 @@ own. Only CANCELLED (a deliberate user stop, not a failure) re-runs; a FAILED or
 DONE one runs again only when the queue editor puts a new set on it behind an
 overwrite warning (store rerun_calc), which makes it a PENDING row again.
 
-Folder layout: each calculation gets its own folder ``{workspace}/{name}/``.
-Names are unique within a queue (enforced by the store — ``QueueStore`` rejects
-duplicates), so folders never collide.
+Folder layout (core/rundir.py): a calculation in a system runs in
+``{workspace}/{system name}/{name}/``, a standalone one in ``{workspace}/{name}/``.
+The folder is decided when the calculation first starts and recorded on it
+(``Calculation.run_dir``); from then on it is found there (or through its
+output_path), whatever happens to its system's name or its place. Names are
+unique within a queue (enforced by the store — ``QueueStore`` rejects
+duplicates, case-insensitively), so folders never collide.
 
 The engine is GUI-agnostic: it communicates only through callbacks.
 """
@@ -65,6 +69,7 @@ from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
 from .runner import OrcaRunner, OrcaRunError, OrcaCancelled, OrcaDetached, OrcaHung
 from .parser import parse_file, ParseResult
 from .procutil import process_matches
+from .rundir import planned_run_dir, result_folder, run_dir_of, run_folder
 from .xyzutil import as_xyz_file
 
 
@@ -95,7 +100,7 @@ class GeometrySource(str, Enum):
 
 @dataclass
 class Calculation:
-    name: str                              # unique; used as folder name
+    name: str                              # unique; names its run folder
     # opt | ts_opt | freq | ts_freq | opt_freq | ts_opt_freq | irc | tddft |
     # sp | general | nmr | neb_ts | mlip_opt | crest_conf
     # (mlip_* runs outside ORCA in the user's MACE env; crest_* runs outside ORCA
@@ -137,6 +142,13 @@ class Calculation:
     # never offered, or given, keep-existing. Meaningful only until the row
     # starts (store.is_rerun: PENDING / BLOCKED); persisted in the session.
     rerun: bool = False
+    # where it runs, relative to the workspace ("{system}/{name}" or "{name}",
+    # core/rundir.py): recorded by the engine when the calc FIRST starts, then
+    # kept -- through a system rename, a move to another row, a CANCELLED
+    # re-run, a rerun_calc -- so a calc that has run is always found where it
+    # ran. "" = not started yet: the folder follows the system's current name.
+    # Persisted in the session; never read from a client (calc_from_dict).
+    run_dir: str = ""
 
     # ---- the queue editor's graph (all default to "standalone, as today") ----
     # system: the lane (one molecule) this calc belongs to, a QueueStore system
@@ -583,23 +595,48 @@ def result_from_output(calc: Calculation):
     return parse_file(str(calc.output_path))
 
 
+def system_name_of(calc, system_names: "Optional[Callable[[str], str]]") -> str:
+    """The name of the system ``calc`` belongs to, through a system id -> name
+    lookup (the store's QueueStore.system_name); "" for a standalone calc, no
+    lookup, or one that fails -- the folder is then the workspace root's."""
+    sid = getattr(calc, "system", "") or ""
+    if not sid or system_names is None:
+        return ""
+    try:
+        return system_names(sid) or ""
+    except Exception:
+        return ""
+
+
+def calc_result_folder(workspace_root, name: str, by_name,
+                       system_names: "Optional[Callable[[str], str]]" = None) -> Path:
+    """The folder a queued calc's files are read from, by NAME
+    (core.rundir.result_folder: its output_path's folder, else its recorded
+    run folder, else the one it would get now). A name that is not in the
+    queue is looked for where a standalone calc of that name runs."""
+    calc = by_name.get(name) if name else None
+    if calc is None:
+        return Path(workspace_root) / name
+    return result_folder(workspace_root, calc, system_name_of(calc, system_names))
+
+
 def find_parent_hessian(calc: "Calculation", by_name: "dict",
-                        workspace_root: Path) -> "tuple[Optional[Path], list[str]]":
+                        workspace_root: Path,
+                        system_names: "Optional[Callable[[str], str]]" = None,
+                        ) -> "tuple[Optional[Path], list[str]]":
     """The Hessian an inp-set template takes from a parent, and every place
     looked: the ``{after}.hess`` of the calc this one runs after, else the
     ``{ref}.hess`` of its geometry source. Each parent's folder is its
     output_path's (a restored session may live in another workspace), else
-    {workspace}/{name}. (None, looked) when there is none. Shared by the
-    engine (which stages what it finds) and the queue editor's preview."""
+    its run folder (calc_result_folder: a parent in another system is looked
+    for in that system's folder). (None, looked) when there is none. Shared by
+    the engine (which stages what it finds) and the queue editor's preview."""
     parents = [calc.after]
     if calc.geometry_source == GeometrySource.REFERENCE:
         parents.append(calc.ref_name)
     looked: "list[str]" = []
     for pname in dict.fromkeys(p for p in parents if p and p != calc.name):
-        parent = by_name.get(pname)
-        folder = (Path(parent.output_path).parent
-                  if parent is not None and parent.output_path
-                  else Path(workspace_root) / pname)
+        folder = calc_result_folder(workspace_root, pname, by_name, system_names)
         src = folder / f"{pname}.hess"
         looked.append(str(src))
         if src.is_file():
@@ -616,7 +653,8 @@ class QueueEngine:
                  mlip_envs: Optional[list] = None,
                  crest_distro: str = "",
                  queue_lock=None,
-                 budget: "Optional[ResourceBudget]" = None):
+                 budget: "Optional[ResourceBudget]" = None,
+                 system_names: "Optional[Callable[[str], str]]" = None):
         self.orca_path = orca_path
         # One OrcaRunner per JOB, not per engine: with several calculations in
         # flight each needs its own process handle and its own cancel/detach
@@ -632,6 +670,13 @@ class QueueEngine:
         # (see orcamgr/crest/), OUTSIDE the ORCA pipeline.
         self.crest_distro = (crest_distro or "").strip()
         self.workspace_root = Path(workspace_root)
+        # system id -> its CURRENT name ("" = none): where a calc in a system
+        # that has not started yet will run (core/rundir.py). Wired to the
+        # store's own systems by make_engine_factory and asked at the moment a
+        # calc starts, so a rename made while the queue runs is followed by
+        # every calc that has not started. Without one, every calc runs in the
+        # workspace root, as before systems had folders.
+        self._system_names = system_names
         self.cb = callbacks or QueueCallbacks()
         # hard cancel: kill the current job and skip the rest (CANCELLED).
         self._cancel_event = threading.Event()
@@ -757,6 +802,39 @@ class QueueEngine:
         if self._detach_event.is_set():
             runner.detach()
 
+    # -- run folders (core/rundir.py) --
+    def _system_name(self, calc: Calculation) -> str:
+        return system_name_of(calc, self._system_names)
+
+    def _run_folder(self, calc: Calculation) -> Path:
+        """Where `calc` runs: its recorded folder, else the one it gets now."""
+        return run_folder(self.workspace_root, calc, self._system_name(calc))
+
+    def _result_folder(self, calc: Calculation) -> Path:
+        """Where `calc`'s files are read: its output's folder, else its run
+        folder."""
+        return result_folder(self.workspace_root, calc, self._system_name(calc))
+
+    def _folder_of(self, name: str) -> Path:
+        """The result folder of the queued calc called `name` (a parent whose
+        .hess or IRC end points a child reads -- in its own system's folder,
+        which may not be the child's)."""
+        return calc_result_folder(self.workspace_root, name, self._by_name,
+                                  self._system_names)
+
+    def _claim_run_folder(self, calc: Calculation) -> Path:
+        """Record where `calc` runs, the moment it first starts, and return
+        that folder. The folder follows the system's name AT THIS MOMENT; once
+        recorded it is kept -- a system renamed or a block moved afterwards
+        never moves a calculation that has run, and nothing on disk is moved
+        for it (a job may be running there). A calc that already has one (a
+        CANCELLED re-run, a rerun_calc, a session from before system folders,
+        recorded as its {workspace}/{name}/) runs there again: the overwrite
+        question it was asked was about that folder."""
+        if not calc.run_dir:
+            calc.run_dir = planned_run_dir(calc.name, self._system_name(calc))
+        return self._run_folder(calc)
+
     # -- geometry resolution --
     def _resolve_geometry(self, calc: Calculation) -> str:
         if calc.geometry_source == GeometrySource.DIRECT:
@@ -827,16 +905,16 @@ class QueueEngine:
         """The forward or backward end point of an IRC (ref_point irc_f /
         irc_b): the {ref}_IRC_F.xyz / {ref}_IRC_B.xyz ORCA writes beside the
         IRC's .out. Read from the IRC's own run folder (its output_path, which
-        a session restored from another workspace keeps), else
-        {workspace}/{ref}. A missing file is a precise error, not "no
-        geometry": the IRC finished, it just did not run in that direction."""
+        a session restored from another workspace keeps), else its recorded
+        run folder -- in its own system's folder, which need not be this
+        calc's. A missing file is a precise error, not "no geometry": the IRC
+        finished, it just did not run in that direction."""
         if ref.state in (CalcState.FAILED, CalcState.BLOCKED, CalcState.CANCELLED):
             raise OrcaRunError(f"Referenced calculation '{calc.ref_name}' did not succeed.")
         if ref.state != CalcState.DONE:
             raise OrcaRunError(
                 f"Referenced calculation '{calc.ref_name}' has no usable geometry yet.")
-        folder = (Path(ref.output_path).parent if ref.output_path
-                  else self.workspace_root / ref.name)
+        folder = self._result_folder(ref)
         side = "forward" if calc.ref_point == "irc_f" else "backward"
         path = folder / f"{ref.name}{_IRC_END_FILES[calc.ref_point]}"
         if not path.is_file():
@@ -883,7 +961,10 @@ class QueueEngine:
 
     # -- single calculation --
     def _run_calc(self, calc: Calculation, index: int) -> None:
-        out_path = self.workspace_root / calc.name / f"{calc.name}.out"
+        # Reattach: the folder recorded when it started (a session from
+        # before system folders reads as {workspace}/{name}/, see
+        # store.load_session) -- never the one its system's name gives now.
+        out_path = self._run_folder(calc) / f"{calc.name}.out"
         # A RUNNING calc restored from a previous session may have been
         # launched under a DIFFERENT workspace root: its persisted output_path
         # is where the detached ORCA is actually writing. Deriving from the
@@ -937,11 +1018,14 @@ class QueueEngine:
         # CREST entry points already clear it.
         calc.message = ""
         calc.faulted = False
+        # It has started: its folder is decided now and recorded (persisted
+        # with the RUNNING stamp below).
+        calc_dir = self._claim_run_folder(calc)
+        out_path = calc_dir / f"{calc.name}.out"
         self.cb.calc_update(index, calc)
 
         xyz = self._resolve_geometry(calc)
 
-        calc_dir = self.workspace_root / calc.name
         calc_dir.mkdir(parents=True, exist_ok=True)
         inp_path = calc_dir / f"{calc.name}.inp"
 
@@ -1172,7 +1256,8 @@ class QueueEngine:
         need = template_hess_need(text, calc.kind, cfg)
         hess = ""
         if need:
-            src, looked = find_parent_hessian(calc, self._by_name, self.workspace_root)
+            src, looked = find_parent_hessian(calc, self._by_name, self.workspace_root,
+                                              self._system_names)
             if src is not None:
                 hess = self._stage_template_hessian(calc, calc_dir, src)
             elif need == "required":
@@ -1268,7 +1353,8 @@ class QueueEngine:
 
         looked = [str(hess_path)]
         if calc.geometry_source == GeometrySource.REFERENCE and calc.ref_name:
-            src = self.workspace_root / calc.ref_name / hess_name
+            # the referenced calc's own folder (another system's, perhaps)
+            src = self._folder_of(calc.ref_name) / hess_name
             looked.append(str(src))
             if src.exists():
                 dest = calc_dir / hess_name
@@ -1355,6 +1441,7 @@ class QueueEngine:
 
         calc.state = CalcState.RUNNING
         calc.message = ""
+        calc_dir = self._claim_run_folder(calc)     # started: its folder is decided
         self.cb.calc_update(index, calc)
 
         xyz = self._resolve_geometry(calc)
@@ -1362,7 +1449,6 @@ class QueueEngine:
             raise OrcaRunError("No coordinates to optimize (geometry is empty).")
         python = self._resolve_mlip_python(calc)
 
-        calc_dir = self.workspace_root / calc.name
         calc_dir.mkdir(parents=True, exist_ok=True)
         out_path = calc_dir / f"{calc.name}.out"
         result_json = calc_dir / f"{calc.name}.mlip.json"
@@ -1422,8 +1508,13 @@ class QueueEngine:
         from ..crest.runner import CrestRunner, write_crest_run_files, build_crest_argv
         from ..crest.env import resolve_run_target
 
-        calc_dir = self.workspace_root / calc.name
+        # Reattach: where it was launched -- the output path recorded at
+        # launch (it survives a change of workspace setting, as for ORCA),
+        # else the recorded run folder.
+        calc_dir = self._run_folder(calc)
         out_path = calc_dir / f"{calc.name}.out"
+        if calc.state == CalcState.RUNNING and calc.output_path:
+            out_path = Path(calc.output_path)
 
         # Reattach path: left RUNNING by a previous session. We only need the
         # distro (persisted on config.crest_env_id) + pid/create_time to check
@@ -1459,6 +1550,8 @@ class QueueEngine:
         # Fresh launch.
         calc.state = CalcState.RUNNING
         calc.message = ""
+        calc_dir = self._claim_run_folder(calc)     # started: its folder is decided
+        out_path = calc_dir / f"{calc.name}.out"
         self.cb.calc_update(index, calc)
 
         xyz = self._resolve_geometry(calc)
@@ -1616,7 +1709,7 @@ class QueueEngine:
             # same-named run and quoted its cause; on a FAILED calc that
             # diagnosis is permanent, because FAILED is locked (P24).
             out_path = Path(calc.output_path) if calc.output_path else (
-                self.workspace_root / calc.name / f"{calc.name}.out")
+                self._run_folder(calc) / f"{calc.name}.out")
             if out_path.exists():
                 r = parse_file(str(out_path))
                 if r.error_message:
@@ -2150,10 +2243,17 @@ class QueueEngine:
         # stamped DONE from an output it never produced).
         if id(calc) not in self._skip_ids:
             return False
+        # The folder the overwrite question was about (bridge._overwrite_
+        # conflicts asks the same rule): its recorded run folder, else the one
+        # it would run in now. An output elsewhere -- a {workspace}/{name}/
+        # from before system folders, for a calc in a system -- is not this
+        # calc's to keep: running it cannot overwrite that one either.
+        rel = run_dir_of(calc, self._system_name(calc))
+        calc_dir = self.workspace_root.joinpath(*rel.split("/"))
         if calc.kind.startswith("mlip"):
-            out_path = self.workspace_root / calc.name / f"{calc.name}.mlip.json"
+            out_path = calc_dir / f"{calc.name}.mlip.json"
         else:
-            out_path = self.workspace_root / calc.name / f"{calc.name}.out"
+            out_path = calc_dir / f"{calc.name}.out"
         problem = ""
         if out_path.exists():
             # result_from_output reads calc.output_path; restore it on
@@ -2174,6 +2274,8 @@ class QueueEngine:
                     calc.result = result
                     calc.state = CalcState.DONE
                     calc.message = "Kept existing result (not recomputed)."
+                    # adopted: that folder is where its result lives
+                    calc.run_dir = rel
                     self._by_name[calc.name] = calc
                     self.cb.log(f"[{calc.name}] kept existing result on disk "
                                 "— not recomputed.", "info", calc.name)
@@ -2201,6 +2303,9 @@ class QueueEngine:
         # No launch has happened for this attempt yet — until _run_calc
         # reports one, _failure_reason must not trust an on-disk .out (A22).
         self._orca_launched = False
+        # whether its run folder was recorded before this attempt (a BLOCKED
+        # outcome hands back a folder this attempt claimed: nothing ran)
+        had_run_dir = bool(calc.run_dir)
         try:
             # MLIP calcs run OUTSIDE the ORCA pipeline (see orcamgr/mlip/):
             # a MACE relaxation in the user's env, not an ORCA .inp. The
@@ -2252,6 +2357,10 @@ class QueueEngine:
             calc.message = f"Skipped: {e}"
             calc.pid = None
             calc.create_time = None
+            if not had_run_dir:
+                # it never ran, so it has no folder yet: one moved or renamed
+                # before it is retried follows its system like any other
+                calc.run_dir = ""
             self.cb.log(f"[{calc.name}] blocked: {e}", "warn", calc.name)
             self.cb.calc_update(i, calc)
         except OrcaRunError as e:

@@ -123,6 +123,9 @@ interface OrcaBridge {
   // in-app (P5). Refuses anything that is not a data format; failure is data.
   open_path_external(path: string): Promise<string>;          // OkResult JSON
   show_path_in_folder(path: string): Promise<string>;         // OkResult JSON
+  // A queued calc's run folder (its output selected), resolved by the backend:
+  // {workspace}/{system}/{name}/ or {workspace}/{name}/, or where it ran.
+  show_calc_folder(name: string): Promise<string>;            // OkResult JSON
   // Write a parsed geometry into the run folder as <base>_structure.xyz, so it
   // can be handed to a program that reads files rather than payloads.
   save_structure_xyz(source: string, xyz: string): Promise<string>;  // SavedFileResult JSON

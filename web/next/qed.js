@@ -1454,10 +1454,9 @@
     host.innerHTML = `
       <div class="qe-ititle">
         ${sys ? `<input class="qe-sysname" data-f="sysname" value="${esc(sysName)}" spellcheck="false"
-            style="width:${Math.max(sysName.length, 2) + 0.5}ch"${nameLocked ? " readonly" : ""}
-            aria-label="System name, renames every calculation in this row"
-            title="${nameLocked ? "This row has started. Its calculations keep their names."
-                                : "Rename the row. Every calculation name follows."}">`
+            style="width:${Math.max(sysName.length, 2) + 0.5}ch"
+            aria-label="System name, renames every calculation in this row that has not run"
+            title="${esc(renameTip(L))}">`
           : ownName ? "" : `<span class="qe-sysname" data-fixed="1">${esc(c.name)}</span>`}
         ${ownName ? `<input class="qe-sysname qe-sfx" data-f="ownname" value="${esc(sys ? suffix : c.name)}" spellcheck="false"
             style="width:${Math.max((sys ? suffix : c.name).length, 2) + 0.5}ch"
@@ -1735,8 +1734,8 @@
     host.innerHTML = `
       <div class="qe-ititle">
         <input class="qe-sysname" data-f="sysname" value="${esc(s.name || "")}" spellcheck="false"
-          style="width:${Math.max(String(s.name || "").length, 2) + 0.5}ch"${fixed ? " readonly" : ""}
-          aria-label="System name" title="${fixed ? "This row has started. Its calculations keep their names." : "Rename the row. Every calculation name follows."}">
+          style="width:${Math.max(String(s.name || "").length, 2) + 0.5}ch"
+          aria-label="System name" title="${esc(renameTip(L))}">
       </div>
       <div class="qe-cm">
         <label>charge <input class="qe-num" data-f="charge" value="${esc(String(s.charge))}" inputmode="numeric" spellcheck="false"${fixed ? " readonly" : ""}></label>
@@ -1822,6 +1821,17 @@
 
   /** A system name as ORCA and the file system will take it. @param {string} v */
   const cleanName = (v) => String(v || "").trim().replace(/[\\/:*?"<>|\s&,;=]/g, "-");
+
+  /** What renaming a row does, said on its name field. Once something in
+   *  it has run, that keeps its name and the folder it ran in (the store's
+   *  update_system); what has not run follows the new name, folder and all.
+   *  @param {any} L */
+  function renameTip(L) {
+    const ran = L.started || L.calcs.some((/** @type {any} */ c) => c.state === "cancelled" && !!c.output_path);
+    return ran
+      ? "Rename the row. Calculations that have not run follow; the ones that have keep their names and folders."
+      : "Rename the row. Every calculation name follows.";
+  }
 
   /** @param {any} L @param {string} value */
   function renameSystem(L, value) {
@@ -1932,7 +1942,7 @@
     apply(ops, inv, "the type change");
   }
 
-  /** Rename one calculation (its own name is its folder): what runs after
+  /** Rename one calculation (its own name names its folder): what runs after
    *  it or takes its geometry follows in the same batch. Refused when one
    *  of those has started -- a started calculation keeps what it ran.
    *  @param {any} c @param {string} value the whole new name */
@@ -2020,13 +2030,13 @@
                    { t: "node", key: L.sys ? L.key + "/" + nodeId : "c:" + name, m: 0 });
   }
 
-  /** "Show folder": the calculation's run folder in the file manager. One
-   *  that has not run has none yet, and says so. @param {any} c */
+  /** "Show folder": the calculation's run folder in the file manager. The
+   *  backend knows where it is (a system's calculations run in its own
+   *  folder, and one that has run keeps the folder it ran in), so the page
+   *  names the calculation, never a path. One that has not run has none yet,
+   *  and says so. @param {any} c */
   async function showFolder(c) {
-    const ws = String((NB.settings && NB.settings.workspace_root) || "");
-    const sep = ws.indexOf("\\") >= 0 ? "\\" : "/";
-    const path = c.output_path || (ws ? ws.replace(/[\\/]+$/, "") + sep + c.name : c.name);
-    const r = await NB.call("show_path_in_folder", path);
+    const r = await NB.call("show_calc_folder", c.name);
     if (!r || r.ok !== true) {
       NB.fail(STARTED.indexOf(c.state) < 0 && !c.output_path
         ? `${c.name} has no folder yet: it has not run.`

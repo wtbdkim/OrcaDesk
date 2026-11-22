@@ -36,6 +36,8 @@ from ..core.input_generator import (CONSTRAINED_KINDS, JOB_PLACEHOLDER,
                                     template_option_conflicts)
 from ..core.structure import parse_block
 from ..core.runner import OrcaRunError
+from ..core import rundir
+from ..core.rundir import folder_name_problem, restored_run_dir
 from ..core.procutil import process_matches
 from ..paths import data_dir, user_data_root
 # Wire-payload shapes (plain dicts at runtime; see schemas.py for the mirror
@@ -86,11 +88,15 @@ def _new_pin() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
-# calc.name becomes an on-disk folder name (workspace_root / name), so it must be
-# validated at this single shared serialization point — the only client-side
-# guard lives in the desktop JS and is bypassed by the phone/HTTP path.
-_BAD_NAME_CHARS = re.compile(r'[\\/:*?"<>|]')
-# ...and it is also what ORCA is invoked with. ORCA 6 splits its own argument on
+# calc.name becomes an on-disk folder name (its run folder, core/rundir.py), so
+# it must be validated at this single shared serialization point — the only
+# client-side guard lives in the desktop JS and is bypassed by the phone/HTTP
+# path. The folder rule itself (separators, Windows-forbidden and control
+# characters, length, '..', a trailing dot or space, reserved device names)
+# lives in core/rundir.folder_name_problem, because a system's name is a folder
+# too: its calculations run under {workspace}/{system name}/.
+#
+# A calc name is also what ORCA is invoked with. ORCA 6 splits its own argument on
 # whitespace before handing it to orca_startup, so a space or an '&' in the file
 # name makes every run of that calculation die in Startup ("Cannot open input
 # file <first word>" / "no input files") — a FAILED calc, and FAILED is locked
@@ -112,25 +118,12 @@ _BAD_NAME_CHARS = re.compile(r'[\\/:*?"<>|]')
 # a plain functional/basis run hid this for so long. '(', ')' and "'" survive
 # that parse and stay legal.
 _ORCA_HOSTILE_CHARS = re.compile(r"[\s&,;=]")
-# Control characters and lone surrogates are not typeable in the desktop's
-# single-line input but arrive freely through calc_from_dict (the phone/HTTP
-# path, a hand-edited session.json). A control character reaches mkdir and dies
-# with a localized WinError 123, which stamps the calc FAILED — locked (P24);
-# a surrogate cannot be encoded to UTF-8 at all and used to poison session
-# autosave for the rest of the app's life.
-_UNUSABLE_NAME_CHARS = re.compile(r"[\x00-\x1f\x7f\ud800-\udfff]")
-# Windows caps a path component at 255 characters, and the workspace path plus
-# "{name}/{name}.inp" is spent twice over on top of it. The cap is here rather
-# than at mkdir so the refusal is a sentence instead of a WinError 3.
-_MAX_NAME_LEN = 120
-_RESERVED_NAMES = {"con", "prn", "aux", "nul",
-                   *(f"com{i}" for i in range(1, 10)),
-                   *(f"lpt{i}" for i in range(1, 10))}
 
 
 def _validate_calc_name(name: str, kind: str = "", restoring: bool = False) -> None:
     """Reject names that could escape the workspace or break on Windows.
-    Allows Unicode (e.g. Korean) — only path-dangerous patterns are blocked.
+    Allows Unicode (e.g. Korean) — only path-dangerous patterns are blocked
+    (core.rundir.folder_name_problem, the folder rule a system name obeys too).
 
     ``kind`` selects the ORCA-only rule below. It defaults to "" (apply it),
     because a caller that does not know the kind is building an ORCA calc or
@@ -144,8 +137,9 @@ def _validate_calc_name(name: str, kind: str = "", restoring: bool = False) -> N
     finished or failed run to enforce something only a NEW run has to obey.
     Every path-safety rule still applies; only the ORCA rule is grandfathered.
     """
-    if _BAD_NAME_CHARS.search(name):
-        raise ValueError('Name contains characters not allowed in a folder name: \\ / : * ? " < > |')
+    problem = folder_name_problem(name)
+    if problem:
+        raise ValueError(problem)
     # ORCA's constraint, applied where ORCA runs. The MLIP and CREST pipelines
     # pass the name as a subprocess argv element / a shell-quoted variable, so a
     # space is genuinely fine for them — and refusing it for every kind would
@@ -156,18 +150,6 @@ def _validate_calc_name(name: str, kind: str = "", restoring: bool = False) -> N
         raise ValueError("Name must not contain a space or one of & , ; = — ORCA "
                          "cannot open an input file whose name has one, and its "
                          "gCP helper writes its result to the wrong file.")
-    if _UNUSABLE_NAME_CHARS.search(name):
-        raise ValueError("Name contains a character that cannot be used in a "
-                         "folder name.")
-    if len(name) > _MAX_NAME_LEN:
-        raise ValueError(f"Name is too long ({len(name)} characters); "
-                         f"keep it under {_MAX_NAME_LEN}.")
-    if ".." in name:
-        raise ValueError("Name must not contain '..'.")
-    if name.endswith("."):
-        raise ValueError("Name must not end with a dot.")
-    if name.split(".")[0].lower() in _RESERVED_NAMES:
-        raise ValueError(f"'{name}' uses a name reserved by Windows.")
 
 
 def _flatten_choices(value) -> list:
@@ -588,8 +570,12 @@ def system_from_dict(d, restoring: bool = False) -> dict:
     A missing id is minted. The name obeys the calc-name rules — it is the
     prefix of the lane's calculation names, so a name a calculation could not
     carry is refused here rather than at every add (ORCA's rule too, unless
-    restoring; see _validate_calc_name). Charge/multiplicity are clamped like a
-    calc's; an input's xyz is kept as a coordinate block."""
+    restoring; see _validate_calc_name) — and it is, verbatim, the folder the
+    lane's calculations run in ({workspace}/{system name}/{name}/,
+    core/rundir.py): a name that is not a safe folder (a separator, a
+    trailing dot or space, a Windows device name...) is refused, never mapped
+    to another spelling. Charge/multiplicity are clamped like a calc's; an
+    input's xyz is kept as a coordinate block."""
     if not isinstance(d, dict):
         raise ValueError("A system must be an object.")
     sid = d.get("id") or new_system_id()
@@ -749,7 +735,10 @@ def system_summary(s: dict) -> SystemSummary:
 # Schema 2: a level block's config holds its options (render_template_text
 # reads them). A schema-1 file's level blocks carry config nobody chose as
 # options, and load_session reads it as none.
-SESSION_SCHEMA = 2
+# Schema 3: a calc records the folder it ran in (run_dir, core/rundir.py). A
+# calc of an older file that has run did so in {workspace}/{name}/, and
+# load_session records exactly that.
+SESSION_SCHEMA = 3
 
 
 def _session_file():
@@ -788,6 +777,7 @@ def calc_to_session_dict(c: Calculation) -> CalcFull:
         ref_point=c.ref_point,
         set_name=c.set_name,
         rerun=bool(c.rerun),
+        run_dir=c.run_dir or "",
     )
 
 
@@ -823,7 +813,21 @@ def calc_from_session_dict(d: dict) -> Calculation:
     # restored here only, never read by calc_from_dict: no client can hand a
     # new calc the overwrite answer (a rerun row skips keep-existing)
     c.rerun = d.get("rerun") is True
+    # the folder it ran in -- restored here only, and only as a folder inside
+    # the workspace named after the calc (restored_run_dir); calc_from_dict
+    # never reads it, so no client can point a calc's run at another path
+    c.run_dir = restored_run_dir(d.get("run_dir"), c.name)
     return c
+
+
+def _ran_in_the_old_layout(c: Calculation) -> bool:
+    """A calc of a session written before run folders were recorded (schema
+    < 3) that has run -- and so ran in {workspace}/{name}/: it is finished,
+    failed, cancelled or running, it holds an output path (a blocked row that
+    was cancelled before), or it is a rerun_calc row waiting to overwrite its
+    old output."""
+    return (c.state not in _UNSTARTED or bool(c.output_path)
+            or bool(getattr(c, "rerun", False)))
 
 
 def _restore_systems(entries) -> "list[dict]":
@@ -1075,6 +1079,27 @@ class QueueStore:
         with self._lock:
             return copy.deepcopy(self._systems)
 
+    # ---- run folders (core/rundir.py) ----
+    def system_name(self, system_id: str) -> str:
+        """The current name of the system with this id; "" for none or an
+        unknown id. What a calc that has not started yet runs under -- the
+        engine asks it at the moment a calc starts (make_engine_factory)."""
+        if not system_id:
+            return ""
+        with self._lock:
+            s = next((s for s in self._systems if s["id"] == system_id), None)
+            return s["name"] if s is not None else ""
+
+    def run_folder(self, calc: Calculation, workspace) -> Path:
+        """Where ``calc`` runs: its recorded folder, else the one it would get
+        now under its system's current name (core.rundir.run_folder)."""
+        return rundir.run_folder(workspace, calc, self.system_name(calc.system))
+
+    def result_folder(self, calc: Calculation, workspace) -> Path:
+        """Where ``calc``'s files are read: its output's folder, else its run
+        folder (core.rundir.result_folder)."""
+        return rundir.result_folder(workspace, calc, self.system_name(calc.system))
+
     def run_resources(self) -> RunResources:
         """Cores/memory the in-flight jobs reserved, against the run's budget.
         All zeros between runs: the budget lives on the engine, and an idle
@@ -1319,6 +1344,14 @@ class QueueStore:
         new_calc.message = ""
         new_calc.result = None
         new_calc.output_path = ""
+        # ...but under the same name it is the same calculation on disk: one
+        # that has run (a CANCELLED one, edited to be retried) keeps the folder
+        # it ran in, wherever it is moved to. A renamed one is a new name and
+        # gets a new folder when it starts, as before.
+        if new_calc.name == calcs[idx].name:
+            new_calc.run_dir = calcs[idx].run_dir
+        else:
+            new_calc.run_dir = ""
         calcs[idx] = new_calc
 
     def reorder(self, from_idx: int, to_idx: int) -> bool:
@@ -1465,7 +1498,7 @@ class QueueStore:
         the rest); state and result are not carried."""
         merged = {k: v for k, v in calc_to_session_dict(current).items()
                   if k not in ("state", "message", "output_path", "pid",
-                               "create_time", "rerun")}
+                               "create_time", "rerun", "run_dir")}
         merged.update(patch)
         if "kind" in patch and "config" not in patch and isinstance(
                 merged.get("config"), dict):
@@ -1533,6 +1566,9 @@ class QueueStore:
         new_calc.pid = None
         new_calc.create_time = None
         new_calc.rerun = True
+        # it runs again where it ran: the overwrite warning was about the
+        # output in THAT folder (core/rundir.py)
+        new_calc.run_dir = current.run_dir
         calcs[idx] = new_calc
         self._rerun_stash[name] = current
         self._rerun_freed[name] = (self._unblock_after(calcs, name)
@@ -1683,6 +1719,13 @@ class QueueStore:
         else:
             raise ValueError(f"Unknown operation '{kind}'.")
 
+    @classmethod
+    def _has_started(cls, c: Calculation) -> bool:
+        """Whether a calc has started at some point: it is running, done or
+        failed, or it carries the run folder recorded when it started (a
+        cancelled one, one edited since, a rerun_calc row)."""
+        return c.state in cls._STARTED or bool(c.run_dir)
+
     @staticmethod
     def _check_system_name(systems: "list[dict]", name: str, sid: str) -> None:
         if any(o["name"].casefold() == name.casefold() and o["id"] != sid
@@ -1693,14 +1736,19 @@ class QueueStore:
                        op: dict) -> None:
         """update_system: patch a lane's name / charge / multiplicity / inputs.
 
-        A rename renames every calc of the lane whose name starts with the old
-        name (new + the rest of the old name) and re-points every editable
-        calc's geometry reference and `after` at the new names. It is refused
-        once any calc of the lane has started — a started calc's name is its
-        folder on disk — and while the engine holds one. Charge and
-        multiplicity propagate to the lane's editable calcs that had the
-        lane's old value; a calc set apart (its own multiplicity) keeps it. Every calc this
-        touches is an edit (a new object, PENDING again), like replace()."""
+        A rename renames every calc of the lane that has NOT STARTED and whose
+        name starts with the old name (new + the rest of the old name), and
+        re-points every editable calc's geometry reference and `after` at the
+        new names; those calcs run under the new name's folder when they start
+        (core/rundir.py). A calc that has started (_has_started: running,
+        done, failed, or one with a recorded run folder -- a cancelled one)
+        keeps its name and the folder it ran in, under the old name: P24
+        freezes what it ran, other calcs name it, and nothing on disk is moved
+        (a job may be running there). Refused when a calc it would rename is
+        held by the engine. Charge and multiplicity propagate to the lane's
+        editable calcs that had the lane's old value; a calc set apart (its own
+        multiplicity) keeps it. Every calc this touches is an edit (a new
+        object, PENDING again), like replace()."""
         sid = op.get("id")
         idx = next((i for i, o in enumerate(systems) if o["id"] == sid), None)
         if idx is None:
@@ -1718,17 +1766,16 @@ class QueueStore:
 
         rename: dict[str, str] = {}
         if new["name"] != old["name"]:
-            started = next((c for c in lane if c.state in self._STARTED
-                            or self._engine_active(c.name)), None)
-            if started is not None:
-                raise ValueError(
-                    f"'{old['name']}' cannot be renamed: '{started.name}' has "
-                    "already run (or is running), and its name is its folder.")
             for c in lane:
-                if c.name.startswith(old["name"]):
-                    new_name = new["name"] + c.name[len(old["name"]):]
-                    _validate_calc_name(new_name, c.kind)
-                    rename[c.name] = new_name
+                if not c.name.startswith(old["name"]) or self._has_started(c):
+                    continue
+                if self._engine_active(c.name):
+                    raise ValueError(
+                        f"'{old['name']}' cannot be renamed now: '{c.name}' is "
+                        "about to run.")
+                new_name = new["name"] + c.name[len(old["name"]):]
+                _validate_calc_name(new_name, c.kind)
+                rename[c.name] = new_name
             keep = {c.name.casefold() for c in calcs if c.name not in rename}
             seen_new: set[str] = set()
             for new_name in rename.values():
@@ -2008,14 +2055,21 @@ class QueueStore:
         restored = []
         seen_names: set[str] = set()
         schema = data.get("schema", 1)
-        legacy = not (isinstance(schema, int) and not isinstance(schema, bool)
-                      and schema >= SESSION_SCHEMA)
+        if not isinstance(schema, int) or isinstance(schema, bool):
+            schema = 1
         for d in entries:
             try:
                 c = calc_from_session_dict(d)
             except Exception:
                 continue  # skip a corrupt entry rather than lose the whole queue
-            if legacy and c.is_raw and is_level_text(c.raw_text):
+            if schema < 3 and not c.run_dir and _ran_in_the_old_layout(c):
+                # Before run folders were recorded every calculation ran in
+                # {workspace}/{name}/, so that is the folder this one ran in:
+                # recorded as such, it is found (and a CANCELLED or rerun_calc
+                # one runs again) there, whatever system it belongs to now. A
+                # calc that has not run follows the layout of today.
+                c.run_dir = c.name
+            if schema < 2 and c.is_raw and is_level_text(c.raw_text):
                 # Before schema 2 a level block's config was never read (its
                 # text was the whole input), so whatever it holds -- the
                 # defaults, or a guided calc's settings the level was dropped
@@ -2152,7 +2206,10 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
         # a rerun row's old output is one the user chose to overwrite: never
         # kept, whatever the keep answers (Run modal, resume) say
         keep = skip - store.rerun_names()
+        # a calc in a system runs under its system's name as it is when the
+        # calc starts (core/rundir.py), so the engine asks the store then
         return QueueEngine(orca_path, workspace_root, cb, skip_names=keep,
                            mlip_envs=envs, crest_distro=crest_pref,
-                           queue_lock=store._lock, budget=budget)
+                           queue_lock=store._lock, budget=budget,
+                           system_names=store.system_name)
     return factory

@@ -228,7 +228,7 @@
 
 /**
  * Full-fidelity calculation, as returned by get_calc() ("calc" key).
- * Mirror of calc_to_session_dict() in orcamgr/state/store.py — 25 keys.
+ * Mirror of calc_to_session_dict() in orcamgr/state/store.py — 27 keys.
  * @typedef {Object} CalcFull
  * @property {string} name
  * @property {string} kind
@@ -256,6 +256,8 @@
  * @property {""|"irc_f"|"irc_b"} ref_point
  * @property {string} set_name
  * @property {boolean} rerun        put back from DONE / FAILED by rerun_calc (its old output is overwritten, never kept)
+ * @property {string} run_dir       the folder it ran in, relative to the workspace ("sys/name" or "name"),
+ *           recorded when it first started; "" = not started. Read-only: add_calc / update_calc ignore it
  */
 
 /**

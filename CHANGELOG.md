@@ -29,6 +29,31 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   the archive's SHA-256 before unpacking it. A file that does not match is
   deleted without being unpacked or run, the install fails with a message
   that says so, and a CREST already installed is left as it was.
+- **A row's calculations run in the row's own folder.** A step of a system
+  in the queue window now runs in `{workspace}/{system}/{name}/` instead of
+  `{workspace}/{name}/`, so a workspace of 20 molecules × 6 steps holds 20
+  folders instead of 120. A calculation on its own still runs in
+  `{workspace}/{name}/`. The folder is decided when a calculation first
+  starts and is remembered: renaming the row or moving a block to another
+  row later never moves a calculation that has run, and ORCAdesk never moves
+  or renames a folder on disk. A cancelled calculation, or a finished one
+  given a new set, runs again in the folder it ran in. Sessions and results
+  from earlier versions keep working: what ran before is found in
+  `{workspace}/{name}/`, and runs again there.
+- **A row can be renamed after something in it has run.** Its calculations
+  that have not run take the new name, and the new folder; the ones that have
+  keep their names and folders. The rename used to be refused once anything
+  in the row had started.
+- A row name is its folder name, so a name Windows would change or refuse is
+  refused, for rows and calculations alike: one ending in a space or a dot,
+  or a reserved device name (`CON`, `con .txt`, `COM¹`…).
+- *Show folder* in the queue window opens the folder the calculation
+  actually runs in.
+
+### Fixed
+- A CREST search reattached after a restart reads its output where it was
+  launched, even if the workspace setting changed meanwhile (an ORCA job
+  already did).
 
 ## [0.11.3] — 2026-11-20
 

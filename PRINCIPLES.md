@@ -359,7 +359,14 @@ removed one stay in the queue to be re-pointed at another calculation
 (their BLOCKED state does not lock them out of editing — BLOCKED is in
 `EDITABLE_STATES` for exactly this reason).
 
-*(Amended 2026-07-03; implemented in 0.4.3-beta.)*
+**Nor does a rename or a move.** A calculation runs in the folder recorded
+when it first started (`core/rundir.py`); renaming its system or moving its
+block to another row changes where calculations that have *not* run will go,
+never where one that has run lives, and no folder is ever moved or renamed —
+a job may be running in it.
+
+*(Amended 2026-07-03; implemented in 0.4.3-beta. Rename/move clause added
+with per-system run folders, unreleased.)*
 
 ### P25 — Success is judged per-kind, chemically
 
@@ -465,8 +472,10 @@ caller nothing let the UI answer "Saved." to a write that never happened.
 
 Client input is validated where all clients converge — `calc_from_dict` —
 because a guard in the desktop JS is bypassed by the phone/HTTP path. Calc
-names become on-disk folder names, so they are checked for path-dangerous
-characters, `..`, and Windows reserved names (Unicode, e.g. Korean, is
+names — and system names, the folder a system's calculations run under —
+become on-disk folder names, so they are checked (one rule,
+`rundir.folder_name_problem`) for path-dangerous characters, `..`, a trailing
+dot or space, and Windows reserved names (Unicode, e.g. Korean, is
 allowed), for control characters and lone surrogates, and for a length
 Windows can actually use; `kind` is validated against the known set for the
 same reason (it chooses the pipeline, not a label) — the first two reach `mkdir` (a localized WinError)

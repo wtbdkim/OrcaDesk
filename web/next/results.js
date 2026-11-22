@@ -780,7 +780,8 @@
   // ---------------------------------------------------------------- raw pair
 
   /** The name the backend resolves a run folder by. A result opened from disk
-   *  is not in the queue, but a run folder is `{workspace}/{name}/` and the
+   *  is not in the queue, but a run folder is named after its calculation
+   *  (`{workspace}/{name}/`, or `{workspace}/{system}/{name}/`) and the
    *  artifact inside it is `{name}.out` — so the folder name IS the name the
    *  .inp/.out slots take. @param {string} path */
   function nameFromPath(path) {

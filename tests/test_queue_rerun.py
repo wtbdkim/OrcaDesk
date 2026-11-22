@@ -162,9 +162,9 @@ def test_the_mark_survives_a_session_round_trip_but_not_the_undo_stash(store):
 
 def test_a_rerun_row_is_never_offered_or_given_keep_existing(store, tmp_path):
     ws = tmp_path / "ws"
-    for name in ("mol_Opt", "mol_Freq"):
-        (ws / name).mkdir(parents=True)
-        (ws / name / f"{name}.out").write_text("old", encoding="utf-8")
+    for name in ("mol_Opt", "mol_Freq"):            # where system "mol" runs them
+        (ws / "mol" / name).mkdir(parents=True)
+        (ws / "mol" / name / f"{name}.out").write_text("old", encoding="utf-8")
     stub = SimpleNamespace(store=store, settings=SimpleNamespace(workspace_root=str(ws)))
     conflicts = lambda: Bridge._overwrite_conflicts(stub)      # noqa: E731
     assert conflicts() == {"mol_Freq"}                         # DONE is not asked about
