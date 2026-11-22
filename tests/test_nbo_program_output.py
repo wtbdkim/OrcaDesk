@@ -3,12 +3,11 @@
 ``fch2ch2f_anti_nbo7.out`` is a real ORCA 6.1.1 + NBO 7.0.10 output
 (FCH2CH2F, anti, wB97X-D4/def2-TZVP, closed shell), trimmed: the input echo,
 then the NBO block verbatim except the per-NBO coefficient listing, which the
-parser does not read. These numbers are NBO's, not ORCAdesk's own analysis
+parser does not read, and the licensee line of NBO's banner, which is
+redacted. These numbers are NBO's, not ORCAdesk's own analysis
 (orcamgr/nbo/), and the parser keeps them in ``ParseResult.nbo_program``.
 """
 
-import glob
-import os
 from pathlib import Path
 
 import pytest
@@ -17,9 +16,6 @@ from orcamgr.core.parser import parse_file
 from orcamgr.state import schemas
 
 FIX = Path(__file__).parent / "nbo" / "fixtures"
-# cis/trans N2F2 NBO 7 runs, when the example folder is on this machine
-_NBO = sorted(glob.glob(str(Path(r"D:\11_ComputationalChem\redacted example folder")
-                            / "08_Natural Bond Orbital Analysis" / "*NBO*" / "*.out")))
 
 
 @pytest.fixture(scope="module")
@@ -95,15 +91,3 @@ def test_the_parsed_shape_is_the_wire_payload(nbo):
     assert set(nbo["interactions"][0]) == set(schemas.NboProgramE2Payload.__annotations__)
     assert set(nbo["lewis"]["core"]) == set(schemas.NboLewisShare.__annotations__)
 
-
-@pytest.mark.skipif(not _NBO, reason="example corpus not on this machine")
-@pytest.mark.parametrize("path", _NBO, ids=os.path.basename)
-def test_every_nbo_example_conserves_its_electrons(path):
-    n = parse_file(path).nbo_program
-    assert n and not n["open_shell"]
-    total = sum(a["total"] for a in n["atoms"])
-    assert sum(o["occ"] for o in n["orbitals"]) == pytest.approx(total, abs=2e-3)
-    by = {o["index"]: o for o in n["orbitals"]}
-    for x in n["interactions"]:
-        assert by[x["donor"]]["label"] == x["donor_label"]
-        assert by[x["acceptor"]]["label"] == x["acceptor_label"]
