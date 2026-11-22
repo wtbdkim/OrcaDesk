@@ -291,7 +291,12 @@ localStorage) and is set from `MOL.displayMenu` — the *Display* popover — or
 keys on a focused stage (1–4, H, L, +/−, 0). The orientation is a rotation
 matrix turned about the screen's axes; Shift/middle-drag pans; the wheel zooms
 only on a stage mounted with `wheel: "plain"` (the pop-out), elsewhere
-Ctrl+wheel, so the report still scrolls. It keeps **two** radius tables with two
+Ctrl+wheel, so the report still scrolls. That rule and its step are one
+function, `MOL.wheelZoom(e, plain)` (a notch arrives as deltaY 60, 9%), and the
+3Dmol surface view reads it too: `volumeView` puts a capturing wheel listener
+on `#mv-gl` that stops the event before 3Dmol's own handler on its canvas
+(×1.44 a notch measured, reversed, and bare even in the report) and calls
+`gl.zoom(f)` — bare only while the box is home in `#mv-stage`. It keeps **two** radius tables with two
 fallbacks, which is the thing to keep straight: the covalent table (Cordero
 2008, H–Pu) decides what is bonded to what (an unknown element guesses
 GENEROUSLY — a missed bond draws a molecule as dust), and the van der Waals
@@ -309,7 +314,7 @@ with a reference neither happens, at the price that a bond a run really breaks
 stays drawn. The builder keeps its box's bonds across the moves it makes
 itself (Apply, Apply all, a push — `showGeom(true)`) and across a re-render
 (the reference is `st.bondRef`, not the stage's), and reads what the user
-types or pastes by distance again. The ball's one floor is `stickPx * 0.62`,
+types or pastes by distance again. The ball's one floor is `stickPx * KNOB` (0.62),
 stated against the stick width rather than as a pixel count: a flat 2.5px
 minimum clamps the SMALL atoms first, so it erased the H-vs-C distinction
 exactly where the molecule is large against its box — every cell thumbnail of a
@@ -317,13 +322,31 @@ real molecule. The **axis marker** in a stage's bottom-left corner is drawn by t
 same file and IS the control for the axis views — the old *View down x/y/z*
 button is gone. The arm's LABEL is the target (two arms nearly edge-on cross at
 the origin), `gizmoArms()` is the one speller of where an arm is so the drawn
-one and the clicked one cannot disagree, `opts.gizmoBottom` lifts it clear of a
-stage that writes in that corner (the Visual stage's `.vizcap` does), and x/y/z
+one and the clicked one cannot disagree, `opts.gizmoBottom` is where a stage
+that writes in that corner has its caption start, in px up from the bottom
+(the cell thumbnail's `.cap` 24, the Visual stage's and the pop-out's
+`.vizcap` 26), and the whole marker keeps above it — the origin sits
+`GIZMO.ox` (40) higher, room for an arm pointing straight down plus its label.
+It used to be the origin's own height, so the thumbnail's 26 put x's label on
+*final · N atoms*. And x/y/z
 on the focused canvas are the keyboard route, since nothing drawn can be
 tabbed to. The view scale is fitted to the molecule's BOUNDING SPHERE, not
 to its projected extent — the projected one is recomputed every frame, so a drag
 re-zoomed continuously (1.6x between end-on and broadside on a Tf2O-shaped
-molecule). DESIGN.md §17.4e.
+molecule). The sphere is the smallest one holding the atom centres
+(`enclose`, Bădoiu–Clarkson, never worse than the centroid's — it is also
+the pivot), and `fitReach` is the farthest any ball is drawn from the centre
+in any orientation, `max (r·sinθ + b)·D/(D − r·cosθ)` per ball size, cached on
+the scene per display type; the edge around it is 4% of the shorter side
+within 6–18 px (`PAD_*`), and the only floors (`SPAN_FLOOR` 0.3 Å,
+`REACH_FLOOR` 1 Å) are for a lone atom or H₂. The 3Dmol surface view fits
+in `volumeView`'s `fit()`: `zoomTo` counts atom centres and each surface's
+box corners but never fits under `minimumZoomToDistance` (default 5 Å, which
+drew a small molecule at two fifths of the panel), so that config value is
+set before each fit to the atoms' own reach with their spheres (≥ 1 Å, +2%
+for the perspective), then `gl.zoom(0.95)` leaves the edge; its box is
+adopted right after the stage's atom canvas so the caption and buttons stay
+above it. DESIGN.md §17.4e.
 
 The builder seeds a new calculation from **`get_step_defaults`** (StepConfig's
 own defaults) and from no literal of its own: its copies had drifted — MaxIter
@@ -1273,7 +1296,12 @@ The `core/` pipeline:
 - `parser.py` — `parse_file()` → `ParseResult` (energies + SCF energy
   decomposition, geometry, orbitals/HOMO-LUMO, Mulliken & Löwdin charges, Mayer
   population (bond orders + valences), dipole moment, rotational constants,
-  frequencies, full thermochemistry (U/H/G/ZPE/T·S/temp/pressure), TD-DFT
+  frequencies with their IR intensities (`ir_intensities`, km/mol, one per
+  `frequencies` entry, from the `IR SPECTRUM` table after the last frequency
+  block, matched by ORCA's mode number — the table starts at mode 6, or 5 for a
+  linear molecule, and on ORCA 6.1.1 has no row for an imaginary mode, which
+  therefore reads 0; `[]` when there is no table, and the report then draws
+  every band at one height), full thermochemistry (U/H/G/ZPE/T·S/temp/pressure), TD-DFT
   transitions + excited-state composition, NMR, NEB/IRC path — both print a
   `PATH SUMMARY` table; `neb_path_kind` records which, so the report titles
   an IRC profile as an IRC — and a relaxed surface scan: `scan_coords` from
@@ -2549,3 +2577,78 @@ lands so it flags a real problem, not every result.
 When changing how assets are loaded, keep `web/` and `data/` landing at the *same*
 relative paths the code expects — `build.spec` bundles them there, and `paths.py` reads
 them there.
+
+## Packaging the Windows build (build.bat, build.spec, installer.iss)
+
+**The two artifacts are licensed differently.** The source is MIT. The Windows
+build bundles PyQt6 and PyQt6-WebEngine (GPL-3.0-only), Qt 6.11.1 and Qt WebEngine
+(LGPL-3.0, with Chromium's components under their own licenses, LGPL-2.1 for
+FFmpeg the most restrictive), Python 3.12.10 (PSF, with OpenSSL under Apache-2.0)
+and smaller pieces, so the installer and `dist\ORCAdesk\` are conveyed under the
+GPL-3.0 as a whole. MIT is GPL-compatible, so the repository stays MIT; only the
+binary has the GPL's obligations: the license texts, the notices, and the
+corresponding source. Three files say so, and `build.spec` copies all of them
+**next to `ORCAdesk.exe`** (not into `_internal\`), so the zipped dist folder and
+the installed folder both carry them:
+- `LICENSE-BINARY.txt` — what the binary is licensed under and where the
+  corresponding source is (this release's git tag, the PyQt6 sdists on PyPI, the
+  Qt 6.11.1 sources on download.qt.io). It is the installer's license page
+  (`LicenseFile=`), so the wizard no longer presents MIT alone.
+- `THIRD_PARTY_NOTICES.txt` — every bundled component with its version, license,
+  copyright line, files, and the `licenses\` file holding its full text, made
+  from the files actually present in `dist\ORCAdesk`; it ends with where each
+  text came from.
+- `licenses/` — the full texts (GPL-3.0, LGPL-3.0/2.1, Apache-2.0, MPL-2.0, the
+  packages' own dist-info license files, Python's `LICENSE.txt` and its
+  incorporated-software section, a Qt notice, Qt's and Qt WebEngine's third-party
+  attributions collected from doc.qt.io/qt-6.11 per component, Mesa/LLVM for
+  `opengl32sw.dll`, 3Dmol.js, the fonts' OFL, PyInstaller's COPYING).
+
+`installer.iss` is **tracked** (it was git-ignored until 0.11.3): with `build.spec`,
+`build.bat` and `requirements-build.txt` it is the "scripts used to control
+compilation and installation" the GPL counts as corresponding source. It installs
+the dist folder recursively — the notices come with it — and an ISPP `#error`
+stops the compile when `dist\ORCAdesk` lacks them, so an installer cannot be made
+from an older build. Settings → About states the source license, where the
+notices are, that ORCAdesk is an independent personal project, and that there is
+no warranty. `tests/test_release_notices.py` pins the seams: `installer.iss`'s
+version against `APP_VERSION`, the source tag in `LICENSE-BINARY.txt`, every
+`requirements-build.txt` pin against its notice, and the notices against the
+files in `licenses/`.
+
+**Build only from the clean environment.** PyInstaller bundles whatever the
+building interpreter can import, so `build.bat` recreates `.venv-build\`
+(git-ignored) on every run and installs `requirements-build.txt`, which pins the
+app's dependencies and PyInstaller with `==`. Built from the global site-packages,
+the 0.11.3 candidate shipped PyYAML, charset_normalizer and typing_extensions,
+none of which the app imports, and Git for Windows' OpenSSL 3.5.6 DLLs, which
+PyInstaller's QtNetwork hook found on the Git Bash `PATH` for Qt's OpenSSL TLS
+backend. `build.spec` excludes those packages too, and drops `qopensslbackend.dll`
+with `libssl-3-x64.dll` / `libcrypto-3-x64.dll` (no TLS goes through Qt;
+Schannel stays; Python's own `libssl-3.dll` / `libcrypto-3.dll` are other files).
+A changed pin or Python version changes what the notices must say — update
+`THIRD_PARTY_NOTICES.txt`, `LICENSE-BINARY.txt` and `licenses/` with it.
+
+**Unused Qt is kept out by an allowlist of PyQt6 modules.** `build.spec` excludes
+every PyQt6 extension module except the eight the app loads (QtCore, QtGui,
+QtWidgets, QtNetwork, QtWebChannel, QtWebEngineCore, QtWebEngineWidgets, and
+QtPrintSupport, which `PyQt6.QtWebEngineWidgets` imports itself). Without it,
+Qt6WebEngineWidgets' link to Qt6QuickWidgets made PyInstaller hidden-import
+`PyQt6.QtQuickWidgets` → `QtQuick` → `QtQml`, whose hook collects the whole
+`qml/` tree; the QML plugins in it pulled in 58 Qt DLLs the app never loads,
+among them Quick3D, Quick3DPhysics and QuickTimeline, which Qt offers only under
+the GPL. The Qt DLLs Qt WebEngine really links (Qt6Quick, Qt6QuickWidgets, the
+Qt6Qml* four, Qt6OpenGL, Qt6Positioning, Qt6WebChannel, Qt6PrintSupport) still
+arrive through PyInstaller's binary dependency analysis — a PE-import walk from
+the kept modules, QtWebEngineProcess.exe and the collected plugins reaches
+exactly those 17 Qt6 DLLs — and Qt WebEngine Widgets needs no QML import at
+run time. The PDF image-format plugin (`qpdf.dll`, the only thing linking
+Qt6Pdf) is dropped too. `collect_all("PyQt6.QtWebEngine*")`, which the spec used
+to run, collected nothing (the two are extension modules, not packages);
+PyInstaller's own QtWebEngineCore hook brings QtWebEngineProcess, the `.pak`
+resources, ICU data and the locales. Measured on the 0.11.3 build:
+1,793 files / 167 DLLs / 545 MiB before, 352 files / 50 DLLs / 478 MiB after
+(the `qml/` tree was 1,341 of the removed files; Qt6WebEngineCore.dll and its
+resources are most of what remains). Checked by launching the built exe: the
+first-run dialog, then the notebook page over QWebChannel, WebGL and a 3Dmol.js
+viewer, driven through `ORCADESK_REMOTE_DEBUG`.

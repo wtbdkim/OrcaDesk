@@ -1,0 +1,96 @@
+                                       INPUT FILE
+================================================================================
+NAME = sn2_oh_ch3br_iaoibo.inp
+|  1> ! M062X 6-311++G** TightSCF
+|  2> %loc
+|  3>  LocMet IAOIBO
+|  4>  Random 0
+|  5> end
+|  6> %pal nprocs 4 end
+|  7> * xyz -1 1
+|  8>   C     0.000000    0.000000    0.000000
+|  9>   Br    0.000000    0.000000    1.960000
+| 10>   H     1.030000    0.000000   -0.340000
+| 11>   H    -0.515000    0.892000   -0.340000
+| 12>   H    -0.515000   -0.892000   -0.340000
+| 13>   O     0.000000    0.000000   -2.900000
+| 14>   H     0.000000    0.000000   -3.870000
+| 15> *
+| 16> 
+| 17>                          ****END OF INPUT****
+
+------------------------------------------------------------------------------
+                           ORCA ORBITAL LOCALIZATION
+------------------------------------------------------------------------------
+
+Input orbitals are from                  ... sn2_oh_ch3br_iaoibo.gbw
+Output orbitals are to                   ... sn2_oh_ch3br_iaoibo.loc
+Max. number of iterations                ... 128
+Localizations seeded randomly            ... off
+Convergence tolerance                    ... 1.000e-06
+Threshold for strong local MOs           ... 9.500e-01
+Threshold for bond MOs                   ... 8.500e-01
+Operator                                 ... 0
+Orbital range for localization           ... 11 to 26
+Localization criterion                   ... IAO-IBO
+Entering Jacobi type localization:
+Using Cholesky decomposition as initial guess.
+Your calculation utilizes the IAOIBO localization method
+Cite in your paper:
+G. KNIZIA, INTRISIC ATOMIC ORBITALS: AN UNBIASED BRIDGE BETWEEN
+QUANTUM THEORY AND CHEMICAL CONCEPTS 
+J. CHEM. THEOTY COMPUT. 2013, 9, 4834~4843.
+
+-------------------
+IAO PARTIAL CHARGES 
+-------------------
+Warning!!! IAOs HAVE MEANING, only when all occupied MOs are involved.
+   0 C :    1.448316
+   1 Br:   17.786351
+   2 H :    0.244472
+   3 H :    0.244485
+   4 H :    0.244485
+   5 O :    0.711663
+   6 H :    0.320227
+Sum of atomic charges:   21.0000000
+
+Initial value of the localization sum :    11.441176
+ITERATION   0 : L=   11.8053385342 DL=  3.64e-01 (MAX-T)=  45.000 
+ITERATION   1 : L=   11.8054542156 DL=  1.16e-04 (MAX-T)=   0.499 
+ITERATION   2 : L=   11.8054542258 DL=  1.01e-08 (MAX-T)=   0.002 
+LOCALIZATION SUM CONVERGED
+
+
+--------------------------------------------------------------------------------
+                    LOCALIZED MOLECULAR ORBITAL COMPOSITIONS
+--------------------------------------------------------------------------------
+
+The Mulliken populations for each LMO on each atom are computed
+The LMO`s will be ordered according to atom index and type
+  (A) Strongly localized MO`s have populations of >=0.950 on one atom
+  (B) Two center bond orbitals have populations of >=0.850 on two atoms
+  (C) Other MO`s are considered to be `delocalized`
+
+FOUND  -  11 strongly local MO`s
+       -   5 two center bond MO`s
+       -   0 significantly delocalized MO`s
+
+Rather strongly localized orbitals:
+MO  21:   5O  -   0.981649
+MO  20:   5O  -   0.981653
+MO  19:   5O  -   1.027169
+MO  18:   1Br -   1.005991
+MO  17:   1Br -   1.005976
+MO  16:   1Br -   1.010391
+MO  15:   1Br -   1.000061
+MO  14:   1Br -   1.000060
+MO  13:   1Br -   1.000003
+MO  12:   1Br -   1.000004
+MO  11:   1Br -   1.000225
+Bond-like localized orbitals:
+MO  26:   6H  -   0.437018  and   5O  -   0.561748
+MO  25:   4H  -   0.419822  and   0C  -   0.621281
+MO  24:   3H  -   0.419822  and   0C  -   0.621281
+MO  23:   2H  -   0.419826  and   0C  -   0.621317
+MO  22:   1Br -   0.654019  and   0C  -   0.347814
+Localized MO's were stored in: sn2_oh_ch3br_iaoibo.loc

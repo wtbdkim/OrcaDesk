@@ -31,7 +31,7 @@
   <img src="docs/images/queue-window.png" alt="큐 창: 분자마다 한 줄, 줄마다 계산 단계가 이어진 모습" width="100%">
 </p>
 
-> **현재 버전: 0.11.2** (베타). 실제 ORCA 6.1.1 출력으로 검증했습니다.
+> **현재 버전: 0.11.3** (베타). 실제 ORCA 6.1.1 출력으로 검증했습니다.
 > ORCAdesk는 ORCA 개발진, FACCTs, 어떤 기관과도 관계없는 개인 프로젝트이며 ORCA를
 > 포함하지 않습니다. 직접 설치한 `orca`를 실행합니다(학술용 무료).
 
@@ -64,7 +64,7 @@
 | ![메인 창](docs/images/main-window.png) | ![IRC 구조 선택](docs/images/irc-picker.png) |
 | **메인 창**: 왼쪽의 큐 목록, 그리고 계산마다 실시간 수렴 그래프와 출력. | **IRC 다음 단계**: IRC 에너지 곡선에서 이어 갈 구조를 고릅니다. |
 | ![결과](docs/images/results.png) | ![3D 뷰어](docs/images/viewer.png) |
-| **결과**: 파서가 정리한 요약(여기서는 열화학)과 입력, 검색되는 출력 전체. | **3D**: 끝난 계산의 파동 함수로 그린 오비탈·전자 밀도·ESP. |
+| **결과**: IR 스펙트럼으로 그린 진동 모드. 봉우리를 누르면 그 진동이 구조 위에서 움직입니다. | **3D**: 끝난 계산의 파동 함수로 그린 오비탈·전자 밀도·ESP. |
 
 ## 설치
 
@@ -145,7 +145,7 @@ ORCA 입력 전체라서, 수준 하나를 모든 계산 종류에 쓸 수 있�
   안에서 여러 계산을 동시에 돌립니다. 큐는 자동 저장되고 다음 실행 때
   복원됩니다.
 - 결과 보고서는 **Output**(요약, 최종 구조, 오비탈 에너지, 전하, 결합 차수,
-  진동수와 진동 애니메이션, 열화학, UV-Vis, NMR, NEB 경로, scan, `.out` 전체와
+  IR 스펙트럼과 진동 애니메이션, 열화학, UV-Vis, NMR, NEB 경로, scan, `.out` 전체와
   찾기)과 **Visual**(구조, 궤적, 오비탈, 전자 밀도, ESP 3D)로 나뉩니다.
 
 ### MLIP와 CREST
@@ -173,3 +173,13 @@ ORCA 입력 전체라서, 수준 하나를 모든 계산 종류에 쓸 수 있�
 MIT License, Copyright (c) 2026 Taewoo Kim. [LICENSE](LICENSE)를 참고하세요.
 ORCAdesk는 개인 프로젝트이며, 어떤 기관도 만들거나 보증하거나 지원하지 않습니다. 함께 배포되는 글꼴(Inter, JetBrains Mono)과
 3Dmol.js의 라이선스는 [README.md](README.md#license)에 적혀 있습니다.
+
+**Windows 설치 파일은 소스와 라이선스가 다릅니다.** 설치 파일에는 PyQt6(GPL-3.0),
+Qt와 Qt WebEngine(LGPL-3.0, 그 안의 Chromium 구성 요소는 각자의 라이선스), Python 등
+제3자 소프트웨어가 함께 들어 있습니다. PyQt6가 GPL-3.0이므로 설치 파일 전체는 GNU GPL v3로
+배포되며, ORCAdesk 자체 코드는 그대로 MIT입니다([LICENSE-BINARY.txt](LICENSE-BINARY.txt)).
+포함된 구성 요소의 버전·라이선스·저작권 표시는 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)에,
+라이선스 전문은 [licenses/](licenses/)에 있고, 설치하면 둘 다 `ORCAdesk.exe` 옆에 놓입니다.
+설치 파일의 대응 소스는 해당 릴리스 태그의 이 저장소(0.11.3은
+[`v0.11.3`](https://github.com/wtbdkim/OrcaDesk/tree/v0.11.3), `build.spec`과 `installer.iss` 포함)와
+PyPI의 PyQt6 소스, [download.qt.io](https://download.qt.io/archive/qt/6.11/6.11.1/)의 Qt 6.11.1 소스입니다.

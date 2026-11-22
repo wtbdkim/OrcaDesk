@@ -32,7 +32,7 @@
   <img src="docs/images/queue-window.png" alt="The queue window: one row per molecule, each a chain of calculation steps" width="100%">
 </p>
 
-> **Status: 0.11.2** (`0.11.2`, beta), validated against real ORCA 6.1.1
+> **Status: 0.11.3** (`0.11.3`, beta), validated against real ORCA 6.1.1
 > output. ORCAdesk is an independent, personal project, not affiliated with
 > the ORCA developers, FACCTs or any institution, and it does not include ORCA:
 > it drives the `orca` you install yourself (free for academic use).
@@ -70,7 +70,7 @@
 | ![Main window](docs/images/main-window.png) | ![IRC structure picker](docs/images/irc-picker.png) |
 | **Main window**: the queue strip, and every job as a cell with its live convergence and output. | **After an IRC**: choose the structure to continue from on the IRC's energy profile. |
 | ![Results](docs/images/results.png) | ![3D viewer](docs/images/viewer.png) |
-| **Results**: the summary the parser read (thermochemistry here) beside the input and the whole output, searchable. | **3D**: orbitals, densities and ESP maps from the finished wavefunction. |
+| **Results**: the vibrational modes as an IR spectrum; click a band to watch that mode move on the structure. | **3D**: orbitals, densities and ESP maps from the finished wavefunction. |
 
 ## Install
 
@@ -214,8 +214,9 @@ A finished calculation opens as a report, read two ways: **Output** and
 - **Output** is what the parser read: the summary, final geometry (*Copy
   .xyz*), orbital energies (HOMO / LUMO), Mulliken and Löwdin charges, Mayer
   bond orders, dipole moment, rotational constants, the SCF energy
-  decomposition, frequencies (imaginary modes flagged, any one animated) and
-  full thermochemistry, TD-DFT transitions with a UV-Vis plot, NMR
+  decomposition, frequencies as an IR spectrum (imaginary modes flagged, any
+  one animated) and full thermochemistry, TD-DFT transitions with a UV-Vis
+  plot, NMR
   shieldings, the NEB path and scan surfaces. *Show all* reveals every section
   regardless of type, and the whole `.out` is there with Find.
 - **Visual** lists everything that can be drawn from the result: the
@@ -285,11 +286,14 @@ top bar).
 build.bat
 ```
 
-This installs the dependencies and PyInstaller, then produces `dist\ORCAdesk\`
-with `ORCAdesk.exe` and its runtime files. Zip the **whole** folder to pass it
-on (QtWebEngine's Chromium runtime lives beside the `.exe`; expect
-~150–250 MB). The installer is made from it with Inno Setup
-([INSTALLER_GUIDE_KR.md](INSTALLER_GUIDE_KR.md)).
+This builds a clean virtual environment (`.venv-build`, from the pinned
+`requirements-build.txt`) and runs PyInstaller in it, producing
+`dist\ORCAdesk\` with `ORCAdesk.exe`, its runtime files and the license
+notices. Zip the **whole** folder to pass it on (QtWebEngine's Chromium runtime
+lives beside the `.exe`; expect about 480 MB, about 130 MB as an installer).
+The installer is made from it with Inno Setup and `installer.iss`
+([INSTALLER_GUIDE_KR.md](INSTALLER_GUIDE_KR.md)). A build you pass on carries
+the same license terms as ours: see *License* below.
 
 <details>
 <summary><b>Project layout</b></summary>
@@ -350,10 +354,25 @@ output files for developing the optimization-time estimator.
 MIT License, Copyright (c) 2026 Taewoo Kim. See [LICENSE](LICENSE).
 ORCAdesk is a personal project; no institution makes, endorses or supports it.
 
-Third-party files ship with the app under their own terms:
+**The Windows installer is licensed differently from the source.** It bundles
+third-party software: PyQt6 (GPL-3.0), Qt and Qt WebEngine (LGPL-3.0, with
+Chromium's components under their own licenses), Python and a few smaller
+libraries. Because PyQt6 is GPL-3.0, the installer as a whole is conveyed under
+the GNU GPL v3, while ORCAdesk's own code stays MIT
+([LICENSE-BINARY.txt](LICENSE-BINARY.txt)). Every bundled component is listed,
+with its version, license and copyright, in
+[THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt), and the full license texts
+are in [licenses/](licenses/); the installer puts both next to `ORCAdesk.exe`.
+The corresponding source of an installer is this repository at the release's
+tag (for 0.11.3, [`v0.11.3`](https://github.com/wtbdkim/OrcaDesk/tree/v0.11.3),
+`build.spec` and `installer.iss` included), plus the upstream PyQt6 sources on
+PyPI and the Qt 6.11.1 sources on [download.qt.io](https://download.qt.io/archive/qt/6.11/6.11.1/).
+
+Two third-party works are part of this repository itself, under their own terms:
 
 - **Inter** and **JetBrains Mono**, the two typefaces the UI is drawn in,
   carried rather than fetched because the app runs offline. `web/fonts/`, SIL
   Open Font License 1.1 (full text in `web/fonts/OFL.txt`).
-- **3Dmol.js** 2.4.2, the 3D renderer. `web/vendor/`, see that file's own
-  header and the upstream project for its terms.
+- **3Dmol.js** 2.4.2, the 3D renderer. `web/vendor/`, BSD-3-Clause; the full
+  text, with the GLmol, three.js and jQuery notices it carries, is in
+  `web/vendor/3Dmol-min.js.LICENSE.txt`.

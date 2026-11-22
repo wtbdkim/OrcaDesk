@@ -1,0 +1,57 @@
+Qt notice
+=========
+
+ORCAdesk for Windows uses the Qt toolkit, version 6.11.1, including
+Qt WebEngine 6.11.1.
+Copyright (C) The Qt Company Ltd. and other contributors. https://www.qt.io/
+
+License
+-------
+Qt is used under the GNU Lesser General Public License version 3
+(LGPL-3.0.txt in this folder; it supplements the GNU GPL version 3,
+GPL-3.0.txt). The Qt-developed part of Qt WebEngine is under the same
+license. Qt WebEngine also contains Chromium, whose components are under
+the licenses listed in QtWebEngine-Chromium-third-party.txt; the most
+restrictive of them is the GNU LGPL version 2.1 (LGPL-2.1.txt). Third-party
+code inside the other Qt libraries is listed in Qt-third-party.txt.
+
+The Qt binaries are the unmodified ones from the PyQt6-Qt6 6.11.1 and
+PyQt6-WebEngine-Qt6 6.11.1 wheels published on PyPI. ORCAdesk does not
+modify Qt.
+
+Qt modules in this build
+------------------------
+Qt Core, Qt GUI, Qt Widgets, Qt Network, Qt Print Support, Qt OpenGL
+(qtbase); Qt Qml, Qt Qml Meta, Qt Qml Models, Qt Qml WorkerScript,
+Qt Quick, Qt Quick Widgets (qtdeclarative; Qt WebEngine links them);
+Qt SVG (qtsvg); the image-format plugins of qtimageformats; Qt Positioning
+(qtpositioning; Qt WebEngine links it); Qt WebChannel (qtwebchannel);
+Qt WebEngine Core and Qt WebEngine Widgets (qtwebengine).
+None of the Qt modules that Qt offers only under the GPL (such as Qt Quick
+3D, Qt Quick 3D Physics or Qt Quick Timeline) is included.
+
+Where the files are
+-------------------
+In the installation folder: _internal\PyQt6\Qt6\bin (the Qt6*.dll
+libraries, QtWebEngineProcess.exe and opengl32sw.dll), and the plugins,
+resources and translations folders next to it.
+
+Replacing Qt
+------------
+The Qt libraries are separate, dynamically linked files. You may replace
+them with your own builds of Qt 6.11.1, modified or not, that keep the same
+binary interface; ORCAdesk loads whatever is in that folder.
+
+Source code
+-----------
+The complete corresponding source code of Qt 6.11.1, including Qt WebEngine
+and the Chromium code it contains, is available from The Qt Company:
+
+  https://download.qt.io/archive/qt/6.11/6.11.1/single/
+      qt-everywhere-src-6.11.1.tar.xz (all of Qt)
+  https://download.qt.io/archive/qt/6.11/6.11.1/submodules/
+      qtbase-, qtdeclarative-, qtsvg-, qtimageformats-, qtpositioning-,
+      qtwebchannel- and qtwebengine-everywhere-src-6.11.1.tar.xz
+      (the modules this build carries)
+
+Qt is a registered trademark of The Qt Company Ltd. and its subsidiaries.

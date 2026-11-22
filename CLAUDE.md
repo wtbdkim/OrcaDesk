@@ -39,9 +39,11 @@ python main.py
 pip install -r requirements-server.txt # fastapi, uvicorn, qrcode, pillow
 python -m orcamgr.server.run           # http://127.0.0.1:8000/docs for API docs
 
-# Build a standalone Windows app -> dist\ORCAdesk\ORCAdesk.exe (+ runtime folder)
-build.bat                              # installs deps + PyInstaller, then runs:
-python -m PyInstaller build.spec --noconfirm
+# Build a standalone Windows app -> dist\ORCAdesk\ORCAdesk.exe (+ runtime folder
+# and the license notices), then the installer (installer.iss is tracked)
+build.bat                              # recreates .venv-build from requirements-build.txt, then:
+.venv-build\Scripts\python -m PyInstaller build.spec --noconfirm
+"C:\Program Files\Inno Setup 7\ISCC.exe" installer.iss   # -> installer_output\
 
 # Type-check the web/ front-ends (plain JS + JSDoc, no build step; needs Node)
 npx -p typescript tsc --noEmit -p jsconfig.json
@@ -172,7 +174,9 @@ Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
   Window title and the UI badge/About (via `get_about()`) derive from it —
   **never hardcode a version string in `web/`**. To release, bump `APP_VERSION`,
   the `CHANGELOG.md` / `README.md` / `README.ko.md` prose, **and** `installer.iss`'s
-  `MyAppVersion` / `MyAppVersionFull` (Inno Setup cannot read `paths.py`).
+  `MyAppVersion` / `MyAppVersionFull` (Inno Setup cannot read `paths.py`) and the
+  version / source tag in `LICENSE-BINARY.txt` and `THIRD_PARTY_NOTICES.txt`
+  (`tests/test_release_notices.py` checks all three).
 - Bridge slots and API endpoints exchange **JSON strings**, typically
   `{"ok": bool, ...}` or `{"error": "..."}`; errors are returned as data, never
   raised across the JS boundary. Don't annotate FastAPI endpoints with the
@@ -207,6 +211,12 @@ Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
   paths — `build.spec` bundles them there and `paths.py` reads them there.
 - Phone sync is **not** in the packaged build (`build.spec` `excludes`); drop
   those excludes deliberately when it ships.
+- **The Windows build is GPL-3.0 as a whole** (it bundles PyQt6); the source
+  stays MIT. Build it only through `build.bat` (the clean `.venv-build`), and
+  when what is bundled changes (a `requirements-build.txt` pin, the Python
+  version, a `build.spec` exclude) update `THIRD_PARTY_NOTICES.txt`,
+  `LICENSE-BINARY.txt` and `licenses/` in the same commit (ARCHITECTURE.md
+  *Packaging the Windows build*).
 
 ## Git workflow
 

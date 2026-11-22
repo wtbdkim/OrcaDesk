@@ -1,0 +1,25 @@
+# The exact environment the Windows build is made from (build.bat installs it
+# into the clean virtual environment .venv-build\). requirements.txt says what
+# the app needs; this file pins what a released build bundles, so the build can
+# be reproduced and THIRD_PARTY_NOTICES.txt names the right versions. Change a
+# pin here and update THIRD_PARTY_NOTICES.txt, LICENSE-BINARY.txt and the
+# licenses\ texts in the same commit.
+# Interpreter: CPython 3.12.10 (64-bit, python.org installer).
+
+# --- the app (requirements.txt) ---
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.1
+PyQt6-sip==13.11.1
+PyQt6-WebEngine==6.11.0
+PyQt6-WebEngine-Qt6==6.11.1
+psutil==7.2.2
+numpy==2.4.6
+
+# --- the build tool (not bundled, except PyInstaller's bootloader) ---
+pyinstaller==6.20.0
+pyinstaller-hooks-contrib==2026.5
+altgraph==0.17.5
+pefile==2024.8.26
+pywin32-ctypes==0.2.3
+packaging==26.3
+setuptools==84.2.1

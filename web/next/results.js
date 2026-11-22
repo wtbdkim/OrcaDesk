@@ -289,18 +289,33 @@
       // No table under the spectrum: a hundred-odd rows of one number each is
       // the chart transcribed, and it buried everything below it. The number is
       // on the band instead, where the reader is already looking.
+      // With ORCA's IR intensities (km/mol, one per mode; parser.py
+      // _ir_intensities) a band stands at its intensity against the strongest,
+      // so the chart reads as the spectrum. Without them (an older payload, an
+      // output with no IR table) every band is one height and the axis counts
+      // modes. ORCA 6.1.1 gives an imaginary mode no IR row, so it reads 0; it
+      // is still drawn full height in red -- on a TS result it is the band the
+      // reader is looking for -- and its label says it has no IR intensity.
+      /** @type {number[] | null} */
+      const ir = Array.isArray(d.ir_intensities)
+        && d.ir_intensities.length === d.frequencies.length ? d.ir_intensities : null;
+      const top = ir ? Math.max(...ir) || 1 : 1;
       const pts = d.frequencies.map((f, i) => ({
-        x: f, y: 1, cls: f < 0 ? "var(--err)" : "var(--crit-de)",
-        lab: `Mode ${i + 1} · ${f.toFixed(2)} cm⁻¹${f < 0 ? " · imaginary" : ""}` }));
+        x: f, y: ir && !(f < 0 && !ir[i]) ? ir[i] / top : 1, cls: f < 0 ? "var(--err)" : "var(--crit-de)",
+        lab: `Mode ${i + 1} · ${f.toFixed(2)} cm⁻¹${f < 0 ? " · imaginary" : ""}${
+          !ir ? "" : f < 0 && !ir[i] ? " · no IR intensity" : ` · ${ir[i].toFixed(2)} km/mol`}` }));
       out.push(sec("sec-freq", "Vibrational modes",
         d.frequencies.length + " modes · " + imag + " imaginary",
         (imag ? "One imaginary mode is what makes a structure a transition state; more "
               + "than one means it is not a stationary point of either kind."
               : "No imaginary modes — this geometry is a minimum on the surface.")
-        + " Point at a band for its wavenumber; the arrow keys step through them. Click"
-        + " one, or press Enter on it, to see that mode move on the structure.",
+        + (ir ? " Band height is the IR intensity, scaled to the strongest band (an"
+              + " imaginary mode, which has none, is drawn full height in red). Point at"
+              + " a band for its wavenumber and intensity; the arrow keys step through them."
+              : " Point at a band for its wavenumber; the arrow keys step through them.")
+        + " Click one, or press Enter on it, to see that mode move on the structure.",
         plate(chart(pts, cw, Math.round(cw * 0.26),
-                    { xlab: "wavenumber (cm⁻¹)", ylab: "modes",
+                    { xlab: "wavenumber (cm⁻¹)", ylab: ir ? "IR intensity (rel.)" : "modes",
                       stick: true, hover: true, pick: "mode" })
               + modeJump(d.frequencies)),
         "wide"));

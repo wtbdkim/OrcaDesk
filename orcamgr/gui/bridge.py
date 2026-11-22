@@ -37,7 +37,7 @@ from ..crest.env import (
 from ..crest.shell import (
     list_targets as crest_list_targets, transport_kind as crest_transport,
 )
-from ..paths import (APP_VERSION, APP_AUTHOR, APP_ORG, APP_EMAIL,
+from ..paths import (APP_VERSION, APP_AUTHOR, APP_EMAIL,
                      config_file, user_data_root)
 from ..textio import repair_ansi_line
 from .. import uistate
@@ -238,7 +238,6 @@ class Bridge(QObject):
         return json.dumps(AboutPayload(
             version=APP_VERSION,
             author=APP_AUTHOR,
-            org=APP_ORG,
             email=APP_EMAIL,
         ))
 
@@ -1427,6 +1426,7 @@ class Bridge(QObject):
                     for t in r.transitions
                 ],
                 frequencies=r.frequencies,
+                ir_intensities=r.ir_intensities,
                 n_imaginary=r.n_imaginary,
                 mulliken=r.mulliken_charges,
                 nmr=[

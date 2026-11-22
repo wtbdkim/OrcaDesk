@@ -1,0 +1,344 @@
+ORCAdesk 0.11.3 for Windows: third-party notices
+================================================
+
+This file lists the software that ships in the Windows build of ORCAdesk:
+the installer, and the program folder it installs (the same folder build.bat
+makes in dist\ORCAdesk). For each component it gives the version, the
+license, the copyright notice, the files it occupies (relative to the program
+folder) and the file in the licenses folder that holds the full license text.
+
+Why the build as a whole is conveyed under the GNU GPL v3, and where the
+corresponding source is: see LICENSE-BINARY.txt.
+
+The list was made from the files actually present in dist\ORCAdesk after a
+build from the clean environment pinned in requirements-build.txt (CPython
+3.12.10, PyInstaller 6.20.0). Where each license text comes from is listed
+at the end.
+
+
+1. ORCAdesk
+-----------
+Version:   0.11.3
+License:   MIT
+Copyright: Copyright (c) 2026 Taewoo Kim
+Files:     ORCAdesk.exe (with the PyInstaller bootloader, item 12);
+           _internal\web, _internal\web_mobile, _internal\data,
+           _internal\resources, except the third-party files named in
+           items 13 and 14
+Text:      LICENSE
+
+
+2. PyQt6
+--------
+Version:   6.11.0
+License:   GPL-3.0-only
+Copyright: Copyright (c) 2026 Riverbank Computing Limited
+Files:     _internal\PyQt6\QtCore.pyd, QtGui.pyd, QtWidgets.pyd,
+           QtNetwork.pyd, QtPrintSupport.pyd, QtWebChannel.pyd, and the
+           PyQt6 package's Python code inside ORCAdesk.exe
+Text:      licenses\PyQt6-LICENSE.txt (= licenses\GPL-3.0.txt)
+Source:    https://pypi.org/project/PyQt6/6.11.0/#files
+
+
+3. PyQt6-WebEngine
+------------------
+Version:   6.11.0
+License:   GPL-3.0-only
+Copyright: Copyright (c) 2026 Riverbank Computing Limited
+Files:     _internal\PyQt6\QtWebEngineCore.pyd, QtWebEngineWidgets.pyd
+Text:      licenses\PyQt6-LICENSE.txt (PyQt6-WebEngine's own LICENSE file is
+           byte-identical)
+Source:    https://pypi.org/project/PyQt6-WebEngine/6.11.0/#files
+
+
+4. PyQt6-sip
+------------
+Version:   13.11.1
+License:   BSD-2-Clause
+Copyright: Copyright (c) 2025 Phil Thompson <phil@riverbankcomputing.com>
+Files:     _internal\PyQt6\sip.cp312-win_amd64.pyd
+Text:      licenses\PyQt6-sip-LICENSE.txt
+
+
+5. Qt
+-----
+Version:   6.11.1 (the PyQt6-Qt6 6.11.1 wheel, unmodified)
+License:   LGPL-3.0-only (Qt is also offered under GPL-2.0, GPL-3.0 and a
+           commercial license; this build uses it under the LGPL-3.0)
+Copyright: Copyright (C) The Qt Company Ltd. and other contributors.
+Files:     _internal\PyQt6\Qt6\bin\Qt6Core.dll, Qt6Gui.dll, Qt6Widgets.dll,
+           Qt6Network.dll, Qt6PrintSupport.dll, Qt6OpenGL.dll, Qt6Qml.dll,
+           Qt6QmlMeta.dll, Qt6QmlModels.dll, Qt6QmlWorkerScript.dll,
+           Qt6Quick.dll, Qt6QuickWidgets.dll, Qt6Positioning.dll,
+           Qt6Svg.dll, Qt6WebChannel.dll, qt.conf;
+           _internal\PyQt6\Qt6\plugins (generic, iconengines, imageformats,
+           networkinformation, platforms, styles, tls);
+           _internal\PyQt6\Qt6\translations\qt_*.qm, qtbase_*.qm
+Text:      licenses\LGPL-3.0.txt, licenses\GPL-3.0.txt,
+           licenses\Qt-NOTICE.txt (what is included, how to replace it,
+           where the source is),
+           licenses\Qt-third-party.txt (third-party code inside these Qt
+           libraries: zlib, libpng, libjpeg, FreeType, HarfBuzz, PCRE2,
+           libtiff, libwebp, the Public Suffix List (MPL-2.0,
+           licenses\MPL-2.0.txt) and others, each with its license text)
+Source:    https://download.qt.io/archive/qt/6.11/6.11.1/
+
+
+6. Qt WebEngine, with Chromium
+------------------------------
+Version:   Qt WebEngine 6.11.1 (the PyQt6-WebEngine-Qt6 6.11.1 wheel,
+           unmodified), based on Chromium 140.0.7339.225
+License:   the Qt-developed part: LGPL-3.0-only; the Chromium part: many
+           components under BSD, MIT, Apache-2.0, ICU/Unicode, LGPL-2.1
+           (FFmpeg) and other licenses
+Copyright: Copyright (C) The Qt Company Ltd. and other contributors;
+           Copyright 2015 The Chromium Authors; the copyright notices of
+           every Chromium component are in the file named below
+Files:     _internal\PyQt6\Qt6\bin\Qt6WebEngineCore.dll,
+           Qt6WebEngineWidgets.dll, QtWebEngineProcess.exe;
+           _internal\PyQt6\Qt6\resources (icudtl.dat, the .pak files,
+           v8_context_snapshot*.bin);
+           _internal\PyQt6\Qt6\translations\qtwebengine_*.qm and
+           qtwebengine_locales\*.pak
+Text:      licenses\LGPL-3.0.txt, licenses\LGPL-2.1.txt,
+           licenses\Apache-2.0.txt, licenses\Qt-NOTICE.txt,
+           licenses\QtWebEngine-Chromium-third-party.txt (every component,
+           with its license text)
+Source:    https://download.qt.io/archive/qt/6.11/6.11.1/submodules/
+           (qtwebengine-everywhere-src-6.11.1)
+
+
+7. Mesa 3D llvmpipe (opengl32sw.dll), with LLVM
+-----------------------------------------------
+Version:   Mesa 11.2.2, LLVM 3.6.2 (shipped in the PyQt6-Qt6 wheel as Qt's
+           software OpenGL fallback)
+License:   MIT (Mesa); University of Illinois/NCSA Open Source License (LLVM)
+Copyright: Copyright (C) 1999-2007 Brian Paul All Rights Reserved.
+           Copyright (c) 2003-2014 University of Illinois at
+           Urbana-Champaign. All rights reserved.
+Files:     _internal\PyQt6\Qt6\bin\opengl32sw.dll
+Text:      licenses\Mesa-LLVM-opengl32sw.txt
+
+
+8. Python
+---------
+Version:   3.12.10 (the python.org Windows build)
+License:   PSF-2.0 (Python Software Foundation License Version 2)
+Copyright: Copyright (c) 2001-2023 Python Software Foundation. All Rights
+           Reserved. Copyright (c) 2000 BeOpen.com. Copyright (c) 1995-2001
+           CNRI. Copyright (c) 1991-1995 SMC.
+Files:     _internal\python312.dll, python3.dll, base_library.zip, the
+           standard-library extension modules (_asyncio.pyd, _bz2.pyd,
+           _ctypes.pyd, _decimal.pyd, _hashlib.pyd, _lzma.pyd,
+           _multiprocessing.pyd, _overlapped.pyd, _queue.pyd, _socket.pyd,
+           _ssl.pyd, _uuid.pyd, _wmi.pyd, pyexpat.pyd, select.pyd,
+           unicodedata.pyd), and standard-library modules inside
+           ORCAdesk.exe
+Text:      licenses\Python-LICENSE.txt,
+           licenses\Python-incorporated-software.txt
+Changes:   none. Python is included unmodified; PyInstaller only
+           byte-compiles the standard library into base_library.zip and
+           the archive inside ORCAdesk.exe (the brief summary of changes
+           the PSF License asks for).
+
+Libraries that are part of Python's Windows build:
+
+8a. OpenSSL 3.0.16 - Apache-2.0
+    Copyright 1998-2025 The OpenSSL Authors. All rights reserved.
+    Files: _internal\libssl-3.dll, libcrypto-3.dll (used by _ssl.pyd and
+    _hashlib.pyd)
+    Text:  licenses\Apache-2.0.txt (also inside Python-LICENSE.txt)
+
+8b. libffi 3.4.4 - MIT
+    libffi - Copyright (c) 1996-2022 Anthony Green, Red Hat, Inc and others.
+    Files: _internal\libffi-8.dll (used by _ctypes.pyd)
+    Text:  licenses\Python-LICENSE.txt (libffi section)
+
+8c. bzip2 / libbzip2 1.0.8 - bzip2-1.0.6 license (BSD-style)
+    Copyright (C) 1996-2019 Julian R Seward. All rights reserved.
+    Files: in _internal\_bz2.pyd
+    Text:  licenses\Python-LICENSE.txt (bzip2 section)
+
+8d. xz / liblzma 5.2.5 - public domain (no notice required)
+    Files: in _internal\_lzma.pyd
+
+8e. zlib 1.3.1 - Zlib
+    Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
+    Files: in _internal\python312.dll
+    Text:  licenses\Python-incorporated-software.txt (zlib section)
+
+8f. Expat 2.7.1 - MIT
+    Copyright (c) 1998, 1999, 2000 Thai Open Source Software Center Ltd and
+    Clark Cooper; Copyright (c) 2001-2022 Expat maintainers
+    Files: in _internal\pyexpat.pyd
+    Text:  licenses\Python-incorporated-software.txt (expat section)
+
+8g. libmpdec (mpdecimal) 2.5.1 - BSD-2-Clause
+    Copyright (c) 2008-2020 Stefan Krah. All rights reserved.
+    Files: in _internal\_decimal.pyd
+    Text:  licenses\Python-incorporated-software.txt (libmpdec section)
+
+8h. HACL* (hashlib's SHA-2 and SHA-3) - MIT
+    Copyright (c) 2016-2022 INRIA, CMU and Microsoft Corporation
+    Copyright (c) 2022-2023 HACL* Contributors
+    Files: in _internal\python312.dll
+    Text:  the MIT terms, as in CPython 3.12.10 Modules/_hacl/*.c:
+
+      Permission is hereby granted, free of charge, to any person obtaining
+      a copy of this software and associated documentation files (the
+      "Software"), to deal in the Software without restriction, including
+      without limitation the rights to use, copy, modify, merge, publish,
+      distribute, sublicense, and/or sell copies of the Software, and to
+      permit persons to whom the Software is furnished to do so, subject to
+      the following conditions:
+
+      The above copyright notice and this permission notice shall be
+      included in all copies or substantial portions of the Software.
+
+      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+      EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+      MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+      NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+      LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+      OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+      WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+8i. Other code incorporated in Python (Mersenne Twister, SipHash24, strtod
+    and dtoa, and others): licenses\Python-incorporated-software.txt.
+
+
+9. Microsoft Visual C++ runtime
+-------------------------------
+Version:   14.42.34438 (from Python), 14.44.35211 (from the Qt wheel),
+           14.40.33810 (from the NumPy wheel)
+License:   Microsoft Visual C++ Redistributable ("Distributable Code") terms
+Copyright: (c) Microsoft Corporation. All rights reserved.
+Files:     _internal\VCRUNTIME140.dll, VCRUNTIME140_1.dll;
+           _internal\PyQt6\Qt6\bin\MSVCP140.dll, MSVCP140_1.dll,
+           MSVCP140_2.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll;
+           _internal\numpy.libs\msvcp140-*.dll
+Note:      These files are redistributed only as part of this program and
+           stay under Microsoft's terms, not under the GPL or the MIT
+           License. Do not alter Microsoft's copyright notices, and do not
+           separate these files from the program to distribute them on
+           their own. Python's own conditions for them are in
+           licenses\Python-LICENSE.txt ("Additional Conditions for this
+           Windows binary build").
+
+
+10. NumPy
+---------
+Version:   2.4.6
+License:   BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0
+Copyright: Copyright (c) 2005-2025, NumPy Developers.
+Files:     _internal\numpy, _internal\numpy-2.4.6.dist-info
+Text:      licenses\numpy-LICENSE.txt; the licenses of the code NumPy
+           vendors are also in
+           _internal\numpy-2.4.6.dist-info\licenses
+
+10a. OpenBLAS (scipy-openblas 0.3.31.188.0), with LAPACK and the GCC
+     runtime library - BSD-3-Clause; BSD-3-Clause-Open-MPI;
+     GPL-3.0-or-later WITH GCC-exception-3.1
+     Files: _internal\numpy.libs\libscipy_openblas64_-*.dll
+     Text:  licenses\numpy-LICENSE.txt (the OpenBLAS, LAPACK and GCC
+            runtime library sections, with their copyright notices)
+
+
+11. psutil
+----------
+Version:   7.2.2
+License:   BSD-3-Clause
+Copyright: Copyright (c) 2009, Jay Loden, Dave Daeschler, Giampaolo Rodola
+Files:     _internal\psutil
+Text:      licenses\psutil-LICENSE.txt
+
+
+12. PyInstaller bootloader, loader and run-time hooks
+-----------------------------------------------------
+Version:   6.20.0
+License:   GPL-2.0-or-later WITH the PyInstaller Bootloader Exception (the
+           bootloader and loader may be distributed with the program under
+           any terms); the run-time hooks (pyi_rth_*) under Apache-2.0
+           (licenses\Apache-2.0.txt)
+Copyright: Copyright (c) 2010-2023, PyInstaller Development Team;
+           Copyright (c) 2005-2009, Giovanni Bajo; based on previous work
+           under copyright (c) 2002 McMillan Enterprises, Inc.
+Files:     ORCAdesk.exe (the bootloader and the pyimod*/pyi_rth_* modules
+           inside it)
+Text:      licenses\PyInstaller-COPYING.txt
+
+
+13. 3Dmol.js
+------------
+Version:   2.4.2 (byte-identical to the npm package 3dmol@2.4.2,
+           build/3Dmol-min.js)
+License:   BSD-3-Clause. It incorporates GLmol 0.47 (MIT or LGPL-3.0; used
+           here under the MIT License), three.js (MIT) and jQuery (MIT).
+Copyright: Copyright (c) 2014, University of Pittsburgh and contributors;
+           GLmol (C) Copyright 2011-2012, biochem_fan;
+           three.js Copyright (c) 2010-2012 three.js Authors;
+           jQuery Copyright (c) 2011 John Resig
+Files:     _internal\web\vendor\3Dmol-min.js
+Text:      licenses\3Dmol.js-LICENSE.txt (the same text is in
+           _internal\web\vendor\3Dmol-min.js.LICENSE.txt)
+
+
+14. Inter and JetBrains Mono typefaces
+--------------------------------------
+Version:   the latin and latin-ext subsets served by Google Fonts (Inter
+           v20; JetBrains Mono)
+License:   SIL Open Font License 1.1 (no Reserved Font Name declared)
+Copyright: Copyright (c) 2016 The Inter Project Authors
+           (https://github.com/rsms/inter);
+           Copyright (c) 2020 The JetBrains Mono Project Authors
+Files:     _internal\web\fonts\inter-latin.woff2, inter-latin-ext.woff2,
+           jetbrains-mono-latin.woff2, jetbrains-mono-latin-ext.woff2
+Text:      licenses\Inter-JetBrainsMono-OFL-1.1.txt (the same text is in
+           _internal\web\fonts\OFL.txt)
+
+
+Not included
+------------
+ORCA, CREST, MACE and the Python packages of an MLIP environment are not
+part of this distribution. ORCAdesk runs the copies you install yourself,
+under their own licenses.
+
+
+Where the license texts come from (fetched or copied 2026-11-22)
+----------------------------------------------------------------
+GPL-3.0.txt          https://www.gnu.org/licenses/gpl-3.0.txt
+LGPL-3.0.txt         https://www.gnu.org/licenses/lgpl-3.0.txt
+LGPL-2.1.txt         https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+Apache-2.0.txt       https://www.apache.org/licenses/LICENSE-2.0.txt
+MPL-2.0.txt          https://www.mozilla.org/media/MPL/2.0/index.txt
+PyQt6-LICENSE.txt    pyqt6-6.11.0.dist-info/licenses/LICENSE in the PyQt6
+                     6.11.0 wheel
+PyQt6-sip-LICENSE.txt
+                     pyqt6_sip-13.11.1.dist-info/licenses/LICENSE in the
+                     PyQt6-sip 13.11.1 wheel
+psutil-LICENSE.txt   psutil-7.2.2.dist-info/LICENSE in the psutil 7.2.2 wheel
+numpy-LICENSE.txt    numpy-2.4.6.dist-info/licenses/LICENSE.txt in the NumPy
+                     2.4.6 Windows wheel
+Python-LICENSE.txt   LICENSE.txt of the python.org Python 3.12.10 installer
+                     (C:\Program Files\Python312\LICENSE.txt)
+Python-incorporated-software.txt
+                     the section "Licenses and Acknowledgements for
+                     Incorporated Software" of the same installer's
+                     Doc\html\license.html, converted to plain text
+Qt-NOTICE.txt        written for ORCAdesk
+Qt-third-party.txt   https://doc.qt.io/qt-6.11/licenses-used-in-qt.html and
+                     the per-component pages it links to (Qt Core, GUI,
+                     Image Formats, Network, Positioning, Qml, Quick, SVG)
+QtWebEngine-Chromium-third-party.txt
+                     https://doc.qt.io/qt-6.11/qtwebengine-licensing.html and
+                     the per-component pages it links to
+Mesa-LLVM-opengl32sw.txt
+                     Mesa docs/license.html at tag mesa-11.2.2 and LLVM
+                     llvm/LICENSE.TXT at tag llvmorg-3.6.2 (sources named in
+                     the file)
+PyInstaller-COPYING.txt
+                     pyinstaller-6.20.0.dist-info/licenses/COPYING.txt in the
+                     PyInstaller 6.20.0 wheel
+3Dmol.js-LICENSE.txt https://raw.githubusercontent.com/3dmol/3Dmol.js/2.4.2/LICENSE
+Inter-JetBrainsMono-OFL-1.1.txt
+                     web/fonts/OFL.txt in this repository

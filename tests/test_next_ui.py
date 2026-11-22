@@ -786,3 +786,19 @@ def test_a_step_can_go_before_a_block():
     assert "!B && (_clip || _wfs.length)" in menu, "a workflow before a block"
     assert 't.closest(".qe-ins")' in _function_body(src, "dropTarget")
     assert ".qe-ins{" in _read(NEXT / "app.css")
+
+
+def test_a_long_block_name_keeps_its_job_part():
+    """A block name too long for its 140px card gives way in its system part
+    ("glyc…_Freq"), never in the job part ("glycine_Fr…"): nameHtml splits it
+    at the row's system name (else the last separator), the CSS lets only the
+    system part shrink first, and the card's title carries the whole name."""
+    src = _read(NEXT / "qed.js")
+    body = _function_body(src, "nameHtml")
+    assert 'data-split="1"' in body and "qe-stem" in body and "qe-tail" in body
+    assert "stem(name)" in body                       # the fallback split
+    assert src.count("nameHtml(n.name, L.sys ? L.name : \"\")") == 1
+    assert src.count("nameHtml(c.name, L.sys ? L.name : \"\")") == 1
+    css = _read(NEXT / "app.css")
+    assert ".qe-nm[data-split]{display:flex;}" in css
+    assert ".qe-stem{flex:0 100000 auto;" in css and ".qe-tail{flex:0 1 auto;" in css

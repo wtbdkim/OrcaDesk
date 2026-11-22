@@ -398,7 +398,8 @@
       // measurement in progress would be cleared every second.
       const cv = q(".thumb canvas");
       let st = _thumbs.get(cv);
-      if (!st) { st = MOL.mount(cv, { gizmoBottom: 26, labels: false }); _thumbs.set(cv, st); }
+      // gizmoBottom: the caption's top edge (.thumb .cap: 8px up, one 15px line)
+      if (!st) { st = MOL.mount(cv, { gizmoBottom: 24, labels: false }); _thumbs.set(cv, st); }
       if (st.__atoms !== geom) { st.setAtoms(geom, { bondsFrom: [got.input] }); st.__atoms = geom; }
       // the trajectory, not this one frame: the thumbnail is the door to every
       // structure the run has written, which is what the big window is for

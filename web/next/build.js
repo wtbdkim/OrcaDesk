@@ -1436,7 +1436,6 @@
     /** the Ctrl+clicked atoms, in order, waiting for the button @type {number[]} */
     let sel = [];
     const stage = MOL.mount(cv, Object.assign({
-      gizmoBottom: 26,
       onPick: (/** @type {any} */ p) => { picked = p && p.kind === "atom" ? p.i : null; sayFix(); },
     }, picking ? {
       onChain: (/** @type {number[]} */ idx) => pick(idx),
