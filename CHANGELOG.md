@@ -7,7 +7,31 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [0.11.3] — 2026-11-20
 
+### Added
+- **Settings → About says what ORCAdesk is licensed under.** Beside the
+  version: the source code license (MIT), that the Windows build bundles
+  third-party software under its own licenses and where their notices are,
+  that ORCAdesk is an independent personal project, and that it comes
+  without warranty.
+
 ### Changed
+- **The Windows installer carries its licenses.** Its license page shows
+  `LICENSE-BINARY.txt` instead of the MIT text alone: ORCAdesk's own code is
+  MIT, but the installer bundles PyQt6 (GPL-3.0), Qt and Qt WebEngine
+  (LGPL-3.0, with Chromium) and Python, so as a whole it is conveyed under the
+  GPL-3.0, and the file says where the corresponding source is.
+  `THIRD_PARTY_NOTICES.txt` (every bundled component with its version,
+  license and copyright) and a `licenses` folder with the full texts are
+  installed next to `ORCAdesk.exe`. The 3Dmol.js license file holds the full
+  upstream license instead of a five-line banner.
+- **A smaller build, made from a clean environment.** `build.bat` builds in a
+  fresh virtual environment (`.venv-build`) from pinned versions
+  (`requirements-build.txt`), and the build leaves out the Qt modules
+  ORCAdesk never loads (Quick 3D, Multimedia, PDF, Sensors and the rest of
+  the QML tree) and packages that had leaked in from the build machine. The
+  program folder goes from 1,793 files (545 MiB) to 352 (478 MiB).
+- The installer's publisher is *Taewoo Kim*, and `installer.iss` is in the
+  repository again, as part of the installer's corresponding source.
 - **The vibrational spectrum in the report is an IR spectrum.** Each band
   now stands at its IR intensity, read from ORCA's IR SPECTRUM table and
   scaled to the strongest band, and pointing at a band (or stepping with the

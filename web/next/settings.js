@@ -197,6 +197,15 @@
           <div class="scard-title">About</div>
           <div class="kvline"><span>Version</span>
             <span class="v">${NB.esc((NB.about && NB.about.version) || "")}</span></div>
+          <div class="kvline"><span>Source code license</span>
+            <span class="v">MIT</span></div>
+          <p class="hint">The Windows build also bundles third-party software under its own
+            licenses (PyQt6 under GPL-3.0, so the build as a whole is GPL-3.0; Qt and
+            Chromium under LGPL and others). They are listed in THIRD_PARTY_NOTICES.txt and
+            the licenses folder, in the ORCAdesk install folder.</p>
+          <p class="hint">ORCAdesk is an independent personal project, not affiliated with
+            the ORCA developers, FACCTs or any institution.</p>
+          <p class="hint">Provided as is, without warranty of any kind.</p>
         </div>
       </div>`;
 

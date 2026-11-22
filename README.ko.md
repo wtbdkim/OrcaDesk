@@ -173,3 +173,13 @@ ORCA 입력 전체라서, 수준 하나를 모든 계산 종류에 쓸 수 있�
 MIT License, Copyright (c) 2026 Taewoo Kim. [LICENSE](LICENSE)를 참고하세요.
 ORCAdesk는 개인 프로젝트이며, 어떤 기관도 만들거나 보증하거나 지원하지 않습니다. 함께 배포되는 글꼴(Inter, JetBrains Mono)과
 3Dmol.js의 라이선스는 [README.md](README.md#license)에 적혀 있습니다.
+
+**Windows 설치 파일은 소스와 라이선스가 다릅니다.** 설치 파일에는 PyQt6(GPL-3.0),
+Qt와 Qt WebEngine(LGPL-3.0, 그 안의 Chromium 구성 요소는 각자의 라이선스), Python 등
+제3자 소프트웨어가 함께 들어 있습니다. PyQt6가 GPL-3.0이므로 설치 파일 전체는 GNU GPL v3로
+배포되며, ORCAdesk 자체 코드는 그대로 MIT입니다([LICENSE-BINARY.txt](LICENSE-BINARY.txt)).
+포함된 구성 요소의 버전·라이선스·저작권 표시는 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)에,
+라이선스 전문은 [licenses/](licenses/)에 있고, 설치하면 둘 다 `ORCAdesk.exe` 옆에 놓입니다.
+설치 파일의 대응 소스는 해당 릴리스 태그의 이 저장소(0.11.3은
+[`v0.11.3`](https://github.com/wtbdkim/OrcaDesk/tree/v0.11.3), `build.spec`과 `installer.iss` 포함)와
+PyPI의 PyQt6 소스, [download.qt.io](https://download.qt.io/archive/qt/6.11/6.11.1/)의 Qt 6.11.1 소스입니다.

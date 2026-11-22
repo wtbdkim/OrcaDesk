@@ -2577,3 +2577,78 @@ lands so it flags a real problem, not every result.
 When changing how assets are loaded, keep `web/` and `data/` landing at the *same*
 relative paths the code expects — `build.spec` bundles them there, and `paths.py` reads
 them there.
+
+## Packaging the Windows build (build.bat, build.spec, installer.iss)
+
+**The two artifacts are licensed differently.** The source is MIT. The Windows
+build bundles PyQt6 and PyQt6-WebEngine (GPL-3.0-only), Qt 6.11.1 and Qt WebEngine
+(LGPL-3.0, with Chromium's components under their own licenses, LGPL-2.1 for
+FFmpeg the most restrictive), Python 3.12.10 (PSF, with OpenSSL under Apache-2.0)
+and smaller pieces, so the installer and `dist\ORCAdesk\` are conveyed under the
+GPL-3.0 as a whole. MIT is GPL-compatible, so the repository stays MIT; only the
+binary has the GPL's obligations: the license texts, the notices, and the
+corresponding source. Three files say so, and `build.spec` copies all of them
+**next to `ORCAdesk.exe`** (not into `_internal\`), so the zipped dist folder and
+the installed folder both carry them:
+- `LICENSE-BINARY.txt` — what the binary is licensed under and where the
+  corresponding source is (this release's git tag, the PyQt6 sdists on PyPI, the
+  Qt 6.11.1 sources on download.qt.io). It is the installer's license page
+  (`LicenseFile=`), so the wizard no longer presents MIT alone.
+- `THIRD_PARTY_NOTICES.txt` — every bundled component with its version, license,
+  copyright line, files, and the `licenses\` file holding its full text, made
+  from the files actually present in `dist\ORCAdesk`; it ends with where each
+  text came from.
+- `licenses/` — the full texts (GPL-3.0, LGPL-3.0/2.1, Apache-2.0, MPL-2.0, the
+  packages' own dist-info license files, Python's `LICENSE.txt` and its
+  incorporated-software section, a Qt notice, Qt's and Qt WebEngine's third-party
+  attributions collected from doc.qt.io/qt-6.11 per component, Mesa/LLVM for
+  `opengl32sw.dll`, 3Dmol.js, the fonts' OFL, PyInstaller's COPYING).
+
+`installer.iss` is **tracked** (it was git-ignored until 0.11.3): with `build.spec`,
+`build.bat` and `requirements-build.txt` it is the "scripts used to control
+compilation and installation" the GPL counts as corresponding source. It installs
+the dist folder recursively — the notices come with it — and an ISPP `#error`
+stops the compile when `dist\ORCAdesk` lacks them, so an installer cannot be made
+from an older build. Settings → About states the source license, where the
+notices are, that ORCAdesk is an independent personal project, and that there is
+no warranty. `tests/test_release_notices.py` pins the seams: `installer.iss`'s
+version against `APP_VERSION`, the source tag in `LICENSE-BINARY.txt`, every
+`requirements-build.txt` pin against its notice, and the notices against the
+files in `licenses/`.
+
+**Build only from the clean environment.** PyInstaller bundles whatever the
+building interpreter can import, so `build.bat` recreates `.venv-build\`
+(git-ignored) on every run and installs `requirements-build.txt`, which pins the
+app's dependencies and PyInstaller with `==`. Built from the global site-packages,
+the 0.11.3 candidate shipped PyYAML, charset_normalizer and typing_extensions,
+none of which the app imports, and Git for Windows' OpenSSL 3.5.6 DLLs, which
+PyInstaller's QtNetwork hook found on the Git Bash `PATH` for Qt's OpenSSL TLS
+backend. `build.spec` excludes those packages too, and drops `qopensslbackend.dll`
+with `libssl-3-x64.dll` / `libcrypto-3-x64.dll` (no TLS goes through Qt;
+Schannel stays; Python's own `libssl-3.dll` / `libcrypto-3.dll` are other files).
+A changed pin or Python version changes what the notices must say — update
+`THIRD_PARTY_NOTICES.txt`, `LICENSE-BINARY.txt` and `licenses/` with it.
+
+**Unused Qt is kept out by an allowlist of PyQt6 modules.** `build.spec` excludes
+every PyQt6 extension module except the eight the app loads (QtCore, QtGui,
+QtWidgets, QtNetwork, QtWebChannel, QtWebEngineCore, QtWebEngineWidgets, and
+QtPrintSupport, which `PyQt6.QtWebEngineWidgets` imports itself). Without it,
+Qt6WebEngineWidgets' link to Qt6QuickWidgets made PyInstaller hidden-import
+`PyQt6.QtQuickWidgets` → `QtQuick` → `QtQml`, whose hook collects the whole
+`qml/` tree; the QML plugins in it pulled in 58 Qt DLLs the app never loads,
+among them Quick3D, Quick3DPhysics and QuickTimeline, which Qt offers only under
+the GPL. The Qt DLLs Qt WebEngine really links (Qt6Quick, Qt6QuickWidgets, the
+Qt6Qml* four, Qt6OpenGL, Qt6Positioning, Qt6WebChannel, Qt6PrintSupport) still
+arrive through PyInstaller's binary dependency analysis — a PE-import walk from
+the kept modules, QtWebEngineProcess.exe and the collected plugins reaches
+exactly those 17 Qt6 DLLs — and Qt WebEngine Widgets needs no QML import at
+run time. The PDF image-format plugin (`qpdf.dll`, the only thing linking
+Qt6Pdf) is dropped too. `collect_all("PyQt6.QtWebEngine*")`, which the spec used
+to run, collected nothing (the two are extension modules, not packages);
+PyInstaller's own QtWebEngineCore hook brings QtWebEngineProcess, the `.pak`
+resources, ICU data and the locales. Measured on the 0.11.3 build:
+1,793 files / 167 DLLs / 545 MiB before, 352 files / 50 DLLs / 478 MiB after
+(the `qml/` tree was 1,341 of the removed files; Qt6WebEngineCore.dll and its
+resources are most of what remains). Checked by launching the built exe: the
+first-run dialog, then the notebook page over QWebChannel, WebGL and a 3Dmol.js
+viewer, driven through `ORCADESK_REMOTE_DEBUG`.

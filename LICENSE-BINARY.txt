@@ -1,0 +1,63 @@
+ORCAdesk for Windows: the license of this binary distribution
+==============================================================
+
+ORCAdesk's own source code
+--------------------------
+ORCAdesk's own source code is licensed under the MIT License,
+Copyright (c) 2026 Taewoo Kim. The full text is in LICENSE, in the same
+folder as this file.
+
+What else this Windows build contains
+-------------------------------------
+This Windows build (the installer and the installed program folder) also
+contains third-party software, each part under its own license. Among them:
+
+  - PyQt6 6.11.0 and PyQt6-WebEngine 6.11.0 (Riverbank Computing Limited):
+    GNU General Public License v3.
+  - Qt 6.11.1 and Qt WebEngine 6.11.1 (The Qt Company Ltd. and other
+    contributors): GNU Lesser General Public License v3. Qt WebEngine contains
+    Chromium, whose components are under BSD, MIT, Apache-2.0, LGPL-2.1 and
+    other licenses.
+  - Python 3.12.10 (PSF License), with OpenSSL 3.0.16 (Apache License 2.0),
+    libffi, bzip2, xz, zlib, expat and mpdecimal.
+  - NumPy (with OpenBLAS), psutil, PyQt6-sip, Mesa (Qt's software OpenGL
+    fallback), 3Dmol.js, the Inter and JetBrains Mono fonts, the PyInstaller
+    bootloader and the Microsoft Visual C++ runtime.
+
+THIRD_PARTY_NOTICES.txt lists every component with its version, license and
+copyright notice. The licenses folder holds the full license texts.
+
+The license of the build as a whole
+-----------------------------------
+Because PyQt6 is licensed under the GNU General Public License version 3,
+this binary distribution as a whole is conveyed under the terms of the GNU
+General Public License version 3 (licenses\GPL-3.0.txt). ORCAdesk's own code
+remains available under the MIT License as well, and every third-party
+component keeps its own license.
+
+Qt is used under the GNU LGPL v3 (licenses\LGPL-3.0.txt; details in
+licenses\Qt-NOTICE.txt). Its libraries are separate files in the
+_internal\PyQt6\Qt6\bin folder of the installation; you may replace them with
+your own, modified builds of the same Qt version.
+
+Corresponding source
+--------------------
+  - ORCAdesk 0.11.3, including build.spec, build.bat, requirements-build.txt
+    and installer.iss (the scripts that build this program and this
+    installer): https://github.com/wtbdkim/OrcaDesk/tree/v0.11.3
+  - PyQt6 6.11.0 and PyQt6-WebEngine 6.11.0 (source distributions):
+    https://pypi.org/project/PyQt6/6.11.0/#files
+    https://pypi.org/project/PyQt6-WebEngine/6.11.0/#files
+  - PyQt6-sip 13.11.1: https://pypi.org/project/PyQt6-sip/13.11.1/#files
+  - Qt 6.11.1, including Qt WebEngine and the Chromium code it contains
+    (qt-everywhere-src-6.11.1, or the qtbase / qtdeclarative / qtsvg /
+    qtimageformats / qtpositioning / qtwebchannel / qtwebengine submodules):
+    https://download.qt.io/archive/qt/6.11/6.11.1/
+  - Python 3.12.10: https://www.python.org/downloads/release/python-31210/
+
+No warranty
+-----------
+ORCAdesk is provided "as is", without warranty of any kind; see LICENSE and
+sections 15 and 16 of the GNU GPL. ORCAdesk is an independent personal
+project. It is not made, endorsed or supported by the ORCA developers, FACCTs,
+or any institution, and it does not include ORCA.

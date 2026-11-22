@@ -1,7 +1,7 @@
 # Contributors
 
 ## Author
-- **Taewoo Kim** (Korea Science Academy of KAIST) — creator, lead developer
+- **Taewoo Kim** — creator, lead developer
 
 ## Data contributors
 ORCA output files used to develop and validate the optimization-time

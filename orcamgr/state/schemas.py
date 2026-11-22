@@ -319,7 +319,6 @@ class ErrorPayload(TypedDict):
 class AboutPayload(TypedDict):
     version: str
     author: str
-    org: str
     email: str
 
 

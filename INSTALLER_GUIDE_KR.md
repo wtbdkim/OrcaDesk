@@ -35,15 +35,29 @@ Inno Setup만 미리 설치해 두면(아래 2단계 참고), 그 다음부터�
 build.bat
 ```
 
-또는 직접:
+`build.bat`은 매번 깨끗한 가상환경 `.venv-build\`(git에 올라가지 않음)를
+새로 만들고, `requirements-build.txt`에 고정된 버전만 설치한 뒤 빌드합니다.
+Python은 3.12(가능하면 3.12.10)가 필요합니다.
+
+직접 하려면, `.venv-build`를 만든 다음 그 안의 Python으로:
 
 ```
-python -m PyInstaller build.spec --noconfirm
+.venv-build\Scripts\python -m PyInstaller build.spec --noconfirm
 ```
 
-끝나면 `dist\ORCAdesk\` 폴더가 생기고 그 안에 `ORCAdesk.exe`가
-있습니다. 한 번 더블클릭해서 창이 잘 뜨는지 확인하세요. (이게 안 되면
-설치 파일을 만들어도 똑같이 안 됩니다.)
+**전역 Python(`python -m PyInstaller ...`)으로 빌드하지 마세요.** PyInstaller는
+빌드하는 Python이 import할 수 있는 것을 모두 묶기 때문에, 이 PC에 깔린 다른
+패키지(PyYAML 등)나 PATH에 있는 DLL(Git for Windows의 OpenSSL 등)이 섞여
+들어가고, 그러면 `THIRD_PARTY_NOTICES.txt`가 실제 묶인 내용과 달라집니다.
+
+끝나면 `dist\ORCAdesk\` 폴더가 생기고 그 안에 `ORCAdesk.exe`와 함께
+`LICENSE`, `LICENSE-BINARY.txt`, `THIRD_PARTY_NOTICES.txt`, `licenses\` 폴더가
+있습니다(라이선스 고지 — 아래 "라이선스" 참고). 한 번 더블클릭해서 창이 잘
+뜨는지 확인하세요. (이게 안 되면 설치 파일을 만들어도 똑같이 안 됩니다.)
+
+> 이전 빌드의 `dist\` 안에 읽기 전용 폴더가 남아 있으면 PyInstaller가
+> `WinError 5`로 실패할 수 있습니다. 그때는 `dist\` 폴더를 지우거나 그 안
+> 폴더들의 읽기 전용 속성을 해제한 뒤 다시 실행하세요.
 
 ---
 
@@ -88,10 +102,30 @@ python -m PyInstaller build.spec --noconfirm
   Inno Setup은 파이썬을 읽지 못하므로 `orcamgr/paths.py`의 `APP_VERSION`을
   베껴 둔 곳이 `installer.iss` 상단의 `MyAppVersion` / `MyAppVersionFull`
   두 줄입니다. 이 값이 설치 마법사 화면, 제어판의 "프로그램 추가/제거"
-  항목, 그리고 출력 파일 이름을 모두 결정합니다. `installer.iss`는
-  저장소에 올라가지 않는 로컬 파일이라(.gitignore) 저장소 쪽 검사로는
-  이 어긋남을 잡을 수 없으니, 릴리스 때 이 문서의 이 줄을 확인하세요.
-  (실제로 0.5.0에 멈춘 채 세 번의 릴리스를 지나간 적이 있습니다.)
+  항목, 그리고 출력 파일 이름을 모두 결정합니다. (`installer.iss`가 git에서
+  빠져 있던 시절에는 0.5.0에 멈춘 채 세 번의 릴리스를 지나간 적이 있습니다.)
+  이제 `installer.iss`는 저장소에 있고, `tests/test_release_notices.py`가
+  이 버전과 `APP_VERSION`이 다르면 실패합니다. 같은 테스트가
+  `LICENSE-BINARY.txt`의 소스 태그(`.../tree/v<버전>`)와
+  `THIRD_PARTY_NOTICES.txt` 첫 줄의 버전도 확인하니, 함께 올리세요.
+
+## 라이선스 (설치 파일을 배포하기 전에)
+
+- ORCAdesk 소스는 MIT지만, 설치 파일에는 PyQt6(GPL-3.0), Qt·Qt WebEngine
+  (LGPL-3.0, 안에 Chromium), Python 등이 함께 들어가므로 **설치 파일 전체는
+  GPL-3.0으로 배포**됩니다. 그래서 설치 마법사의 라이선스 화면은 MIT 전문이
+  아니라 `LICENSE-BINARY.txt`를 보여 줍니다.
+- `build.spec`이 `LICENSE`, `LICENSE-BINARY.txt`, `THIRD_PARTY_NOTICES.txt`,
+  `licenses\`를 `dist\ORCAdesk\`의 `ORCAdesk.exe` 옆에 복사하고, 설치 파일이
+  이것들을 그대로 설치 폴더에 넣습니다. `dist\ORCAdesk`에 이 파일들이 없으면
+  `installer.iss`는 컴파일을 거부합니다(예전 빌드로 설치 파일을 만드는 것을 막음).
+- `requirements-build.txt`의 버전이나 Python 버전을 바꾸면 묶이는 내용이
+  바뀌므로 `THIRD_PARTY_NOTICES.txt`, `LICENSE-BINARY.txt`, `licenses\`도 같이
+  고쳐야 합니다(자세한 내용: `docs/ARCHITECTURE.md`의 "Packaging the Windows
+  build").
+- GitHub 릴리스에 설치 파일을 올릴 때는 그 빌드의 커밋에 `v<버전>` 태그를
+  붙이고, 릴리스 설명에도 `LICENSE-BINARY.txt`의 "Corresponding source" 내용을
+  적어 두세요.
 - 앱을 수정해서 새 버전을 배포할 때는 1~3단계를 다시 하면 됩니다.
   설정/계산 폴더는 사용자 폴더(%APPDATA%\ORCAdesk)에 따로 저장되므로
   재설치해도 보존됩니다.

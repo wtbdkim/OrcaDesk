@@ -468,7 +468,6 @@
  * @typedef {Object} AboutPayload
  * @property {string} version
  * @property {string} author
- * @property {string} org
  * @property {string} email
  */
 
