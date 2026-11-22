@@ -23,7 +23,7 @@
 
 /**
  * One calculation as it appears in the polled queue snapshot.
- * Mirror of calc_to_dict() in orcamgr/state/store.py — 26 keys, all
+ * Mirror of calc_to_dict() in orcamgr/state/store.py — 28 keys, all
  * always present.
  * @typedef {Object} CalcSummary
  * @property {string} name              unique; doubles as the on-disk folder name
@@ -33,7 +33,12 @@
  * @property {"direct"|"reference"} geometry_source
  * @property {string} ref_name          referenced calc name ("" for direct)
  * @property {boolean} is_raw
- * @property {"pending"|"running"|"done"|"failed"|"blocked"|"cancelled"} state
+ * @property {"pending"|"running"|"done"|"failed"|"blocked"|"cancelled"|"filtered"} state
+ *                                      "filtered": terminal, no output -- the
+ *                                      energy condition on its incoming edge
+ *                                      (filter_de / filter_top) left it out, or
+ *                                      what it depends on was; frozen like done;
+ *                                      `message` says why
  * @property {string} message
  * @property {string} output_path
  * @property {string} scf_convergence   from the config; "" when no config
@@ -51,9 +56,19 @@
  * @property {boolean} auto_pass        approval gate after a Freq passes by itself
  *                                      on the expected imaginary-mode count
  * @property {boolean} approved         the user approved the gate
- * @property {""|"irc_f"|"irc_b"} ref_point  which geometry of ref_name: final,
- *                                      or the IRC's forward / backward end
+ * @property {string} ref_point         which geometry of ref_name: "" final,
+ *                                      "irc_f" / "irc_b" the IRC's forward /
+ *                                      backward end, "conf:<k>" (k >= 1) the
+ *                                      CREST ensemble's k-th conformer (1 = the
+ *                                      lowest, as {name}_c1.xyz; ref_name a
+ *                                      crest_conf calc)
  * @property {string} set_name          display only: the inp set it came from
+ * @property {number|null} filter_de    the energy condition on the edge INTO it
+ *                                      (graph field, like `gate`): pass only
+ *                                      within this many kcal/mol of the lowest
+ *                                      of its stack (same system + node); null = off
+ * @property {number} filter_top        ...and/or only the N lowest of its
+ *                                      stack pass; 0 = off
  * @property {boolean} waiting          derived: its `after` is DONE but the
  *                                      approval gate is closed — the run skips
  *                                      it and leaves it pending
@@ -121,11 +136,13 @@
  * @typedef {Object} InpSet
  * @property {string} id
  * @property {string} name
- * @property {"ORCA"|"MLIP"} kind
+ * @property {"ORCA"|"MLIP"|"CREST"} kind
  * @property {string} text   ORCA (a level of theory): a whole input with {{JOB}}
  *                           on its ! line and {{GEOMETRY}}, optionally
  *                           {{CHARGE}} {{MULT}} {{HESS}}; MLIP: "key value"
- *                           lines (model, device, nprocs, env)
+ *                           lines (model, device, nprocs, env); CREST: "key
+ *                           value" lines (method, solvent, ewin, threads,
+ *                           preset, nci, solvent_model, env)
  */
 
 /**
@@ -228,7 +245,7 @@
 
 /**
  * Full-fidelity calculation, as returned by get_calc() ("calc" key).
- * Mirror of calc_to_session_dict() in orcamgr/state/store.py — 27 keys.
+ * Mirror of calc_to_session_dict() in orcamgr/state/store.py — 29 keys.
  * @typedef {Object} CalcFull
  * @property {string} name
  * @property {string} kind
@@ -240,7 +257,7 @@
  * @property {string} ref_name
  * @property {boolean} is_raw
  * @property {string} raw_text
- * @property {"pending"|"running"|"done"|"failed"|"blocked"|"cancelled"} state
+ * @property {"pending"|"running"|"done"|"failed"|"blocked"|"cancelled"|"filtered"} state
  * @property {string} message
  * @property {string} output_path
  * @property {number|null} pid              detached ORCA pid while RUNNING
@@ -253,8 +270,10 @@
  * @property {"auto"|"approval"} gate
  * @property {boolean} auto_pass
  * @property {boolean} approved
- * @property {""|"irc_f"|"irc_b"} ref_point
+ * @property {string} ref_point     "" | "irc_f" | "irc_b" | "conf:<k>" (see CalcSummary)
  * @property {string} set_name
+ * @property {number|null} filter_de  edge condition: ΔE window in kcal/mol, null = off (see CalcSummary)
+ * @property {number} filter_top      edge condition: only the N lowest of the stack pass, 0 = off
  * @property {boolean} rerun        put back from DONE / FAILED by rerun_calc (its old output is overwritten, never kept)
  * @property {string} run_dir       the folder it ran in, relative to the workspace ("sys/name" or "name"),
  *           recorded when it first started; "" = not started. Read-only: add_calc / update_calc ignore it
@@ -286,8 +305,10 @@
  * @property {"auto"|"approval"} [gate]
  * @property {boolean} [auto_pass]
  * @property {boolean} [approved]
- * @property {""|"irc_f"|"irc_b"} [ref_point]
+ * @property {string} [ref_point]   "" | "irc_f" | "irc_b" | "conf:<k>"
  * @property {string} [set_name]
+ * @property {number|null} [filter_de]
+ * @property {number} [filter_top]
  */
 
 /**
@@ -684,6 +705,7 @@
  * @property {Object<string, string>} [jobs]  calc kind -> what {{JOB}} becomes for it
  *           ("" for tddft: its %tddft block is the job)
  * @property {string[]} [mlip_jobs]  the kinds a block made from an MLIP set may run
+ * @property {string[]} [crest_jobs] the kinds a block made from a CREST set runs (["crest_conf"])
  * @property {Object<string, string>} [next_kind]  calc kind -> the kind a level placed
  *           after it runs by default ("" = a row's start; not listed: "sp")
  */

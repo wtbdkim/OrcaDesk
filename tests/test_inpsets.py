@@ -2,9 +2,9 @@
 
 An ORCA set is a level of theory: a whole input with {{JOB}} on its ! line
 (filled from each block's kind at launch) and {{GEOMETRY}}; an MLIP set is
-`key value` lines. Seeded once from ORCAdesk's own defaults (StepConfig +
+`key value` lines, and so is a CREST set. Seeded once from ORCAdesk's own defaults (StepConfig +
 build_input, at the user's %pal / %maxcore), stored in
-user_data_root()/inp_sets.json (schema 2); a schema-1 file (one set per job
+user_data_root()/inp_sets.json (schema 3); a schema-1 file (one set per job
 kind) is backed up once and migrated. Every test passes ``root`` explicitly,
 so nothing touches the real user data.
 """
@@ -20,17 +20,18 @@ from orcamgr.state import inpsets
 from orcamgr.state.inpsets import (SET_KINDS,
                                    convert_legacy_text, default_kind_after,
                                    delete_set, load_sets, migrate_sets,
+                                   crest_config_from_text,
                                    mlip_config_from_text, save_set,
                                    validate_set)
 
 LEVEL = "! r2SCAN-3c {{JOB}}\n* xyz 0 1\n{{GEOMETRY}}\n*\n"
 
 
-def test_the_first_load_seeds_one_orca_level_and_the_mlip_set(tmp_path):
+def test_the_first_load_seeds_one_orca_level_the_mlip_and_the_crest_set(tmp_path):
     sets = load_sets(tmp_path, nprocs=8, maxcore_mb=3000)
-    assert [s["kind"] for s in sets] == list(SET_KINDS) == ["ORCA", "MLIP"]
+    assert [s["kind"] for s in sets] == list(SET_KINDS) == ["ORCA", "MLIP", "CREST"]
     assert inpsets.sets_file(tmp_path).exists()
-    orca, mlip = sets
+    orca, mlip, crest = sets
     assert orca["name"] == "wB97X-D4 / def2-TZVP"
     assert orca["text"] == ("! wB97X-D4 def2-TZVP {{JOB}}\n%maxcore 3000\n"
                             "%pal nprocs 8 end\n* xyz {{CHARGE}} {{MULT}}\n"
@@ -38,9 +39,11 @@ def test_the_first_load_seeds_one_orca_level_and_the_mlip_set(tmp_path):
     # a level carries no job and none of the job's blocks
     assert "%geom" not in orca["text"] and "%irc" not in orca["text"]
     assert mlip_config_from_text(mlip["text"])["mlip_model"] == mlip["name"]
+    assert crest == {"id": "seed-crest", "name": "GFN2-xTB", "kind": "CREST",
+                     "text": "method gfn2\newin 6\nthreads 4"}
     # and the seeds are what a second load reads back
     assert load_sets(tmp_path, nprocs=1, maxcore_mb=100) == sets
-    assert json.loads(inpsets.sets_file(tmp_path).read_text(encoding="utf-8"))["schema"] == 2
+    assert json.loads(inpsets.sets_file(tmp_path).read_text(encoding="utf-8"))["schema"] == 3
 
 
 def test_save_mints_an_id_and_replace_keeps_it(tmp_path):
@@ -87,6 +90,8 @@ def test_delete_removes_and_an_emptied_list_stays_empty(tmp_path):
     ({"name": "", "kind": "ORCA", "text": LEVEL}, "name"),
     ({"name": "x", "kind": "MLIP", "text": "modle MACE\n"}, "unknown key"),
     ({"name": "x", "kind": "MLIP", "text": "device tpu\n"}, "device"),
+    ({"name": "x", "kind": "CREST", "text": "method gfn2\nmodle x\n"}, "line 2: unknown key"),
+    ({"name": "x", "kind": "CREST", "text": "ewin -1\n"}, "ewin"),
     ({"id": "../x", "name": "x", "kind": "ORCA", "text": LEVEL}, "id"),
     ("not an object", "object"),
 ])
@@ -114,7 +119,7 @@ def test_an_unreadable_file_reads_as_the_seeds_without_being_overwritten(tmp_pat
 def test_a_bad_entry_in_the_file_is_dropped_alone(tmp_path):
     good = {"id": "g", "name": "ok", "kind": "ORCA", "text": LEVEL}
     inpsets.sets_file(tmp_path).write_text(json.dumps(
-        {"schema": 2, "sets": [good, {"id": "b", "kind": "ORCA"}, good]}), encoding="utf-8")
+        {"schema": 3, "sets": [good, {"id": "b", "kind": "ORCA"}, good]}), encoding="utf-8")
     assert load_sets(tmp_path) == [good]
 
 
@@ -163,16 +168,17 @@ def _write_v1(tmp_path, sets) -> bytes:
 def test_the_seeded_v1_library_becomes_one_level(tmp_path):
     raw = _write_v1(tmp_path, _v1_seeds(8, 3000))
     sets = load_sets(tmp_path)
-    assert [(s["id"], s["kind"]) for s in sets] == [("seed-mlip", "MLIP"), ("seed-opt", "ORCA")]
+    assert [(s["id"], s["kind"]) for s in sets] == [
+        ("seed-mlip", "MLIP"), ("seed-opt", "ORCA"), ("seed-crest", "CREST")]
     level = sets[1]
     assert level["name"] == "wB97X-D4 / def2-TZVP"
     assert level["text"] == ("! wB97X-D4 def2-TZVP {{JOB}}\n%maxcore 3000\n"
                              "%pal nprocs 8 end\n* xyz {{CHARGE}} {{MULT}}\n"
                              "{{GEOMETRY}}\n*\n")
-    # backed up byte for byte, and the file is schema 2 now
+    # backed up byte for byte, and the file is schema 3 now
     assert (tmp_path / inpsets.BACKUP_NAME).read_bytes() == raw
     stored = json.loads(inpsets.sets_file(tmp_path).read_text(encoding="utf-8"))
-    assert stored["schema"] == 2 and stored["sets"] == sets
+    assert stored["schema"] == 3 and stored["sets"] == sets
     assert load_sets(tmp_path) == sets               # read back, not migrated twice
 
 
@@ -222,14 +228,14 @@ def test_identical_levels_merge_and_a_name_clash_is_told_apart():
 def test_an_entry_that_was_not_a_valid_v1_set_is_dropped_alone(tmp_path):
     _write_v1(tmp_path, _v1_seeds()[:2] + [{"id": "b", "kind": "SP", "name": "x",
                                             "text": "! SP\n* xyz 0 1\nH 0 0 0\n*\n"}])
-    assert [s["id"] for s in load_sets(tmp_path)] == ["seed-mlip", "seed-opt"]
+    assert [s["id"] for s in load_sets(tmp_path)] == ["seed-mlip", "seed-opt", "seed-crest"]
 
 
 def test_a_save_into_a_v1_file_migrates_and_backs_up_first(tmp_path):
     raw = _write_v1(tmp_path, _v1_seeds())
     save_set({"name": "mine", "kind": "ORCA", "text": LEVEL}, tmp_path)
     assert (tmp_path / inpsets.BACKUP_NAME).read_bytes() == raw
-    assert [s["kind"] for s in load_sets(tmp_path)] == ["MLIP", "ORCA", "ORCA"]
+    assert [s["kind"] for s in load_sets(tmp_path)] == ["MLIP", "ORCA", "CREST", "ORCA"]
 
 
 # ---- a block made from a schema-1 set reads as its migrated level ----------
@@ -261,3 +267,74 @@ def test_a_renamed_v1_set_is_found_by_its_level_form():
 def test_a_level_text_has_no_level_forms():
     assert inpsets.level_forms(LEVEL) == []
     assert inpsets.level_forms("") == []
+
+
+# ---- CREST sets -------------------------------------------------------------
+
+def test_crest_text_maps_onto_the_config_fields():
+    assert crest_config_from_text(
+        "# screening\nmethod GFN2//GFNFF\nsolvent water\newin 3.5\nthreads 99999\n"
+        "preset quick\nnci yes\nsolvent_model GBSA\nenv Ubuntu-24.04\n") == {
+        "crest_method": "gfn2//gfnff", "crest_solvent": "water", "crest_ewin": 3.5,
+        "crest_threads": 1024, "crest_preset": "quick", "crest_nci": True,
+        "crest_solvent_model": "gbsa", "crest_env_id": "Ubuntu-24.04"}
+    # a key left out is not set (the store gives it the default); "none" is
+    # CREST's full run, and every bool word is read
+    assert crest_config_from_text("preset none\nnci off\n") == {
+        "crest_preset": "", "crest_nci": False}
+    assert crest_config_from_text("") == {}
+
+
+@pytest.mark.parametrize("text, msg", [
+    ("method gfn2 --evil\n", "line 1: method"),
+    ("solvent two words\n", "solvent"),
+    ("ewin lots\n", "ewin"), ("ewin 1001\n", "ewin"), ("ewin nan\n", "ewin"),
+    ("threads 0\n", "threads"), ("threads 2.5\n", "threads"),
+    ("preset slow\n", "preset"), ("solvent_model cosmo\n", "solvent_model"),
+    ("nci maybe\n", "nci"), ("Freq\n", "unknown key"),
+])
+def test_a_bad_crest_line_is_named(text, msg):
+    with pytest.raises(ValueError, match=msg):
+        crest_config_from_text(text)
+
+
+def test_a_crest_set_saves_and_shares_a_name_only_across_kinds(tmp_path):
+    s = save_set({"name": "fast", "kind": "CREST", "text": "method gfnff\npreset squick\n"},
+                 tmp_path)
+    assert s["kind"] == "CREST"
+    with pytest.raises(ValueError, match="CREST set named 'fast'"):
+        save_set({"name": "FAST", "kind": "CREST", "text": "method gfn2\n"}, tmp_path)
+    save_set({"name": "fast", "kind": "MLIP", "text": "model x\n"}, tmp_path)
+
+
+def test_a_schema_2_file_gets_the_crest_seed_once(tmp_path):
+    good = {"id": "g", "name": "ok", "kind": "ORCA", "text": LEVEL}
+    f = inpsets.sets_file(tmp_path)
+    f.write_text(json.dumps({"schema": 2, "sets": [good]}), encoding="utf-8")
+    sets = load_sets(tmp_path)
+    assert [s["id"] for s in sets] == ["g", "seed-crest"]
+    stored = json.loads(f.read_text(encoding="utf-8"))
+    assert stored["schema"] == 3 and stored["sets"] == sets
+    # no schema-1 backup for an upgrade that only adds a set
+    assert not (tmp_path / inpsets.BACKUP_NAME).exists()
+    # deleted by the user, it stays deleted
+    assert delete_set("seed-crest", tmp_path)
+    assert [s["id"] for s in load_sets(tmp_path)] == ["g"]
+
+
+def test_a_schema_2_file_that_already_has_a_crest_set_of_that_name_keeps_it(tmp_path):
+    own = {"id": "mine", "name": "gfn2-xtb", "kind": "CREST", "text": "method gfn2\n"}
+    inpsets.sets_file(tmp_path).write_text(
+        json.dumps({"schema": 2, "sets": [own]}), encoding="utf-8")
+    assert load_sets(tmp_path) == [own]
+
+
+def test_a_save_into_a_schema_2_file_adds_the_seed_too(tmp_path):
+    inpsets.sets_file(tmp_path).write_text(json.dumps({"schema": 2, "sets": []}),
+                                           encoding="utf-8")
+    save_set({"name": "mine", "kind": "ORCA", "text": LEVEL}, tmp_path)
+    assert [s["kind"] for s in load_sets(tmp_path)] == ["CREST", "ORCA"]
+
+
+def test_a_crest_search_is_followed_by_a_single_point():
+    assert inpsets.NEXT_KIND["crest_conf"] == "sp" == default_kind_after("crest_conf")

@@ -423,6 +423,7 @@
       log.innerHTML = `<div class="l-info">${
         c.state === "pending" ? "Not started yet."
         : c.state === "blocked" ? "Waiting on another calculation."
+        : c.state === "filtered" ? "Filtered out: it did not run, so it has no output."
         : "No output on disk yet."}</div>`;
     }
     // on every update, not only when lines arrived: the chart beside the pane
@@ -472,7 +473,8 @@
    *  @param {any[]} calcs */
   function fetchTails(calcs) {
     calcs.forEach(c => {
-      if (c.state === "pending" || c.state === "blocked") return;
+      // a filtered calculation never ran: there is no output to read
+      if (c.state === "pending" || c.state === "blocked" || c.state === "filtered") return;
       if (_busy.has(c.name)) return;
       const have = _tails.get(c.name);
       if (have && c.state !== "running" && have.at !== "running") return;

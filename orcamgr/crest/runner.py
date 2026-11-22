@@ -67,6 +67,83 @@ _MAX_INDETERMINATE = 20
 _PID_WAIT = 10.0        # seconds to wait for the launched script to write its .pid
 _WSL_CALL_TIMEOUT = 20.0
 
+# ---- geometry constraints (--cinp) -----------------------------------------
+# The builder's constraints (StepConfig.geom_constraints, the ORCA form's own
+# list: kinds C/B/A/D, atoms 0-based, value None = hold the starting value)
+# reach CREST as an xtb-style ``$constrain`` file named by ``--cinp``. Its
+# syntax is the xtb "Detailed Input" one CREST documents for --cinp
+# (crest-docs Example 4, xtb-docs xcontrol), 1-based atoms, Å and degrees,
+# ``auto`` = the value in the input structure. What CREST 3.0.2 actually
+# accepts was MEASURED against the pinned binary, and it is narrower than the
+# documentation:
+#   * a ``force constant=`` line (with or without spaces, any value) kills the
+#     parser — "Error allocating ... bytes" in parse_xtbinput.f90, or a
+#     segfault — so none is written and CREST's own 0.05 Eh/Bohr² applies;
+#   * ``atoms:`` takes an explicit comma list only: a range (``1-3``) or a
+#     single atom kills the parser the same way. The atoms are held at their
+#     DISTANCES TO EACH OTHER (CREST expands the list to pairwise distance
+#     constraints), not at fixed positions — so one fixed atom means nothing
+#     and is never written (store refuses it at add time);
+#   * ``$metadyn`` / ``atoms:`` restricts the metadynamics bias (and, with
+#     --subrmsd, the RMSD) to the atoms listed — CREST's own ``--constrain``
+#     writes exactly that beside a fixed-atom list, so the file does too;
+#   * ``auto`` works for distance, angle and dihedral alike; ``reference=``
+#     is not needed (``auto`` reads the input structure).
+CREST_CONSTRAINTS_FILE = "constraints.inp"
+_CINP_LINE = {"B": "distance", "A": "angle", "D": "dihedral"}
+
+
+def _fixed_atoms(constraints) -> list[int]:
+    """The 0-based atoms of the C (fixed) constraints, in order, each once."""
+    out: list[int] = []
+    for c in constraints or []:
+        if c.get("kind") == "C":
+            a = int(c["atoms"][0])
+            if a not in out:
+                out.append(a)
+    return out
+
+
+def has_crest_constraints(constraints) -> bool:
+    """Whether a constraint list gives CREST anything to hold: a bond, angle or
+    dihedral, or at least two fixed atoms (one alone has no partner to keep a
+    distance to)."""
+    return (any(c.get("kind") in _CINP_LINE for c in constraints or [])
+            or len(_fixed_atoms(constraints)) >= 2)
+
+
+def crest_constraints_text(constraints, n_atoms: int = 0) -> str:
+    """The ``--cinp`` file for a normalized ``geom_constraints`` list, or ""
+    when it holds nothing CREST can use (see has_crest_constraints). Atoms are
+    written 1-based. ``n_atoms`` (the structure's atom count) lets the
+    metadynamics bias be restricted to the atoms that are not fixed; 0 leaves
+    it CREST's own (all atoms)."""
+    if not has_crest_constraints(constraints):
+        return ""
+    lines = ["$constrain"]
+    for c in constraints:
+        word = _CINP_LINE.get(c.get("kind"))
+        if not word:
+            continue
+        v = c.get("value")
+        # normalize_constraints wraps a dihedral to [-180, 180); CREST holds
+        # -180 fine but prints it as "deg=******" (measured, 3.0.2), so the
+        # same torsion is written as 180
+        if v is not None and c.get("kind") == "D" and float(v) <= -180.0:
+            v = 180.0
+        target = "auto" if v is None else f"{float(v):.6g}"
+        lines.append(f"  {word}: " + ", ".join(str(int(a) + 1) for a in c["atoms"])
+                     + f", {target}")
+    fixed = _fixed_atoms(constraints)
+    if len(fixed) >= 2:
+        lines.append("  atoms: " + ",".join(str(a + 1) for a in fixed))
+        free = [i for i in range(int(n_atoms or 0)) if i not in set(fixed)]
+        if free:
+            lines += ["$metadyn", "  atoms: " + ",".join(str(i + 1) for i in free)]
+    lines.append("$end")
+    return "\n".join(lines) + "\n"
+
+
 def build_crest_argv(config, charge: int, multiplicity: int) -> list[str]:
     """Build CREST CLI flags (excluding the binary and the input filename) from a
     StepConfig + the calc's charge/multiplicity. CREST's --uhf is the number of
@@ -125,13 +202,19 @@ def build_crest_argv(config, charge: int, multiplicity: int) -> list[str]:
         if getattr(config, attr, False):
             argv.append(flag)
 
+    # the constraints file write_crest_run_files puts beside the input, named
+    # relative: CREST runs with its cwd in the folder that holds both
+    if has_crest_constraints(getattr(config, "geom_constraints", None)):
+        argv += ["--cinp", CREST_CONSTRAINTS_FILE]
+
     argv += ["--chrg", str(int(charge))]
     argv += ["--uhf", str(max(0, int(multiplicity) - 1))]
     return argv
 
 
 def write_crest_run_files(calc_dir, name: str, xyz: str, crest_bin: str,
-                          argv_flags: list[str], transport: str = "") -> Path:
+                          argv_flags: list[str], transport: str = "",
+                          constraints=None) -> Path:
     """Write the input ``{name}.xyz`` and the self-contained ``run_crest.sh`` into
     the calc folder. Returns the run_crest.sh path. The script is written with LF
     line endings (bash chokes on CRLF).
@@ -140,10 +223,30 @@ def write_crest_run_files(calc_dir, name: str, xyz: str, crest_bin: str,
     read and tested from either platform — the script is the one artefact where
     WSL and a local shell genuinely differ, so it is worth being able to look at
     the other one.
+
+    ``constraints`` (the calc's ``geom_constraints``) become
+    ``constraints.inp`` beside the input when CREST can use them — the file
+    ``build_crest_argv`` names with ``--cinp``. Without them a previous
+    attempt's ``constraints.inp`` is removed: it is ORCAdesk's own input, and a
+    re-run starts from what this calculation says now.
     """
     calc_dir = Path(calc_dir)
     calc_dir.mkdir(parents=True, exist_ok=True)
-    (calc_dir / f"{name}.xyz").write_text(as_xyz_file(xyz), encoding="utf-8", newline="\n")
+    xyz_text = as_xyz_file(xyz)
+    (calc_dir / f"{name}.xyz").write_text(xyz_text, encoding="utf-8", newline="\n")
+    try:
+        n_atoms = int(xyz_text.split("\n", 1)[0].strip())
+    except ValueError:
+        n_atoms = 0
+    cinp = crest_constraints_text(constraints, n_atoms)
+    cinp_path = calc_dir / CREST_CONSTRAINTS_FILE
+    if cinp:
+        cinp_path.write_text(cinp, encoding="utf-8", newline="\n")
+    else:
+        try:
+            cinp_path.unlink()
+        except OSError:
+            pass
 
     kind = transport or shell.transport_kind()
     scratch = shell.uses_scratch(kind)
@@ -172,6 +275,14 @@ def write_crest_run_files(calc_dir, name: str, xyz: str, crest_bin: str,
             'create WSL scratch dir" > "$MNT/$NAME.out"; echo 96 > "$MNT/$NAME.crest.rc"; exit 96; }',
             'cp "$MNT/$NAME.xyz" "$SCRATCH/input.xyz" || { echo "ORCAdesk: could not '
             'copy input .xyz into WSL scratch" > "$MNT/$NAME.out"; echo 95 > "$MNT/$NAME.crest.rc"; exit 95; }',
+        ]
+        if cinp:
+            # --cinp names it relative to the cwd, which is the scratch dir
+            lines.append(
+                f'cp "$MNT/{CREST_CONSTRAINTS_FILE}" "$SCRATCH/" || {{ echo "ORCAdesk: could not '
+                'copy the constraints file into WSL scratch" > "$MNT/$NAME.out"; '
+                'echo 95 > "$MNT/$NAME.crest.rc"; exit 95; }')
+        lines += [
             'cd "$SCRATCH" || { echo 94 > "$MNT/$NAME.crest.rc"; exit 94; }',
             'INPUT=input.xyz',
         ]

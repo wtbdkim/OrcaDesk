@@ -103,3 +103,18 @@ def test_a_bad_entry_is_dropped_on_read_and_the_rest_kept(tmp_path):
     (tmp_path / wfm.FILE_NAME).write_text(json.dumps({"schema": 1, "workflows": [
         {"name": "no steps", "id": "wf-0", "steps": []}, good, dict(good)]}), encoding="utf-8")
     assert wfm.load_workflows(tmp_path) == [good]
+
+
+def test_a_steps_energy_condition_and_conformer_point_are_kept(tmp_path):
+    # a CREST -> conformer-SP stack copied as a workflow keeps the condition
+    # on its edge and each member's conf:<k>; calc_from_dict judges them on
+    # replay, like every other step field
+    steps = [_step("c0", "crest_conf", is_raw=False, raw_text="", set_name=""),
+             _step("c1", "sp", node="n1", after="c0", ref="c0", ref_point="conf:1",
+                   filter_de=3.0, filter_top=5),
+             _step("c2", "sp", node="n1", after="c0", ref="c0", ref_point="conf:2",
+                   filter_de=None, filter_top=5)]
+    wfm.save_workflow(_wf("screen", steps=steps), tmp_path)
+    got = wfm.load_workflows(tmp_path)[0]["steps"]
+    assert [(s["ref_point"], s["filter_de"], s["filter_top"]) for s in got[1:]] == [
+        ("conf:1", 3.0, 5), ("conf:2", None, 5)]

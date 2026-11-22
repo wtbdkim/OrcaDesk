@@ -334,7 +334,7 @@ var NB = {};
       // is what makes a queue restored from a previous session show its graphs
       // instead of three empty panes.
       const need = NB.queue.filter(c =>
-        c.state !== "pending" && c.state !== "blocked" && !_seeded.has(c.name));
+        c.state !== "pending" && c.state !== "blocked" && c.state !== "filtered" && !_seeded.has(c.name));
       if (need.length) {
         const got = await Promise.all(need.slice(0, 3).map(c => seed(c.name)));
         if (got.some(Boolean)) fed = true;

@@ -105,6 +105,39 @@ def test_an_mlip_template_becomes_an_mlip_config():
                         "raw_text": "modle x\n"})
 
 
+def test_a_crest_template_becomes_a_crest_config():
+    c = calc_from_dict({"name": "c", "kind": "crest_conf", "xyz": H2, "is_raw": True,
+                        "raw_text": "method gfnff\nsolvent water\newin 3\npreset quick\n",
+                        "config": {"crest_threads": 16, "crest_nci": True}})
+    assert c.is_raw is False                       # it runs as a CREST search
+    cfg = c.config
+    assert (cfg.crest_method, cfg.crest_solvent, cfg.crest_ewin, cfg.crest_preset) == (
+        "gfnff", "water", 3.0, "quick")
+    # the text is the whole setting: a key it leaves out is the default, not
+    # what the payload's (or an edited calc's old) config held
+    assert (cfg.crest_threads, cfg.crest_nci) == (4, False)
+    assert cfg.kind == "crest_conf"
+    assert "gfnff" in c.raw_text                   # the template is kept for display
+    with pytest.raises(ValueError, match="CREST set line 1: unknown key"):
+        calc_from_dict({"name": "c", "kind": "crest_conf", "xyz": H2, "is_raw": True,
+                        "raw_text": "methd gfn2\n"})
+
+
+def test_a_crest_set_block_keeps_its_settings_through_an_edit(store):
+    store.apply_ops([{"op": "add_calc", "calc": {
+        "name": "c", "kind": "crest_conf", "is_raw": True, "xyz": H2,
+        "raw_text": "method gfn2\newin 6\nthreads 4", "set_name": "GFN2-xTB"}}])
+    store.apply_ops([{"op": "update_calc", "name": "c", "calc": {"charge": 1}}])
+    c = store.get("c")
+    assert (c.charge, c.config.crest_method, c.config.crest_threads) == (1, "gfn2", 4)
+    # a new text is applied again, in place of the old one
+    store.apply_ops([{"op": "update_calc", "name": "c", "calc": {
+        "is_raw": True, "raw_text": "method gfnff\nthreads 8"}}])
+    c = store.get("c")
+    assert (c.config.crest_method, c.config.crest_threads, c.config.crest_ewin) == (
+        "gfnff", 8, 6.0)
+
+
 # ---- systems in the store and the session ----------------------------------------
 
 def test_snapshot_carries_systems_without_coordinates(store):

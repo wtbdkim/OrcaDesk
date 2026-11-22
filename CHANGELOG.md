@@ -6,6 +6,43 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **CREST in the queue window.** The inp-set library has a CREST group next
+  to ORCA levels and MLIP, seeded with *GFN2-xTB* (`method gfn2`, `ewin 6`,
+  `threads 4`; an existing library gets it once). A CREST set is `key value`
+  lines (method, solvent, ewin, threads, preset, nci, solvent_model, env); a
+  bad line is refused naming it. Put on a row it makes a conformer-search
+  block, and the natural next step after it is a single point.
+- **Edit in the builder for MLIP and CREST blocks.** A block made from an
+  MLIP or CREST set opens the Guided builder's full form (for CREST: search
+  speed, NCI, solvent model, MD / MTD lengths and the other options), and
+  saving there is one undoable edit. The block is then a built one, no longer
+  its set's, and its inspector lists every option that differs from the
+  default.
+- **Screening CREST conformers with an energy condition.** A step added
+  after a CREST block asks how many conformers to take and, optionally, a ΔE
+  window: it becomes a stack of single points `_c1 … _cK`, each starting from
+  that conformer (1 = the lowest). The edge into a stack can carry a
+  condition — *Pass on ΔE ≤ X kcal/mol · top N* — shown as a chip on the
+  block and set in its inspector. When the queue runs, members that miss it
+  are not run and end **Filtered** (with the reason, e.g. `ΔE 4.21 kcal/mol
+  > 3.00`), and so does everything after them; the stack counts what passed
+  (`3/10`). After CREST the window is measured from the lowest conformer;
+  after a stack of calculations the next step waits for every member's
+  parent to finish and measures from the lowest energy among them, so a
+  single-point stack can screen what an optimization stack then runs.
+  Changing the condition puts filtered members back to be judged again.
+- **Constraints for a CREST conformer search.** The CREST form's structure
+  view now takes constraints the way an ORCA optimization does: drag across
+  (or Ctrl+click) 2, 3 or 4 atoms for a bond, angle or dihedral, with an
+  optional target (empty = keep the starting value), or fix atoms. CREST
+  holds them through the whole search (`--cinp constraints.inp`, written in
+  the run folder). Fixed atoms keep their distances to each other rather than
+  their positions, so at least two are needed; the metadynamics then moves
+  only the other atoms, and *Constrained atoms out of the RMSD* (`--subrmsd`)
+  usually belongs with them. A constraint that names an atom the structure
+  does not have is refused when the search is added (or, for a geometry taken
+  from another calculation, before CREST starts). The queue window's
+  inspector lists them (`constrain B 12 27 auto`).
 - **The MACE model picker says each model's license.** Every model is
   labelled with the license of its weights (`MACE-OFF medium · ASL`), and the
   line under the picker says what that license allows and where its full text
@@ -51,6 +88,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   actually runs in.
 
 ### Fixed
+- **The builder's suggestion lists scroll.** Functional, basis set and
+  solvent (and CREST's solvent) showed their suggestions in a native popup
+  that ignored the mouse wheel, so a long list could not be scrolled past
+  what fit. The suggestions are now drawn in the page: a click shows all of
+  them with the current one marked, typing filters, the arrow keys and Enter
+  or a click take one, Escape closes, and a value no suggestion matches is
+  said to be used as-is.
 - A CREST search reattached after a restart reads its output where it was
   launched, even if the workspace setting changed meanwhile (an ORCA job
   already did).

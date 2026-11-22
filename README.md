@@ -125,7 +125,8 @@ state's colour.
   becomes a row, with its charge and multiplicity read from the comment line
   when it gives them. Ctrl+click row names to select several: one paste or one
   charge then goes on all of them.
-- **Inp sets**: the library holds your ORCA **levels** and MLIP sets. Drop one
+- **Inp sets**: the library holds your ORCA **levels**, MLIP sets and CREST
+  sets (a CREST set on a row makes a conformer search). Drop one
   on a block to change its level (its type stays), or click one while a block
   is selected.
 - **Adding steps**: the **+** beside a block opens a small menu: the natural
@@ -248,7 +249,10 @@ A finished calculation opens as a report, read two ways: **Output** and
   ORCAdesk can install the binary into it); on Linux it runs directly. A
   search survives the app closing like an ORCA run; follow-up calculations
   start from the **lowest-energy conformer**, and every conformer is exported
-  as its own `.xyz`.
+  as its own `.xyz`. In the queue window a step after a CREST block can take
+  several conformers at once (a stack `_c1 … _cK`), and the edge into a stack
+  can carry an energy condition (*ΔE ≤ X kcal/mol · top N*): members that miss
+  it end **Filtered** instead of running.
 
 <details>
 <summary><b>WSL memory note</b> (CREST on Windows)</summary>
@@ -362,7 +366,7 @@ orcamgr/
     hessfile.py, normalmodes.py  vibrational modes from a frequency run's .hess
   state/
     store.py                  shared queue (single source of truth) + session autosave
-    inpsets.py                the queue window's inp sets (ORCA levels, MLIP sets)
+    inpsets.py                the queue window's inp sets (ORCA levels, MLIP, CREST)
     workflows.py              saved workflows (step chains)
   mlip/                       MLIP (MACE) env detection + relaxation runner/parser
   crest/                      CREST conformer search (WSL on Windows, directly on Linux)

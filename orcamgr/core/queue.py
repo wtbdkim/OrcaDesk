@@ -28,6 +28,13 @@ Failure propagation: if a calculation fails, any calculation that depends on it
 (directly or transitively) is marked BLOCKED and skipped. Unrelated calculations
 continue. This is dependency-scoped, not whole-queue.
 
+The edge into a calculation may also carry an energy condition (filter_de /
+filter_top, judged by _judge_filter before the approval gate, once every
+member of its stack has a settled parent): a calculation that fails it, a
+conformer reference (ref_point conf:<k>) past the end of its CREST ensemble,
+and every dependent of either are FILTERED — terminal, never run, never
+BLOCKED or FAILED.
+
 A FAILED calculation is locked (P24): it never re-enters the run loop on its
 own. Only CANCELLED (a deliberate user stop, not a failure) re-runs; a FAILED or
 DONE one runs again only when the queue editor puts a new set on it behind an
@@ -91,6 +98,11 @@ class CalcState(str, Enum):
     FAILED = "failed"
     BLOCKED = "blocked"       # a dependency failed, so this never ran
     CANCELLED = "cancelled"
+    # the energy condition on the edge into it (filter_de / filter_top) or a
+    # conformer reference past the end of its CREST ensemble screened it out,
+    # or a calc it depends on was filtered: terminal, never ran, no output.
+    # Frozen like DONE; only a change of its filter reopens it (store).
+    FILTERED = "filtered"
 
 
 class GeometrySource(str, Enum):
@@ -170,8 +182,16 @@ class Calculation:
     auto_pass: bool = True
     approved: bool = False
     # which geometry of ref_name: "" its final one, "irc_f"/"irc_b" the end
-    # points ORCA writes for an IRC ({ref}_IRC_F.xyz / {ref}_IRC_B.xyz)
+    # points ORCA writes for an IRC ({ref}_IRC_F.xyz / {ref}_IRC_B.xyz),
+    # "conf:<k>" conformer k (1 = the lowest) of a CREST search
     ref_point: str = ""
+    # the energy condition on the edge into it (judged by the engine when its
+    # dependencies are otherwise ready, before the approval gate; see
+    # QueueEngine._judge_filter): filter_de, a window in kcal/mol above the
+    # lowest of its stack (None = off); filter_top, only the N lowest of its
+    # stack pass (0 = off). A calc that fails it is FILTERED.
+    filter_de: Optional[float] = None
+    filter_top: int = 0
     # display only: the inp set (state/inpsets.py) the input came from
     set_name: str = ""
 
@@ -377,6 +397,34 @@ _FREQ_KINDS = ("freq", "ts_freq", "opt_freq", "ts_opt_freq")
 # (Calculation.ref_point) are closed sets: each value selects engine behaviour.
 GATES = ("auto", "approval")
 REF_POINTS = ("", "irc_f", "irc_b")
+# ...plus one open family: "conf:<k>", conformer k of a CREST ensemble, k >= 1
+# and 1 the lowest-energy one -- the numbering of ParseResult.conformers[].index
+# and of the exported {name}_c<k>.xyz (crest/parser.py, crest/export.py).
+_CONF_REF_RE = re.compile(r"conf:[1-9][0-9]*")   # used with fullmatch
+# The kinds whose result is a conformer ensemble a conf:<k> reference reads.
+CONFORMER_KINDS = ("crest_conf",)
+# Hartree -> kcal/mol (CODATA 2018), the energy filter's unit
+HARTREE_TO_KCAL_MOL = 627.5094740631
+
+
+def is_ref_point(value) -> bool:
+    """Whether ``value`` is a ref_point the engine knows: one of REF_POINTS or
+    ``conf:<k>`` (k a whole number >= 1, no sign, no leading zero)."""
+    return isinstance(value, str) and (value in REF_POINTS
+                                       or bool(_CONF_REF_RE.fullmatch(value)))
+
+
+def conf_index(ref_point) -> int:
+    """k of a ``conf:<k>`` ref_point, else 0."""
+    if isinstance(ref_point, str) and _CONF_REF_RE.fullmatch(ref_point):
+        return int(ref_point[5:])
+    return 0
+
+
+def has_filter(calc) -> bool:
+    """Whether the edge into ``calc`` carries an energy condition."""
+    return (getattr(calc, "filter_de", None) is not None
+            or int(getattr(calc, "filter_top", 0) or 0) > 0)
 # ref_point -> the file ORCA writes for that IRC end, beside {ref}.out
 _IRC_END_FILES = {"irc_f": "_IRC_F.xyz", "irc_b": "_IRC_B.xyz"}
 # The kinds whose run can write those end files: an IRC, and a "general" calc
@@ -393,11 +441,27 @@ class OrcaBlocked(OrcaRunError):
     re-tried on the next Run), never FAILED (locked, P24)."""
 
 
+class OrcaFiltered(OrcaRunError):
+    """Nothing to run, by design rather than by fault: a conformer reference
+    past the end of the CREST ensemble (``conf:<k>`` with k > N). Nothing
+    launched; the row is stamped FILTERED, never FAILED."""
+
+
 def ref_point_problem(calc: "Calculation", parent: "Optional[Calculation]") -> str:
     """The refusal for a ref_point irc_f / irc_b whose parent's kind cannot
-    write IRC end points, or "" (no ref_point, no parent in hand, or an IRC)."""
-    if (calc.ref_point not in _IRC_END_FILES or parent is None
-            or calc.geometry_source != GeometrySource.REFERENCE):
+    write IRC end points, or a conf:<k> whose parent is not a conformer search
+    (CONFORMER_KINDS), or "" (no ref_point, no parent in hand, or the right
+    kind of parent)."""
+    if parent is None or calc.geometry_source != GeometrySource.REFERENCE:
+        return ""
+    k = conf_index(calc.ref_point)
+    if k:
+        if parent.kind in CONFORMER_KINDS:
+            return ""
+        return (f"'{calc.name}' starts from conformer {k} of '{parent.name}', "
+                f"but '{parent.name}' is not a CREST conformer search "
+                f"({parent.kind}) and has no conformers.")
+    if calc.ref_point not in _IRC_END_FILES:
         return ""
     if parent.kind in IRC_END_KINDS:
         return ""
@@ -720,6 +784,14 @@ class QueueEngine:
         self._slot_cv = threading.Condition(self._queue_lock)
         # Per-job state for the thread running it (see _job).
         self._job_local = threading.local()
+        # The energy condition (_judge_filter): the verdicts the pick reached
+        # for rows it hands to _precheck to stamp (id -> (row, (state, msg))),
+        # the DONE parents whose results a scan asked for (read outside the
+        # lock by _load_results), and those already tried this run (id ->
+        # row; the value pins the object so its id is not recycled).
+        self._verdicts: "dict[int, tuple]" = {}
+        self._to_load: "dict[int, Calculation]" = {}
+        self._load_tried: "dict[int, Calculation]" = {}
 
     # -- per-job state ----------------------------------------------------
     @property
@@ -860,8 +932,13 @@ class QueueEngine:
         ref = self._by_name.get(calc.ref_name)
         if ref is None:
             raise OrcaRunError(f"Referenced calculation '{calc.ref_name}' not found in queue.")
+        if ref.state == CalcState.FILTERED:
+            # normally stamped before it gets here (_precheck's cascade)
+            raise OrcaFiltered(f"parent {ref.name} was filtered")
         if calc.ref_point in _IRC_END_FILES:
             return self._irc_end_geometry(calc, ref)
+        if conf_index(calc.ref_point):
+            return self._conformer_geometry(calc, ref)
         # Parse-on-miss: a DONE ref restored from a previous session has no
         # in-memory ParseResult (we don't eagerly re-parse on load), so read its
         # output now. Dispatch on kind: an MLIP ref's output is the worker's JSON
@@ -932,6 +1009,41 @@ class QueueEngine:
         if not any(ln.strip() for ln in coords):
             raise OrcaRunError(f"{path.name} in {folder} holds no coordinates.")
         return "\n".join(coords)
+
+    def _conformer_geometry(self, calc: Calculation, ref: Calculation) -> str:
+        """Conformer k of a CREST search (ref_point conf:<k>): conformers[k-1]
+        of its parsed result (crest_conformers.xyz, energy-sorted, 1 = the
+        lowest -- the {name}_c<k>.xyz export's numbering), read from its run
+        folder when a restored session holds no result yet. k past the end of
+        the ensemble is no fault of anyone's -- CREST found fewer conformers
+        than the stack has members -- so it is OrcaFiltered, not a failure."""
+        k = conf_index(calc.ref_point)
+        if ref.kind not in CONFORMER_KINDS:
+            raise OrcaBlocked(
+                f"'{calc.ref_name}' is not a CREST conformer search ({ref.kind}); "
+                f"it has no conformer {k}.")
+        if ref.state in (CalcState.FAILED, CalcState.BLOCKED, CalcState.CANCELLED):
+            raise OrcaRunError(f"Referenced calculation '{calc.ref_name}' did not succeed.")
+        if ref.state != CalcState.DONE:
+            raise OrcaRunError(
+                f"Referenced calculation '{calc.ref_name}' has no usable geometry yet.")
+        if not ref.result and ref.output_path:
+            # parse-on-miss, as for a final geometry (DONE is frozen, P24, so
+            # the write cannot race the engine)
+            try:
+                ref.result = result_from_output(ref)
+            except Exception as e:
+                raise OrcaBlocked(f"'{calc.ref_name}' finished, but its conformers "
+                                  f"could not be read ({e}).")
+        confs = list(getattr(ref.result, "conformers", None) or ())
+        if not confs:
+            raise OrcaBlocked(f"'{calc.ref_name}' finished, but its conformer "
+                              "ensemble could not be read (crest_conformers.xyz).")
+        if k > len(confs):
+            raise OrcaFiltered(f"CREST found only {len(confs)} conformers")
+        conf = confs[k - 1]
+        return "\n".join(f"{a.symbol} {a.x:.10f} {a.y:.10f} {a.z:.10f}"
+                         for a in conf.geometry)
 
     def _judge_dead_running(self, calc: Calculation, index: int, out_path) -> None:
         """A calc restored as RUNNING whose detached ORCA is no longer alive:
@@ -1570,9 +1682,22 @@ class QueueEngine:
         except (AttributeError, TypeError):
             pass
 
+        # The constraints (--cinp) name atoms of the structure that runs: one it
+        # does not have is refused here, before CREST is started -- the same
+        # rule build_input applies to an ORCA calc. Coordinates in hand were
+        # checked when the calc was added; a referenced geometry exists only now.
+        constraints = list(getattr(calc.config, "geom_constraints", None) or [])
+        if constraints:
+            from .input_generator import constraint_index_error
+            n_atoms = int(as_xyz_file(xyz).split("\n", 1)[0].strip() or 0)
+            err = constraint_index_error(constraints, n_atoms)
+            if err:
+                raise OrcaRunError(err)
+
         calc_dir.mkdir(parents=True, exist_ok=True)
         argv = build_crest_argv(calc.config, calc.charge, calc.multiplicity)
-        script_path = write_crest_run_files(calc_dir, calc.name, xyz, crest_bin, argv)
+        script_path = write_crest_run_files(calc_dir, calc.name, xyz, crest_bin, argv,
+                                            constraints=constraints)
 
         method = getattr(calc.config, "crest_method", "") or "gfn2"
         # Name where it runs, because the answer differs per machine and the log
@@ -1672,6 +1797,10 @@ class QueueEngine:
                     continue
                 if parent.state in (CalcState.FAILED, CalcState.BLOCKED):
                     return parent
+                if parent.state == CalcState.FILTERED:
+                    # terminal and never ran: its dependents are FILTERED
+                    # (_filtered_by), whatever lies further up its chain
+                    continue
                 if parent.state == CalcState.DONE:
                     # The chain ENDS at a finished parent. Its geometry is on
                     # disk and frozen (P24), so it is self-sufficient —
@@ -1682,6 +1811,181 @@ class QueueEngine:
                     continue
                 stack.append(parent)
         return None
+
+    def _filtered_by(self, calc: Calculation) -> "Optional[Calculation]":
+        """The FILTERED calc this row depends on directly (its geometry
+        reference or the calc it runs `after`), or None. Its dependents are
+        FILTERED in turn -- never BLOCKED (nothing failed), never FAILED. One
+        level is enough: a filtered parent's own dependents are stamped as
+        the walk reaches each of them, parent first (_deps_ready)."""
+        for pname in _parent_names(calc):
+            parent = self._by_name.get(pname)
+            if (parent is not None and parent is not calc
+                    and parent.state == CalcState.FILTERED):
+                return parent
+        return None
+
+    # -- the energy condition on an edge (filter_de / filter_top) --
+    def _settled(self, parent: Calculation, seen: dict) -> bool:
+        """Whether ``parent`` will not change state again in this run -- the
+        rule _deps_ready waits on: not RUNNING, not picked, and not a PENDING
+        or CANCELLED row this run has yet to handle."""
+        if parent.state == CalcState.RUNNING or parent.name in self._active_names:
+            return False
+        return not (parent.state in (CalcState.PENDING, CalcState.CANCELLED)
+                    and id(parent) not in seen)
+
+    @staticmethod
+    def _filter_group(calc: Calculation, calcs: list) -> "list[Calculation]":
+        """The calcs ``calc``'s energy condition ranks it among: the members of
+        its stack (same system and the same, non-empty node) that carry a
+        condition too. A calc with no node is a group of one."""
+        if not calc.node:
+            return [calc]
+        group = [c for c in calcs if c.node == calc.node
+                 and c.system == calc.system and has_filter(c)]
+        return group if any(c is calc for c in group) else group + [calc]
+
+    def _score_of(self, m: Calculation, seen: dict) -> tuple:
+        """What ranks group member ``m``, read from memory only (this runs
+        under the store lock, P37 -- a result not loaded yet is asked for with
+        "load" and read by the dispatcher outside the lock):
+
+        * ("score", energy_eh, reference_eh | None) -- a conf:<k> member is
+          scored by conformer k's energy, its reference the ensemble's lowest
+          (conformer 1); any other member by its parent's final_energy_eh
+          (the calc it runs `after`, else its geometry reference), its
+          reference the lowest score of the group (None here);
+        * ("wait",) -- the parent may still change state in this run;
+        * ("load", parent) -- a DONE parent whose result is not in memory;
+        * ("past_end", n) -- conf:<k> with k > n conformers;
+        * ("no_energy", message) -- a DONE parent with nothing to rank by;
+        * ("no_parent",) / ("not_done", parent) -- nothing to rank, by the
+          normal dependency rules' account (a FAILED parent blocks, etc.)."""
+        is_ref = m.geometry_source == GeometrySource.REFERENCE
+        k = conf_index(m.ref_point) if is_ref else 0
+        pname = m.ref_name if k else (m.after or (m.ref_name if is_ref else ""))
+        parent = self._by_name.get(pname) if pname else None
+        if parent is None or parent is m:
+            return ("no_parent",)
+        if not self._settled(parent, seen):
+            return ("wait",)
+        if parent.state != CalcState.DONE:
+            return ("not_done", parent)
+        if parent.result is None:
+            if id(parent) not in self._load_tried:
+                return ("load", parent)
+            return ("no_energy", f"the result of '{parent.name}' could not be read")
+        if k:
+            confs = list(getattr(parent.result, "conformers", None) or ())
+            if not confs:
+                return ("no_energy", f"'{parent.name}' holds no conformer ensemble")
+            if k > len(confs):
+                return ("past_end", len(confs))
+            return ("score", confs[k - 1].energy_eh, confs[0].energy_eh)
+        energy = getattr(parent.result, "final_energy_eh", None)
+        if energy is None:
+            return ("no_energy", f"'{parent.name}' finished without a final energy")
+        return ("score", float(energy), None)
+
+    def _judge_filter(self, calc: Calculation, calcs: list, seen: dict):
+        """The energy condition's verdict on ``calc``, whose own dependencies
+        are ready (_deps_ready), under the store lock, from memory only:
+
+        * None -- nothing to judge, or it passes (on to its approval gate);
+        * "wait" -- the barrier: a member of its group still has a parent that
+          may change state in this run (or a result still to load) -- left
+          PENDING and unseen, like any unmet dependency;
+        * (CalcState, message) -- FILTERED (or BLOCKED, editable) without
+          running, stamped by _precheck.
+
+        A conf:<k> reference past the end of the ensemble is FILTERED with or
+        without a condition. With one, the members whose parent is DONE are
+        ranked by score (ascending, ties by conformer number then queue order, rank 0-based): ``calc``
+        passes iff (filter_top == 0 or rank < filter_top) and (filter_de is
+        None or (score - reference) * HARTREE_TO_KCAL_MOL <= filter_de, to
+        1e-9) -- the reference being conformer 1 of the CREST for a conf:<k>
+        member, so a lone conf:5 is still judged against the ensemble's
+        minimum, and the group's lowest score otherwise. Members whose parent
+        is not DONE are left out of the ranking (each follows the normal
+        rules: a FAILED parent blocks it, a FILTERED one filters it). A DONE
+        parent with no energy to rank by makes its member BLOCKED (editable:
+        remove the condition, or fix the parent) and leaves it out."""
+        if conf_index(calc.ref_point) and calc.geometry_source == GeometrySource.REFERENCE:
+            own = self._score_of(calc, seen)
+            if own[0] == "load":
+                self._to_load[id(own[1])] = own[1]
+                return "wait"
+            if own[0] == "past_end":
+                return (CalcState.FILTERED, f"Filtered: CREST found only {own[1]} conformers")
+        # a rerun row (a set put on a DONE/FAILED block behind an overwrite
+        # warning, store rerun_calc) was asked for explicitly: the condition
+        # does not screen it out again
+        if not has_filter(calc) or getattr(calc, "rerun", False):
+            return None
+        scored: "list[tuple[float, str, Calculation, Optional[float]]]" = []
+        own = None
+        waiting = False
+        for m in self._filter_group(calc, calcs):
+            st = self._score_of(m, seen)
+            if m is calc:
+                own = st
+            if st[0] == "wait":
+                waiting = True
+            elif st[0] == "load":
+                self._to_load[id(st[1])] = st[1]
+                waiting = True
+            elif st[0] == "score":
+                scored.append((st[1], m.name, m, st[2]))
+        if waiting:
+            return "wait"
+        if own is None or own[0] == "no_parent":
+            return (CalcState.BLOCKED, "Skipped: the energy condition on its edge has "
+                                       "no parent energy to compare (it runs after "
+                                       "no calculation).")
+        if own[0] == "no_energy":
+            return (CalcState.BLOCKED, "Skipped: the energy condition on its edge "
+                                       f"cannot be judged: {own[1]}.")
+        if own[0] == "past_end":
+            return (CalcState.FILTERED, f"Filtered: CREST found only {own[1]} conformers")
+        if own[0] == "not_done":
+            return (CalcState.BLOCKED, f"Skipped: '{own[1].name}' did not finish.")
+        # ties (equal energies -- CREST frames without one read as 0.0)
+        # go by conformer number, then queue order: never by name as
+        # text, where _c10 sorts before _c2
+        pos = {id(x): n for n, x in enumerate(calcs)}
+        scored.sort(key=lambda t: (t[0], conf_index(t[2].ref_point),
+                                   pos.get(id(t[2]), 0), t[1]))
+        rank = next(i for i, t in enumerate(scored) if t[2] is calc)
+        score, _, _, reference = scored[rank]
+        if reference is None:
+            reference = scored[0][0]
+        de = (score - reference) * HARTREE_TO_KCAL_MOL
+        if calc.filter_de is not None and de > calc.filter_de + 1e-9:
+            return (CalcState.FILTERED,
+                    f"Filtered: ΔE {de:.2f} kcal/mol > {calc.filter_de:.2f}")
+        if calc.filter_top and rank >= calc.filter_top:
+            return (CalcState.FILTERED,
+                    f"Filtered: rank {rank + 1} > top {calc.filter_top}")
+        return None
+
+    def _load_results(self, parents: list) -> None:
+        """Read the results the energy condition asked for ("load"), outside
+        the store lock (a large .out takes a second, P37). Writing a DONE
+        calc's result here is safe through the DONE-frozen invariant (P24),
+        as for _resolve_geometry's parse-on-miss. Each is tried once a run: a
+        result that cannot be read is "no energy" from then on."""
+        for p in parents:
+            if p.result is None and p.output_path:
+                try:
+                    if Path(p.output_path).is_file():
+                        p.result = result_from_output(p)
+                except Exception as e:
+                    self.cb.log(f"[{p.name}] could not read its result for an "
+                                f"energy condition ({e}).", "warn", p.name)
+        with self._slot_cv:
+            for p in parents:
+                self._load_tried[id(p)] = p
 
     def _failure_reason(self, calc: Calculation, runner_msg: str) -> str:
         """Turn a raw runner error into a user-facing reason. If ORCA wrote an
@@ -1728,6 +2032,9 @@ class QueueEngine:
             self._by_name = {c.name: c for c in calcs}
             # Pin the keep-existing answers to the rows they were given about.
             self._skip_ids = {id(c) for c in calcs if c.name in self._skip_names}
+            self._verdicts.clear()
+            self._to_load.clear()
+            self._load_tried.clear()
             # A row still BLOCKED from a previous run whose ancestry is now
             # clean (its failed parent was removed, or its reference
             # re-pointed) WILL run this pass — reset it up front so the visible
@@ -1787,11 +2094,17 @@ class QueueEngine:
         threads: "list[threading.Thread]" = []
         try:
             while True:
+                to_load: "list[Calculation]" = []
                 with self._slot_cv:
                     if self._should_stop(calcs):
                         break
+                    self._to_load = {}
                     picked = self._pick_ready(calcs, seen)
-                    if picked is None:
+                    if picked is None and self._to_load:
+                        # An energy condition needs results not in memory yet:
+                        # read them outside the lock (below), then scan again.
+                        to_load = list(self._to_load.values())
+                    elif picked is None:
                         if self._slots:
                             # A job in flight will free budget (or satisfy the
                             # dependency the rest are waiting on) and wake us.
@@ -1814,9 +2127,13 @@ class QueueEngine:
                             # job left to unblock it: the rest is a cycle.
                             self._block_unreachable(calcs, seen)
                             break
-                    i, calc = picked
-                    seen[id(calc)] = calc
-                    self._active_names.add(calc.name)
+                    if picked is not None:
+                        i, calc = picked
+                        seen[id(calc)] = calc
+                        self._active_names.add(calc.name)
+                if picked is None:
+                    self._load_results(to_load)
+                    continue
                 if not self._precheck(calc, i):
                     self._release(calc.name)
                     continue
@@ -1865,6 +2182,20 @@ class QueueEngine:
                 return j, c
             if not self._deps_ready(c, seen):
                 continue
+            # The energy condition on its edge is judged BEFORE its approval
+            # gate: a row it screens out is FILTERED, never left waiting for
+            # an approval that would be pointless. Only a row that has not
+            # started is judged: a RUNNING one is a detached job to reattach,
+            # and filtering (or blocking) it would orphan that job.
+            verdict = (None if c.state == CalcState.RUNNING
+                       else self._judge_filter(c, calcs, seen))
+            if verdict == "wait":
+                continue
+            if verdict is not None:
+                self._verdicts[id(c)] = (c, verdict)
+                return j, c
+            if self._gate_holds(c):
+                continue
             if ignore_budget:
                 return j, c
             if self._fits(self._slot_for(c)):
@@ -1891,22 +2222,20 @@ class QueueEngine:
         turn a clear error into a hang. A FAILED/BLOCKED parent is ready too —
         _precheck blocks the child, as before.
 
-        The calc this one runs `after` is waited for by the same rule, and
-        once it is DONE the edge's approval gate is asked too: a row held at
-        its gate (gate_waiting) is not ready — it stays PENDING and unseen, and
-        a run left with nothing but such rows ends (_block_unreachable leaves
-        them alone).
+        The calc this one runs `after` is waited for by the same rule. Once
+        both are settled, _pick_ready asks the edge's energy condition
+        (_judge_filter) and then its approval gate: a row held at its gate
+        (gate_waiting) is not ready — it stays PENDING and unseen, and a run
+        left with nothing but such rows ends (_block_unreachable leaves them
+        alone).
         """
         for pname in _parent_names(calc):
             parent = self._by_name.get(pname)
             if parent is None or parent is calc:
                 continue
-            if parent.state == CalcState.RUNNING or parent.name in self._active_names:
+            if not self._settled(parent, seen):
                 return False
-            if (parent.state in (CalcState.PENDING, CalcState.CANCELLED)
-                    and id(parent) not in seen):
-                return False
-        return not self._gate_holds(calc)
+        return True
 
     def _gate_holds(self, calc: Calculation) -> bool:
         """True when `calc` waits at its approval gate (gate_waiting). Read
@@ -1930,7 +2259,9 @@ class QueueEngine:
         as free would let it reach _start_job with no room, where waiting would
         park the single dispatcher and head-of-line block every row behind it.
         """
-        return (calc.state in (CalcState.DONE, CalcState.FAILED)
+        return (calc.state in (CalcState.DONE, CalcState.FAILED, CalcState.FILTERED)
+                or (calc.state != CalcState.RUNNING
+                    and self._filtered_by(calc) is not None)
                 or self._blocked_by(calc) is not None)
 
     def _slot_for(self, calc: Calculation) -> "_JobSlot":
@@ -2002,7 +2333,8 @@ class QueueEngine:
             # them here would unfreeze, unlock or orphan them. They cannot be in
             # this loop any more (see _pick_ready), so this is the second lock
             # on the door, not the first.
-            if c.state in (CalcState.DONE, CalcState.FAILED, CalcState.RUNNING):
+            if c.state in (CalcState.DONE, CalcState.FAILED, CalcState.RUNNING,
+                           CalcState.FILTERED):
                 continue
             c.state = CalcState.BLOCKED
             c.message = "Skipped: its geometry reference can never complete."
@@ -2013,7 +2345,9 @@ class QueueEngine:
     def _held_at_gates(self, calcs: list[Calculation],
                        seen: dict) -> "dict[int, Calculation]":
         """Unhandled rows waiting at an approval gate, plus every unhandled row
-        whose dependencies (geometry reference or `after`) reach one of them —
+        whose dependencies (geometry reference or `after`) reach one of them,
+        and every row with an energy condition whose stack has a member that
+        depends on one (its barrier waits for that member's parent) —
         id -> row. Caller holds the lock."""
         held: "dict[int, Calculation]" = {
             id(c): c for c in calcs if id(c) not in seen and self._gate_holds(c)}
@@ -2028,7 +2362,11 @@ class QueueEngine:
                     continue
                 if c.state not in (CalcState.PENDING, CalcState.CANCELLED):
                     continue
-                if any(p in held_names for p in _parent_names(c)):
+                if any(p in held_names for p in _parent_names(c)) or (
+                        has_filter(c) and any(
+                            p in held_names
+                            for m in self._filter_group(c, calcs)
+                            for p in _parent_names(m))):
                     held[id(c)] = c
                     held_names.add(c.name)
                     grew = True
@@ -2174,6 +2512,12 @@ class QueueEngine:
                         calc.name)
             return False
 
+        # FILTERED is terminal (it never ran and has nothing to run): left as
+        # it is, quietly -- it was logged when it was filtered.
+        if calc.state == CalcState.FILTERED:
+            self._verdicts.pop(id(calc), None)
+            return False
+
         # A reference to a calculation that is not in the queue at all. Both
         # run entry points screen for this up front (find_dangling_reference),
         # but the startup resume cannot refuse — it has a running job to
@@ -2208,17 +2552,52 @@ class QueueEngine:
             self.cb.calc_update(i, calc)
             return False
 
+        # A calc it depends on was filtered: so is this one -- before the
+        # failure check, since a screened-out branch is not fixed by an edit.
+        filtered = (self._filtered_by(calc)
+                    if calc.state != CalcState.RUNNING else None)
+        if filtered is not None:
+            self._verdicts.pop(id(calc), None)
+            self._stamp_filtered(calc, i, f"Filtered: parent {filtered.name} "
+                                          "was filtered")
+            return False
+
         # Whether a dependency failed is decided from the queue as it is NOW
         # (see _blocked_by), so a row edited or re-added mid-run is judged on
         # what it references now, not on a name recorded at run start.
         if self._blocked_by(calc) is not None:
+            self._verdicts.pop(id(calc), None)
             calc.state = CalcState.BLOCKED
             calc.message = "Skipped: a dependency failed."
             self.cb.log(f"[{calc.name}] blocked (a dependency failed).",
                         "warn", calc.name)
             self.cb.calc_update(i, calc)
             return False
+
+        # The energy condition's verdict, reached when the scan picked it
+        # (_judge_filter, under the lock).
+        entry = self._verdicts.pop(id(calc), None)
+        if entry is not None and entry[0] is calc and calc.state != CalcState.RUNNING:
+            state, message = entry[1]
+            if state == CalcState.FILTERED:
+                self._stamp_filtered(calc, i, message)
+            else:
+                calc.state = state
+                calc.message = message
+                self.cb.log(f"[{calc.name}] blocked: {message}", "warn", calc.name)
+                self.cb.calc_update(i, calc)
+            return False
         return True
+
+    def _stamp_filtered(self, calc: Calculation, i: int, message: str) -> None:
+        """Stamp ``calc`` FILTERED with its reason, and say so in the log."""
+        calc.state = CalcState.FILTERED
+        calc.message = message
+        calc.pid = None
+        calc.create_time = None
+        self.cb.log(f"[{calc.name}] {message[0].lower() + message[1:]}.",
+                    "info", calc.name)
+        self.cb.calc_update(i, calc)
 
     def _try_keep_existing(self, calc: Calculation, i: int) -> bool:
         """The keep-existing ("skip") run option: the user chose to keep the
@@ -2350,6 +2729,12 @@ class QueueEngine:
             calc.create_time = None
             self.cb.log(f"[{calc.name}] cancelled.", "info", calc.name)
             self.cb.calc_update(i, calc)
+        except OrcaFiltered as e:
+            # nothing launched, by design (a conformer past the ensemble's
+            # end): FILTERED, never FAILED. It has no folder of its own.
+            if not had_run_dir:
+                calc.run_dir = ""
+            self._stamp_filtered(calc, i, f"Filtered: {e}")
         except OrcaBlocked as e:
             # nothing launched, and the fix is an edit (or a parent's run):
             # BLOCKED stays editable and is re-tried on the next Run

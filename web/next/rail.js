@@ -30,7 +30,7 @@
   const GROUPS = [
     { key: "running", label: "Running", states: ["running"], fold: false },
     { key: "queued", label: "Queued", states: ["pending", "blocked"], fold: false },
-    { key: "done", label: "Finished", states: ["done", "failed", "cancelled"], fold: true },
+    { key: "done", label: "Finished", states: ["done", "failed", "cancelled", "filtered"], fold: true },
   ];
 
   /** @param {any} c @returns {string} */
@@ -100,6 +100,8 @@
     if (c.state === "done") return "done";
     if (c.state === "failed") return "failed";
     if (c.state === "blocked") return "blocked";
+    // left out by the energy condition on its edge: neutral, not a failure
+    if (c.state === "filtered") return "filtered";
     return c.is_raw ? "raw" : "";
   }
 

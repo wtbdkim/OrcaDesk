@@ -13,12 +13,17 @@ An inp set is ``{id, name, kind, text}``, ``kind`` one of SET_KINDS:
   level once per job type.
 * ``"MLIP"`` -- not an ORCA input at all but ``key value`` lines (MLIP_KEYS)
   mapped onto the MLIP fields of StepConfig (mlip_config_from_text).
+* ``"CREST"`` -- ``key value`` lines too (CREST_KEYS), mapped onto the CREST
+  fields of StepConfig (crest_config_from_text); a block made from one runs a
+  conformer search (input_generator.CREST_TEMPLATE_KINDS).
 
 Stored in ``user_data_root()/inp_sets.json`` (tmp + ``os.replace``, like the
-settings and the session), schema 2. The first load -- no file yet -- seeds one
+settings and the session), schema 3. The first load -- no file yet -- seeds one
 ORCA level from ORCAdesk's own defaults (StepConfig + build_input at the user's
-default %pal / %maxcore, ``{{JOB}}`` in the job keyword's place) and the MACE
-MLIP set. A file that cannot be read degrades to the seeds in memory and is
+default %pal / %maxcore, ``{{JOB}}`` in the job keyword's place), the MACE
+MLIP set and the GFN2-xTB CREST set. A schema-2 file gets the CREST seed added
+once when it is read (it predates CREST sets); a user who deletes it later
+keeps it deleted, because the file is schema 3 from then on. A file that cannot be read degrades to the seeds in memory and is
 replaced on the next save (P32); it is never a crash.
 
 A schema-1 file (one set per job kind: MLIP / Opt / OptTS / Freq / IRC / SP)
@@ -52,10 +57,10 @@ from ..paths import user_data_root
 FILE_NAME = "inp_sets.json"
 #: where a schema-1 file is copied before it is migrated (once, never overwritten)
 BACKUP_NAME = "inp_sets.v1.json"
-SCHEMA = 2
+SCHEMA = 3
 
 #: what a set may be, in the order the editor lists them
-SET_KINDS = ("ORCA", "MLIP")
+SET_KINDS = ("ORCA", "MLIP", "CREST")
 #: schema 1's per-job kinds, read only to migrate them
 LEGACY_KINDS = ("Opt", "OptTS", "Freq", "IRC", "SP")
 
@@ -63,7 +68,10 @@ LEGACY_KINDS = ("Opt", "OptTS", "Freq", "IRC", "SP")
 #: dropped on the editor's + slot runs until the user picks another Type.
 #: "" is the start of a row (after its input).
 NEXT_KIND = {"": "opt", "mlip_opt": "opt", "opt": "freq", "ts_opt": "ts_freq",
-              "ts_freq": "irc", "ts_opt_freq": "irc", "irc": "sp"}
+              "ts_freq": "irc", "ts_opt_freq": "irc", "irc": "sp",
+              # a CREST search is screened by single points (one per
+              # conformer, ref_point conf:<k>)
+              "crest_conf": "sp"}
 
 #: an MLIP set's keys -> the StepConfig field each one sets
 #: the placeholders an ORCA set's text may hold -- each is filled at launch
@@ -76,6 +84,23 @@ _PLACEHOLDER_RE = re.compile(r"\{\{[^{}]*\}\}")
 MLIP_KEYS = {"model": "mlip_model", "device": "mlip_device",
              "nprocs": "nprocs", "env": "mlip_env_id"}
 _MLIP_DEVICES = {"": "", "auto": "", "cpu": "cpu", "cuda": "cuda"}
+
+#: a CREST set's keys -> the StepConfig field each one sets
+CREST_KEYS = {"method": "crest_method", "solvent": "crest_solvent",
+              "ewin": "crest_ewin", "threads": "crest_threads",
+              "preset": "crest_preset", "nci": "crest_nci",
+              "solvent_model": "crest_solvent_model", "env": "crest_env_id"}
+#: preset words -> StepConfig.crest_preset ("" = CREST's full default run)
+_CREST_PRESETS = {"": "", "none": "", "default": "", "quick": "quick",
+                  "squick": "squick", "mquick": "mquick"}
+_CREST_BOOL = {"yes": True, "true": True, "on": True, "1": True,
+               "no": False, "false": False, "off": False, "0": False}
+#: a method / solvent becomes one CREST command-line argument
+#: (crest.runner.build_crest_argv): one token of these characters
+_CREST_TOKEN = re.compile(r"^[A-Za-z0-9_.,()/+-]+$")
+#: the seeded CREST set
+CREST_SEED = {"id": "seed-crest", "name": "GFN2-xTB", "kind": "CREST",
+              "text": "method gfn2\newin 6\nthreads 4"}
 
 #: the job keywords a schema-1 set's `!` line may carry (the vocabulary the
 #: queue editor's kind detection read), each replaced by the one {{JOB}}
@@ -138,6 +163,78 @@ def mlip_config_from_text(text: str) -> dict:
     return out
 
 
+def crest_config_from_text(text: str) -> dict:
+    """The StepConfig fields a CREST set's text sets, as a dict.
+
+    One ``key value`` per line; blank lines and ``#`` comments are skipped.
+    Keys are CREST_KEYS, values held to StepConfig's own rules (from_dict):
+    method / solvent one token (each becomes a CREST argument), ewin a number
+    from 0 to 1000 (kcal/mol), threads a whole number >= 1 (at most 1024),
+    preset quick / squick / mquick (none or default = CREST's full run),
+    solvent_model alpb / gbsa, nci yes / no. An unknown key or a bad value is
+    a ValueError naming the line -- never silently dropped, or the search
+    would run with a setting nobody wrote. A key left out is not in the dict:
+    the store gives it StepConfig's default (the text is the whole setting)."""
+    out: dict = {}
+    for n, raw in enumerate((text or "").splitlines(), start=1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        key, _, value = line.partition(" ")
+        key, value = key.strip().lower(), value.strip()
+        if key not in CREST_KEYS:
+            raise ValueError(
+                f"CREST set line {n}: unknown key '{key}' (known: "
+                + ", ".join(CREST_KEYS) + ").")
+        field = CREST_KEYS[key]
+        low = value.lower()
+        if key == "method":
+            if not _CREST_TOKEN.match(value):
+                raise ValueError(f"CREST set line {n}: method is one word "
+                                 "(gfn2, gfnff, gfn0, gfn2//gfnff ...).")
+            out[field] = low
+        elif key == "solvent":
+            if value and not _CREST_TOKEN.match(value):
+                raise ValueError(f"CREST set line {n}: solvent is one word "
+                                 "(e.g. water, methanol, chcl3).")
+            out[field] = value
+        elif key == "ewin":
+            try:
+                ewin = float(value)
+            except ValueError:
+                ewin = float("nan")
+            if not 0.0 <= ewin <= 1000.0:
+                raise ValueError(f"CREST set line {n}: ewin is an energy window "
+                                 "in kcal/mol, from 0 to 1000.")
+            out[field] = ewin
+        elif key == "threads":
+            try:
+                threads = int(value)
+            except ValueError:
+                threads = 0
+            if threads < 1:
+                raise ValueError(f"CREST set line {n}: threads must be a whole "
+                                 "number of at least 1.")
+            out[field] = min(1024, threads)
+        elif key == "preset":
+            if low not in _CREST_PRESETS:
+                raise ValueError(f"CREST set line {n}: preset must be quick, "
+                                 "squick or mquick (or none).")
+            out[field] = _CREST_PRESETS[low]
+        elif key == "solvent_model":
+            if low not in ("alpb", "gbsa"):
+                raise ValueError(f"CREST set line {n}: solvent_model must be "
+                                 "alpb or gbsa.")
+            out[field] = low
+        elif key == "nci":
+            if low not in _CREST_BOOL:
+                raise ValueError(f"CREST set line {n}: nci must be yes or no.")
+            out[field] = _CREST_BOOL[low]
+        else:
+            out[field] = value
+    return out
+
+
 def job_line_has_placeholder(text: str) -> bool:
     """True when {{JOB}} stands on one of the text's ``!`` lines
     (input_generator.is_level_text, the renderer's own test)."""
@@ -149,7 +246,8 @@ def seed_sets(nprocs: int = 6, maxcore_mb: int = 2400) -> "list[dict]":
     (StepConfig + build_input, ``{{JOB}}`` where the job keyword goes) at the
     given %pal nprocs / %maxcore, written literally into the text so the engine
     admits the job by what it asks (core/resources.py reads a raw input's own
-    %pal / %maxcore), and the default MACE model as an MLIP set."""
+    %pal / %maxcore), the default MACE model as an MLIP set, and GFN2-xTB as
+    a CREST set (CREST_SEED)."""
     from ..mlip.runner import DEFAULT_MACE_MODEL   # noqa: PLC0415 (lazy, like the bridge)
     cfg = StepConfig(kind="sp", calculation_type=JOB_PLACEHOLDER,
                      nprocs=int(nprocs), maxcore_mb=int(maxcore_mb))
@@ -161,6 +259,7 @@ def seed_sets(nprocs: int = 6, maxcore_mb: int = 2400) -> "list[dict]":
         {"id": "seed-mlip", "name": DEFAULT_MACE_MODEL, "kind": "MLIP",
          "text": (f"model {DEFAULT_MACE_MODEL}\ndevice auto\n"
                   f"nprocs {int(nprocs)}\n")},
+        dict(CREST_SEED),
     ]
 
 
@@ -202,12 +301,14 @@ def validate_set(d) -> dict:
     carry {{GEOMETRY}} (without it the run would use whatever coordinates the
     text happens to hold, never the lane's) and {{JOB}} on its ``!`` line
     (without it every block would run the one job the text names, whatever
-    its Type says); an MLIP text must parse."""
+    its Type says); an MLIP or CREST text must parse."""
     sid, name, kind, text = _checked_common(d)
     if kind not in SET_KINDS:
         raise ValueError("An inp set kind is one of " + ", ".join(SET_KINDS) + ".")
     if kind == "MLIP":
         mlip_config_from_text(text)
+    elif kind == "CREST":
+        crest_config_from_text(text)
     else:
         if GEOMETRY_PLACEHOLDER not in text:
             raise ValueError(f"An ORCA set must contain {GEOMETRY_PLACEHOLDER} where "
@@ -374,29 +475,47 @@ def migrate_sets(entries) -> "list[dict]":
     return out
 
 
-def _is_legacy(data: dict) -> bool:
+def _schema_of(data: dict) -> int:
     try:
-        schema = int(data.get("schema", 1))
+        return int(data.get("schema", 1))
     except (TypeError, ValueError):
-        schema = 1
-    return schema < SCHEMA or any(
+        return 1
+
+
+def _is_legacy(data: dict) -> bool:
+    """A schema-1 file (one set per job kind), for migrate_sets."""
+    return _schema_of(data) < 2 or any(
         isinstance(d, dict) and d.get("kind") in LEGACY_KINDS for d in data["sets"])
 
 
-def _read(path: Path) -> "tuple[Optional[list[dict]], bool, bytes]":
-    """(the stored sets, whether they were migrated from schema 1, the file's
-    bytes), or (None, False, b"") when there is no usable file. Entries that
+def _with_crest_seed(sets: "list[dict]") -> "list[dict]":
+    """Schema 2 -> 3: the CREST seed added, once (the file predates CREST
+    sets). Not when a set already holds its id, or its name among the CREST
+    sets."""
+    if any(s["id"] == CREST_SEED["id"] or (
+            s["kind"] == "CREST"
+            and s["name"].casefold() == CREST_SEED["name"].casefold())
+           for s in sets):
+        return sets
+    return [*sets, dict(CREST_SEED)]
+
+
+def _read(path: Path) -> "tuple[Optional[list[dict]], str, bytes]":
+    """(the stored sets, what was upgraded, the file's bytes), or (None, "",
+    b"") when there is no usable file. The upgrade is "v1" for a schema-1
+    file (migrated, and backed up before it is replaced), "v2" for a
+    schema-2 one (the CREST seed added), "" for a current one. Entries that
     do not validate are dropped one by one (a hand-edited file loses that
     entry, not the rest)."""
     try:
         raw = path.read_bytes()
         data = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError):
-        return None, False, b""
+        return None, "", b""
     if not isinstance(data, dict) or not isinstance(data.get("sets"), list):
-        return None, False, b""
+        return None, "", b""
     if _is_legacy(data):
-        return migrate_sets(data["sets"]), True, raw
+        return _with_crest_seed(migrate_sets(data["sets"])), "v1", raw
     out, ids = [], set()
     for d in data["sets"]:
         try:
@@ -407,7 +526,9 @@ def _read(path: Path) -> "tuple[Optional[list[dict]], bool, bytes]":
             continue
         ids.add(s["id"])
         out.append(s)
-    return out, False, raw
+    if _schema_of(data) < SCHEMA:
+        return _with_crest_seed(out), "v2", raw
+    return out, "", raw
 
 
 def _backup(path: Path, raw: bytes) -> None:
@@ -444,10 +565,10 @@ def _current(path: Path, nprocs: int, maxcore_mb: int) -> "list[dict]":
     """The sets to change (caller holds the lock): the stored ones, a schema-1
     file migrated -- backed up first, OSError when that cannot be done, so the
     original is never replaced without its copy -- else the seeds."""
-    sets, migrated, raw = _read(path)
+    sets, upgraded, raw = _read(path)
     if sets is None:
         return seed_sets(nprocs, maxcore_mb)
-    if migrated:
+    if upgraded == "v1":
         _backup(path, raw)
     return sets
 
@@ -461,11 +582,12 @@ def load_sets(root: Optional[Path] = None, nprocs: int = 6,
     every set keeps an empty list — only a missing file seeds."""
     path = sets_file(root)
     with _lock:
-        sets, migrated, raw = _read(path)
+        sets, upgraded, raw = _read(path)
         if sets is not None:
-            if migrated:
+            if upgraded:
                 try:
-                    _backup(path, raw)
+                    if upgraded == "v1":
+                        _backup(path, raw)
                     _write(path, sets)
                 except OSError:
                     pass
@@ -485,7 +607,7 @@ def save_set(d, root: Optional[Path] = None, nprocs: int = 6,
     (with its id). ValueError when it does not validate or its name is taken
     by another set of its kind, OSError when the file cannot be written."""
     s = validate_set(d)
-    if s["kind"] != "MLIP":
+    if s["kind"] == "ORCA":
         err = unknown_placeholder_error(s["text"])
         if err:
             raise ValueError(err)
@@ -497,7 +619,8 @@ def save_set(d, root: Optional[Path] = None, nprocs: int = 6,
         clash = next((o for o in sets if o["id"] != s["id"] and o["kind"] == s["kind"]
                       and o["name"].casefold() == s["name"].casefold()), None)
         if clash is not None:
-            raise ValueError(f"There is already an {s['kind']} set named "
+            article = "a" if s["kind"] == "CREST" else "an"
+            raise ValueError(f"There is already {article} {s['kind']} set named "
                              f"'{clash['name']}'.")
         for i, old in enumerate(sets):
             if old["id"] == s["id"]:

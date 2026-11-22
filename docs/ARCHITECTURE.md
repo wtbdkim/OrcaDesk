@@ -501,9 +501,15 @@ endpoints keep `-> dict` and only *construct* through the schema types.
 `system` (the lane, a system id; `""` = a standalone calc), `node` (stack
 members share one), `col` / `row` (grid position), `after` (the calc it runs
 after — the edge), `gate` (`"auto"` | `"approval"`), `auto_pass`, `approved`,
-`ref_point` (`""` | `"irc_f"` | `"irc_b"`) and `set_name` (display only). All
+`ref_point` (`""` | `"irc_f"` | `"irc_b"` | `"conf:<k>"`, the last strictly
+`^conf:[1-9][0-9]*$`, `core.queue.is_ref_point`), `set_name` (display only),
+and the energy condition on the edge into it: `filter_de` (a window in
+kcal/mol, a finite number ≥ 0, or `null` = off) and `filter_top` (a whole
+number; 0 = off, N ≥ 1 = only the N lowest of the stack pass). All
 default to "standalone, as today", ride `calc_from_dict` / `calc_to_dict` /
-`calc_to_session_dict`, and are checked at the trust boundary by
+`calc_to_session_dict` (`CalcSummary` / `CalcFull`: `filter_de: float | None`,
+`filter_top: int`; a session without the keys loads with the defaults), and
+are checked at the trust boundary by
 `_graph_fields` (a closed-set or wrong-typed value is a `ValueError` for a new
 payload, degraded to the default on restore — evicting a run's record over a
 layout field is the thing `_validate_calc_name`'s `restoring` rule exists to
@@ -511,8 +517,11 @@ avoid). `CalcSummary.waiting` is derived in `snapshot()` by
 `core.queue.gate_waiting` (Queue semantics). An MLIP template (`kind mlip*`
 sent with `is_raw` and `key value` text) is turned into the MLIP config by
 `calc_from_dict` (`inpsets.mlip_config_from_text`) and runs as an ordinary
-MLIP calc; the text stays in `raw_text` for the editor, `is_raw` false. The
-text is the whole MLIP setting: the `MLIP_KEYS` fields are reset to
+MLIP calc; the text stays in `raw_text` for the editor, `is_raw` false. A
+CREST template (`kind crest*`, `inpsets.crest_config_from_text`, the
+`CREST_KEYS` fields) is handled the same way and runs as an ordinary
+conformer search. The
+text is the whole MLIP (or CREST) setting: the `MLIP_KEYS` fields are reset to
 `StepConfig` defaults before it is applied, so an edited text that drops a key
 (`update_calc` merges the old config in first) returns that setting to the
 default rather than keeping the old value. A **level block** (an ORCA inp-set
@@ -538,7 +547,8 @@ own `%irc` block reads one — `InitHess read` with a relative
 geometry reference (`core.queue.template_hess_problem`); and a `ref_point`
 `irc_f` / `irc_b` on a
 parent whose kind writes no IRC end points (anything but `irc` / `general`,
-`ref_point_problem`) — checked by `add` / `replace` and, for `apply_ops`, on
+`ref_point_problem`), or a `conf:<k>` on a parent that is not a conformer
+search (`CONFORMER_KINDS` = `crest_conf`) — checked by `add` / `replace` and, for `apply_ops`, on
 the batch's final state for every row it added or rebuilt (or whose parent it
 rebuilt).
 
@@ -579,16 +589,29 @@ builder's *Level* mode) keeps `raw_text` / `set_name` — the patch merges over
 the calc — and `config` is the block's whole option set. A calc that
 BECOMES a level block through a patch without `config` (a level dropped on a
 guided calc) gets no options: its old config was a whole guided input. An
-MLIP set's block is re-derived from its text (`is_raw` set again) for a
+MLIP (or CREST) set's block is re-derived from its text (`is_raw` set again) for a
 `raw_text`, `config` or `kind` patch, so an options edit (T / P for an MLIP
 frequency) never replaces the model the text sets.
+A patch of **only** `filter_de` / `filter_top` on a row that is not editable
+is the energy condition being changed (`_refilter`): a **FILTERED** row goes
+back to PENDING with no message and the new condition, and so does every
+FILTERED row downstream of it (by reference or `after`, transitively), each
+as a new object so a running engine picks it again (P29) and judges it
+afresh; a DONE, FAILED or RUNNING row keeps its state and everything it ran,
+only the condition being written onto the live object at commit (as for
+`place_calc`), so the queue editor can change a stack's condition on all its
+members in one batch. Any other edit of a FILTERED row is refused like a
+DONE one's (it is not in `EDITABLE_STATES`); a lane rename / recharge
+(`update_system`) still carries it along (new name, references, charge),
+leaving it FILTERED — it never ran and owns nothing on disk.
 `rerun_calc` is P24's one explicit way back from DONE and FAILED: the queue
 editor sends it when a set is dropped on (or clicked onto) a finished or
 failed block, only after an overwrite warning that is asked every time
 (`requestRerun`, never the once-only replace answer). A stack whose other
 members are still editable (none running) takes the set too, by
 `update_calc` in the same batch. It is refused for anything but a DONE or
-FAILED row the engine is not handling, and its `calc` may hold only the set fields
+FAILED row the engine is not handling (a FILTERED row, which never ran and has
+nothing to overwrite, is refused with a pointer to its energy condition), and its `calc` may hold only the set fields
 (`raw_text` / `set_name` / `set_id` / `is_raw` / `config`); the patch merges
 like `update_calc`'s (the same `_patched` helper, so a guided calc becoming a
 level block drops its old config). The row is rebuilt PENDING with no
@@ -743,15 +766,24 @@ on the release.
 
 **Inp sets** (`orcamgr/state/inpsets.py`, slots `get_inp_sets`,
 `save_inp_set(json)` → the set with its id, `delete_inp_set(id)`) are saved
-templates `{id, name, kind, text}`, `kind` ∈ **ORCA** / **MLIP**, in
-`user_data_root()/inp_sets.json` (schema 2). An ORCA set is a **level of
+templates `{id, name, kind, text}`, `kind` ∈ **ORCA** / **MLIP** / **CREST**
+(`SET_KINDS`), in `user_data_root()/inp_sets.json` (schema 3). An ORCA set is a **level of
 theory**: a whole input whose `!` line holds `{{JOB}}` where the job keyword
 goes (required, with `{{GEOMETRY}}`; `{{CHARGE}}` / `{{MULT}}` optional) — the
 block made from it runs the job its own `kind` says (the editor's Type), so
 one level serves every step. An MLIP set is `model` / `device` / `nprocs` /
-`env` lines. A missing file seeds one level (`wB97X-D4 / def2-TZVP`, from
-`StepConfig` + `build_input` with `calculation_type="{{JOB}}"`) and the MACE
-set, at the user's `default_nprocs` / `default_maxcore_mb` written literally
+`env` lines. A CREST set is `method` / `solvent` / `ewin` / `threads` /
+`preset` / `nci` / `solvent_model` / `env` lines (`CREST_KEYS` →
+`crest_method` … `crest_env_id`), held by `crest_config_from_text` to
+`StepConfig`'s own rules — method and solvent one token (each becomes a CREST
+argument), `ewin` 0–1000 kcal/mol, `threads` ≥ 1 (≤ 1024), `preset`
+`quick` / `squick` / `mquick` (`none` = the full run), `solvent_model`
+`alpb` / `gbsa`, `nci` a yes/no word — an unknown key or a bad value refused
+naming the line; its block runs `crest_conf` (`CREST_TEMPLATE_KINDS`). A
+missing file seeds one level (`wB97X-D4 / def2-TZVP`, from
+`StepConfig` + `build_input` with `calculation_type="{{JOB}}"`), the MACE
+set and the CREST set `seed-crest` (`GFN2-xTB`: `method gfn2` / `ewin 6` /
+`threads 4`), at the user's `default_nprocs` / `default_maxcore_mb` written literally
 (so a template is admitted by what it asks — `core/resources.py` reads a raw
 input's own `%pal` / `%maxcore`); a file emptied by the user stays empty, an
 unreadable one reads as the seeds and is replaced only on the next save. A
@@ -761,10 +793,12 @@ what *+ New* starts from), `jobs` (`TEMPLATE_JOB_KEYWORDS`: the kinds a
 level's block may run — the Type select; `tddft` maps to `""`), `mlip_jobs`
 (`MLIP_TEMPLATE_KINDS`: `mlip_opt` / `mlip_sp` / `mlip_freq` /
 `mlip_opt_freq`, every task the MLIP pipeline runs — the frequency ones read
-`freq_temp_k` / `freq_pressure_atm`) and `next_kind` (`NEXT_KIND`: the
+`freq_temp_k` / `freq_pressure_atm`), `crest_jobs` (`CREST_TEMPLATE_KINDS`:
+`crest_conf`) and `next_kind` (`NEXT_KIND`: the
 natural next step a level dropped on the + slot starts as — `opt` at a row's
 start or after `mlip_opt`, `freq` after `opt`, `ts_freq` after `ts_opt`,
-`irc` after `ts_freq` / `ts_opt_freq`, `sp` after anything else). The queue
+`irc` after `ts_freq` / `ts_opt_freq`, `sp` after `crest_conf` (the
+conformer-screening stack) and after anything else). The queue
 window's set editor (DESIGN.md §17.6) writes through `save_inp_set` /
 `delete_inp_set` only. `save_set` also refuses a `{{...}}` that is not one of
 `KNOWN_PLACEHOLDERS` (`{{GEOMETRY}}`, `{{JOB}}`, `{{CHARGE}}`, `{{MULT}}`,
@@ -801,6 +835,12 @@ its set's or one of those; and its set is the one its `set_name` names when
 that matches, else (a set merged into another, or renamed `name (Kind)`) the
 set of its kind whose text it migrates to, a renamed one first (`setOf` in
 `qed.js`).
+
+**Schema 2 → 3** only adds the CREST seed: a schema-2 file is read as it is,
+`seed-crest` appended unless a set already holds that id or that name among
+the CREST sets, and written back as schema 3 (no backup — nothing is changed).
+A user who deletes the seed afterwards keeps it deleted: the file is schema 3
+from then on. A schema-1 file gets the seed in the same pass as its migration.
 
 The slot list is in `web/globals.d.ts`; the payloads are `InpSet`,
 `InpSetsResult`, `InpSetResult`, `SystemSummary` / `SystemFull`,
@@ -1565,6 +1605,63 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   point and which file — the IRC finished, it just did not run that way — so
   the row is BLOCKED (editable), not FAILED. A `ref_point` on a parent whose
   kind writes no IRC ends is refused when it is added (Queue store above).
+  `conf:<k>` reads conformer k of a CREST search: `conformers[k-1]` of its
+  parsed result (`crest_conformers.xyz`, energy-sorted; 1 = the lowest, the
+  numbering of `Conformer.index` and of the exported `{name}_c<k>.xyz`), read
+  on demand from its folder when a restored session holds no result
+  (`_conformer_geometry`). k past the end of the ensemble is no fault — CREST
+  found fewer conformers than the stack has members — so the row is
+  **FILTERED** (`Filtered: CREST found only N conformers`), never FAILED or
+  BLOCKED; the engine decides it at pick time from the parsed ensemble (below),
+  and `_resolve_geometry` raises `OrcaFiltered` as the backstop.
+- **The energy condition on an edge (`filter_de` / `filter_top`) and FILTERED.**
+  A calc *has a filter* when `filter_de` is not None or `filter_top` > 0. Its
+  **group** is its stack: the calcs with the same `system` and the same
+  non-empty `node` that have a filter too (a calc with node `""` is a group
+  of one). Each member is **scored** by conformer k's energy (Eh) when its
+  `ref_point` is `conf:<k>`, else by the `final_energy_eh` of its parent (its
+  `after`, else its geometry reference). `_judge_filter` runs in
+  `_pick_ready` once the calc's own dependencies are settled and **before its
+  approval gate** (a row the condition screens out is FILTERED, never left
+  waiting for an approval):
+  **barrier** — while any member's parent may still change state in this run
+  (`_settled`: RUNNING, picked, or PENDING/CANCELLED not yet handled) the calc
+  is not ready (PENDING, unseen) and keeps the run alive like any unmet
+  dependency; a member whose parent waits at an approval gate holds the whole
+  stack the same way (`_held_at_gates`), so the run ends with them PENDING,
+  never BLOCKED. Members whose parent is not DONE are left out of the ranking
+  and follow the normal rules (a FAILED parent → BLOCKED, a FILTERED one →
+  FILTERED). The rest are ranked by score (ascending; ties by conformer
+  number, then queue order, never by name as text; rank 0-based); the calc **passes** iff (`filter_top` == 0 or rank <
+  `filter_top`) and (`filter_de` is None or (score − reference) ×
+  627.5094740631 ≤ `filter_de` + 1e-9), the **reference** being conformer 1 of
+  the CREST for a `conf:<k>` member (so a lone `conf:5` is judged against the
+  ensemble's minimum, not itself) and the lowest score of the group otherwise
+  (a group is expected to be one or the other). Failing it stamps FILTERED
+  with `Filtered: ΔE 4.21 kcal/mol > 3.00` (checked first) or `Filtered: rank
+  7 > top 5`. A DONE parent with **no energy to rank by** (no final energy,
+  an output that cannot be read, a CREST result without an ensemble) leaves
+  its member out and stamps it **BLOCKED** with the reason — editable: drop
+  the condition or fix the parent; re-judged next Run. Scores come from
+  results in memory only (the judgment runs under the store lock, P37): a DONE
+  parent restored without one is asked for (`_to_load`), the dispatcher reads
+  it outside the lock (`_load_results`, once per run per parent; the write is
+  safe through the DONE-frozen invariant, as for parse-on-miss) and scans
+  again. Only a row that has **not started** is judged: a RUNNING row (a
+  detached job to reattach after a restart) is never filtered, blocked or
+  held by the barrier, and a **rerun** row (`rerun_calc`, asked for
+  explicitly) is not screened out again.
+  again. The verdict reached at pick time is handed to `_precheck`
+  (`_verdicts`), which stamps it. **FILTERED** is terminal: it never ran, has
+  no output and no run folder, is never re-run (`_handled_without_running`),
+  never keeps a run alive, is not in `EDITABLE_STATES` (only a change of its
+  condition reopens it, Queue store above), is skipped by
+  `_block_unreachable`, is restored from the session as it is, and counts as
+  settled for removal and the pre-run screens (`SETTLED_STATES`). Its
+  dependents (by `after` or reference) are stamped FILTERED in turn
+  (`_filtered_by`: `Filtered: parent X was filtered`) — never BLOCKED, never
+  FAILED; a FILTERED parent ends `_blocked_by`'s walk like a DONE one. Each
+  filtered calc logs one line (`[name] filtered: …`).
 - **`after` is a dependency like a reference, and its edge may be gated.** The
   queue editor's edge (`Calculation.after`) is independent of the geometry, but
   the engine treats it exactly like a reference: `_deps_ready` waits for it,
@@ -2203,16 +2300,63 @@ method (the label maps 1:1 onto CREST's flag — `gfn2` → `--gfn2`, incl.
 (`--mdlen x<mult>`, `--tstep`, `--tnmd`, `--mddump`, `--vbdump`), and the
 `--cbonds`/`--subrmsd`/`--norotmd`/`--keepdir`/`--cluster` toggles. Each advanced
 flag is emitted only when set to a non-default value; the enum/numeric fields are
-validated and clamped in `StepConfig.from_dict` (the trust boundary). File-based
-options (`--cinp` constraints) and standalone modes (`--cregen`) are intentionally
-out of scope. UI: the builder's CREST form + a closed `<details class="advsec">`
-for the advanced knobs.
+validated and clamped in `StepConfig.from_dict` (the trust boundary). Standalone
+modes (`--cregen`) are intentionally out of scope. UI: the builder's CREST form
++ a closed `<details class="advsec">` for the advanced knobs.
+
+**Constraints reach CREST as a `--cinp` file.** A `crest_conf` takes the same
+`StepConfig.geom_constraints` list the ORCA form writes (kinds C/B/A/D, atoms
+0-based, `value` None = hold the start; `normalize_constraints` is the trust
+boundary for both), picked on the builder's stage (DESIGN.md §17.4s). When it
+holds something CREST can use (`has_crest_constraints`: a bond/angle/dihedral,
+or ≥2 fixed atoms) `write_crest_run_files` writes `constraints.inp` beside the
+input `.xyz` and `build_crest_argv` adds `--cinp constraints.inp` — relative,
+because CREST's cwd is the folder holding both (under WSL the script copies it
+into the ext4 scratch dir with the input). Without constraints a previous
+attempt's `constraints.inp` is removed, so a re-run starts from what the calc
+says now. The file (`crest_constraints_text`) is the xtb Detailed-Input syntax
+CREST documents for `--cinp`, 1-based, Å / degrees, `auto` for no target:
+
+```
+$constrain
+  distance: 1, 3, auto
+  angle: 1, 2, 3, 109.5
+  dihedral: 1, 2, 3, 9, 180
+  atoms: 1,2,3
+$metadyn
+  atoms: 4,5,6,7,8,9
+$end
+```
+
+What the pinned **CREST 3.0.2 accepts was measured** (WSL Ubuntu, ethanol,
+`--squick`), and it is narrower than the docs: a `force constant=` line (any
+value, any spacing) kills the parser (`parse_xtbinput.f90`: "Error allocating
+… bytes", or a segfault), so none is written and CREST's 0.05 Eh/Bohr² applies;
+`atoms:` takes an explicit comma list only — a range (`1-3`) or a single atom
+dies the same way. `atoms:` holds the atoms at their pairwise **distances**
+(the run log lists them as distance constraints), not at fixed positions, so
+one fixed atom holds nothing: `calc_from_dict` refuses a crest calc with
+exactly one C constraint, and the file never writes one. Beside a fixed list
+the file restricts the metadynamics bias to the other atoms (`$metadyn atoms:`
+— what CREST's own `--constrain` generates), which is also the subset
+`--subrmsd` compares. `auto` works for distance, angle and dihedral;
+`reference=` is not needed. A constrained run (dihedral held at 180°) ended
+normally with every conformer at that dihedral. Atom indices are checked like
+ORCA's: against coordinates in hand when the calc is added (`calc_from_dict`),
+against a referenced geometry in `_run_crest_calc` before CREST starts. A
+CREST *set* has no constraint line, so a set put on a calc clears them. The
+queue editor's CREST settings view lists them as `constrain B 12 27 auto`.
 
 **Conformer → follow-up pipeline.** Follow-up MLIP/ORCA calculations are built
 in the **builder** by referencing the CREST calc through the normal
-geometry source; a reference always receives the **lowest-energy
+geometry source; a reference receives the **lowest-energy
 conformer** (the classic single-geometry handoff via `_resolve_geometry` —
-`parse_crest_result` sets `geometry`/`final_energy_eh` to the best conformer).
+`parse_crest_result` sets `geometry`/`final_energy_eh` to the best conformer)
+— except with `ref_point` `conf:<k>`, which reads conformer k (Queue
+semantics). The queue editor pre-allocates a stack of K such single points
+(`conf:1` … `conf:K`) and may put an energy condition on the edge into it;
+members past the end of the ensemble, or outside the condition, end
+FILTERED. The engine never adds or rewrites rows for this.
 The per-conformer track fan-out (`crest_handoff="all"`, `expand_conformer_tracks`
 / `substitute_calcs`) was removed in 0.6.0-beta. The report's conformer
 list is **read-only** for building: results are for interpretation; building

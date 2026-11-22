@@ -91,7 +91,7 @@ lines, status-pill dots, buttons, charts:
 | success / ready / converged / goal | `--ok` (green) | the chart *goal line* is green |
 | running / in progress / caution | `--warn` (amber) | **running is amber, not blue**; the live chart trace is amber |
 | failure / error / imaginary mode / destructive | `--err` (red) | |
-| neutral / pending / cancelled / blocked / raw ORCA text | grey (`--info`, `--orca`, `--muted-foreground`) | `blocked` styles like the other neutral states |
+| neutral / pending / cancelled / blocked / filtered / raw ORCA text | grey (`--info`, `--orca`, `--muted-foreground`) | `blocked` styles like the other neutral states; `filtered` (left out by an edge's energy condition) is neutral too, never a failure |
 | raw-input / MLIP special modes | `--raw` (purple; teal in light) | |
 
 Value coloring is decided by meaning at render time (e.g. summary values:
@@ -977,10 +977,19 @@ change, never on the redraw.
 
 ## 12. State → color matrix
 
-| Surface | pending | running | done | failed | cancelled | blocked | raw/MLIP tag |
-|---|---|---|---|---|---|---|---|
-| Badge bg | `--accent` | warn-15% | ok-15% | err-15% | `--accent` | `--accent` | raw-15% |
-| Badge text | muted | `--warn` | `--ok` | `--err` | muted | muted | `--raw` |
+| Surface | pending | running | done | failed | cancelled | blocked | filtered | raw/MLIP tag |
+|---|---|---|---|---|---|---|---|---|
+| Badge bg | `--accent` | warn-15% | ok-15% | err-15% | `--accent` | `--accent` | `--accent` | raw-15% |
+| Badge text | muted | `--warn` | `--ok` | `--err` | muted | muted | muted | `--raw` |
+
+**Filtered** is a terminal state with no output: the energy condition on the
+edge into a calculation (§17.6) left it out, or what it depends on was. It is
+neutral like cancelled and blocked and told apart from both where a state is
+drawn small: its dot is a solid faint disc (`--qe-faint`; theirs are rings),
+a queue block's border is dotted faint and the card at 60% (blocked: 45%),
+a stack member at 55%, and its `message` (the reason, "Filtered: ΔE 4.21
+kcal/mol > 3.00") is the block's tooltip and the inspector's note. In the
+main window it sits in the rail's Finished group.
 
 A **running calc ORCA has already failed** (`CalcSummary.faulted`: a fatal
 marker printed, the process still alive) stays where running rows go, because
@@ -1958,8 +1967,16 @@ keeps what the three share — name, charge, multiplicity, the coordinates box
 with its stage and structure check, or the reference — and swaps only the block
 under them; each backend's own settings survive a switch away and back. An
 MLIP or CREST calculation is not an ORCA one, so none of the ORCA-only blocks
-are drawn for it (method, constraints, push along a mode, Preview .inp), rather
-than drawn and ignored. D41 as amended decides the picker, from the polled
+are drawn for it (method, push along a mode, Preview .inp), rather than drawn
+and ignored. The stage's **Constraints** group is the exception for CREST,
+which runs them (its `--cinp` file): the same picks (drag or Ctrl+click 2–4
+atoms, one atom to fix, the typed *Add*), the same rows with an optional
+target and their *Apply*, saved as the same `geom_constraints` — but no
+*Constrain | Scan* toggle (CREST does not scan), and the hint adds what is
+CREST's own: fixed atoms keep their distances to each other, not their
+places, so at least two are needed (Add refuses one, as does the backend),
+and *Constrained atoms out of the RMSD* (`--subrmsd`) usually goes with them.
+An MLIP calculation has no constraints. D41 as amended decides the picker, from the polled
 backend status: a backend never set up has **no button**, only *+ More
 backends…*, which opens Settings; one set up but not ready (an environment that
 fails to import, no WSL distribution with CREST) keeps its button and opens
@@ -2060,8 +2077,13 @@ The layout and interactions are the approved design canvas's (the "ORCAdesk
 Queue" prototype); its sample data and template texts are not the spec. Three
 columns:
 
-- **Library** (left) — the inp sets in two groups, **ORCA levels** and
-  **MLIP**, each with a *+ New* beside its name. An ORCA set is a **level of
+- **Library** (left) — the inp sets in three groups, **ORCA levels**,
+  **MLIP** and **CREST**, each with a *+ New* beside its name (a CREST set is
+  `key value` lines like an MLIP one -- method, solvent, ewin, threads,
+  preset, nci, solvent_model, env -- and a block made from it is a
+  conformer search, `crest_conf`, labelled *Conformers*; a text is read as
+  CREST settings only with no line an ORCA input starts with `!`, `%` or `*`
+  and none naming an MLIP backend or model). An ORCA set is a **level of
   theory, not a job**: a whole input whose `!` line holds `{{JOB}}` where the
   job keyword goes, so one level serves every step of a row and the library
   no longer repeats a level once per job type (the user asked for it: the job
@@ -2103,9 +2125,25 @@ columns:
   and a back card 5px behind it for each other member, at most three — past
   that the count tells), shows its count bottom right, at the end of the
   `kind / set` line — never top right, where a block shows its run order —
-  and unfolds a member list. **Edges**
+  and unfolds a member list; once some of its members are **filtered** the
+  count reads `passed/total` (`3/10`), and a filtered member is faint in the
+  list with its reason on hover. A step after a CREST search is a
+  **conformer stack**: one member per conformer, `_c1` … `_cK` (`_c1` the
+  lowest, as the search's `{name}_c1.xyz`), each taking its structure by
+  reference to that conformer (`ref_point` `conf:<k>`). **Edges**
   are solid when the next step runs by itself and dashed amber when it waits
-  for approval, and meet a block at its vertical middle. A block hangs off its
+  for approval, and meet a block at its vertical middle. The edge into a
+  calculation may carry an **energy condition** (`filter_de`: pass within
+  ΔE kcal/mol of the lowest; `filter_top`: pass the N lowest) -- the group
+  is the stack it leads into; ΔE is from the CREST search's lowest
+  conformer for conformer members, else from the stack's lowest parent
+  energy once every member's parent has finished; what fails it ends
+  filtered (§12), and so does what hangs off that. It is drawn as a small
+  pill on the block the edge leads into, top-left above the card (`ΔE ≤ 3`,
+  `top 5`, `ΔE ≤ 3 · top 5`, `*` when the members disagree; the 36px gap
+  between columns has no room for words), neutral grey on the canvas colour
+  -- never the gate's dash or amber, since the two are independent and can
+  both be on one edge -- and a click on it selects the edge. A block hangs off its
   `after`, else the calculation its geometry is taken from: standalone
   calculations tied that way (a TS with the Freq and IRC built from it) share
   one lane, laid out by the slot rule below parent first (a child queued
@@ -2148,9 +2186,27 @@ columns:
   the menu, else the first), the natural next step as the primary button
   (Enter), every other Type the level can run (O / T / F / I / S answer
   Optimization, TS optimization, Frequencies — TS frequencies after an
-  OptTS —, IRC, Single point), an MLIP pre-optimization per MLIP set, the
+  OptTS —, IRC, Single point), an MLIP pre-optimization per MLIP set, a
+  conformer search per CREST set (not before a block: what follows a search
+  is the conformer stack its picker makes), the
   copied and the saved workflows (locked after a stack, with the reason;
-  after an IRC the picker asks first, as for a step), and **Manual build…** (M). Escape or a click elsewhere closes it
+  after an IRC or a CREST search the picker asks first, as for a step), and **Manual build…** (M).
+  **After a CREST search, every add asks how many conformers it runs on**
+  (the conformer picker, the IRC picker's recipe: choosing and confirming
+  separate): *conformers* (default 5, 1 to the ensemble's size once the
+  search has run, else 1 to 50 with the note that a member past the
+  ensemble it finds has no structure) and an optional *pass on ΔE ≤ … kcal/mol*
+  (empty: all pass), and ONE confirm button that says what it will do --
+  *Add 5 single points (conformers 1–5)*, *Paste on 5 conformers (1–5)* for
+  a workflow, *Use conformer 3* for a block's geometry. Once the search has
+  run, its ensemble is listed small (`c3  1.24`, ΔE from the lowest, from
+  `parse_calc_output`'s `conformers`), the members to be added marked and
+  those the ΔE window would filter struck through. The result is one
+  undoable batch: K calculations on one node, after the search, each by
+  reference to its conformer, the window on their incoming edge. A workflow
+  after a search is pasted once per conformer, each step's K copies
+  stacked, the window on the edge into its first steps. A step after a
+  conformer stack is one per member (`_c3` kept), as after any stack. Escape or a click elsewhere closes it
   and leaves the selection as it was; what was chosen is one undoable batch,
   like a dropped set. **A step before a block**: the selected block that
   can still change shows a small round dashed **+** on its incoming side (in
@@ -2174,7 +2230,8 @@ columns:
   becomes a one-node system named after it (`place_calc`: its place in the
   layout changes, nothing it ran — P24). A pending block below a failed or
   blocked one is drawn blocked at once (the design's derived state), not only
-  after a run says so. An empty system shows its first slot; an empty queue
+  after a run says so; one below a filtered one is drawn filtered the same
+  way. An empty system shows its first slot; an empty queue
   says how a row starts. **Ctrl/Shift+click on row names selects several
   rows**: the inspector then sets one charge and multiplicity on all of them
   (a row that has started keeps its own) and puts a workflow into every
@@ -2223,11 +2280,14 @@ columns:
   row exists is listed with the reason, never renamed). One batch, Ctrl+Z
   undoes it. A stack takes no paste after it (it has several ends); after an
   IRC the IRC picker asks which structure(s), and the workflow is pasted once
-  per structure picked (`_F` / `_B`, each step's two copies stacked).
+  per structure picked (`_F` / `_B`, each step's two copies stacked); after a
+  CREST search the conformer picker asks how many (`_c1` … `_cK`). A copied
+  workflow carries the energy condition of an edge inside the copy.
 - **Names** — a step the editor makes is `<system>_<Job>`: the job as ORCA's
   keyword (`{{JOB}}`) reads it — `_Opt`, `_OptTS`, `_FreqTS`, `_IRC`, `_SP`,
-  `_Preopt` (MLIP) — a taken one numbered (`_SP2`), a stack's members tailed
-  `_F` / `_B` / `_P<k>`, a copy `<name>_copy`. Older hyphen names still read
+  `_Preopt` (MLIP), `_CREST` (a conformer search) — a taken one numbered
+  (`_SP2`), a stack's members tailed `_F` / `_B` / `_P<k>` / `_c<k>` (the
+  k-th conformer), a copy `<name>_copy`. Older hyphen names still read
   as stacks. A redraw (a poll while the queue runs) waits while a mouse button
   is down, so a click is never lost to the block being redrawn under it.
 - **Inspector** (right) — for a block: the system name (renames the lane:
@@ -2239,7 +2299,8 @@ columns:
   the calculations that had its old value), the geometry (the system's structures, or any ancestor's
   output along the `after` chain — every member of an ancestor stack, an IRC's
   two ends and *a point on its path…*, which opens the IRC picker; never an
-  IRC's bare final geometry, which measured as the TS it started from), the template, and *Save as* a new set of the kind its text is. A level's
+  IRC's bare final geometry, which measured as the TS it started from; a
+  CREST search's lowest conformer and *a conformer…*, which asks its number), the template, and *Save as* a new set of the kind its text is. A level's
   block also has its **Type** (Optimization, TS optimization, Frequencies, TS
   frequencies, Opt + Freq, TS Opt + Freq, IRC, Single point, NMR — the kinds
   the backend fills `{{JOB}}` for, in the Guided builder's words), editable
@@ -2253,7 +2314,20 @@ columns:
   builder. A block the Guided builder made, or a pasted text that is no level,
   shows its generated input read-only
   and *Edit in the builder* (an MLIP or CREST block: the settings it runs, in
-  `key value` lines, never an ORCA input it does not run). A level's block
+  `key value` lines, never an ORCA input it does not run -- for CREST every
+  option that is not StepConfig's default, the builder's search speed, NCI,
+  solvent model, MD / MTD numbers and toggles included). A block made from
+  an **MLIP or CREST set** shows the set's lines (editable while the block
+  is) and its own *Edit in the builder*: the Guided builder in that
+  backend's form, seeded from the block's whole config (the form holds more
+  than a set's few keys can say). Saved there, the block keeps its place in
+  the graph and is **no longer the set's**: its `set_name` and text go and it
+  reads `Conformers / guided`, never the set's name with a `*` -- a `*` says
+  "this set's text, edited", and a builder config is not a text the set
+  could be compared with. That save, and every builder save of an MLIP or
+  CREST block, is one `update_calc` patch through the undoable batch (a
+  rename in the form is left to `update_calc`, which carries the
+  references along). A level's block
   has **its own options** (calc.config under StepConfig's names, merged into
   the level by the backend): *Edit options in the builder* opens the builder
   in **Level mode** -- the Type (the template kinds), geometry, the stage
@@ -2268,7 +2342,8 @@ columns:
   The block's options are named under it (`1 constraint · MaxIter 300`) and
   in the inspector. A refusal (`'name': …`) is said in the inspector, and in
   the builder above its Save, not only in a toast. An MLIP set's block has a
-  *Task* select (`mlip_jobs`). Below that: *↑ Earlier* /
+  *Task* select (`mlip_jobs`); a CREST set's block runs `crest_conf`
+  (`crest_jobs`) and has no Task. Below that: *↑ Earlier* /
   *↓ Later* (Alt+←/→: the block's run order within its row, an `order` op,
   never past what it depends on or what depends on it), *Duplicate* (the
   whole setup as `<name>_copy`, next free row of its column), *Show folder*,
@@ -2283,6 +2358,16 @@ columns:
   another row says so (no edge on the canvas shows it). For an edge: *Auto* /
   *After approval*, the auto-pass box after a Freq (`ts_freq`: one imaginary
   mode expected, otherwise none), and *Approve* while the next step waits.
+  **The energy condition** is one compact row, *Pass on ΔE ≤ [ ] kcal/mol ·
+  top [ ]* (empty: off), with a line saying what ΔE is measured from, in
+  the inspector of an edge out of or into a stack or out of a CREST search,
+  and of a block that is a stack or follows one (or a search); anywhere a
+  condition is already set too. A change goes to every member that can
+  still take it -- one still to run, or a **filtered** one, which then goes
+  back to pending with what it filtered (the store's rule: on a filtered row
+  the condition is the one thing that changes, every other edit is refused
+  as on a done one) -- in one undoable batch; a member that has run keeps
+  the condition it ran under, and the line says so.
   With **nothing selected** the inspector is the **set editor** (not a help
   text): the set's name as the title, whether it is an ORCA level or MLIP
   settings (a text that reads as the other says it will move group), the
@@ -2348,6 +2433,9 @@ dark-only with literal zinc hexes; each is mapped onto a token (`app.css`,
 `--qe-faint`, `--qe-ghost`) mixed from `--muted-foreground` into the
 background so they follow the theme. None of it is a uispec landmark: the
 reference has no queue window, and the main page's landmarks are unchanged.
+The conformer stack, the condition chip and control and the filtered state
+are one named block at the bottom of `app.css` ("the conformer stack and the
+edge condition"), drawn only from those tokens; no token was added.
 
 ---
 

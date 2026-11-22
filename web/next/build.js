@@ -82,7 +82,7 @@
   function combo(label, opts, value) {
     const id = "dl" + (++_uid);
     return `<div class="field"><label>${NB.esc(label)}</label>
-      <input class="mono" list="${id}" value="${NB.esc(value)}">
+      <input class="mono" data-list="${id}" autocomplete="off" value="${NB.esc(value)}">
       <datalist id="${id}">${opts.map(o => `<option value="${NB.esc(o)}"></option>`).join("")}</datalist>
     </div>`;
   }
@@ -145,7 +145,7 @@
    *  draw them, so update_calc would otherwise get a payload without them and
    *  pull the calculation out of its lane. */
   const PLACE_KEYS = ["system", "node", "col", "row", "after", "gate", "auto_pass",
-                      "approved", "ref_point", "set_name"];
+                      "approved", "ref_point", "set_name", "filter_de", "filter_top"];
 
   /* ---- Level mode ---------------------------------------------------------
      A block made from an ORCA level (the queue window's inp sets) runs the
@@ -163,6 +163,12 @@
      batch) or as a third mode of a new calculation (`place.levels`). */
   /** the Level-mode context of the next open, or null @type {any} */
   let _lvl = null;
+  /** An edit's own save, from the queue window (`place.save` on an edit): the
+   *  form's payload goes through the editor's undoable batch instead of
+   *  update_calc. It answers {ok, error} -- or null when it leaves this save
+   *  to update_calc (a rename, whose references the slot follows).
+   *  @type {null|((payload: any) => Promise<any>)} */
+  let _editSave = null;
   /** A level's IRC reads the Hessian of the step before it unless told
    *  otherwise -- the template default, not StepConfig's (calc_anfreq). */
   const AUTO_HESS = "auto";
@@ -270,6 +276,7 @@
     // Level mode on a level's block: its context rides on `place` (an edit
     // has no place of its own otherwise)
     _lvl = _target !== null && place && place.level ? place.level : null;
+    _editSave = _target && place && typeof place.save === "function" ? place.save : null;
     // the main window hosts the form in the stream, the queue window in a
     // stream-like column over its lanes and inspector (qed.js #qe-build)
     if (NB.win === "queue") { if (NB.qed) NB.qed.render(); }
@@ -313,6 +320,7 @@
     // another mount, and would open on the draft -- another place's name
     // and reference -- under this place's title.
     const ctx = { lvl: calc ? _lvl : null,
+                  /** an edit's own save (_editSave) @type {any} */ save: calc ? _editSave : null,
                   offer: !calc && _place && _place.levels ? _place.levels : null,
                   /** @type {any} */ seed: calc ? null : _seed,
                   /** the queue window's names for this place, by kind @type {any} */
@@ -386,9 +394,9 @@
   }
 
   /** @param {HTMLElement} el @param {any} summary @param {() => void} close
-   *  @param {{lvl: any, offer: any, seed?: any, names?: any}} [ctx] what cellFor fixed for this cell */
+   *  @param {{lvl: any, offer: any, save?: any, seed?: any, names?: any}} [ctx] what cellFor fixed for this cell */
   async function mount(el, summary, close, ctx) {
-    ctx = ctx || { lvl: null, offer: null, seed: null, names: null };
+    ctx = ctx || { lvl: null, save: null, offer: null, seed: null, names: null };
     await loadChoices();
     const body = /** @type {HTMLElement} */ (el.querySelector(".stubbody"));
     // Editing needs the FULL calculation (the summary in the queue carries no
@@ -443,6 +451,7 @@
     // Level mode: a level's block, or a new one started from a level
     st.lvlCtx = ctx.lvl || ctx.offer || null;
     st.levelEdit = !!(ctx.lvl && summary);
+    st.editSave = summary && ctx.save ? ctx.save : null;
     if (st.levelEdit) {
       st.level = { text: String(calc.raw_text || ""), set_name: String(calc.set_name || ""),
                    set_id: String(calc.set_id || "") };
@@ -589,6 +598,9 @@
       lvlCtx: null,
       /** an existing level's block: Level is its only mode */
       levelEdit: false,
+      /** an edit's own save through the queue window's undoable batch
+       *  (_editSave), or null @type {any} */
+      editSave: null,
       /** a seeded new calculation's place, for "Use the draft" @type {any} */
       seededFrom: null,
       /** the queue window's names for this place by kind (place.names), or
@@ -668,9 +680,11 @@
           <canvas class="molcv" data-v="geomcv"
                   aria-label="The structure in the coordinates box"></canvas>
           <p class="geomempty" data-x="geomempty">No coordinates yet</p>
-          ${K.cons && !st.raw ? `<div class="stageacts">
+          ${consOn(st) ? `<div class="stageacts">
             <button class="btn btn-sm" type="button" data-act="fixatom" disabled
-                    title="Hold the selected atom's position">Fix atom</button></div>` : ""}
+                    title="${st.backend === "crest"
+                      ? "Hold the selected atom at its distances to the other fixed atoms"
+                      : "Hold the selected atom's position"}">Fix atom</button></div>` : ""}
         </div>
         <!-- push along a mode: a frequency run's .hess, a mode, how far. The
              stage previews it; Apply puts it in the box (DESIGN.md §17.4p) -->
@@ -704,19 +718,20 @@
           : `<p class="hint" style="margin:0">No other calculation to take a geometry from yet.</p>`}
       </div>
 
-      ${K.cons && !st.raw ? `<div data-cons>
+      ${consOn(st) ? `<div data-cons>
         <div class="divider"></div>
         <!-- what a pick on the stage defines: a coordinate held, or the one a
              relaxed surface scan walks (DESIGN.md §17.4r). Only an
-             optimization scans, so the second half says so on other kinds -->
+             optimization scans, so the second half says so on other kinds;
+             a CREST search has no scan, so no toggle (§17.4s) -->
         <div class="conshead">
           <div class="grouplabel">Constraints</div>
-          <div class="seg" role="group" aria-label="What a pick on the structure defines">
+          ${st.backend === "crest" ? "" : `<div class="seg" role="group" aria-label="What a pick on the structure defines">
             <button type="button" data-pmode="cons"
                     aria-pressed="${st.pickMode !== "scan" || !K.scan}">Constrain</button>
             <button type="button" data-pmode="scan" aria-pressed="${st.pickMode === "scan" && !!K.scan}"${
               K.scan ? "" : ` disabled title="A relaxed scan is an Optimization: ORCA scans in no other job type"`}>Scan</button>
-          </div>
+          </div>`}
         </div>
         <p class="hint" style="margin:0 0 10px" data-x="conshint"></p>
         <div class="conslist" data-a="cons"></div>
@@ -1375,13 +1390,26 @@
         PLACE_KEYS.forEach(k => { if (k in calc) payload[k] = calc[k]; });
         // a reference moved to another calculation is that one's final geometry
         if (payload.ref_name !== calc.ref_name) payload.ref_point = "";
-        // made Guided from a set's text: it is no longer that set's block
-        if (!payload.is_raw && backendOfKind(payload.kind) === "dft") payload.set_name = "";
+        // made Guided from a set's text: it is no longer that set's block --
+        // an MLIP or CREST set's block too, whose form holds more than the
+        // set's `key value` lines can say (raw_text goes "" with it, so the
+        // set's text is never shown as what it runs)
+        if (!payload.is_raw) payload.set_name = "";
       }
       const placed = st.editing ? null : _place;
       if (placed) Object.assign(payload, placed.fields);
       const proceed = await confirmOverwrite(payload.name, st.editing);
       if (!proceed) return;
+      if (st.editing && calc && st.editSave) {
+        // the queue window's own save: one undoable batch
+        const res = await st.editSave(payload);
+        if (res) {
+          if (!res.ok) { const m = res.error || "The queue refused that change."; NB.fail(m); sayRefusal(m); return; }
+          NB.toast(`"${payload.name}" saved.`, "ok");
+          close();
+          return;
+        }
+      }
       const r = st.editing
         ? await NB.call("update_calc", st.editing, JSON.stringify(payload))
         : await NB.call("add_calc", JSON.stringify(payload));
@@ -1404,6 +1432,14 @@
   const CONS_NAME = { C: "Position", B: "Bond", A: "Angle", D: "Dihedral" };
   const CONS_BY_COUNT = ["", "C", "B", "A", "D"];
 
+  /** Whether a pick on the stage makes a constraint: a Guided ORCA kind that
+   *  optimizes, or a CREST search, which takes the same list as its --cinp
+   *  file (crest/runner.py, §17.4s). @param {any} st @returns {boolean} */
+  function consOn(st) {
+    if (st.backend === "crest") return true;
+    return st.backend === "dft" && !!(KINDS[st.kind] || {}).cons && !st.raw;
+  }
+
   /** The same coordinate, named in either direction — O1–H2 is H2–O1, and
    *  ORCA would be handed it twice. @param {any} a @param {any} b */
   function sameCons(a, b) {
@@ -1424,7 +1460,8 @@
     const ta = q('[data-f="xyz"]'), cv = q('[data-v="geomcv"]');
     if (!ta || !cv) return;
     const K = KINDS[st.kind] || KINDS.general;
-    const picking = !!K.cons && !st.raw;
+    const picking = consOn(st);
+    const crest = st.backend === "crest";
     const fix = q('[data-act="fixatom"]');
     const useRef = () => q('input[name="gsrc"][value="reference"]').checked;
     /** whether a pick defines the scan: the toggle says so, and the kind can */
@@ -1538,9 +1575,10 @@
         ? (ref
           ? "Name the 2, 3 or 4 atoms of the bond, angle or dihedral to scan, numbered from 1. Each step is an optimization with that coordinate held; the constraints still apply."
           : "Drag across 2, 3 or 4 atoms for the bond, angle or dihedral to scan — or Ctrl+click them in order and press Scan. Each step is an optimization with that coordinate held; the constraints still apply.")
-        : ref
+        : (ref
         ? "Atoms are numbered from 1. They are checked against the referenced geometry when the run starts."
-        : "Drag across 2, 3 or 4 atoms for a bond, angle or dihedral — or Ctrl+click them in order and press Add; select one atom to fix it. Leave a target empty to hold the current value.";
+        : "Drag across 2, 3 or 4 atoms for a bond, angle or dihedral — or Ctrl+click them in order and press Add; select one atom to fix it. Leave a target empty to hold the current value.")
+        + (crest ? " CREST holds them through the whole search (a --cinp file). Fixed atoms keep their distances to each other, not their places, so fix two or more; the search then moves only the rest, and \"Constrained atoms out of the RMSD\" (--subrmsd, under Advanced) usually belongs with them." : "");
       listScan(ref);
       box.innerHTML = st.cons.map((c, k) => {
         const lab = consLabel(c, ref);
@@ -2090,6 +2128,12 @@
           Math.max(...bad.atoms) + 1}, but the structure has ${n} atoms.`;
       }
     }
+    // CREST keeps fixed atoms at their distances to each other: one alone
+    // holds nothing (the backend refuses it too, calc_from_dict)
+    if (String(p.kind || "").startsWith("crest")
+        && cons.filter((/** @type {any} */ c) => c.kind === "C").length === 1) {
+      return "CREST holds fixed atoms at their distances to each other, so one fixed atom holds nothing: fix at least two, or remove it.";
+    }
     const scanErr = scanProblem(p, lvl);
     if (scanErr) return scanErr;
     if (opts && p.kind === "irc" && p.config.irc_init_hess === "read"
@@ -2144,8 +2188,10 @@
      cell as an ORCA one: the backend control at the top of the form decides
      which form sits under the shared name / charge / multiplicity row and the
      shared geometry block. They are not ORCA calculations — no method, no
-     basis, no .inp, no constraints — so nothing of the ORCA form is drawn for
-     them, and nothing of it is read back.
+     basis, no .inp — so nothing of the ORCA form is drawn for them, and
+     nothing of it is read back. The one thing CREST shares with it is the
+     stage's Constraints list (consOn): picked the same way, saved as the
+     same geom_constraints, run as CREST's --cinp file; no Scan.
 
      Hidden or locked per D41 (as amended):
      a backend the user never set up has no button here, only "+ More
@@ -2416,7 +2462,7 @@
         ${pick("Solvent model", [["alpb", "ALPB"], ["gbsa", "GBSA"]],
                cfg.crest_solvent_model || DEF.crest_solvent_model, "mid")}
         <div class="field"><label>Solvent</label>
-          <input class="mono" list="${sid}" value="${NB.esc(solvent)}" placeholder="gas phase">
+          <input class="mono" data-list="${sid}" autocomplete="off" value="${NB.esc(solvent)}" placeholder="gas phase">
           <datalist id="${sid}">${CREST_SOLVENTS.map(o => `<option value="${o}"></option>`).join("")}</datalist>
         </div>
         ${target}
@@ -2492,6 +2538,10 @@
       crest_norotmd: chk("norotmd"),
       crest_keepdir: chk("keepdir"),
       crest_cluster: chk("cluster"),
+      // the stage's constraints, in the ORCA form's own list: they become the
+      // search's --cinp file (crest/runner.py)
+      geom_constraints: (st.cons || []).map((/** @type {any} */ c) =>
+        ({ kind: c.kind, atoms: c.atoms.slice(), value: c.value })),
     };
   }
 
@@ -2600,6 +2650,122 @@
     const m = model || DEF.mlip_model || "";
     return m ? (model ? "" : "No model line, so the default runs. ") + licenseNote(m) : "";
   }
+
+  /* ---- a combo's suggestions (D63, §9.3) -----------------------------------
+     A <datalist> popup is a native window in QtWebEngine: it ignores the mouse
+     wheel (a long list cannot be scrolled) and the theme. A combo keeps its
+     <datalist> as the list of suggestions (`data-list` names it, never `list`,
+     so the native popup never opens) and they are drawn here, in the page.
+     Opened by a click or ArrowDown it shows every suggestion, the current
+     value marked (D60: focus never pre-filters); typing filters; Enter or a
+     click takes one; Escape closes it; a value no suggestion matches is said
+     to be used as-is. */
+  (function suggest() {
+    /** @type {HTMLDivElement|null} */ let box = null;
+    /** @type {HTMLInputElement|null} */ let field = null;
+    /** @type {string[]} */ let shown = [];
+    let active = -1;
+    let taking = false;   // the events take() sends are not typing
+    /** @param {HTMLInputElement} inp @returns {string[]} */
+    const optionsOf = (inp) => {
+      const dl = document.getElementById(inp.dataset.list || "");
+      return dl ? Array.from(dl.querySelectorAll("option")).map(o => o.value) : [];
+    };
+    /** @param {EventTarget|null} t @returns {HTMLInputElement|null} */
+    const comboOf = (t) => (t instanceof HTMLInputElement && t.dataset.list ? t : null);
+    function close() {
+      if (box) box.remove();
+      box = null; field = null; shown = []; active = -1;
+    }
+    function place() {
+      if (!box || !field) return;
+      const r = field.getBoundingClientRect();
+      const below = window.innerHeight - r.bottom - 12, above = r.top - 12;
+      const up = below < 160 && above > below;
+      box.style.left = r.left + "px";
+      box.style.width = r.width + "px";
+      box.style.maxHeight = Math.max(96, Math.min(280, up ? above : below)) + "px";
+      box.style.top = up ? "" : (r.bottom + 4) + "px";
+      box.style.bottom = up ? (window.innerHeight - r.top + 4) + "px" : "";
+    }
+    function mark() {
+      if (!box) return;
+      Array.from(box.children).forEach((el, i) => {
+        if (i === active) el.setAttribute("aria-selected", "true");
+        else el.removeAttribute("aria-selected");
+      });
+      const el = active >= 0 ? box.children[active] : null;
+      if (el) el.scrollIntoView({ block: "nearest" });
+    }
+    /** @param {HTMLInputElement} inp @param {boolean} all every suggestion, unfiltered */
+    function render(inp, all) {
+      field = inp;
+      const opts = optionsOf(inp);
+      const q = inp.value.trim().toLowerCase();
+      shown = all || !q ? opts : opts.filter(o => o.toLowerCase().indexOf(q) >= 0);
+      if (!box) {
+        box = document.createElement("div");
+        box.className = "suggest";
+        box.setAttribute("role", "listbox");
+        // mousedown, not click: the field keeps its focus (no focusout first)
+        box.addEventListener("mousedown", e => {
+          e.preventDefault();
+          const it = e.target instanceof Element ? e.target.closest(".suggest-item") : null;
+          if (it instanceof HTMLElement) take(Number(it.dataset.i));
+        });
+        document.body.appendChild(box);
+      }
+      active = shown.findIndex(o => o.toLowerCase() === q);
+      box.innerHTML = shown.length
+        ? shown.map((o, i) => `<div class="suggest-item" role="option" data-i="${i}">${NB.esc(o)}</div>`).join("")
+        : `<div class="suggest-none">No match — ${NB.esc(inp.value.trim())} will be used as-is.</div>`;
+      if (!shown.length && !q) { close(); return; }
+      place();
+      mark();
+    }
+    /** @param {number} i */
+    function take(i) {
+      const inp = field;
+      if (!inp || shown[i] === undefined) return;
+      inp.value = shown[i];
+      close();
+      taking = true;
+      try {
+        inp.dispatchEvent(new Event("input", { bubbles: true }));
+        inp.dispatchEvent(new Event("change", { bubbles: true }));
+      } finally { taking = false; }
+    }
+    document.addEventListener("click", e => {
+      const inp = comboOf(e.target);
+      if (inp && !(box && field === inp)) render(inp, true);
+    });
+    document.addEventListener("input", e => {
+      const inp = comboOf(e.target);
+      if (inp && !taking && document.activeElement === inp) render(inp, false);
+    });
+    document.addEventListener("focusout", e => { if (e.target === field) close(); });
+    // capture: Enter / Escape on an open list are its own, not the builder's
+    document.addEventListener("keydown", e => {
+      const inp = comboOf(e.target);
+      if (!inp) return;
+      const open = !!(box && field === inp && shown.length);
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        if (!open) { if (e.key === "ArrowDown") { render(inp, true); e.preventDefault(); } return; }
+        active = (active + (e.key === "ArrowDown" ? 1 : -1) + shown.length) % shown.length;
+        mark();
+        e.preventDefault();
+      } else if (e.key === "Enter" && open && active >= 0) {
+        take(active);
+        e.preventDefault(); e.stopPropagation();
+      } else if (e.key === "Escape" && box && field === inp) {
+        close();
+        e.preventDefault(); e.stopPropagation();
+      }
+    }, true);
+    // the field moved under it (a scroll of the form, a resize): follow it
+    document.addEventListener("scroll", e => { if (box && e.target !== box) place(); }, true);
+    window.addEventListener("resize", () => place());
+  })();
 
   NB.build = { open: open, target: target, place: place, cellFor: cellFor, KINDS: KINDS,
                licenseNote: modelLicenseNote };

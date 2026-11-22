@@ -15,16 +15,18 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import re
 import secrets
 import threading
+from dataclasses import fields
 from pathlib import Path
 from typing import Optional
 
 from ..core.queue import (
     GATES, KNOWN_KINDS, REF_POINTS, Calculation, CalcState, GeometrySource,
-    QueueEngine, QueueCallbacks, gate_waiting, ref_point_problem,
+    QueueEngine, QueueCallbacks, gate_waiting, is_ref_point, ref_point_problem,
     result_from_output, template_hess_problem, validate_result,
 )
 from ..core.input_generator import (CONSTRAINED_KINDS, JOB_PLACEHOLDER,
@@ -45,7 +47,8 @@ from ..paths import data_dir, user_data_root
 from .schemas import (CalcFull, CalcSummary, LogLine, LogPayload,
                       QueueSnapshot, RunResources, SystemInputSummary,
                       SystemSummary, XyzFileEntry)
-from .inpsets import MLIP_KEYS, mlip_config_from_text
+from .inpsets import (MLIP_KEYS, crest_config_from_text,
+                      mlip_config_from_text)
 
 # States whose calculations the user may still edit / reorder.
 # PENDING: never run yet. CANCELLED: a deliberate user stop, not a failure, so
@@ -62,6 +65,10 @@ EDITABLE_STATES = {CalcState.PENDING, CalcState.CANCELLED, CalcState.BLOCKED}
 RERUNNABLE_STATES = (CalcState.DONE, CalcState.FAILED)
 #: the states a rerun row (Calculation.rerun) still has not started in
 _UNSTARTED = (CalcState.PENDING, CalcState.BLOCKED)
+#: the states that never run again as they are: DONE is frozen, FAILED locked
+#: (P24), FILTERED screened out by an energy condition (or its parent's). A
+#: run needs nothing from what they reference, and they hold no job.
+SETTLED_STATES = (CalcState.DONE, CalcState.FAILED, CalcState.FILTERED)
 
 
 def is_rerun(c: Calculation) -> bool:
@@ -264,6 +271,8 @@ def calc_to_dict(c: Calculation, waiting: bool = False) -> CalcSummary:
         approved=c.approved,
         ref_point=c.ref_point,
         set_name=c.set_name,
+        filter_de=c.filter_de,
+        filter_top=int(c.filter_top or 0),
         waiting=bool(waiting),
     )
 
@@ -373,6 +382,23 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
         for field, value in mlip_config_from_text(_s("raw_text")).items():
             setattr(cfg, field, value)
         is_raw = False
+    # A CREST inp set is `key value` lines the same way
+    # (inpsets.crest_config_from_text): its CREST fields, every other one the
+    # default, and the calc runs as an ordinary conformer search.
+    if is_raw and kind.startswith("crest"):
+        # every crest_* field, not just the ones a text can name: the text is
+        # the whole setting, so a Guided block's advanced options (cluster,
+        # MTD length, ...) must not survive a set put on it
+        defaults = StepConfig()
+        for field in fields(StepConfig):
+            if field.name.startswith("crest_"):
+                setattr(cfg, field.name, getattr(defaults, field.name))
+        for field, value in crest_config_from_text(_s("raw_text")).items():
+            setattr(cfg, field, value)
+        # constraints are picked on the builder's stage and a set's text has
+        # no line for them: an edited calc's old ones do not ride along
+        cfg.geom_constraints = []
+        is_raw = False
     # An ORCA inp set is a level: its `!` line holds {{JOB}}, filled from this
     # calc's kind at launch (input_generator.render_template_text). A kind
     # with no job keyword is refused HERE, when it is added or its Type is
@@ -415,12 +441,24 @@ def calc_from_dict(d: dict, restoring: bool = False) -> Calculation:
     # restore, which must not evict an entry for a rule a new run obeys.
     # (A valued angle ORCA will stop on as a linear bend is NOT refused: it is
     # a warning — constraint_warning below — and the user's call.)
+    # A CREST search takes them too (its --cinp file, crest/runner.py), by the
+    # same rule.
+    crest = cfg.kind.startswith("crest")
     if (not restoring and (not is_raw or level) and src == "direct"
-            and cfg.geom_constraints and cfg.kind in CONSTRAINED_KINDS):
+            and cfg.geom_constraints and (cfg.kind in CONSTRAINED_KINDS or crest)):
         n_atoms = len(parse_block(_s("xyz")))
         err = constraint_index_error(cfg.geom_constraints, n_atoms) if n_atoms else ""
         if err:
             raise ValueError(err)
+    # CREST holds fixed atoms at their distances to EACH OTHER (pairwise, its
+    # only form), so one fixed atom has nothing to hold -- and CREST 3.0.2
+    # dies parsing a one-atom list. Refused when added, whatever the geometry
+    # source, since it does not depend on the structure.
+    if (not restoring and crest and not is_raw
+            and sum(1 for c in cfg.geom_constraints if c.get("kind") == "C") == 1):
+        raise ValueError(
+            "A CREST search holds fixed atoms at their distances to each other, "
+            "so one fixed atom holds nothing: fix at least two, or remove it.")
     # A scan coordinate is held to the same rule, for the same reason.
     if (not restoring and (not is_raw or level) and src == "direct"
             and cfg.geom_scan and cfg.kind in SCAN_KINDS):
@@ -454,7 +492,7 @@ _GRID_MAX = 10_000
 
 #: the queue editor's Calculation fields (core.queue.Calculation)
 GRAPH_FIELDS = ("system", "node", "col", "row", "after", "gate", "auto_pass",
-                "approved", "ref_point", "set_name")
+                "approved", "ref_point", "set_name", "filter_de", "filter_top")
 
 
 def keep_graph_fields(d: dict, existing: "Optional[Calculation]") -> dict:
@@ -474,7 +512,7 @@ def keep_graph_fields(d: dict, existing: "Optional[Calculation]") -> dict:
 def _graph_fields(d: dict, restoring: bool) -> dict:
     """The queue editor's fields of a calc payload (core.queue.Calculation:
     system, node, col, row, after, gate, auto_pass, approved, ref_point,
-    set_name), checked at the trust boundary. A missing key is "standalone, as
+    set_name, filter_de, filter_top), checked at the trust boundary. A missing key is "standalone, as
     today". A wrong-typed or out-of-set value is a ValueError for a new
     payload; on restore it degrades to the default instead, because evicting a
     calculation from the queue over a layout field would cost the user the
@@ -521,6 +559,42 @@ def _graph_fields(d: dict, restoring: bool) -> dict:
         bad(f"'{key}' must be one of: " + ", ".join(repr(a) for a in allowed) + ".")
         return default
 
+    def ref_point() -> str:
+        # REF_POINTS, or the open family conf:<k> (core.queue.is_ref_point)
+        v = d.get("ref_point", "")
+        if v is None:
+            return ""
+        if is_ref_point(v):
+            return v
+        bad("'ref_point' must be one of: "
+            + ", ".join(repr(a) for a in REF_POINTS)
+            + ", or 'conf:<k>' with k a whole number from 1.")
+        return ""
+
+    def filter_de() -> "Optional[float]":
+        # kcal/mol, finite and >= 0; null / missing = no window
+        v = d.get("filter_de")
+        if v is None:
+            return None
+        if (isinstance(v, bool) or not isinstance(v, (int, float))
+                or not math.isfinite(v) or v < 0):
+            bad("'filter_de' must be a finite energy window of 0 kcal/mol or "
+                "more, or null.")
+            return None
+        return float(v)
+
+    def filter_top() -> int:
+        # 0 = off; N >= 1 = only the N lowest of the stack pass
+        v = d.get("filter_top", 0)
+        if v is None:
+            return 0
+        if (isinstance(v, int) and not isinstance(v, bool)) or (
+                isinstance(v, float) and v.is_integer()):
+            if v >= 0:
+                return int(v)
+        bad("'filter_top' must be a whole number of 0 (off) or more.")
+        return 0
+
     after = d.get("after", "")
     if not isinstance(after, str):
         if after is not None:
@@ -535,8 +609,10 @@ def _graph_fields(d: dict, restoring: bool) -> dict:
         gate=choice("gate", GATES, "auto"),
         auto_pass=flag("auto_pass", True),
         approved=flag("approved", False),
-        ref_point=choice("ref_point", REF_POINTS, ""),
+        ref_point=ref_point(),
         set_name=set_name,
+        filter_de=filter_de(),
+        filter_top=filter_top(),
     )
 
 
@@ -776,6 +852,8 @@ def calc_to_session_dict(c: Calculation) -> CalcFull:
         approved=c.approved,
         ref_point=c.ref_point,
         set_name=c.set_name,
+        filter_de=c.filter_de,
+        filter_top=int(c.filter_top or 0),
         rerun=bool(c.rerun),
         run_dir=c.run_dir or "",
     )
@@ -826,8 +904,8 @@ def _ran_in_the_old_layout(c: Calculation) -> bool:
     failed, cancelled or running, it holds an output path (a blocked row that
     was cancelled before), or it is a rerun_calc row waiting to overwrite its
     old output."""
-    return (c.state not in _UNSTARTED or bool(c.output_path)
-            or bool(getattr(c, "rerun", False)))
+    return ((c.state not in _UNSTARTED and c.state != CalcState.FILTERED)
+            or bool(c.output_path) or bool(getattr(c, "rerun", False)))
 
 
 def _restore_systems(entries) -> "list[dict]":
@@ -1237,7 +1315,7 @@ class QueueStore:
             # one is held. (It used to be refused until the run ended, so a
             # long run left its finished rows impossible to tidy.)
             if (target.state not in EDITABLE_STATES
-                    and target.state not in (CalcState.DONE, CalcState.FAILED)):
+                    and target.state not in SETTLED_STATES):
                 raise ValueError(
                     "While the queue is running, a running calculation "
                     "cannot be removed.")
@@ -1247,7 +1325,7 @@ class QueueStore:
             dep = next(
                 (c for c in calcs
                  if check_refs and c.name != name
-                 and c.state not in (CalcState.DONE, CalcState.FAILED)
+                 and c.state not in SETTLED_STATES
                  and self._depends_on(c, name)),
                 None)
             if dep is not None:
@@ -1320,7 +1398,7 @@ class QueueStore:
                     "Cannot edit: this calculation is about to run.")
             if check_refs and new_calc.name != name and any(
                     c.name != name
-                    and c.state not in (CalcState.DONE, CalcState.FAILED)
+                    and c.state not in SETTLED_STATES
                     and self._depends_on(c, name)
                     for c in calcs):
                 raise ValueError(
@@ -1413,7 +1491,7 @@ class QueueStore:
             if self._running:
                 names = {c.name for c in calcs}
                 for c in calcs:
-                    if c.state in (CalcState.DONE, CalcState.FAILED):
+                    if c.state in SETTLED_STATES:
                         continue
                     problem = self._missing_dependency(c, names)
                     if problem:
@@ -1439,7 +1517,7 @@ class QueueStore:
                 entry = placed.get(id(c))
                 if entry is not None and entry[0] is c:
                     live = entry[1]
-                    for f in self._PLACE_KEYS + ("approved",):
+                    for f in self._PLACE_KEYS + ("approved",) + self._FILTER_KEYS:
                         setattr(live, f, getattr(c, f))
                     calcs[i] = live
             self._calcs[:] = calcs
@@ -1507,8 +1585,8 @@ class QueueStore:
             merged["config"] = {**merged["config"], "kind": patch["kind"]}
         if (({"raw_text", "config", "kind"} & set(patch))
                 and merged.get("set_name") and merged.get("raw_text")
-                and str(merged.get("kind", "")).startswith("mlip")):
-            # an MLIP template's text (a calc that came from an inp set)
+                and str(merged.get("kind", "")).startswith(("mlip", "crest"))):
+            # an MLIP (or CREST) template's text (a calc that came from an inp set)
             # is applied to the config again by calc_from_dict — the
             # stored calc reads is_raw false. Also for an options edit
             # (config: T / P for an MLIP frequency) or a Type change, or
@@ -1543,6 +1621,12 @@ class QueueStore:
         if idx is None:
             raise ValueError(f"No calculation named '{name}'.")
         current = calcs[idx]
+        if current.state == CalcState.FILTERED:
+            # it never ran, so there is nothing to overwrite: what brings it
+            # back is the condition that screened it out (_refilter)
+            raise ValueError(f"'{name}' was screened out ({current.message}); "
+                             "change the energy condition on its edge to "
+                             "judge it again.")
         if current.state not in RERUNNABLE_STATES:
             raise ValueError(f"'{name}' has not finished: only a done or failed "
                              "calculation runs again this way.")
@@ -1601,6 +1685,71 @@ class QueueStore:
             calcs[i] = again
             freed.append((c, again))
         return freed
+
+    #: the energy condition on the edge into a calc (core.queue.Calculation)
+    _FILTER_KEYS = ("filter_de", "filter_top")
+
+    def _refilter(self, calcs: "list[Calculation]", current: Calculation,
+                  patch: dict, placed: "dict[int, tuple]") -> None:
+        """update_calc with only filter_de / filter_top, on a row that is not
+        editable. The condition is judged again:
+
+        * a FILTERED row goes back to PENDING (message cleared) with the new
+          condition -- and so does every FILTERED row downstream of it (by
+          geometry reference or `after`, transitively), each as a new object
+          so a running engine, which has handled the filtered one, picks it
+          again (P29). The run judges them afresh.
+        * a DONE, FAILED or RUNNING row keeps its state and everything it ran
+          (P24); only the condition on the edge into it is recorded, on the
+          live object (written back at commit, like place_calc), so a stack's
+          condition can be changed on all its members in one batch.
+
+        Every other edit of a FILTERED row is refused like a DONE one's."""
+        checked = _graph_fields(patch, restoring=False)
+        idx = calcs.index(current)
+        if current.state == CalcState.FILTERED:
+            if self._engine_active(current.name):
+                raise ValueError(f"'{current.name}' cannot change: the run is "
+                                 "handling it.")
+            again = copy.copy(current)
+            for k in patch:
+                setattr(again, k, checked[k])
+            again.state = CalcState.PENDING
+            again.message = ""
+            calcs[idx] = again
+            self._reopen_filtered_after(calcs, current.name)
+            return
+        entry = placed.get(id(current))
+        if entry is not None and entry[0] is current:
+            moved = current                      # already this batch's copy
+        else:
+            moved = copy.copy(current)
+            placed[id(moved)] = (moved, current)
+        for k in patch:
+            setattr(moved, k, checked[k])
+        calcs[idx] = moved
+
+    def _reopen_filtered_after(self, calcs: "list[Calculation]",
+                               name: str) -> None:
+        """Every FILTERED row downstream of `name` (by geometry reference or
+        `after`, transitively) back to PENDING, each as a new object."""
+        down, grew = {name}, True
+        while grew:
+            grew = False
+            for c in calcs:
+                ref = c.ref_name if self._is_reference(c) else ""
+                if c.name not in down and (ref in down or c.after in down):
+                    down.add(c.name)
+                    grew = True
+        for i, c in enumerate(calcs):
+            if (c.name == name or c.name not in down
+                    or c.state != CalcState.FILTERED
+                    or self._engine_active(c.name)):
+                continue
+            again = copy.copy(c)
+            again.state = CalcState.PENDING
+            again.message = ""
+            calcs[i] = again
 
     def _undo_rerun(self, calcs: "list[Calculation]", systems: "list[dict]",
                     op: dict) -> None:
@@ -1667,6 +1816,11 @@ class QueueStore:
             patch = op.get("calc")
             if not isinstance(patch, dict):
                 raise ValueError("update_calc needs a 'calc' object.")
+            if (patch and set(patch) <= set(self._FILTER_KEYS)
+                    and current.state not in EDITABLE_STATES):
+                self._refilter(calcs, current, patch,
+                               {} if placed is None else placed)
+                return
             new_calc = self._patched(current, patch)
             # still the row the user chose to overwrite, while it has not started
             new_calc.rerun = is_rerun(current)
@@ -1786,7 +1940,11 @@ class QueueStore:
         recharge = (new["charge"], new["multiplicity"]) != (old["charge"], old["multiplicity"])
 
         for i, c in enumerate(calcs):
-            if c.state not in EDITABLE_STATES:
+            # a FILTERED row never ran and owns nothing on disk: it follows
+            # the lane's names and charge like an editable one, but stays
+            # FILTERED (a change of its condition is what reopens it)
+            filtered = c.state == CalcState.FILTERED
+            if c.state not in EDITABLE_STATES and not filtered:
                 continue
             changes: dict = {}
             if c.name in rename:
@@ -1811,8 +1969,9 @@ class QueueStore:
             edited = copy.copy(c)
             for field, value in changes.items():
                 setattr(edited, field, value)
-            edited.state = CalcState.PENDING
-            edited.message = ""
+            if not filtered:
+                edited.state = CalcState.PENDING
+                edited.message = ""
             edited.result = None
             edited.output_path = ""
             calcs[i] = edited
@@ -2122,13 +2281,13 @@ def queue_needs_orca(calcs: "list[Calculation]") -> bool:
     Single shared decision (P4) for both run entry points (the desktop bridge
     and the phone server): an all-MLIP or all-CREST queue must be runnable with
     no ORCA executable configured, so requiring a valid ORCA path is gated on
-    this instead of being unconditional. DONE calcs are never recomputed and
-    FAILED calcs are locked (P24) — neither will ever launch ORCA, so they don't
-    count (a stale FAILED ORCA calc must not force an ORCA path onto an otherwise
+    this instead of being unconditional. DONE calcs are never recomputed,
+    FAILED calcs are locked (P24) and FILTERED ones never run — none will ever
+    launch ORCA, so they don't count (a stale FAILED ORCA calc must not force an ORCA path onto an otherwise
     all-MLIP/CREST queue).
     """
     return any(
-        c.state not in (CalcState.DONE, CalcState.FAILED)
+        c.state not in SETTLED_STATES
         and not c.kind.startswith("mlip")
         and not c.kind.startswith("crest")
         for c in calcs
@@ -2146,8 +2305,9 @@ def find_dangling_reference(calcs: "list[Calculation]") -> "str | None":
         # DONE results are frozen and FAILED calcs are locked (P24) — neither
         # will ever run again, so a dangling reference on them must not veto
         # the whole run (e.g. a FAILED calc whose referenced parent was later
-        # removed would otherwise lock the Run button for good).
-        if c.state in (CalcState.DONE, CalcState.FAILED):
+        # removed would otherwise lock the Run button for good). FILTERED
+        # never runs as it is either.
+        if c.state in SETTLED_STATES:
             continue
         src = c.geometry_source
         is_ref = src == GeometrySource.REFERENCE or str(

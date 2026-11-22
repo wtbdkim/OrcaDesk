@@ -544,14 +544,15 @@ def test_a_copied_workflow_keeps_a_level_blocks_options():
 
 def test_the_old_queues_block_actions_are_in_the_inspector():
     """Duplicate, Show folder, run earlier / later, the structures panel, the
-    input the run folder holds, and Clear finished (done and failed only: a
+    input the run folder holds, and Clear finished (done, failed and filtered
+    only -- a filtered one is as final as a done one, with no output; a
     cancelled block runs again) -- each through the ops batch."""
     src = _read(NEXT / "qed.js")
     node = _function_body(src, "inspectNode")
     for a in ("dup", "folder", "earlier", "later", "structs", "ownname"):
         assert f'"{a}"' in node, f"the inspector lost {a}"
     assert 'NB.call("get_inp"' in node, "a finished block shows a regenerated input again"
-    assert 'const FINISHED = ["done", "failed"]' in src
+    assert 'const FINISHED = ["done", "failed", "filtered"]' in src
     assert 'id="qe-clearfin"' in src
     move = _function_body(src, "moveRun")
     assert 'op: "order"' in move and "dependentsOf(" in move, "a reorder may break a dependency"

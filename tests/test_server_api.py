@@ -177,6 +177,20 @@ def test_add_calc_via_api_lands_in_shared_store(store):
     assert store.get("job1") is not None
 
 
+def test_the_energy_condition_rides_the_api_like_the_desktop(store):
+    # the same trust boundary (calc_from_dict) and the same snapshot rows
+    client = _client(create_app(store, bind_host="127.0.0.1"))
+    r = client.post("/api/queue", json={**_calc_payload("sp1"), "filter_de": 2.5,
+                                        "filter_top": 3})
+    assert r.status_code == 200
+    row = r.json()["snapshot"]["calculations"][0]
+    assert (row["filter_de"], row["filter_top"]) == (2.5, 3)
+    bad = client.post("/api/queue", json={**_calc_payload("sp2"), "filter_top": -1})
+    assert bad.status_code == 400 and "filter_top" in bad.json()["detail"]
+    bad = client.post("/api/queue", json={**_calc_payload("sp3"), "ref_point": "conf:0"})
+    assert bad.status_code == 400
+
+
 def test_duplicate_calc_name_is_conflict_409(store):
     client = _client(create_app(store, bind_host="127.0.0.1"))
     assert client.post("/api/queue", json=_calc_payload("dup")).status_code == 200

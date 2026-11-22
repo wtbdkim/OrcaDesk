@@ -31,7 +31,7 @@ from typing import Optional, TypedDict
 # these names exist so snapshot/envelope schemas can reference the shapes.)
 
 class CalcSummary(TypedDict):
-    """Compact queue-row form — mirror of store.calc_to_dict (26 keys)."""
+    """Compact queue-row form — mirror of store.calc_to_dict (28 keys)."""
     name: str
     kind: str
     charge: int
@@ -40,6 +40,8 @@ class CalcSummary(TypedDict):
     ref_name: str
     is_raw: bool
     state: str                # "pending"|"running"|"done"|"failed"|"blocked"|"cancelled"
+                              # |"filtered" (screened out by the energy condition
+                              # on its edge, or its parent's; never ran)
     message: str
     output_path: str
     scf_convergence: str
@@ -64,14 +66,19 @@ class CalcSummary(TypedDict):
                               # the expected imaginary-mode count
     approved: bool            # the user approved the gate
     ref_point: str            # "" final geometry | "irc_f" | "irc_b" of ref_name
+                              # | "conf:<k>" conformer k (1 = lowest) of a CREST ref
     set_name: str             # display only: the inp set it came from
+    # the energy condition on the edge into it (judged before the gate):
+    filter_de: "float | None"  # window in kcal/mol above the stack's lowest
+                              # (conformer 1 for a conf:<k> ref); None = off
+    filter_top: int           # only the N lowest of the stack pass; 0 = off
     # derived (core.queue.gate_waiting): `after` is DONE but the approval gate
     # is closed — the run skips this row and leaves it PENDING
     waiting: bool
 
 
 class CalcFull(TypedDict):
-    """Full-fidelity form — mirror of store.calc_to_session_dict (27 keys)."""
+    """Full-fidelity form — mirror of store.calc_to_session_dict (29 keys)."""
     name: str
     kind: str
     config: dict              # StepConfig.to_dict(), {} when absent
@@ -97,6 +104,8 @@ class CalcFull(TypedDict):
     approved: bool
     ref_point: str
     set_name: str
+    filter_de: "float | None"
+    filter_top: int
     rerun: bool               # put back from DONE/FAILED by rerun_calc (never kept)
     # the folder it ran in, relative to the workspace ("{system}/{name}" or
     # "{name}", core/rundir.py), recorded when it first started; "" = not
@@ -587,6 +596,8 @@ class InpSetsResult(_Ok, total=False):
                                  # "" for tddft: its %tddft block is the job)
     mlip_jobs: "list[str]"       # the kinds an MLIP set's block may run
                                  # (input_generator.MLIP_TEMPLATE_KINDS)
+    crest_jobs: "list[str]"      # the kinds a CREST set's block may run
+                                 # (input_generator.CREST_TEMPLATE_KINDS)
     next_kind: "dict[str, str]"  # calc kind -> the kind a level placed after it
                                  # runs by default ("" = a row's start; any
                                  # kind not listed: "sp") — inpsets.NEXT_KIND

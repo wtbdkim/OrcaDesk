@@ -47,9 +47,9 @@ def call(stub, slot, *args):
 
 def test_inp_set_slots(bridge):
     sets = call(bridge, "get_inp_sets")
-    assert sets["ok"] and [s["kind"] for s in sets["sets"]] == ["ORCA", "MLIP"]
+    assert sets["ok"] and [s["kind"] for s in sets["sets"]] == ["ORCA", "MLIP", "CREST"]
     assert "%pal nprocs 4 end" in next(s for s in sets["sets"] if s["kind"] == "ORCA")["text"]
-    assert set(sets["defaults"]) == {"ORCA", "MLIP"}
+    assert set(sets["defaults"]) == {"ORCA", "MLIP", "CREST"}
     assert "%pal nprocs 4 end" in sets["defaults"]["ORCA"]
     saved = call(bridge, "save_inp_set", json.dumps(
         {"name": "mine", "kind": "ORCA", "text": "! {{JOB}}\n* xyz 0 1\n{{GEOMETRY}}\n*\n"}))
@@ -163,6 +163,9 @@ def test_inp_sets_carry_the_job_map(bridge):
     assert sets["jobs"]["neb_ts"] == "NEB-TS" and sets["jobs"]["tddft"] == ""
     assert "general" not in sets["jobs"]
     assert sets["mlip_jobs"] == ["mlip_opt", "mlip_sp", "mlip_freq", "mlip_opt_freq"]
+    # a CREST set's block runs the conformer search, and an SP follows it
+    assert sets["crest_jobs"] == ["crest_conf"]
+    assert sets["next_kind"]["crest_conf"] == "sp"
 
 
 def test_the_preview_renders_a_level_block_for_its_kind(bridge, tmp_path):

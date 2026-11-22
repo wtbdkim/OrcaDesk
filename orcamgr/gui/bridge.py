@@ -42,7 +42,8 @@ from ..paths import (APP_VERSION, APP_AUTHOR, APP_EMAIL,
 from ..textio import repair_ansi_line
 from .. import uistate
 from ..core.input_generator import (GEOMETRY_PLACEHOLDER, StepConfig,
-                                    MLIP_TEMPLATE_KINDS, TEMPLATE_JOB_KEYWORDS,
+                                    CREST_TEMPLATE_KINDS, MLIP_TEMPLATE_KINDS,
+                                    TEMPLATE_JOB_KEYWORDS,
                                     build_input_template, is_level_text,
                                     render_raw_input, render_template_text,
                                     template_config, template_hess_need)
@@ -1637,7 +1638,8 @@ class Bridge(QObject):
         "+ New" starts from), and what {{JOB}} becomes per calculation kind
         (`jobs`: the kinds a level's block may run, the editor's Type; "" for
         TD-DFT, whose %tddft block is the job), the kinds an MLIP set's block
-        may run (`mlip_jobs`), and the natural next step after each kind
+        may run (`mlip_jobs`), the kinds a CREST set's block may run
+        (`crest_jobs`), and the natural next step after each kind
         (`next_kind`, the Type a level dropped on the + slot starts with; any
         other kind: "sp")."""
         try:
@@ -1648,6 +1650,7 @@ class Bridge(QObject):
         return json.dumps(InpSetsResult(ok=True, sets=sets, defaults=defaults,
                                         jobs=dict(TEMPLATE_JOB_KEYWORDS),
                                         mlip_jobs=list(MLIP_TEMPLATE_KINDS),
+                                        crest_jobs=list(CREST_TEMPLATE_KINDS),
                                         next_kind=dict(inpsets.NEXT_KIND)))
 
     @pyqtSlot(str, result=str)
@@ -2520,14 +2523,14 @@ class Bridge(QObject):
         resume, so the two cannot disagree about what "would be clobbered"
         means (P4)."""
         ws = Path(self.settings.workspace_root)
-        # DONE is skipped by the run loop anyway; FAILED is locked (P24) and
+        # DONE and FILTERED are skipped by the run loop; FAILED is locked (P24) and
         # never runs as it is; a CANCELLED calc overwriting its own partial .out
         # is the point of a retry; a RUNNING one is appending to its own file. A
         # rerun row (a set put on a DONE or FAILED calc, store rerun_calc) was confirmed
         # as an overwrite when it was made: it is not asked about again, and
         # never kept (make_engine_factory drops it from the keep answers too).
         skip = {CalcState.DONE, CalcState.FAILED, CalcState.CANCELLED,
-                CalcState.RUNNING}
+                CalcState.RUNNING, CalcState.FILTERED}
         out = set()
         for c in self.store.list():
             if c.state in skip or is_rerun(c):

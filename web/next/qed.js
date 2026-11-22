@@ -41,9 +41,15 @@
   /** @param {number} c */
   const X = (c) => X0 + c * COLW;
 
-  /** what a set may be: an ORCA level of theory, or MLIP settings */
-  const SET_KINDS = ["ORCA", "MLIP"];
-  const SET_GROUP = { ORCA: "ORCA levels", MLIP: "MLIP" };
+  /** what a set may be: an ORCA level of theory, MLIP settings, or CREST
+   *  settings (a conformer search) */
+  const SET_KINDS = ["ORCA", "MLIP", "CREST"];
+  const SET_GROUP = { ORCA: "ORCA levels", MLIP: "MLIP", CREST: "CREST" };
+  /** the set kinds whose text is `key value` settings, not an ORCA input:
+   *  no {{GEOMETRY}} / {{JOB}}; the store reads the fields from the lines */
+  const SETTINGS_KINDS = ["MLIP", "CREST"];
+  /** @param {string} k */
+  const isSettings = (k) => SETTINGS_KINDS.indexOf(k) >= 0;
   const EDITABLE = ["pending", "blocked", "cancelled"];
   const STARTED = ["running", "done", "failed"];
   /** the name every new step of a kind gets: the system's, "_", then its job
@@ -51,7 +57,7 @@
   const SUFFIX = { mlip_opt: "Preopt", mlip_sp: "MLSP", mlip_freq: "MLFreq", mlip_opt_freq: "MLOptFreq",
                    opt: "Opt", ts_opt: "OptTS", freq: "Freq", ts_freq: "FreqTS",
                    opt_freq: "OptFreq", ts_opt_freq: "OptTSFreq", irc: "IRC", sp: "SP", nmr: "NMR",
-                   tddft: "TDDFT", neb_ts: "NEB-TS" };
+                   tddft: "TDDFT", neb_ts: "NEB-TS", crest_conf: "CREST" };
   /** what joins the parts of a name the editor makes: system_Job_F */
   const SEP = "_";
   /** what a calculation of each kind is called on its block */
@@ -59,7 +65,7 @@
     mlip_opt: "Preopt", mlip_sp: "MLIP SP", mlip_freq: "MLIP Freq", mlip_opt_freq: "MLIP Opt+Freq",
     opt: "Opt", ts_opt: "OptTS", freq: "Freq", ts_freq: "TS Freq", irc: "IRC", sp: "SP",
     opt_freq: "Opt+Freq", ts_opt_freq: "OptTS+Freq", neb_ts: "NEB-TS", tddft: "TD-DFT",
-    nmr: "NMR", general: "General", crest_conf: "CREST",
+    nmr: "NMR", general: "General", crest_conf: "Conformers",
   };
   /** The Type select of a level's block, in the Guided builder's words
    *  (build.js KINDS[].label) and its order. Only the kinds the backend can
@@ -72,14 +78,26 @@
   /** The Task select of an MLIP set's block, in the Guided builder's words */
   const MLIP_TYPES = [["mlip_opt", "Optimization"], ["mlip_sp", "Single point"],
                       ["mlip_freq", "Frequencies"], ["mlip_opt_freq", "Opt + Frequencies"]];
-  /** the states "Clear finished" takes off the list (a cancelled block re-runs) */
-  const FINISHED = ["done", "failed"];
+  /** the states "Clear finished" takes off the list (a cancelled block
+   *  re-runs); a filtered one is as final as a done one, with no output */
+  const FINISHED = ["done", "failed", "filtered"];
   /** the kinds whose approval gate can pass by itself on the imaginary-mode count */
   const FREQ_KINDS = ["freq", "ts_freq", "opt_freq", "ts_opt_freq"];
   const ST_LABEL = { done: "done", running: "running", waiting: "waiting for approval",
-                     pending: "pending", failed: "failed", blocked: "blocked", cancelled: "cancelled" };
+                     pending: "pending", failed: "failed", blocked: "blocked", cancelled: "cancelled",
+                     filtered: "filtered" };
+  /** the graph fields: where a block is drawn and what its incoming edge
+   *  carries (its gate, and the energy condition filter_de / filter_top) */
   const PLACE_KEYS = ["system", "node", "col", "row", "after", "gate", "auto_pass",
-                      "approved", "ref_point", "set_name"];
+                      "approved", "ref_point", "set_name", "filter_de", "filter_top"];
+  /** the tail of a conformer stack's members: system_SP_c3 runs on conformer 3 */
+  const CONF_TAIL = "c";
+  /** a ref_point naming a conformer of a CREST ensemble: "conf:3" @param {string} p */
+  const confOf = (p) => { const m = /^conf:(\d+)$/.exec(String(p || "")); return m ? int(m[1]) : 0; };
+  /** a ref_point in words: "forward end", "conformer 3" ("" for the final
+   *  geometry) @param {string} p */
+  const pointWords = (p) => p === "irc_f" ? "forward end" : p === "irc_b" ? "backward end"
+    : confOf(p) ? "conformer " + confOf(p) : String(p || "");
   const GEOM = "{{GEOMETRY}}";
   const JOB = "{{JOB}}";
   /** the copied workflow, mirrored in the UI state so it outlives a reload
@@ -104,6 +122,8 @@
   let _next = {};
   /** the kinds a block made from an MLIP set may run (get_inp_sets `mlip_jobs`) @type {string[]} */
   let _mlipJobs = [];
+  /** the kinds a block made from a CREST set runs (get_inp_sets `crest_jobs`) @type {string[]} */
+  let _crestJobs = [];
   /** The last refusal of an ops batch, said in the inspector beside what it
    *  names (the error starts "'<name>': ...") as well as in a toast.
    *  @type {{text: string, name: string}|null} */
@@ -295,7 +315,8 @@
     if (started.length) {
       const c = started[0];
       NB.fail("Cannot undo " + u.label + ": '" + c.name + "' has " +
-              (c.state === "running" ? "started running" : "already run (" + c.state + ")") +
+              (c.state === "running" ? "started running" : c.state === "filtered" ? "been filtered out"
+                : "already run (" + c.state + ")") +
               ", and undoing would remove it from the queue. Use Remove… on it if you mean to.");
       return;
     }
@@ -336,7 +357,7 @@
       // an MLIP calc's settings live in its config, which a new text rewrites
       // (the store reads the MLIP fields from it): the undo puts the whole
       // config back -- a Guided MLIP block has no text to re-read them from
-      if ("raw_text" in patch && /^mlip/.test(String(was.kind || "")) && was.config && !("config" in patch)) {
+      if ("raw_text" in patch && /^(mlip|crest)/.test(String(was.kind || "")) && was.config && !("config" in patch)) {
         back.config = was.config;
       }
       ops.push({ op: "update_calc", name: n, calc: patch });
@@ -360,6 +381,7 @@
     _jobs = r && r.ok && r.jobs && typeof r.jobs === "object" ? r.jobs : {};
     _next = r && r.ok && r.next_kind && typeof r.next_kind === "object" ? r.next_kind : {};
     _mlipJobs = r && r.ok && Array.isArray(r.mlip_jobs) ? r.mlip_jobs.map(String) : [];
+    _crestJobs = r && r.ok && Array.isArray(r.crest_jobs) ? r.crest_jobs.map(String) : [];
     return _sets;
   }
   async function loadWorkflows() {
@@ -378,10 +400,16 @@
    *  order: those the backend fills {{JOB}} for. */
   const typeKinds = () => TYPE_ORDER.filter(k => k in _jobs);
   /** The set kind a calculation of `kind` is made from: "MLIP" for an MLIP
-   *  pre-optimization, "ORCA" for a kind a level can run, "" otherwise.
-   *  @param {string} kind */
+   *  pre-optimization, "CREST" for a conformer search, "ORCA" for a kind a
+   *  level can run, "" otherwise. @param {string} kind */
   const setKindOf = (kind) => (/^mlip_/.test(String(kind || "")) ? "MLIP"
+    : /^crest/.test(String(kind || "")) ? "CREST"
     : (Object.keys(_jobs).length ? kind in _jobs : TYPE_ORDER.indexOf(kind) >= 0) ? "ORCA" : "");
+  /** The kind a block made from a settings set runs: an MLIP
+   *  pre-optimization, a CREST conformer search; "" for a level (its Type
+   *  says). @param {string} setKind */
+  const settingsKind = (setKind) => setKind === "MLIP" ? "mlip_opt"
+    : setKind === "CREST" ? (_crestJobs[0] || "crest_conf") : "";
   /** The natural next step after a block of `kind` ("" = a row's start):
    *  the backend's rule (inpsets.NEXT_KIND). @param {string} kind */
   const nextKind = (kind) => _next[kind || ""] || (kind ? "sp" : "opt");
@@ -389,10 +417,18 @@
    *  levels have to agree. @param {string} a @param {string} b */
   const isFreqAfterOpt = (a, b) => (a === "opt" || a === "ts_opt") && (b === "freq" || b === "ts_freq");
 
-  /** What a set's text is: MLIP settings (`key value` lines, no ! line) or
-   *  an ORCA input. @param {string} text */
+  /** What a set's text is: MLIP settings (`key value` lines naming a
+   *  backend or model, no ! line), CREST settings (`key value` lines naming
+   *  the search -- method, ewin, preset, nci ... -- and no line an ORCA input
+   *  starts with !, % or *), or an ORCA input. MLIP is asked first: none of
+   *  its keys is a CREST setting, while `env` is both's.
+   *  @param {string} text */
   function detectKind(text) {
-    return /^\s*(backend|model|mlip)\b/im.test(text) && !/^\s*!/m.test(text) ? "MLIP" : "ORCA";
+    const t = String(text || "");
+    if (/^\s*!/m.test(t)) return "ORCA";
+    if (/^\s*(backend|model|mlip|device|nprocs)\b/im.test(t)) return "MLIP";
+    if (/^\s*(method|ewin|preset|nci|solvent_model|solvent|threads)\b/im.test(t) && !/^\s*[%*]/m.test(t)) return "CREST";
+    return "ORCA";
   }
   /** The model an MLIP set's text names, read as the store reads it
    *  (state/inpsets.py mlip_config_from_text: `key value`, # comments, the
@@ -411,7 +447,7 @@
   /** The calculation kind an input's own job line says (a dropped or
    *  imported .inp), "" when it is not an ORCA input. @param {string} text */
   function jobKindOf(text) {
-    if (detectKind(text) === "MLIP") return "";
+    if (isSettings(detectKind(text))) return "";
     const w = String(text).split("\n").filter(l => l.trim().indexOf("!") === 0)
       .join(" ").toUpperCase().replace(/!/g, " ").split(/\s+/);
     const opt = w.some(x => /^(OPT|TIGHTOPT|LOOSEOPT|VERYTIGHTOPT|COPT|ZOPT)$/.test(x));
@@ -458,7 +494,7 @@
    *  names its own job runs as written, and goes to the builder as .inp text.
    *  @param {any} c */
   function isLevelCalc(c) {
-    if (!c || setKindOf(c.kind) === "MLIP" || (!c.set_name && !c.is_raw)) return false;
+    if (!c || isSettings(setKindOf(c.kind)) || (!c.set_name && !c.is_raw)) return false;
     return hasJobLine(templateOf(c));
   }
 
@@ -695,6 +731,12 @@
         L.edges.push({ key: k, from: A, to: B, gate: c.after && c.gate === "approval" ? "approval" : "auto",
                        ref: !c.after });
       });
+      // what each edge holds (the members of B hanging off A) and the energy
+      // condition they carry
+      L.edges.forEach((/** @type {any} */ e) => {
+        e.gated = e.to.members.filter((/** @type {any} */ c) => e.from.members.some((/** @type {any} */ a) => a.name === upOf(c)));
+        e.cond = condOf(e.gated);
+      });
       L.started = L.calcs.some((/** @type {any} */ c) => STARTED.indexOf(c.state) >= 0);
       L.name = L.sys ? String(L.sys.name || "") : L.calcs[0].name;
     });
@@ -704,6 +746,28 @@
    *  calculation its geometry is taken from. @param {any} c @returns {string} */
   function upOf(c) {
     return c.after || (c.geometry_source === "reference" ? String(c.ref_name || "") : "");
+  }
+  /** a number as a condition says it: 3, 2.5, 0.25 @param {number} v */
+  const condNum = (v) => String(Math.round(v * 100) / 100);
+  /** The energy condition on the edge into some calculations (filter_de,
+   *  filter_top: graph fields describing the edge INTO each, like its gate),
+   *  read off the first that has one; `mixed` when they do not all agree.
+   *  @param {any[]} members @returns {{de: number|null, top: number, mixed: boolean}} */
+  function condOf(members) {
+    const one = (/** @type {any} */ c) => ({
+      de: c.filter_de == null || c.filter_de === "" || !isFinite(Number(c.filter_de)) ? null : Number(c.filter_de),
+      top: Math.max(0, int(c.filter_top)) });
+    const all = members.map(one);
+    const k = all.find(x => x.de !== null || x.top > 0) || all[0] || { de: null, top: 0 };
+    return { de: k.de, top: k.top, mixed: all.some(x => x.de !== k.de || x.top !== k.top) };
+  }
+  /** "ΔE ≤ 3", "top 5", "ΔE ≤ 3 · top 5" ("" for none; "*" when the
+   *  members do not all carry it) @param {{de: number|null, top: number, mixed: boolean}} k */
+  function condWords(k) {
+    const w = [];
+    if (k.de !== null) w.push("ΔE ≤ " + condNum(k.de));
+    if (k.top > 0) w.push("top " + k.top);
+    return w.length ? w.join(" · ") + (k.mixed ? " *" : "") : "";
   }
   /** A name without its last "_part" (or "-part", as older names were made):
    *  the stack Ltyr-MV_SP of Ltyr-MV_SP_F. @param {string} s */
@@ -756,13 +820,36 @@
     };
     _doomed = new Set(q.filter((/** @type {any} */ c) => c.state === "pending" && bad(c, new Set()))
       .map((/** @type {any} */ c) => c.name));
+    // and those below a FILTERED one: the engine leaves them out too (a
+    // dependent of a filtered calculation is filtered), so they are drawn
+    // filtered now, as a pending one below a failed one is drawn blocked
+    /** @type {Map<string, boolean>} */ const sv = new Map();
+    /** @param {any} c @param {Set<string>} seen @returns {boolean} */
+    const sieved = (c, seen) => {
+      if (sv.has(c.name)) return /** @type {boolean} */ (sv.get(c.name));
+      if (seen.has(c.name)) return false;
+      seen.add(c.name);
+      let out = false;
+      for (const u of [c.after, c.geometry_source === "reference" ? c.ref_name : ""]) {
+        const p = u ? by.get(u) : null;
+        if (!p || p === c) continue;
+        if (p.state === "filtered" || (p.state === "pending" && sieved(p, seen))) { out = true; break; }
+      }
+      sv.set(c.name, out);
+      return out;
+    };
+    _sieved = new Set(q.filter((/** @type {any} */ c) => c.state === "pending" && !_doomed.has(c.name)
+      && sieved(c, new Set())).map((/** @type {any} */ c) => c.name));
   }
+  /** Pending calculations below a filtered one (doomedFrom) @type {Set<string>} */
+  let _sieved = new Set();
 
   /** One calculation's state as the canvas draws it: a faulted run is
    *  failed, a pending one that can never run is blocked, one held at its
    *  gate is waiting. @param {any} c */
   const calcState = (c) => c.state === "running" && c.faulted ? "failed"
     : c.state === "pending" && _doomed.has(c.name) ? "blocked"
+    : c.state === "pending" && _sieved.has(c.name) ? "filtered"
     : c.state === "pending" && c.waiting ? "waiting" : c.state;
 
   /** A block's state: the most pressing of its members'. @param {any} n */
@@ -771,7 +858,8 @@
     for (const s of ["running", "failed", "waiting", "blocked", "pending", "cancelled"]) {
       if (st.indexOf(s) >= 0) return s;
     }
-    return "done";
+    // finished: done when anything passed, filtered when nothing did
+    return st.every(s => s === "filtered") ? "filtered" : "done";
   }
 
   /** @param {string} key */
@@ -908,7 +996,7 @@
     const fin = NB.queue.filter((/** @type {any} */ c) => FINISHED.indexOf(c.state) >= 0).length;
     const cf = /** @type {HTMLButtonElement} */ (NB.$("qe-clearfin"));
     cf.disabled = !fin;
-    cf.title = fin ? `Take the ${fin} finished or failed calculation${fin === 1 ? "" : "s"} off the list (their files stay)`
+    cf.title = fin ? `Take the ${fin} finished, failed or filtered calculation${fin === 1 ? "" : "s"} off the list (their files stay)`
                    : "Nothing has finished yet";
     const pb = /** @type {HTMLButtonElement} */ (NB.$("qe-paste"));
     pb.disabled = !_clip;
@@ -950,7 +1038,7 @@
                                                 && EDITABLE.indexOf(c.state) >= 0)) {
         w.push(L.name + ": choose a structure for the first calculation.");
       }
-      const noGeo = L.calcs.find((/** @type {any} */ c) => c.set_name && setKindOf(c.kind) !== "MLIP"
+      const noGeo = L.calcs.find((/** @type {any} */ c) => c.set_name && !isSettings(setKindOf(c.kind))
         && _full.has(c.name) && templateOf(c).indexOf(GEOM) < 0);
       if (noGeo) w.push(noGeo.name + ": its template has no " + GEOM + " placeholder.");
     });
@@ -995,14 +1083,14 @@
       NB.$("qe-dragimgs").innerHTML = "";
       return;
     }
-    // ORCA levels, then MLIP sets; each group shown, an empty one too:
+    // ORCA levels, then MLIP sets, then CREST sets; each group shown, an empty one too:
     // "+ New" is where its first set comes from
     host.innerHTML = SET_KINDS.map(kd => {
       const sets = _sets.filter(s => s.kind === kd);
       const match = !!n && n.setKind === kd;
       const draft = editing && !editing.id && editing.kind === kd
         ? `<span class="qe-set" data-edit="1" data-draft="1">${esc(editing.name || "New set")} · unsaved</span>` : "";
-      const what = kd === "ORCA" ? "level" : "MLIP set";
+      const what = setWord(kd);
       return `<div class="qe-group">
         <div class="qe-ghead"><span class="qe-kind"${match ? ' data-on="1"' : ""}>${esc(SET_GROUP[kd])}</span>
           <button class="qe-new" type="button" data-new="${kd}" aria-label="New ${esc(what)}"
@@ -1024,7 +1112,7 @@
     }).join("") + renderWorkflowGroup();
     NB.$("qe-dragimgs").innerHTML = _sets.map(s =>
       `<div class="qe-dragimg" id="qe-di-${esc(s.id)}"><span class="qe-nm">${
-        esc(s.kind === "MLIP" ? "Preopt" : "Level")}</span><span class="qe-sub">${esc(s.name)}</span></div>`).join("")
+        esc(s.kind === "MLIP" ? "Preopt" : s.kind === "CREST" ? "Conformers" : "Level")}</span><span class="qe-sub">${esc(s.name)}</span></div>`).join("")
       + _wfs.map(w => `<div class="qe-dragimg" id="qe-di-wf-${esc(w.id)}"><span class="qe-nm">Workflow</span><span
         class="qe-sub">${esc(w.name)}</span></div>`).join("");
   }
@@ -1097,12 +1185,24 @@
     });
     const Y = (/** @type {any} */ L, /** @type {number} */ r) => laneTop.get(L.key) + LANE_PAD + r * ROWH;
 
-    // edges, under the blocks
+    // edges, under the blocks; an energy condition on one is a chip on the
+    // block it leads into (its top-left, above the card: the 36px gap between
+    // columns has no room for words), once per block
+    /** @type {Set<string>} */ const chipped = new Set();
     M.lanes.forEach((/** @type {any} */ L) => L.edges.forEach((/** @type {any} */ e) => {
       const A = e.from, B = e.to;
       const on = _sel && _sel.t === "edge" && _sel.key === e.key;
       const attrs = `data-gate="${e.gate}"${on ? ' data-sel="1"' : ""}`;
-      const aria = esc("Connection " + A.short + " to " + B.short + (e.gate === "approval" ? ", after approval" : ""));
+      const cw = condWords(e.cond);
+      const aria = esc("Connection " + A.short + " to " + B.short + (e.gate === "approval" ? ", after approval" : "")
+        + (cw ? ", passes on " + cw.replace("ΔE ≤", "ΔE at most") + (e.cond.de !== null ? " kcal/mol" : "") : ""));
+      if (cw && !chipped.has(B.key)) {
+        chipped.add(B.key);
+        parts.push(`<button type="button" class="qe-echip" data-a="edge" data-k="${esc(e.key)}"${on ? ' data-sel="1"' : ""}
+          style="left:${X(B.col)}px; top:${Y(L, B.row) - 18}px" aria-label="${aria}"
+          title="${esc("Only what passes this goes on to " + B.short + (e.cond.de !== null ? " (ΔE in kcal/mol)" : "")
+            + "; the rest ends filtered. Click to change it.")}">${esc(cw)}</button>`);
+      }
       const ya = Y(L, A.row) + H / 2, yb = Y(L, B.row) + H / 2;
       const hseg = (/** @type {number} */ x1, /** @type {number} */ x2, /** @type {number} */ y) =>
         `<button type="button" class="qe-edge" data-a="edge" data-k="${esc(e.key)}" aria-label="${aria}"
@@ -1140,6 +1240,10 @@
       // never reads as run order 2
       const backs = n.stack ? Math.min(n.members.length - 1, MAX_BACKS) : 0;
       const edge = (/** @type {number} */ i) => calcState(n.members[i]);
+      // a stack whose members are partly filtered counts what passed: 3/10
+      const cut = n.members.filter((/** @type {any} */ c) => calcState(c) === "filtered").length;
+      const count = cut ? (n.members.length - cut) + "/" + n.members.length : String(n.members.length);
+      const countWords = n.members.length + " calculations" + (cut ? ", " + (n.members.length - cut) + " passed the condition" : "");
       const sub = `<span class="qe-sub"${mod ? ' data-mod="1"' : ""}>${esc((KIND_LABEL[n.kind] || n.kind) + " / " + setName)}${mod ? " *" : ""}</span>`;
       parts.push(`<div class="qe-node" data-k="${esc(n.key)}" data-setkind="${n.setKind}"${
           n.editable ? ' data-editable="1"' : ""}${_pop === n.key ? ' data-pop="1"' : ""}
@@ -1148,18 +1252,20 @@
         <div class="qe-card"${sel ? ' data-sel="1"' : ""} data-st="${n.state}" data-edge="${edge(0)}">
           <button type="button" class="qe-pick" data-a="node" data-k="${esc(n.key)}"
             aria-label="${esc(aria)}"${n.stack ? ` aria-expanded="${!!open}"` : ""}
-            title="${esc(n.name + "\n" + (KIND_LABEL[n.kind] || n.kind) + " / " + setName)}">
+            title="${esc(n.name + "\n" + (KIND_LABEL[n.kind] || n.kind) + " / " + setName
+              + (!n.stack && calcState(c0) === "filtered" ? "\n" + (c0.message || "Filtered: what it depends on was filtered out.") : ""))}">
             <span class="qe-line"><span class="qe-dot" data-st="${n.state}"></span>
               ${nameHtml(n.name, L.sys ? L.name : "")}
               ${n.stack ? "" : `<span class="qe-ord" aria-label="Run order ${n.first}">${n.first}</span>`}</span>
             ${n.stack
-              ? `<span class="qe-line qe-line2">${sub}<span class="qe-ord" data-stack="1" aria-label="${n.members.length} calculations">${n.members.length}</span></span>`
+              ? `<span class="qe-line qe-line2">${sub}<span class="qe-ord" data-stack="1"${cut ? ' data-cut="1"' : ""} aria-label="${esc(countWords)}">${count}</span></span>`
               : sub}
           </button>
           ${open ? `<div class="qe-pop" role="list">${n.members.map((/** @type {any} */ c, /** @type {number} */ i) =>
               `<button type="button" class="qe-prow" role="listitem" data-a="member" data-k="${esc(n.key)}" data-m="${i}"${
-                (_sel.m || 0) === i ? ' data-on="1"' : ""}
-                aria-label="Select ${esc(c.name)}, run order ${M.idx.get(c.name) + 1}" title="${esc(c.name)}">${
+                (_sel.m || 0) === i ? ' data-on="1"' : ""} data-st="${calcState(c)}"
+                aria-label="Select ${esc(c.name)}, run order ${M.idx.get(c.name) + 1}, ${esc(ST_LABEL[calcState(c)] || c.state)}"
+                title="${esc(c.name + (calcState(c) === "filtered" ? "\n" + (c.message || "Filtered: what it depends on was filtered out.") : ""))}">${
                   nameHtml(c.name, L.sys ? L.name : "")}<span
                 class="qe-ord">${M.idx.get(c.name) + 1}</span></button>`).join("")}</div>` : ""}
         </div>
@@ -1361,8 +1467,9 @@
     // (the builder edits it -- a pasted text that is no level included,
     // so a text block can always go back to the builder)
     const isMlip = setKindOf(c.kind) === "MLIP" && !!c.set_name;
+    const isCrest = setKindOf(c.kind) === "CREST" && !!c.set_name;
     const text = c.set_name || c.is_raw ? templateOf(c) : "";
-    const isLevel = !isMlip && !!text && hasJobLine(text);
+    const isLevel = !isMlip && !isCrest && !!text && hasJobLine(text);
     const isSetText = !isLevel && !!c.set_name;
     const isTemplate = isLevel || isSetText;
     const mod = isModified(n);
@@ -1397,6 +1504,8 @@
         return;
       }
       into.push({ key: "ref:" + x.name, label: "ref → " + x.name });
+      // a CREST search: its lowest conformer above, any other picked by number
+      if (x.kind === "crest_conf") into.push({ key: "conf:" + x.name, label: x.name + ": a conformer…" });
     };
     for (let a = c.after; a && !seen.has(a); ) {
       seen.add(a);
@@ -1431,7 +1540,7 @@
     if (c.geometry_source === "reference") {
       geo = "ref:" + c.ref_name + (c.ref_point ? ":" + c.ref_point : "");
       if (!opts.some(o => o.key === geo) && !others.some(o => o.key === geo)) {
-        opts.push({ key: geo, label: "ref → " + c.ref_name + (c.ref_point ? " (" + c.ref_point + ")" : "") + (refGone ? ", gone" : "") });
+        opts.push({ key: geo, label: "ref → " + c.ref_name + (c.ref_point ? ", " + pointWords(c.ref_point) : "") + (refGone ? ", gone" : "") });
       }
     } else {
       const sf = sys ? await systemFull(sys.id) : null;
@@ -1448,6 +1557,11 @@
     const refusalFor = _refusal && (!_refusal.name || n.members.some((/** @type {any} */ x) => x.name === _refusal.name))
       ? _refusal.text : "";
     const option = (/** @type {any} */ o) => `<option value="${esc(o.key)}"${o.key === geo ? " selected" : ""}>${esc(o.label)}</option>`;
+    // the energy condition on the edge into it: offered on a stack, after a
+    // stack or a CREST search, or wherever one is set already
+    const upN = _M.nodeOf.get(upOf(n.members[0]));
+    const cond = n.stack || (upN && upN !== n && (upN.stack || upN.kind === "crest_conf")) || !!condWords(condOf(n.members))
+      ? condControl(() => { const nn = nodeByKey(n.key); return nn ? nn.members : []; }) : null;
     // its own name: the part after the row's (the whole name, standalone)
     const ownName = !locked && !(sys && !suffix);
 
@@ -1483,6 +1597,7 @@
       <select class="qe-select" data-f="geo" aria-label="Geometry"${locked ? " disabled" : ""}>${
         opts.map(option).join("")}${others.length ? `<optgroup label="Other calculations">${
         others.map(option).join("")}</optgroup>` : ""}</select>
+      ${cond ? cond.html : ""}
       ${isLevel ? `
         <label class="qe-typerow"><span class="qe-note">Type</span>
           <select class="qe-select" data-f="type" aria-label="Type: the job this block runs at its level"${
@@ -1504,11 +1619,19 @@
           aria-label="${esc((n.setKind === "ORCA" ? "Level" : n.setKind || "Template") + " / " + (c.set_name || ".inp text"))}">${esc(text)}</textarea>
         ${mod && !locked && n.editable ? `
           <div class="qe-saveas">
-            <input class="qe-input" data-f="newname" placeholder="${esc(kind === "ORCA" ? "Save as a new level" : "Save as a new MLIP set")}"
+            <input class="qe-input" data-f="newname" placeholder="${esc("Save as a new " + setWord(kind))}"
               aria-label="Name for the new inp set">
             <button class="btn btn-primary" type="button" data-a="saveas" disabled>Save</button>
           </div>` : ""}
         ${isMlip ? `<p class="hint">An MLIP block runs the settings these lines name.</p>` : ""}
+        ${isCrest ? `<p class="hint">A CREST block runs the settings these lines name.</p>` : ""}
+        ${isMlip || isCrest ? `<div class="qe-saveas">
+          <span class="qe-note">${esc(isCrest
+            ? "The search speed, NCI, solvent model, MD / MTD lengths and the other CREST options are the builder's. Saved there, the block is built, no longer the set's."
+            : "The task's own options are the builder's. Saved there, the block is built, no longer the set's.")}</span>
+          <button class="btn btn-sm" type="button" data-a="sbedit"${locked || !n.editable ? " disabled" : ""}
+            title="${esc(isCrest ? "Search speed, NCI, solvent model, MD / MTD lengths and the other CREST options"
+              : "The model, device, cores and the task's options")}">Edit in the builder</button></div>` : ""}
         ${isSetText && !isMlip && setKindOf(c.kind) === "ORCA" ? `<div class="qe-saveas">
           <span class="qe-note">This text names its own job (it has no ${JOB}), so it runs as written; its type cannot change here.</span>
           <button class="btn btn-sm" type="button" data-a="edit"${locked ? " disabled" : ""}>Edit in the builder</button></div>` : ""}
@@ -1585,12 +1708,15 @@
     const ty = q('[data-f="type"]');
     if (ty) ty.addEventListener("change", () => { const v = live(); if (v) setType(v.n, ty.value); });
     wireWorkflowButtons(host, [n], L);
+    if (cond) cond.wire(host);
     const btn = (/** @type {string} */ a, /** @type {(v: any) => void} */ fn) => {
       const b = q(`[data-a="${a}"]`);
       if (b) b.addEventListener("click", () => { const v = live(); if (v) fn(v); });
     };
     btn("lvedit", v => openLevelBuilder(v.c.name));
-    btn("edit", v => openBuilder(v.c.name));
+    // an MLIP or CREST block's builder edit is one undoable batch
+    btn("edit", v => (/^(mlip|crest)/.test(String(v.c.kind || "")) ? openSettingsBuilder(v.c.name) : openBuilder(v.c.name)));
+    btn("sbedit", v => openSettingsBuilder(v.c.name));
     btn("earlier", v => moveRun(v.c, -1));
     btn("later", v => moveRun(v.c, 1));
     btn("dup", v => duplicateBlock(v.n, v.c));
@@ -1657,6 +1783,23 @@
          `nprocs ${v(cfg.nprocs, "1")}`, cfg.mlip_env_id ? `env ${cfg.mlip_env_id}` : ""]
       : [`method ${v(cfg.crest_method, "gfn2")}`, `solvent ${v(cfg.crest_solvent, "none")}`,
          `ewin ${v(cfg.crest_ewin, "6")}`, `threads ${v(cfg.crest_threads, "4")}`];
+    if (kind.indexOf("crest") === 0) {
+      // and every other CREST option that is not StepConfig's default (the
+      // builder's: search speed, NCI, solvent model, MD / MTD numbers, the
+      // toggles), so what the block runs is all in view
+      const shown = ["crest_method", "crest_solvent", "crest_ewin", "crest_threads"];
+      Object.keys(cfg).filter(k => k.indexOf("crest_") === 0 && shown.indexOf(k) < 0).sort().forEach(k => {
+        const val = cfg[k], d = (_stepDef || {})[k];
+        if (val === "" || val == null || val === false || val === d || (typeof val === "number" && Number(d) === val)) return;
+        lines.push(`${k.slice(6)} ${val === true ? "on" : String(val)}`);
+      });
+      // the stage's constraints (its --cinp file), atoms numbered from 1 as
+      // the builder shows them; no target = hold the starting value (auto)
+      (Array.isArray(cfg.geom_constraints) ? cfg.geom_constraints : []).forEach((/** @type {any} */ c) => {
+        const at = (c.atoms || []).map((/** @type {number} */ a) => Number(a) + 1).join(" ");
+        lines.push(`constrain ${c.kind} ${at}` + (c.kind === "C" ? "" : " " + (c.value == null ? "auto" : String(c.value))));
+      });
+    }
     return "# " + (KIND_LABEL[kind] || kind) + ": not an ORCA input, these are the settings it runs\n"
       + lines.filter(Boolean).join("\n");
   }
@@ -1674,6 +1817,14 @@
     const waiting = gated.filter((/** @type {any} */ c) => c.waiting);
     const approved = appr && gated.length && gated.every((/** @type {any} */ c) => c.approved);
     const locked = !gated.every((/** @type {any} */ c) => EDITABLE.indexOf(c.state) >= 0);
+    // the energy condition this edge carries: offered into or out of a stack,
+    // after a CREST search, or wherever one is set already
+    const cond = A.stack || B.stack || A.kind === "crest_conf" || !!condWords(e.cond)
+      ? condControl(() => {
+          let cur = null;
+          if (_M) for (const L of _M.lanes) { cur = L.edges.find((/** @type {any} */ x) => x.key === e.key) || cur; }
+          return cur ? cur.gated : [];
+        }) : null;
     host.innerHTML = `
       <span class="qe-ititle">${esc(A.short)} → ${esc(B.short)}</span>
       <div class="seg" role="group" aria-label="Next calculation runs">
@@ -1688,7 +1839,9 @@
           + "The queue skips " + B.short + " and runs the next calculation until you approve.")}</span>
         <button class="btn btn-primary" type="button" data-a="approve">Approve</button></div>` : ""}
       ${approved && !waiting.length ? `<span class="qe-ok">Approved. ${esc(B.short)} runs when the queue reaches it.</span>` : ""}
-      ${locked ? `<p class="hint">${esc(B.short)} has started; its gate is kept as it ran.</p>` : ""}`;
+      ${locked ? `<p class="hint">${esc(B.short)} has started; its gate is kept as it ran.</p>` : ""}
+      ${cond ? cond.html : ""}`;
+    if (cond) cond.wire(host);
     const names = gated.map((/** @type {any} */ c) => c.name);
     const on = (/** @type {string} */ a, /** @type {() => void} */ fn) => {
       const el = host.querySelector(`[data-a="${a}"]`); if (el) el.addEventListener("click", fn);
@@ -1713,6 +1866,73 @@
       const u = updates(names, () => ({ auto_pass: !!ap.checked }));
       apply(u.ops, u.inv, "the auto-pass change");
     });
+  }
+
+  /** The energy condition's control -- "Pass on: ΔE ≤ [ ] kcal/mol · top [ ]"
+   *  -- for the calculations an edge leads into (a stack's members, or what
+   *  one edge holds), and its wiring. A change goes to every member that can
+   *  still take it -- one still to run, or a filtered one, which then goes
+   *  back to pending with what it filtered (the store does that) -- in one
+   *  undoable batch; a member that has run keeps the condition it ran under.
+   *  `membersNow` gives them as the model holds them when a field fires.
+   *  @param {() => any[]} membersNow @returns {{html: string, wire: (host: HTMLElement) => void}} */
+  function condControl(membersNow) {
+    const takes = (/** @type {any} */ c) => EDITABLE.indexOf(c.state) >= 0 || c.state === "filtered";
+    const members = membersNow();
+    const can = members.filter(takes);
+    const k = condOf(can.length ? can : members);
+    const confs = members.length > 0 && members.every((/** @type {any} */ c) => confOf(c.ref_point) > 0);
+    const how = confs ? "ΔE is measured from the CREST search's lowest conformer"
+      : "ΔE is measured from the lowest of the stack, once every member's parent has finished";
+    const ran = members.length - can.length;
+    const dis = can.length ? "" : " disabled";
+    const html = `<div class="qe-cond">
+        <span class="qe-note">Pass on</span>
+        <label class="qe-condf">ΔE ≤ <input class="qe-input qe-condnum" data-f="cde" inputmode="decimal" spellcheck="false"
+          placeholder="off" value="${k.de === null ? "" : esc(condNum(k.de))}"${dis}
+          aria-label="Pass only what lies within this many kcal/mol of the lowest; empty for no window"> kcal/mol</label>
+        <span class="qe-note">·</span>
+        <label class="qe-condf">top <input class="qe-input qe-condnum" data-f="ctop" inputmode="numeric" spellcheck="false"
+          placeholder="off" value="${k.top > 0 ? k.top : ""}"${dis}
+          aria-label="Pass only this many of the lowest; empty for all"></label>
+      </div>
+      <p class="hint qe-condh">${esc(how + "; the rest end filtered. A filtered one goes back to pending when this changes."
+        + (k.mixed ? " The members carry different conditions: a change here sets it on all of them." : "")
+        + (!can.length ? " Every member has run: the condition stays as it ran."
+          : ran ? ` ${ran} that ${ran === 1 ? "has" : "have"} run keep${ran === 1 ? "s" : ""} the condition ${ran === 1 ? "it" : "they"} ran under.` : ""))}</p>`;
+    const wire = (/** @type {HTMLElement} */ host) => {
+      const de = /** @type {any} */ (host.querySelector('[data-f="cde"]'));
+      const top = /** @type {any} */ (host.querySelector('[data-f="ctop"]'));
+      /** @param {string} field @param {any} v */
+      const send = (field, v) => {
+        const names = membersNow().filter(takes)
+          .filter((/** @type {any} */ c) => (field === "filter_de" ? condOf([c]).de : condOf([c]).top) !== v)
+          .map((/** @type {any} */ c) => c.name);
+        if (!names.length) return;
+        const u = updates(names, () => ({ [field]: v }));
+        apply(u.ops, u.inv, "the condition change");
+      };
+      const back = () => { _inspSig = ""; renderInspector(); };
+      if (de) {
+        de.addEventListener("focus", () => de.select());
+        de.addEventListener("change", () => {
+          const t = de.value.trim().replace(",", ".");
+          const v = t === "" ? null : Number(t);
+          if (v !== null && (!isFinite(v) || v < 0)) { NB.fail("The ΔE window is a number of kcal/mol, 0 or more (empty: no window)."); de.blur(); back(); return; }
+          send("filter_de", v === null ? null : Math.round(v * 100) / 100);
+        });
+      }
+      if (top) {
+        top.addEventListener("focus", () => top.select());
+        top.addEventListener("change", () => {
+          const t = top.value.trim();
+          const v = t === "" ? 0 : Number(t);
+          if (!isFinite(v) || v < 0 || Math.round(v) !== v) { NB.fail("Top N is a whole number, 1 or more (empty: all pass)."); top.blur(); back(); return; }
+          send("filter_top", v);
+        });
+      }
+    };
+    return { html: html, wire: wire };
   }
 
   /** A system's panel: its name, charge, multiplicity and structures --
@@ -1868,10 +2088,19 @@
       if (!inp) { NB.fail("Could not read that structure."); return; }
       patch = { geometry_source: "direct", xyz: inp.xyz, ref_name: "", ref_point: "" };
     } else if (key.indexOf("ref:") === 0) {
+      // "ref:<name>[:<point>]" -- a point is irc_f / irc_b or conf:<k>, which
+      // holds a colon itself; a name never does (cleanName)
       const rest = key.slice(4);
-      const pt = /:(irc_f|irc_b)$/.exec(rest);
+      const pt = /:(irc_f|irc_b|conf:\d+)$/.exec(rest);
       patch = { geometry_source: "reference", xyz: "", ref_name: pt ? rest.slice(0, -pt[0].length) : rest,
                 ref_point: pt ? pt[1] : "" };
+    } else if (key.indexOf("conf:") === 0) {
+      // a conformer of a CREST search, asked by its number
+      const cr = NB.queue.find((/** @type {any} */ x) => x.name === key.slice(5));
+      const ch = cr ? await askConformers(cr, { one: true, at: confOf(c.ref_name === cr.name ? c.ref_point : "") || 1 }) : null;
+      // cancelled: the select goes back to what the block has
+      if (!ch) { _inspSig = ""; render(); return; }
+      patch = { geometry_source: "reference", xyz: "", ref_name: cr.name, ref_point: "conf:" + ch.k };
     } else if (key.indexOf("pick:") === 0) {
       // a point of an IRC's path (or one of its ends), asked
       const irc = NB.queue.find((/** @type {any} */ x) => x.name === key.slice(5));
@@ -1897,8 +2126,8 @@
   async function saveAs(n, text, name) {
     if (!name) return;
     const kind = detectKind(text);
-    if (kind !== "MLIP" && text.indexOf(GEOM) < 0) { NB.fail("A set needs the " + GEOM + " placeholder."); return; }
-    if (kind !== "MLIP" && !hasJobLine(text)) {
+    if (!isSettings(kind) && text.indexOf(GEOM) < 0) { NB.fail("A set needs the " + GEOM + " placeholder."); return; }
+    if (!isSettings(kind) && !hasJobLine(text)) {
       NB.fail(`A level needs ${JOB} on its ! line, where the job keyword goes: put it in place of ${
         jobKindOf(text) ? "the job keyword" : "a job keyword"} and save again.`);
       return;
@@ -1906,7 +2135,7 @@
     const r = await NB.call("save_inp_set", JSON.stringify({ name: name, kind: kind, text: text }));
     if (!r || r.ok !== true) { NB.fail(why(r, "Could not save the set")); return; }
     await loadSets();
-    NB.toast(`Saved "${name}" as ${kind === "ORCA" ? "a level" : "an MLIP set"}.`, "ok");
+    NB.toast(`Saved "${name}" as ${kind === "ORCA" ? "a level" : "a " + setWord(kind)}.`, "ok");
     if (kind === n.setKind) {
       const set = r.set || setByName(name, kind);
       const u = updates(n.members.map((/** @type {any} */ c) => c.name),
@@ -2044,6 +2273,29 @@
     }
   }
 
+  /** "Edit in the builder" on an MLIP or CREST block (made from a set or
+   *  in the builder): the Guided builder in that backend's form, seeded from
+   *  the block's whole config, whose Save is one update_calc patch through
+   *  the undoable batch -- the block keeps its place in the graph (the
+   *  builder sends its graph fields back) and, saved from the form, is no
+   *  longer its set's (set_name and raw_text go: what the form holds is more
+   *  than a set's `key value` lines say). A rename is left to the builder's
+   *  own update_calc, which carries the references with it.
+   *  @param {string} name */
+  async function openSettingsBuilder(name) {
+    await fullCalcs([name]);
+    openBuilder(name, undefined, {
+      save: async (/** @type {any} */ payload) => {
+        if (!payload || payload.name !== name) return null;
+        const patch = Object.assign({}, payload);
+        ["name", "state", "message"].forEach(k => { delete patch[k]; });
+        const u = updates([name], () => patch);
+        const ok = await apply(u.ops, u.inv, "the builder edit of " + name);
+        return ok ? { ok: true } : { ok: false, error: _refusal ? _refusal.text : "The queue refused that change." };
+      },
+    });
+  }
+
   /** What Level mode needs from the editor: the Type kinds a level's block
    *  may run (get_inp_sets `jobs`) and the library's ORCA levels. */
   function levelCtx() {
@@ -2094,7 +2346,7 @@
       return lane.length && lane.every((/** @type {any} */ c) => fin.has(c.name));
     });
     NB.modalRaw("Clear finished",
-      `<p>${fin.size} finished or failed calculation${fin.size === 1 ? "" : "s"} leave${fin.size === 1 ? "s" : ""} the list${
+      `<p>${fin.size} finished, failed or filtered calculation${fin.size === 1 ? "" : "s"} leave${fin.size === 1 ? "s" : ""} the list${
         emptied.length ? `, with ${emptied.length === 1 ? "the row it leaves" : "the " + emptied.length + " rows they leave"} empty` : ""}.
         Their folders stay on disk. Cancelled calculations stay: they run again with the queue.${
         kept ? ` ${kept} stay${kept === 1 ? "s" : ""} because a calculation still to run starts from ${kept === 1 ? "it" : "them"}.` : ""}
@@ -2268,7 +2520,7 @@
     const k = names.length, one = k === 1;
     const failed = again.filter((/** @type {any} */ c) => c.state === "failed").length;
     const word = !failed ? "finished" : failed === k ? "failed" : "finished or failed";
-    const what = set.kind === "ORCA" ? "level" : "MLIP set";
+    const what = setWord(set.kind);
     const them = one ? "it" : "them";
     // what already ran after it keeps its own results (P24): said, not changed
     const kids = NB.queue.some((/** @type {any} */ c) => c.state === "done" && names.indexOf(upOf(c)) >= 0);
@@ -2313,7 +2565,7 @@
     if (_replaceOk) { go(); return; }
     const from = n.members[0].set_name || "its own template";
     const lost = isModified(n) ? " Its edited template is replaced too." : "";
-    const what = set.kind === "ORCA" ? "level" : "MLIP set";
+    const what = setWord(set.kind);
     NB.modalRaw(set.kind === "ORCA" ? "Replace the level?" : "Replace the inp set?",
       `<p>${esc(n.short)} changes from ${esc(from)} to ${esc(set.name)}${
         set.kind === "ORCA" ? ", and stays " + esc(TYPE_LABEL[n.kind] || KIND_LABEL[n.kind] || n.kind) : ""}.${
@@ -2332,8 +2584,8 @@
   /** "a Freq", "an Opt" / "an SP" / "an IRC" / "an MLIP": the kinds as said aloud
    *  @param {string} k */
   const aKind = (k) => "an " + k;
-  /** "level" / "MLIP set": what a set of a kind is called @param {string} k */
-  const setWord = (k) => (k === "ORCA" ? "level" : "MLIP set");
+  /** "level" / "MLIP set" / "CREST set": what a set of a kind is called @param {string} k */
+  const setWord = (k) => (k === "ORCA" ? "level" : k === "CREST" ? "CREST set" : "MLIP set");
   const cap = (/** @type {string} */ s) => s.charAt(0).toUpperCase() + s.slice(1);
 
   /** the set the editor falls back to: the last one opened or saved */
@@ -2437,8 +2689,9 @@
     if (NB.build.target() !== null) { NB.toast("The builder is open. Close it to start a set."); return; }
     guardSwitch(() => {
       const text = _defaults[kind] || (kind === "MLIP" ? "model \ndevice auto\nnprocs 1\n"
+        : kind === "CREST" ? "method gfn2\newin 6\nthreads 4\n"
         : "! " + JOB + "\n\n* xyz {{CHARGE}} {{MULT}}\n" + GEOM + "\n*\n");
-      const name = freeSetName(kind, kind === "ORCA" ? "New level" : "New MLIP set");
+      const name = freeSetName(kind, "New " + setWord(kind));
       _ed = { id: "", kind: kind, name: name, text: text, base: { name: name, text: text, kind: kind } };
       showEditor("setname");
     });
@@ -2521,8 +2774,8 @@
     const clash = name ? _sets.find(x => x.kind === kind && lower(x.name) === lower(name)
                                          && (asNew || !d.id || x.id !== d.id)) : null;
     const err = !name ? "A set needs a name."
-      : kind !== "MLIP" && text.indexOf(GEOM) < 0 ? `A level needs ${GEOM} where the coordinates go.`
-      : kind !== "MLIP" && !hasJobLine(text) ? `A level needs ${JOB} on its ! line, where the job keyword goes (each block's Type fills it in).`
+      : !isSettings(kind) && text.indexOf(GEOM) < 0 ? `A level needs ${GEOM} where the coordinates go.`
+      : !isSettings(kind) && !hasJobLine(text) ? `A level needs ${JOB} on its ! line, where the job keyword goes (each block's Type fills it in).`
       : clash ? `There is already ${aKind(kind)} set named "${clash.name}". Give this one another name.`
       : "";
     if (err) { edError(err); return; }
@@ -2642,11 +2895,11 @@
     const nm = q('[data-f="setname"]'), ta = q('[data-f="settext"]');
     const sync = () => {
       const k = detectKind(d.text);
-      q('[data-f="kind"]').textContent = k === "ORCA" ? "ORCA level" : "MLIP set";
+      q('[data-f="kind"]').textContent = k === "ORCA" ? "ORCA level" : setWord(k);
       q('[data-f="dirty"]').textContent = !d.id ? "· new, not saved" : edDirty() ? "· unsaved changes" : "";
       const mv = q('[data-f="moves"]');
       mv.hidden = k === d.kind;
-      mv.textContent = k === d.kind ? "" : `This text reads as ${k === "MLIP" ? "MLIP settings" : "an ORCA input"}: saved, it moves to the ${SET_GROUP[k]} group.`;
+      mv.textContent = k === d.kind ? "" : `This text reads as ${k === "MLIP" ? "MLIP settings" : k === "CREST" ? "CREST settings" : "an ORCA input"}: saved, it moves to the ${SET_GROUP[k]} group.`;
       if (k === "ORCA" && !mv.textContent && !hasJobLine(d.text)) {
         mv.hidden = false;
         mv.textContent = `Put ${JOB} on the ! line where the job keyword goes: each block's Type fills it in.`;
@@ -2654,6 +2907,8 @@
       const ph = q('[data-f="ph"]');
       const mlipPh = "One setting per line: model, device (auto, cpu, cuda), nprocs, env.";
       ph.textContent = k === "MLIP" ? mlipPh
+        : k === "CREST" ? "One setting per line: method (gfn2, gfn1, gfnff ...), solvent, solvent_model, ewin (kcal/mol), threads, preset, nci, env. "
+          + "After a CREST block, a step asks how many conformers to run it on."
         : JOB + " the block's job, from its Type (TightOpt, OptTS, Freq, IRC, SP ...; ORCAdesk adds the %geom / %irc block that job needs unless the text has its own) · "
           + GEOM + " the block's coordinates · {{CHARGE}} {{MULT}} its charge and multiplicity · {{HESS}} optional: an IRC reads the Hessian of the step before it by itself.";
       // the model's licence, as the builder's picker says it: some MACE
@@ -2795,14 +3050,25 @@
     // a level runs what the add menu chose, else the natural next step (Opt
     // to start a row, Freq after Opt, TS Freq after OptTS, IRC after a TS
     // Freq, SP after an IRC or anything else); the block's Type changes it
-    const kind = set.kind === "MLIP" ? "mlip_opt" : want || nextKind(P ? P.kind : "");
+    const kind = settingsKind(set.kind) || want || nextKind(P ? P.kind : "");
     const nodeId = newId("n");
     // the members, as tails on one base name: after an IRC the structure(s)
     // picked (both ends, one, or a point on its path), one per member of a
     // stack, or a single calculation
     /** @type {{tail: string, after: string, ref: string, pt: string, xyz: string}[]} */
     let tails;
-    if (P && !P.stack && P.kind === "irc" && kind !== "irc") {
+    // the energy condition the conformer picker put on the edge (null: none)
+    /** @type {number|null} */ let fde = null;
+    if (P && !P.stack && P.kind === "crest_conf" && kind !== "crest_conf") {
+      // after a CREST search: how many conformers (one member each, _c1 ...
+      // _cK, by reference to the search's k-th conformer) and the condition
+      const p = P.members[0].name;
+      const ch = await askConformers(P.members[0], { kind: kind });
+      if (!ch) return;
+      fde = ch.de;
+      tails = Array.from({ length: ch.k }, (_, i) =>
+        ({ tail: SEP + CONF_TAIL + (i + 1), after: p, ref: p, pt: "conf:" + (i + 1), xyz: "" }));
+    } else if (P && !P.stack && P.kind === "irc" && kind !== "irc") {
       const p = P.members[0].name;
       const ends = await askIrcStructure(P.members[0], true);
       if (!ends) return;
@@ -2840,7 +3106,7 @@
       // lines into the MLIP config (store.calc_from_dict) and keeps the text
       is_raw: true, raw_text: set.text, set_name: set.name, set_id: set.id,
       system: sys.id, node: nodeId, col: g.c, row: g.r, after: m.after,
-      gate: "auto", auto_pass: true, approved: false,
+      gate: "auto", auto_pass: true, approved: false, filter_de: fde, filter_top: 0,
       config: {}, state: "pending", message: "",
     } }));
     const fresh = members.map(m => m.name);
@@ -2878,7 +3144,7 @@
     const full = names.map((/** @type {string} */ nm) => { const f = _full.get(nm); return f && f.calc ? f.calc : null; });
     const lost = names.filter((/** @type {string} */ nm, /** @type {number} */ i) => !full[i]);
     if (lost.length) { NB.fail(`Could not read ${lost.join(", ")}.`); return; }
-    const kind = set.kind === "MLIP" ? "mlip_opt" : want || "opt";
+    const kind = settingsKind(set.kind) || want || "opt";
     const root = String(sys.name || "") + SEP + (SUFFIX[kind] || "step");
     const tails = B.members.map((/** @type {any} */ c) => (B.stack ? tailOf(c.name) : ""));
     const named = await avoidDisk(extra => {
@@ -2911,23 +3177,27 @@
     B.members.forEach((/** @type {any} */ c, /** @type {number} */ i) => {
       const f = full[i];
       const byRef = f.geometry_source === "reference";
+      const cond = condOf([Object.assign({}, f, c)]);
       adds.push({ op: "add_calc", calc: {
         name: fresh[i], kind: kind, charge: int(c.charge), multiplicity: int(c.multiplicity) || 1,
         geometry_source: byRef ? "reference" : "direct", xyz: byRef ? "" : String(f.xyz || ""),
         ref_name: byRef ? String(f.ref_name || "") : "", ref_point: byRef ? String(f.ref_point || "") : "",
         is_raw: true, raw_text: set.text, set_name: set.name, set_id: set.id,
         system: sys.id, node: nodeId, col: B.col, row: B.row, after: String(f.after || ""),
-        // the gate was on the connection into B: it stays on that connection
+        // the gate and the energy condition were on the connection into B:
+        // they stay on that connection
         gate: f.gate === "approval" ? "approval" : "auto", auto_pass: f.auto_pass !== false, approved: !!f.approved,
+        filter_de: cond.de, filter_top: cond.top,
         config: {}, state: "pending", message: "",
       } });
       links.push({ op: "update_calc", name: c.name, calc: {
         after: fresh[i], geometry_source: "reference", ref_name: fresh[i], ref_point: "", xyz: "",
-        gate: "auto", auto_pass: true, approved: false } });
+        gate: "auto", auto_pass: true, approved: false, filter_de: null, filter_top: 0 } });
       unlink.push({ op: "update_calc", name: c.name, calc: {
         after: String(f.after || ""), geometry_source: byRef ? "reference" : "direct",
         ref_name: String(f.ref_name || ""), ref_point: String(f.ref_point || ""), xyz: byRef ? "" : String(f.xyz || ""),
-        gate: f.gate === "approval" ? "approval" : "auto", auto_pass: f.auto_pass !== false, approved: !!f.approved } });
+        gate: f.gate === "approval" ? "approval" : "auto", auto_pass: f.auto_pass !== false, approved: !!f.approved,
+        filter_de: cond.de, filter_top: cond.top } });
     });
     // the new steps run just before B's
     const cur = NB.queue.map((/** @type {any} */ c) => c.name);
@@ -3042,6 +3312,9 @@
     const B = g.before || null;
     const levels = _sets.filter(s => s.kind === "ORCA");
     const mlips = _sets.filter(s => s.kind === "MLIP");
+    // a conformer search goes after a block or first in a row, never into a
+    // chain: what follows it is the conformer stack its picker makes
+    const crests = B ? [] : _sets.filter(s => s.kind === "CREST");
     const kinds = typeKinds();
     // what goes before a step is most often the optimization it starts from
     let sugg = B ? "opt" : nextKind(P ? P.kind : "");
@@ -3066,6 +3339,7 @@
       ${B ? `<p class="qe-note">It starts from ${esc(B.short)}'s structure${P ? ", after " + esc(P.short) : ""}; ${
           esc(B.short)} then runs on its result.</p>` : ""}
       ${isIrc ? `<p class="qe-note">Which structure it starts from (an end, both, or a point on the path) is asked next.</p>` : ""}
+      ${!B && P && !P.stack && P.kind === "crest_conf" ? `<p class="qe-note">How many conformers it runs on (one step each, stacked) and an energy condition are asked next.</p>` : ""}
       ${levels.length && kinds.length ? `
         <label class="qe-rlab">level <select class="qe-select" data-f="level" aria-label="The level the step runs at">${
           levels.map(s => `<option value="${esc(s.id)}"${lv && s.id === lv.id ? " selected" : ""}>${esc(s.name)}</option>`).join("")}</select></label>
@@ -3076,6 +3350,8 @@
         : `<p class="qe-note">No ORCA level yet: + New under ORCA levels makes one.</p>`}
       ${mlips.length ? `<div class="qe-amrow">${mlips.map(s =>
           `<button class="btn btn-sm btn-ghost" type="button" data-mlip="${esc(s.id)}" title="An MLIP pre-optimization with this set">Preopt · ${esc(s.name)}</button>`).join("")}</div>` : ""}
+      ${crests.length ? `<div class="qe-amrow">${crests.map(s =>
+          `<button class="btn btn-sm btn-ghost" type="button" data-mlip="${esc(s.id)}" title="A CREST conformer search with this set">Conformers · ${esc(s.name)}</button>`).join("")}</div>` : ""}
       ${!B && (_clip || _wfs.length) ? `<div class="qe-amrow"><span class="qe-note">workflow</span>${
           _clip ? wfBtn('data-wfclip="1"', "copied", wfSummary(_clip)) : ""}${
           _wfs.map(w => wfBtn(`data-wfid="${esc(w.id)}"`, w.name, wfSummary(w))).join("")}</div>` : ""}
@@ -3148,7 +3424,7 @@
     if (!g) NB.toast("That + slot is gone: select the block again.");
     return g;
   }
-  /** @param {string} setId @param {string} kind "" for an MLIP set's own */
+  /** @param {string} setId @param {string} kind "" for an MLIP or CREST set's own */
   async function menuAdd(setId, kind) {
     const g = menuSlot();
     const set = _sets.find(s => s.id === setId);
@@ -3234,7 +3510,7 @@
       const emptied = emptiedBy(s);
       const finished = names.some(x => {
         const c = NB.queue.find((/** @type {any} */ y) => y.name === x);
-        return c && (c.state === "done" || c.state === "failed");
+        return c && FINISHED.indexOf(c.state) >= 0;
       });
       const before = NB.queue.map((/** @type {any} */ c) => c.name);
       const sysFull = emptied ? await systemFull(L.sys.id) : null;
@@ -3247,10 +3523,10 @@
         ? { t: "node", key: keepKey, m: 0 } : null;
       apply(ops, inv, "the removal");
     };
-    const finishedAny = calcs.some(c => c && (c.state === "done" || c.state === "failed"));
+    const finishedAny = calcs.some(c => c && FINISHED.indexOf(c.state) >= 0);
     const finishedOwn = own.some(x => {
       const c = NB.queue.find((/** @type {any} */ y) => y.name === x);
-      return c && (c.state === "done" || c.state === "failed");
+      return c && FINISHED.indexOf(c.state) >= 0;
     });
     // "Remove only this": what hangs off it stays, blocked until it is given
     // another geometry -- refused by the store while a run is going (a
@@ -3443,7 +3719,7 @@
         if (!full) { problems.push(c.name + " could not be read."); return; }
         const raw = String(full.raw_text || "");
         const isRaw = !!full.is_raw || (!!c.set_name && !!raw);
-        if (isRaw && setKindOf(c.kind) !== "MLIP" && raw.indexOf(GEOM) < 0) {
+        if (isRaw && !isSettings(setKindOf(c.kind)) && raw.indexOf(GEOM) < 0) {
           problems.push(c.name + "'s text carries its own coordinates (no " + GEOM + "), so it cannot run on another structure.");
         }
         const ref = full.geometry_source === "reference" && local.has(full.ref_name) ? local.get(full.ref_name) : "";
@@ -3453,10 +3729,13 @@
                      // a level's block carries its options (constraints, IRC
                      // settings ...) in its config; a text that names its own
                      // job has none
-                     config: !isRaw || (setKindOf(c.kind) !== "MLIP" && hasJobLine(raw)) ? full.config || {} : {},
+                     config: !isRaw || (!isSettings(setKindOf(c.kind)) && hasJobLine(raw)) ? full.config || {} : {},
                      after: c.after && local.has(c.after) ? local.get(c.after) : "",
                      ref: ref, ref_point: ref ? String(full.ref_point || "") : "",
                      gate: c.gate === "approval" ? "approval" : "auto", auto_pass: c.auto_pass !== false,
+                     // the energy condition of an edge inside the copy
+                     filter_de: c.after && local.has(c.after) ? condOf([c]).de : null,
+                     filter_top: c.after && local.has(c.after) ? condOf([c]).top : 0,
                      col: n.col - minC, row: n.row - minR });
       });
     });
@@ -3734,6 +4013,124 @@
     });
   }
 
+  /** what a step of a kind is called, one of it ("single point"); several
+   *  add an "s" when the word allows it, else " steps" @type {Object<string, string>} */
+  const NOUN = { sp: "single point", opt: "optimization", ts_opt: "TS optimization", freq: "frequency calculation",
+                 ts_freq: "TS frequency calculation", opt_freq: "Opt + Freq", ts_opt_freq: "TS Opt + Freq",
+                 irc: "IRC", nmr: "NMR calculation", tddft: "TD-DFT calculation", neb_ts: "NEB-TS",
+                 mlip_opt: "MLIP pre-optimization", mlip_sp: "MLIP single point", mlip_freq: "MLIP frequency calculation",
+                 mlip_opt_freq: "MLIP Opt + Freq", crest_conf: "conformer search" };
+  /** @param {string} kind @param {number} k */
+  const nounFor = (kind, k) => {
+    const w = NOUN[kind] || (KIND_LABEL[kind] || kind) + " step";
+    return k === 1 ? w : /[a-z]$/.test(w) ? w + "s" : w + " steps";
+  };
+  /** the most conformers a step can be asked to run on before the search has run */
+  const CONF_MAX = 50;
+
+  /** How many conformers of a CREST search a step after it runs on (a
+   *  stack, one member per conformer: _c1 ... _cK, conformer 1 the lowest,
+   *  as the search's {name}_c1.xyz), and the optional energy condition on
+   *  that edge (ΔE ≤ … kcal/mol from the lowest conformer; the rest end
+   *  filtered). Choosing and confirming are separate, as in the IRC picker:
+   *  ONE confirm button says what it will do ("Add 5 single points
+   *  (conformers 1–5)"). Once the search has run its ensemble is listed
+   *  (parse_calc_output's `conformers`): the count is clamped to it and the
+   *  list shows which are added and which the condition would leave out.
+   *  `one`: a block's geometry -- which single conformer, "Use conformer 3".
+   *  Resolves to {k, de} (k the count, or the conformer when `one`), or null.
+   *  @param {any} crest the CREST calculation
+   *  @param {{kind?: string, wf?: boolean, one?: boolean, at?: number}} opts
+   *  @returns {Promise<{k: number, de: number|null} | null>} */
+  async function askConformers(crest, opts) {
+    /** @type {{index: number, rel_kcal: number}[]} */ let confs = [];
+    if (crest.state === "done") {
+      const r = await NB.call("parse_calc_output", crest.name);
+      if (r && Array.isArray(r.conformers)) {
+        confs = r.conformers.filter((/** @type {any} */ c) => c && isFinite(Number(c.index)))
+          .map((/** @type {any} */ c) => ({ index: int(c.index), rel_kcal: Number(c.rel_kcal) }))
+          .sort((a, b) => a.index - b.index);
+      }
+    }
+    const N = confs.length;
+    const max = N || CONF_MAX;
+    const one = !!opts.one;
+    let k = Math.max(1, Math.min(max, one ? int(opts.at) || 1 : 5));
+    /** @type {number|null} */ let de = null;
+    let bad = "";
+    const range = (/** @type {number} */ n) => n === 1 ? "conformer 1" : "conformers 1–" + n;
+    const label = () => one ? "Use conformer " + k
+      : opts.wf ? `Paste on ${k} conformer${k === 1 ? "" : "s"} (${range(k)})`
+      : `Add ${k} ${nounFor(opts.kind || "sp", k)} (${range(k)})`;
+    const title = one ? "Take which conformer of " + crest.name + "?"
+      : (opts.wf ? "Paste the workflow on which conformers of " : "Start from which conformers of ") + crest.name + "?";
+    const known = N
+      ? `${esc(crest.name)} found ${N} conformer${N === 1 ? "" : "s"}, lowest first (ΔE from the lowest, kcal/mol).`
+      : `${esc(crest.name)} ${crest.state === "done" ? "listed no conformers here" : "has not run yet"}: how many it finds is known once it has (its energy window, ewin, bounds the ensemble). A member past the ensemble it finds has no structure to start from.`;
+    const rows = () => confs.slice(0, Math.max(k, 12)).map(c => {
+      const added = one ? c.index === k : c.index <= k;
+      const cut = !one && added && de !== null && c.rel_kcal > de;
+      return `<div class="qe-confrow"${added ? ' data-in="1"' : ""}${cut ? ' data-cut="1"' : ""}><span>c${c.index}</span><span>${
+        isFinite(c.rel_kcal) ? c.rel_kcal.toFixed(2) : "—"}</span><span>${cut ? "filtered by ΔE" : added ? (one ? "taken" : "added") : ""}</span></div>`;
+    }).join("") + (confs.length > Math.max(k, 12) ? `<div class="qe-confrow"><span>…</span><span></span><span>${confs.length - Math.max(k, 12)} more</span></div>` : "");
+    const foot = () => /** @type {any} */ (NB.$("modal-foot").lastElementChild);
+    return new Promise(resolve => {
+      NB.modalRaw(title,
+        `<p class="qe-note">${known}</p>
+        <div class="qe-ircrow">
+          <label class="qe-rlab">${one ? "conformer" : "conformers"} <input class="qe-input qe-ircnum" type="number" data-f="k"
+            min="1" max="${max}" step="1" value="${k}" aria-label="${esc((one ? "Conformer number" : "How many conformers") + ", 1 to " + max)}"></label>
+          <span class="qe-note">${one ? "1 is the lowest" : "the lowest first, one step each, stacked"}${N ? "" : " (1 to " + max + ")"}</span>
+        </div>
+        ${one ? "" : `<div class="qe-ircrow">
+          <label class="qe-rlab">pass on ΔE ≤ <input class="qe-input qe-condnum" data-f="de" inputmode="decimal" spellcheck="false"
+            placeholder="off" aria-label="Pass only conformers within this many kcal/mol of the lowest; empty for all"></label>
+          <span class="qe-note">kcal/mol from the lowest; empty: all pass. The rest end filtered.</span>
+        </div>`}
+        <p class="qe-note" data-tone="err" data-x="bad" role="alert" hidden></p>
+        ${N ? `<div class="qe-conflist" data-x="list" aria-live="polite">${rows()}</div>` : ""}`,
+        [{ label: "Cancel", cls: "btn-ghost", act: () => resolve(null) },
+         { label: label(), cls: "btn-primary", focus: true, act: () => resolve(bad ? null : { k: k, de: one ? null : de }) }]);
+      const box = NB.$("modal-body");
+      const kin = /** @type {HTMLInputElement} */ (box.querySelector('[data-f="k"]'));
+      const din = /** @type {HTMLInputElement|null} */ (box.querySelector('[data-f="de"]'));
+      const badEl = /** @type {HTMLElement} */ (box.querySelector('[data-x="bad"]'));
+      const list = /** @type {HTMLElement|null} */ (box.querySelector('[data-x="list"]'));
+      const show = () => {
+        badEl.hidden = !bad; badEl.textContent = bad;
+        foot().disabled = !!bad;
+        foot().textContent = label();
+        if (list) list.innerHTML = rows();
+      };
+      const readK = (/** @type {boolean} */ clamp) => {
+        const v = parseInt(kin.value, 10);
+        if (isFinite(v) && v >= 1 && v <= max) k = v;
+        else if (clamp) { k = Math.max(1, Math.min(max, isFinite(v) ? v : k)); kin.value = String(k); }
+        show();
+      };
+      const readDe = () => {
+        if (!din) return;
+        const t = din.value.trim().replace(",", ".");
+        const v = t === "" ? null : Number(t);
+        bad = v !== null && (!isFinite(v) || v < 0) ? "The ΔE window is a number of kcal/mol, 0 or more (empty: all pass)." : "";
+        de = bad || v === null ? null : Math.round(v * 100) / 100;
+        show();
+      };
+      kin.addEventListener("focus", () => kin.select());
+      kin.addEventListener("input", () => readK(false));
+      kin.addEventListener("change", () => readK(true));
+      if (din) din.addEventListener("input", readDe);
+      // Enter in a field confirms, as the button does
+      [kin, din].forEach(el => el && el.addEventListener("keydown", (/** @type {KeyboardEvent} */ ev) => {
+        if (ev.key !== "Enter") return;
+        ev.preventDefault();
+        readK(true); readDe();
+        if (!bad) foot().click();
+      }));
+      show();
+    });
+  }
+
   /** A yes / no question in the modal. @param {string} title @param {string} body
    *  @param {string} yes @returns {Promise<boolean>} */
   function askYes(title, body, yes) {
@@ -3780,10 +4177,13 @@
    *  number); roots after `t.parent` (geometry from it -- its `t.refPoint`
    *  end, or `t.rootXyz` copied in), else on `t.xyz`. After an IRC the
    *  workflow runs once per structure picked: each pass names its steps with
-   *  `t.tail` (_F, _B) and shares `t.nodeIds`, so the passes stack per step.
+   *  `t.tail` (_F, _B) and shares `t.nodeIds`, so the passes stack per step;
+   *  after a CREST search once per conformer (_c1 ..., `t.filterDe` the
+   *  condition the picker put on the edge into the first steps).
    *  @param {any} wf @param {{sysId: string, laneName: string, charge: number, mult: number,
    *    xyz: string, parent: string, col0: number, row0: number, taken: Set<string>,
-   *    tail?: string, refPoint?: string, rootXyz?: string, nodeIds?: Map<string, string>}} t */
+   *    tail?: string, refPoint?: string, rootXyz?: string, nodeIds?: Map<string, string>,
+   *    filterDe?: number|null}} t */
   function instantiate(wf, t) {
     /** @type {Map<string, any[]>} */ const byNode = new Map();
     wf.steps.forEach((/** @type {any} */ st) => {
@@ -3813,9 +4213,11 @@
         ref_name: ref, ref_point: st.ref ? String(st.ref_point || "") : (ref ? t.refPoint || "" : ""),
         is_raw: !!st.is_raw, raw_text: st.is_raw ? String(st.raw_text || "") : "",
         set_name: String(st.set_name || ""),
-        config: !st.is_raw || (setKindOf(st.kind) !== "MLIP" && hasJobLine(String(st.raw_text || ""))) ? st.config || {} : {},
+        config: !st.is_raw || (!isSettings(setKindOf(st.kind)) && hasJobLine(String(st.raw_text || ""))) ? st.config || {} : {},
         system: t.sysId, node: node, col: t.col0 + int(st.col), row: t.row0 + int(st.row),
         after: after, gate: after ? st.gate || "auto" : "auto", auto_pass: st.auto_pass !== false,
+        filter_de: st.after ? (st.filter_de == null ? null : Number(st.filter_de)) : (t.filterDe == null ? null : t.filterDe),
+        filter_top: st.after ? Math.max(0, int(st.filter_top)) : 0,
         approved: false, state: "pending", message: "",
       } });
       fresh.push(name);
@@ -3856,6 +4258,15 @@
       if (!ends) return;
       passes = ends;
     }
+    // after a CREST search: on how many conformers (once each, _c1 ...),
+    // and the condition on the edge into the workflow's first steps
+    /** @type {number|null} */ let filterDe = null;
+    if (P.kind === "crest_conf") {
+      const ch = await askConformers(P.members[0], { wf: true });
+      if (!ch) return;
+      filterDe = ch.de;
+      passes = Array.from({ length: ch.k }, (_, i) => ({ tail: SEP + CONF_TAIL + (i + 1), pt: "conf:" + (i + 1), xyz: "" }));
+    }
     let pre = { ops: /** @type {any[]} */ ([]), inv: /** @type {any[]} */ ([]) };
     let sys = P.lane.sys;
     if (!sys) { const a = await adopt(P); if (!a) return; pre = a; sys = a.sys; }
@@ -3878,7 +4289,7 @@
       /** @type {Map<string, string>} */ const nodeIds = new Map();
       const outs = passes.map(e => instantiate(wf, { sysId: sysId, laneName: laneName, charge: charge, mult: mult,
         xyz: "", parent: P.members[0].name, col0: col0, row0: row0, taken: taken,
-        tail: e.tail, refPoint: e.pt, rootXyz: e.xyz, nodeIds: nodeIds }));
+        tail: e.tail, refPoint: e.pt, rootXyz: e.xyz, nodeIds: nodeIds, filterDe: filterDe }));
       const fresh = outs.reduce((/** @type {string[]} */ a, o) => a.concat(o.fresh), []);
       return { ops: outs.reduce((/** @type {any[]} */ a, o) => a.concat(o.ops), []),
                fresh: fresh, first: outs[0].first, names: fresh };
@@ -4217,11 +4628,13 @@
       const n = _M.nodeOf.get(m.name);
       if (n) select({ t: "node", key: n.key, m: Math.max(0, n.members.findIndex((/** @type {any} */ c) => c.name === m.name)) });
       const c = NB.queue.find((/** @type {any} */ x) => x.name === m.name);
-      // a level's block opens in Level mode; an MLIP set's block is edited
-      // as its text in the inspector; anything else in the builder
+      // a level's block opens in Level mode; an MLIP or CREST block in the
+      // builder's own form for it, saved as one undoable batch; anything
+      // else in the builder
       if (m.type === "edit" && c && EDITABLE.indexOf(c.state) >= 0) {
         if (isLevelCalc(c)) openLevelBuilder(m.name);
-        else if (!(c.set_name && setKindOf(c.kind) === "MLIP")) openBuilder(m.name);
+        else if (/^(mlip|crest)/.test(String(c.kind || ""))) openSettingsBuilder(m.name);
+        else openBuilder(m.name);
       }
       if (n) {
         const el = NB.$("qe-graph").querySelector(`.qe-node[data-k="${CSS.escape(n.key)}"]`);

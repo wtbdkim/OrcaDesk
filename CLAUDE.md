@@ -159,6 +159,11 @@ Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
   recomputed; a FAILED one's BLOCKED dependents go back to PENDING with it).
   Removal is queue-list-only — **nothing on the removal path touches the
   filesystem**.
+- **`FILTERED` is frozen too**: the engine's verdict on the energy condition
+  of the edge into a calc (`filter_de` / `filter_top`, judged over its stack
+  with a barrier) or on a missing CREST conformer (`ref_point` `conf:<k>`).
+  It never ran; its dependents cascade to FILTERED (never BLOCKED); only an
+  edit of the condition returns it (and FILTERED rows below it) to PENDING.
 - **Live queue (P29)**: the engine walks the store's own list under the store's
   lock, so adds/edits/reorders land in the running run; in-flight, DONE/FAILED
   rows and reference integrity stay protected.

@@ -929,6 +929,9 @@ TEMPLATE_JOB_KEYWORDS = {
 #: pipeline has (orcamgr/mlip; the frequency ones read freq_temp_k /
 #: freq_pressure_atm for their thermochemistry)
 MLIP_TEMPLATE_KINDS = ("mlip_opt", "mlip_sp", "mlip_freq", "mlip_opt_freq")
+#: the kinds a block made from a CREST set may run: the conformer search
+#: (orcamgr/crest), the one task the CREST pipeline has
+CREST_TEMPLATE_KINDS = ("crest_conf",)
 #: a level block's IRC initial Hessian by default: the parent's .hess when one
 #: is found (staged into the run folder), else ORCA computes it (calc_anfreq)
 IRC_INIT_AUTO = "auto"

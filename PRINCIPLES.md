@@ -342,6 +342,14 @@ not a failure) remain editable and do re-run. Only `EDITABLE_STATES`
 its affordances from the same rule (D64). Frozen results are reconstructed
 lazily (parse-on-miss), never eagerly at startup.
 
+**FILTERED is frozen too.** A calc the engine left out because it failed
+the energy condition on the edge into it (`filter_de` / `filter_top`), or
+whose CREST conformer does not exist, never ran and has no output; it is
+neither edited, reordered nor re-run (`rerun_calc` refuses it), and its
+dependents are FILTERED with it, never BLOCKED. The one way back is
+changing that condition: the edit returns it, and the FILTERED rows
+downstream of it, to PENDING to be judged again.
+
 **Removal never touches disk.** The × control stays available in every
 state except RUNNING, but it is strictly a queue-list operation — ORCAdesk
 never deletes a calculation's workspace folder, and nothing on the removal

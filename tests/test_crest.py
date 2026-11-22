@@ -656,3 +656,174 @@ def test_an_energy_of_exactly_zero_is_a_value_not_a_missing_one(tmp_path):
     r = parse_crest_result(str(d / "z.out"))
 
     assert r.final_energy_eh == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Geometry constraints (--cinp). The builder's stage list (geom_constraints:
+# kinds C/B/A/D, atoms 0-based, value None = hold the start) becomes an
+# xtb-style $constrain file. The shape is what CREST 3.0.2 was MEASURED to
+# accept (crest/runner.py): no "force constant=" line, an explicit comma list
+# for fixed atoms, 1-based atoms, "auto" for an empty target.
+# ---------------------------------------------------------------------------
+
+from orcamgr.crest.runner import (CREST_CONSTRAINTS_FILE, crest_constraints_text,
+                                  write_crest_run_files)
+from orcamgr.state.store import calc_from_dict, calc_to_session_dict
+
+ETHANOL_XYZ = (
+    "C 1.275 -0.252 -0.016\nC -0.015 0.561 0.033\nO -1.169 -0.242 -0.056\n"
+    "H 1.303 -0.853 -0.921\nH 2.134 0.413 -0.007\nH 1.340 -0.916 0.845\n"
+    "H -0.040 1.164 0.953\nH -0.068 1.238 -0.823\nH -1.139 -0.902 0.645"
+)
+
+
+def _cfg_with(constraints):
+    return StepConfig.from_dict({"kind": "crest_conf", "geom_constraints": constraints})
+
+
+def test_argv_names_the_constraints_file_only_when_there_are_constraints():
+    plain = build_crest_argv(StepConfig(kind="crest_conf"), 0, 1)
+    assert "--cinp" not in plain
+    cfg = _cfg_with([{"kind": "B", "atoms": [0, 2], "value": None}])
+    argv = build_crest_argv(cfg, 0, 1)
+    assert argv[argv.index("--cinp") + 1] == CREST_CONSTRAINTS_FILE == "constraints.inp"
+    # one fixed atom alone gives CREST nothing to hold: no file, no flag
+    lone = _cfg_with([{"kind": "C", "atoms": [3], "value": None}])
+    assert "--cinp" not in build_crest_argv(lone, 0, 1)
+
+
+def test_constraints_text_for_every_kind_is_one_based_with_targets_and_auto():
+    cons = _cfg_with([
+        {"kind": "B", "atoms": [0, 2], "value": None},
+        {"kind": "B", "atoms": [1, 2], "value": 1.45},
+        {"kind": "A", "atoms": [0, 1, 2], "value": 109.5},
+        {"kind": "D", "atoms": [0, 1, 2, 8], "value": 175},
+        {"kind": "D", "atoms": [3, 0, 1, 6], "value": None},
+        {"kind": "C", "atoms": [0], "value": None},
+        {"kind": "C", "atoms": [1], "value": None},
+        {"kind": "C", "atoms": [2], "value": None},
+    ]).geom_constraints
+    text = crest_constraints_text(cons, n_atoms=9)
+    assert text.splitlines() == [
+        "$constrain",
+        "  distance: 1, 3, auto",
+        "  distance: 2, 3, 1.45",
+        "  angle: 1, 2, 3, 109.5",
+        "  dihedral: 1, 2, 3, 9, 175",
+        "  dihedral: 4, 1, 2, 7, auto",
+        "  atoms: 1,2,3",
+        "$metadyn",
+        "  atoms: 4,5,6,7,8,9",
+        "$end",
+    ]
+    # CREST 3.0.2 dies on these (measured): never written
+    assert "force constant" not in text and "reference" not in text
+    assert "1-3" not in text
+    # 180 is wrapped to -180 at the boundary; CREST prints that as "******",
+    # so the file says 180 (the same torsion)
+    flat = _cfg_with([{"kind": "D", "atoms": [0, 1, 2, 8], "value": 180}]).geom_constraints
+    assert "  dihedral: 1, 2, 3, 9, 180" in crest_constraints_text(flat, 9).splitlines()
+
+
+def test_constraints_text_is_empty_without_anything_crest_can_hold():
+    assert crest_constraints_text([], 9) == ""
+    assert crest_constraints_text([{"kind": "C", "atoms": [4], "value": None}], 9) == ""
+    # all atoms fixed: no $metadyn block with an empty list
+    allfix = [{"kind": "C", "atoms": [i], "value": None} for i in range(3)]
+    t = crest_constraints_text(allfix, 3)
+    assert "$metadyn" not in t and "  atoms: 1,2,3" in t
+
+
+def test_run_files_write_the_constraints_beside_the_input_and_stage_them(tmp_path):
+    cons = [{"kind": "D", "atoms": [0, 1, 2, 8], "value": None}]
+    for transport in ("wsl", "local"):
+        d = tmp_path / transport
+        script = write_crest_run_files(d, "conf", ETHANOL_XYZ, "/c/crest",
+                                       ["--gfn2", "--cinp", "constraints.inp"],
+                                       transport=transport, constraints=cons)
+        inp = (d / "constraints.inp").read_text(encoding="utf-8")
+        assert "dihedral: 1, 2, 3, 9, auto" in inp
+        assert b"\r" not in (d / "constraints.inp").read_bytes()
+        body = script.read_text(encoding="utf-8")
+        assert "--cinp constraints.inp" in body
+        # under WSL the run happens in scratch, so the file is copied there
+        # before the cd (--cinp names it relative to the cwd); locally the
+        # run is in the folder that already holds it
+        if transport == "wsl":
+            cp = body.index('cp "$MNT/constraints.inp" "$SCRATCH/"')
+            assert cp < body.index('cd "$SCRATCH"')
+        else:
+            assert 'cp "$MNT/constraints.inp"' not in body
+
+
+def test_a_rerun_without_constraints_removes_the_previous_file(tmp_path):
+    d = tmp_path / "conf"
+    cons = [{"kind": "B", "atoms": [0, 1], "value": None}]
+    write_crest_run_files(d, "conf", ETHANOL_XYZ, "/c/crest", [], transport="local",
+                          constraints=cons)
+    assert (d / "constraints.inp").exists()
+    script = write_crest_run_files(d, "conf", ETHANOL_XYZ, "/c/crest", [],
+                                   transport="wsl", constraints=[])
+    assert not (d / "constraints.inp").exists()
+    assert "constraints.inp" not in script.read_text(encoding="utf-8")
+
+
+def _crest_payload(constraints, **kw):
+    d = {"name": "conf", "kind": "crest_conf", "xyz": ETHANOL_XYZ,
+         "config": {"kind": "crest_conf", "geom_constraints": constraints}}
+    d.update(kw)
+    return d
+
+
+def test_the_store_keeps_constraints_on_a_crest_calc():
+    cons = [{"kind": "B", "atoms": [0, 2], "value": 2.5},
+            {"kind": "C", "atoms": [0], "value": None},
+            {"kind": "C", "atoms": [1], "value": None}]
+    calc = calc_from_dict(_crest_payload(cons))
+    assert calc.config.geom_constraints == cons
+    # and round-trips the session file
+    again = calc_from_dict(dict(calc_to_session_dict(calc)), restoring=True)
+    assert again.config.geom_constraints == cons
+
+
+def test_an_out_of_range_atom_is_refused_when_a_crest_calc_is_added():
+    bad = [{"kind": "B", "atoms": [0, 11], "value": None}]
+    with pytest.raises(ValueError, match="names atom 12, but the structure has 9 atoms"):
+        calc_from_dict(_crest_payload(bad))
+    # a referenced geometry is checked when the run starts, not here
+    calc_from_dict(_crest_payload(bad, geometry_source="reference", ref_name="p", xyz=""))
+    # nor on restore, which must not evict a stored calc
+    calc_from_dict(_crest_payload(bad), restoring=True)
+
+
+def test_a_single_fixed_atom_is_refused_for_a_crest_calc():
+    with pytest.raises(ValueError, match="fix at least two"):
+        calc_from_dict(_crest_payload([{"kind": "C", "atoms": [0], "value": None}]))
+
+
+def test_a_crest_set_carries_no_constraints_of_an_edited_calc():
+    d = _crest_payload([{"kind": "B", "atoms": [0, 2], "value": None}],
+                       is_raw=True, raw_text="method gfn2\n")
+    assert calc_from_dict(d).config.geom_constraints == []
+
+
+def test_the_engine_writes_the_constraints_file_and_refuses_a_missing_atom(tmp_path, monkeypatch):
+    _patch_runner(monkeypatch)
+    cb, _, _ = _recording_callbacks()
+    engine = QueueEngine("", str(tmp_path), cb)
+    calc = Calculation(name="conf", kind="crest_conf", xyz=ETHANOL_XYZ,
+                       config=_cfg_with([{"kind": "D", "atoms": [0, 1, 2, 8], "value": 175}]))
+    engine.run_all([calc])
+    assert calc.state == CalcState.DONE
+    folder = tmp_path / "conf"
+    assert "dihedral: 1, 2, 3, 9, 175" in (folder / "constraints.inp").read_text(encoding="utf-8")
+    assert "--cinp constraints.inp" in (folder / "run_crest.sh").read_text(encoding="utf-8")
+
+    # a constraint past the structure (a referenced geometry is only known
+    # now) fails before CREST starts
+    bad = Calculation(name="bad", kind="crest_conf", xyz="H 0 0 0\nH 0 0 0.74",
+                      config=_cfg_with([{"kind": "B", "atoms": [0, 5], "value": None}]))
+    engine.run_all([bad])
+    assert bad.state == CalcState.FAILED
+    assert "names atom 6" in bad.message
+    assert not (tmp_path / "bad" / "run_crest.sh").exists()

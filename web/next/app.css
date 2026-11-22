@@ -1754,3 +1754,56 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 .railfoot .runrow{gap:3px; flex-wrap:nowrap;}
 .railfoot .runrow .btn,.railfoot .runrow .btn-ghost{flex:0 0 auto; padding:4px 6px;}
 .railfoot .runrow .btn-primary{flex:1 1 auto; padding:4px 6px;}
+
+/* ------------------ the conformer stack and the edge condition ------------------
+   (DESIGN.md §17.6, §12) After a CREST search a step is a STACK, one member per
+   conformer (_c1 ... _cK), made by the conformer picker; the edge into a stack
+   may carry an energy condition (a ΔE window, the top N), drawn as a chip on
+   the block it leads into and set in the inspector; a member that fails it
+   ends FILTERED -- terminal, no output, neutral like cancelled and blocked but
+   told apart from both: a solid faint dot (theirs are rings) and a dotted card
+   border. The chip is orthogonal to the approval gate's dashed amber edge and
+   wears neither its dash nor its amber. Queue window only (plus the rail's
+   dot), so no uispec landmark moves. */
+:is(.qe-card,.qe-back)[data-edge="filtered"]{border-color:var(--qe-faint); border-style:dotted;}
+.qe-card[data-st="filtered"]{opacity:.6;}
+.qe-dot[data-st="filtered"]{background:var(--qe-faint); border-color:var(--qe-faint);}
+.qe-prow[data-st="filtered"]{opacity:.55;}
+.qe-ord[data-cut]{padding:0 5px;}
+.qmain .d.filtered{background:var(--qe-faint); border-color:var(--qe-faint);}
+.qe-echip{position:absolute; z-index:4; height:16px; max-width:176px; padding:0 6px;
+  border:1px solid var(--qe-faint); border-radius:var(--radius-pill); background:var(--stage);
+  color:var(--muted-foreground); font-size:10.5px; line-height:14px; font-variant-numeric:tabular-nums;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer;}
+.qe-echip:hover,.qe-echip:focus-visible,.qe-echip[data-sel]{color:var(--foreground); border-color:var(--foreground);}
+.qe-cond{display:flex; align-items:baseline; flex-wrap:wrap; gap:8px; font-size:12px; color:var(--qe-dim);}
+.qe-condf{display:inline-flex; align-items:baseline; gap:6px;}
+.qe-input.qe-condnum{flex:0 0 auto; width:7ch; min-height:28px; padding:3px 8px; font-size:12px;
+  font-variant-numeric:tabular-nums;}
+.qe-condh{margin:-10px 0 0;}
+.qe-conflist{margin-top:10px; max-height:168px; overflow:auto; padding:4px 0;
+  border:1px solid var(--border); border-radius:6px; font-family:var(--font-mono); font-size:11.5px;}
+.qe-confrow{display:grid; grid-template-columns:4ch 7ch minmax(0,1fr); gap:10px; padding:1px 10px; color:var(--qe-faint);}
+.qe-confrow span:nth-child(2){text-align:right;}
+.qe-confrow[data-in]{color:var(--foreground);}
+.qe-confrow[data-cut]{color:var(--qe-dim);}
+.qe-confrow[data-cut] span:first-child{text-decoration:line-through;}
+
+/* ---- combo suggestions (build.js `suggest`) ---------------------------------
+   Deliberate departure from the native <datalist> popup: in QtWebEngine that
+   popup is a native window that ignores the mouse wheel and the theme, so a
+   combo's suggestions are drawn in the page. A floating list (D32 shadow),
+   max-height 280px (§9.3), combo items at 13px (§9.4). */
+.suggest{
+  position:fixed; z-index:90; overflow-y:auto; overscroll-behavior:contain;
+  background:var(--popover); border:1px solid var(--border);
+  border-radius:var(--radius-sm); box-shadow:var(--shadow-md); padding:4px;
+}
+.suggest-item{
+  padding:6px 10px; border-radius:calc(var(--radius-sm) - 4px); cursor:pointer;
+  font-family:var(--font-mono); font-size:13px; color:var(--foreground);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.suggest-item:hover{background:var(--accent);}
+.suggest-item[aria-selected="true"]{background:var(--secondary-hover);}
+.suggest-none{padding:6px 10px; font-size:13px; color:var(--muted-foreground);}

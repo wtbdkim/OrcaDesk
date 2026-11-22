@@ -44,7 +44,7 @@ launching. Any port above 1024 works. It is off unless you set it.)
 | `boot.js` | channel, polled queue/log, per-calculation trackers, routing (`?win=`, dropped files, the hand-over to the queue window), toast/modal |
 | `rail.js` | the main window's queue rail — a 256px status strip (dot + name per row), run controls, *Open queue* |
 | `build.js` | the builder (a cell becomes the form); in the queue window hosted over the lanes and the inspector (`#qe-build`, a stream-like column of the reference cell's width), exactly as the main window drew it. *Level mode* (`NB.build.open(name, null, {level: ctx})`) edits a level's block: its options, not its method |
-| `qed.js` | the queue window: inp-set library (ORCA levels, MLIP sets) and saved workflows, lanes of nodes (stacks drawn as one card per member) and edges, the + slot's add menu and the before-a-block + (`insertBefore`), the IRC structure picker (`askIrcStructure`), overwrite reruns of a done or failed block (`requestRerun`), multi-select and workflow copy/paste, inspector (a block with its Type, options and rendered input -- or the `.inp` its folder holds once it ran -- several blocks, an edge, a row's structures, or -- nothing selected -- the inp-set editor), undo |
+| `qed.js` | the queue window: inp-set library (ORCA levels, MLIP sets, CREST sets) and saved workflows, lanes of nodes (stacks drawn as one card per member) and edges (an energy condition drawn as a chip, set by `condControl`), the + slot's add menu and the before-a-block + (`insertBefore`), the IRC structure picker (`askIrcStructure`), the conformer picker after a CREST search (`askConformers`), overwrite reruns of a done or failed block (`requestRerun`), multi-select and workflow copy/paste, inspector (a block with its Type, options and rendered input -- or the `.inp` its folder holds once it ran -- several blocks, an edge, a row's structures, or -- nothing selected -- the inp-set editor), undo |
 | `stream.js` | one cell per calculation: thumbnail, chart, output, facts |
 | `results.js` | the report — sections, charts, input/output, reaction profile |
 | `settings.js` | the settings slide-over |
@@ -96,6 +96,13 @@ come from `get_workflows` / `save_workflow` / `delete_workflow`
 after an IRC asks `askIrcStructure(irc, both)` first (as `addFromSet`,
 `pasteAfter` and `setGeometry` do): an end comes back as a reference
 (`ref_point` `irc_f` / `irc_b`), any other point of the path as coordinates.
+One that can land after a CREST search asks `askConformers(crest, opts)`
+the same way: K members `_c1` … `_cK`, each `ref_point` `conf:<k>`, and the
+optional ΔE window as `filter_de` on their incoming edge. A `ref_point` may
+hold a colon (`conf:3`), so a geometry key `ref:<name>:<point>` is parsed
+from its end, never split on `:`. `filter_de` / `filter_top` are graph fields
+like `gate` (`PLACE_KEYS`, in `qed.js` and `build.js`); on a filtered row a
+patch of those two alone is the one edit the store takes.
 
 To work on the queue window, open it (*Open queue*) and press F5 in it: it
 reloads on its own, like the main window.
