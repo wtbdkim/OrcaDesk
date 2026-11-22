@@ -2218,8 +2218,19 @@
   /** @type {[string, string][]} */
   const CREST_PRESETS = [["", "standard (thorough)"], ["quick", "quick"],
                          ["squick", "super quick"], ["mquick", "micro quick"]];
-  const CREST_SOLVENTS = ["water", "acetonitrile", "chcl3", "dmso", "methanol", "thf",
-                          "toluene", "acetone", "ether", "hexane"];
+  /* The solvents xtb has ALPB parameters for (xtb-docs "Implicit Solvation";
+     every one is in CREST 3.0.2's own parameter tables), as --alpb / --gbsa
+     take them; GBSA (GFN2) has only the second list. A combo: another name
+     still goes through verbatim and CREST says whether it knows it. */
+  const CREST_SOLVENTS = ["water", "acetone", "acetonitrile", "aniline", "benzaldehyde",
+    "benzene", "ch2cl2", "chcl3", "cs2", "dioxane", "dmf", "dmso", "ethanol", "ether",
+    "ethylacetate", "furane", "hexadecane", "hexane", "methanol", "nitromethane", "octanol",
+    "woctanol", "phenol", "thf", "toluene"];
+  const CREST_GBSA_SOLVENTS = ["water", "acetone", "acetonitrile", "benzene", "ch2cl2",
+    "chcl3", "cs2", "dmf", "dmso", "ether", "hexane", "methanol", "thf", "toluene"];
+  /** @param {string} model @returns {string} the CREST solvent datalist's options */
+  const crestSolventOptions = (model) =>
+    (model === "gbsa" ? CREST_GBSA_SOLVENTS : CREST_SOLVENTS).map(o => `<option value="${o}"></option>`).join("");
 
   /** @param {string} kind @returns {string} "dft" | "mlip" | "crest" */
   function backendOfKind(kind) {
@@ -2463,7 +2474,7 @@
                cfg.crest_solvent_model || DEF.crest_solvent_model, "mid")}
         <div class="field"><label>Solvent</label>
           <input class="mono" data-list="${sid}" autocomplete="off" value="${NB.esc(solvent)}" placeholder="gas phase">
-          <datalist id="${sid}">${CREST_SOLVENTS.map(o => `<option value="${o}"></option>`).join("")}</datalist>
+          <datalist id="${sid}">${crestSolventOptions(cfg.crest_solvent_model || DEF.crest_solvent_model)}</datalist>
         </div>
         ${target}
       </div>
@@ -2594,6 +2605,15 @@
     if (modelSel) modelSel.addEventListener("change", () => {
       const n = q('[data-x="licnote"]');
       if (n) n.innerHTML = licenseNote(modelSel.value);
+    });
+    // CREST's solvent suggestions follow the solvent model (GBSA knows fewer)
+    const crestField = (/** @type {string} */ label) => [...el.querySelectorAll('[data-bk="crest"] .field')]
+      .find(f => { const l = f.querySelector("label"); return !!l && l.textContent.trim() === label; });
+    const solModel = crestField("Solvent model"), solField = crestField("Solvent");
+    const solSel = solModel ? solModel.querySelector("select") : null;
+    const solList = solField ? solField.querySelector("datalist") : null;
+    if (solSel && solList) solSel.addEventListener("change", () => {
+      solList.innerHTML = crestSolventOptions(solSel.value);
     });
 
     /** Show, lock or unlock against what the poll last said. Called now and

@@ -4025,8 +4025,6 @@
     const w = NOUN[kind] || (KIND_LABEL[kind] || kind) + " step";
     return k === 1 ? w : /[a-z]$/.test(w) ? w + "s" : w + " steps";
   };
-  /** the most conformers a step can be asked to run on before the search has run */
-  const CONF_MAX = 50;
 
   /** How many conformers of a CREST search a step after it runs on (a
    *  stack, one member per conformer: _c1 ... _cK, conformer 1 the lowest,
@@ -4053,7 +4051,10 @@
       }
     }
     const N = confs.length;
-    const max = N || CONF_MAX;
+    // before the search has run there is no bound: a member past the ensemble
+    // it finds is FILTERED without running, and the ΔE condition is what
+    // decides how many run
+    const max = N || Infinity;
     const one = !!opts.one;
     let k = Math.max(1, Math.min(max, one ? int(opts.at) || 1 : 5));
     /** @type {number|null} */ let de = null;
@@ -4079,8 +4080,8 @@
         `<p class="qe-note">${known}</p>
         <div class="qe-ircrow">
           <label class="qe-rlab">${one ? "conformer" : "conformers"} <input class="qe-input qe-ircnum" type="number" data-f="k"
-            min="1" max="${max}" step="1" value="${k}" aria-label="${esc((one ? "Conformer number" : "How many conformers") + ", 1 to " + max)}"></label>
-          <span class="qe-note">${one ? "1 is the lowest" : "the lowest first, one step each, stacked"}${N ? "" : " (1 to " + max + ")"}</span>
+            min="1"${N ? ` max="${N}"` : ""} step="1" value="${k}" aria-label="${esc((one ? "Conformer number" : "How many conformers") + (N ? ", 1 to " + N : ", 1 or more"))}"></label>
+          <span class="qe-note">${one ? "1 is the lowest" : "the lowest first, one step each, stacked"}${N ? "" : "; those past the ensemble it finds end filtered"}</span>
         </div>
         ${one ? "" : `<div class="qe-ircrow">
           <label class="qe-rlab">pass on ΔE ≤ <input class="qe-input qe-condnum" data-f="de" inputmode="decimal" spellcheck="false"

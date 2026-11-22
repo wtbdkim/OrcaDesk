@@ -61,6 +61,19 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   check, nothing fetched until you ask.
 
 ### Changed
+- **CREST suggests every solvent it has parameters for.** The solvent list
+  grew from 10 to the 25 ALPB solvents of xtb (aniline, benzaldehyde,
+  benzene, CH2Cl2, CS2, dioxane, DMF, ethanol, ethyl acetate, furane,
+  hexadecane, nitromethane, octanol, wet octanol, phenol, …), and under GBSA
+  it offers only the 14 GBSA has. Another name is still passed as typed.
+- **No cap on how many conformers a step takes before CREST has run.** It
+  was 50; a member past the ensemble the search finds ends filtered without
+  running, and the ΔE condition decides how many actually run. Once the
+  search has run, the cap is the number it found.
+- **The rail's meters say they are reservations.** *Cores reserved* and
+  *Memory reserved*, with a tooltip: the memory figure is what the run's
+  budget sets aside (ORCA `%maxcore` × cores, 3 GB an MLIP job, 128 MB per
+  CREST thread), not what the jobs use — a CREST search uses far less.
 - **Install CREST fetches a pinned release and checks it.** It downloads
   CREST 3.0.2 by its tag instead of whatever release is newest, and compares
   the archive's SHA-256 before unpacking it. A file that does not match is

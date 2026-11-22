@@ -386,16 +386,21 @@
   function occupancy(r) {
     const box = NB.el("div", "railres");
     /** @param {string} label @param {number} used @param {number} budget @param {string} unit */
-    const meter = (label, used, budget, unit) => {
+    /** @param {string} [tip] what the figure is, on hover */
+    const meter = (label, used, budget, unit, tip) => {
       const pct = budget > 0 ? Math.min(100, Math.round((used / budget) * 100)) : 0;
-      return `<div class="meter">
+      return `<div class="meter"${tip ? ` title="${NB.esc(tip)}"` : ""}>
         <div class="res-line"><span>${NB.esc(label)}</span>
           <span>${used}${unit} / ${budget > 0 ? budget + unit : "auto"}</span></div>
         <div class="res-bar"><span style="width:${pct}%"></span></div>
       </div>`;
     };
-    box.innerHTML = meter("Cores", r.cores_used, r.cores_budget, "")
-      + meter("Memory", Math.round(r.ram_used_mb / 1024), Math.round(r.ram_budget_mb / 1024), " GB")
+    // both are what the run's budget sets aside for the jobs it admitted, not
+    // what they use: cores are declared (exact), memory is an estimate
+    box.innerHTML = meter("Cores reserved", r.cores_used, r.cores_budget, "",
+                          "Cores the running jobs declared (%pal nprocs, CREST -T, the MLIP thread cap), against the run's budget.")
+      + meter("Memory reserved", Math.round(r.ram_used_mb / 1024), Math.round(r.ram_budget_mb / 1024), " GB",
+              "What the run's budget sets aside for the running jobs, not what they use: ORCA %maxcore × cores, 3 GB an MLIP job, 128 MB per CREST thread (a search uses far less; under WSL its real use is inside the WSL VM). Before a second job starts, the machine's free memory is checked too.")
       + `<div class="meter wide"><div class="res-line"><span>Running</span>
            <span>${r.jobs} of ${r.max_jobs || "as many as fit"}</span></div></div>`;
     return box;

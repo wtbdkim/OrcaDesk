@@ -792,6 +792,12 @@ margin-bottom 8px; 11.5px mono; --muted-foreground`, the job count in
 `--foreground` 600 and `/` separators at 0.45 opacity. Shown only while a
 parallel run actually holds cores (`jobs > 0 && max_jobs > 1`); a one-at-a-time
 run needs no budget readout, so it stays hidden.
+The notebook's rail draws the same figures as meters labelled **Cores
+reserved** and **Memory reserved**, each with a tooltip saying what it is: what
+the run's budget sets aside for the jobs it admitted, never what they use
+(cores are declared and exact; memory is the estimate of `core/resources.py`,
+far above what a CREST search takes, whose real use under WSL sits inside the
+WSL VM).
 
 > Any component that sets its own `display` **must** pair it with a
 > `[hidden] { display: none; }` rule (`.queue-resources[hidden]`,
