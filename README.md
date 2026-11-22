@@ -274,6 +274,49 @@ ORCA executable, workspace folder, MLIP environments, CREST, per-step defaults
 graph's options. A **dark and a light theme** are a click apart (☀ / ☽ in the
 top bar).
 
+## What ORCAdesk downloads or installs for you
+
+Nothing, until you ask. Three actions fetch third-party software, each under
+its own license. ORCAdesk does not redistribute any of it: your machine
+downloads it from the upstream sources named here.
+
+- **Settings → MLIP environments → Create** builds a Python environment with
+  pip: **PyTorch** (BSD-3-Clause; the GPU build also brings NVIDIA's CUDA
+  libraries, under NVIDIA's own terms) from download.pytorch.org, then
+  **mace-torch** (MIT) or **SevenNet** (`sevenn`, MIT) from PyPI, with their
+  dependencies (among them ASE, LGPL-2.1-or-later). pip picks the current
+  versions.
+- **MACE model weights** are downloaded by mace-torch from the model authors'
+  GitHub the first time a model runs, and cached in `~/.cache/mace`. The
+  weights carry their own licenses, shown beside each model in the builder:
+
+  | Model | License |
+  |---|---|
+  | MACE-OFF small / medium / large (the default is MACE-OFF medium) | ASL |
+  | MACE-OMOL extra-large | ASL |
+  | MACE-MH-1, MACE-MH-1 omol | ASL |
+  | MACE-MP-0 small / medium / large | MIT |
+
+  The [Academic Software License (ASL)](https://github.com/gabor1/ASL) allows
+  **academic, non-commercial use only**; commercial use needs a license from
+  the model's authors. Sources: [mace-off](https://github.com/ACEsuit/mace-off),
+  [mace-mp](https://github.com/ACEsuit/mace-mp),
+  [mace-foundations](https://github.com/ACEsuit/mace-foundations) and the
+  [MACE-MH-1 model card](https://huggingface.co/mace-foundations/mace-mh-1).
+- **Settings → CREST → Install CREST** downloads **CREST 3.0.2** from
+  [github.com/crest-lab/crest](https://github.com/crest-lab/crest), checks its
+  SHA-256, and only then unpacks it into `~/.local/opt/crest` (inside the WSL
+  distribution on Windows). CREST is LGPL-3.0, and so are the xTB methods built
+  into it ([tblite](https://github.com/tblite/tblite)); the separate `xtb`
+  program is not installed.
+
+Please cite the models and CREST in work that uses them.
+
+ORCAdesk sends **no telemetry** and has no update check. Apart from the
+downloads above, it does not use the network: its window shows only pages
+bundled with the app, and the phone-sync server (not in the packaged app) runs
+only when started from source.
+
 ## Limitations
 
 - ORCAdesk is **beta**. Parsers and input generation are checked against real

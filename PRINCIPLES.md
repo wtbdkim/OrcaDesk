@@ -118,7 +118,11 @@ path a hand-built one would be. What is *not* scriptable stays the user's job
 and is named as a prerequisite rather than attempted — a WSL distro, a base
 Python interpreter — as is anything needing a compiler or an interactive
 session. ORCA is never provisioned: it is licensed, and its installer is
-interactive.
+interactive. What a provisioning step downloads is named, with its license,
+where the user starts it, and a binary fetched by URL is a pinned release
+checked against a recorded SHA-256 before it is unpacked — a mismatch fails
+and runs nothing (`crest/installer.py`; pip installs come from PyPI and
+download.pytorch.org over HTTPS at the versions pip resolves).
 
 **When a job could go either way, the terminal decides.** Analysing a result is
 ORCAdesk's own work; only *producing* one is a toolchain's — the line falls

@@ -532,6 +532,31 @@ def test_parse_mace_model_unknown_label_falls_back_to_off_medium(label):
     assert parse_mace_model(label) == ("mace_off", "medium", "")
 
 
+# ---------------------------------------------------------------------------
+# 4b. every offered model's weights have their licence recorded
+# ---------------------------------------------------------------------------
+
+def test_every_offered_mace_model_has_exactly_one_licence_recorded():
+    """The builder labels each model with the licence of its weights, read from
+    data/mace_licenses.json. A model added to the picker but not there would be
+    offered unlabelled; one listed twice would be labelled by chance."""
+    from orcamgr.state.store import load_choice_groups
+    offered = [m for g in load_choice_groups("mace_models").values() for m in g]
+    recorded = [m for g in load_choice_groups("mace_licenses").values() for m in g]
+    assert sorted(recorded) == sorted(offered)
+
+
+@pytest.mark.parametrize("model, licence", [
+    # checked against the primary sources named in data/mace_licenses.json
+    ("MACE-OFF small", "ASL"), ("MACE-OFF medium", "ASL"), ("MACE-OFF large", "ASL"),
+    ("MACE-OMOL extra-large", "ASL"), ("MACE-MH-1", "ASL"), ("MACE-MH-1 omol", "ASL"),
+    ("MACE-MP-0 small", "MIT"), ("MACE-MP-0 medium", "MIT"), ("MACE-MP-0 large", "MIT"),
+])
+def test_each_mace_models_licence_is_the_one_its_authors_state(model, licence):
+    from orcamgr.state.store import load_choice_groups
+    assert model in load_choice_groups("mace_licenses")[licence]
+
+
 def test_write_mlip_run_files_records_model_arg_and_charge_spin(tmp_path):
     """The worker config carries the resolved loader + model arg and the calc's
     charge/multiplicity (OMol25 / multi-head models read them; MACE-OFF/MP don't)."""

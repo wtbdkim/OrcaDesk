@@ -1,0 +1,12 @@
+{
+  "_source": "The licence of each model's WEIGHTS in mace_models.json, grouped by licence (mace-torch itself, the code, is MIT). Checked 2026-11-22 against the primary sources: MACE-OFF23 = ASL (github.com/ACEsuit/mace-off LICENSE.md and README 'License'; mace-torch 0.3.16 mace_off docstring). MACE-MP-0 = MIT (github.com/ACEsuit/mace-mp LICENSE; the model table in the github.com/ACEsuit/mace-foundations README; mace-torch mace_mp docstring). MACE-OMOL-0 = ASL (mace-foundations README table; mace-torch mace_omol docstring). MACE-MH-0/1 = ASL (mace-foundations README table; model card huggingface.co/mace-foundations/mace-mh-1 'License'); 'MACE-MH-1 omol' is the same mh-1 weights with another head. ASL full text: github.com/gabor1/ASL (clause 13: academic non-commercial use only). Loaded through load_choices like any option list; web/next/build.js (MODEL_LICENSES) words each group key. Every model in mace_models.json must be listed here exactly once (tests/test_mlip.py).",
+  "ASL": {
+    "_note": "Academic Software License: academic research or other not-for-profit scholarly use only; commercial use needs a separate licence from the authors.",
+    "keywords": ["MACE-OFF small", "MACE-OFF medium", "MACE-OFF large",
+                 "MACE-OMOL extra-large", "MACE-MH-1", "MACE-MH-1 omol"]
+  },
+  "MIT": {
+    "_note": "MIT licence: no restriction on use.",
+    "keywords": ["MACE-MP-0 small", "MACE-MP-0 medium", "MACE-MP-0 large"]
+  }
+}

@@ -2024,6 +2024,21 @@ The Settings sheet, closed with unsaved edits, asks once (§13.1, three-way):
 focused). Escape or a click outside the prompt is Cancel and never Discard
 (D61). Changing a field and changing it back is not "unsaved".
 
+**17.4w Third-party terms are said where the choice is made.** What a click
+downloads, and the license it comes under, is stated beside that click, not
+only in a README. The MACE model picker suffixes every option with the license
+of its weights (`MACE-OFF medium · ASL`) and keeps one `.hint` under the row
+(`data-x="licnote"`) that names the selected model's license, what it allows
+(*ASL — academic, non-commercial use only*) and where its full text is, as plain
+text: the page has no way to open a link outside the app, and a link inside it
+would navigate the window away. A model no license group lists says so rather
+than showing nothing. The queue window's MLIP set editor adds the same sentence
+to its hint for the model its text names (the default's, when it names none).
+Settings → MLIP environments and Settings → CREST each carry one `.hint` under
+their buttons naming what *Create* / *Install CREST* fetches, from where and
+under which licenses — for CREST, that the download is a pinned release checked
+against its SHA-256. Existing classes only; no new rule in `app.css`.
+
 **17.5 It is the only front-end.** The classic window and the switch between
 the two are removed (unreleased), and with them the Settings sheet's Interface
 card (the switch) and Appearance card (the Liquid-Glass style and its intensity

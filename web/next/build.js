@@ -50,7 +50,8 @@
   async function loadChoices() {
     if (_loaded) return;
     const names = ["functionals", "basis_sets", "calculation_types",
-                   "scf_convergences", "ri_approximations", "solvents", "mace_models"];
+                   "scf_convergences", "ri_approximations", "solvents", "mace_models",
+                   "mace_licenses"];
     await Promise.all([...names.map(async n => {
       const g = await NB.call("load_choices", n);
       CHOICES[n] = (g && !g.error) ? g : {};
@@ -2280,6 +2281,37 @@
              placeholder="${NB.esc(ph)}"></div>`;
   }
 
+  /** What each group of data/mace_licenses.json means, in the words the
+   *  picker shows. WHICH model is under which licence is data (checked against
+   *  each model's own card and repository, sources in that file); only the
+   *  wording is here. The weights are what is licensed -- mace-torch, the code
+   *  that downloads them, is MIT. */
+  const MODEL_LICENSES = {
+    ASL: { label: "ASL — academic, non-commercial use only",
+           where: "Full terms:", url: "github.com/gabor1/ASL" },
+    MIT: { label: "MIT license", where: "Terms:", url: "github.com/ACEsuit/mace-mp" },
+  };
+  /** The licence group `model` is listed under, or "" when none lists it.
+   *  @param {string} model @returns {string} */
+  function licenseOf(model) {
+    const g = CHOICES.mace_licenses || {};
+    return Object.keys(g).filter(k => k.charAt(0) !== "_")
+      .filter(k => items(g, k).indexOf(model) >= 0)[0] || "";
+  }
+  /** The line under the model picker, as escaped markup (the model and the
+   *  address in .mono): the model's licence, where its full text is -- plain
+   *  text, since a link would navigate the app's own window away -- and when
+   *  the weights are fetched. @param {string} model @returns {string} */
+  function licenseNote(model) {
+    const code = licenseOf(model);
+    const L = MODEL_LICENSES[code];
+    const m = `<span class="mono">${NB.esc(model)}</span>`;
+    return (!code ? `${m}: license not recorded here; check the model's own page before you use it.`
+      : L ? `${m}: ${NB.esc(L.label)}. ${NB.esc(L.where)} <span class="mono">${NB.esc(L.url)}</span>.`
+      : `${m}: ${NB.esc(code)}.`)
+      + " mace-torch downloads the weights the first time a model runs.";
+  }
+
   /** Whether some READY environment's torch sees a CUDA device: the GPU is
    *  offered only then, since the worker would die loading a device it lacks. */
   function mlipCuda() {
@@ -2312,7 +2344,8 @@
         ? `<option value="${NB.esc(model)}" selected>${NB.esc(model)} (not in the list)</option>` : "")
         + Object.keys(groups).filter(g => g.charAt(0) !== "_").map(g =>
           `<optgroup label="${NB.esc(g)}">${items(groups, g).map(o => `<option value="${
-            NB.esc(o)}"${o === model ? " selected" : ""}>${NB.esc(o)}</option>`).join("")}</optgroup>`).join("");
+            NB.esc(o)}"${o === model ? " selected" : ""}>${NB.esc(o)}${
+            licenseOf(o) ? " · " + NB.esc(licenseOf(o)) : ""}</option>`).join("")}</optgroup>`).join("");
       const envs = (NB.backends.mlip && NB.backends.mlip.envs) || [];
       const envId = cfg.mlip_env_id || "";
       const envOpts = [["", "First ready"]].concat(envs.map(e =>
@@ -2332,6 +2365,7 @@
                             ["cuda", cuda ? "GPU (CUDA)" : "GPU (CUDA) — none detected", !cuda]], dev)}
           ${text("CPU threads", cfg.nprocs || d.default_nprocs || DEF.nprocs, "narrow", "number")}
         </div>
+        <p class="hint" data-x="licnote" style="margin:0 0 8px">${licenseNote(model)}</p>
         <p class="hint" data-x="threadsnote" style="margin:0 0 8px">${threadsNote(dev)}</p>
         <p class="hint" style="margin:0">Charge and multiplicity are read by the OMol25 and
           multi-head models (ions, radicals); MACE-OFF and MACE-MP ignore them.</p>
@@ -2500,6 +2534,17 @@
       if (n && devSel) n.textContent = threadsNote(devSel.value);
     };
     if (devSel) devSel.addEventListener("change", sayDevice);
+    // the licence line follows the model picked (each model's weights carry
+    // their own licence, and some are academic-only)
+    const modelSel = /** @type {any} */ (
+      [...el.querySelectorAll('[data-bk="mlip"] .field')].filter(f => {
+        const l = f.querySelector("label");
+        return l && l.textContent.trim() === "MACE model";
+      }).map(f => f.querySelector("select"))[0] || null);
+    if (modelSel) modelSel.addEventListener("change", () => {
+      const n = q('[data-x="licnote"]');
+      if (n) n.innerHTML = licenseNote(modelSel.value);
+    });
 
     /** Show, lock or unlock against what the poll last said. Called now and
      *  after every poll; it writes only what changed, so a field being typed
@@ -2546,5 +2591,16 @@
   }
   NB.watch(() => { if (_syncBackends) _syncBackends(); });
 
-  NB.build = { open: open, target: target, place: place, cellFor: cellFor, KINDS: KINDS };
+  /** The licence line for a model named in an MLIP set's text (the queue
+   *  editor's set editor): the builder's own words, once the lists are in.
+   *  Escaped markup, like licenseNote. @param {string} model @returns {Promise<string>} */
+  async function modelLicenseNote(model) {
+    await loadChoices();
+    // a set with no model line runs the default model, whose licence counts too
+    const m = model || DEF.mlip_model || "";
+    return m ? (model ? "" : "No model line, so the default runs. ") + licenseNote(m) : "";
+  }
+
+  NB.build = { open: open, target: target, place: place, cellFor: cellFor, KINDS: KINDS,
+               licenseNote: modelLicenseNote };
 })();

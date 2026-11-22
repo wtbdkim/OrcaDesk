@@ -394,6 +394,18 @@
   function detectKind(text) {
     return /^\s*(backend|model|mlip)\b/im.test(text) && !/^\s*!/m.test(text) ? "MLIP" : "ORCA";
   }
+  /** The model an MLIP set's text names, read as the store reads it
+   *  (state/inpsets.py mlip_config_from_text: `key value`, # comments, the
+   *  last `model` line wins), or "" when it names none. @param {string} text */
+  function mlipModelOf(text) {
+    let model = "";
+    String(text || "").split("\n").forEach(raw => {
+      const line = raw.split("#")[0].trim();
+      const sp = line.indexOf(" ");
+      if (sp > 0 && line.slice(0, sp).toLowerCase() === "model") model = line.slice(sp + 1).trim();
+    });
+    return model;
+  }
   /** an ORCA job keyword, the vocabulary a ! line's job is read in */
   const JOB_WORD = /^(OPT|TIGHTOPT|LOOSEOPT|VERYTIGHTOPT|COPT|ZOPT|OPTTS|SCANTS|FREQ|NUMFREQ|ANFREQ|IRC|SP)$/i;
   /** The calculation kind an input's own job line says (a dropped or
@@ -2629,10 +2641,19 @@
         mv.hidden = false;
         mv.textContent = `Put ${JOB} on the ! line where the job keyword goes: each block's Type fills it in.`;
       }
-      q('[data-f="ph"]').textContent = k === "MLIP"
-        ? "One setting per line: model, device (auto, cpu, cuda), nprocs, env."
+      const ph = q('[data-f="ph"]');
+      const mlipPh = "One setting per line: model, device (auto, cpu, cuda), nprocs, env.";
+      ph.textContent = k === "MLIP" ? mlipPh
         : JOB + " the block's job, from its Type (TightOpt, OptTS, Freq, IRC, SP ...; ORCAdesk adds the %geom / %irc block that job needs unless the text has its own) · "
           + GEOM + " the block's coordinates · {{CHARGE}} {{MULT}} its charge and multiplicity · {{HESS}} optional: an IRC reads the Hessian of the step before it by itself.";
+      // the model's licence, as the builder's picker says it: some MACE
+      // weights are for academic, non-commercial use only
+      if (k === "MLIP") {
+        const text = d.text;
+        NB.build.licenseNote(mlipModelOf(text)).then(t => {
+          if (t && d.text === text && ph.isConnected) ph.innerHTML = esc(mlipPh) + " " + t;
+        });
+      }
     };
     sync();
     const typed = () => {

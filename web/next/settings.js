@@ -177,6 +177,13 @@
             <span class="sp" style="flex:1"></span>
             <span class="hint" style="margin:0" data-a="e-state"></span>
           </div>
+          <p class="hint" style="margin:10px 0 0">Create downloads PyTorch (BSD-3-Clause; a GPU
+            build also brings NVIDIA's CUDA libraries, under NVIDIA's own terms) and the backend
+            — <span class="mono">mace-torch</span> or <span class="mono">sevenn</span>, both
+            MIT — with their dependencies (ASE is LGPL-2.1+), from PyPI and
+            <span class="mono">download.pytorch.org</span>. The MACE model weights download the
+            first time a model runs, each under its own license: several are ASL, for academic,
+            non-commercial use only. The builder shows each model's license.</p>
         </div>
 
         <div class="scard">
@@ -191,6 +198,11 @@
             <span class="sp" style="flex:1"></span>
             <span class="hint" style="margin:0" data-a="c-state"></span>
           </div>
+          <p class="hint" style="margin:10px 0 0">Install CREST downloads a pinned CREST release
+            (the static Linux build) from <span class="mono">github.com/crest-lab/crest</span> and
+            checks its SHA-256 before unpacking it; a file that does not match is deleted, never
+            run. CREST is LGPL-3.0, and so are the xTB methods built into it (tblite); the
+            separate <span class="mono">xtb</span> program is not installed.</p>
         </div>
 
         <div class="scard">

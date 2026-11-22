@@ -157,6 +157,35 @@ ORCA 입력 전체라서, 수준 하나를 모든 계산 종류에 쓸 수 있�
   바로 실행합니다. 다음 계산은 에너지가 가장 낮은 이성질체로 시작하고, 모든
   이성질체는 각각 `.xyz`로 저장됩니다.
 
+## ORCAdesk가 대신 내려받거나 설치하는 것
+
+요청하기 전에는 아무것도 내려받지 않습니다. 아래 세 동작만 제3자 소프트웨어를
+받아 오며, 각각 자체 라이선스를 따릅니다. ORCAdesk가 재배포하는 것이 아니라,
+사용자의 컴퓨터가 아래 원 배포처에서 직접 받습니다.
+
+- **Settings → MLIP environments → Create**: pip로 Python 환경을 만듭니다.
+  **PyTorch**(BSD-3-Clause, GPU 빌드에는 NVIDIA 자체 약관을 따르는 CUDA
+  라이브러리도 포함)는 download.pytorch.org에서, **mace-torch**(MIT) 또는
+  **SevenNet**(`sevenn`, MIT)과 그 의존성(ASE는 LGPL-2.1 이상 등)은 PyPI에서
+  받습니다. 버전은 pip가 고르는 최신 버전입니다.
+- **MACE 모델 가중치**: 모델을 처음 실행할 때 mace-torch가 모델 저자들의
+  GitHub에서 받아 `~/.cache/mace`에 저장합니다. 가중치마다 라이선스가 따로
+  있으며, 빌더의 모델 목록에 함께 표시됩니다. MACE-OFF(small/medium/large,
+  기본값은 MACE-OFF medium), MACE-OMOL extra-large, MACE-MH-1(omol 헤드 포함)은
+  [ASL](https://github.com/gabor1/ASL), MACE-MP-0(small/medium/large)은 MIT입니다.
+  **ASL은 학술·비상업적 사용만 허용**하며, 상업적 사용에는 모델 저자들의 별도
+  라이선스가 필요합니다. 출처는 [README.md](README.md#what-orcadesk-downloads-or-installs-for-you)에 있습니다.
+- **Settings → CREST → Install CREST**: [github.com/crest-lab/crest](https://github.com/crest-lab/crest)에서
+  **CREST 3.0.2**를 받아 SHA-256을 확인한 뒤에만 `~/.local/opt/crest`(Windows에서는
+  WSL 배포판 안)에 풉니다. CREST는 LGPL-3.0이며, 그 안에 들어 있는 xTB
+  방법(tblite)도 LGPL-3.0입니다. 별도의 `xtb` 프로그램은 설치하지 않습니다.
+
+이 모델들과 CREST를 쓴 연구에서는 해당 문헌을 인용해 주세요.
+
+ORCAdesk는 **원격 측정(telemetry)을 보내지 않고** 업데이트 확인도 하지 않습니다.
+위의 내려받기 외에는 네트워크를 쓰지 않습니다. 창에는 앱에 함께 들어 있는 페이지만
+표시되고, 휴대폰 연동 서버(배포판에는 없음)는 소스에서 직접 실행할 때만 동작합니다.
+
 ## 한계
 
 - ORCAdesk는 **베타**입니다. 파서와 입력 생성은 ORCA 6.1.1 출력으로

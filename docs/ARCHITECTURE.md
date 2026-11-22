@@ -1858,7 +1858,13 @@ the name. Overflow otherwise surfaces as an opaque `OSError` at the *end* of a
 finished download (2.5 GB for a GPU env), so `path_budget_error()` refuses up
 front and names the number of characters to cut; `long_paths_enabled()` (the
 `LongPathsEnabled` registry value) lifts the gate entirely. The device is never
-guessed: `has_nvidia_gpu()` only *defaults* the choice and warns. Bridge slots
+guessed: `has_nvidia_gpu()` only *defaults* the choice and warns. Unlike the
+CREST installer, these are pip installs at the current versions pip resolves
+(PyPI over HTTPS, torch from `download.pytorch.org`) — not pinned or hashed by
+ORCAdesk. The Settings card names what *Create* downloads and under which
+licences: PyTorch (BSD-3-Clause; a GPU build also brings NVIDIA's CUDA
+libraries under NVIDIA's terms), mace-torch / sevenn (both MIT), their
+dependencies (ase is LGPL-2.1-or-later). Bridge slots
 `get_mlip_install_options` / `get_mlip_install_status` / `create_mlip_env` /
 `cancel_mlip_install` follow the probe pattern (background thread + UI polling,
 guarded by `_mlip_install_lock`); on success the env is appended to
@@ -1872,7 +1878,7 @@ the backend's own block (`backendForm` in `build.js`, see the front-end
 section): the shared name / charge / multiplicity row (charge and multiplicity
 used only by charge/spin-aware models — OMol25 / multi-head; MACE-OFF/MP
 ignore them), a MACE-model dropdown (options in `data/mace_models.json`, served
-via `load_choices`), a **CPU threads** field (`StepConfig.nprocs`, seeded from
+via `load_choices`) **labelled with each model's licence**, a **CPU threads** field (`StepConfig.nprocs`, seeded from
 `Settings.default_nprocs`) that both caps the worker and is what the core
 budget charges the job, and the shared **geometry source** (coordinates **or**
 a reference to another queued calc). It adds a calc of the kind chosen by its
@@ -1907,6 +1913,37 @@ row's *edit* opens the builder on that backend's own form and saves through
 needed. The form is **locked** until some MLIP env is ready (`backendState`,
 from the `get_mlip_status` poll), and the save handler refuses on its own
 (P44).
+
+**Each model's weights carry their own licence, and the picker says it.**
+ORCAdesk never ships or downloads weights itself: the worker calls
+`mace_off` / `mace_mp` / `mace_omol`, and mace-torch fetches the file on first
+use into its cache (`~/.cache/mace`) from the authors' GitHub —
+`raw.githubusercontent.com/ACEsuit/mace-off` for MACE-OFF23,
+`github.com/ACEsuit/mace-mp/releases` for MACE-MP-0, and
+`github.com/ACEsuit/mace-foundations/releases` for MACE-OMOL-0 and MACE-MH-1
+(the URLs in mace-torch 0.3.16's `foundations_models.py`). The licences differ
+and some forbid commercial use, the default MACE-OFF medium among them, so
+`data/mace_licenses.json` groups every offered model by its weights' licence —
+**ASL** (Academic Software License, github.com/gabor1/ASL: academic,
+non-commercial use only): MACE-OFF small/medium/large, MACE-OMOL extra-large,
+MACE-MH-1 (and its omol head); **MIT**: MACE-MP-0 small/medium/large. Each
+entry was checked against its primary source, recorded in the file's
+`_source`: the mace-off `LICENSE.md` and README, the mace-mp `LICENSE`, the
+model table in the mace-foundations README, the MACE-MH-1 model card on
+Hugging Face, and mace-torch's own docstrings. (The mace-foundations
+*repository* `LICENSE` is MIT; that covers its scripts, while its README table
+gives OMOL-0 and MH-0/1 as ASL.) The file goes through `load_choices` like any
+option list, so neither the bridge nor the store changed; `build.js` loads it,
+words each group (`MODEL_LICENSES`: label + where the full terms are), suffixes
+every option with its group (`MACE-OFF medium · ASL`) and keeps a line under
+the picker (`data-x="licnote"`, `licenseNote`) on the selected model's licence;
+a model typed in that no group lists says the licence is not recorded. The
+queue editor's MLIP-set editor shows the same line for the set's `model` line
+(the default's, when there is none) through `NB.build.licenseNote`.
+`tests/test_mlip.py` pins that every offered model is listed exactly once and
+the verified grouping; `tests/test_next_ui.py` that every group has wording.
+The weights' licence is not repeated in the run: mace-torch itself prints its
+ASL notice into the calculation's `.out`.
 
 **Running MLIP jobs.** The run pipeline mirrors `core/` but lives in
 `orcamgr/mlip/` (kept off ORCA's path): `runner.py` (`MlipRunner` +
@@ -1996,6 +2033,36 @@ static release tarball onto a target + symlink — fully scriptable, so ORCAdesk
 auto-installs CREST; on Windows the one manual prerequisite is a WSL distro
 existing, and on macOS it refuses up front rather than fetching a Linux binary),
 plus the run pipeline (`runner.py`, `parser.py`).
+
+**The installer fetches one pinned release and checks it before unpacking.**
+`CREST_VERSION` / `CREST_ASSET` name the release (`v3.0.2`,
+`crest-gnu-12-ubuntu-latest.tar.xz` — the GNU/OpenBLAS static build), and
+`CREST_RELEASE_URL` is built from the tag; `/releases/latest/` is never used,
+because it moves under the user (it resolved to v3.0.2 when this was pinned;
+the `latest` *tag* is a rolling prerelease). `CREST_SHA256` is that asset's
+SHA-256. v3.0.2 predates GitHub's published asset digests, so it was computed:
+the asset downloaded twice (tag URL and `/releases/latest/` redirect, both
+8,764,012 bytes) and hashed with `sha256sum` and `certutil`, all agreeing.
+`install_script()` renders the bash the transport runs: pre-flight
+(`tar`/`xz`, `curl`/`wget`, and a hash tool — `sha256sum`, else `shasum`, else
+`openssl`; none is exit 96, not an unchecked install), download into a
+`mktemp -d` that the `EXIT` trap deletes, compare, and only then remove the old
+`~/.local/opt/crest` and extract. A mismatch is exit 97 with an
+`ORCAdesk-ERR:` sentence naming both hashes and saying the file was deleted
+unpacked and unrun and nothing was changed — it reaches the Settings card
+through `install_error` like every other installer diagnostic, and an existing
+CREST survives it (the removal comes after the check). `tests/test_crest_installer.py`
+pins the order, the pin and the message, fakes the transport for both
+platforms, and runs the script for real (Linux bash, or Git for Windows' bash —
+never `System32\bash.exe`, which is WSL) against a local archive with a wrong
+and then the right hash. **Bumping the release**: change `CREST_VERSION`,
+download the new asset, take its SHA-256 (from the release's own digest where
+GitHub shows one, otherwise compute it as above) into `CREST_SHA256`, and
+update the version named in `README.md` / `README.ko.md`. What is installed is
+CREST, LGPL-3.0-or-later (`LICENSE` + `LICENSE.LESSER` in the archive), whose
+binary includes the xTB methods through tblite (LGPL-3.0-or-later); the
+separate `xtb` program is not installed. Settings → CREST says so under the
+Install button, with where it comes from.
 
 **Running CREST jobs** mirrors the *ORCA* runner (not the MLIP one) because a
 CREST run is long and must survive ORCAdesk closing. `QueueEngine._run_crest_calc`

@@ -319,6 +319,26 @@ def test_the_default_mace_model_is_one_the_picker_lists():
     assert "DEFAULT_MACE_MODEL" in body
 
 
+def test_the_model_picker_says_each_models_licence():
+    """Some MACE weights are under the Academic Software License (academic,
+    non-commercial use only), the default among them, so the picker labels
+    every model and says what its licence allows and where the full text is.
+    Which model is under which licence is data (data/mace_licenses.json); the
+    builder only words each group, so every group needs its words."""
+    from orcamgr.state.store import load_choice_groups
+    src = _read(NEXT / "build.js")
+    assert '"mace_licenses"' in src, "the builder no longer loads the licence groups"
+    words = src[src.index("const MODEL_LICENSES"):]
+    words = words[:words.index("};")]
+    for code in load_choice_groups("mace_licenses"):
+        assert re.search(rf"\b{re.escape(code)}: \{{ label:", words), \
+            f"MODEL_LICENSES has no wording for the {code} group"
+    assert "github.com/gabor1/ASL" in words      # where the ASL's full text is
+    assert 'data-x="licnote"' in src             # the line under the picker
+    # the queue editor's MLIP set text names a model too
+    assert "NB.build.licenseNote(" in _read(NEXT / "qed.js")
+
+
 # ---------------------------------------------------------------- two windows
 
 def test_the_page_lays_itself_out_by_its_window():

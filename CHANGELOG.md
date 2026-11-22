@@ -5,6 +5,31 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **The MACE model picker says each model's license.** Every model is
+  labelled with the license of its weights (`MACE-OFF medium · ASL`), and the
+  line under the picker says what that license allows and where its full text
+  is. MACE-OFF, MACE-OMOL and MACE-MH-1 (the default, MACE-OFF medium, among
+  them) are under the Academic Software License: academic, non-commercial use
+  only. MACE-MP-0 is MIT. The queue window's MLIP set editor shows the same
+  line for the model its text names.
+- **Settings says what Create and Install download, and under which
+  licenses.** MLIP environments: PyTorch (BSD-3-Clause, plus NVIDIA's CUDA
+  libraries in a GPU build), mace-torch or sevenn (MIT) and their
+  dependencies. CREST: where it comes from, that CREST and the xTB methods
+  built into it are LGPL-3.0, and that the separate xtb program is not
+  installed.
+- README: a section on what ORCAdesk downloads or installs for you, with
+  each component's license, and the network use: no telemetry, no update
+  check, nothing fetched until you ask.
+
+### Changed
+- **Install CREST fetches a pinned release and checks it.** It downloads
+  CREST 3.0.2 by its tag instead of whatever release is newest, and compares
+  the archive's SHA-256 before unpacking it. A file that does not match is
+  deleted without being unpacked or run, the install fails with a message
+  that says so, and a CREST already installed is left as it was.
+
 ## [0.11.3] — 2026-11-20
 
 ### Added
