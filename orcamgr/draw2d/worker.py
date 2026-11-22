@@ -65,17 +65,104 @@ def main():
         print(json.dumps({"ok": False, "error": "RDKit could not read these atoms."}))
         return
     method, note = "bonds", ""
-    mol = Chem.Mol(raw)
-    try:
-        rdDetermineBonds.DetermineBonds(mol, charge=charge)
-        Chem.Kekulize(mol, clearAromaticFlags=True)
-    except Exception as e:
+    pt = Chem.GetPeriodicTable()
+    ORD = {1: Chem.BondType.SINGLE, 2: Chem.BondType.DOUBLE, 3: Chem.BondType.TRIPLE}
+
+    def tidy(m):
+        # xyz2mol leaves charge-separated pairs (S2+ with O-, C+ next to C-):
+        # each bond between opposite charges becomes one order higher with
+        # both charges a step nearer zero -- only while the result sanitizes
+        # and the total |charge| strictly drops (nitro's N+/O- stays). Pairs
+        # with a terminal atom first, so a sulfonyl becomes S=O, not N=S.
+        rw = Chem.RWMol(m)
+        while True:
+            tot = sum(abs(a.GetFormalCharge()) for a in rw.GetAtoms())
+            cands = []
+            for b in rw.GetBonds():
+                a, c = b.GetBeginAtom(), b.GetEndAtom()
+                if a.GetFormalCharge() * c.GetFormalCharge() >= 0 or b.GetBondTypeAsDouble() >= 3:
+                    continue
+                cands.append((0 if min(a.GetDegree(), c.GetDegree()) == 1 else 1, b.GetIdx()))
+            moved = False
+            for _, bi in sorted(cands):
+                t = Chem.RWMol(rw)
+                tb = t.GetBondWithIdx(bi)
+                tb.SetBondType(ORD[int(round(tb.GetBondTypeAsDouble())) + 1])
+                for at in (tb.GetBeginAtom(), tb.GetEndAtom()):
+                    q = at.GetFormalCharge()
+                    at.SetFormalCharge(q - (1 if q > 0 else -1))
+                try:
+                    Chem.SanitizeMol(t)
+                    Chem.Kekulize(t, clearAromaticFlags=True)
+                except Exception:
+                    continue
+                if sum(abs(a.GetFormalCharge()) for a in t.GetAtoms()) < tot:
+                    rw, moved = t, True
+                    break
+            if not moved:
+                return rw.GetMol()
+
+    # Partial bonds (a transition state's forming / breaking bonds) are far
+    # longer than covalent: over PARTIAL x the covalent-radius sum. Measured on
+    # an NBS bromination TS: N...Br 1.16, Br...C 1.18, every real bond <= 1.05.
+    # Bond orders assigned THROUGH them come out as a spray of formal charges
+    # (20 on a neutral molecule), so they are left out of the assignment, drawn
+    # as plain lines, and their atoms' charges are not shown.
+    PARTIAL = 1.10
+    conn = Chem.Mol(raw)
+    rdDetermineBonds.DetermineConnectivity(conn)
+    pos = conn.GetConformer()
+    partial = []
+    for b in conn.GetBonds():
+        i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+        rc = (pt.GetRcovalent(conn.GetAtomWithIdx(i).GetAtomicNum())
+              + pt.GetRcovalent(conn.GetAtomWithIdx(j).GetAtomicNum()))
+        if rc > 0 and (pos.GetAtomPosition(i) - pos.GetAtomPosition(j)).Length() / rc > PARTIAL:
+            partial.append((i, j))
+    core = Chem.RWMol(conn)
+    for i, j in partial:
+        core.RemoveBond(i, j)
+    core = core.GetMol()
+    # without the partial bonds the fragments' charges no longer have to add
+    # up to the molecule's: the molecule's first, then the nearest others
+    tries = [charge] if not partial else [charge, charge - 1, charge + 1, charge - 2, charge + 2]
+    mol, err = None, ""
+    for c in tries:
+        trial = Chem.Mol(core)
+        try:
+            rdDetermineBonds.DetermineBondOrders(trial, charge=c)
+            Chem.Kekulize(trial, clearAromaticFlags=True)
+        except Exception as e:
+            err = err or (str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__)
+            continue
+        mol = tidy(trial)
+        break
+    ends = set(k for pair in partial for k in pair)
+    if mol is not None:
+        # what is left beyond the molecule's own charge, away from the partial
+        # bonds, means the assignment is not a Lewis structure worth drawing
+        left = sum(abs(a.GetFormalCharge()) for a in mol.GetAtoms() if a.GetIdx() not in ends)
+        if left > abs(charge) + 2:
+            err, mol = "it needs %d formal charges on a molecule of charge %d" % (left, charge), None
+    if mol is None:
         method = "connectivity"
-        msg = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
-        note = ("Bond orders could not be determined (" + msg[:160] + "); "
+        note = ("Bond orders could not be determined (" + err[:160] + "); "
                 "every bond is drawn single.")
         mol = Chem.Mol(raw)
         rdDetermineBonds.DetermineConnectivity(mol)
+    else:
+        rw = Chem.RWMol(mol)
+        for i, j in partial:
+            rw.AddBond(i, j, Chem.BondType.SINGLE)
+        for k in ends:
+            rw.GetAtomWithIdx(k).SetFormalCharge(0)
+            rw.GetAtomWithIdx(k).SetNumRadicalElectrons(0)
+        mol = rw.GetMol()
+        if partial:
+            sym = lambda k: mol.GetAtomWithIdx(k).GetSymbol() + str(k + 1)
+            note = ("Partial bonds (" + ", ".join(sym(i) + "..." + sym(j) for i, j in partial)
+                    + ", longer than 1.10 x covalent) are drawn as plain lines, left out of "
+                    "the bond-order assignment; their atoms' charges are not shown.")
     bonds = []
     for b in mol.GetBonds():
         o = b.GetBondTypeAsDouble() if method == "bonds" else 1.0
@@ -86,7 +173,7 @@ def main():
     centres = []
     try:
         m2 = Chem.Mol(mol)
-        if method == "connectivity":
+        if method == "connectivity" or partial:
             for a in m2.GetAtoms():
                 a.SetNoImplicit(True)
             m2.UpdatePropertyCache(strict=False)

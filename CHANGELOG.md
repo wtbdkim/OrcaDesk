@@ -19,9 +19,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   ChemDraw or ChemSketch to edit. Bond orders come from **RDKit**, which runs
   in a Python environment of its own — *Settings → 2D drawing* registers one
   or creates it (RDKit, BSD-3-Clause, with NumPy and Pillow from PyPI, about
-  50 MB). It is never part of ORCAdesk itself. When RDKit cannot assign bond
-  orders (a transition state, a metal complex, a charge that does not fit),
-  the drawing shows the connectivity with single bonds and says so. The total
+  50 MB). It is never part of ORCAdesk itself. A transition state's partial
+  bonds (longer than 1.10 × covalent) are drawn as plain lines but left out
+  of the bond-order assignment, so a TS draws as a clean Lewis structure
+  instead of a spray of formal charges, and charge-separated pairs RDKit
+  leaves (S²⁺/O⁻ in a sulfonyl, C⁺ next to C⁻) are folded into the bond
+  between them. When bond orders still cannot be assigned (a metal complex,
+  a charge that does not fit), the drawing shows the connectivity with single
+  bonds and says so. The total
   charge is the calculation's own and can be changed beside the drawing.
 - **Molecular orbitals on the 2D drawing, the textbook way.** The 2D
   structure pane has an **Orbital** choice (None by default; the run's

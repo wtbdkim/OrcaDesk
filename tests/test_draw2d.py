@@ -169,6 +169,53 @@ def test_real_worker_perceives_ethanol_and_falls_back_on_a_bad_charge():
     assert r["ok"] and r["method"] == "connectivity" and "single" in r["note"]
 
 
+def _xyz(text):
+    return [{"el": el, "x": float(x), "y": float(y), "z": float(z)}
+            for el, x, y, z in (line.split() for line in text.strip().splitlines())]
+
+
+# methanesulfonamide (MMFF): xyz2mol alone gives S2+ / O- / O-
+MESYLAMIDE = _xyz("""
+C 1.249181 0.031394 0.475893
+S -0.233468 -0.553768 -0.315104
+O -0.822119 -1.604875 0.479855
+O -0.002012 -0.691402 -1.733126
+N -1.253128 0.765492 -0.148410
+H 1.025808 0.263519 1.518747
+H 1.609484 0.913626 -0.056241
+H 1.994417 -0.765164 0.423282
+H -2.060779 0.512387 0.424132
+H -1.507384 1.128791 -1.069029
+""")
+
+# an SN2-like transition state [Cl...CH3...Cl]-: both C...Cl 2.14 A (1.2 x
+# covalent, inside RDKit's 1.3 connectivity factor), the partial bonds a TS
+# drawing must not turn into charges
+SN2_TS = _xyz("""
+C 0.000 0.000 0.000
+Cl 2.140 0.000 0.000
+Cl -2.140 0.000 0.000
+H 0.000 1.070 0.000
+H 0.000 -0.535 0.927
+H 0.000 -0.535 -0.927
+""")
+
+
+@pytest.mark.skipif(not os.environ.get("ORCADESK_RDKIT_PYTHON"),
+                    reason="set ORCADESK_RDKIT_PYTHON to an interpreter with RDKit")
+def test_real_worker_tidies_charge_separation_and_leaves_partial_bonds_out():
+    py = os.environ["ORCADESK_RDKIT_PYTHON"]
+    r = run_worker(py, MESYLAMIDE, 0, 1)
+    assert r["ok"] and r["method"] == "bonds" and r["note"] == ""
+    assert not any(r["charges"])                       # S=O, not S2+ / O-
+    assert sorted(o for *_ij, o in r["bonds"]).count(2) == 2
+    r = run_worker(py, SN2_TS, -1, 1)
+    assert r["ok"] and r["method"] == "bonds"
+    assert "Partial bonds" in r["note"] and "C1...Cl2" in r["note"].replace("Cl2...C1", "C1...Cl2")
+    assert len(r["bonds"]) == 5                        # the partial bonds still drawn
+    assert r["charges"][1] == 0 and r["charges"][2] == 0 and r["charges"][0] == 0
+
+
 # ---------------------------------------------------------------- MOL V2000
 
 def _drawing():

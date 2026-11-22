@@ -2286,12 +2286,30 @@ stdout  {"ok": true, "rdkit": "2026.09.2", "method": "bonds" | "connectivity",
         {"ok": false, "error": "..."}
 ```
 
-`DetermineBonds(mol, charge=...)` then `Kekulize(clearAromaticFlags=True)`
-(MOL wants 1/2/3). When that fails — a transition state, a metal (RDKit has no
-valences for Fe), a charge that does not fit — the worker falls back to
+`DetermineConnectivity`, then `DetermineBondOrders(mol, charge=...)` and
+`Kekulize(clearAromaticFlags=True)` (MOL wants 1/2/3), with two corrections
+measured on a real NBS-bromination TS (49 atoms, neutral), where plain
+`DetermineBonds` put **20** formal charges on the molecule:
+
+* **Partial bonds** — a connectivity bond longer than `PARTIAL` = 1.10 × the
+  covalent-radius sum (that TS: N…Br 1.16, Br…C 1.18; every real bond ≤ 1.05)
+  is removed before the bond orders are assigned and added back as a plain
+  single bond for drawing. Without them the fragments' charges need not add up
+  to the molecule's, so the molecule's charge is tried first, then ±1, ±2.
+  Their atoms' formal charges and radicals are zeroed in the reply and `note`
+  names the partial bonds. They are not drawn dashed (decided: not yet).
+* **Charge-pair tidy** — a bond between opposite formal charges becomes one
+  order higher with both charges a step nearer zero, while the result still
+  sanitizes and the total |charge| strictly drops; pairs with a terminal atom
+  first. xyz2mol's sulfonyl S²⁺(O⁻)₂ becomes S(=O)₂, a C⁺–C⁻ pair a double
+  bond; nitro's N⁺/O⁻ cannot take the bond and stays.
+
+After both, more than |charge| + 2 formal charges away from the partial bonds
+counts as a failed assignment. When the assignment fails — a metal (RDKit has
+no valences for Fe), a charge that does not fit — the worker falls back to
 `DetermineConnectivity` with every bond single and says so in `note`
-(`method: "connectivity"`); TS partial bonds are not drawn as such, only what
-the connectivity gives. Stereocentres come from `AssignStereochemistryFrom3D`
+(`method: "connectivity"`). Tests: the opt-in real-RDKit tests in
+`tests/test_draw2d.py` pin both (methanesulfonamide, an SN2-like TS). Stereocentres come from `AssignStereochemistryFrom3D`
 + `FindMolChiralCenters(includeUnassigned=True)`. `run_worker` validates the
 reply against the atoms it sent (indices in range, orders 1–3, per-atom lists
 of the right length) and adds a note when RDKit's unpaired-electron count
