@@ -448,6 +448,61 @@
  */
 
 /**
+ * Mirror of the Python Draw2dInstallPayload: progress of the running (or
+ * last) 2D-drawing environment creation.
+ * @typedef {Object} Draw2dInstallPayload
+ * @property {"idle"|"running"|"done"|"error"} state
+ * @property {number} step
+ * @property {number} steps
+ * @property {string} label
+ * @property {string} error
+ * @property {boolean} cancelled
+ */
+
+/**
+ * Mirror of the Python Draw2dStatusPayload: Bridge.get_draw2d_status() and
+ * every 2D-drawing environment slot -- the add-on's whole state in one poll.
+ * @typedef {Object} Draw2dStatusPayload
+ * @property {"unset"|"checking"|"ready"|"error"} state
+ * @property {string} python       registered interpreter, or ""
+ * @property {string} version      its Python version, or ""
+ * @property {string} rdkit        RDKit version when it imports, or ""
+ * @property {string} message      one sentence: ready / why not
+ * @property {"checking"|"ready"} bases_state
+ * @property {BasePythonPayload[]} base_pythons   supported = RDKit has wheels
+ * @property {string} env_dir      where Create builds the environment
+ * @property {Draw2dInstallPayload} install
+ */
+
+/**
+ * Mirror of the Python Draw2dPerceptionPayload: draw2d_perceive() /
+ * get_draw2d_job() -- RDKit's bond perception for one structure.
+ * @typedef {Object} Draw2dPerceptionPayload
+ * @property {number} [job]
+ * @property {"running"|"done"|"error"|"idle"} [state]
+ * @property {string} [error]
+ * @property {"bonds"|"connectivity"} [method]
+ * @property {string} [note]
+ * @property {string} [rdkit]
+ * @property {number[][]} [bonds]          [i, j, order], 0-based
+ * @property {number[]} [charges]
+ * @property {number[]} [radicals]
+ * @property {number[]} [stereocentres]
+ * @property {number} [charge]
+ * @property {number} [multiplicity]
+ * @property {"calculation"|"output"|"request"|"default"} [charge_from]
+ */
+
+/**
+ * Mirror of the Python Draw2dSaveResult: draw2d_save().
+ * @typedef {Object} Draw2dSaveResult
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {string} [path]
+ * @property {boolean} [cancelled]   the user closed the Save dialog
+ */
+
+/**
  * One WSL distro probed for CREST (backs the "CREST ready" indicator).
  * @typedef {Object} CrestDistroPayload
  * @property {string} distro      distro name (`wsl -d <distro>`)

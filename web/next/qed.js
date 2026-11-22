@@ -4056,11 +4056,18 @@
     // decides how many run
     const max = N || Infinity;
     const one = !!opts.one;
-    let k = Math.max(1, Math.min(max, one ? int(opts.at) || 1 : 5));
+    // the count starts EMPTY: nothing is assumed for the user. Empty means
+    // every conformer the search found; before it has run there is nothing
+    // to take "all" of, so a number has to be typed
+    let k = one ? Math.max(1, Math.min(max, int(opts.at) || 1)) : N;
+    let typed = one;
     /** @type {number|null} */ let de = null;
     let bad = "";
-    const range = (/** @type {number} */ n) => n === 1 ? "conformer 1" : "conformers 1–" + n;
-    const label = () => one ? "Use conformer " + k
+    const range = (/** @type {number} */ n) => !typed && n === N ? (n === 1 ? "the only conformer" : "all " + n + " conformers")
+      : n === 1 ? "conformer 1" : "conformers 1–" + n;
+    const need = () => !one && k < 1;
+    const label = () => need() ? "Type how many conformers"
+      : one ? "Use conformer " + k
       : opts.wf ? `Paste on ${k} conformer${k === 1 ? "" : "s"} (${range(k)})`
       : `Add ${k} ${nounFor(opts.kind || "sp", k)} (${range(k)})`;
     const title = one ? "Take which conformer of " + crest.name + "?"
@@ -4080,8 +4087,8 @@
         `<p class="qe-note">${known}</p>
         <div class="qe-ircrow">
           <label class="qe-rlab">${one ? "conformer" : "conformers"} <input class="qe-input qe-ircnum" type="number" data-f="k"
-            min="1"${N ? ` max="${N}"` : ""} step="1" value="${k}" aria-label="${esc((one ? "Conformer number" : "How many conformers") + (N ? ", 1 to " + N : ", 1 or more"))}"></label>
-          <span class="qe-note">${one ? "1 is the lowest" : "the lowest first, one step each, stacked"}${N ? "" : "; those past the ensemble it finds end filtered"}</span>
+            min="1"${N ? ` max="${N}"` : ""} step="1" value="${one ? k : ""}"${one ? "" : ` placeholder="${N ? "all " + N : "how many"}"`} aria-label="${esc((one ? "Conformer number" : "How many conformers") + (N ? ", 1 to " + N + (one ? "" : "; empty for all") : ", 1 or more"))}"></label>
+          <span class="qe-note">${one ? "1 is the lowest" : "the lowest first, one step each, stacked"}${one ? "" : N ? "; empty: all of them" : "; those past the ensemble it finds end filtered"}</span>
         </div>
         ${one ? "" : `<div class="qe-ircrow">
           <label class="qe-rlab">pass on ΔE ≤ <input class="qe-input qe-condnum" data-f="de" inputmode="decimal" spellcheck="false"
@@ -4091,7 +4098,7 @@
         <p class="qe-note" data-tone="err" data-x="bad" role="alert" hidden></p>
         ${N ? `<div class="qe-conflist" data-x="list" aria-live="polite">${rows()}</div>` : ""}`,
         [{ label: "Cancel", cls: "btn-ghost", act: () => resolve(null) },
-         { label: label(), cls: "btn-primary", focus: true, act: () => resolve(bad ? null : { k: k, de: one ? null : de }) }]);
+         { label: label(), cls: "btn-primary", focus: true, act: () => resolve(bad || need() ? null : { k: k, de: one ? null : de }) }]);
       const box = NB.$("modal-body");
       const kin = /** @type {HTMLInputElement} */ (box.querySelector('[data-f="k"]'));
       const din = /** @type {HTMLInputElement|null} */ (box.querySelector('[data-f="de"]'));
@@ -4099,11 +4106,13 @@
       const list = /** @type {HTMLElement|null} */ (box.querySelector('[data-x="list"]'));
       const show = () => {
         badEl.hidden = !bad; badEl.textContent = bad;
-        foot().disabled = !!bad;
+        foot().disabled = !!bad || need();
         foot().textContent = label();
         if (list) list.innerHTML = rows();
       };
       const readK = (/** @type {boolean} */ clamp) => {
+        if (!one && kin.value.trim() === "") { typed = false; k = N; show(); return; }
+        typed = true;
         const v = parseInt(kin.value, 10);
         if (isFinite(v) && v >= 1 && v <= max) k = v;
         else if (clamp) { k = Math.max(1, Math.min(max, isFinite(v) ? v : k)); kin.value = String(k); }
@@ -4126,7 +4135,7 @@
         if (ev.key !== "Enter") return;
         ev.preventDefault();
         readK(true); readDe();
-        if (!bad) foot().click();
+        if (!bad && !need()) foot().click();
       }));
       show();
     });

@@ -2062,6 +2062,51 @@ their buttons naming what *Create* / *Install CREST* fetches, from where and
 under which licenses — for CREST, that the download is a pinned release checked
 against its SHA-256. Existing classes only; no new rule in `app.css`.
 
+**17.4x The 2D drawing is the 3D view, flattened — and an add-on says what it
+needs.** Results › Visual's strip ends with a **2D structure** tile whenever it
+holds a structure (`.viztype`, `d` = *beside the 3D view*). It is a way of
+looking at the structure on the stage, not a kind of its own: pressed, the
+stage splits (`.vizstage[data-split]`) — the 3D view keeps the left half and
+`.viz2d` takes the right; below the panel's own 1500px breakpoint the halves
+stack, 3D on top. The structure is whichever the stage holds (the Structure
+tile's geometry, or the frame picked in a set, whose list still steps through
+frames); from a surface tile it takes the first structure tile's atoms back.
+The stage's overlays (*Open in viewer* / *Display*, the element key, the
+caption) move with the 3D half. Any other tile closes the split.
+The drawing follows every drag (one redraw per animation frame) in exactly the
+3D view's orientation — x right, y up, never mirrored — on a **white paper**
+(`.d2paper`) in both themes: it is the figure as it will be saved and pasted,
+black ink on white like ChemDraw's, so it is data, not chrome (D1, as the ESP
+ramp's literal colours are). The preview's frame is the structure's bounding
+circle, so the drawing does not jump in scale while it turns; what is saved is
+cropped to the ink. Under the paper, `.d2bar`: *Wedge above* — a slider
+(5–60°, default 25°, §11.20: cheap to move, it only re-draws) with a fixed-width
+mono readout; *All H*; *Charge* (the calculation's own; a change re-perceives);
+then *Copy image* (the one non-ghost button) · *Save SVG* · *Save PNG* ·
+*Save MOL*. One `.d2note` line says where the bond orders came from (*Bond
+orders by RDKit 2026.09.2, for the calculation's charge.*) and turns `--warn`
+when it has to admit something: *Connectivity only — every bond single.* with
+RDKit's reason, a multiplicity RDKit's Lewis structure disagrees with, or *A
+bond at a stereocentre points almost straight at you — turn the structure a
+little so the wedges read unambiguously.*
+Not set up, the tile is still there (D41): the paper gives way to the card and
+one sentence says what is needed — *2D drawing is an add-on: it needs RDKit, in
+a Python environment of its own (ORCAdesk can create one — about 50 MB from
+PyPI).* — with **Set up in Settings**; an environment that fails its probe says
+why instead (*The 2D-drawing environment does not work: …*). The controls are
+disabled meanwhile, and the pane notices a set-up finishing without a reload.
+Settings carries a **2D drawing** card after CREST: a sentence on what it is,
+one `.envrow` (*RDKit environment*, `RDKit x · Python y`, the interpreter in
+mono, D42's badge: ready / checking / unusable, *Remove*), then *Create*
+(primary; disabled with the reason in its tooltip when an environment already
+works, while base Pythons are being found, or when none in RDKit's 3.9–3.15
+window exists) · *Register an existing one…* · *Re-check* · *Cancel* (while
+building), and the §17.4w `.hint`: what *Create* downloads (RDKit BSD-3-Clause,
+NumPy BSD-3-Clause, Pillow MIT-CMU, from PyPI, ~50 MB). *Remove* confirms and
+deletes nothing from disk. Not a reference landmark: the mockup has no 2D tile
+and no such card, so no uispec role moves; the new rules are one named block at
+the bottom of `app.css`.
+
 **17.5 It is the only front-end.** The classic window and the switch between
 the two are removed (unreleased), and with them the Settings sheet's Interface
 card (the switch) and Appearance card (the Liquid-Glass style and its intensity
@@ -2199,10 +2244,14 @@ columns:
   after an IRC or a CREST search the picker asks first, as for a step), and **Manual build…** (M).
   **After a CREST search, every add asks how many conformers it runs on**
   (the conformer picker, the IRC picker's recipe: choosing and confirming
-  separate): *conformers* (default 5, 1 to the ensemble's size once the
-  search has run, else 1 to 50 with the note that a member past the
-  ensemble it finds has no structure) and an optional *pass on ΔE ≤ … kcal/mol*
-  (empty: all pass), and ONE confirm button that says what it will do --
+  separate): *conformers* (**empty by default** -- nothing is assumed for
+  the user: empty is every conformer the search found, placeholder `all 38`;
+  a number is 1 to the ensemble's size. Before the search has run there is no
+  "all" and no upper bound: the field reads *how many* and the button
+  *Type how many conformers*, disabled, until one is typed, with the note
+  that a member past the ensemble it finds ends filtered) and an optional
+  *pass on ΔE ≤ … kcal/mol* (empty: all pass), and ONE confirm button that
+  says what it will do -- *Add 38 single points (all 38 conformers)*,
   *Add 5 single points (conformers 1–5)*, *Paste on 5 conformers (1–5)* for
   a workflow, *Use conformer 3* for a block's geometry. Once the search has
   run, its ensemble is listed small (`c3  1.24`, ΔE from the lowest, from
@@ -2485,3 +2534,4 @@ Same convention as PRINCIPLES.md Appendix A: **fix** / **accepted** /
 | B30 | The notebook front-end (§17) draws flat — the Liquid-Glass appearance variants (§16) are set from its Settings but rendered only by the classic window | D2, §17.5 | resolved (unreleased — the classic window and the Liquid-Glass variants are removed, so there is nothing left to render elsewhere; the notebook is the only front-end, draws flat, and no longer offers a style setting. History: accepted in 0.10.1 and narrowed as the MLIP/CREST builders, the 3D viewer, the Visual panel and the natural-orbital analysis landed) |
 | B32 | The notebook's top bar shows **all three backend pills** — ORCA, MLIP, CREST — whether or not MLIP/CREST were ever set up, where D41 hides an unadopted backend's pill. Asked for directly: the pills are how the user sees, at a glance and without opening Settings, what this machine can run. They follow D42's four states; CREST's probe `error` (a shell with no target carrying CREST, the never-installed case) reads *not set*, not *error*. Below 1320px the state word folds into the tooltip and the screen-reader text, the name and dot stay | D41 | accepted (0.10.1; unreleased — the classic window, which kept D41's hide-until-adopted, is removed, so this is now the desktop's only behaviour) |
 | B33 | §8 (tokens) and Part II (§9–§15) were extracted from the classic front-end's `web/style.css`, which is removed; they have not been re-mirrored against the notebook's `web/next/app.css`, so a value or a class name there may describe nothing that ships | P52, §8 | stale-doc (unreleased — Part I still binds; the notebook's exact values are its approved design's, §17.0) |
+| B34 | Results › Visual's **2D structure** tile is shown whether or not the 2D-drawing add-on was ever set up, where D41's scope clause hides an unadopted optional feature. Asked for directly: the tile is how the feature is found at all, and its half of the stage says what is needed and links to Settings rather than offering a pretend-enabled control (the controls stay disabled until the probe says ready) | D41 | accepted (unreleased; §17.4x) |

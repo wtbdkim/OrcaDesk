@@ -1353,6 +1353,26 @@ _MULT_RE = re.compile(r"Multiplicity\s+Mult\s+\.+\s*(\d+)")
 _MULT_SCAN_LINES = 4000
 
 
+_CHARGE_RE = re.compile(r"Total Charge\s+Charge\s+\.+\s*(-?\d+)")
+
+
+def read_charge(path) -> Optional[int]:
+    """The total charge of a run, read from its ``.out`` head the same bounded
+    way :func:`read_multiplicity` reads the multiplicity (the two lines sit
+    together in ORCA's input summary). None when unreadable or absent."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i >= _MULT_SCAN_LINES:
+                    break
+                m = _CHARGE_RE.search(line)
+                if m:
+                    return int(m.group(1))
+    except OSError:
+        return None
+    return None
+
+
 def read_multiplicity(path) -> Optional[int]:
     """The spin multiplicity of a finished run, read from its ``.out`` alone.
 

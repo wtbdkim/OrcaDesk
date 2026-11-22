@@ -32,6 +32,18 @@ interface OrcaBridge {
   get_mlip_install_status(): Promise<string>;  // MlipInstallPayload JSON
   create_mlip_env(payloadJson: string): Promise<string>;  // MlipInstallPayload | {error}
   cancel_mlip_install(): Promise<string>;      // MlipInstallPayload JSON
+  // 2D drawing add-on (orcamgr/draw2d/: an RDKit env of its own, a worker run in it)
+  get_draw2d_status(): Promise<string>;        // Draw2dStatusPayload JSON (first call starts base-Python detection)
+  pick_draw2d_python(): Promise<string>;       // raw path string ("" = cancelled)
+  set_draw2d_python(python: string): Promise<string>;  // Draw2dStatusPayload | {error}
+  remove_draw2d_env(): Promise<string>;        // Draw2dStatusPayload JSON (nothing deleted from disk)
+  check_draw2d(): Promise<string>;             // Draw2dStatusPayload JSON (re-probe + re-detect)
+  create_draw2d_env(payloadJson: string): Promise<string>;  // {base_python?} -> Draw2dStatusPayload | {error}
+  cancel_draw2d_install(): Promise<string>;    // Draw2dStatusPayload JSON
+  draw2d_perceive(payloadJson: string): Promise<string>;    // {source, atoms, charge|null} -> Draw2dPerceptionPayload (state "running"); poll get_draw2d_job
+  get_draw2d_job(): Promise<string>;           // Draw2dPerceptionPayload JSON (the latest job)
+  draw2d_save(payloadJson: string): Promise<string>;        // {format: svg|png|mol, source, name, svg?|png?|drawing?} -> Draw2dSaveResult
+  copy_draw2d_image(pngDataUri: string, svg: string): Promise<string>;  // OkResult JSON (Qt clipboard: image + image/svg+xml)
   // CREST (runs in WSL; separate from ORCA)
   get_crest_status(): Promise<string>;         // CrestStatusPayload JSON
   check_crest(): Promise<string>;              // CrestStatusPayload JSON (re-probe)

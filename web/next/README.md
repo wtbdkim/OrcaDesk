@@ -50,6 +50,7 @@ launching. Any port above 1024 works. It is off unless you set it.)
 | `settings.js` | the settings slide-over |
 | `viewer.js` | Structure (picking, measuring), Visual, natural orbitals |
 | `mvwin.js` | the pop-out viewer: frame walker, favourites, orbitals & maps |
+| `draw2d.js` | the 2D drawing beside the Visual stage (add-on): pure projection / stereo / SVG core (`NB.draw2d.core`, tested by `tests/web/draw2d.test.js`) and the pane |
 | `charts.js` | a cell's convergence trace, stage chain and progress row |
 | `mol.js` | every structure drawn (Avogadro-style display types, depth cues, the Display menu): the cell thumbnails and the interactive stages |
 

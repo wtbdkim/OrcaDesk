@@ -31,6 +31,7 @@ from ..mlip.env import (
     env_payload_checking, env_payload_error, env_payload_from_probe, aggregate_status,
     order_envs_by_readiness,
 )
+from ..draw2d import env as d2env
 from ..crest.env import (
     probe_all as crest_probe_all, aggregate_status as crest_aggregate_status,
 )
@@ -79,6 +80,8 @@ from ..state.schemas import (
     FepResult, GeomAtomPayload, GetCalcResult, GraphLinesResult, LoadResult,
     LogTailResult, OutputInfoResult, OutputLinesResult, OutputFindResult,
     MlipStatusPayload, MlipInstallPayload, MlipInstallOptionsPayload,
+    Draw2dStatusPayload, Draw2dInstallPayload, Draw2dPerceptionPayload,
+    Draw2dSaveResult,
     MutationResult, NboJobPayload, NboResultPayload, NmrPayload, OkResult,
     OrbitalPayload, SavedFileResult,
     ParsePayload, QrResult, ScanCoordPayload, ScanPointPayload,
@@ -231,6 +234,23 @@ class Bridge(QObject):
         # CREST probe generation (same stale-overwrite guard as MLIP's).
         self._crest_probe_seq = 0
         self._start_crest_probe()
+        # The 2D-drawing add-on (orcamgr/draw2d/): one registered RDKit
+        # interpreter, probed in the background like an MLIP env; base-Python
+        # detection for its Create runs lazily, on the first status poll (it
+        # launches every interpreter on the machine, and most sessions never
+        # open the card); the install and the bond-perception job are each a
+        # background thread the UI polls. One lock for all of it.
+        self._d2_lock = threading.Lock()
+        self._d2_env: dict = d2env.status_unset()
+        self._d2_probe_seq = 0
+        self._d2_bases: dict = {"state": "", "base_pythons": []}
+        self._d2_install: dict = {"state": "idle", "step": 0, "steps": 0,
+                                  "label": "", "error": "", "cancelled": False}
+        self._d2_installer = None
+        self._d2_job: dict = {"job": 0, "state": "idle"}
+        self._d2_job_seq = 0
+        if self.settings.draw2d_python:
+            self._start_d2_probe()
 
     # --- about / metadata ---
     @pyqtSlot(result=str)
@@ -333,6 +353,10 @@ class Bridge(QObject):
                     except (TypeError, ValueError):
                         continue
                     setattr(self.settings, key, max(lo, min(hi, val)))
+            # ...and they apply to a run already going, not only the next one
+            if any(k in data for k in ("max_concurrent_jobs", "max_total_cores",
+                                       "max_total_ram_mb")):
+                self.store.update_run_budget(self._budget())
             # opt-ETA mode: only accept known values
             if "eta_mode" in data and data["eta_mode"] in ("conservative", "eager"):
                 self.settings.eta_mode = data["eta_mode"]
@@ -729,6 +753,395 @@ class Bridge(QObject):
         if installer is not None:
             installer.cancel()
         return self.get_mlip_install_status()
+
+    # --- 2D drawing add-on (orcamgr/draw2d/, an RDKit env of its own) ---
+    def _d2_env_dir(self) -> Path:
+        from ..draw2d.installer import ENV_DIRNAME
+        return user_data_root() / ENV_DIRNAME
+
+    def _start_d2_probe(self) -> None:
+        """Probe the registered RDKit interpreter off the UI thread (importing
+        RDKit takes a second). A probe that finishes after the interpreter was
+        changed or removed -- or after a newer probe started -- is dropped."""
+        with self._d2_lock:
+            python = self.settings.draw2d_python
+            if not python:
+                self._d2_env = d2env.status_unset()
+                return
+            self._d2_env = d2env.status_checking(python)
+            self._d2_probe_seq += 1
+            seq = self._d2_probe_seq
+
+        def _worker() -> None:
+            try:
+                st = d2env.status_from_probe(d2env.probe_env(python))
+            except Exception as e:    # a crash must still publish (never stuck)
+                st = d2env.status_error(python, f"Probe failed: {e}")
+            with self._d2_lock:
+                if (self._d2_probe_seq == seq
+                        and self.settings.draw2d_python == python):
+                    self._d2_env = st
+
+        threading.Thread(target=_worker, daemon=True,
+                         name="orcadesk-draw2d-probe").start()
+
+    def _start_d2_bases(self) -> None:
+        """Detect base interpreters for Create (each is launched for its
+        version, so never on the UI thread)."""
+        with self._d2_lock:
+            if self._d2_bases.get("state") == "checking":
+                return
+            self._d2_bases = {"state": "checking", "base_pythons": []}
+
+        def _worker() -> None:
+            from ..draw2d.installer import base_pythons
+            try:
+                found = base_pythons()
+            except Exception as e:     # detection must never kill the card
+                found = []
+                self.store.append_log(
+                    f"2D drawing: base-Python detection failed: {e}", "warn")
+            with self._d2_lock:
+                self._d2_bases = {"state": "ready", "base_pythons": found}
+
+        threading.Thread(target=_worker, daemon=True,
+                         name="orcadesk-draw2d-bases").start()
+
+    def _d2_status_json(self) -> str:
+        """Draw2dStatusPayload. Takes the lock itself, so it is never called
+        with the lock held (P37)."""
+        with self._d2_lock:
+            env = dict(self._d2_env)
+            bases = dict(self._d2_bases)
+            inst = dict(self._d2_install)
+        return json.dumps(Draw2dStatusPayload(
+            state=env["state"], python=env["python"], version=env["version"],
+            rdkit=env["rdkit"], message=env["message"],
+            bases_state=bases.get("state") or "checking",
+            base_pythons=list(bases.get("base_pythons") or []),
+            env_dir=str(self._d2_env_dir()),
+            install=Draw2dInstallPayload(**inst)))
+
+    @pyqtSlot(result=str)
+    def get_draw2d_status(self) -> str:
+        """The add-on's whole state (Draw2dStatusPayload). The first call also
+        starts base-Python detection for Create."""
+        with self._d2_lock:
+            need = not self._d2_bases.get("state")
+        if need:
+            self._start_d2_bases()
+        return self._d2_status_json()
+
+    @pyqtSlot(result=str)
+    def pick_draw2d_python(self) -> str:
+        exe = "python.exe" if sys.platform.startswith("win") else "python"
+        filt = f"Python interpreter ({exe});;All files (*.*)"
+        path, _ = QFileDialog.getOpenFileName(
+            self.window, "Locate a Python interpreter that has RDKit", "", filt)
+        return path or ""
+
+    @pyqtSlot(str, result=str)
+    def set_draw2d_python(self, python: str) -> str:
+        """Register the RDKit interpreter (a folder pick is resolved to the
+        python inside it) and probe it."""
+        python = d2env.resolve_interpreter(python or "")
+        if not python:
+            return json.dumps(ErrorPayload(error="No interpreter path given."))
+        with self._d2_lock:
+            self.settings.draw2d_python = python
+        self.settings.save()
+        self._start_d2_probe()
+        return self._d2_status_json()
+
+    @pyqtSlot(result=str)
+    def remove_draw2d_env(self) -> str:
+        """Stop using the registered interpreter. Nothing is deleted from disk:
+        a Create-built environment stays where it is and Create adopts it."""
+        with self._d2_lock:
+            self.settings.draw2d_python = ""
+            self._d2_probe_seq += 1
+            self._d2_env = d2env.status_unset()
+        self.settings.save()
+        return self._d2_status_json()
+
+    @pyqtSlot(result=str)
+    def check_draw2d(self) -> str:
+        """Re-probe the interpreter and re-detect base Pythons."""
+        self._start_d2_probe()
+        self._start_d2_bases()
+        return self._d2_status_json()
+
+    @pyqtSlot(str, result=str)
+    def create_draw2d_env(self, payload_json: str) -> str:
+        """Build a venv with RDKit under user_data_root and register it on
+        success. {base_python?}: "" takes the best detected interpreter.
+        Returns at once; the UI polls get_draw2d_status(). Refuses while one is
+        already running -- two pips into one tree is corruption."""
+        from ..draw2d.installer import Draw2dEnvInstaller, venv_python
+        try:
+            data = json.loads(payload_json or "{}")
+            base = str(data.get("base_python") or "").strip()
+        except (json.JSONDecodeError, AttributeError) as e:
+            return json.dumps(ErrorPayload(error=str(e)))
+        env_dir = self._d2_env_dir()
+        with self._d2_lock:
+            running = self._d2_install.get("state") == "running"
+            if not running:
+                if not base:
+                    found = [b for b in self._d2_bases.get("base_pythons") or []
+                             if b.get("supported")]
+                    base = found[0]["python"] if found else ""
+                self._d2_install = {"state": "running", "step": 0, "steps": 3,
+                                    "label": "Starting…", "error": "",
+                                    "cancelled": False}
+                installer = self._d2_installer = Draw2dEnvInstaller()
+                in_use = [self.settings.draw2d_python]
+        if running:
+            return self._d2_status_json()
+
+        def _on_line(line: str) -> None:
+            self.store.append_log(f"[draw2d-install] {line}", "info")
+
+        def _on_step(i: int, total: int, label: str) -> None:
+            with self._d2_lock:
+                self._d2_install.update({"step": i, "steps": total, "label": label})
+
+        def _worker() -> None:
+            try:
+                res = installer.run(base, env_dir, on_line=_on_line,
+                                    on_step=_on_step, in_use=in_use)
+            except Exception as e:
+                res = {"ok": False, "python": "", "error": str(e), "cancelled": False}
+            if res.get("ok"):
+                python = res.get("python") or str(venv_python(env_dir))
+                with self._d2_lock:
+                    self.settings.draw2d_python = python
+                self.settings.save()
+                self._start_d2_probe()
+                self.store.append_log(
+                    f"2D drawing: RDKit environment ready at {env_dir}.", "ok")
+            elif res.get("cancelled"):
+                self.store.append_log("2D drawing: environment creation cancelled.",
+                                      "warn")
+            else:
+                self.store.append_log(
+                    "2D drawing: environment creation failed: "
+                    f"{res.get('error') or 'unknown error'}", "err")
+            with self._d2_lock:
+                self._d2_installer = None
+                self._d2_install = {
+                    "state": "done" if res.get("ok") else "error",
+                    "step": self._d2_install.get("step", 0), "steps": 3,
+                    "label": self._d2_install.get("label", ""),
+                    "error": "" if res.get("ok") else (res.get("error") or ""),
+                    "cancelled": bool(res.get("cancelled"))}
+
+        threading.Thread(target=_worker, daemon=True,
+                         name="orcadesk-draw2d-install").start()
+        return self._d2_status_json()
+
+    @pyqtSlot(result=str)
+    def cancel_draw2d_install(self) -> str:
+        """Stop a running Create (terminates pip)."""
+        with self._d2_lock:
+            installer = self._d2_installer
+        if installer is not None:
+            installer.cancel()
+        return self._d2_status_json()
+
+    def _d2_charge_for(self, source: str) -> tuple:
+        """(charge, multiplicity, where from) for the structure on show: the
+        queued calculation's own, else its .out's input summary, else 0/1."""
+        from ..core.parser import read_charge, read_multiplicity
+        src = (source or "").strip()
+        if src.startswith("file:"):
+            p = Path(src[5:])
+            out = p if p.suffix.lower() == ".out" else p.with_suffix(".out")
+            try:
+                if out.is_file():
+                    c = read_charge(out)
+                    if c is not None:
+                        return c, read_multiplicity(out) or 1, "output"
+            except (OSError, ValueError):
+                pass
+            return 0, 1, "default"
+        name = src[5:] if src.startswith("calc:") else src
+        calc = self.store.get(name) if name else None
+        if calc is not None:
+            return (int(getattr(calc, "charge", 0) or 0),
+                    int(getattr(calc, "multiplicity", 1) or 1), "calculation")
+        return 0, 1, "default"
+
+    @pyqtSlot(str, result=str)
+    def draw2d_perceive(self, payload_json: str) -> str:
+        """Start RDKit bond perception for one structure: {source, atoms:
+        [{el, x, y, z}], charge?: int|null} (null = the calculation's own,
+        _d2_charge_for). Returns {job, state: "running"} at once, or an error;
+        the UI polls get_draw2d_job(). Called once per structure -- the drawing
+        is redrawn in the front-end on every rotation, never here."""
+        from ..draw2d.worker import clean_atoms, run_worker
+        with self._d2_lock:
+            self._d2_job_seq += 1
+            job = self._d2_job_seq
+            python = self.settings.draw2d_python
+            ready = self._d2_env.get("state") == "ready"
+
+        def fail(msg: str) -> str:
+            res = Draw2dPerceptionPayload(job=job, state="error", error=msg)
+            with self._d2_lock:
+                if self._d2_job_seq == job:
+                    self._d2_job = dict(res)
+            return json.dumps(res)
+
+        if not python or not ready:
+            return fail("2D drawing needs a Python environment with RDKit — "
+                        "set one up in Settings › 2D drawing.")
+        try:
+            d = json.loads(payload_json or "{}")
+            atoms = clean_atoms(d.get("atoms"))
+            source = str(d.get("source") or "")
+            req_charge = d.get("charge")
+        except (json.JSONDecodeError, ValueError, AttributeError, TypeError) as e:
+            return fail(str(e) or "Unreadable request.")
+        charge, mult, origin = self._d2_charge_for(source)
+        if req_charge is not None:
+            try:
+                charge, origin = int(req_charge), "request"
+            except (TypeError, ValueError, OverflowError):
+                return fail("The charge must be a whole number.")
+        running = Draw2dPerceptionPayload(job=job, state="running", charge=charge,
+                                          multiplicity=mult, charge_from=origin)
+        with self._d2_lock:
+            self._d2_job = dict(running)
+
+        def _worker() -> None:
+            try:
+                r = run_worker(python, atoms, charge, mult, cwd=str(user_data_root()))
+            except Exception as e:
+                r = {"ok": False, "error": str(e)}
+            if r.get("ok"):
+                res = Draw2dPerceptionPayload(
+                    job=job, state="done", method=r["method"], note=r["note"],
+                    rdkit=r["rdkit"], bonds=r["bonds"], charges=r["charges"],
+                    radicals=r["radicals"], stereocentres=r["stereocentres"],
+                    charge=charge, multiplicity=mult, charge_from=origin)
+            else:
+                res = Draw2dPerceptionPayload(
+                    job=job, state="error", error=r.get("error") or "Failed.",
+                    charge=charge, multiplicity=mult, charge_from=origin)
+            with self._d2_lock:
+                if self._d2_job_seq == job:
+                    self._d2_job = dict(res)
+
+        threading.Thread(target=_worker, daemon=True,
+                         name="orcadesk-draw2d-job").start()
+        return json.dumps(running)
+
+    @pyqtSlot(result=str)
+    def get_draw2d_job(self) -> str:
+        """The latest perception job (Draw2dPerceptionPayload)."""
+        with self._d2_lock:
+            job = dict(self._d2_job)
+        return json.dumps(job)
+
+    @pyqtSlot(str, result=str)
+    def draw2d_save(self, payload_json: str) -> str:
+        """Save the drawing on screen through a Save dialog:
+        {format: "svg"|"png"|"mol", source, name?, svg?, png?, drawing?}.
+        svg is the text the front-end drew, png a data:image/png;base64 URI,
+        drawing the MOL writer's input (draw2d/molfile.py: the 2D coordinates
+        and wedge flags exactly as drawn -- one projection, not two). The
+        suffix is forced to the format's own and nothing is opened afterwards,
+        so openwith's default-deny rule is untouched. Draw2dSaveResult; closing
+        the dialog is {ok: false, cancelled: true}, not an error."""
+        import base64
+        import binascii
+        from ..draw2d.molfile import MolfileError, write_molblock
+        try:
+            d = json.loads(payload_json or "{}")
+            fmt = str(d.get("format") or "")
+        except (json.JSONDecodeError, AttributeError):
+            return json.dumps(Draw2dSaveResult(ok=False, error="Unreadable request."))
+        specs = {"svg": ("SVG image (*.svg)", ".svg"),
+                 "png": ("PNG image (*.png)", ".png"),
+                 "mol": ("MDL MOL file (*.mol)", ".mol")}
+        if fmt not in specs:
+            return json.dumps(Draw2dSaveResult(ok=False, error=f"Unknown format '{fmt}'."))
+        try:
+            if fmt == "svg":
+                text = str(d.get("svg") or "")
+                if not text.lstrip().startswith("<svg"):
+                    raise ValueError("There is no drawing to save.")
+                blob = text.encode("utf-8")
+            elif fmt == "png":
+                uri = str(d.get("png") or "")
+                head = "data:image/png;base64,"
+                if not uri.startswith(head):
+                    raise ValueError("There is no image to save.")
+                try:
+                    blob = base64.b64decode(uri[len(head):], validate=True)
+                except binascii.Error:
+                    raise ValueError("The image is unreadable.") from None
+                if not blob.startswith(b"\x89PNG"):
+                    raise ValueError("The image is not a PNG.")
+            else:
+                blob = write_molblock(d.get("drawing") or {}).encode("ascii")
+        except (MolfileError, ValueError, TypeError) as e:
+            return json.dumps(Draw2dSaveResult(ok=False, error=str(e)))
+        # start beside the result when it has a folder, else in the workspace
+        start = self._dialog_start_dir()
+        try:
+            run_dir, _base, _open, err = self._plot_source(str(d.get("source") or ""))
+            if not err and run_dir is not None and Path(run_dir).is_dir():
+                start = str(run_dir)
+        except (OSError, ValueError):
+            pass
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_",
+                      str(d.get("name") or "structure")).strip("._") or "structure"
+        filt, suffix = specs[fmt]
+        name = f"{stem}_2d{suffix}"
+        path, _ = QFileDialog.getSaveFileName(
+            self.window, "Save the 2D drawing",
+            str(Path(start) / name) if start else name, filt)
+        if not path:
+            return json.dumps(Draw2dSaveResult(ok=False, cancelled=True))
+        out = Path(path)
+        if out.suffix.lower() != suffix:
+            out = out.with_name(out.name + suffix)
+        try:
+            out.write_bytes(blob)
+        except OSError as e:
+            return json.dumps(Draw2dSaveResult(
+                ok=False, error=f"Could not write {out.name}: {e.strerror or e}"))
+        self.store.append_log(f"2D drawing saved: {out}", "ok")
+        return json.dumps(Draw2dSaveResult(ok=True, path=str(out)))
+
+    @pyqtSlot(str, str, result=str)
+    def copy_draw2d_image(self, png_data_uri: str, svg: str) -> str:
+        """Put the drawing on the clipboard as an image (PNG) and as SVG, so it
+        pastes into a document or a slide as a picture and into an SVG-aware
+        program as vectors. Through Qt rather than navigator.clipboard, whose
+        image writes QtWebEngine does not grant a page."""
+        import base64
+        import binascii
+        from PyQt6.QtCore import QMimeData
+        from PyQt6.QtGui import QGuiApplication, QImage
+        head = "data:image/png;base64,"
+        if not (png_data_uri or "").startswith(head):
+            return json.dumps(OkResult(ok=False, error="There is no image to copy."))
+        try:
+            blob = base64.b64decode(png_data_uri[len(head):], validate=True)
+        except binascii.Error:
+            return json.dumps(OkResult(ok=False, error="The image is unreadable."))
+        img = QImage.fromData(blob, "PNG")
+        if img.isNull():
+            return json.dumps(OkResult(ok=False, error="The image is unreadable."))
+        mime = QMimeData()
+        mime.setImageData(img)
+        if (svg or "").lstrip().startswith("<svg"):
+            mime.setData("image/svg+xml", svg.encode("utf-8"))
+        QGuiApplication.clipboard().setMimeData(mime)
+        return json.dumps(OkResult(ok=True))
 
     # --- CREST environment (WSL-backed, kept separate from ORCA) ---
     def _start_crest_probe(self) -> None:

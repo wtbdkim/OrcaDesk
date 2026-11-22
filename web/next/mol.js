@@ -1080,6 +1080,9 @@ var MOL = {};
     /** @type {IntersectionObserver|null} */
     let io = null;
 
+    /** told after every paint: the 2D drawing follows the view with it
+     *  (draw2d.js), and reads the view itself with view() @type {any} */
+    let viewer = null;
     const handle = { canvas: canvas, paint: paint };
     function paint() {
       _live.add(handle);
@@ -1088,6 +1091,7 @@ var MOL = {};
         gizmo: true, hotAxis: hotAxis, gizmoBottom: opts.gizmoBottom,
         labels: opts.labels !== false, chain: chain, hilite: hilite, picks: picks,
         arrows: vib && !vib.playing ? vib.arrows : null });
+      if (viewer) viewer();
     }
 
     /** The mode's coordinates at phase `p` (-1 … 1) of its swing. @param {number} p */
@@ -1546,6 +1550,18 @@ var MOL = {};
       },
       /** the mode on screen, if any: whether it is moving */
       vibState() { return vib ? { playing: vib.playing } : null; },
+      /** The orientation as render() projects with it: the matrix R
+       *  (row-major; view = R·(p − centre), x right, y up, z toward the
+       *  viewer), the centre it turns about, and the atoms themselves -- the
+       *  same array setAtoms was given, so a caller can tell a new structure
+       *  from a turned one by identity. */
+      view() {
+        return { R: R.slice(), cx: sc.cx, cy: sc.cy, cz: sc.cz, atoms: atoms };
+      },
+      /** Be told after every paint (a drag, a zoom, a new structure); null
+       *  stops it. One listener -- the 2D drawing beside this stage.
+       *  @param {(() => void)|null} fn */
+      onView(fn) { viewer = fn || null; },
       destroy() { stopVib(); if (ro) ro.disconnect(); _live.delete(handle); },
     };
   };

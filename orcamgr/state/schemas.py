@@ -298,6 +298,53 @@ class MlipInstallPayload(TypedDict):
     cancelled: bool
 
 
+class Draw2dInstallPayload(TypedDict):
+    """Progress of the running (or last) 2D-drawing environment creation --
+    the same shape as MlipInstallPayload."""
+    state: str                # "idle" | "running" | "done" | "error"
+    step: int                 # 1-based, 0 before the first step
+    steps: int                # total steps in the plan
+    label: str                # what that step is doing
+    error: str                # failure reason, or ""
+    cancelled: bool
+
+
+class Draw2dStatusPayload(TypedDict):
+    """Bridge.get_draw2d_status() and every 2D-drawing environment slot -- the
+    whole add-on picture in one poll: the registered interpreter's probe state
+    (D42: "unset" | "checking" | "ready" | "error"), what Create could build
+    from, and the install in flight."""
+    state: str                # "unset" | "checking" | "ready" | "error"
+    python: str               # registered interpreter, or ""
+    version: str              # its Python version, or ""
+    rdkit: str                # RDKit version when it imports, or ""
+    message: str              # one sentence: ready / why not
+    bases_state: str          # "checking" | "ready" -- base-Python detection
+    base_pythons: "list[BasePythonPayload]"   # supported = RDKit has wheels
+    env_dir: str              # where Create builds the environment
+    install: Draw2dInstallPayload
+
+
+class Draw2dPerceptionPayload(TypedDict, total=False):
+    """Bridge.draw2d_perceive() / get_draw2d_job() -- RDKit's bond perception
+    for one structure, run once per structure (the drawing itself is redrawn
+    in the front-end). `job` ties a reply to its request: a slow answer for a
+    frame the user has already left is recognised and dropped."""
+    job: int
+    state: str                # "running" | "done" | "error"
+    error: str
+    method: str               # "bonds" (RDKit orders) | "connectivity" (all single)
+    note: str                 # why orders are missing / a multiplicity remark, or ""
+    rdkit: str
+    bonds: "list[list[int]]"  # [i, j, order], 0-based
+    charges: "list[int]"      # formal charge per atom
+    radicals: "list[int]"     # unpaired electrons per atom
+    stereocentres: "list[int]"
+    charge: int               # the total charge perception was run with
+    multiplicity: int
+    charge_from: str          # "calculation" | "output" | "request" | "default"
+
+
 class CrestDistroPayload(TypedDict):
     """One TARGET probed for CREST (backs the "CREST ready" indicator). A target
     is a WSL distro on Windows and the single pseudo-target "local" elsewhere --
@@ -820,6 +867,14 @@ class SavedFileResult(_Ok, total=False):
     (open_path_external), and the front-end holds a calc name, not a path."""
     error: str
     path: str
+
+
+class Draw2dSaveResult(_Ok, total=False):
+    """draw2d_save -- one file written through a Save dialog. `cancelled` is
+    the user closing the dialog, which is not an error (A2)."""
+    error: str
+    path: str
+    cancelled: bool
 
 
 class ExportResult(_Ok, total=False):

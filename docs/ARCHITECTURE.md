@@ -12,7 +12,10 @@ The **automated test suite** (`tests/`, pytest + one plain-Node script) covers t
 framework-free layers: `state/` (store, schemas, session persistence), `core/`
 (queue-engine semantics with a fake runner, per-kind validation, input generator,
 parser on synthetic fixtures), `mlip/` (with a stdlib-only stub worker — no MACE
-env needed), `crest/` (ensemble parser against a real ethanol corpus in
+env needed), `draw2d/` (the RDKit probe against a fake `rdkit`
+package, the worker protocol with a stub script, the V2000 writer; one opt-in
+test runs the real worker when `ORCADESK_RDKIT_PYTHON` names an interpreter
+with RDKit), `crest/` (ensemble parser against a real ethanol corpus in
 `tests/crest/fixtures/`, CLI-flag building, the QueueEngine path via a fake
 runner — no WSL/CREST needed — and `test_crest_transport.py`, which renders the
 WSL *and* local `run_crest.sh` from either platform so neither shape is only
@@ -418,7 +421,10 @@ step panels, which share exactly one helper (`_fmtDuration`, re-exported on the
 namespace). The mobile PWA loads **only** `scf_graph.js`: it uses the SCF/geo
 graph alone, so it never ships the panel half. In node both files export the
 namespace, so `tests/web/scf_graph.test.js` requires `scf_graph.js` and then
-`progress_panels.js` for its side effect.
+`progress_panels.js` for its side effect. The 2D drawing's pure core
+(`web/next/draw2d.js`, `NB.draw2d.core`) is tested the same way by
+`tests/web/draw2d.test.js`, which runs the file in a `vm` context holding only
+an empty `NB` (the file defines functions at load time and touches no DOM).
 
 **One instance per user** (`orcamgr/gui/single_instance.py`, wired in
 `main.py` before `MainWindow` exists — the window restores the session and
@@ -2209,6 +2215,146 @@ not the ORCA one. The pipeline was validated end to end against a real MACE
 environment (MACE-OFF), including the MLIP→ORCA geometry handoff; those
 validation runs were performed locally; the unit suite covers the pipeline
 with a stub worker, and `tests/smoke` runs it against a real MACE env.
+
+## 2D drawing add-on (an RDKit environment of its own)
+
+Results › Visual's **2D structure** tile draws the structure on the stage as a
+ChemDraw-style 2D drawing **in exactly the 3D view's orientation**, redrawn on
+every frame of a drag, with wedge/hash bonds chosen from how far each bond
+leaves the screen. Its outputs are an image (*Copy image*, *Save SVG*, *Save
+PNG*) and an editable MDL MOL V2000 file (*Save MOL*) that ChemDraw and
+ChemSketch open.
+
+**Why an add-on in a separate environment.** Bond orders need chemistry —
+`rdkit.Chem.rdDetermineBonds.DetermineBonds` — and RDKit is a large compiled
+package ORCAdesk does not ship: it is not in `requirements*.txt`, nothing in
+the app imports it, and `build.spec` *excludes* it so a build machine that
+happens to have it cannot bundle it (the dev machine's own Python does). Like
+the MLIP environments the user registers a Python that has RDKit, or lets
+ORCAdesk create one, and ORCAdesk runs a worker in it as a subprocess. One
+environment, not a list: RDKit has no backends that conflict.
+
+`orcamgr/draw2d/` (Qt-free):
+
+- `env.py` — `probe_env(python)` imports `rdkit` **and**
+  `rdkit.Chem.rdDetermineBonds` in that interpreter (an RDKit older than
+  2022.09 imports and still cannot perceive bonds: "green" must mean the
+  worker will run, D42/P2). Same failure taxonomy as the MLIP probe: a
+  non-zero exit is "the interpreter did not start", not "RDKit missing"; the
+  probe's JSON line is found scanning backwards past banners. Wire states
+  `unset | checking | ready | error`.
+- `installer.py` — *Create*: `python -m venv user_data_root()/draw2d_env`,
+  `pip install --upgrade pip`, `pip install rdkit`. It reuses the MLIP
+  installer's machinery (base-interpreter detection, the streamed, cancellable
+  runner — `Draw2dEnvInstaller` subclasses `MlipEnvInstaller` and replaces only
+  `run`) with RDKit's own CPython window, **measured** against PyPI: rdkit
+  2026.09.2 ships cp310–cp315 wheels and a 3.9 base resolves to 2025.09.2.
+  A half-built env of its own (unregistered, no `rdkit` in site-packages,
+  only venv entries) is removed before a retry; an RDKit env already there
+  (Settings lost, or *Remove* used) is adopted instead of downloaded again;
+  anything else in the way is refused by name. What it downloads: RDKit
+  (BSD-3-Clause) + NumPy (BSD-3-Clause) + Pillow (MIT-CMU), ~45 MB of wheels,
+  ~150 MB installed.
+- `worker.py` — the worker is a **string constant run with `python -c`**,
+  never a file: a frozen build has no package sources on disk, and nothing
+  then has to be written anywhere (never under `resource_root()`). It is
+  parameter-free; the request arrives on stdin. Launched with
+  `cwd=user_data_root()` (so a stray module in the app's cwd cannot shadow an
+  import), a 90 s ceiling and a 500-atom limit checked before launch.
+- `molfile.py` — the V2000 writer, pure and validating (the front-end's
+  payload is a trust boundary): element symbols, finite coordinates, bond
+  orders 1–3, stereo flags 0/1/6, charges −15…15, ≤999 atoms/bonds. A wedge
+  flag on a double/triple bond is dropped (meaningless in V2000). Charges and
+  radicals are written as `M  CHG` / `M  RAD` so a program filling implicit
+  hydrogens does not "repair" a charged or open-shell atom; hidden hydrogens
+  are simply absent.
+
+**Worker protocol** — one JSON object each way:
+
+```
+stdin   {"atoms": [{"el", "x", "y", "z"}...], "charge": int, "multiplicity": int}
+stdout  {"ok": true, "rdkit": "2026.09.2", "method": "bonds" | "connectivity",
+         "note": "", "bonds": [[i, j, order]...], "charges": [...],
+         "radicals": [...], "stereocentres": [i...]}
+        {"ok": false, "error": "..."}
+```
+
+`DetermineBonds(mol, charge=...)` then `Kekulize(clearAromaticFlags=True)`
+(MOL wants 1/2/3). When that fails — a transition state, a metal (RDKit has no
+valences for Fe), a charge that does not fit — the worker falls back to
+`DetermineConnectivity` with every bond single and says so in `note`
+(`method: "connectivity"`); TS partial bonds are not drawn as such, only what
+the connectivity gives. Stereocentres come from `AssignStereochemistryFrom3D`
++ `FindMolChiralCenters(includeUnassigned=True)`. `run_worker` validates the
+reply against the atoms it sent (indices in range, orders 1–3, per-atom lists
+of the right length) and adds a note when RDKit's unpaired-electron count
+disagrees with the calculation's multiplicity. The charge is the queued
+calculation's own (`Calc.charge`), else the `.out`'s `Total Charge` line
+(`parser.read_charge`, the same bounded head scan as `read_multiplicity`),
+else 0 — and the pane can override it.
+
+**The split: chemistry once, geometry per frame.** The bridge runs the worker
+**once per structure** (`draw2d_perceive` → background thread →
+`get_draw2d_job` poll, a `job` number dropping a late answer for a structure
+the user has left); the front-end caches the answer per structure and charge.
+Everything that changes as the structure turns runs in `web/next/draw2d.js`
+on every redraw, throttled to one per animation frame through
+`stage.onView(fn)` — a listener `MOL.mount` calls after every paint — and
+`stage.view()`, which returns mol.js's own rotation matrix, the centre it turns
+about and the atom array (identity tells a new structure from a turned one).
+The pure core is `NB.draw2d.core`, tested in node by
+`tests/web/draw2d.test.js`:
+
+- **Projection.** `v = R·(p − c)` with mol.js's row-major `R`, exactly as
+  `render()` projects (`rx = R[0]x + R[1]y + R[2]z`, …). mol.js draws
+  `X = ox + rx·s`, `Y = oy − ry·s` and magnifies larger `rz`
+  (`k = D/(D − rz)`), so view space is **x right, y up, z toward the viewer**
+  — right-handed, the screen and not its mirror. The drawing is orthographic
+  (no perspective), in Å, y up, which is also MOL's convention; the SVG flips
+  y once. Verified end-to-end: 60 random views of L-alanine, each projected,
+  wedged, written as V2000 and read back by RDKit, gave the 3D structure's
+  CIP label 59 times — the one miss had its methyl 80° out of the plane,
+  drawn 0.27 Å long, which is why the pane warns when a bond at a stereocentre
+  exceeds 72° (`END_ON`).
+- **Stereo rule.** For each drawn single bond, `θ = asin(|Δz| / L)` (L the 3D
+  length); `θ ≤ threshold` (default 25°, the pane's slider) is a plain line,
+  otherwise a wedge (MOL 1) when the far end is nearer the viewer and a hash
+  (6) when it is farther. The narrow end — the bond's **first** atom in the
+  MOL file — is the better stereo anchor: a stereocentre, then a heavy atom
+  over H, then more heavy-atom neighbours, ties to the lower index (stable
+  while turning).
+- **Hydrogens and labels.** H is hidden except on stereocentres and on
+  heteroatoms (anything not C), or all shown with *All H*; carbon is an
+  unlabelled vertex unless it stands alone, is charged or is a radical, and a
+  labelled atom counts the hydrogens hidden on it (`CH4`).
+- **SVG drawn here, not by RDKit's MolDraw2DSVG.** A drag redraws sixty times
+  a second; a subprocess round trip per frame would make "real time" a
+  slideshow, and drawing it here keeps the style (ink, fonts, wedge widths)
+  one definition. The preview frames the structure's bounding circle (it does
+  not jump in scale while turning); the saved SVG/PNG is cropped to the ink on
+  white, PNG rasterised at 3× in the page.
+
+**Outputs.** `draw2d_save` opens a native Save dialog (starting in the
+result's folder, else the workspace), forces the format's suffix, and writes
+the SVG text, the decoded PNG (checked for the PNG signature) or — for MOL —
+`write_molblock(drawing)`, where `drawing` is the coordinates and flags the
+front-end just drew (`NB.draw2d.core.molInput`): **one projection**, never
+re-derived in Python. Nothing is opened afterwards, so `openwith.py`'s
+default-deny rule is untouched. `copy_draw2d_image` puts the PNG (as an image)
+and the SVG (`image/svg+xml`) on the clipboard through Qt — QtWebEngine does
+not grant a page `navigator.clipboard` image writes.
+
+**Bridge surface.** `get_draw2d_status` (Draw2dStatusPayload: env state,
+base Pythons for *Create* — detected lazily on the first poll, since it
+launches every interpreter on the machine — and the install's progress),
+`pick_draw2d_python`, `set_draw2d_python`, `remove_draw2d_env` (deletes
+nothing), `check_draw2d`, `create_draw2d_env`, `cancel_draw2d_install`,
+`draw2d_perceive`, `get_draw2d_job`, `draw2d_save`, `copy_draw2d_image`. One
+lock (`_d2_lock`) guards the state; `_d2_status_json` takes it itself and is
+never called under it (P37). The setting is `Settings.draw2d_python` (""
+= not set up). Linux runs it from source the same way: the only platform
+difference is the venv layout (`venv_python`), a `sys.platform` branch (P58).
+The phone server is unaffected.
 
 ## CREST environment (a WSL-backed third backend)
 

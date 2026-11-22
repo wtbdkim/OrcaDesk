@@ -71,6 +71,9 @@
    *  @type {Record<string, number>} */
   const _gridByKind = {};
   let _source = "";
+  /** The 2D drawing beside the stage while the "2D structure" tile is
+   *  pressed (draw2d.js), else null. @type {any} */
+  let _d2 = null;
 
   /** Elements present, for the legend — a key to colours that are actually on
    *  screen, rather than a periodic table. @param {any[]} atoms */
@@ -387,6 +390,7 @@
     const sec = NB.$("sec-visual");
     if (!sec) return;
     const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
+    if (_d2) { _d2.destroy(); _d2 = null; }
     if (_viz) _viz.destroy();
     _sd = d || {}; _ssrc = source;
     _mode.n = 0; _mode.m = null;
@@ -436,6 +440,10 @@
       : [];
     sets.forEach(s => tiles.push({
       n: s.label, d: `${s.count} ${s.count === 1 ? "frame" : "frames"}`, set: s }));
+    // The 2D drawing is a way of looking at the STRUCTURE on the stage, so it
+    // is offered wherever there is one -- and always, set up or not: an add-on
+    // that is not installed says what it needs in its own half (D41).
+    if (tiles.length) tiles.push({ n: "2D structure", d: "beside the 3D view", draw2d: true });
     const mos = picks.filter(p => p.kind === "mo");
     if (mos.length) {
       // the whole manifold is here, so the tile COUNTS it rather than naming
@@ -465,6 +473,8 @@
       if (!t) return;
       sec.querySelectorAll("[data-tile]").forEach(o => o.setAttribute(
         "aria-pressed", String(Number(/** @type {HTMLElement} */ (o).dataset.tile) === i)));
+      if (t.draw2d) { openDraw2d(sec, source, tiles); return; }
+      closeDraw2d(sec);
       if (t.structure) { loadStructure(sec); return; }
       leaveStructure(sec);
       if (t.set) loadSet(sec, t.set); else loadPicks(sec, source, d, t);
@@ -498,6 +508,44 @@
     // It opens on the first tile, which is the run's own structure whenever the
     // parse has one -- the picture the result is OF, before anything beside it.
     _selectTile(0);
+  }
+
+  /** The "2D structure" tile: split the stage, the 3D view on one side and
+   *  the drawing of exactly that view on the other (draw2d.js), following
+   *  every drag. It draws whatever structure the stage holds -- the parsed
+   *  geometry, or the frame picked in a set, which the list beside it still
+   *  steps through -- and when a surface had the stage, it takes the first
+   *  structure tile's atoms back first: a drawing of an isosurface is not a
+   *  thing. @param {HTMLElement} sec @param {string} source @param {any[]} tiles */
+  function openDraw2d(sec, source, tiles) {
+    const q = (k) => /** @type {any} */ (sec.querySelector(`[data-v="${k}"]`));
+    if (!_onStructure && !_setKey) {
+      const first = tiles.filter(t => t.structure || t.set)[0];
+      if (!first) return;
+      if (first.structure) loadStructure(sec);
+      else loadSet(sec, first.set);
+    }
+    const stage = q("vstage");
+    if (_d2) return;
+    stage.dataset.split = "1";
+    const host = NB.el("div", "viz2d");
+    host.setAttribute("data-v", "v2d");
+    stage.appendChild(host);
+    _d2 = NB.draw2d.mount(host, _viz, { source: source, name: title(source) });
+    if (_viz) _viz.repaint();
+  }
+
+  /** Put the stage back to one picture. @param {HTMLElement} sec */
+  function closeDraw2d(sec) {
+    if (!_d2) return;
+    _d2.destroy();
+    _d2 = null;
+    const stage = /** @type {HTMLElement} */ (sec.querySelector('[data-v="vstage"]'));
+    if (!stage) return;
+    delete stage.dataset.split;
+    const host = stage.querySelector('[data-v="v2d"]');
+    if (host) host.remove();
+    if (_viz) _viz.repaint();
   }
 
   /** The surfaces of one kind, on the left. The stage draws them in place now,

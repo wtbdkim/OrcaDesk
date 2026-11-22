@@ -230,6 +230,12 @@ A finished calculation opens as a report, read two ways: **Output** and
   **electrostatic potential map**. Each opens in the **3D viewer**: step
   through structures with ← / →, star the ones worth keeping (F), and export
   them.
+- **2D structure** (an add-on, set up in *Settings → 2D drawing*) splits the
+  stage: the 3D view on one side and, on the other, a ChemDraw-style 2D drawing
+  of exactly that view, redrawn as you turn it. Bond orders come from RDKit;
+  a bond leaving the screen by more than an adjustable angle (25° by default)
+  becomes a wedge (toward you) or a hash (away). *Copy image*, *Save SVG* /
+  *PNG*, or *Save MOL* for ChemDraw and ChemSketch to edit.
 - Surfaces come from the finished wavefunction (nothing is re-run), and the
   isovalue redraws instantly. *Show in folder* opens the run folder for your
   own programs (Avogadro, VMD, ChimeraX).
@@ -284,7 +290,7 @@ top bar).
 
 ## What ORCAdesk downloads or installs for you
 
-Nothing, until you ask. Three actions fetch third-party software, each under
+Nothing, until you ask. Four actions fetch third-party software, each under
 its own license. ORCAdesk does not redistribute any of it: your machine
 downloads it from the upstream sources named here.
 
@@ -317,6 +323,12 @@ downloads it from the upstream sources named here.
   distribution on Windows). CREST is LGPL-3.0, and so are the xTB methods built
   into it ([tblite](https://github.com/tblite/tblite)); the separate `xtb`
   program is not installed.
+- **Settings → 2D drawing → Create** builds a small Python environment of its
+  own (under ORCAdesk's user folder) with pip: **RDKit** (BSD-3-Clause) and the
+  two packages its wheel needs, **NumPy** (BSD-3-Clause) and **Pillow**
+  (MIT-CMU), from PyPI — about 50 MB, ~150 MB on disk. ORCAdesk runs it only to
+  perceive bond orders for the 2D drawing; it is never imported into ORCAdesk
+  itself, and not part of the Windows build.
 
 Please cite the models and CREST in work that uses them.
 

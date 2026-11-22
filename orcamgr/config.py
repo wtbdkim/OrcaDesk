@@ -161,6 +161,11 @@ class Settings:
     # so ORCAdesk runs its Linux binary through WSL (see orcamgr/crest/); the
     # binary is detected/installed per-distro, not stored here.
     crest_distro: str = ""
+    # The 2D-drawing add-on's interpreter: a Python environment that has RDKit
+    # ("" = not set up). Like the MLIP envs it is the user's (or one ORCAdesk
+    # created under user_data_root), never part of ORCAdesk's own runtime;
+    # readiness is probed in orcamgr/draw2d/env.py, not stored here.
+    draw2d_python: str = ""
     workspace_root: str = ""
     # default compute resources (used to seed the GUI)
     default_nprocs: int = 6

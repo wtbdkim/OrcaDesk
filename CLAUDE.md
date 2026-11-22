@@ -56,6 +56,7 @@ python tools/uidiff.py spec_mock.json spec_real.json   # exit code = differences
 # Automated tests (pip install -r requirements-dev.txt once) — fast, ~1200 tests
 python -m pytest
 node tests/web/scf_graph.test.js       # tracker/progress tests, no npm deps
+node tests/web/draw2d.test.js          # 2D drawing core (projection, stereo rule, SVG)
 
 # Real-backend smoke matrix (opt-in, ~1.5 h): one answer-known input per calc
 # kind through the real QueueEngine against YOUR ORCA/MACE/CREST. Run before a
@@ -117,6 +118,7 @@ testable). Where to look, by area (each is a section of `docs/ARCHITECTURE.md`):
 | Geometry | `core/structure.py`, `core/hessfile.py`, `core/normalmodes.py` | Reads only, except constraint-target Apply and push-along-mode. |
 | MLIP | `mlip/` | User's own env runs the worker; one env per MLIP; import-probe readiness. |
 | CREST | `crest/` (`shell.py` = transport) | WSL distro on Windows, `"local"` elsewhere; detected, never configured. |
+| 2D drawing (add-on) | `draw2d/`, `web/next/draw2d.js` | RDKit only in the user's own env (worker via `python -c`, once per structure); projection/stereo/SVG in JS per redraw; never bundled. |
 | Cubes / viewer | `core/plot.py`, `cube.py`, `molview.py`, `web/next/mvwin.js` | orca_plot driven by verified menu sequences; grid-qualified cube names. |
 | NBO | `nbo/` | ORCAdesk's own reimplementation — never presented as NBO-program-compatible (P5, A25). |
 | Text encoding | `textio.py` | ORCA `.out` on Windows is mixed UTF-8 / ANSI; decode process output via `decode_process_output`. |
@@ -305,6 +307,7 @@ not optional: confirm it before committing, every time.
 Alongside the doc check, run the test suite before every commit that touches
 Python or the `SCFGraph` modules (`python -m pytest` and, for
 `scf_graph.js` / `progress_panels.js` changes,
-`node tests/web/scf_graph.test.js`) — the suite is fast and pins the
+`node tests/web/scf_graph.test.js`; for `web/next/draw2d.js`,
+`node tests/web/draw2d.test.js`) — the suite is fast and pins the
 principle contracts (P56). A red test is either a test bug or a product bug;
 never adjust a test to make wrong behavior pass.

@@ -5,6 +5,30 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **2D structure drawing, in exactly the 3D view's orientation (an add-on).**
+  Results › Visual has a **2D structure** tile: the stage splits, the 3D view
+  on one side and a ChemDraw-style drawing of the same structure on the other,
+  redrawn as you turn it — no re-layout, so a 3D-looking structure no longer
+  has to be drawn by hand. A bond leaving the screen by more than an
+  adjustable angle (25° by default) becomes a wedge (toward you) or a hash
+  (away), its narrow end on the stereocentre; hydrogens are hidden except on
+  stereocentres and heteroatoms (*All H* shows them all); heteroatoms and
+  charges are labelled. *Copy image*, *Save SVG*, *Save PNG*, and *Save MOL*
+  (V2000, with the drawn 2D coordinates, bond orders and wedge/hash flags) for
+  ChemDraw or ChemSketch to edit. Bond orders come from **RDKit**, which runs
+  in a Python environment of its own — *Settings → 2D drawing* registers one
+  or creates it (RDKit, BSD-3-Clause, with NumPy and Pillow from PyPI, about
+  50 MB). It is never part of ORCAdesk itself. When RDKit cannot assign bond
+  orders (a transition state, a metal complex, a charge that does not fit),
+  the drawing shows the connectivity with single bonds and says so. The total
+  charge is the calculation's own and can be changed beside the drawing.
+
+### Changed
+- **The conformer picker's count starts empty.** It assumed 5; empty now
+  means every conformer the search found (*Add 38 single points (all 38
+  conformers)*). Before the search has run, a number has to be typed.
+
 ### Fixed
 - **A calculation whose folder you moved by hand is found again.** Sorting
   finished runs into folders of your own (`{workspace}/project/series/{name}/`)

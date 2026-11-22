@@ -25,6 +25,10 @@
   let _crestTimer = null;
   /** an install was started from this sheet: report how it ended, once */
   let _crestInstallWatch = false;
+  /** the 2D-drawing card's poll, same lifetime as the MLIP one @type {any} */
+  let _d2Timer = null;
+  /** a Create was started from this sheet: report how it ended, once */
+  let _d2Watch = false;
 
   /** @param {string} label @param {string} key @param {string} [kind] @param {string} [hint] */
   function row(label, key, kind, hint) {
@@ -59,6 +63,8 @@
     _mlipTimer = null;
     clearInterval(_crestTimer);
     _crestTimer = null;
+    clearInterval(_d2Timer);
+    _d2Timer = null;
   }
 
   function render() {
@@ -206,6 +212,27 @@
         </div>
 
         <div class="scard">
+          <div class="scard-title">2D drawing</div>
+          <p class="scard-desc">An add-on. Results \u203a Visual\u2019s <b>2D structure</b> tile
+            draws the structure in exactly the 3D view\u2019s orientation, with wedges and
+            hashes, to copy or save as an image or a MOL file. Bond orders come from RDKit,
+            which runs in a Python environment of its own \u2014 never in ORCAdesk\u2019s.</p>
+          <div data-a="d2"><p class="hint" style="margin:0">Checking\u2026</p></div>
+          <div class="btn-group" style="margin-top:10px;align-items:center">
+            <button class="btn btn-sm btn-primary" type="button" data-a="d2-create">Create</button>
+            <button class="btn btn-sm btn-ghost" type="button" data-a="d2-register">Register an existing one\u2026</button>
+            <button class="btn btn-sm btn-ghost" type="button" data-a="d2-recheck">Re-check</button>
+            <button class="btn btn-sm btn-ghost" type="button" data-a="d2-cancel" hidden>Cancel</button>
+            <span class="sp" style="flex:1"></span>
+            <span class="hint" style="margin:0" data-a="d2-state"></span>
+          </div>
+          <p class="hint" style="margin:10px 0 0">Create builds a venv under ORCAdesk\u2019s
+            user folder and downloads RDKit (BSD-3-Clause) with NumPy (BSD-3-Clause) and Pillow
+            (MIT-CMU) from PyPI \u2014 about 50 MB, ~150 MB on disk. Register points at any Python
+            that already has <span class="mono">rdkit</span>.</p>
+        </div>
+
+        <div class="scard">
           <div class="scard-title">About</div>
           <div class="kvline"><span>Version</span>
             <span class="v">${NB.esc((NB.about && NB.about.version) || "")}</span></div>
@@ -282,6 +309,29 @@
       paintCrest(host, await NB.call("set_crest_distro", v));
     });
     loadCrest(host);
+
+    // --- 2D drawing
+    q('[data-a="d2-recheck"]').addEventListener("click", async () => {
+      paintD2(host, await NB.call("check_draw2d"));
+    });
+    q('[data-a="d2-register"]').addEventListener("click", async () => {
+      const python = await NB.bridge.pick_draw2d_python();
+      if (!python) return;
+      const r = await NB.call("set_draw2d_python", python);
+      if (r && r.error && !r.state) { NB.fail(r.error); return; }
+      paintD2(host, r);
+    });
+    q('[data-a="d2-create"]').addEventListener("click", async () => {
+      const r = await NB.call("create_draw2d_env", JSON.stringify({ base_python: "" }));
+      if (r && r.error && !r.state) { NB.fail(r.error); return; }
+      _d2Watch = true;
+      NB.toast("Building the 2D-drawing environment \u2014 about 50 MB from PyPI.");
+      paintD2(host, r);
+    });
+    q('[data-a="d2-cancel"]').addEventListener("click", async () => {
+      paintD2(host, await NB.call("cancel_draw2d_install"));
+    });
+    loadD2(host);
 
     // what "unsaved" is measured against: the form exactly as it was drawn
     // from the saved settings
@@ -375,6 +425,80 @@
       ? "Install failed — " + st.install_error
       : checking ? (_crestInstallWatch ? "Installing…" : "Checking…")
       : "";
+  }
+
+  // ---------------------------------------------------------------- 2D drawing
+
+  /** Paint once, then poll while the sheet is open: the probe imports RDKit
+   *  and a Create runs pip, both finishing after the click that started them.
+   *  @param {HTMLElement} host */
+  async function loadD2(host) {
+    paintD2(host, await NB.call("get_draw2d_status"));
+    clearInterval(_d2Timer);
+    _d2Timer = setInterval(async () => {
+      if (NB.$("settings").hidden) { clearInterval(_d2Timer); _d2Timer = null; return; }
+      paintD2(host, await NB.call("get_draw2d_status"));
+    }, 1200);
+  }
+
+  /** @param {HTMLElement} host @param {any} st Draw2dStatusPayload */
+  function paintD2(host, st) {
+    const q = (sel) => /** @type {any} */ (host.querySelector(sel));
+    const box = q('[data-a="d2"]');
+    if (!box || !st || !st.state) return;
+    const inst = st.install || {};
+    const running = inst.state === "running";
+    if (st.state === "unset") {
+      box.innerHTML = `<p class="hint" style="margin:0">Not set up. Create one, or register
+        a Python that already has RDKit.</p>`;
+    } else {
+      const cls = st.state === "ready" ? "done" : st.state === "error" ? "failed" : "running";
+      const word = st.state === "ready" ? "ready" : st.state === "error" ? "unusable" : "checking";
+      const detail = [st.rdkit ? "RDKit " + st.rdkit : "",
+                      st.version ? "Python " + st.version : ""].filter(Boolean).join(" · ");
+      box.innerHTML = `<div class="envrow">
+          <div style="min-width:0"><div class="n">RDKit environment</div>
+            <div class="d">${NB.esc(detail || (st.state === "checking" ? "checking…" : ""))}</div>
+            <div class="d2env">${NB.esc(st.python)}</div></div>
+          <span class="sp"></span>
+          <span class="badge ${cls}">${word}</span>
+          <button class="btn btn-sm btn-ghost" type="button" data-a="d2-remove">Remove</button>
+        </div>` + (st.state === "error" && st.message
+        ? `<div class="finding err" style="margin:-4px 0 8px">${NB.esc(st.message)}</div>` : "");
+      q('[data-a="d2-remove"]').addEventListener("click", () => {
+        NB.confirm("Remove the 2D-drawing environment",
+          "ORCAdesk stops using this Python. Nothing is deleted from disk — an environment "
+          + "Create built stays where it is, and Create picks it up again.",
+          "Remove", async () => paintD2(host, await NB.call("remove_draw2d_env")));
+      });
+    }
+    // Create: pointless with a working environment, impossible with no base
+    // Python to build one from (D41: disabled with the reason, never pretend)
+    const bases = (st.base_pythons || []).filter(b => b.supported);
+    const create = q('[data-a="d2-create"]');
+    const why = running ? "Building…"
+      : st.state === "ready" ? "A working environment is already registered"
+      : st.bases_state !== "ready" ? "Looking for a Python to build from…"
+      : !bases.length ? "No Python 3.9–3.15 found on this machine — install one, then Re-check"
+      : "";
+    create.disabled = !!why;
+    create.title = why || `Builds ${st.env_dir} from Python ${bases[0].version}`;
+    q('[data-a="d2-cancel"]').hidden = !running;
+    const state = q('[data-a="d2-state"]');
+    if (running) {
+      state.textContent = `${inst.step || 0}/${inst.steps || 3} · ${inst.label || "working…"}`;
+    } else if (inst.state === "error" && (inst.error || inst.cancelled)) {
+      state.textContent = inst.cancelled ? "Cancelled." : inst.error;
+    } else if (!bases.length && st.bases_state === "ready" && st.state !== "ready") {
+      state.textContent = "No Python 3.9–3.15 found — install one, then Re-check.";
+    } else {
+      state.textContent = "";
+    }
+    if (_d2Watch && !running && (inst.state === "done" || inst.state === "error")) {
+      _d2Watch = false;
+      if (inst.state === "done") NB.toast("2D-drawing environment built.", "ok");
+      else if (!inst.cancelled) NB.fail("2D-drawing environment: " + (inst.error || "the build failed"));
+    }
   }
 
   // ---------------------------------------------------------------- MLIP

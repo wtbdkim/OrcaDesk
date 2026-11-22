@@ -91,6 +91,13 @@ excludes = [
 # them; the excludes keep them out if someone builds elsewhere.
 excludes += ["yaml", "charset_normalizer", "typing_extensions"]
 excludes += ["PyQt6." + m for m in _PYQT6_UNUSED]
+# The 2D-drawing add-on's RDKit lives in the USER's own environment and is
+# only ever run there as a subprocess (orcamgr/draw2d/worker.py); nothing in
+# the app imports it. Excluded so a build machine that happens to have it can
+# never bundle it (it is not a dependency, and its licence notices are not in
+# THIRD_PARTY_NOTICES.txt). The add-on's own code ships as ordinary modules,
+# and its worker is a string run with `python -c`, so no data file is needed.
+excludes += ["rdkit"]
 
 
 a = Analysis(

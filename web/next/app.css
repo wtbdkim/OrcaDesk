@@ -1807,3 +1807,62 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 .suggest-item:hover{background:var(--accent);}
 .suggest-item[aria-selected="true"]{background:var(--secondary-hover);}
 .suggest-none{padding:6px 10px; font-size:13px; color:var(--muted-foreground);}
+
+/* ---------------------------- the 2D drawing (an add-on) ----------------------------
+   (DESIGN.md §17.4r) Results › Visual's "2D structure" tile splits the stage:
+   the 3D view keeps the left half and the drawing of exactly that view takes
+   the right, redrawn on every frame of a drag (draw2d.js). Below the panel's
+   own breakpoint (1500px, where .vizpanel already shortens) the halves stack,
+   3D on top, so neither is squeezed to a column. The stage's own overlays --
+   Open in viewer / Display, the element key, the caption -- move with the 3D
+   half. The paper is WHITE in both themes, on purpose: it is the figure as it
+   will be saved and pasted (black ink on white, like ChemDraw's), so what is
+   on screen is what the file holds -- data, not chrome (D1), as the ESP ramp's
+   literal red-white-blue is (.mvramp). Not a reference landmark: the mockup
+   has no 2D tile, so no uispec role moves. */
+/* a size, not an inset: .vizstage canvas's 100% would win over `right`, and a
+   canvas's `auto` is its own bitmap's size, which grows a resize at a time */
+.vizstage[data-split] canvas.molcv{width:50%;}
+.vizstage[data-split] .stageacts{right:calc(50% + 10px);}
+.vizstage[data-split] .viewlegend{right:calc(50% + 12px);}
+.viz2d{
+  position:absolute; top:0; bottom:0; left:50%; right:0;
+  display:flex; flex-direction:column; min-width:0;
+  background:var(--card); border-left:1px solid var(--border);
+}
+.d2paper{
+  flex:1 1 auto; min-height:0; display:flex; align-items:center; justify-content:center;
+  background:#ffffff; padding:12px; overflow:hidden;
+}
+.d2paper > svg{width:100%; height:100%; display:block;}
+/* no drawing yet (set-up needed, perceiving, failed): the card, not the paper */
+.d2paper.need{background:var(--card);}
+.d2need{max-width:44ch; text-align:center; color:var(--muted-foreground); font-size:12px;}
+.d2need p{margin:0 0 10px;}
+.d2bar{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  padding:8px 10px; border-top:1px solid var(--border);
+}
+.d2bar .sp{flex:1;}
+.d2ctl{display:inline-flex; align-items:center; gap:8px; font-size:12px; color:var(--muted-foreground);}
+.d2ctl input[type="range"]{width:110px; accent-color:var(--primary);}
+.d2val{min-width:34px; font-family:var(--font-mono); font-size:12px; color:var(--foreground);
+  font-variant-numeric:tabular-nums;}
+.d2num{width:6ch; font-size:12px; padding:4px 6px; min-height:28px;
+  background:var(--input-bg); border:1px solid var(--input); border-radius:var(--radius-sm);}
+.d2chk{display:inline-flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;}
+.d2chk input{width:15px; height:15px; accent-color:var(--foreground); margin:0;}
+.d2note{margin:0; padding:0 10px 8px; font-size:11px; line-height:1.45; color:var(--muted-foreground);}
+.d2note:empty{display:none;}
+.d2note.warn{color:var(--warn);}
+@media (max-width:1500px){
+  .vizstage[data-split] canvas.molcv{width:100%; height:50%;}
+  .vizstage[data-split] .stageacts{right:10px;}
+  .vizstage[data-split] .viewlegend{right:12px; bottom:calc(50% + 10px);}
+  .vizstage[data-split] .vizcap{bottom:calc(50% + 10px);}
+  .viz2d{top:50%; left:0; border-left:0; border-top:1px solid var(--border);}
+}
+
+/* the Settings card's interpreter line (DESIGN.md §17.4r) */
+.d2env{font-family:var(--font-mono); font-size:11px; color:var(--muted-foreground);
+  overflow-wrap:anywhere;}
