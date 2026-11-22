@@ -17,7 +17,10 @@ standalone one in {workspace}/{name}/. What is pinned here:
 * reattach after a restart tails the recorded folder;
 * a CANCELLED re-run and a rerun_calc run again where they ran;
 * no client can set the recorded folder (calc_from_dict ignores it; the
-  session restore checks it).
+  session restore checks it);
+* a folder the user moved by hand is found again by name and recorded where
+  it is now (relocate_moved) -- never a guess between two, never a running job,
+  never a move of the app's own.
 
 Workspaces are tmp_path folders; nothing launches ORCA (a fake runner writes
 the output a converged run would). A test that starts a run stops it in a
@@ -27,6 +30,9 @@ finally.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -224,8 +230,10 @@ def test_the_planned_folder_is_the_system_folder_or_the_root():
 
 @pytest.mark.parametrize("value, ok", [
     ("x", True), ("sys/x", True), ("my mol/x", True),
+    # a folder the user sorted by hand, up to MAX_FOLDER_DEPTH folders deep
+    ("a/b/x", True), ("a/b/c/d/x", True), ("a/b/c/d/e/x", False),
     ("../x", False), ("sys/../x", False), ("/x", False), ("C:/x", False),
-    ("C:\\sys\\x", False), ("a/b/x", False), ("sys/y", False), ("sys/", False),
+    ("C:\\sys\\x", False), ("a//x", False), ("sys/y", False), ("sys/", False),
     ("con/x", False), ("sys./x", False), ("", False), (None, False), (7, False),
 ])
 def test_a_restored_folder_is_inside_the_workspace_and_named_after_the_calc(value, ok):
@@ -678,3 +686,155 @@ def test_a_rerun_calc_runs_again_in_the_folder_it_ran_in(store, ws):
     run(store, ws)
     assert FakeOrca.launched == [ws / "mol" / "mol_Opt" / "mol_Opt.inp"]
     assert store.get("mol_Opt").state == CalcState.DONE
+
+
+# ---- a folder the user moved by hand ----------------------------------------------
+
+def done_at(store, ws, name, folder, system=""):
+    """A finished calc whose output sits in ``folder`` (relative to ws), recorded there."""
+    add(store, opt(name, system=system))
+    out = write_out(ws.joinpath(*folder.split("/")), name)
+    c = store.get(name)
+    c.state, c.run_dir, c.output_path = CalcState.DONE, folder, str(out)
+    return c
+
+
+def move(ws, src, dst):
+    """What the user does in the file manager."""
+    target = ws.joinpath(*dst.split("/"))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    ws.joinpath(*src.split("/")).rename(target)
+    return target
+
+
+def log_lines(store, text):
+    return [ln for ln in store.log_since(0)["lines"] if text in ln["msg"]]
+
+
+def test_the_search_finds_a_run_folder_by_name_and_output_down_to_the_depth_bound(ws):
+    write_out(ws / "proj" / "series" / "a", "a")
+    write_out(ws / "b", "b")
+    (ws / "proj" / "c").mkdir(parents=True)                         # named c, no output
+    write_out(ws / "x1" / "dup", "dup")
+    write_out(ws / "x2" / "dup", "dup")
+    write_out(ws.joinpath("1", "2", "3", "4", "deep"), "deep")          # 4 folders up
+    write_out(ws.joinpath("1", "2", "3", "4", "5", "deeper"), "deeper")  # 5: past the bound
+    got = rundir.find_moved(ws, {n: f"{n}.out" for n in
+                                 ("a", "b", "c", "dup", "deep", "deeper", "none")})
+    assert {n: sorted(v) for n, v in got.items()} == {
+        "a": ["proj/series/a"], "b": ["b"], "dup": ["x1/dup", "x2/dup"],
+        "deep": ["1/2/3/4/deep"]}
+    assert rundir.find_moved(ws, {"a": "a.mlip.json"}) == {}          # the file it wrote
+    assert rundir.find_moved(ws / "absent", {"a": "a.out"}) == {}
+    assert rundir.find_moved(ws, {"../a": "a.out", "": "x.out"}) == {}
+
+
+def test_the_search_does_not_follow_a_link_or_a_junction(ws, tmp_path):
+    write_out(tmp_path / "outside" / "a", "a")
+    ws.mkdir()
+    linked = False
+    if sys.platform == "win32":
+        import _winapi                       # a junction needs no privilege
+        _winapi.CreateJunction(str(tmp_path / "outside"), str(ws / "junction"))
+        linked = True
+    try:
+        os.symlink(tmp_path / "outside", ws / "link", target_is_directory=True)
+        linked = True
+    except (OSError, NotImplementedError):
+        pass                                 # Windows without the symlink privilege
+    if not linked:
+        pytest.skip("no link could be made here")
+    assert rundir.find_moved(ws, {"a": "a.out"}) == {}
+
+
+def test_a_finished_calc_moved_by_hand_is_found_recorded_and_restored(store, ws, data):
+    add_system(store, "s1", "mol")
+    c = done_at(store, ws, "mol_Opt", "mol/mol_Opt", system="s1")
+    new = move(ws, "mol/mol_Opt", "archive/2026 runs/mol_Opt")
+    assert store.relocate_moved(ws) == ["mol_Opt"]
+    assert c.run_dir == "archive/2026 runs/mol_Opt"
+    assert Path(c.output_path) == new / "mol_Opt.out"
+    assert store.result_folder(c, ws) == new and store.run_folder(c, ws) == new
+    assert len(log_lines(store, "Found mol_Opt in archive/2026 runs/mol_Opt")) == 1
+    # persisted, the deeper folder included: the next launch reads it there
+    again = QueueStore()
+    again.load_session()
+    assert again.get("mol_Opt").run_dir == "archive/2026 runs/mol_Opt"
+    assert again.get("mol_Opt").output_path == c.output_path
+    assert store.relocate_moved(ws) == []                    # nothing left to look for
+
+
+def test_two_folders_that_fit_are_never_guessed_between(store, ws):
+    c = done_at(store, ws, "solo", "solo")
+    old = c.output_path
+    move(ws, "solo", "a/solo")
+    write_out(ws / "b" / "solo", "solo")                     # a copy
+    assert store.relocate_moved(ws) == [] and store.relocate_moved(ws) == []
+    assert c.output_path == old and c.run_dir == "solo"
+    assert len(log_lines(store, "2 folders named solo")) == 1        # said once
+    (ws / "b" / "solo" / "solo.out").unlink()                # the user keeps one
+    assert store.relocate_moved(ws) == ["solo"] and c.run_dir == "a/solo"
+
+
+def test_a_running_calc_and_an_output_still_in_place_are_left_alone(store, ws):
+    live = done_at(store, ws, "live", "live")
+    live.state = CalcState.RUNNING                           # its job writes where it started
+    move(ws, "live", "elsewhere/live")
+    here = done_at(store, ws, "here", "here")
+    write_out(ws / "copy" / "here", "here")                  # the record still holds
+    before = sorted(p.relative_to(ws).as_posix() for p in ws.rglob("*"))
+    assert store.relocate_moved(ws) == []
+    assert (live.run_dir, here.run_dir) == ("live", "here")
+    assert sorted(p.relative_to(ws).as_posix() for p in ws.rglob("*")) == before
+
+
+def test_an_on_demand_lookup_does_not_walk_again_for_a_name_just_missed(store, ws, monkeypatch):
+    done_at(store, ws, "gone", "gone")
+    shutil.rmtree(ws / "gone")                               # deleted, not moved
+    walks = []
+    real = rundir.find_moved
+    monkeypatch.setattr(rundir, "find_moved",
+                        lambda w, wanted: walks.append(set(wanted)) or real(w, wanted))
+    assert store.relocate_moved(ws, ["gone"]) == []
+    assert store.relocate_moved(ws, ["gone"]) == []          # within the retry window
+    assert walks == [{"gone"}]
+    write_out(ws / "back" / "gone", "gone")
+    assert store.relocate_moved(ws) == ["gone"]              # a full lookup always looks
+    assert store.get("gone").run_dir == "back/gone"
+
+
+def test_the_irc_picker_and_show_folder_follow_a_moved_irc(store, ws, monkeypatch):
+    import orcamgr.openwith as openwith
+    shown = []
+    monkeypatch.setattr(openwith, "show_in_folder",
+                        lambda p: shown.append(Path(p)) or {"ok": True})
+    add_system(store, "s1", "ts")
+    store.apply_ops([{"op": "add_calc", "calc": {"name": "ts_IRC", "kind": "irc",
+                                                 "xyz": H2, "system": "s1"}}])
+    c = store.get("ts_IRC")
+    folder = ws / "ts" / "ts_IRC"
+    out = write_out(folder, "ts_IRC")
+    (folder / "ts_IRC_IRC_Full_trj.xyz").write_text(
+        "2\nb\nH 0 0 0\nH 0 0 1\n2\nf\nH 0 0 0\nH 0 0 1.1\n", encoding="utf-8")
+    c.state, c.run_dir, c.output_path = CalcState.DONE, "ts/ts_IRC", str(out)
+    b = bridge(store, ws)
+    # what the picker hit: the path files moved with the folder
+    new = move(ws, "ts/ts_IRC", "sorted/3CNin/ts_IRC")
+    got = call(b, "get_irc_structures", "ts_IRC")
+    assert got["ok"] and [f["path"] for f in got["files"]] == [
+        str(new / "ts_IRC_IRC_Full_trj.xyz")]
+    # moved again: Show folder follows it too
+    newer = move(ws, "sorted/3CNin/ts_IRC", "ts_IRC")
+    assert call(b, "show_calc_folder", "ts_IRC")["ok"] is True
+    assert shown == [newer / "ts_IRC.out"] and c.run_dir == "ts_IRC"
+
+
+def test_a_step_after_a_moved_parent_starts_from_its_geometry_where_it_is_now(store, ws):
+    parent = done_at(store, ws, "p_Opt", "p_Opt")
+    move(ws, "p_Opt", "done/p_Opt")
+    add(store, opt("p_SP", geometry_source="reference", ref_name="p_Opt",
+                   after="p_Opt", xyz=""))
+    run(store, ws)
+    assert parent.run_dir == "done/p_Opt"
+    assert store.get("p_SP").state == CalcState.DONE
+    assert "0.740000" in (ws / "p_SP" / "p_SP.inp").read_text(encoding="utf-8")

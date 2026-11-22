@@ -147,7 +147,10 @@ Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
   standalone (`core/rundir.py`, the one helper). The folder is recorded when
   the calc first starts (`run_dir`) and wins from then on: a system rename or
   a move never moves a calc that has run, re-runs reuse it, and nothing on
-  disk is ever moved. A system name is its folder verbatim (unsafe = refused).
+  disk is ever moved. The one exception to "the record wins": a folder the
+  USER moved by hand (recorded output gone) is found again by name and
+  re-recorded (`QueueStore.relocate_moved`). A system name is its folder
+  verbatim (unsafe = refused).
   ORCA-backed kinds also refuse space, `&`, `,`, `;`,
   `=` — but that rule is **not** applied on session restore.
 - **`kind` is a closed set** (`KNOWN_KINDS`); `mlip*` / `crest*` route outside

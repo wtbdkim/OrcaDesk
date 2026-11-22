@@ -3,6 +3,23 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **A calculation whose folder you moved by hand is found again.** Sorting
+  finished runs into folders of your own (`{workspace}/project/series/{name}/`)
+  left every one of them unreadable: no results, no `.inp`, and an IRC's
+  structure picker fell back to "wrote no path files" although the path files
+  were there. When a calculation's output is no longer where it was recorded,
+  ORCAdesk now looks under the workspace for a folder with the calculation's
+  name holding that output, up to four folders deep, and remembers it there:
+  results, the IRC picker, *Show folder*, a step that starts from it and a
+  re-run all go to where it is now, and the log says where each was found.
+  It looks at startup, when a run starts and when you open something whose
+  output is missing. Two folders that both fit are not guessed between (the
+  log names them); a running calculation is never touched; ORCAdesk itself
+  still moves nothing.
+
 ## [0.11.4] — 2026-11-23
 
 ### Added

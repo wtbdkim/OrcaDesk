@@ -1488,12 +1488,41 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
     (an edit under the same name carries it, `_replace_in`; a rename drops it,
     a new name being a new folder), and `rerun_calc` copies it onto the rebuilt
     row — the overwrite warning was about the output in THAT folder.
+  - **The record follows a folder the user moved by hand — and only that.**
+    Users sort finished runs into folders of their own
+    (`{workspace}/project/series/{name}/`); before this, every such calc kept
+    pointing at a folder that no longer existed, and every read failed (the
+    IRC picker showed "wrote no path files" with the path files on disk).
+    `QueueStore.relocate_moved(workspace, names=None)`: a calc that has run and
+    is not RUNNING, whose recorded `output_path` is no longer a file, is looked
+    for by `rundir.find_moved` — breadth-first under the workspace, folders
+    named after the calc (`os.path.normcase`: any case on Windows) holding a
+    file of the output's name, at most `MAX_FOLDER_DEPTH` (4) folders above
+    the run folder and `MAX_SEARCH_FOLDERS` (20 000) listings, links and
+    junctions not followed, a folder name failing the folder rule not entered.
+    Exactly one hit: `output_path` and `run_dir` are recorded there (autosaved,
+    one `info` log line per calc), so reads, references and a CANCELLED re-run
+    go there. Several: nothing is guessed; one `warn` line naming them (once
+    per name per launch). None: left as it is — the folder may be deleted on
+    purpose. The disk is read outside the store lock; a calc that changed
+    meanwhile (now RUNNING, or another `output_path`) is left alone. Nothing on
+    disk is touched. Who asks: the startup hook `Bridge.relocate_moved_calcs`
+    (a daemon thread, so a large workspace never delays the first paint),
+    `make_engine_factory` (every run entry point: Run, the startup resume, the
+    phone's `/api/run`), and on demand the reads that find an output missing —
+    `_calc_run_dir`, `_parse_target`, `show_calc_folder` — in the `names`
+    form, which leaves a name looked for and not found alone for
+    `_REFIND_RETRY_S` (5 s) so a deleted result does not walk the workspace on
+    every poll. Measured on a real workspace of 93 calcs moved two folders
+    deep: all found in 13 ms.
   - **The record is never taken from a client**: `calc_from_dict` does not
     read it (like `rerun`); `calc_from_session_dict` restores it only through
-    `restored_run_dir` — `name` or `{folder}/{name}`, each part passing the
-    folder rule, so it is always inside the workspace and named after the calc.
-    It rides `calc_to_session_dict` (`CalcFull.run_dir`, read-only for the
-    page).
+    `restored_run_dir` — `name` or `{folder}/.../{name}` under at most
+    `MAX_FOLDER_DEPTH` folders, each part passing the folder rule, so it is
+    always inside the workspace and named after the calc. (ORCAdesk itself
+    records at most `{system}/{name}`; the deeper ones come from
+    `relocate_moved`.) It rides `calc_to_session_dict` (`CalcFull.run_dir`,
+    read-only for the page).
   - **`session.json` schema 3.** A calc of an older file that has run (done,
     failed, cancelled or running, or holding an `output_path`, or a pending
     `rerun_calc` row) ran in `{workspace}/{name}/`, and `load_session` records

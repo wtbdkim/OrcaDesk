@@ -428,6 +428,10 @@ class MainWindow(_WebWindowMixin, QMainWindow):
         # happily behind it.
         self.view.loadFinished.connect(self._check_ui_loaded)
 
+        # Results whose folders the user moved by hand while ORCAdesk was
+        # closed are found again (in the background) and read where they are.
+        self.bridge.relocate_moved_calcs()
+
         # If a calculation from the previous session is still running, reattach
         # and continue the queue from where it left off.
         self.bridge.resume_session_if_running()

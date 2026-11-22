@@ -373,8 +373,16 @@ block to another row changes where calculations that have *not* run will go,
 never where one that has run lives, and no folder is ever moved or renamed —
 a job may be running in it.
 
+**What the user moves, the record follows.** The reverse is the user's to do:
+a finished calculation's folder sorted by hand into folders of one's own is
+still that calculation's result. When its recorded output is gone, the folder
+is looked for by name under the workspace and, when exactly one fits,
+recorded where it is now — never a guess between two, never a running job,
+and still no move, rename or deletion by the app (`QueueStore.relocate_moved`).
+
 *(Amended 2026-07-03; implemented in 0.4.3-beta. Rename/move clause added
-with per-system run folders, unreleased.)*
+with per-system run folders, unreleased; the user-move clause added
+2026-11-23.)*
 
 ### P25 — Success is judged per-kind, chemically
 

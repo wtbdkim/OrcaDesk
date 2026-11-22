@@ -1084,6 +1084,12 @@ class QueueStore:
         # pairs. In memory only.
         self._rerun_stash: dict[str, Calculation] = {}
         self._rerun_freed: "dict[str, list[tuple[Calculation, Calculation]]]" = {}
+        # relocate_moved's memory, in memory only: name -> when a calc whose
+        # output is gone was last looked for and not found (an on-demand
+        # lookup waits _REFIND_RETRY_S before walking the workspace for it
+        # again), and the names already reported as found in several folders
+        self._refind_missed: dict[str, float] = {}
+        self._refind_ambiguous: set[str] = set()
 
     # ---- auth token ----
     @property
@@ -1177,6 +1183,87 @@ class QueueStore:
         """Where ``calc``'s files are read: its output's folder, else its run
         folder (core.rundir.result_folder)."""
         return rundir.result_folder(workspace, calc, self.system_name(calc.system))
+
+    #: how long an on-demand relocate_moved leaves a name it looked for and
+    #: did not find before walking the workspace for it again
+    _REFIND_RETRY_S = 5.0
+
+    def relocate_moved(self, workspace, names=None) -> "list[str]":
+        """Find again the calculations whose folder the user moved by hand,
+        and record where they are now.
+
+        A calc that has run and is not running, whose recorded output file is
+        gone, is looked for under the workspace by name (rundir.find_moved: a
+        folder named after it holding a file of its output's name, up to
+        rundir.MAX_FOLDER_DEPTH folders deep). Exactly one such folder: its
+        output_path and run_dir are recorded there, so every read (results,
+        references, .hess, IRC ends, the IRC picker, Show folder) and a re-run
+        go there from then on. Several: none is guessed, and the log says so
+        once. None: the calc is left as it is (its folder may be deleted). The
+        app moves, renames and deletes nothing (P24) -- it follows a move the
+        user made. A RUNNING calc is never touched: its job writes where it was
+        launched.
+
+        ``names`` (an iterable of calc names) is the on-demand form a read
+        uses: only those calcs, and not one looked for and not found in the
+        last _REFIND_RETRY_S seconds, so a deleted result does not walk the
+        workspace on every poll. None looks for every such calc (startup, the
+        start of a run). The disk is read outside the lock; a calc that changed
+        meanwhile is left alone. Returns the names recorded anew."""
+        import time
+        now = time.monotonic()
+        only = None if names is None else set(names)
+        with self._lock:
+            cands = [(c.name, c.output_path) for c in self._calcs
+                     if c.output_path and c.state != CalcState.RUNNING
+                     and (only is None or (c.name in only and now - self._refind_missed.get(
+                         c.name, float("-inf")) >= self._REFIND_RETRY_S))]
+        missing: dict[str, str] = {}
+        for name, out in cands:
+            try:
+                # is_file(), not exists(): a device name ("CON") exists (P32)
+                if Path(out).is_file():
+                    continue
+            except (OSError, ValueError):
+                pass
+            missing[name] = out
+        if not missing:
+            return []
+        found = rundir.find_moved(workspace, {n: Path(o).name for n, o in missing.items()})
+        moved: list[str] = []
+        logs: "list[tuple[str, str, str]]" = []
+        with self._lock:
+            for name, out in missing.items():
+                hits = found.get(name, [])
+                if len(hits) != 1:
+                    self._refind_missed[name] = now
+                    if hits and name not in self._refind_ambiguous:
+                        self._refind_ambiguous.add(name)
+                        shown = ", ".join(hits[:3]) + (", ..." if len(hits) > 3 else "")
+                        logs.append((
+                            f"{name}: its output is no longer at {out}, and "
+                            f"{len(hits)} folders named {name} hold one ({shown}). "
+                            "None is picked; keep only one of them to have it found.",
+                            "warn", name))
+                    continue
+                c = next((c for c in self._calcs if c.name == name), None)
+                if c is None or c.state == CalcState.RUNNING or c.output_path != out:
+                    continue          # changed while the workspace was read
+                rel = hits[0]
+                if rundir.restored_run_dir(rel, c.name) != rel:
+                    continue          # find_moved only offers recordable folders
+                c.run_dir = rel
+                c.output_path = str(Path(workspace).joinpath(*rel.split("/"), Path(out).name))
+                self._refind_missed.pop(name, None)
+                self._refind_ambiguous.discard(name)
+                moved.append(name)
+                logs.append((f"Found {name} in {rel}: its folder was moved, "
+                             "and it is read from there now.", "info", name))
+            if moved:
+                self._bump_and_save()
+        for msg, level, calc in logs:
+            self.append_log(msg, level, calc)
+        return moved
 
     def run_resources(self) -> RunResources:
         """Cores/memory the in-flight jobs reserved, against the run's budget.
@@ -2350,7 +2437,14 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
     budget: a core/resources.ResourceBudget capping how many calculations run at
     once and how many cores / how much memory they may occupy together. None =
     the default one-at-a-time queue.
+
+    Every run entry point builds its engine here (the Run button, the startup
+    resume, the phone's /api/run), so this is where a calc the user moved on
+    disk is found again first (relocate_moved): a step after it then reads its
+    geometry, .hess or IRC end where it is now, and a CANCELLED one re-runs
+    there (P4).
     """
+    store.relocate_moved(workspace_root)
     skip = set(skip_names or ())
     envs = list(mlip_envs or [])
     crest_pref = (crest_distro or "").strip()

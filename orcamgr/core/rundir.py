@@ -17,6 +17,13 @@ on disk is ever moved or renamed for it: a job may be running in that folder.
 A calculation that has not started has no record; its folder follows its
 system's CURRENT name.
 
+The one thing that follows a folder is that record, and only when the USER
+moved the folder: a calculation whose recorded output is gone is looked for by
+name under the workspace (``find_moved``, a folder named after it holding that
+output, up to ``MAX_FOLDER_DEPTH`` folders deep), and when exactly one folder
+fits, the store records it there instead (``QueueStore.relocate_moved``).
+ORCAdesk itself still moves nothing.
+
 This module is the one place the rule lives (P4). Every caller -- the engine,
 the store, the desktop bridge -- resolves a folder through it, giving the
 system NAME (the store holds the systems; the engine asks it through the
@@ -37,6 +44,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import deque
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -139,16 +147,28 @@ def result_folder(workspace, calc, system_name: str = "") -> Path:
     return run_folder(workspace, calc, system_name)
 
 
+#: How many folders a run folder may sit under in the workspace: ORCAdesk makes
+#: one (the system's), a user who sorts finished runs by hand makes more
+#: ("project/series/{name}"). Both the recorded folder a session restores and
+#: the search for a moved one stop here.
+MAX_FOLDER_DEPTH = 4
+#: The folders one search for moved run folders may list at most, so a
+#: workspace set to a drive root turns a missing result into a bounded walk,
+#: never a minutes-long one.
+MAX_SEARCH_FOLDERS = 20_000
+
+
 def restored_run_dir(value, name: str) -> str:
     """A recorded run folder read back from session.json, checked: ``name``
-    itself, or ``"{folder}/{name}"`` with a folder that passes the folder rule
-    -- always relative, always inside the workspace, always named after the
-    calc. Anything else reads as "" (not recorded). A client never sets it at
-    all: calc_from_dict does not read it."""
+    itself, or ``"{folder}/.../{name}"`` under at most ``MAX_FOLDER_DEPTH``
+    folders that each pass the folder rule -- always relative, always inside
+    the workspace, always named after the calc. Anything else reads as ""
+    (not recorded). A client never sets it at all: calc_from_dict does not
+    read it."""
     if not isinstance(value, str) or not value or not isinstance(name, str):
         return ""
     parts = value.split("/")
-    if parts[-1] != name or len(parts) > 2:
+    if parts[-1] != name or len(parts) > MAX_FOLDER_DEPTH + 1:
         return ""
     if any(folder_name_problem(p) for p in parts):
         return ""
@@ -215,3 +235,62 @@ def _subfolders(ws: Path) -> "list[tuple[Path, set]]":
         if inner:
             out.append((Path(path), inner))
     return out
+
+
+# ---- a run folder the user moved ------------------------------------------------
+
+def find_moved(workspace, wanted: "dict[str, str]") -> "dict[str, list[str]]":
+    """Where run folders the user moved by hand are now.
+
+    ``wanted`` maps a calc name to the file name of its result artifact (the
+    name of its recorded ``output_path``: ``{name}.out``, ``{name}.mlip.json``).
+    For each, the folders under the workspace named after the calc that hold
+    that file, as run folders relative to the workspace (``/``-separated,
+    ending in the calc's own name, so ``restored_run_dir`` takes them back), in
+    breadth-first order. A name found nowhere is left out; what more than one
+    folder means is the caller's call (QueueStore.relocate_moved refuses to
+    guess).
+
+    Folders only, at most MAX_FOLDER_DEPTH folders above a run folder and
+    MAX_SEARCH_FOLDERS listings in all. A symbolic link or a junction is not
+    followed (one pointing back up would walk until the bound), nor is a
+    folder whose name could not be part of a recorded run folder
+    (folder_name_problem); an unreadable folder is skipped (P6). A name matches
+    the way the file system compares names (``os.path.normcase``: any case on
+    Windows, exact elsewhere)."""
+    keys: "dict[str, tuple[str, str]]" = {}
+    for n, artifact in wanted.items():
+        if (isinstance(n, str) and n and not folder_name_problem(n)
+                and isinstance(artifact, str) and artifact):
+            keys[os.path.normcase(n)] = (n, artifact)
+    found: "dict[str, list[str]]" = {}
+    if not keys:
+        return found
+    pending: "deque[tuple[Path, tuple[str, ...]]]" = deque([(Path(workspace), ())])
+    listed = 0
+    while pending and listed < MAX_SEARCH_FOLDERS:
+        folder, rel = pending.popleft()
+        listed += 1
+        try:
+            with os.scandir(folder) as it:
+                subs = [e for e in it if _plain_folder(e)]
+        except OSError:
+            continue
+        for e in subs:
+            hit = keys.get(os.path.normcase(e.name))
+            if hit is not None and (Path(e.path) / hit[1]).is_file():
+                found.setdefault(hit[0], []).append("/".join((*rel, hit[0])))
+            if len(rel) < MAX_FOLDER_DEPTH:
+                pending.append((Path(e.path), (*rel, e.name)))
+    return found
+
+
+def _plain_folder(entry) -> bool:
+    """A real folder with a name a recorded run folder may hold: not a link,
+    not a junction (``is_junction`` is Python 3.12+), not unreadable."""
+    try:
+        if entry.is_symlink() or getattr(entry, "is_junction", lambda: False)():
+            return False
+        return entry.is_dir(follow_symlinks=False) and not folder_name_problem(entry.name)
+    except OSError:
+        return False

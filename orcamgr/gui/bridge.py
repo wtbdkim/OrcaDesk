@@ -1321,6 +1321,8 @@ class Bridge(QObject):
         calc = next((c for c in self.store.list() if c.name == name), None)
         if calc is None:
             return None, json.dumps(ErrorPayload(error=f"'{name}' is not in the queue."))
+        # a folder the user moved by hand is followed (it records in place)
+        self.store.relocate_moved(self.settings.workspace_root, (calc.name,))
         if not calc.output_path or not Path(calc.output_path).exists():
             return None, json.dumps(ErrorPayload(error="no output file on disk"))
         # the worker must not hold the store's own object
@@ -1830,11 +1832,14 @@ class Bridge(QObject):
         fails these three), else the folder recorded when it started, else the
         one it would get now ({workspace}/{system}/{name}/ or
         {workspace}/{name}/, core/rundir.py). A name not in the queue is looked
-        for where a standalone calc of that name runs."""
+        for where a standalone calc of that name runs. A calc whose recorded
+        output is gone because the user moved its folder is found again first
+        (QueueStore.relocate_moved, which records the new place on the calc)."""
         ws = Path(self.settings.workspace_root)
         calc = self.store.get(name)
         if calc is None:
             return ws / name
+        self.store.relocate_moved(ws, (calc.name,))
         return self.store.result_folder(calc, ws)
 
     def _result_file(self, name: str, suffix: str) -> Path:
@@ -2418,6 +2423,8 @@ class Bridge(QObject):
         calc = self.store.get(str(name or ""))
         if calc is None:
             return json.dumps(OkResult(ok=False, error=f"No calculation named '{name}'."))
+        # a folder the user moved by hand is followed (it records in place)
+        self.store.relocate_moved(self.settings.workspace_root, (calc.name,))
         if calc.output_path and Path(calc.output_path).exists():
             return self.show_path_in_folder(calc.output_path)
         folder = self._calc_run_dir(calc.name)
@@ -2651,6 +2658,16 @@ class Bridge(QObject):
         pending (as opposed to cancel_queue, which kills the running job)."""
         ok = self.store.request_stop_after_current()
         return json.dumps(OkResult(ok=ok))
+
+    def relocate_moved_calcs(self) -> None:
+        """Startup hook (not a JS slot): find again, in the background, every
+        restored calculation whose folder the user moved by hand while the app
+        was closed (QueueStore.relocate_moved). A thread, so a large workspace
+        never holds up the first paint; the store's lock covers what it
+        records, and the page sees it on its next poll."""
+        ws = self.settings.workspace_root
+        threading.Thread(target=self.store.relocate_moved, args=(ws,),
+                         name="relocate-moved", daemon=True).start()
 
     def resume_session_if_running(self) -> None:
         """Startup hook (not a JS slot): if a calculation from the previous

@@ -186,7 +186,8 @@ up, so a plain ORCA install sees DFT alone).
 - Each calculation gets its own folder: `{workspace}/{system}/{name}/` for a
   step of a row (system) in the queue window, `{workspace}/{name}/` for a
   calculation on its own. A calculation stays in the folder it first ran in,
-  even if its row is renamed later. The queue
+  even if its row is renamed later; if you move finished folders into
+  folders of your own, ORCAdesk finds them there by name. The queue
   **autosaves** and is restored on the next launch. **Cancel** kills the
   running jobs; **Stop after current** lets them finish. Irreversible actions
   ask first.
