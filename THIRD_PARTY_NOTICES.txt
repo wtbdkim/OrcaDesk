@@ -1,4 +1,4 @@
-ORCAdesk 0.11.4 for Windows: third-party notices
+ORCAdesk 0.12.0 for Windows: third-party notices
 ================================================
 
 This file lists the software that ships in the Windows build of ORCAdesk:
@@ -18,7 +18,7 @@ at the end.
 
 1. ORCAdesk
 -----------
-Version:   0.11.4
+Version:   0.12.0
 License:   MIT
 Copyright: Copyright (c) 2026 Taewoo Kim
 Files:     ORCAdesk.exe (with the PyInstaller bootloader, item 12);

@@ -3,7 +3,7 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.12.0] — 2026-11-23
 
 ### Added
 - **Windows PCs as compute devices.** A Windows laptop or PC with OpenSSH

@@ -31,7 +31,7 @@
   <img src="docs/images/queue-window.png" alt="큐 창: 분자마다 한 줄, 줄마다 계산 단계가 이어진 모습" width="100%">
 </p>
 
-> **현재 버전: 0.11.4** (베타). 실제 ORCA 6.1.1 출력으로 검증했습니다.
+> **현재 버전: 0.12.0** (베타). 실제 ORCA 6.1.1 출력으로 검증했습니다.
 > ORCAdesk는 ORCA 개발진, FACCTs, 어떤 기관과도 관계없는 개인 프로젝트이며 ORCA를
 > 포함하지 않습니다. 직접 설치한 `orca`를 실행합니다(학술용 무료).
 
@@ -223,6 +223,6 @@ Qt와 Qt WebEngine(LGPL-3.0, 그 안의 Chromium 구성 요소는 각자의 라�
 배포되며, ORCAdesk 자체 코드는 그대로 MIT입니다([LICENSE-BINARY.txt](LICENSE-BINARY.txt)).
 포함된 구성 요소의 버전·라이선스·저작권 표시는 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)에,
 라이선스 전문은 [licenses/](licenses/)에 있고, 설치하면 둘 다 `ORCAdesk.exe` 옆에 놓입니다.
-설치 파일의 대응 소스는 해당 릴리스 태그의 이 저장소(0.11.4는
-[`v0.11.4`](https://github.com/wtbdkim/OrcaDesk/tree/v0.11.4), `build.spec`과 `installer.iss` 포함)와
+설치 파일의 대응 소스는 해당 릴리스 태그의 이 저장소(0.12.0는
+[`v0.12.0`](https://github.com/wtbdkim/OrcaDesk/tree/v0.12.0), `build.spec`과 `installer.iss` 포함)와
 PyPI의 PyQt6 소스, [download.qt.io](https://download.qt.io/archive/qt/6.11/6.11.1/)의 Qt 6.11.1 소스입니다.

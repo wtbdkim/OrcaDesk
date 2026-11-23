@@ -32,7 +32,7 @@
   <img src="docs/images/queue-window.png" alt="The queue window: one row per molecule, each a chain of calculation steps" width="100%">
 </p>
 
-> **Status: 0.11.4** (`0.11.4`, beta), validated against real ORCA 6.1.1
+> **Status: 0.12.0** (`0.12.0`, beta), validated against real ORCA 6.1.1
 > output. ORCAdesk is an independent, personal project, not affiliated with
 > the ORCA developers, FACCTs or any institution, and it does not include ORCA:
 > it drives the `orca` you install yourself (free for academic use).
@@ -429,7 +429,7 @@ with its version, license and copyright, in
 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt), and the full license texts
 are in [licenses/](licenses/); the installer puts both next to `ORCAdesk.exe`.
 The corresponding source of an installer is this repository at the release's
-tag (for 0.11.4, [`v0.11.4`](https://github.com/wtbdkim/OrcaDesk/tree/v0.11.4),
+tag (for 0.12.0, [`v0.12.0`](https://github.com/wtbdkim/OrcaDesk/tree/v0.12.0),
 `build.spec` and `installer.iss` included), plus the upstream PyQt6 sources on
 PyPI and the Qt 6.11.1 sources on [download.qt.io](https://download.qt.io/archive/qt/6.11/6.11.1/).
 
