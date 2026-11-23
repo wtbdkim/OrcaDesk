@@ -2224,7 +2224,23 @@ ends — whatever way — `fetch_and_verify` brings the **whole** remote folder
 into a staging folder, checks every name and size, moves it into the run
 folder, and only then `safe_remove` deletes the remote copy behind a local
 path guard and a remote `realpath` check. The engine judges the result from
-the local files.
+the local files. **ORCA scratch is never fetched** (`is_scratch`:
+`*.tmp`, `*.tmp.<n>`): a finished ORCA deletes it itself, so it is left only
+by a cancelled, killed or crashed run — and is then nearly all of the folder
+(a cancelled 49-atom CPCM SP: ~400 MB of `.tmp` beside a 60 kB `.out`, which
+held the row RUNNING for many minutes from AWS Sydney while it downloaded).
+
+**Stopping a remote job (POSIX).** The recorded pid is the session leader
+(`setsid`), and `_kill_script` signals the whole **session**, member by
+member (`ps -o pid= -s <pid>`), as well as the process group: mpirun gives
+each rank a process group of its own, so a group kill alone left mpirun and
+both `orca_leanscf_mpi` ranks computing after the driver died (measured on
+AWS). With the leader gone its pid cannot be reused while a process still
+names it as a session, so the members are the job's; a leader pid that
+exists with another start time is someone else's and nothing is signalled.
+The group kill is written `kill -TERM -<pgid>` — dash, Ubuntu's `/bin/sh`,
+rejects `kill -TERM -- -<pgid>` ("Illegal number"), and with the old
+spelling the group kill never happened at all.
 
 **Cancel while away / restart.** A cancel that cannot reach the device is
 CANCELLED at once with `CLEANUP_PENDING_MESSAGE`; its entry goes on the
@@ -2910,7 +2926,8 @@ renders both shapes from either platform and pins that absence. The launcher **w
 appears** before returning — without that, `wsl.exe` closes the pty before
 `setsid` finishes detaching and the child is killed (a real bug found by
 end-to-end testing). Because it's a true detach, `monitor` tails the `.out` +
-watches for `.rc`, `cancel` does a process-group kill (`kill -- -PID`, reaching
+watches for `.rc`, `cancel` does a process-group kill (`kill -TERM -PID` — never `kill -- -PID`,
+which dash rejects — reaching
 xtb/OpenMP children), and reattach after a restart uses the pid + start-time (the
 WSL analogue of `procutil.process_matches`; `reconcile_calcs` special-cases
 `crest*` via `_crest_calc_alive`).

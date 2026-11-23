@@ -251,17 +251,32 @@ def _start_str(start) -> str:
 def _kill_script(pid: int, start) -> str:
     # Only the process recorded at launch: pid AND start time must match, so a
     # pid the kernel reused for something else is never signalled.
+    #
+    # The recorded pid is a session leader (setsid), and everything ORCA starts
+    # stays in that SESSION -- but not in its process group: mpirun puts each
+    # rank in a group of its own, so a group kill leaves the ranks computing
+    # (measured on AWS: the driver died, mpirun and both orca_leanscf_mpi ranks
+    # ran on). So the whole session is signalled, member by member (``ps -s``).
+    # Once the leader is gone its pid cannot be reused while any process still
+    # names it as a session, so those members are this job's; a leader pid
+    # that exists with another start time is someone else's, and nothing is
+    # touched. ``kill -TERM -<pgid>``, not ``kill -TERM -- -<pgid>``: dash
+    # (Ubuntu's /bin/sh) rejects the ``--`` ("Illegal number"), and the group
+    # kill silently never happened.
     st = _q(_start_str(start))
     p = int(pid)
     return f"""
 same() {{ s=$(awk '{{print $22}}' /proc/{p}/stat 2>/dev/null); [ -n "$s" ] && [ "$s" = {st} ]; }}
-same || {{ echo gone; exit 0; }}
-kill -TERM -- -{p} 2>/dev/null || kill -TERM {p} 2>/dev/null
+sess() {{ ps -o pid= -s {p} 2>/dev/null || {{ same && echo {p}; }}; }}
+if [ -d /proc/{p} ] && ! same; then echo gone; exit 0; fi
+[ -n "$(sess)" ] || {{ echo gone; exit 0; }}
+sig() {{ kill -$1 -{p} 2>/dev/null; for q in $(sess); do kill -$1 "$q" 2>/dev/null; done; }}
+sig TERM
 i=0
-while [ $i -lt 20 ]; do same || {{ echo killed; exit 0; }}; sleep 0.5; i=$((i+1)); done
-kill -KILL -- -{p} 2>/dev/null || kill -KILL {p} 2>/dev/null
+while [ $i -lt 20 ]; do [ -n "$(sess)" ] || {{ echo killed; exit 0; }}; sleep 0.5; i=$((i+1)); done
+sig KILL
 sleep 0.5
-same && {{ echo alive; exit 1; }}
+[ -n "$(sess)" ] && {{ echo alive; exit 1; }}
 echo killed
 """
 
@@ -358,6 +373,18 @@ def list_remote_files(transport: Transport, alias: str, remote_dir: str,
     return files, res
 
 
+_SCRATCH = re.compile(r"\.tmp(\.\d+)?$")
+
+
+def is_scratch(rel: str) -> bool:
+    """ORCA's scratch files (``name.X.tmp``, ``name.X.tmp.0``): a finished ORCA
+    deletes them itself, so only a run that was cancelled, killed or crashed
+    leaves them -- and they are the bulk of it (a cancelled 49-atom CPCM SP:
+    ~400 MB of .tmp beside a 60 kB .out). They are never fetched; the remote
+    copy is deleted with the folder."""
+    return bool(_SCRATCH.search(posixpath.basename(rel)))
+
+
 def fetch_and_verify(transport: Transport, alias: str, remote_dir: str,
                      local_dir: Path, stop=None) -> FetchResult:
     """Bring the WHOLE ``remote_dir`` into ``local_dir`` (design D4).
@@ -374,6 +401,7 @@ def fetch_and_verify(transport: Transport, alias: str, remote_dir: str,
         return FetchResult(False, res.unreachable,
                            res.err.strip() or f"listing failed ({res.rc})",
                            missing=(res.rc == 3))
+    files = {rel: size for rel, size in files.items() if not is_scratch(rel)}
     local_dir = Path(local_dir)
     staging = local_dir / (STAGING_PREFIX + posixpath.basename(remote_dir.rstrip("/")))
     pf = platform_for(remote_dir)

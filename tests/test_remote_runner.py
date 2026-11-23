@@ -252,6 +252,34 @@ def test_a_size_mismatch_keeps_the_remote_copy(tmp_path, monkeypatch):
     assert (d / "job.out").read_text() == "an older run's output\n"   # nothing replaced
 
 
+def test_orca_scratch_is_never_fetched(tmp_path):
+    # a cancelled or crashed ORCA leaves its .tmp scratch behind -- ~400 MB on a
+    # 49-atom CPCM SP -- and a cancel used to wait for all of it to download
+    d = _folder(tmp_path)
+    fake = FakeTransport()
+    fake.write(RDIR + "/job.out", b"partial\n")
+    fake.write(RDIR + "/job.gbw", b"orbitals")
+    fake.write(RDIR + "/job.G0.tmp", b"x" * 100)
+    fake.write(RDIR + "/job.diisao.tmp.0", b"x" * 100)
+    fr = fetch_and_verify(fake, "gcp", RDIR, d)
+    assert fr.ok
+    assert (d / "job.out").read_bytes() == b"partial\n" and (d / "job.gbw").exists()
+    assert not list(d.glob("*.tmp*"))
+    assert rr.is_scratch("a/b.K0.tmp") and rr.is_scratch("b.cpscfdata.tmp.12")
+    assert not rr.is_scratch("b.tmp.bak") and not rr.is_scratch("b.densities")
+
+
+def test_the_kill_script_reaches_the_whole_session_and_runs_under_dash():
+    # mpirun gives each rank a process group of its own, so the group kill
+    # alone left both ranks computing; and dash rejects "kill -TERM -- -pgid"
+    # ("Illegal number"), so even the group kill never happened on Ubuntu
+    s = rr._kill_script(4242, 999.0)
+    assert "-- -" not in s
+    assert "ps -o pid= -s 4242" in s and "kill -$1 -4242" in s
+    # a pid that exists with another start time is someone else's: untouched
+    assert s.index("! same; then echo gone") < s.index("sig TERM")
+
+
 def test_detach_leaves_the_remote_job_running(tmp_path):
     d = _folder(tmp_path)
     fake = FakeTransport()

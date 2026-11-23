@@ -20,6 +20,15 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   how many jobs run, each against that device's own budget.
 
 ### Fixed
+- **Cancel stops every process of a calculation on a Linux compute device.**
+  A parallel ORCA run (nprocs > 1) kept computing on the device after Cancel:
+  only ORCA's main process was stopped, while its MPI workers ran on, holding
+  the device's cores. Cancel now stops all of them.
+- **Cancelling a calculation on a compute device no longer takes minutes.**
+  The cancelled row stayed RUNNING while hundreds of MB of ORCA's temporary
+  files were downloaded with its folder. Those scratch files (`*.tmp`) are now
+  left on the device and deleted with the folder; the output, `.gbw` and
+  everything else still come back.
 - **A busy device is no longer shown as disconnected.** When many
   calculations on one compute device finished together, bringing their results
   back held every connection, and the regular checks and new starts waited too

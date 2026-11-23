@@ -73,7 +73,7 @@ class FakeTransport:
             if self.on_launch:
                 self.on_launch(self, d)
             return RunResult(0, f"pid={self.pid}\nstart={self.start}\n")
-        if "kill -TERM" in script:
+        if "sig TERM" in script:            # the POSIX kill script
             self.alive = False
             return RunResult(0, "killed\n")
         if "| base64" in script:
