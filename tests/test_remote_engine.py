@@ -5,6 +5,7 @@ store's persistence of where a calc ran."""
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 import orcamgr.core.queue as queue_mod
@@ -222,6 +223,32 @@ def test_a_remote_running_calc_is_reattached_on_its_device(tmp_path, monkeypatch
     eng.run_all([calc])
     assert calc.state == CalcState.DONE, calc.message
     assert b"TERMINATED" in (Path(tmp_path) / "re1" / "re1.out").read_bytes()
+
+
+def test_a_job_reattached_before_the_first_probe_gets_the_workdir_later(tmp_path):
+    # After a restart the jobs were reattached before the device's first
+    # probe came back, so their runners had workdir "" and the delete guard
+    # refused every folder they fetched (15 on the AWS device, 2026-11-23).
+    # The watch thread's probe now fills an empty workdir in -- never a set one.
+    import types
+    eng = QueueEngine("orca", str(tmp_path), QueueCallbacks(),
+                      budget=ResourceBudget(max_jobs=1, cores=1, ram_mb=1),
+                      device_entries=[normalize_device({"alias": "gcp", "enabled": True})],
+                      transport=FakeTransport(), device_info=lambda a: _info(ok=False),
+                      device_probe=lambda e: _info())
+    empty = types.SimpleNamespace(workdir="")
+    kept = types.SimpleNamespace(workdir="/somewhere/else")
+    eng._slots["a"] = queue_mod._JobSlot(name="a", device="gcp", runner=empty)
+    eng._slots["b"] = queue_mod._JobSlot(name="b", device="gcp", runner=kept)
+    t = threading.Thread(target=eng._watch_devices, daemon=True)
+    t.start()
+    deadline = time.monotonic() + 10
+    while not empty.workdir and time.monotonic() < deadline:
+        time.sleep(0.05)
+    eng._watch_stop.set()
+    t.join(5)
+    assert empty.workdir == "/home/u/orcadesk-runs"
+    assert kept.workdir == "/somewhere/else"
 
 
 # ---- persistence --------------------------------------------------------------

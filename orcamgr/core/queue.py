@@ -2587,6 +2587,18 @@ class QueueEngine:
                 fresh = resolve_device(entry, info)
                 with self._slot_cv:
                     self._devices[alias] = fresh
+                    # A job reattached before the device's first probe came
+                    # back got a runner with no workdir, so the delete guard
+                    # refused every folder it fetched (15 on the AWS device
+                    # after a restart, 2026-11-23: "outside ''"). Hand it the
+                    # probed workdir now; only an empty one is filled, never
+                    # a recorded one changed.
+                    if fresh.workdir:
+                        for s in self._slots.values():
+                            r = s.runner
+                            if (s.device == alias and r is not None
+                                    and hasattr(r, "workdir") and not r.workdir):
+                                r.workdir = fresh.workdir
                     self._slot_cv.notify_all()
                 if fresh.online:
                     try:

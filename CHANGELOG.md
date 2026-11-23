@@ -118,6 +118,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   many at once.
 
 ### Fixed
+- **A compute device's copies are deleted after a restart too.** Jobs picked up again
+  after ORCAdesk was reopened brought their results back but left the copy on
+  the device, because they were reattached before the device was checked and
+  so did not know its run folder. They now learn it when the check comes back.
 - **Calculations on a Windows compute device survive an app restart.**
   Reopening ORCAdesk forgot where each of them ran on the device, so they
   were shown Disconnected within seconds and could not have brought their
