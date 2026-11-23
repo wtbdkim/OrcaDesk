@@ -1940,8 +1940,20 @@ Front-end side: `web/next/build.js` owns the builder's structure check
 
 ## Remote devices (orcamgr/remote/)
 
-Status: phase 1 implemented against a fake transport only — **not yet run
-against a real SSH host**. The full design, with the user's decisions, is
+Status: phase 1. The unit tests drive it through a fake transport; the
+transport pipeline itself has been run against a **real SSH host** — a WSL
+Ubuntu 24.04 with openssh-server, reached through Windows' System32 OpenSSH —
+with a *fake ORCA* that replays a real finished output
+(`tests/smoke/test_remote_ssh_smoke.py`, opt-in via `ORCADESK_SMOKE_REMOTE`):
+probe, sftp upload, `setsid` launch, the 10 s base64 sync (the local `.out`
+grows a step per sync), whole-folder fetch + name/size verification, guarded
+delete, cancel, and a 30 s sshd outage (the `disconnected` flag rose after two
+unanswered syncs, fell on the next answered one, and the run completed).
+**Not yet verified:** a real ORCA on the device (and whether a non-interactive
+`sh -s` finds OpenMPI for a parallel job), the queue engine placing rows on a
+device through the app, and the ORCA version read from the install folder's
+name. A WSL host stops with the distro's idle shutdown unless something keeps
+it running. The full design, with the user's decisions, is
 `docs/REMOTE_DEVICES_DESIGN_KR.md`; this section is what the code does.
 
 **Which devices exist is detected, not configured (P58).** `devices.parse_ssh_config`

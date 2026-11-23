@@ -384,7 +384,10 @@ web/next/app.css       --lost / --lost-tint 토큰과 위 규칙 (맨 아래 이
   `reconcile_calcs`가 원격 RUNNING을 건드리지 않는지.
 - `devices.py`: ssh config 파싱(와일드카드, Include, 이상한 별칭 거부).
 - `test_bridge_slots.py`가 새 슬롯을 잡는지 확인.
-- 실제 기기: `ORCADESK_SMOKE=1 ORCADESK_SMOKE_REMOTE=<alias> python -m pytest tests/smoke`
+- 실제 기기: `ORCADESK_SMOKE_REMOTE=<alias> python -m pytest tests/smoke/test_remote_ssh_smoke.py`
+  — 가짜 ORCA(실제 출력을 재생, 표시 없는 입력은 거부)로 SSH 경로 전체를 확인.
+  2026-11-23 WSL(Ubuntu 24.04, 포트 2222)에서 통과: 점검, 업로드, 실행, 10초 동기화,
+  가져오기·검증·삭제, 취소, sshd 30초 중단 시 연결 끊김 표시와 복구.
   opt-in 섹션 — 짧은 opt+freq 체인을 이 PC → 원격 → 이 PC로 넘겨 돌린다.
 
 ## 12. 구현 순서

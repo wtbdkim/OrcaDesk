@@ -62,6 +62,8 @@ node tests/web/draw2d.test.js          # 2D drawing core (projection, stereo rul
 # kind through the real QueueEngine against YOUR ORCA/MACE/CREST. Run before a
 # release cut; each backend section auto-skips when its backend is absent.
 ORCADESK_SMOKE=1 python -m pytest tests/smoke -v
+# Remote-device pipeline over a REAL ssh host (a fake ORCA on it; see the file)
+ORCADESK_SMOKE_REMOTE=wsl-orca python -m pytest tests/smoke/test_remote_ssh_smoke.py -v
 ```
 
 Testing notes (full description: ARCHITECTURE.md *Test suite*):

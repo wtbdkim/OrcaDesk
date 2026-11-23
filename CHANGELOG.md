@@ -6,8 +6,8 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **Remote compute devices over SSH (in development, not yet tried against a
-  real device).** Settings › *Compute devices* lists the hosts in your SSH
+- **Remote compute devices over SSH (in development; the SSH side has been
+  tried against a real host, a real ORCA on the device not yet).** Settings › *Compute devices* lists the hosts in your SSH
   config (you set them up there yourself); switch one on and the queue sends
   ORCA calculations that do not fit on this machine to it, each device with
   its own core / memory / job limits. The whole run folder comes back before
