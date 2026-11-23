@@ -11,6 +11,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   how many jobs run, each against that device's own budget.
 
 ### Fixed
+- **A compute device's caps apply to the run in progress.** Changing a
+  device's cores, memory, job limit, preferences or spot setting in *Compute
+  devices* (or switching it off) waited for the next Run; it now takes effect
+  at once, as the local limits do. Jobs already running keep their share.
 - **No more console windows popping up from a Windows compute device's
   calculations.** Every calculation ORCAdesk started on a Windows machine
   (and the helper that keeps it on the fast cores) opened a console window on

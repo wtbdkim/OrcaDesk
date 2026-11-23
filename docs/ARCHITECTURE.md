@@ -2193,8 +2193,13 @@ with a device is a job to reattach there — always admitted to its device. A
 `RemoteUnavailable` (upload/start failed) is not the calc's failure: the
 device goes offline, the row goes back to PENDING and is offered again
 (`_unsee`). `_watch_devices` re-probes every `DEVICE_WATCH` s during a run.
-The live-budget change (`set_budget`) is not wired per pool yet: a device's
-caps changed mid-run apply to the next run.
+A device's settings are live like the local budget: `set_remote_device` /
+`remove_remote_device` hand the saved entry to a running engine
+(`QueueStore.update_run_device` -> `QueueEngine.update_device_entry`), which
+re-resolves that pool's budget, prefer and spot at once, keeps what only the
+probe knows (workdir, online, ORCA/CREST paths), and stops the pool of a device
+switched off (its in-flight jobs are still watched and fetched). Jobs already
+there keep what they reserved.
 
 **Running** (`runner.RemoteOrcaRunner`, `OrcaRunner`'s verbs): the run folder
 is prepared locally exactly as for a local run, then its top-level files
@@ -2256,7 +2261,7 @@ must never land there. A non-spot device never requeues. With a static IP
 the `~/.ssh/config` entry keeps working across a stop / start; a *replaced*
 instance at that address has a new host key, which BatchMode refuses —
 `_plain_failure` says so and points at `ssh <alias>` to fix it. Device
-settings changed mid-run apply to the next run, like its caps.
+settings changed mid-run apply to the run in progress, like its caps.
 
 ## Optional phone-sync server
 

@@ -251,6 +251,43 @@ def test_a_job_reattached_before_the_first_probe_gets_the_workdir_later(tmp_path
     assert kept.workdir == "/somewhere/else"
 
 
+def test_a_device_entry_saved_mid_run_changes_its_budget_at_once(tmp_path):
+    # A laptop set to 12 cores in the Compute devices card kept its run-start
+    # 16 until the next Run (2026-11-23). The running engine now takes the
+    # saved entry; what only the probe knows (workdir, online) is kept.
+    eng = QueueEngine("orca", str(tmp_path), QueueCallbacks(),
+                      budget=ResourceBudget(max_jobs=1, cores=1, ram_mb=1),
+                      device_entries=[normalize_device({"alias": "gcp", "enabled": True})],
+                      transport=FakeTransport(), device_info=lambda a: _info())
+    assert eng._devices["gcp"].budget.cores == 8 and eng._devices["gcp"].online
+    eng.update_device_entry(normalize_device({"alias": "gcp", "enabled": True,
+                                              "cores": 6, "ram_mb": 30000}))
+    dev = eng._devices["gcp"]
+    assert (dev.budget.cores, dev.budget.ram_mb) == (6, 30000)
+    assert dev.online and dev.workdir == "/home/u/orcadesk-runs"
+    # switched off mid-run: no new jobs there
+    eng.update_device_entry({"alias": "gcp", "enabled": False})
+    assert eng._pool_state["gcp"] == queue_mod.POOL_STOPPED
+    assert not eng._pool_takes("gcp")
+
+
+def test_the_store_hands_a_device_entry_only_to_a_running_engine():
+    from orcamgr.state.store import QueueStore
+    store = QueueStore()
+    assert store.update_run_device({"alias": "gcp", "enabled": True}) is False
+    got = []
+
+    class _Engine:
+        def update_device_entry(self, entry):
+            got.append(entry)
+    store._running, store._engine = True, _Engine()
+    try:
+        assert store.update_run_device({"alias": "gcp", "enabled": True}) is True
+    finally:
+        store._running, store._engine = False, None
+    assert got == [{"alias": "gcp", "enabled": True}]
+
+
 # ---- persistence --------------------------------------------------------------
 
 def test_where_a_calc_ran_round_trips_but_no_client_can_set_it():

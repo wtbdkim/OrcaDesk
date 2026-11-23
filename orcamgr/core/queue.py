@@ -3234,6 +3234,46 @@ class QueueEngine:
         t.start()
         return True
 
+    def update_device_entry(self, entry: dict) -> None:
+        """Take a device's changed settings entry while the run goes on (the
+        Compute devices card saved new caps, prefer kinds, spot...). Like the
+        local budget (set_budget), a device's caps are live: before this a
+        laptop set to 12 cores kept its run-start 16 until the next Run.
+        Jobs already there keep what they reserved. A device switched off
+        stops taking jobs (its pool is stopped) but its in-flight jobs are
+        still watched and fetched; one switched on mid-run joins at once and
+        the watch thread probes it."""
+        alias = entry.get("alias")
+        if not alias:
+            return
+        fresh = (resolve_device(entry, self._device_info(alias))
+                 if entry.get("enabled") else None)
+        with self._slot_cv:
+            self._device_entries = [e for e in self._device_entries
+                                    if e.get("alias") != alias]
+            if fresh is None:
+                if alias in self._pool_state:
+                    self._pool_state[alias] = POOL_STOPPED
+            else:
+                self._device_entries.append(dict(entry))
+                old = self._devices.get(alias)
+                if old is not None:
+                    # what only a probe knows, never lost to a settings save
+                    if not fresh.workdir:
+                        fresh.workdir = old.workdir
+                    if not fresh.online and old.online:
+                        fresh.online = old.online
+                        fresh.has_mpi = old.has_mpi
+                        fresh.mem_avail_mb = old.mem_avail_mb
+                    if not fresh.orca_path:
+                        fresh.orca_path = old.orca_path
+                    if not fresh.crest_path:
+                        fresh.crest_path = old.crest_path
+                        fresh.crest_extended = old.crest_extended
+                self._devices[alias] = fresh
+                self._pool_state.setdefault(alias, POOL_RUNNING)
+            self._slot_cv.notify_all()
+
     def set_budget(self, budget: "ResourceBudget") -> None:
         """Take a new admission budget while the run goes on (the Settings
         sheet saved new limits). The queue is live (P29), and its limits are

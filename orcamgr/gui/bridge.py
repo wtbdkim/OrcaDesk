@@ -1324,8 +1324,8 @@ class Bridge(QObject):
         """Change one device's settings entry ({alias, enabled?, max_jobs?,
         cores?, ram_mb?, orca_path?, workdir?, prefer?, spot?,
         requeue_after_min?}); keys left out keep their value. Applies at once
-        (no Save), like the CREST card -- and to the next run: a run in
-        progress keeps the pools it started with."""
+        (no Save), like the CREST card -- to the next run and to a run in
+        progress (QueueStore.update_run_device), as the local budget does."""
         try:
             data = json.loads(payload_json or "{}")
             if not isinstance(data, dict):
@@ -1350,6 +1350,10 @@ class Bridge(QObject):
                     or (entry["enabled"] and not current["enabled"])):
                 if self._remote_transport.available():
                     self._remote.refresh([entry])
+            # ...and the run in progress takes it too: caps, prefer, spot,
+            # switched on or off (a laptop set to 12 cores kept 16 until the
+            # next Run before this)
+            self.store.update_run_device(entry)
             return self._devices_payload(
                 "" if saved else
                 f"Settings could not be written to {config_file()}.")
@@ -1364,6 +1368,9 @@ class Bridge(QObject):
             self.settings.remote_devices = [d for d in self.settings.remote_devices
                                             if d["alias"] != alias]
             saved = self.settings.save()
+            # a run in progress stops giving it jobs (its running jobs are
+            # still watched and fetched)
+            self.store.update_run_device({"alias": alias, "enabled": False})
             self.store.forget_remote_device(alias)
             self._remote.forget(alias)
             return self._devices_payload(

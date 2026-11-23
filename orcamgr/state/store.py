@@ -2337,6 +2337,17 @@ class QueueStore:
         engine.set_budget(budget)
         return True
 
+    def update_run_device(self, entry: dict) -> bool:
+        """Hand the running engine a compute device's changed settings entry
+        (QueueEngine.update_device_entry), so its caps apply to the run in
+        progress too. Returns False if nothing runs."""
+        with self._lock:
+            if not self._running or self._engine is None:
+                return False
+            engine = self._engine
+        engine.update_device_entry(entry)
+        return True
+
     def pause_run(self) -> bool:
         """Stop processing the queue WITHOUT killing the in-flight ORCA — used on
         app shutdown so the running calculation survives (its detached ORCA keeps
