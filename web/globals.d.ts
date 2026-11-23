@@ -53,7 +53,7 @@ interface OrcaBridge {
   // remote compute devices (~/.ssh/config hosts; orcamgr/remote/)
   get_devices(): Promise<string>;                      // DevicesPayload JSON
   detect_devices(): Promise<string>;                   // DevicesPayload JSON (re-reads the SSH config, probes every host)
-  set_remote_device(payloadJson: string): Promise<string>;  // DevicesPayload | {error}: {alias, enabled?, max_jobs?, cores?, ram_mb?, orca_path?, workdir?, kinds?, spot?, requeue_after_min?}
+  set_remote_device(payloadJson: string): Promise<string>;  // DevicesPayload | {error}: {alias, enabled?, max_jobs?, cores?, ram_mb?, orca_path?, workdir?, prefer?: string[], spot?, requeue_after_min?}
   remove_remote_device(alias: string): Promise<string>;     // DevicesPayload JSON: the settings entry and its clean-up list go
   // file pickers / loaders
   pick_orca_executable(): Promise<string>;     // raw path string

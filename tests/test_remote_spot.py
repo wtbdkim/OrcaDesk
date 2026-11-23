@@ -1,5 +1,7 @@
-"""Spot devices (orcamgr/remote/): a device kept to single points takes
-nothing costly to lose, and a job on a spot / preemptible VM is given back to
+"""Spot devices (orcamgr/remote/): a device's preferred kinds go to it first
+-- a SOFT preference, the user's decision of 2026-11-23, which replaced a
+hard "single points only" switch: it still takes other ORCA kinds when none
+it prefers is ready -- and a job on a spot / preemptible VM is given back to
 the queue -- PENDING, never FAILED (P24) -- when the device stays silent past
 its limit or the VM was taken away under it. Fake transport, fake clock."""
 from __future__ import annotations
@@ -12,8 +14,8 @@ import orcamgr.core.queue as queue_mod
 from orcamgr.core.queue import (REQUEUED_MESSAGE, CalcState, QueueCallbacks,
                                 QueueEngine)
 from orcamgr.core.resources import ResourceBudget
-from orcamgr.remote.devices import (SINGLE_POINT_KINDS, device_takes,
-                                    normalize_device, resolve_device)
+from orcamgr.remote.devices import (ORCA_KINDS, device_prefers, normalize_device,
+                                    resolve_device)
 from orcamgr.remote.runner import RemoteRequeue
 from orcamgr.state.store import QueueStore
 
@@ -31,50 +33,107 @@ _ERROR = _PARTIAL + b"ORCA finished by error termination in SCF\n"
 
 def test_device_settings_default_to_today_and_are_clamped():
     d = normalize_device({"alias": "gcp"})
-    assert (d["kinds"], d["spot"], d["requeue_after_min"]) == ("all", False, 5)
-    d = normalize_device({"alias": "gcp", "kinds": "single_point", "spot": True,
+    assert (d["prefer"], d["spot"], d["requeue_after_min"]) == ([], False, 5)
+    d = normalize_device({"alias": "gcp", "prefer": ["sp", "nmr", "sp"], "spot": True,
                           "requeue_after_min": 0})
-    assert (d["kinds"], d["spot"], d["requeue_after_min"]) == ("single_point", True, 1)
-    # an unknown word is "all" (never a silent lock-out); only a real True is spot
-    d = normalize_device({"alias": "gcp", "kinds": "opt_only", "spot": "true",
-                          "requeue_after_min": 10**9})
-    assert (d["kinds"], d["spot"], d["requeue_after_min"]) == ("all", False, 1440)
+    assert (d["prefer"], d["spot"], d["requeue_after_min"]) == (["nmr", "sp"], True, 1)
+    # unknown and non-ORCA kinds are dropped; only a real True is spot
+    d = normalize_device({"alias": "gcp", "prefer": ["opt_only", "crest_conf", 3, "opt"],
+                          "spot": "true", "requeue_after_min": 10**9})
+    assert (d["prefer"], d["spot"], d["requeue_after_min"]) == (["opt"], False, 1440)
+    assert normalize_device({"alias": "gcp", "prefer": "sp"})["prefer"] == []
 
 
-def test_single_point_devices_take_only_what_never_moves_the_geometry():
-    assert SINGLE_POINT_KINDS == {"sp", "tddft", "nmr"}
-    for k in ("sp", "tddft", "nmr"):
-        assert device_takes("single_point", k)
-    for k in ("opt", "ts_opt", "freq", "opt_freq", "irc", "neb_ts", "general"):
-        assert not device_takes("single_point", k) and device_takes("all", k)
-    dev = resolve_device(normalize_device({"alias": "gcp", "kinds": "single_point",
-                                           "spot": True, "requeue_after_min": 7}), _info())
-    assert (dev.kinds, dev.spot, dev.requeue_after_min) == ("single_point", True, 7)
+def test_the_retired_kinds_switch_migrates_to_a_preference():
+    # 6b845eb's hard filter, replaced by the user's decision: what it meant
+    # becomes a preference, and the key itself is gone
+    d = normalize_device({"alias": "gcp", "kinds": "single_point"})
+    assert d["prefer"] == ["tddft", "nmr", "sp"] and "kinds" not in d
+    assert normalize_device({"alias": "gcp", "kinds": "all"})["prefer"] == []
+    # an explicit preference wins over the old switch
+    assert normalize_device({"alias": "gcp", "kinds": "single_point",
+                             "prefer": ["opt"]})["prefer"] == ["opt"]
+    dev = resolve_device({"alias": "gcp", "kinds": "single_point", "spot": True,
+                          "requeue_after_min": 7}, _info())
+    assert (dev.prefer, dev.spot, dev.requeue_after_min) == (("tddft", "nmr", "sp"), True, 7)
+
+
+def test_a_preference_is_soft_and_empty_means_none():
+    assert device_prefers((), "opt") and device_prefers(("sp",), "sp")
+    assert not device_prefers(("sp",), "opt")
+    # the list ORCAdesk offers is exactly the ORCA kinds the engine knows
+    assert set(ORCA_KINDS) == {k for k in queue_mod.KNOWN_KINDS
+                               if not k.startswith(("mlip", "crest"))}
 
 
 # ---- placement ------------------------------------------------------------------
 
-def test_a_single_point_device_takes_the_sp_and_leaves_the_opt_here(tmp_path, monkeypatch):
-    monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
-    entry = normalize_device({"alias": "gcp", "enabled": True, "max_jobs": 2,
-                              "kinds": "single_point"})
-    eng = QueueEngine("orca-not-needed", str(tmp_path), QueueCallbacks(),
-                      budget=ResourceBudget(max_jobs=1, cores=64, ram_mb=10**6),
-                      device_entries=[entry], transport=FakeTransport(),
-                      device_info=lambda a: _info())
-    where, gate = {}, threading.Barrier(2, timeout=20)
+def _pref_engine(tmp_path, prefer, max_jobs=2):
+    entry = normalize_device({"alias": "gcp", "enabled": True, "max_jobs": max_jobs,
+                              "prefer": prefer})
+    return QueueEngine("orca-not-needed", str(tmp_path), QueueCallbacks(),
+                       budget=ResourceBudget(max_jobs=1, cores=64, ram_mb=10**6),
+                       device_entries=[entry], transport=FakeTransport(),
+                       device_info=lambda a: _info())
+
+
+def _run_holding(eng, calcs, together):
+    """Run ``calcs`` with the fake job body; the names in ``together`` wait
+    for each other, so they are provably in flight at the same time."""
+    where, gate = {}, threading.Barrier(len(together), timeout=20)
 
     def fake(calc, index):
         where[calc.name] = eng._job.device
-        if calc.name in ("hold", "sp1"):
-            gate.wait()            # both in flight together: sp1 found a device
+        if calc.name in together:
+            gate.wait()
         calc.state = CalcState.DONE
     eng._run_calc = fake
-    hold, opt1, sp1 = make_calc("hold"), make_calc("opt1", kind="opt"), make_calc("sp1")
-    for c in (hold, opt1, sp1):
+    for c in calcs:
         c.config.nprocs = 1
-    eng.run_all([hold, opt1, sp1])
-    assert where == {"hold": "", "sp1": "gcp", "opt1": ""}
+    eng.run_all(calcs)
+    return where
+
+
+def test_a_device_preferring_sp_takes_the_sp_behind_an_opt(tmp_path, monkeypatch):
+    # this machine is full (hold); an Opt and an SP are ready, the Opt first in
+    # the queue: the device that prefers single points takes the SP first --
+    # and, with room left and nothing it prefers ready, the Opt after it
+    monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
+    eng = _pref_engine(tmp_path, ["sp"])
+    hold, opt1, sp1 = make_calc("hold"), make_calc("opt1", kind="opt"), make_calc("sp1")
+    order = []
+    real = eng._pick_ready
+
+    def spy(*a, **kw):
+        got = real(*a, **kw)
+        if got is not None:
+            order.append(got[1].name)
+        return got
+    eng._pick_ready = spy
+    where = _run_holding(eng, [hold, opt1, sp1], {"hold", "sp1", "opt1"})
+    assert order[:3] == ["hold", "sp1", "opt1"]
+    assert where == {"hold": "", "sp1": "gcp", "opt1": "gcp"}
+
+
+def test_with_only_an_opt_ready_the_sp_device_still_takes_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
+    eng = _pref_engine(tmp_path, ["sp"])
+    hold, opt1 = make_calc("hold"), make_calc("opt1", kind="opt")
+    assert _run_holding(eng, [hold, opt1], {"hold", "opt1"}) == {"hold": "", "opt1": "gcp"}
+
+
+def test_a_device_with_no_preference_behaves_as_before(tmp_path, monkeypatch):
+    monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
+    eng = _pref_engine(tmp_path, [])
+    hold, opt1, sp1 = make_calc("hold"), make_calc("opt1", kind="opt"), make_calc("sp1")
+    where = _run_holding(eng, [hold, opt1, sp1], {"hold", "opt1", "sp1"})
+    assert where == {"hold": "", "opt1": "gcp", "sp1": "gcp"}
+
+
+def test_this_machine_still_comes_first_for_a_preferred_kind(tmp_path, monkeypatch):
+    monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
+    eng = _pref_engine(tmp_path, ["sp"])
+    assert _run_holding(eng, [make_calc("sp1")], {"sp1"}) == {"sp1": ""}
 
 
 # ---- the runner: requeue only on a spot device ------------------------------------
@@ -190,7 +249,7 @@ def test_the_engine_puts_a_requeued_row_back_and_runs_it_again(tmp_path, monkeyp
     cb = QueueCallbacks(remote_cleanup=cleanups.append,
                         calc_update=lambda i, c: messages.append((c.name, c.state, c.message)))
     entry = normalize_device({"alias": "gcp", "enabled": True, "spot": True,
-                              "kinds": "single_point"})
+                              "prefer": ["sp"]})
     eng = QueueEngine("orca-not-needed", str(tmp_path), cb,
                       budget=ResourceBudget(max_jobs=1, cores=64, ram_mb=10**6),
                       device_entries=[entry], transport=FakeTransport(),

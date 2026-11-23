@@ -392,6 +392,15 @@
             d.has_mpi ? "" : "no MPI: 1-core calculations only"].filter(Boolean).join(" · ");
   }
 
+  /** One checkbox per ORCA kind, in the builder's words and order
+   *  (NB.build.KINDS -- the labels the Guided builder shows), ticked for the
+   *  kinds the device prefers. @param {string[]} prefer @returns {string} */
+  function preferBoxes(prefer) {
+    const kinds = /** @type {Record<string, any>} */ ((NB.build && NB.build.KINDS) || {});
+    return Object.keys(kinds).map(k => `<label><input type="checkbox" data-f="prefer" data-k="${NB.esc(k)}"${
+      prefer.indexOf(k) >= 0 ? " checked" : ""}> ${NB.esc(kinds[k].label || k)}</label>`).join("");
+  }
+
   /** @param {HTMLElement} host @param {any} st DevicesPayload */
   function paintDevices(host, st) {
     const q = (sel) => /** @type {any} */ (host.querySelector(sel));
@@ -429,12 +438,10 @@
             ${num("cores", "cores", d.cores_cap, "Cores the queue may use there; 0 = all it has")}
             ${num("ram_mb", "memory (MB)", d.ram_cap_mb, "Memory the queue may use there; 0 = 75% of it")}
           </div>
+          <div class="ctl" title="Calculations this device takes first. A preference, not a limit: with nothing of these kinds ready, it takes any other ORCA calculation. None ticked = no preference. Single points (SP, TD-DFT, NMR) never move the structure, so a spot VM loses only their own run.">
+            <span class="devpref">prefers</span>${preferBoxes(d.prefer || [])}
+          </div>
           <div class="ctl">
-            <label title="Which calculations the queue sends there. Single points (SP, TD-DFT, NMR) never move the structure, so losing one costs only its own run.">runs
-              <select class="mono" data-f="kinds">
-                <option value="all"${d.kinds !== "single_point" ? " selected" : ""}>Any ORCA calculation</option>
-                <option value="single_point"${d.kinds === "single_point" ? " selected" : ""}>Single points only (safe to lose)</option>
-              </select></label>
             <label title="A spot / preemptible cloud VM can be taken away under a job. A job there that stops answering for this many minutes in a row, or dies with no word from ORCA, is put back in the queue to run again, here or elsewhere."><input type="checkbox" data-f="spot"${d.spot ? " checked" : ""}> Spot / preemptible VM</label>
             ${d.spot ? num("requeue_after_min", "re-queue after (min)", d.requeue_after_min,
                 "Minutes of continuous silence before a job there is put back in the queue; any answer starts the count again") : ""}
@@ -455,7 +462,8 @@
           /** @type {Record<string, any>} */ const patch = { alias: alias };
           const f = inp.dataset.f;
           if (f === "enabled" || f === "spot") patch[f] = !!inp.checked;
-          else if (f === "kinds") patch.kinds = inp.value;
+          else if (f === "prefer") patch.prefer = Array.from(
+            rowEl.querySelectorAll('[data-f="prefer"]:checked')).map((/** @type {any} */ b) => b.dataset.k);
           else { const n = parseInt(inp.value, 10); patch[f] = isFinite(n) && n > 0 ? n : 0; }
           const r = await NB.call("set_remote_device", JSON.stringify(patch));
           if (r && r.error) { NB.fail(r.error); return; }

@@ -2016,15 +2016,20 @@ since, delete last. `reconcile_calcs` never judges a remote RUNNING calc on
 the UI thread; the engine's reattach does, fetching first. Transport detail
 goes to `remote.log` in the user data folder, never to the shared log (D6).
 
-**Spot devices: what a device takes, and a lost job given back.** Two more
+**Spot devices: what a device prefers, and a lost job given back.** Two more
 choices per device in `Settings.remote_devices` (normalized in
-`devices.normalize_device`): `kinds` — `"all"` (default) or
-`"single_point"`, which `_place` honours through `devices.device_takes`
-(`SINGLE_POINT_KINDS` = `sp`, `tddft`, `nmr`: the ORCA kinds that read a fixed
-structure and write a result in one pass; every other kind walks a geometry,
-builds a Hessian displacement by displacement, or is free text, and a lost
-one is hours of progress) — and `spot` with `requeue_after_min` (5, clamped
-1–1440). On a spot device the runner raises `RemoteRequeue` instead of waiting
+`devices.normalize_device`): `prefer` — a list of ORCA kinds
+(`devices.ORCA_KINDS`, pinned to `KNOWN_KINDS` by a test; empty = no
+preference) — and `spot` with `requeue_after_min` (5, clamped 1–1440). The
+preference is **soft** (the user's decision, which replaced 6b845eb's hard
+`kinds: "all" | "single_point"` filter; an entry still carrying
+`"single_point"` migrates to `prefer: [tddft, nmr, sp]`): `_pick_ready` scans
+twice. The first pass (`_place(relax=False)`) places a row on this machine,
+on a device that prefers its kind, or on one with no preference; only when
+that pass places nothing does the second (`relax=True`) let a device take a
+kind it does not prefer. So a spot VM preferring single points takes the SP
+queued behind an Opt, and still takes the Opt when no SP is ready — never
+idles while work it could run waits. "This machine first" is unchanged. On a spot device the runner raises `RemoteRequeue` instead of waiting
 for ever: (a) after `requeue_after_min` of **continuous** silence — the timer
 starts at the first unanswered sync and any answered one resets it, so a
 flapping link never adds its outages up and a device back within the limit

@@ -1901,4 +1901,6 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 .devrow .ctl label{font-size:12px; color:var(--muted-foreground); display:inline-flex;
   align-items:center; gap:6px;}
 .devrow .ctl input[type="number"]{width:7ch;}
+/* the preference row's lead word: the kind checkboxes follow it */
+.devrow .ctl .devpref{font-size:12px; color:var(--muted-foreground);}
 .devrow .ctl input[type="checkbox"]{width:15px; height:15px; accent-color:var(--foreground); margin:0;}

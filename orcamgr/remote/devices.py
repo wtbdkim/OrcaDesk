@@ -40,18 +40,23 @@ _MAX_RAM_MB = 4_000_000
 # (core/resources._AUTO_RAM_SHARE).
 _AUTO_RAM_SHARE = 0.75
 
-# Which calculations a device takes (Settings.remote_devices "kinds").
-# "single_point" is for a device that may vanish under a job -- a spot /
-# preemptible cloud VM: only kinds that never move the geometry and keep
-# nothing worth resuming, so losing one costs its own run time and nothing
-# else. sp, tddft and nmr are exactly the ORCA kinds of KNOWN_KINDS that read
-# a fixed structure and write a result in one pass; every other ORCA kind
-# walks a geometry (opt / ts_opt / irc / neb_ts), builds a Hessian
-# displacement by displacement (freq), or is free text that may do either
-# (general) -- a lost one is hours of progress, and a half-finished geometry
-# is a trap for whatever references it.
-DEVICE_KINDS = ("all", "single_point")
-SINGLE_POINT_KINDS = frozenset({"sp", "tddft", "nmr"})
+# Which calculations a device PREFERS (Settings.remote_devices "prefer"): a
+# list of ORCA kinds, empty = no preference. A soft preference, not a filter
+# (the user's decision, 2026-11-23 -- it replaced a hard "single points
+# only" switch): a device with room takes a ready calc of a kind it prefers
+# first, and any other ORCA calc only when no preferred one can go there
+# (QueueEngine._pick_ready's two passes). Typical use: a spot / preemptible
+# cloud VM that prefers single points, which never move the geometry, so
+# losing one costs only its own run.
+#
+# The ORCA kinds of core/queue.KNOWN_KINDS (MLIP and CREST never leave this
+# machine), in the builder's order; repeated here because core/queue imports
+# this module (a test pins the two together).
+ORCA_KINDS = ("opt", "opt_freq", "ts_opt", "ts_opt_freq", "freq", "ts_freq",
+              "neb_ts", "irc", "tddft", "nmr", "sp", "general")
+# What the retired "kinds": "single_point" setting meant; an entry that still
+# carries it is migrated to this preference (normalize_device).
+SINGLE_POINT_KINDS = ("tddft", "nmr", "sp")
 
 # A spot device unreachable this long gives its jobs back to the queue
 # ("requeue_after_min", minutes; clamped). Long enough that a dropped Wi-Fi
@@ -61,12 +66,25 @@ _MIN_REQUEUE_AFTER_MIN = 1
 _MAX_REQUEUE_AFTER_MIN = 1440
 
 
-def device_takes(kinds: str, calc_kind: str) -> bool:
-    """Whether a device whose ``kinds`` setting is ``kinds`` takes a calc of
-    ``calc_kind`` (remote_capable is checked separately)."""
-    if kinds == "single_point":
-        return calc_kind in SINGLE_POINT_KINDS
-    return True
+def device_prefers(prefer, calc_kind: str) -> bool:
+    """Whether a device whose preference is ``prefer`` counts ``calc_kind`` as
+    one of its own: always when it prefers nothing in particular. A device
+    that does not prefer a kind still TAKES it -- in the dispatcher's second
+    pass (remote_capable is checked separately)."""
+    return not prefer or calc_kind in prefer
+
+
+def normalize_prefer(raw, legacy_kinds=None) -> List[str]:
+    """A ``prefer`` value coerced to known ORCA kinds, each once, in
+    ORCA_KINDS order. ``legacy_kinds`` is the retired ``kinds`` setting: an
+    entry with no ``prefer`` yet and ``kinds: "single_point"`` keeps what it
+    meant as a preference for single points."""
+    if raw is None and legacy_kinds == "single_point":
+        raw = list(SINGLE_POINT_KINDS)
+    if not isinstance(raw, (list, tuple)):
+        return []
+    want = {k for k in raw if isinstance(k, str)}
+    return [k for k in ORCA_KINDS if k in want]
 
 
 # --------------------------------------------------------------------------
@@ -347,7 +365,6 @@ def normalize_device(raw: dict) -> Optional[dict]:
         return None
     orca = raw.get("orca_path", "")
     work = raw.get("workdir", DEFAULT_WORKDIR)
-    kinds = raw.get("kinds", "all")
     requeue = raw.get("requeue_after_min", DEFAULT_REQUEUE_AFTER_MIN)
     if requeue is None or isinstance(requeue, bool):
         requeue = DEFAULT_REQUEUE_AFTER_MIN
@@ -360,8 +377,8 @@ def normalize_device(raw: dict) -> Optional[dict]:
         "ram_mb": _clamp(raw.get("ram_mb", 0), 0, _MAX_RAM_MB),
         "orca_path": orca.strip() if isinstance(orca, str) else "",
         "workdir": (work.strip() if isinstance(work, str) else "") or DEFAULT_WORKDIR,
-        # an unknown word is "all" -- today's behaviour, never a silent lock-out
-        "kinds": kinds if kinds in DEVICE_KINDS else "all",
+        # unknown kinds are dropped; the retired "kinds" switch migrates
+        "prefer": normalize_prefer(raw.get("prefer"), raw.get("kinds")),
         "spot": raw.get("spot") is True,
         "requeue_after_min": _clamp(requeue, _MIN_REQUEUE_AFTER_MIN, _MAX_REQUEUE_AFTER_MIN),
     }
@@ -398,7 +415,7 @@ class RemoteDevice:
     has_mpi: bool = False
     online: bool = False
     mem_avail_mb: int = 0
-    kinds: str = "all"            # DEVICE_KINDS
+    prefer: tuple = ()            # ORCA kinds it takes first (); () = no preference
     spot: bool = False            # may vanish: its jobs are re-queued when it does
     requeue_after_min: int = DEFAULT_REQUEUE_AFTER_MIN
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False,
@@ -422,7 +439,7 @@ def resolve_device(entry: dict, info: Optional[DeviceInfo]) -> RemoteDevice:
         has_mpi=bool(info.has_mpi) if ready else False,
         online=ready,
         mem_avail_mb=(info.mem_avail_mb if ready else 0),
-        kinds=entry.get("kinds", "all") if entry.get("kinds") in DEVICE_KINDS else "all",
+        prefer=tuple(normalize_prefer(entry.get("prefer"), entry.get("kinds"))),
         spot=entry.get("spot") is True,
         requeue_after_min=_clamp(entry.get("requeue_after_min", DEFAULT_REQUEUE_AFTER_MIN),
                                  _MIN_REQUEUE_AFTER_MIN, _MAX_REQUEUE_AFTER_MIN),

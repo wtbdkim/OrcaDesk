@@ -79,7 +79,7 @@ from .procutil import process_matches
 from .rundir import planned_run_dir, result_folder, run_dir_of, run_folder
 from .xyzutil import as_xyz_file
 import logging
-from ..remote.devices import device_takes, resolve_device
+from ..remote.devices import device_prefers, resolve_device
 from ..remote.runner import (RemoteCancelUnreachable, RemoteOrcaRunner,
                              RemoteRequeue, RemoteUnavailable, launch_stamp,
                              remote_dir_for, remote_safe_name)
@@ -2380,6 +2380,21 @@ class QueueEngine:
         # names must track the live list: mid-run adds resolve their references
         # against the queue as it is NOW, not as it was at run start
         self._by_name = {c.name: c for c in calcs}
+        # Two passes for the devices' preferences (remote/devices.py): the
+        # first places a row only on this machine, on a device that prefers
+        # its kind, or on a device with no preference; only when that places
+        # nothing may a device take a kind it does not prefer -- so a spot VM
+        # that prefers single points takes the SP behind an Opt in the queue,
+        # and still takes the Opt when no SP is ready.
+        picked = self._pick_pass(calcs, seen, ignore_budget, relax=False)
+        if picked is None and not ignore_budget and self._devices:
+            picked = self._pick_pass(calcs, seen, ignore_budget, relax=True)
+        return picked
+
+    def _pick_pass(self, calcs: list[Calculation], seen: dict,
+                   ignore_budget: bool, relax: bool):
+        """One scan of _pick_ready; ``relax`` lets a device take a kind it
+        does not prefer. Caller holds the lock."""
         for j, c in enumerate(calcs):
             if id(c) in seen:
                 continue
@@ -2411,7 +2426,7 @@ class QueueEngine:
                 self._placed[c.name] = (c.device if c.state == CalcState.RUNNING
                                         else "")
                 return j, c
-            where = self._place(c)
+            where = self._place(c, relax=relax)
             if where is not None:
                 self._placed[c.name] = where
                 return j, c
@@ -2541,12 +2556,14 @@ class QueueEngine:
                 return False
         return True
 
-    def _place(self, calc: Calculation) -> "Optional[str]":
+    def _place(self, calc: Calculation, relax: bool = True) -> "Optional[str]":
         """Where ``calc`` would run now: "" (this machine), a device alias, or
         None when nowhere has room. This machine first, then the devices in
-        the user's order (design §5). A RUNNING row with a device is a job
-        already there to reattach: it goes back to its device whatever that
-        device's state, or the job would be orphaned. Caller holds the lock."""
+        the user's order (design §5). Without ``relax`` a device whose
+        preference leaves out ``calc.kind`` is skipped (_pick_ready's first
+        pass). A RUNNING row with a device is a job already there to
+        reattach: it goes back to its device whatever that device's state, or
+        the job would be orphaned. Caller holds the lock."""
         if calc.state == CalcState.RUNNING:
             if calc.device:
                 return calc.device
@@ -2557,9 +2574,8 @@ class QueueEngine:
         if self._devices and remote_capable(
                 calc, run_dir_of(calc, self._system_name(calc))):
             for alias, dev in self._devices.items():
-                # a device kept to single points (a spot VM) takes nothing
-                # that would be costly to lose (remote/devices.py)
-                if not device_takes(dev.kinds, calc.kind):
+                # a preference is soft: skipped in the first pass only
+                if not relax and not device_prefers(dev.prefer, calc.kind):
                     continue
                 slot.device = alias
                 if self._fits(slot):

@@ -17,9 +17,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   is applied at once and its remote job is tidied up when the device is back.
   Linux devices only; MLIP, CREST and GPU calculations stay on this machine.
 - **Spot / preemptible cloud VMs as compute devices.** Each device in
-  *Compute devices* can be kept to **single points only** (SP, TD-DFT, NMR —
-  nothing that would be costly to lose), and marked **Spot / preemptible
-  VM**: a job there that stays silent for 5 minutes in a row (adjustable), or
+  *Compute devices* has **preferred calculation kinds** (tick e.g. Single
+  point, TD-DFT and NMR — nothing that would be costly to lose): it takes
+  those first, and any other ORCA calculation only when none of them is
+  ready, so it never sits idle while work waits. A device can also be marked
+  **Spot / preemptible VM**: a job there that stays silent for 5 minutes in a row (adjustable), or
   that dies with no word from ORCA because the VM was taken away, goes back
   to the queue as *Re-queued* and runs again — on this machine or another
   device — instead of hanging or being locked as failed. A connection that

@@ -252,7 +252,8 @@ class DevicePayload(TypedDict):
     ram_cap_mb: int           # 0 = 75% of the probed memory
     orca_path_setting: str    # "" = find it
     workdir_setting: str
-    kinds: str                # "all" | "single_point" (sp / tddft / nmr only)
+    prefer: "list[str]"       # ORCA kinds it takes first ([] = no preference);
+                              # a soft preference: it takes others when none is ready
     spot: bool                # spot / preemptible VM: lost jobs are re-queued
     requeue_after_min: int    # continuous silence before a spot job is re-queued
 

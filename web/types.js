@@ -127,7 +127,8 @@
  * @property {number} ram_cap_mb        0 = 75% of the probed memory
  * @property {string} orca_path_setting "" = find it
  * @property {string} workdir_setting
- * @property {"all"|"single_point"} kinds  single_point = SP / TD-DFT / NMR only
+ * @property {string[]} prefer        ORCA kinds it takes first ([] = no preference); soft --
+ *                                     it takes other kinds when none it prefers is ready
  * @property {boolean} spot             spot / preemptible VM: lost jobs are re-queued
  * @property {number} requeue_after_min continuous silence before a spot job is re-queued
  */
