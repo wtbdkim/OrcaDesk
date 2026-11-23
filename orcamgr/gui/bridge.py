@@ -243,6 +243,9 @@ class Bridge(QObject):
         enabled = [d for d in self.settings.remote_devices if d.get("enabled")]
         if enabled and self._remote_transport.available():
             self._remote.refresh(enabled)
+        # between runs the rail still lists each enabled device (stopped), so
+        # its own Run is there to press (store.run_resources)
+        self.store.idle_devices = self._idle_devices
         # Orbital / density cubes for the Results-tab 3D viewer. orca_plot runs
         # from ~0.2 s (one MO) to ~10 s (an SCF density) on a mid-sized system —
         # short, but not short enough to block Qt's UI thread — so it follows the
@@ -1233,6 +1236,18 @@ class Bridge(QObject):
         """Blocking re-probe for the engine's device watch (its own thread)."""
         self._remote.refresh([entry], wait=True)
         return self._remote.get(entry.get("alias", ""))
+
+    def _idle_devices(self) -> list:
+        """[{id, online}] of the enabled devices for the idle snapshot."""
+        if not self._remote_transport.available():
+            return []
+        out = []
+        for d in self.settings.remote_devices:
+            if not d.get("enabled"):
+                continue
+            info = self._remote.get(d["alias"])
+            out.append({"id": d["alias"], "online": bool(info and info.usable)})
+        return out
 
     def _device_args(self) -> dict:
         """The remote-device half of make_engine_factory's arguments."""
@@ -3304,6 +3319,13 @@ class Bridge(QObject):
 
     @pyqtSlot(str, result=str)
     def run_queue(self, skip_names_json: str = "") -> str:
+        # a run already alive (draining, or some devices stopped): the
+        # whole-queue Run puts every pool back to work in that same run
+        if self.store.resume_run():
+            return json.dumps(OkResult(ok=True))
+        return self._start_run(skip_names_json)
+
+    def _start_run(self, skip_names_json: str = "", pool_states=None) -> str:
         calcs = self.store.list()
         # ORCA is required only if a non-MLIP calc will actually run — an
         # all-MLIP queue runs through the user's MACE env without ORCA
@@ -3321,6 +3343,7 @@ class Bridge(QObject):
                                       mlip_envs=self._mlip_envs_for_run(),
                                       crest_distro=self.settings.crest_distro,
                                       budget=self._budget(),
+                                      pool_states=pool_states,
                                       **self._device_args())
         try:
             # the reference screen runs inside start_run's lock, against the
@@ -3348,6 +3371,45 @@ class Bridge(QObject):
         pending (as opposed to cancel_queue, which kills the running job)."""
         ok = self.store.request_stop_after_current()
         return json.dumps(OkResult(ok=ok))
+
+    # --- per-device run controls (the rail's device lines) ---
+    # A pool is "" for this PC or a device's ~/.ssh/config alias. While a run
+    # is alive each control sets only that pool; while the queue is idle a
+    # device's Run starts a run in which only that pool takes jobs (every
+    # other pool starts stopped -- the whole-queue Run turns them all on).
+
+    def _pool_ok(self, pool: str) -> bool:
+        return pool == "" or pool in {d["alias"] for d in self.settings.remote_devices
+                                      if d.get("enabled")}
+
+    @pyqtSlot(str, str, result=str)
+    def run_device(self, pool: str, skip_names_json: str = "") -> str:
+        """Let one pool take jobs: in the run that is alive, or by starting a
+        run with only this pool on."""
+        pool = pool or ""
+        if not self._pool_ok(pool):
+            return json.dumps(OkResult(ok=False, error=f"No enabled device '{pool}'."))
+        if self.store.set_pool_state(pool, "running"):
+            return json.dumps(OkResult(ok=True))
+        states = {d["alias"]: "stopped" for d in self.settings.remote_devices
+                  if d.get("enabled")}
+        states[""] = "stopped"
+        states[pool] = "running"
+        return self._start_run(skip_names_json, pool_states=states)
+
+    @pyqtSlot(str, result=str)
+    def stop_device(self, pool: str) -> str:
+        """One pool's Stop after current: it finishes what it runs and takes
+        no new job; the others go on."""
+        ok = self.store.set_pool_state(pool or "", "draining")
+        return json.dumps(OkResult(ok=ok))
+
+    @pyqtSlot(str, result=str)
+    def cancel_device(self, pool: str) -> str:
+        """Cancel the calculations running on one pool (they end CANCELLED,
+        re-runnable) and stop it; the other pools are not touched."""
+        n = self.store.cancel_pool(pool or "")
+        return json.dumps(OkResult(ok=n >= 0))
 
     def relocate_moved_calcs(self) -> None:
         """Startup hook (not a JS slot): find again, in the background, every

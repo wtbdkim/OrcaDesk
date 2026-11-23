@@ -113,7 +113,7 @@ testable). Where to look, by area (each is a section of `docs/ARCHITECTURE.md`):
 | Bridge API | `gui/bridge.py`, `web/globals.d.ts` | New backend functionality = new `@pyqtSlot`; declare it in `globals.d.ts`. |
 | Wire payloads | `state/schemas.py` ↔ `web/types.js` | TypedDicts are the source of truth; mirror field by field. |
 | Queue store | `state/store.py` | Single source of truth, shared by desktop + phone; `calc_from_dict` is the trust boundary. |
-| Run engine | `core/queue.py`, `core/resources.py` | Budget-admitted concurrency (P57), dependency-ready dispatch, per-kind `validate_result`. |
+| Run engine | `core/queue.py`, `core/resources.py` | Budget-admitted concurrency (P57), dependency-ready dispatch, per-kind `validate_result`; per-pool run state (this PC / each device: running, draining, stopped). |
 | ORCA input | `core/input_generator.py` | `StepConfig` → `.inp`; normalization rules in *Conventions* below. |
 | ORCA run | `core/runner.py`, `core/tailer.py`, `procutil.py` | Detached launch by bare file name in the run folder; reattach via `(pid, create_time)`; hang watchdog. |
 | Parsing | `core/parser.py` | Marker-based, last occurrence wins; `result_from_output` dispatches on kind. |

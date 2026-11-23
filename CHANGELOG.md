@@ -5,6 +5,17 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Run, Stop and Cancel for each computer.** The queue rail's resource box
+  has a line for *This PC* and one for each compute device, each with its own
+  Run (take new calculations), Stop (finish what runs there, start nothing
+  new) and Cancel (stop what runs there, asked first). The row at the bottom
+  still commands the whole queue. Each line says *draining* or *stopped* when
+  it is, so a Stop after current no longer looks like the queue hanging. On an
+  idle queue a device's Run starts the queue on that device alone, and the
+  bottom Run queue also resumes a run that is draining instead of being
+  refused.
+
 ### Fixed
 - **Closing ORCAdesk no longer hangs while calculations run on compute
   devices.** The window waited for every remote job's check-in or result

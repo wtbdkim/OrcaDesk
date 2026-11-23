@@ -89,8 +89,10 @@
  * @property {number} ram_budget_mb     the run's memory budget
  * @property {number} jobs              calculations in flight
  * @property {number} max_jobs          how many may be in flight at once
+ * @property {"running"|"draining"|"stopped"} state  this machine's pool
  * @property {DeviceUsage[]} devices    each enabled remote device's own pool (the
- *                                      figures above are this machine's); [] idle
+ *                                      figures above are this machine's); idle,
+ *                                      one zero line per enabled device (stopped)
  */
 
 /**
@@ -104,6 +106,8 @@
  * @property {number} jobs
  * @property {number} max_jobs
  * @property {boolean} online           false: off, unreachable, or a job lost contact
+ * @property {"running"|"draining"|"stopped"} state  its pool: takes new jobs / finishing
+ *                                      what it has / takes none
  */
 
 /**

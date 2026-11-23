@@ -160,6 +160,11 @@ interface OrcaBridge {
   run_queue(skipNamesJson: string): Promise<string>;
   cancel_queue(): Promise<string>;
   stop_after_current(): Promise<string>;
+  /** one pool ("" = this PC, else a device alias): take jobs (starts a run
+   *  with only this pool on when the queue is idle) / drain / cancel its jobs */
+  run_device(pool: string, skipNamesJson: string): Promise<string>;
+  stop_device(pool: string): Promise<string>;
+  cancel_device(pool: string): Promise<string>;
   // phone-sync server
   get_server_status(): Promise<string>;
   get_connect_qr(): Promise<string>;

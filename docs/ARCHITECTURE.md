@@ -1354,6 +1354,32 @@ The `core/` pipeline:
   so PENDING rows stay PENDING — a stop does not discard the queued plan),
   graceful `request_stop_after_current()` (drain — let the in-flight job finish,
   rest stays PENDING), and `detach()` (shutdown — leave the running job alive).
+  **Per-pool run state.** Each pool — `""` for this machine, an alias for a
+  remote device — is `running` (takes new jobs), `draining` (finishes what it
+  has, takes none) or `stopped`; `_place` (and the over-budget fallback)
+  honours it, a job already running somewhere is reattached whatever its pool
+  says, and `_start_job` hands a picked row back to the scan (`requeue`) when
+  its pool stopped between the pick and the start. The drain is no longer a
+  walk-ending stop: `request_stop_after_current` drains every pool and the walk
+  ends (`_end_of_drain`, "left pending") only once nothing is in flight and no
+  pool takes jobs — so a Run in the meantime (`resume_pools`, the footer's Run
+  while a run is alive) resumes the SAME run instead of being refused. A
+  device's own controls (`set_pool_state`, `cancel_pool` — cancels only that
+  pool's jobs, which end CANCELLED, and stops it) touch only its pool. A
+  device's Run on an idle queue starts a run with `pool_states` = that pool
+  running, every other pool stopped (chosen so "Run on aws" never also loads
+  this PC; the footer Run turns everything on); with this machine stopped the
+  walk waits while a running device is off (the watch may bring it back) and
+  ends when every running device is up but can take nothing left (local-only
+  rows stay PENDING, never stamped BLOCKED as a "cycle"). Each pool's state is
+  reported as `RunResources.state` / `DeviceUsage.state` (a draining pool with
+  nothing in flight reads `stopped`); between runs `store.run_resources` lists
+  every enabled device as stopped (`store.idle_devices`, wired by the bridge)
+  so its Run is on the rail. A new run never inherits a drain: every Run and
+  the startup resume build a fresh engine. Bridge slots: `run_device(pool,
+  skip)`, `stop_device(pool)`, `cancel_device(pool)`; `run_queue` resumes a
+  live run. Measured motive (2026-11-23): after a whole-queue Stop after
+  current the rail showed idle devices and 98 pending rows with no hint.
 - `parser.py` — `parse_file()` → `ParseResult` (energies + SCF energy
   decomposition, geometry, orbitals/HOMO-LUMO, Mulliken & Löwdin charges, Mayer
   population (bond orders + valences), dipole moment, rotational constants,

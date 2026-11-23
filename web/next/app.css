@@ -1904,3 +1904,27 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 /* the preference row's lead word: the kind checkboxes follow it */
 .devrow .ctl .devpref{font-size:12px; color:var(--muted-foreground);}
 .devrow .ctl input[type="checkbox"]{width:15px; height:15px; accent-color:var(--foreground); margin:0;}
+
+/* ============================ per-pool run controls ============================
+   A deliberate addition to the reference (DESIGN.md §17.2, rail): the resource
+   box's line per pool -- "This PC" and each remote device -- carries its own
+   Run / Stop / Cancel and its state word, so a drain ("draining", "stopped")
+   never reads as a stall. Small and quiet: the whole-queue row at the rail's
+   foot stays the primary command. The reference has no remote devices, so no
+   landmark the spec diff compares changes. */
+.railres .poolhead{grid-column:1/-1; display:flex; align-items:center;
+  justify-content:space-between; gap:8px; min-width:0; margin-top:2px;}
+.railres .poolname{font-size:12px; font-weight:500; color:var(--foreground);
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.railres .poolstate{margin-left:6px; font-family:var(--font-mono); font-size:11px;
+  font-weight:400; color:var(--muted-foreground);}
+.railres .poolstate[data-st="draining"]{color:var(--warn);}
+.railres .poolname .lost{margin-left:6px; font-family:var(--font-mono); font-size:11px;
+  font-weight:400; color:var(--lost);}
+.railres .poolctl{display:inline-flex; gap:2px; flex:none;}
+.railres .poolbtn{background:none; border:1px solid transparent; border-radius:var(--radius-sm);
+  padding:1px 6px; font-size:11px; line-height:1.5; color:var(--muted-foreground); cursor:pointer;}
+.railres .poolbtn:hover:not(:disabled){border-color:var(--border); color:var(--foreground);}
+.railres .poolbtn[data-act="cancel"]:hover:not(:disabled){color:var(--err);}
+.railres .poolbtn:disabled{opacity:.35; cursor:default;}
+.railres .poolbtn:focus-visible{outline:2px solid var(--ring); outline-offset:1px;}

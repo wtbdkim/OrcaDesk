@@ -211,6 +211,9 @@ class RunResources(TypedDict):
     ram_budget_mb: int
     jobs: int
     max_jobs: int
+    # this machine's pool: "running" (takes new jobs), "draining" (finishing
+    # what it has, takes none), "stopped" (takes none) -- QueueEngine pools
+    state: str
     # the figures above are THIS machine's; each enabled remote device has
     # its own pool (orcamgr/remote/, design §5), in the user's order
     devices: "list[DeviceUsage]"
@@ -226,6 +229,7 @@ class DeviceUsage(TypedDict):
     jobs: int
     max_jobs: int
     online: bool              # False: off, unreachable, or a job lost contact
+    state: str                # its pool: "running" / "draining" / "stopped"
 
 
 # ---- remote devices (desktop bridge) ------------------------------------------

@@ -186,8 +186,10 @@
       return [c.name, c.state, !!c.faulted, !!c.disconnected, !!c.waiting, c.kind, c.meta, c.message, !!c.is_raw,
               frac == null ? null : Math.floor(frac * 100)];
     });
-    const res = NB.running && NB.resources ? NB.resources : null;
-    return JSON.stringify([rows, cur, _opened, _folded, res]);
+    // idle, the box still carries each device's line (and its Run), so the
+    // idle snapshot is part of what is drawn too
+    const res = NB.resources || null;
+    return JSON.stringify([rows, cur, _opened, _folded, res, !!NB.running]);
   }
   let _sig = "";
 
@@ -277,7 +279,11 @@
 
     host.appendChild(openedGroup());
 
-    if (NB.running && NB.resources) host.appendChild(occupancy(NB.resources));
+    // while a run is alive: what it holds, per pool, with each pool's
+    // controls; idle: the pool lines only, and only when there are devices
+    // (this PC alone has nothing a device line would add to the Run below)
+    if (NB.resources && (NB.running || (NB.resources.devices || []).length))
+      host.appendChild(occupancy(NB.resources));
     host.scrollTop = scroll;
     if (refocus) {
       const back = refocus();
@@ -383,11 +389,49 @@
     return el;
   }
 
-  /** What the run is holding of this machine. Only while something is
-   *  running: an idle queue occupies nothing, and a row of zeroes is noise.
+  /** One pool's line: its name, its state word (so a drain never reads as a
+   *  stall), and its own Run / Stop / Cancel. ``pool`` is "" for this PC.
+   *  @param {string} pool @param {string} label @param {string} state
+   *  @param {number} jobs @param {string} [extra] HTML after the name */
+  function poolHead(pool, label, state, jobs, extra) {
+    const st = state || "running";
+    const word = st === "running" ? ""
+      : `<span class="poolstate" data-st="${st}">${st === "draining" ? "draining" : "stopped"}</span>`;
+    const canRun = st !== "running" && (NB.running || runnableRows());
+    const btn = (/** @type {string} */ act, /** @type {string} */ text,
+                 /** @type {boolean} */ on, /** @type {string} */ tip) =>
+      `<button type="button" class="poolbtn" data-act="${act}" data-pool="${NB.esc(pool)}"${
+        on ? "" : " disabled"} title="${NB.esc(tip)}">${text}</button>`;
+    return `<div class="poolhead"><span class="poolname">${NB.esc(label)}${word}${extra || ""}</span>
+      <span class="poolctl">${
+        btn("run", "Run", canRun, NB.running ? "Take new calculations again"
+            : "Start the queue on " + label + " only (the others stay stopped)")}${
+        btn("stop", "Stop", NB.running && st === "running",
+            "Stop after current: finish what runs on " + label + ", start nothing new there")}${
+        btn("cancel", "Cancel", NB.running && jobs > 0,
+            "Cancel the calculations running on " + label)}</span></div>`;
+  }
+
+  /** Something in the queue a Run would start. */
+  function runnableRows() {
+    // a CANCELLED calculation re-runs (P24), so it counts
+    return NB.queue.some(c =>
+      c.state === "pending" || c.state === "blocked" || c.state === "cancelled");
+  }
+
+  /** What the run is holding of this machine and of each device, with each
+   *  pool's own run controls. While idle only the pool lines are drawn (a
+   *  device's Run starts the queue on it alone); zero meters are noise.
    *  @param {any} r RunResources @returns {HTMLElement} */
   function occupancy(r) {
     const box = NB.el("div", "railres");
+    box.addEventListener("click", onPoolControl);
+    if (!NB.running) {
+      box.innerHTML = poolHead("", "This PC", "stopped", 0)
+        + (r.devices || []).map((/** @type {any} */ d) => poolHead(d.id, d.id, "stopped", 0,
+            d.online ? "" : '<span class="lost">Off</span>')).join("");
+      return box;
+    }
     /** @param {string} label @param {number} used @param {number} budget @param {string} unit */
     /** @param {string} [tip] what the figure is, on hover */
     const meter = (label, used, budget, unit, tip) => {
@@ -400,7 +444,8 @@
     };
     // both are what the run's budget sets aside for the jobs it admitted, not
     // what they use: cores are declared (exact), memory is an estimate
-    box.innerHTML = meter("Cores reserved", r.cores_used, r.cores_budget, "",
+    box.innerHTML = poolHead("", "This PC", r.state, r.jobs)
+      + meter("Cores reserved", r.cores_used, r.cores_budget, "",
                           "Cores the running jobs declared (%pal nprocs, CREST -T, the MLIP thread cap), against the run's budget.")
       + meter("Memory reserved", Math.round(r.ram_used_mb / 1024), Math.round(r.ram_budget_mb / 1024), " GB",
               "What the run's budget sets aside for the running jobs, not what they use: ORCA %maxcore × cores, 3 GB an MLIP job, 128 MB per CREST thread (a search uses far less; under WSL its real use is inside the WSL VM). Before a second job starts, the machine's free memory is checked too.")
@@ -410,29 +455,89 @@
     // reserved there, and "Disconnected" when it stopped answering (D7)
     (r.devices || []).forEach((/** @type {any} */ d) => {
       const pct = d.cores_budget > 0 ? Math.min(100, Math.round((d.cores_used / d.cores_budget) * 100)) : 0;
-      box.insertAdjacentHTML("beforeend", `<div class="meter wide" title="${NB.esc(
+      box.insertAdjacentHTML("beforeend", poolHead(d.id, d.id, d.state, d.jobs,
+          d.online ? "" : '<span class="lost">Disconnected</span>')
+        + `<div class="meter wide" title="${NB.esc(
           "Remote device " + d.id + ": cores the jobs running there declared, against its own budget.")}">
-        <div class="res-line"><span>${NB.esc(d.id)}${d.online ? "" : '<span class="lost">Disconnected</span>'}</span>
-          <span>${d.jobs} job${d.jobs === 1 ? "" : "s"} · ${d.cores_used} / ${d.cores_budget} cores</span></div>
+        <div class="res-line"><span>${d.jobs} job${d.jobs === 1 ? "" : "s"}</span>
+          <span>${d.cores_used} / ${d.cores_budget} cores</span></div>
         <div class="res-bar"><span style="width:${pct}%"></span></div></div>`);
     });
     return box;
   }
 
+  /** A pool control on the rail (event delegation on the resource box).
+   *  @param {MouseEvent} e */
+  async function onPoolControl(e) {
+    const b = /** @type {HTMLElement|null} */ (/** @type {HTMLElement} */ (e.target).closest(".poolbtn"));
+    if (!b || /** @type {HTMLButtonElement} */ (b).disabled) return;
+    const pool = b.dataset.pool || "";
+    const label = pool || "this PC";
+    const act = b.dataset.act;
+    if (act === "run") {
+      if (NB.running) {
+        const r = await NB.call("run_device", pool, "[]");
+        if (r && r.error) NB.fail(r.error);
+      } else {
+        const skip = await preRun();
+        if (skip === null) return;
+        const r = await NB.call("run_device", pool, JSON.stringify(skip));
+        if (r && r.error) { NB.fail(r.error); return; }
+      }
+    } else if (act === "stop") {
+      await NB.call("stop_device", pool);
+      NB.toast("Stopping after the running calculations on " + label + ".");
+    } else if (act === "cancel") {
+      NB.confirm("Cancel on " + label,
+        "The calculations running on " + label + " are stopped now and can be run again; "
+          + label + " takes no new ones. The other devices go on.",
+        "Cancel them", async () => { await NB.call("cancel_device", pool); await NB.poll(); });
+      return;
+    }
+    await NB.poll();
+  }
+
+  /** Each pool's state while a run is alive ("" = this PC).
+   *  @returns {string[]} */
+  function poolStates() {
+    const r = NB.resources;
+    if (!NB.running || !r) return [];
+    return [r.state || "running"].concat((r.devices || []).map((/** @type {any} */ d) => d.state || "running"));
+  }
+
   function paintFoot() {
-    // a CANCELLED calculation re-runs (P24; the engine picks it up like a
-    // pending one), so a queue of only cancelled rows is still runnable
-    const anyRunnable = NB.queue.some(c =>
-      c.state === "pending" || c.state === "blocked" || c.state === "cancelled");
-    NB.$("btn-run").disabled = NB.running || !anyRunnable;
-    NB.$("btn-stop").disabled = !NB.running;
+    const states = poolStates();
+    // the whole-queue Run also resumes a run that is draining or has pools
+    // stopped (every pool takes jobs again)
+    const resumable = NB.running && states.some(s => s !== "running");
+    NB.$("btn-run").disabled = NB.running ? !resumable : !runnableRows();
+    NB.$("btn-stop").disabled = !NB.running || !states.some(s => s === "running");
     NB.$("btn-cancel").disabled = !NB.running;
   }
 
   // ---------------------------------------------------------------- actions
 
   async function runQueue() {
-    if (!NB.queue.length) { NB.toast("Nothing queued."); return; }
+    if (NB.running) {
+      // a run is alive: put every pool back to work, nothing to re-check
+      const r = await NB.call("run_queue", "[]");
+      if (r && r.error) NB.fail(r.error);
+      await NB.poll();
+      return;
+    }
+    const skip = await preRun();
+    if (skip === null) return;
+    const r = await NB.call("run_queue", JSON.stringify(skip));
+    if (r && r.error) { NB.fail(r.error); return; }
+    await NB.poll();
+  }
+
+  /** The checks before a run starts -- an ORCA path when something needs it,
+   *  the overwrite question -- shared by the whole-queue Run and a device's
+   *  Run on an idle queue. The names to skip, or null when the user backed
+   *  out. @returns {Promise<string[]|null>} */
+  async function preRun() {
+    if (!NB.queue.length) { NB.toast("Nothing queued."); return null; }
     // ORCA is required only if something that will actually launch it is in the
     // queue: an all-MLIP or all-CREST run needs no ORCA at all.
     const needsOrca = NB.queue.some(c =>
@@ -444,7 +549,7 @@
     if (needsOrca && !(NB.settings && NB.settings.orca_valid)) {
       NB.fail("ORCA path not set — Settings.");
       NB.settingsView.open();
-      return;
+      return null;
     }
     // A calculation whose folder already holds output would overwrite it; ask
     // before, not after.
@@ -462,10 +567,7 @@
            { label: "Overwrite", cls: "btn-danger", act: () => res(true) }]);
       });
     }
-    if (!go) return;
-    const r = await NB.call("run_queue", JSON.stringify(skip));
-    if (r && r.error) { NB.fail(r.error); return; }
-    await NB.poll();
+    return go ? skip : null;
   }
 
   function init() {

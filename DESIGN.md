@@ -1293,7 +1293,16 @@ queue is the queue window's (§17.6); this window reads it:
   Finished keep their small labels and counts, and Finished still folds; its
   *Clear* is gone. The header is *Queue*, the count and **Open queue**; the
   footer one row of three small buttons (Run queue, Stop after current,
-  Cancel) — *Clear all* is the queue window's. *Opened files* stays, in the
+  Cancel) — *Clear all* is the queue window's. That row is the whole-queue
+  command and stays the primary one; above it the resource box carries a
+  quieter line per **pool** — *This PC* and each enabled remote device — with
+  its own *Run / Stop / Cancel* (`.poolbtn`: 11px text buttons, no fill,
+  bordered on hover, Cancel turning `--err` on hover and asking first) and its
+  state word after the name (`.poolstate`: *draining* in `--warn`, *stopped*
+  muted; nothing while it runs), so a drain never reads as a stall. While idle
+  the box shows only these lines, and only when a device is enabled: a
+  device's *Run* starts the queue on that device alone. The footer's *Run
+  queue* also resumes a run that is draining or has pools stopped. *Opened files* stays, in the
   same row style, with an × that takes a file off the list. Each departure from
   the reference is listed in `tools/uidiff.py` (`REMOVED`,
   `PER_LANDMARK_SKIP`, `STYLE_SKIP`) and the dropped row classes in

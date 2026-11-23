@@ -49,7 +49,7 @@ from ..paths import data_dir, user_data_root
 # Wire-payload shapes (plain dicts at runtime; see schemas.py for the mirror
 # contract with web/types.js)
 from .schemas import (CalcFull, CalcSummary, LogLine, LogPayload,
-                      QueueSnapshot, RunResources, SystemInputSummary,
+                      QueueSnapshot, RunResources, DeviceUsage, SystemInputSummary,
                       SystemSummary, XyzFileEntry)
 from .inpsets import (MLIP_KEYS, crest_config_from_text,
                       mlip_config_from_text)
@@ -1129,6 +1129,9 @@ class QueueStore:
         # persisted in the session, settled when the device is back
         self._remote_cleanup: list[dict] = []
         self._settling: set = set()
+        # [{id, online}] of the enabled remote devices, for the idle snapshot
+        # (run_resources); the desktop bridge wires it to its settings
+        self.idle_devices = lambda: []
         self._running = False
         # monotonically increasing version, bumped on every mutation so clients
         # can cheaply poll "did anything change?"
@@ -1341,8 +1344,20 @@ class QueueStore:
         All zeros between runs: the budget lives on the engine, and an idle
         client reads the limits from the settings payload instead. Duck-typed so
         the store never imports the engine."""
+        # between runs each enabled device still gets its line (stopped, no
+        # jobs), so its own Run is reachable from the rail (idle_devices is
+        # set by the desktop bridge; [] for the phone server and tests)
+        try:
+            idle_devs = [DeviceUsage(id=d["id"], cores_used=0, cores_budget=0,
+                                     ram_used_mb=0, ram_budget_mb=0, jobs=0,
+                                     max_jobs=0, online=bool(d.get("online")),
+                                     state="stopped")
+                         for d in self.idle_devices()]
+        except Exception:
+            idle_devs = []
         idle = RunResources(cores_used=0, cores_budget=0, ram_used_mb=0,
-                            ram_budget_mb=0, jobs=0, max_jobs=0, devices=[])
+                            ram_budget_mb=0, jobs=0, max_jobs=0, state="stopped",
+                            devices=idle_devs)
         eng = self._engine
         if eng is None:
             return idle
@@ -2270,6 +2285,46 @@ class QueueStore:
         self.append_log("Will stop after the current job finishes...", "info")
         return True
 
+    def _live_engine(self):
+        with self._lock:
+            if not self._running or self._engine is None:
+                return None
+            return self._engine
+
+    def resume_run(self) -> bool:
+        """The whole-queue Run while a run is alive (draining, or some pools
+        stopped): every pool takes jobs again. False if nothing runs (the
+        caller then starts a run)."""
+        engine = self._live_engine()
+        if engine is None:
+            return False
+        engine.resume_pools()
+        self.append_log("Resumed: every device takes calculations again.", "info")
+        return True
+
+    def set_pool_state(self, pool: str, state: str) -> bool:
+        """One pool's run state in the running engine ("" = this machine, an
+        alias = a device). False if nothing runs or the pool is unknown."""
+        engine = self._live_engine()
+        if engine is None or not engine.set_pool_state(pool, state):
+            return False
+        where = pool or "this PC"
+        word = {"running": "takes calculations again",
+                "draining": "will stop after its running calculations",
+                "stopped": "takes no new calculations"}.get(state, state)
+        self.append_log(f"{where} {word}.", "info")
+        return True
+
+    def cancel_pool(self, pool: str) -> int:
+        """Cancel the calculations in flight on one pool ("" = this machine)
+        and stop it; the others go on. -1 if nothing runs."""
+        engine = self._live_engine()
+        if engine is None:
+            return -1
+        n = engine.cancel_pool(pool)
+        self.append_log(f"Cancelling {n} calculation(s) on {pool or 'this PC'}...", "info")
+        return n
+
     def update_run_budget(self, budget) -> bool:
         """Hand the running engine a new admission budget (core/resources.
         ResourceBudget), so a limit changed in Settings applies to the run in
@@ -2612,7 +2667,8 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
                         device_entries: "list | None" = None,
                         transport=None,
                         device_info=None,
-                        device_probe=None):
+                        device_probe=None,
+                        pool_states: "dict | None" = None):
     """
     Returns a zero-arg factory that builds a QueueEngine whose callbacks feed
     the given store (log buffer + version bumps). Used by start_run().
@@ -2631,6 +2687,10 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
     devices (orcamgr/remote/) -- Settings.remote_devices, the SSH transport,
     the latest probe per alias and a blocking re-probe. None = this machine
     only.
+    pool_states: each pool's starting run state ("" = this machine, an alias
+    = a device; running / draining / stopped) -- a device's own Run while the
+    queue is idle starts a run with only that pool running. None = all
+    running.
 
     Every run entry point builds its engine here (the Run button, the startup
     resume, the phone's /api/run), so this is where a calc the user moved on
@@ -2665,5 +2725,6 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
                            queue_lock=store._lock, budget=budget,
                            system_names=store.system_name,
                            device_entries=device_entries, transport=transport,
-                           device_info=device_info, device_probe=device_probe)
+                           device_info=device_info, device_probe=device_probe,
+                           pool_states=pool_states)
     return factory

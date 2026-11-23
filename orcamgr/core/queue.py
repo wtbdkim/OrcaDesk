@@ -104,6 +104,13 @@ _SLOT_POLL = 0.25
 # behind it.
 _REFIT_GIVE_UP = 5.0
 
+#: a pool's run state (this machine, or one remote device) -- see
+#: QueueEngine._pool_state
+POOL_RUNNING = "running"
+POOL_DRAINING = "draining"
+POOL_STOPPED = "stopped"
+POOL_STATES = (POOL_RUNNING, POOL_DRAINING, POOL_STOPPED)
+
 
 class CalcState(str, Enum):
     PENDING = "pending"
@@ -966,7 +973,8 @@ class QueueEngine:
                  device_entries: "Optional[list]" = None,
                  transport=None,
                  device_info: "Optional[Callable[[str], object]]" = None,
-                 device_probe: "Optional[Callable[[dict], object]]" = None):
+                 device_probe: "Optional[Callable[[dict], object]]" = None,
+                 pool_states: "Optional[dict]" = None):
         self.orca_path = orca_path
         # One OrcaRunner per JOB, not per engine: with several calculations in
         # flight each needs its own process handle and its own cancel/detach
@@ -1040,6 +1048,19 @@ class QueueEngine:
         self._devices: dict = {
             e["alias"]: resolve_device(e, self._device_info(e["alias"]))
             for e in self._device_entries}
+        # Per-pool run state ("" = this machine, else a device alias):
+        # POOL_RUNNING takes new jobs, POOL_DRAINING finishes what it has and
+        # takes none, POOL_STOPPED takes none. _place honours it; a job already
+        # running somewhere is reattached whatever its pool says. The whole-
+        # queue Stop-after-current drains every pool, Run sets every pool
+        # running; a device's own controls set only its pool. ``pool_states``
+        # seeds it (a device's Run while the queue is idle starts a run with
+        # only that pool running).
+        self._pool_state: "dict[str, str]" = {"": POOL_RUNNING}
+        self._pool_state.update({a: POOL_RUNNING for a in self._devices})
+        for pool, state in (pool_states or {}).items():
+            if pool in self._pool_state and state in POOL_STATES:
+                self._pool_state[pool] = state
         # rows to offer again (a device could not take them: RemoteUnavailable)
         self._unsee: "set[int]" = set()
         # where _pick_ready placed a row, for _start_job (name -> device)
@@ -1161,10 +1182,71 @@ class QueueEngine:
 
     def request_stop_after_current(self) -> None:
         """Stop starting new jobs; let the ones already in flight finish. The
-        remaining calculations stay PENDING. Does NOT kill anything."""
+        remaining calculations stay PENDING. Does NOT kill anything.
+
+        Every pool drains. The walk itself stays alive until nothing is in
+        flight -- then it ends ("left pending") -- so a Run in the meantime
+        (resume_pools) puts the pools back to work in the same run instead of
+        being refused as "already running"."""
         self._stop_after_current.set()
+        self.set_pool_state(None, POOL_DRAINING)
+
+    def resume_pools(self) -> None:
+        """The whole-queue Run while a run is alive (draining, or with some
+        pools stopped): every pool takes jobs again."""
+        self._stop_after_current.clear()
+        self.set_pool_state(None, POOL_RUNNING)
+
+    def set_pool_state(self, pool: "Optional[str]", state: str) -> bool:
+        """Set one pool's run state ("" = this machine, an alias = a device),
+        or every pool's with ``pool`` None. False for an unknown pool or
+        state. A pool set running clears the whole-queue drain flag (a device
+        Run during a drain resumes that device only)."""
+        if state not in POOL_STATES:
+            return False
+        with self._slot_cv:
+            if pool is None:
+                for k in self._pool_state:
+                    self._pool_state[k] = state
+            elif pool in self._pool_state:
+                self._pool_state[pool] = state
+            else:
+                return False
+            if state == POOL_RUNNING:
+                self._stop_after_current.clear()
+            self._slot_cv.notify_all()
+        return True
+
+    def cancel_pool(self, pool: str) -> int:
+        """Cancel the jobs in flight in one pool ("" = this machine) -- each
+        ends CANCELLED, as with the whole-queue Cancel -- and stop the pool so
+        it takes nothing new. Other pools are not touched. Returns how many
+        jobs were signalled."""
+        if not self.set_pool_state(pool, POOL_STOPPED):
+            return 0
+        with self._queue_lock:
+            runners = [s.runner for s in self._slots.values()
+                       if (s.device or "") == pool and s.runner is not None]
+        for r in runners:
+            r.cancel()
         with self._slot_cv:
             self._slot_cv.notify_all()
+        return len(runners)
+
+    def pool_states(self) -> "dict[str, str]":
+        """Each pool's state as shown: a draining pool with nothing left in
+        flight reads "stopped"."""
+        with self._queue_lock:
+            busy = {(s.device or "") for s in self._slots.values()}
+            return {k: (POOL_STOPPED if v == POOL_DRAINING and k not in busy else v)
+                    for k, v in self._pool_state.items()}
+
+    def _pool_takes(self, pool: str) -> bool:
+        """Whether pool ("" = this machine) may be given a new job."""
+        return self._pool_state.get(pool or "", POOL_RUNNING) == POOL_RUNNING
+
+    def _any_pool_running(self) -> bool:
+        return any(v == POOL_RUNNING for v in self._pool_state.values())
 
     def detach(self) -> None:
         """Stop monitoring the queue WITHOUT killing the running ORCA — used on
@@ -2680,6 +2762,25 @@ class QueueEngine:
                             continue
                         if all(id(c) in seen for c in calcs):
                             break     # queue exhausted, nothing left in flight
+                        if not self._any_pool_running():
+                            # drained (Stop after current, or every pool
+                            # stopped) and nothing in flight: end the run
+                            self._end_of_drain(calcs)
+                            break
+                        if not self._pool_takes(""):
+                            # this machine takes nothing new and no running
+                            # device can take what is left right now -- never
+                            # read as a cycle. A running device that is off
+                            # may come back (the watch re-probes it): wait.
+                            # Every running device up and still nothing it can
+                            # take (local-only rows, or nothing ready): the run
+                            # is over for now.
+                            if any(self._pool_takes(a) and not d.online
+                                   for a, d in self._devices.items()):
+                                self._slot_cv.wait(_SLOT_POLL)
+                                continue
+                            self._end_of_drain(calcs)
+                            break
                         # Nothing running and nothing affordable: let the first
                         # ready row through regardless of budget (see above).
                         picked = self._pick_ready(calcs, seen,
@@ -2784,6 +2885,10 @@ class QueueEngine:
             if self._gate_holds(c):
                 continue
             if ignore_budget:
+                # the over-budget fallback runs a row on this machine: never
+                # while this machine's pool is draining or stopped
+                if c.state != CalcState.RUNNING and not self._pool_takes(""):
+                    continue
                 self._placed[c.name] = (c.device if c.state == CalcState.RUNNING
                                         else "")
                 return j, c
@@ -2968,11 +3073,14 @@ class QueueEngine:
                 return calc.device
             return "" if self._fits(self._slot_for(calc)) else None
         slot = self._slot_for(calc)
-        if self._fits(slot):
+        if self._pool_takes("") and self._fits(slot):
             return ""
         if self._devices and remote_capable(
                 calc, run_dir_of(calc, self._system_name(calc))):
             for alias, dev in self._devices.items():
+                # a draining or stopped device takes nothing new
+                if not self._pool_takes(alias):
+                    continue
                 # a preference is soft: skipped in the first pass only
                 if not relax and not device_prefers(dev.prefer, calc.kind):
                     continue
@@ -3075,10 +3183,21 @@ class QueueEngine:
             # "a row that does not fit is skipped OVER" rule. Only wait while
             # something is in flight that will free room, and re-offer the row
             # to the scan instead of holding it.
+            # its pool was drained or stopped between the pick and here (a
+            # device's Stop): hand the row back to the scan, the walk goes on
+            if (not forced and calc.state != CalcState.RUNNING
+                    and not self._pool_takes(slot.device)):
+                self._active_names.discard(calc.name)
+                self._slot_cv.notify_all()
+                return "requeue"
             waited = 0.0
             while not forced and self._slots and not self._fits(slot):
                 if self._stop_pending():
                     break
+                if not self._pool_takes(slot.device):
+                    self._active_names.discard(calc.name)
+                    self._slot_cv.notify_all()
+                    return "requeue"
                 if waited >= _REFIT_GIVE_UP:
                     self._active_names.discard(calc.name)
                     self._slot_cv.notify_all()
@@ -3133,6 +3252,7 @@ class QueueEngine:
         the store for the queue snapshot (duck-typed, so the store never imports
         the engine)."""
         with self._queue_lock:
+            states = self.pool_states()
             local = [s for s in self._slots.values() if not s.device]
             devices = []
             for alias, dev in self._devices.items():
@@ -3148,6 +3268,7 @@ class QueueEngine:
                     "jobs": len(mine),
                     "max_jobs": dev.budget.max_jobs,
                     "online": bool(dev.online) and not lost,
+                    "state": states.get(alias, POOL_RUNNING),
                 })
             return {
                 # this machine (the figures the rail always showed)
@@ -3157,6 +3278,8 @@ class QueueEngine:
                 "ram_budget_mb": self.budget.ram_mb,
                 "jobs": len(local),
                 "max_jobs": self.budget.max_jobs,
+                # this machine's pool: running / draining / stopped
+                "state": states.get("", POOL_RUNNING),
                 # each enabled remote device, in the user's order
                 "devices": devices,
             }
@@ -3165,9 +3288,11 @@ class QueueEngine:
         """A stop of any kind has been signalled — start nothing more. The
         graceful drain counts: it means "let what is running finish", and a row
         picked but still waiting for room has NOT started."""
+        # (a drain is no longer one of these: it drains the pools, and a row
+        # picked for a pool that stopped meanwhile is handed back -- requeue --
+        # so the walk survives to be resumed by a Run)
         return (self._cancel_event.is_set() or self._detach_event.is_set()
-                or self._shutdown_seen.is_set()
-                or self._stop_after_current.is_set())
+                or self._shutdown_seen.is_set())
 
     def _should_stop(self, calcs: list[Calculation]) -> bool:
         """Top-of-iteration stop guards. True → break out of the walk."""
@@ -3191,21 +3316,23 @@ class QueueEngine:
                     f"Cancelled; {remaining} calculation(s) left pending.", "info")
             return True
 
-        # Graceful drain: the user asked to stop AFTER the current job. By
-        # now that job has finished; leave the remaining calcs PENDING (so
-        # they stay runnable) and stop processing the queue.
-        if self._stop_after_current.is_set():
-            # count by state, not position: every already-handled row was
-            # stamped out of PENDING, so the PENDING rows (including the
-            # one just picked) are exactly what this drain leaves behind
-            remaining = sum(1 for c in calcs if c.state == CalcState.PENDING)
-            self.cb.log(
-                f"Stopping after the running job(s); "
-                f"{remaining} calculation(s) left pending.",
-                "info",
-            )
-            return True
+        # (The graceful drain is not a stop here: it drains the pools, and the
+        # walk ends where nothing is in flight and no pool takes jobs --
+        # _run_walk -- so a Run while it drains resumes the same run.)
         return False
+
+    def _end_of_drain(self, calcs: list[Calculation]) -> None:
+        """Every pool is draining or stopped and nothing is in flight: the
+        rows not started stay PENDING (runnable on the next Run)."""
+        # count by state, not position: every already-handled row was
+        # stamped out of PENDING, so the PENDING rows are exactly what this
+        # drain leaves behind
+        remaining = sum(1 for c in calcs if c.state == CalcState.PENDING)
+        self.cb.log(
+            f"Stopping after the running job(s); "
+            f"{remaining} calculation(s) left pending.",
+            "info",
+        )
 
     def _precheck(self, calc: Calculation, i: int) -> bool:
         """State screening before a calc may run. False → the row was handled
