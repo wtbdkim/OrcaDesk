@@ -2080,6 +2080,18 @@ dispatch burst of 16 launches opened 16 connections at once, sshd's default
 The device side was also raised there (`/etc/ssh/sshd_config.d/90-orcadesk.conf`:
 `MaxStartups 100:30:200`, `MaxSessions 50`), but the cap is what protects a
 device nobody tuned — a Windows laptop's sshd has the same default.
+**Every call takes an optional `stop` event** (`_gated_run` runs the child
+with `Popen` and polls every 0.2 s, while waiting for a slot and while the
+child runs): set, the child is killed and reaped and the call returns
+`RC_ABORTED` (`RunResult.aborted`, also `unreachable`). The runner passes its
+detach event to the sync, the hung-check and the fetch (listing and `sftp
+get`), so an app close abandons them at once — the job keeps running on the
+device and is reattached next launch, the staging folder resumes then, and a
+close is never counted as an outage (no Disconnected flag, no spot requeue).
+Measured before: a close with jobs on two devices froze the window past 20 s
+(shutdown's `wait_for_run` waited on syncs of up to 60 s queued behind the
+cap). Launch, kill and delete stay unabortable — a launch cut short could
+leave a process nobody recorded.
 
 **Placement** (`core/queue.py`): one admission pool per device (P57).
 `_place` tries this machine first, then each enabled device in the user's

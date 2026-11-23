@@ -107,14 +107,17 @@ class WindowsPlatform:
     name = "windows"
 
     @staticmethod
-    def run(transport, alias: str, script: str, timeout: float = 30.0):
+    def run(transport, alias: str, script: str, timeout: float = 30.0, stop=None):
         """Send ``script`` the way this platform runs one. A transport with no
-        PowerShell path (a POSIX-only fake) answers as a shell that cannot."""
+        PowerShell path (a POSIX-only fake) answers as a shell that cannot.
+        ``stop`` abandons the call (see ssh._gated_run)."""
         fn = getattr(transport, "run_powershell", None)
         if fn is None:
             from .ssh import RC_ERROR, RunResult
             return RunResult(RC_ERROR, "", "this transport cannot run PowerShell")
-        return fn(alias, script, timeout=timeout)
+        if stop is None:
+            return fn(alias, script, timeout=timeout)
+        return fn(alias, script, timeout=timeout, stop=stop)
 
     @staticmethod
     def sftp_path(path: str) -> str:

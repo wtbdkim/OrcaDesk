@@ -3,6 +3,16 @@
 All notable changes to ORCAdesk are documented here.
 This project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Closing ORCAdesk no longer hangs while calculations run on compute
+  devices.** The window waited for every remote job's check-in or result
+  download to finish (up to a minute each, longer for big folders), so a close
+  with jobs on two devices froze for 20 s or more. Those calls are now
+  abandoned at once; the jobs keep running on the devices and are picked up
+  again on the next launch.
+
 ## [0.12.0] — 2026-11-23
 
 ### Added

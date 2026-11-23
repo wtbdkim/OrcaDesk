@@ -286,8 +286,11 @@ class PosixPlatform:
     name = "posix"
 
     @staticmethod
-    def run(transport, alias: str, script: str, timeout: float = 30.0) -> RunResult:
-        return transport.run(alias, script, timeout=timeout)
+    def run(transport, alias: str, script: str, timeout: float = 30.0,
+            stop=None) -> RunResult:
+        if stop is None:
+            return transport.run(alias, script, timeout=timeout)
+        return transport.run(alias, script, timeout=timeout, stop=stop)
 
     @staticmethod
     def sftp_path(path: str) -> str:
@@ -328,12 +331,12 @@ class FetchResult:
     missing: bool = False     # the remote folder is not there at all
 
 
-def list_remote_files(transport: Transport, alias: str,
-                      remote_dir: str) -> Tuple[Optional[Dict[str, int]], RunResult]:
+def list_remote_files(transport: Transport, alias: str, remote_dir: str,
+                      stop=None) -> Tuple[Optional[Dict[str, int]], RunResult]:
     """{relative path: size} of every file in ``remote_dir`` (the runner's own
     bookkeeping files left out), or None with the failed result."""
     pf = platform_for(remote_dir)
-    res = pf.run(transport, alias, pf.listing(remote_dir), timeout=120)
+    res = pf.run(transport, alias, pf.listing(remote_dir), timeout=120, stop=stop)
     if not res.ok:
         return None, res
     files: Dict[str, int] = {}
@@ -349,7 +352,7 @@ def list_remote_files(transport: Transport, alias: str,
 
 
 def fetch_and_verify(transport: Transport, alias: str, remote_dir: str,
-                     local_dir: Path) -> FetchResult:
+                     local_dir: Path, stop=None) -> FetchResult:
     """Bring the WHOLE ``remote_dir`` into ``local_dir`` (design D4).
 
     Files land in a staging folder of this launch's own first -- ``get -a``
@@ -357,8 +360,9 @@ def fetch_and_verify(transport: Transport, alias: str, remote_dir: str,
     older run's same-named file for a finished download -- are checked one by
     one against the remote listing (name and size, D5), and only then replace
     their counterparts in the run folder. Files that exist only locally (a
-    ``.bak`` set aside) are left alone. Never raises."""
-    files, res = list_remote_files(transport, alias, remote_dir)
+    ``.bak`` set aside) are left alone. Never raises. ``stop`` abandons it
+    (the staging folder stays, and the next attempt resumes into it)."""
+    files, res = list_remote_files(transport, alias, remote_dir, stop=stop)
     if files is None:
         return FetchResult(False, res.unreachable,
                            res.err.strip() or f"listing failed ({res.rc})",
@@ -375,7 +379,8 @@ def fetch_and_verify(transport: Transport, alias: str, remote_dir: str,
         dest.parent.mkdir(parents=True, exist_ok=True)
         pairs.append((pf.sftp_path(posixpath.join(remote_dir, rel)), dest))
     if pairs:
-        got = transport.get(alias, pairs)
+        got = (transport.get(alias, pairs) if stop is None
+               else transport.get(alias, pairs, stop=stop))
         if not got.ok:
             return FetchResult(False, got.unreachable,
                                got.err.strip() or f"download failed ({got.rc})")
@@ -626,9 +631,12 @@ class RemoteOrcaRunner:
         if not pid:
             return False, b""
         remote_out = posixpath.join(self.remote_dir, f"{self._name}.out")
+        # an app close abandons the call at once (stop = the detach event):
+        # the job keeps running on the device and is reattached next launch
         res = self.pf.run(
             self.transport, self.alias,
-            self.pf.sync(pid, start, remote_out, offset, self.SYNC_CAP), timeout=60)
+            self.pf.sync(pid, start, remote_out, offset, self.SYNC_CAP), timeout=60,
+            stop=self._detach_event)
         if res.unreachable:
             return None, b""
         head, _, rest = res.out.partition("\n")
@@ -691,6 +699,10 @@ class RemoteOrcaRunner:
                 except OSError:
                     offset = 0
                 alive, data = self.sync(offset)
+                if self._detach_event.is_set():
+                    # a sync abandoned by the close is no outage: neither the
+                    # Disconnected flag nor the spot requeue may count it
+                    raise OrcaDetached("Monitoring stopped; ORCA left running on the device.")
                 if alive is None:
                     unknown += 1
                     had_outage = True
@@ -753,7 +765,8 @@ class RemoteOrcaRunner:
                             entry, unreachable=False)
 
     def _remote_idle(self) -> Optional[float]:
-        res = self.pf.run(self.transport, self.alias, self.pf.idle(self.remote_dir), timeout=30)
+        res = self.pf.run(self.transport, self.alias, self.pf.idle(self.remote_dir), timeout=30,
+                          stop=self._detach_event)
         if not res.ok:
             return None
         try:
@@ -775,9 +788,11 @@ class RemoteOrcaRunner:
         noticed = False
         while True:
             fr = fetch_and_verify(self.transport, self.alias, self.remote_dir,
-                                  output_path.parent)
+                                  output_path.parent, stop=self._detach_event)
             if fr.ok:
                 return
+            if self._detach_event.is_set():
+                raise OrcaDetached("App closing while results were coming back.")
             if fr.missing:
                 # nothing left on the device to bring back (removed by hand):
                 # the synced .out is all there is, and the engine judges it

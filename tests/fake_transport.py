@@ -59,7 +59,7 @@ class FakeTransport:
         return {k[len(d):]: v for k, v in self.remote.items() if k.startswith(d)}
 
     # -- Transport --
-    def run(self, alias: str, script: str, timeout: float = 30.0) -> RunResult:
+    def run(self, alias: str, script: str, timeout: float = 30.0, stop=None) -> RunResult:
         with self._lock:
             self.calls.append(script)
         if not self.reachable:
@@ -132,7 +132,7 @@ class FakeTransport:
     def dirs(self) -> set:
         return self._dirs
 
-    def put(self, alias: str, pairs, timeout: float = 600.0) -> RunResult:
+    def put(self, alias: str, pairs, timeout: float = 600.0, stop=None) -> RunResult:
         if not self.reachable or self.fail_put:
             return RunResult(RC_SSH, "", "connection lost")
         for local, remote in pairs:
@@ -140,7 +140,7 @@ class FakeTransport:
             self._dirs.add(posixpath.dirname(remote))
         return RunResult(0)
 
-    def get(self, alias: str, pairs, timeout: float = 3600.0) -> RunResult:
+    def get(self, alias: str, pairs, timeout: float = 3600.0, stop=None) -> RunResult:
         if not self.reachable:
             return RunResult(RC_SSH, "", "connection lost")
         if self.fail_get_times > 0:

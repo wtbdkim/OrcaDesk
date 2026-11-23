@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Protocol, Tuple
@@ -54,6 +55,7 @@ RC_SSH = 255
 RC_TIMEOUT = 124
 RC_ERROR = 125
 RC_MISSING = 127
+RC_ABORTED = 130      # the caller's stop event fired (app closing): unknown
 
 
 # A Windows device (Windows OpenSSH Server, whose default shell is cmd.exe)
@@ -129,7 +131,12 @@ class RunResult:
     def unreachable(self) -> bool:
         """The call never reached a remote shell (connect/auth failed, timed
         out, no ssh) -- the answer is "unknown", not "no"."""
-        return self.rc in (RC_SSH, RC_TIMEOUT, RC_ERROR, RC_MISSING)
+        return self.rc in (RC_SSH, RC_TIMEOUT, RC_ERROR, RC_MISSING, RC_ABORTED)
+
+    @property
+    def aborted(self) -> bool:
+        """Given up because the caller's stop event fired -- not an outage."""
+        return self.rc == RC_ABORTED
 
 
 class Transport(Protocol):
@@ -138,13 +145,14 @@ class Transport(Protocol):
 
     def available(self) -> bool: ...
 
-    def run(self, alias: str, script: str, timeout: float = 30.0) -> RunResult: ...
+    def run(self, alias: str, script: str, timeout: float = 30.0,
+            stop=None) -> RunResult: ...
 
     def put(self, alias: str, pairs: Iterable[Tuple[Path, str]],
-            timeout: float = 600.0) -> RunResult: ...
+            timeout: float = 600.0, stop=None) -> RunResult: ...
 
     def get(self, alias: str, pairs: Iterable[Tuple[str, Path]],
-            timeout: float = 3600.0) -> RunResult: ...
+            timeout: float = 3600.0, stop=None) -> RunResult: ...
 
 
 def sftp_quote(path: str) -> str:
@@ -183,17 +191,58 @@ def _gate(alias: str) -> "threading.BoundedSemaphore":
         return g
 
 
-def _gated_run(alias: str, argv: list, data: bytes, timeout: float):
-    """subprocess.run under the device's connection cap. Raises
-    subprocess.TimeoutExpired when no slot frees up within ``timeout``, like
-    a call that ran out of time -- the callers already turn that into
-    RC_TIMEOUT (an unknown, never a "no")."""
+class Aborted(Exception):
+    """A transport call given up because its ``stop`` event was set (the app
+    is closing): the child was killed, the answer is unknown."""
+
+
+# How often a waiting call looks at its stop event. Closing the window used to
+# wait for every remote monitor's in-flight call -- a sync may take up to 60 s,
+# a fetch much longer, and the per-device cap queues the rest behind them --
+# so a close with jobs on two devices froze the window past 20 s (2026-11-23).
+_STOP_POLL = 0.2
+
+
+def _gated_run(alias: str, argv: list, data: bytes, timeout: float, stop=None):
+    """Run ``argv`` under the device's connection cap, feeding it ``data``.
+
+    Raises subprocess.TimeoutExpired when no slot frees up, or the child does
+    not finish, within ``timeout`` -- the callers turn that into RC_TIMEOUT
+    (an unknown, never a "no") -- and Aborted as soon as ``stop`` (a
+    threading.Event, optional) is set, while waiting for a slot or while the
+    child runs. Either way the child is killed and reaped: no ssh/sftp is
+    ever left behind."""
     gate = _gate(alias)
-    if not gate.acquire(timeout=max(1.0, timeout)):
-        raise subprocess.TimeoutExpired(argv, timeout)
+    deadline = time.monotonic() + max(1.0, timeout)
+    while not gate.acquire(timeout=_STOP_POLL):
+        if stop is not None and stop.is_set():
+            raise Aborted()
+        if time.monotonic() >= deadline:
+            raise subprocess.TimeoutExpired(argv, timeout)
     try:
-        return subprocess.run(argv, input=data, capture_output=True,
-                              timeout=timeout, creationflags=_no_window())
+        p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, creationflags=_no_window())
+        end = time.monotonic() + timeout
+        feed = data
+        while True:
+            try:
+                # communicate() may be called again after TimeoutExpired
+                # without losing output; the input goes in on the first call
+                out, err = p.communicate(input=feed, timeout=_STOP_POLL)
+                break
+            except subprocess.TimeoutExpired:
+                feed = None
+                stopped = stop is not None and stop.is_set()
+                if stopped or time.monotonic() >= end:
+                    p.kill()
+                    try:
+                        p.communicate(timeout=5)
+                    except (subprocess.SubprocessError, OSError, ValueError):
+                        pass
+                    if stopped:
+                        raise Aborted()
+                    raise subprocess.TimeoutExpired(argv, timeout)
+        return subprocess.CompletedProcess(argv, p.returncode, out, err)
     finally:
         gate.release()
 
@@ -211,17 +260,21 @@ class SshTransport:
         return Path(self.ssh).exists() if os.path.isabs(self.ssh) else True
 
     # -- one command ---------------------------------------------------------
-    def run(self, alias: str, script: str, timeout: float = 30.0) -> RunResult:
+    def run(self, alias: str, script: str, timeout: float = 30.0,
+            stop=None) -> RunResult:
         """Run ``script`` with ``sh -s`` on ``alias`` (the script goes in on
         stdin, so nothing in it is ever parsed by a local shell or by ssh's
-        own argument joining)."""
+        own argument joining). ``stop`` (a threading.Event) abandons the call
+        at once -- RC_ABORTED -- and kills the ssh child."""
         if not valid_alias(alias):
             return RunResult(RC_ERROR, "", f"not a usable host alias: {alias!r}")
         if not self.ssh:
             return RunResult(RC_MISSING, "", "ssh-not-found")
         argv = [self.ssh, *_COMMON_OPTS, alias, "sh", "-s"]
         try:
-            p = _gated_run(alias, argv, script.encode("utf-8"), timeout)
+            p = _gated_run(alias, argv, script.encode("utf-8"), timeout, stop)
+        except Aborted:
+            return RunResult(RC_ABORTED, "", "aborted")
         except FileNotFoundError:
             return RunResult(RC_MISSING, "", "ssh-not-found")
         except subprocess.TimeoutExpired:
@@ -232,7 +285,8 @@ class SshTransport:
                          (p.stdout or b"").decode("utf-8", "replace"),
                          (p.stderr or b"").decode("utf-8", "replace"))
 
-    def run_powershell(self, alias: str, script: str, timeout: float = 30.0) -> RunResult:
+    def run_powershell(self, alias: str, script: str, timeout: float = 30.0,
+                       stop=None) -> RunResult:
         """Run a PowerShell ``script`` on a Windows ``alias`` (see
         PS_BOOTSTRAP). Same contract as run: never raises."""
         if not valid_alias(alias):
@@ -241,7 +295,9 @@ class SshTransport:
             return RunResult(RC_MISSING, "", "ssh-not-found")
         argv = [self.ssh, *_COMMON_OPTS, alias, *powershell_command()]
         try:
-            p = _gated_run(alias, argv, powershell_stdin(script), timeout)
+            p = _gated_run(alias, argv, powershell_stdin(script), timeout, stop)
+        except Aborted:
+            return RunResult(RC_ABORTED, "", "aborted")
         except FileNotFoundError:
             return RunResult(RC_MISSING, "", "ssh-not-found")
         except subprocess.TimeoutExpired:
@@ -253,7 +309,8 @@ class SshTransport:
                          (p.stderr or b"").decode("utf-8", "replace"))
 
     # -- files -----------------------------------------------------------------
-    def _sftp_batch(self, alias: str, lines: list, timeout: float) -> RunResult:
+    def _sftp_batch(self, alias: str, lines: list, timeout: float,
+                    stop=None) -> RunResult:
         if not valid_alias(alias):
             return RunResult(RC_ERROR, "", f"not a usable host alias: {alias!r}")
         if not self.sftp:
@@ -263,7 +320,9 @@ class SshTransport:
         argv = [self.sftp, *_COMMON_OPTS, "-q", "-b", "-", alias]
         batch = ("\n".join(lines) + "\n").encode("utf-8")
         try:
-            p = _gated_run(alias, argv, batch, timeout)
+            p = _gated_run(alias, argv, batch, timeout, stop)
+        except Aborted:
+            return RunResult(RC_ABORTED, "", "aborted")
         except FileNotFoundError:
             return RunResult(RC_MISSING, "", "sftp-not-found")
         except subprocess.TimeoutExpired:
@@ -277,15 +336,15 @@ class SshTransport:
                          (p.stderr or b"").decode("utf-8", "replace"))
 
     def put(self, alias: str, pairs: Iterable[Tuple[Path, str]],
-            timeout: float = 600.0) -> RunResult:
+            timeout: float = 600.0, stop=None) -> RunResult:
         """Upload each (local file, remote path). The remote folders must
         exist already (the runner makes them with ``mkdir -p``)."""
         lines = [f"put {sftp_quote(_local_for_sftp(lp))} {sftp_quote(rp)}"
                  for lp, rp in pairs]
-        return self._sftp_batch(alias, lines, timeout)
+        return self._sftp_batch(alias, lines, timeout, stop)
 
     def get(self, alias: str, pairs: Iterable[Tuple[str, Path]],
-            timeout: float = 3600.0) -> RunResult:
+            timeout: float = 3600.0, stop=None) -> RunResult:
         """Download each (remote file, local path), resuming a partial local
         file (``get -a``). Local folders must exist already.
 
@@ -295,4 +354,4 @@ class SshTransport:
         a previous run's files of the same name."""
         lines = [f"get -a {sftp_quote(rp)} {sftp_quote(_local_for_sftp(lp))}"
                  for rp, lp in pairs]
-        return self._sftp_batch(alias, lines, timeout)
+        return self._sftp_batch(alias, lines, timeout, stop)

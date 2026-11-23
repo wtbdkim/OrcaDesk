@@ -144,8 +144,8 @@ def test_each_sync_carries_only_what_the_out_gained(tmp_path):
     sent = []
     real_run = fake.run
 
-    def run(alias, script, timeout=30.0):
-        res = real_run(alias, script, timeout)
+    def run(alias, script, timeout=30.0, stop=None):
+        res = real_run(alias, script, timeout, stop)
         if "| base64" in script:
             sent.append(base64.b64decode(res.out.split("\n", 1)[1]))
             fake.write(RDIR + "/job.out", fake.remote[RDIR + "/job.out"] + b"b\n")
@@ -303,3 +303,67 @@ def test_cleanup_of_a_folder_already_gone_is_done(tmp_path):
     fake = FakeTransport()
     fake.alive = False
     assert process_cleanup(fake, _entry(pid=None), WORK, tmp_path) is True
+
+
+# ---- an app close never waits on an in-flight call -----------------------------
+
+class _BlockingFake(FakeTransport):
+    """A device whose sync (or download) hangs until the caller's stop fires,
+    as a slow link does -- the real transport kills the ssh child then."""
+
+    def __init__(self, block):
+        super().__init__()
+        self.block = block          # "sync" | "get"
+
+    def run(self, alias, script, timeout=30.0, stop=None):
+        if self.block == "sync" and "| base64" in script:
+            return self._hang(stop)
+        return super().run(alias, script, timeout, stop)
+
+    def get(self, alias, pairs, timeout=3600.0, stop=None):
+        if self.block == "get":
+            return self._hang(stop)
+        return super().get(alias, pairs, timeout, stop)
+
+    @staticmethod
+    def _hang(stop):
+        import time
+        from orcamgr.remote.ssh import RC_ABORTED, RunResult
+        end = time.monotonic() + 30
+        while time.monotonic() < end:
+            if stop is not None and stop.is_set():
+                return RunResult(RC_ABORTED, "", "aborted")
+            time.sleep(0.02)
+        return RunResult(124, "", "timeout")
+
+
+@pytest.mark.parametrize("block", ["sync", "get"])
+def test_a_detach_does_not_wait_for_a_hung_sync_or_download(tmp_path, block):
+    # Closing the window waited for every remote monitor's in-flight call (a
+    # sync up to 60 s, a fetch much longer): a close with jobs on two devices
+    # froze the window past 20 s (2026-11-23). The call is abandoned now.
+    import threading
+    import time
+    d = _folder(tmp_path)
+    fake = _BlockingFake(block)
+    r = RemoteOrcaRunner(fake, "gcp", "/opt/orca/orca", WORK, RDIR)   # real clock
+    r.launch(d / "job.inp", d / "job.out")
+    if block == "get":
+        _finish_on_device(fake)       # the job ended: the monitor goes to the fetch
+    caught = []
+
+    def watch():
+        try:
+            r.monitor(d / "job.out")
+        except OrcaDetached as e:
+            caught.append(e)
+    th = threading.Thread(target=watch, daemon=True)
+    th.start()
+    time.sleep(0.5)                   # well inside the hung call
+    t0 = time.monotonic()
+    r.detach()
+    th.join(5)
+    assert caught and time.monotonic() - t0 < 1.5
+    # a close is no outage: the Disconnected flag was not raised by it
+    assert not r.disconnected
+    assert fake.files_under(RDIR)     # nothing deleted: the next launch fetches it

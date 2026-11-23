@@ -1,10 +1,16 @@
-"""The per-device connection cap in orcamgr/remote/ssh.py.
+"""The per-device connection cap and the stop event in orcamgr/remote/ssh.py.
 
 A dispatch burst used to open one ssh per job at once; the AWS device's sshd
 (default MaxStartups 10:30:100) dropped the overflow and five launches went
 back to PENDING (measured 2026-11-23). The transport now queues: at most
 MAX_CONNECTIONS_PER_DEVICE ssh/sftp processes per device at a time, the cap
-counted per alias so one busy device never holds up another."""
+counted per alias so one busy device never holds up another.
+
+Closing the window waited for every remote monitor's in-flight call (a sync
+can take 60 s, a fetch much longer, and the cap queues the rest behind them):
+a close with jobs on two devices froze the window past 20 s. A call given a
+``stop`` event now gives up at once -- while waiting for a slot or while its
+child runs -- and kills the child (RC_ABORTED, an unknown)."""
 from __future__ import annotations
 
 import subprocess
@@ -12,56 +18,122 @@ import threading
 import time
 
 import orcamgr.remote.ssh as ssh_mod
-from orcamgr.remote.ssh import RC_TIMEOUT, SshTransport
+from orcamgr.remote.ssh import RC_ABORTED, RC_TIMEOUT, SshTransport
 
 
-class _FakeRun:
-    def __init__(self, hold: float = 0.05):
-        self.lock = threading.Lock()
-        self.live: dict = {}
-        self.peak: dict = {}
-        self.hold = hold
+class _FakePopen:
+    """Stands in for subprocess.Popen: 'runs' for ``hold`` seconds, counting
+    how many run at once per device; kill() ends it early."""
+    lock = threading.Lock()
+    live: dict = {}
+    peak: dict = {}
+    killed = 0
+    hold = 0.05
 
-    def __call__(self, argv, input=None, capture_output=True, timeout=None, creationflags=0):
-        alias = next(a for a in argv if a in ("dev-a", "dev-b"))
-        with self.lock:
-            self.live[alias] = self.live.get(alias, 0) + 1
-            self.peak[alias] = max(self.peak.get(alias, 0), self.live[alias])
-        time.sleep(self.hold)
-        with self.lock:
-            self.live[alias] -= 1
-        return subprocess.CompletedProcess(argv, 0, b"ok\n", b"")
+    def __init__(self, argv, stdin=None, stdout=None, stderr=None, creationflags=0):
+        self.alias = next(a for a in argv if a in ("dev-a", "dev-b"))
+        self.returncode = None
+        self._end = time.monotonic() + type(self).hold
+        self._dead = False
+        with type(self).lock:
+            type(self).live[self.alias] = type(self).live.get(self.alias, 0) + 1
+            type(self).peak[self.alias] = max(type(self).peak.get(self.alias, 0),
+                                              type(self).live[self.alias])
+
+    def _finish(self, rc):
+        if self.returncode is None:
+            self.returncode = rc
+            with type(self).lock:
+                type(self).live[self.alias] -= 1
+
+    def communicate(self, input=None, timeout=None):
+        if self._dead:
+            self._finish(-9)
+            return b"", b""
+        left = self._end - time.monotonic()
+        if timeout is not None and left > timeout:
+            time.sleep(timeout)
+            raise subprocess.TimeoutExpired("ssh", timeout)
+        time.sleep(max(0.0, left))
+        self._finish(0)
+        return b"ok\n", b""
+
+    def kill(self):
+        self._dead = True
+        with type(self).lock:
+            type(self).killed += 1
 
 
-def _burst(transport, alias, n):
-    threads = [threading.Thread(target=transport.run, args=(alias, "true")) for _ in range(n)]
+def _fresh(monkeypatch, hold):
+    class P(_FakePopen):
+        pass
+    P.lock, P.live, P.peak, P.killed, P.hold = threading.Lock(), {}, {}, 0, hold
+    monkeypatch.setattr(ssh_mod.subprocess, "Popen", P)
+    monkeypatch.setattr(ssh_mod, "_gates", {})
+    return P
+
+
+def _burst(transport, alias, n, **kw):
+    threads = [threading.Thread(target=transport.run, args=(alias, "true"), kwargs=kw)
+               for _ in range(n)]
     for t in threads:
         t.start()
     return threads
 
 
 def test_a_burst_never_opens_more_than_the_cap_per_device(monkeypatch):
-    fake = _FakeRun()
-    monkeypatch.setattr(ssh_mod.subprocess, "run", fake)
-    monkeypatch.setattr(ssh_mod, "_gates", {})
+    P = _fresh(monkeypatch, hold=0.3)
     t = SshTransport(ssh="ssh", sftp="sftp")
     threads = _burst(t, "dev-a", 16) + _burst(t, "dev-b", 16)
     for th in threads:
-        th.join(10)
+        th.join(20)
     cap = ssh_mod.MAX_CONNECTIONS_PER_DEVICE
-    assert fake.peak["dev-a"] <= cap and fake.peak["dev-b"] <= cap
+    assert P.peak["dev-a"] <= cap and P.peak["dev-b"] <= cap
     # the cap is per device: the two bursts ran side by side
-    assert fake.peak["dev-a"] == cap and fake.peak["dev-b"] == cap
+    assert P.peak["dev-a"] == cap and P.peak["dev-b"] == cap
 
 
 def test_no_free_slot_within_the_timeout_reads_as_a_timeout(monkeypatch):
-    fake = _FakeRun(hold=2.0)
-    monkeypatch.setattr(ssh_mod.subprocess, "run", fake)
-    monkeypatch.setattr(ssh_mod, "_gates", {})
+    _fresh(monkeypatch, hold=3.0)
     t = SshTransport(ssh="ssh", sftp="sftp")
     busy = _burst(t, "dev-a", ssh_mod.MAX_CONNECTIONS_PER_DEVICE)
-    time.sleep(0.2)
+    time.sleep(0.3)
     res = t.run("dev-a", "true", timeout=1.0)
     assert res.rc == RC_TIMEOUT and res.unreachable     # an unknown, never a "no"
     for th in busy:
         th.join(10)
+
+
+def test_a_stop_abandons_a_running_call_at_once_and_kills_its_child(monkeypatch):
+    P = _fresh(monkeypatch, hold=30.0)
+    t = SshTransport(ssh="ssh", sftp="sftp")
+    stop = threading.Event()
+    out = []
+    th = threading.Thread(target=lambda: out.append(t.run("dev-a", "true", timeout=60, stop=stop)))
+    th.start()
+    time.sleep(0.3)
+    t0 = time.monotonic()
+    stop.set()
+    th.join(5)
+    assert not th.is_alive() and time.monotonic() - t0 < 2
+    assert out[0].rc == RC_ABORTED and out[0].aborted and out[0].unreachable
+    assert P.killed == 1 and P.live["dev-a"] == 0      # the child is gone
+
+
+def test_a_stop_abandons_a_call_still_waiting_for_a_slot(monkeypatch):
+    _fresh(monkeypatch, hold=30.0)
+    t = SshTransport(ssh="ssh", sftp="sftp")
+    holders = threading.Event()
+    busy = _burst(t, "dev-a", ssh_mod.MAX_CONNECTIONS_PER_DEVICE, stop=holders)
+    time.sleep(0.3)
+    stop = threading.Event()
+    out = []
+    th = threading.Thread(target=lambda: out.append(t.run("dev-a", "true", timeout=60, stop=stop)))
+    th.start()
+    time.sleep(0.3)
+    stop.set()
+    th.join(5)
+    assert not th.is_alive() and out[0].rc == RC_ABORTED
+    holders.set()
+    for b in busy:
+        b.join(5)

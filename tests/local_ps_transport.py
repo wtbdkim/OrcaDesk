@@ -28,12 +28,12 @@ class LocalPowerShellTransport:
     def available(self) -> bool:
         return True
 
-    def run(self, alias: str, script: str, timeout: float = 30.0) -> RunResult:
+    def run(self, alias: str, script: str, timeout: float = 30.0, stop=None) -> RunResult:
         self.calls.append(("sh", script))
         return RunResult(1, "", "'sh' is not recognized as an internal or external command,\r\n"
                                 "operable program or batch file.\r\n")
 
-    def run_powershell(self, alias: str, script: str, timeout: float = 30.0) -> RunResult:
+    def run_powershell(self, alias: str, script: str, timeout: float = 30.0, stop=None) -> RunResult:
         self.calls.append(("ps", script))
         try:
             p = subprocess.run(powershell_command(), input=powershell_stdin(script),
@@ -46,14 +46,14 @@ class LocalPowerShellTransport:
         return RunResult(p.returncode, p.stdout.decode("utf-8", "replace"),
                          p.stderr.decode("utf-8", "replace"))
 
-    def put(self, alias: str, pairs, timeout: float = 600.0) -> RunResult:
+    def put(self, alias: str, pairs, timeout: float = 600.0, stop=None) -> RunResult:
         for local, remote in pairs:
             dest = _local(remote)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(local, dest)
         return RunResult(0)
 
-    def get(self, alias: str, pairs, timeout: float = 3600.0) -> RunResult:
+    def get(self, alias: str, pairs, timeout: float = 3600.0, stop=None) -> RunResult:
         for remote, local in pairs:
             src = _local(remote)
             if not src.is_file():
