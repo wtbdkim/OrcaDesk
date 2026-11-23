@@ -118,6 +118,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   many at once.
 
 ### Fixed
+- **Calculations on a Windows compute device survive an app restart.**
+  Reopening ORCAdesk forgot where each of them ran on the device, so they
+  were shown Disconnected within seconds and could not have brought their
+  results back. The folder is now restored for Windows devices as for Linux
+  ones.
 - **A compute device no longer drops calculations started in a burst.**
   Starting many calculations on one device at once opened that many SSH
   connections at the same moment, and the device's SSH server refused the

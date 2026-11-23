@@ -237,6 +237,24 @@ def test_where_a_calc_ran_round_trips_but_no_client_can_set_it():
     assert calc_from_session_dict(bad).device == ""
 
 
+def test_a_windows_devices_folder_survives_a_restart():
+    # Restore used to accept POSIX folders only, so every job on a Windows
+    # device came back with remote_dir "" -- synced and fetched from nowhere
+    # and flagged Disconnected seconds after the app restarted (the laptop,
+    # 2026-11-23). Its clean-up entries were dropped the same way.
+    c = make_calc("x", state=CalcState.RUNNING)
+    c.device, c.remote_dir = "laptop", "C:/Users/pc/orcadesk-runs/sys/x.20261123-191722"
+    back = calc_from_session_dict(calc_to_session_dict(c))
+    assert back.remote_dir == "C:/Users/pc/orcadesk-runs/sys/x.20261123-191722"
+    for bad in ("C:/Users/pc/../x", "relative/x", "C:relative", ""):
+        assert calc_from_session_dict(dict(calc_to_session_dict(c), remote_dir=bad)).remote_dir == ""
+    from orcamgr.state.store import _clean_cleanup_entry
+    e = _clean_cleanup_entry({"device": "laptop", "pid": 1, "create_time": 2.0,
+                              "remote_dir": "C:/Users/pc/orcadesk-runs/sys/x.1",
+                              "calc_name": "x", "launched_at": "1"})
+    assert e is not None and e["remote_dir"] == "C:/Users/pc/orcadesk-runs/sys/x.1"
+
+
 def test_reconcile_leaves_a_remote_running_calc_alone():
     c = make_calc("x", state=CalcState.RUNNING)
     c.device, c.pid, c.create_time = "gcp", 1, 1.0

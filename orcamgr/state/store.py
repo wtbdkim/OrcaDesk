@@ -43,6 +43,7 @@ from ..core.runner import OrcaRunError
 from ..core import rundir
 from ..core.rundir import folder_name_problem, restored_run_dir
 from ..remote.ssh import valid_alias
+from ..remote.winplatform import is_windows_path
 from ..core.procutil import process_matches
 from ..paths import data_dir, user_data_root
 # Wire-payload shapes (plain dicts at runtime; see schemas.py for the mirror
@@ -909,9 +910,21 @@ def calc_from_session_dict(d: dict) -> Calculation:
     dev = d.get("device")
     rdir = d.get("remote_dir")
     c.device = dev if isinstance(dev, str) and valid_alias(dev) else ""
-    c.remote_dir = (rdir if c.device and isinstance(rdir, str) and rdir.startswith("/")
-                    else "")
+    c.remote_dir = rdir if c.device and _remote_dir_ok(rdir) else ""
     return c
+
+
+def _remote_dir_ok(rdir) -> bool:
+    """A remote run folder as the runners record it: an absolute POSIX path
+    on a Linux device, ``C:/...`` on a Windows one, never with a ``..``
+    segment. Accepting POSIX only dropped every Windows device's folder on
+    restore -- the reattached jobs then synced and fetched from "" and were
+    flagged Disconnected within seconds (measured: the laptop, 2026-11-23)."""
+    if not isinstance(rdir, str) or not rdir:
+        return False
+    if not (rdir.startswith("/") or is_windows_path(rdir)):
+        return False
+    return ".." not in rdir.replace("\\", "/").split("/")
 
 
 def _clean_cleanup_entry(e) -> "Optional[dict]":
@@ -923,7 +936,7 @@ def _clean_cleanup_entry(e) -> "Optional[dict]":
     dev, rdir, name = e.get("device"), e.get("remote_dir"), e.get("calc_name")
     if not (isinstance(dev, str) and valid_alias(dev)):
         return None
-    if not (isinstance(rdir, str) and rdir.startswith("/")):
+    if not _remote_dir_ok(rdir):
         return None
     pid, ct = e.get("pid"), e.get("create_time")
     try:
