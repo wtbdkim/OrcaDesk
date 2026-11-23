@@ -118,6 +118,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   many at once.
 
 ### Fixed
+- **A compute device no longer drops calculations started in a burst.**
+  Starting many calculations on one device at once opened that many SSH
+  connections at the same moment, and the device's SSH server refused the
+  overflow, so some launches failed and went back to the queue. ORCAdesk now
+  opens at most four connections per device at a time and queues the rest.
 - **Raising the parallel-run limits in Settings applies to the run in
   progress.** A run started one job at a time kept running one at a time after
   *Max concurrent jobs* (or the core / memory budget) was raised, until it was

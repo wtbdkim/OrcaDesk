@@ -29,6 +29,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Protocol, Tuple
@@ -161,6 +162,42 @@ def _local_for_sftp(p: Path) -> str:
     return Path(p).as_posix()
 
 
+# At most this many ssh/sftp processes at once per device. Without a cap a
+# dispatch burst opened one connection per job at once -- 16 SPs starting on a
+# 16-core device -- and the device's sshd dropped the overflow: OpenSSH's
+# default MaxStartups 10:30:100 refuses unauthenticated connections past 10
+# ("Connection closed by <host> port 22", measured on the AWS device,
+# 2026-11-23; five launches failed and went back to PENDING). Win32-OpenSSH
+# has no connection multiplexing to fall back on, so the client queues
+# instead: a call waits for a free slot within its own timeout.
+MAX_CONNECTIONS_PER_DEVICE = 4
+_gates: "dict[str, threading.BoundedSemaphore]" = {}
+_gates_lock = threading.Lock()
+
+
+def _gate(alias: str) -> "threading.BoundedSemaphore":
+    with _gates_lock:
+        g = _gates.get(alias)
+        if g is None:
+            g = _gates[alias] = threading.BoundedSemaphore(MAX_CONNECTIONS_PER_DEVICE)
+        return g
+
+
+def _gated_run(alias: str, argv: list, data: bytes, timeout: float):
+    """subprocess.run under the device's connection cap. Raises
+    subprocess.TimeoutExpired when no slot frees up within ``timeout``, like
+    a call that ran out of time -- the callers already turn that into
+    RC_TIMEOUT (an unknown, never a "no")."""
+    gate = _gate(alias)
+    if not gate.acquire(timeout=max(1.0, timeout)):
+        raise subprocess.TimeoutExpired(argv, timeout)
+    try:
+        return subprocess.run(argv, input=data, capture_output=True,
+                              timeout=timeout, creationflags=_no_window())
+    finally:
+        gate.release()
+
+
 class SshTransport:
     """The real transport over the system OpenSSH client."""
 
@@ -184,9 +221,7 @@ class SshTransport:
             return RunResult(RC_MISSING, "", "ssh-not-found")
         argv = [self.ssh, *_COMMON_OPTS, alias, "sh", "-s"]
         try:
-            p = subprocess.run(argv, input=script.encode("utf-8"),
-                               capture_output=True, timeout=timeout,
-                               creationflags=_no_window())
+            p = _gated_run(alias, argv, script.encode("utf-8"), timeout)
         except FileNotFoundError:
             return RunResult(RC_MISSING, "", "ssh-not-found")
         except subprocess.TimeoutExpired:
@@ -206,9 +241,7 @@ class SshTransport:
             return RunResult(RC_MISSING, "", "ssh-not-found")
         argv = [self.ssh, *_COMMON_OPTS, alias, *powershell_command()]
         try:
-            p = subprocess.run(argv, input=powershell_stdin(script),
-                               capture_output=True, timeout=timeout,
-                               creationflags=_no_window())
+            p = _gated_run(alias, argv, powershell_stdin(script), timeout)
         except FileNotFoundError:
             return RunResult(RC_MISSING, "", "ssh-not-found")
         except subprocess.TimeoutExpired:
@@ -230,8 +263,7 @@ class SshTransport:
         argv = [self.sftp, *_COMMON_OPTS, "-q", "-b", "-", alias]
         batch = ("\n".join(lines) + "\n").encode("utf-8")
         try:
-            p = subprocess.run(argv, input=batch, capture_output=True,
-                               timeout=timeout, creationflags=_no_window())
+            p = _gated_run(alias, argv, batch, timeout)
         except FileNotFoundError:
             return RunResult(RC_MISSING, "", "sftp-not-found")
         except subprocess.TimeoutExpired:

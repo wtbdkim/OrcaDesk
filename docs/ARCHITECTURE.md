@@ -2071,6 +2071,15 @@ bridge to poll (`get_devices` / `detect_devices` / `set_remote_device` /
 `unreachable` marks a transport failure, which is an *unknown*, not a "no".
 Win32-OpenSSH has no ControlMaster, so each call is a full handshake: one
 short call per job every `SYNC_EVERY` (10 s), nothing held open between.
+**At most `MAX_CONNECTIONS_PER_DEVICE` (4) ssh/sftp processes run at once per
+device** (`_gated_run`, a semaphore per alias; a call that gets no slot within
+its own timeout is `RC_TIMEOUT`, an unknown). Measured on the AWS device: a
+dispatch burst of 16 launches opened 16 connections at once, sshd's default
+`MaxStartups 10:30:100` dropped the overflow ("Connection closed by … port
+22") and five launches went back to PENDING with the device marked offline.
+The device side was also raised there (`/etc/ssh/sshd_config.d/90-orcadesk.conf`:
+`MaxStartups 100:30:200`, `MaxSessions 50`), but the cap is what protects a
+device nobody tuned — a Windows laptop's sshd has the same default.
 
 **Placement** (`core/queue.py`): one admission pool per device (P57).
 `_place` tries this machine first, then each enabled device in the user's
