@@ -5,6 +5,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **A remote device's line on the rail shows its memory too.** Each
+  compute device now reads like *This PC*: cores reserved, memory reserved and
+  how many jobs run, each against that device's own budget.
+
 ### Fixed
 - **No more console windows popping up from a Windows compute device's
   calculations.** Every calculation ORCAdesk started on a Windows machine

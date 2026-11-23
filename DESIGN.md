@@ -1299,7 +1299,10 @@ queue is the queue window's (§17.6); this window reads it:
   its own *Run / Stop / Cancel* (`.poolbtn`: 11px text buttons, no fill,
   bordered on hover, Cancel turning `--err` on hover and asking first) and its
   state word after the name (`.poolstate`: *draining* in `--warn`, *stopped*
-  muted; nothing while it runs), so a drain never reads as a stall. While idle
+  muted; nothing while it runs), so a drain never reads as a stall. Every
+  pool's line reads the same while a run goes on — *Cores reserved*, *Memory
+  reserved* (meters against that pool's own budget) and *Running n of m* — a
+  remote device's included, so its memory is never a guess. While idle
   the box shows only these lines, and only when a device is enabled: a
   device's *Run* starts the queue on that device alone. The footer's *Run
   queue* also resumes a run that is draining or has pools stopped. *Opened files* stays, in the
