@@ -2237,7 +2237,9 @@ columns:
   `kind / set` line — never top right, where a block shows its run order —
   and unfolds a member list; once some of its members are **filtered** the
   count reads `passed/total` (`3/10`), and a filtered member is faint in the
-  list with its reason on hover. A step after a CREST search is a
+  list with its reason on hover. A single block that stands for every
+  conformer a CREST search will find (`conf:all`, below) carries the same
+  badge reading `all`. A step after a CREST search is a
   **conformer stack**: one member per conformer, `_c1` … `_cK` (`_c1` the
   lowest, as the search's `{name}_c1.xyz`), each taking its structure by
   reference to that conformer (`ref_point` `conf:<k>`). **Edges**
@@ -2306,9 +2308,14 @@ columns:
   separate): *conformers* (**empty by default** -- nothing is assumed for
   the user: empty is every conformer the search found, placeholder `all 38`;
   a number is 1 to the ensemble's size. Before the search has run there is no
-  "all" and no upper bound: the field reads *how many* and the button
-  *Type how many conformers*, disabled, until one is typed, with the note
-  that a member past the ensemble it finds ends filtered) and an optional
+  upper bound and empty is **every conformer it finds**: the field reads
+  *all it finds*, the button *Add a single point for every conformer it
+  finds* (*Paste on every conformer it finds* for a workflow), and the note
+  says that one step stands for them until the search has finished and then
+  becomes one per conformer with everything after it; a typed number is a
+  stack of that many, a member past the ensemble it finds ending filtered.
+  After a search that has run but listed no conformers a number has to be
+  typed: *Type how many conformers*, disabled, until one is) and an optional
   *pass on ΔE ≤ … kcal/mol* (empty: all pass), and ONE confirm button that
   says what it will do -- *Add 38 single points (all 38 conformers)*,
   *Add 5 single points (conformers 1–5)*, *Paste on 5 conformers (1–5)* for
@@ -2320,7 +2327,19 @@ columns:
   reference to its conformer, the window on their incoming edge. A workflow
   after a search is pasted once per conformer, each step's K copies
   stacked, the window on the edge into its first steps. A step after a
-  conformer stack is one per member (`_c3` kept), as after any stack. Escape or a click elsewhere closes it
+  conformer stack is one per member (`_c3` kept), as after any stack.
+  **"Every conformer it finds"** adds ONE block (`ref_point` `conf:all`, named
+  as the stack's base without the `_c<k>` tail) — a workflow is pasted once,
+  its first steps such blocks and the rest hanging off them. The block shows
+  its count as **`all`** where a stack shows its members (bottom right, the
+  same badge), and its inspector says: *Stands for every conformer X finds:
+  when the search has finished it becomes one single point per conformer
+  (`…_c1`, `…_c2` …, the lowest first), and so does everything after it. It
+  never runs itself, and undo does not bring it back.* (once the search has
+  finished but the queue has not run since: *…it becomes … when the queue
+  next runs*). When the search is done the queue swaps it, and every block
+  after it, for a stack of one per conformer — new rows the next poll draws;
+  an undo entry made before that cannot take the block back. Escape or a click elsewhere closes it
   and leaves the selection as it was; what was chosen is one undoable batch,
   like a dropped set. **A step before a block**: the selected block that
   can still change shows a small round dashed **+** on its incoming side (in
@@ -2395,7 +2414,9 @@ columns:
   undoes it. A stack takes no paste after it (it has several ends); after an
   IRC the IRC picker asks which structure(s), and the workflow is pasted once
   per structure picked (`_F` / `_B`, each step's two copies stacked); after a
-  CREST search the conformer picker asks how many (`_c1` … `_cK`). A copied
+  CREST search the conformer picker asks how many (`_c1` … `_cK`, or, before
+  the search has run, empty: once, on blocks that stand for every conformer
+  it finds). A copied
   workflow carries the energy condition of an edge inside the copy.
 - **Names** — a step the editor makes is `<system>_<Job>`: the job as ORCA's
   keyword (`{{JOB}}`) reads it — `_Opt`, `_OptTS`, `_FreqTS`, `_IRC`, `_SP`,

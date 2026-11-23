@@ -83,7 +83,22 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   instead of running into the error.
 - **The conformer picker's count starts empty.** It assumed 5; empty now
   means every conformer the search found (*Add 38 single points (all 38
-  conformers)*). Before the search has run, a number has to be typed.
+  conformers)*) — and, before the search has run, every conformer it will
+  find (below).
+- **"Every conformer it finds", before a CREST search has run.** Leave the
+  conformer picker's count empty after a search that has not run yet and
+  the button reads *Add a single point for every conformer it finds* (*Paste
+  on every conformer it finds* for a workflow): one block is added, its count
+  shown as `all`, and the steps you put after it hang off it as usual. When
+  the search finishes with N conformers, that block and everything after it
+  become N copies — a stack of single points `_c1` … `_cN` (lowest first), and
+  each later step a stack of N too — with the ΔE / top-N condition you set
+  applied to the members as before. A search that finished while ORCAdesk was
+  closed (or before the queue last ran) is expanded when the queue next runs.
+  Copies take names that are free in the queue and on disk, so an old result
+  is never overwritten. The block itself never runs, and undo cannot take it
+  back once it has been replaced. Typing a number still makes a stack of that
+  many at once.
 
 ### Fixed
 - **Raising the parallel-run limits in Settings applies to the run in

@@ -35,6 +35,12 @@ conformer reference (ref_point conf:<k>) past the end of its CREST ensemble,
 and every dependent of either are FILTERED — terminal, never run, never
 BLOCKED or FAILED.
 
+A conformer PLACEHOLDER (ref_point conf:all: "every conformer the search
+finds", put after a CREST search that has not run) is never run itself. When
+its search is DONE with N conformers, it and every calculation hanging off it
+are replaced by N copies (expand_conformer_placeholders) -- the one place a run
+rewrites the queue.
+
 A FAILED calculation is locked (P24): it never re-enters the run loop on its
 own. Only CANCELLED (a deliberate user stop, not a failure) re-runs; a FAILED or
 DONE one runs again only when the queue editor puts a new set on it behind an
@@ -53,6 +59,8 @@ The engine is GUI-agnostic: it communicates only through callbacks.
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import os
 import re
 import shutil
@@ -76,7 +84,8 @@ from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
 from .runner import OrcaRunner, OrcaRunError, OrcaCancelled, OrcaDetached, OrcaHung
 from .parser import parse_file, ParseResult
 from .procutil import process_matches
-from .rundir import planned_run_dir, result_folder, run_dir_of, run_folder
+from .rundir import (folder_name_problem, names_with_output, planned_run_dir,
+                     result_folder, run_dir_of, run_folder)
 from .xyzutil import as_xyz_file
 import logging
 from ..remote.devices import device_prefers, resolve_device
@@ -201,7 +210,9 @@ class Calculation:
     approved: bool = False
     # which geometry of ref_name: "" its final one, "irc_f"/"irc_b" the end
     # points ORCA writes for an IRC ({ref}_IRC_F.xyz / {ref}_IRC_B.xyz),
-    # "conf:<k>" conformer k (1 = the lowest) of a CREST search
+    # "conf:<k>" conformer k (1 = the lowest) of a CREST search, "conf:all"
+    # every conformer of one that has not run (a placeholder, never run
+    # itself: see expand_conformer_placeholders)
     ref_point: str = ""
     # the energy condition on the edge into it (judged by the engine when its
     # dependencies are otherwise ready, before the approval gate; see
@@ -229,6 +240,13 @@ class QueueCallbacks:
     # reachable again during a run is reported so that list can be settled
     remote_cleanup: Callable[[dict], None] = lambda entry: None
     device_reachable: Callable[[str], None] = lambda alias: None
+    # the conformer placeholders of a finished CREST search: (crest name, N,
+    # casefolded names that already hold output on disk) -> the report of
+    # expand_conformer_placeholders, or None. Wired to the store's
+    # expand_conformer_placeholders (it saves the session and bumps the
+    # version); None = the engine rewrites the list it walks itself (a
+    # standalone engine, as in the unit tests).
+    expand_placeholders: "Optional[Callable[[str, int, set], Optional[dict]]]" = None
 
 
 @dataclass
@@ -427,6 +445,11 @@ REF_POINTS = ("", "irc_f", "irc_b")
 # and 1 the lowest-energy one -- the numbering of ParseResult.conformers[].index
 # and of the exported {name}_c<k>.xyz (crest/parser.py, crest/export.py).
 _CONF_REF_RE = re.compile(r"conf:[1-9][0-9]*")   # used with fullmatch
+# ...and one closed value: "conf:all", every conformer of a CREST search that
+# has not run yet -- a PLACEHOLDER, never run itself. When the search is DONE
+# with N conformers it is replaced, with every calc hanging off it, by N copies
+# (expand_conformer_placeholders).
+CONF_ALL = "conf:all"
 # The kinds whose result is a conformer ensemble a conf:<k> reference reads.
 CONFORMER_KINDS = ("crest_conf",)
 # Hartree -> kcal/mol (CODATA 2018), the energy filter's unit
@@ -434,10 +457,20 @@ HARTREE_TO_KCAL_MOL = 627.5094740631
 
 
 def is_ref_point(value) -> bool:
-    """Whether ``value`` is a ref_point the engine knows: one of REF_POINTS or
-    ``conf:<k>`` (k a whole number >= 1, no sign, no leading zero)."""
-    return isinstance(value, str) and (value in REF_POINTS
+    """Whether ``value`` is a ref_point the engine knows: one of REF_POINTS,
+    ``conf:<k>`` (k a whole number >= 1, no sign, no leading zero) or
+    ``conf:all`` (CONF_ALL)."""
+    return isinstance(value, str) and (value in REF_POINTS or value == CONF_ALL
                                        or bool(_CONF_REF_RE.fullmatch(value)))
+
+
+def is_conf_placeholder(calc) -> bool:
+    """Whether ``calc`` is a conformer placeholder: a geometry reference to a
+    calc with ref_point ``conf:all``. It is never run; its CREST search, once
+    DONE, replaces it (expand_conformer_placeholders)."""
+    return (getattr(calc, "ref_point", "") == CONF_ALL
+            and calc.geometry_source == GeometrySource.REFERENCE
+            and bool(calc.ref_name))
 
 
 def conf_index(ref_point) -> int:
@@ -511,6 +544,12 @@ def ref_point_problem(calc: "Calculation", parent: "Optional[Calculation]") -> s
     kind of parent)."""
     if parent is None or calc.geometry_source != GeometrySource.REFERENCE:
         return ""
+    if calc.ref_point == CONF_ALL:
+        if parent.kind in CONFORMER_KINDS:
+            return ""
+        return (f"'{calc.name}' starts from every conformer of '{parent.name}', "
+                f"but '{parent.name}' is not a CREST conformer search "
+                f"({parent.kind}) and has no conformers.")
     k = conf_index(calc.ref_point)
     if k:
         if parent.kind in CONFORMER_KINDS:
@@ -609,6 +648,147 @@ def gate_waiting(calc: "Calculation", parent: "Optional[Calculation]") -> bool:
     if parent.state != CalcState.DONE:
         return False
     return not gate_auto_passes(calc, parent)
+
+
+# ---- conformer placeholders (ref_point conf:all) --------------------------
+# A placeholder that has not been replaced yet: never run (it is not
+# dispatched), so it is still in an editable state. BLOCKED counts -- a
+# refusal stamps it, and the next run tries again.
+_PLACEHOLDER_STATES = (CalcState.PENDING, CalcState.CANCELLED, CalcState.BLOCKED)
+# what a copy never inherits: it is a new row that has never started
+_UNSTARTED = dict(state=CalcState.PENDING, message="", result=None,
+                  output_path="", pid=None, create_time=None, faulted=False,
+                  rerun=False, run_dir="", device="", remote_dir="",
+                  disconnected=False)
+
+
+def conformer_placeholder_chain(calcs: "list[Calculation]", crest_name: str):
+    """(placeholders, downstream): the conformer placeholders on the calc
+    called ``crest_name`` still to be replaced, and every calc that depends on
+    one of them -- by its geometry reference or its `after`, transitively --
+    each in list order. Found to a fixpoint over the whole list, so the order
+    rows sit in (a child before its parent) does not matter. A placeholder
+    that hangs off another one is a placeholder (a root), not downstream."""
+    roots = [c for c in calcs
+             if is_conf_placeholder(c) and c.ref_name == crest_name
+             and c.state in _PLACEHOLDER_STATES]
+    if not roots:
+        return [], []
+    ids = {id(c) for c in roots}
+    names = {c.name for c in roots}
+    grew = True
+    while grew:
+        grew = False
+        for c in calcs:
+            if id(c) not in ids and any(p in names for p in _parent_names(c)):
+                ids.add(id(c))
+                names.add(c.name)
+                grew = True
+    root_ids = {id(c) for c in roots}
+    return roots, [c for c in calcs if id(c) in ids and id(c) not in root_ids]
+
+
+def expand_conformer_placeholders(calcs: "list[Calculation]", crest_name: str,
+                                  n: int, busy: "Callable[[str], bool]" = lambda name: False,
+                                  disk_taken=()) -> "Optional[dict]":
+    """Replace the conformer placeholders of the DONE CREST search called
+    ``crest_name`` (N = ``n`` conformers), and everything hanging off them, by
+    N copies -- IN PLACE on ``calcs`` (the store's own list, walked by a
+    running engine: P29), as one change. The caller holds the lock that
+    guards ``calcs``. The one place a run rewrites the queue.
+
+    Placeholder P becomes P_c1 ... P_cN (ref_point conf:k, everything else
+    P's: node, lane, place, gate, filter fields, set, config, charge /
+    multiplicity); each downstream calc D becomes D_c1 ... D_cN, its `after`
+    and geometry reference re-pointed to the k-th copy of a parent in the
+    chain (a parent outside it is kept), keeping D's node, so each step stays
+    one stack of N. Each row's copies take its place in the list. Names: a
+    base whose N copies are all free (case-insensitively, against the rows
+    that stay and ``disk_taken``, names whose folder already holds output) --
+    D, else D2, D3 ... -- the editor's rule for a stack. Every copy is a new
+    row that has never started; the replaced rows never started either (a
+    placeholder is never run, and what hangs off it waits for it), so they
+    simply leave the list -- nothing on disk is touched.
+
+    N = 0: P and its chain are FILTERED instead ("CREST found no
+    conformers"). A chain that holds a row that has started (or is being
+    started: ``busy``), or copy names that are not usable folder names, is
+    refused: every P is BLOCKED with the reason (editable; tried again on
+    the next run) and nothing else changes.
+
+    Returns None when there is nothing to do (no placeholder left -- a
+    second call is a no-op -- or the search is not a DONE one), else
+    {placeholders, n, members, downstream, blocked}: the placeholders' names,
+    N, how many member copies and downstream copies were made, and the
+    refusal ("" when it expanded)."""
+    crest = next((c for c in calcs if c.name == crest_name), None)
+    if crest is None or crest.state != CalcState.DONE or crest.kind not in CONFORMER_KINDS:
+        return None
+    roots, down = conformer_placeholder_chain(calcs, crest_name)
+    if not roots:
+        return None
+    chain = roots + down
+    root_ids = {id(c) for c in roots}
+    n = max(0, int(n))
+    report = {"placeholders": [p.name for p in roots], "n": n,
+              "members": 0, "downstream": 0, "blocked": ""}
+
+    def refuse(why: str) -> dict:
+        for p in roots:
+            p.state = CalcState.BLOCKED
+            p.message = f"Skipped: {why}."
+        report["blocked"] = why
+        return report
+
+    started = next((c for c in chain
+                    if c.state in (CalcState.RUNNING, CalcState.DONE, CalcState.FAILED)
+                    or busy(c.name)), None)
+    if started is not None:
+        return refuse(f"'{started.name}' hangs off it and has already started, "
+                      f"so it cannot become one per conformer of '{crest_name}'")
+    if n == 0:
+        for c in chain:
+            c.state = CalcState.FILTERED
+            c.pid = c.create_time = None
+            c.message = ("Filtered: CREST found no conformers" if id(c) in root_ids
+                         else "Filtered: what it depends on was filtered")
+        return report
+
+    chain_ids = {id(c) for c in chain}
+    taken = {c.name.casefold() for c in calcs if id(c) not in chain_ids}
+    taken |= {str(x).casefold() for x in disk_taken}
+    base_of: "dict[str, str]" = {}
+    for c in chain:
+        base, i = c.name, 2
+        while any(f"{base}_c{k}".casefold() in taken for k in range(1, n + 1)):
+            base, i = f"{c.name}{i}", i + 1
+        problem = folder_name_problem(f"{base}_c{n}")
+        if problem:
+            return refuse(f"'{base}_c{n}' cannot name a calculation ({problem})")
+        base_of[c.name] = base
+        taken |= {f"{base}_c{k}".casefold() for k in range(1, n + 1)}
+
+    def copy_of(c: Calculation, k: int) -> Calculation:
+        def remap(nm: str) -> str:
+            return f"{base_of[nm]}_c{k}" if nm in base_of else nm
+        root = id(c) in root_ids
+        is_ref = c.geometry_source == GeometrySource.REFERENCE
+        return dataclasses.replace(
+            c, name=f"{base_of[c.name]}_c{k}", config=copy.deepcopy(c.config),
+            ref_point=f"conf:{k}" if root else c.ref_point,
+            ref_name=c.ref_name if root or not is_ref else remap(c.ref_name),
+            after=remap(c.after) if c.after else "", **_UNSTARTED)
+
+    out: "list[Calculation]" = []
+    for c in calcs:
+        if id(c) in chain_ids:
+            out.extend(copy_of(c, k) for k in range(1, n + 1))
+        else:
+            out.append(c)
+    calcs[:] = out
+    report["members"] = n * len(roots)
+    report["downstream"] = n * len(down)
+    return report
 
 
 def validate_result(calc: Calculation, result: ParseResult) -> None:
@@ -876,6 +1056,16 @@ class QueueEngine:
         self._verdicts: "dict[int, tuple]" = {}
         self._to_load: "dict[int, Calculation]" = {}
         self._load_tried: "dict[int, Calculation]" = {}
+        # Conformer placeholders (ref_point conf:all): the DONE CREST searches
+        # whose placeholders a scan found ready to replace (id -> (search, N),
+        # replaced outside the scan by _expand_conformers), the placeholders
+        # an attempt left in place (id -> row: their next pick is a BLOCKED
+        # verdict, never another attempt -- so a refusal cannot spin the
+        # dispatcher), and the list the run walks (for an engine with no
+        # store to rewrite it through).
+        self._to_expand: "dict[int, tuple]" = {}
+        self._expand_tried: "dict[int, Calculation]" = {}
+        self._walk: "Optional[list[Calculation]]" = None
 
     # -- per-job state ----------------------------------------------------
     @property
@@ -1048,6 +1238,12 @@ class QueueEngine:
             raise OrcaFiltered(f"parent {ref.name} was filtered")
         if calc.ref_point in _IRC_END_FILES:
             return self._irc_end_geometry(calc, ref)
+        if calc.ref_point == CONF_ALL:
+            # a placeholder is never run (_pick_pass replaces it): this is
+            # the backstop, and BLOCKED keeps it editable
+            raise OrcaBlocked(
+                f"it stands for every conformer of '{ref.name}' and becomes one "
+                "calculation per conformer once that search has finished")
         if conf_index(calc.ref_point):
             return self._conformer_geometry(calc, ref)
         # Parse-on-miss: a DONE ref restored from a previous session has no
@@ -1900,6 +2096,65 @@ class QueueEngine:
                         message=f"Completed — {n} conformer(s).",
                         log_msg=f"done — {n} conformer(s).")
         self._export_crest_conformers(calc, Path(out_path).parent)
+        # the steps put after it for "every conformer it finds" become one
+        # per conformer now (the scan would find them too; this is at once)
+        self._expand_conformers(calc, n)
+
+    def _expand_conformers(self, crest: Calculation, n: int) -> None:
+        """Replace the conformer placeholders of the DONE search ``crest``
+        (N = ``n``) and everything hanging off them by N copies
+        (expand_conformer_placeholders), as ONE change of the queue under its
+        lock -- through the store when one is wired (it saves the session),
+        else on the list this run walks. Called OUTSIDE the scan and the lock
+        (from the dispatcher, or the job thread that finished the search):
+        the names that already hold output on disk are looked up first,
+        without the lock (P37), so a copy never takes a folder with old
+        results in it. Idempotent: with no placeholder left it does nothing.
+        Logs one line."""
+        with self._queue_lock:
+            walk = self._walk
+            if walk is None:
+                return
+            roots, down = conformer_placeholder_chain(walk, crest.name)
+            bases = [c.name for c in roots + down]
+        if not bases:
+            return
+        n = max(0, int(n))
+        try:
+            # the base itself and the next two a collision moves to
+            disk = {x.casefold() for x in names_with_output(
+                self.workspace_root,
+                [f"{b}{s}_c{k}" for b in bases for s in ("", "2", "3")
+                 for k in range(1, n + 1)])}
+        except OSError:
+            disk = set()
+        if self.cb.expand_placeholders is not None:
+            report = self.cb.expand_placeholders(crest.name, n, disk)
+        else:
+            with self._queue_lock:
+                report = expand_conformer_placeholders(
+                    walk, crest.name, n, busy=self._active_names.__contains__,
+                    disk_taken=disk)
+        with self._slot_cv:
+            # whatever placeholder of it is still here was refused (or
+            # appeared meanwhile): its next pick is a verdict, not a retry
+            for c in walk:
+                if is_conf_placeholder(c) and c.ref_name == crest.name:
+                    self._expand_tried[id(c)] = c
+            self._slot_cv.notify_all()
+        if not report:
+            return
+        who = ", ".join(report["placeholders"])
+        if report["blocked"]:
+            self.cb.log(f"[{crest.name}] could not expand {who}: {report['blocked']}.",
+                        "warn", crest.name)
+        elif report["n"] == 0:
+            self.cb.log(f"[{crest.name}] found no conformers: {who} filtered.",
+                        "info", crest.name)
+        else:
+            self.cb.log(f"[{crest.name}] expanded {who} into {report['members']} "
+                        f"copies (+{report['downstream']} downstream)", "info",
+                        crest.name)
 
     def _export_crest_conformers(self, calc: Calculation, calc_dir) -> None:
         """Auto-split the finished ensemble into per-conformer ``.xyz`` files under
@@ -2019,6 +2274,12 @@ class QueueEngine:
         * ("no_energy", message) -- a DONE parent with nothing to rank by;
         * ("no_parent",) / ("not_done", parent) -- nothing to rank, by the
           normal dependency rules' account (a FAILED parent blocks, etc.)."""
+        if is_conf_placeholder(m):
+            # it becomes the stack's members once its search has finished
+            # (_expand_conformers); until then nothing is ranked against it
+            if m.state in (CalcState.PENDING, CalcState.CANCELLED):
+                return ("wait",)
+            return ("no_parent",)
         is_ref = m.geometry_source == GeometrySource.REFERENCE
         k = conf_index(m.ref_point) if is_ref else 0
         pname = m.ref_name if k else (m.after or (m.ref_name if is_ref else ""))
@@ -2192,6 +2453,9 @@ class QueueEngine:
             self._verdicts.clear()
             self._to_load.clear()
             self._load_tried.clear()
+            self._to_expand.clear()
+            self._expand_tried.clear()
+            self._walk = calcs
             # A row still BLOCKED from a previous run whose ancestry is now
             # clean (its failed parent was removed, or its reference
             # re-pointed) WILL run this pass — reset it up front so the visible
@@ -2300,6 +2564,7 @@ class QueueEngine:
         try:
             while True:
                 to_load: "list[Calculation]" = []
+                to_expand: "list[tuple]" = []
                 with self._slot_cv:
                     if self._should_stop(calcs):
                         break
@@ -2310,11 +2575,15 @@ class QueueEngine:
                             seen.pop(cid, None)
                         self._unsee.clear()
                     self._to_load = {}
+                    self._to_expand = {}
                     picked = self._pick_ready(calcs, seen)
-                    if picked is None and self._to_load:
-                        # An energy condition needs results not in memory yet:
-                        # read them outside the lock (below), then scan again.
+                    if picked is None and (self._to_load or self._to_expand):
+                        # An energy condition (or a placeholder) needs results
+                        # not in memory yet, or a finished search's
+                        # placeholders are to be replaced: done outside the
+                        # lock (below), then scan again.
                         to_load = list(self._to_load.values())
+                        to_expand = list(self._to_expand.values())
                     elif picked is None:
                         if self._slots:
                             # A job in flight will free budget (or satisfy the
@@ -2344,6 +2613,8 @@ class QueueEngine:
                         self._active_names.add(calc.name)
                 if picked is None:
                     self._load_results(to_load)
+                    for crest, n in to_expand:
+                        self._expand_conformers(crest, n)
                     continue
                 if not self._precheck(calc, i):
                     self._release(calc.name)
@@ -2408,6 +2679,14 @@ class QueueEngine:
                 return j, c
             if not self._deps_ready(c, seen):
                 continue
+            # a conformer placeholder is never dispatched: once its search is
+            # settled it is replaced (outside the scan), or given a verdict
+            if is_conf_placeholder(c) and c.state != CalcState.RUNNING:
+                verdict = self._placeholder_verdict(c)
+                if verdict is None:
+                    continue
+                self._verdicts[id(c)] = (c, verdict)
+                return j, c
             # The energy condition on its edge is judged BEFORE its approval
             # gate: a row it screens out is FILTERED, never left waiting for
             # an approval that would be pointless. Only a row that has not
@@ -2430,6 +2709,38 @@ class QueueEngine:
             if where is not None:
                 self._placed[c.name] = where
                 return j, c
+        return None
+
+    def _placeholder_verdict(self, calc: Calculation):
+        """What becomes of a conformer placeholder whose search is settled
+        (its dependencies are ready), under the lock, from memory only: None
+        -- not ready, its search's result is asked for (_to_load) or its
+        replacement is (_to_expand), both done outside the scan -- or a
+        (BLOCKED, message) verdict for _precheck to stamp. A FAILED or
+        BLOCKED search never gets here: _handled_without_running blocks the
+        placeholder by the normal rule first, and a FILTERED one filters it."""
+        crest = self._by_name.get(calc.ref_name)
+        if calc.state == CalcState.BLOCKED or id(calc) in self._expand_tried:
+            # an attempt this run left it in place (a run's start resets a
+            # BLOCKED row whose dependencies are clean, so this is one)
+            return (CalcState.BLOCKED, calc.message or (
+                "Skipped: it could not become one calculation per conformer "
+                f"of '{calc.ref_name}'."))
+        if crest is None or crest is calc:
+            return (CalcState.BLOCKED, f"Skipped: '{calc.ref_name}' is not in the queue.")
+        if crest.state != CalcState.DONE:
+            return (CalcState.BLOCKED, f"Skipped: '{crest.name}' did not finish.")
+        if crest.result is None:
+            if id(crest) not in self._load_tried:
+                self._to_load[id(crest)] = crest
+                return None
+            return (CalcState.BLOCKED, "Skipped: the conformers of "
+                                       f"'{crest.name}' could not be read.")
+        confs = getattr(crest.result, "conformers", None) or ()
+        if not confs:
+            return (CalcState.BLOCKED, f"Skipped: '{crest.name}' holds no "
+                                       "conformer ensemble.")
+        self._to_expand[id(crest)] = (crest, len(confs))
         return None
 
     def _deps_ready(self, calc: Calculation, seen: dict) -> bool:
@@ -2905,6 +3216,16 @@ class QueueEngine:
                 calc.message = message
                 self.cb.log(f"[{calc.name}] blocked: {message}", "warn", calc.name)
                 self.cb.calc_update(i, calc)
+            return False
+        # A conformer placeholder never runs: it is replaced by one copy per
+        # conformer (_expand_conformers). _pick_pass never hands one over
+        # without a verdict; this is the second lock on the door.
+        if is_conf_placeholder(calc) and calc.state != CalcState.RUNNING:
+            calc.state = CalcState.BLOCKED
+            calc.message = (f"Skipped: it stands for every conformer of "
+                            f"'{calc.ref_name}' and is never run itself.")
+            self.cb.log(f"[{calc.name}] blocked: {calc.message}", "warn", calc.name)
+            self.cb.calc_update(i, calc)
             return False
         return True
 

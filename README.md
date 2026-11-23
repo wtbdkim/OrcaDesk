@@ -257,9 +257,11 @@ A finished calculation opens as a report, read two ways: **Output** and
   search survives the app closing like an ORCA run; follow-up calculations
   start from the **lowest-energy conformer**, and every conformer is exported
   as its own `.xyz`. In the queue window a step after a CREST block can take
-  several conformers at once (a stack `_c1 … _cK`), and the edge into a stack
-  can carry an energy condition (*ΔE ≤ X kcal/mol · top N*): members that miss
-  it end **Filtered** instead of running.
+  several conformers at once (a stack `_c1 … _cK`) — or, before the search has
+  run, *every conformer it finds*: one block that becomes a stack of one per
+  conformer, with every step after it, when the search finishes — and the
+  edge into a stack can carry an energy condition (*ΔE ≤ X kcal/mol · top N*):
+  members that miss it end **Filtered** instead of running.
 
 <details>
 <summary><b>WSL memory note</b> (CREST on Windows)</summary>

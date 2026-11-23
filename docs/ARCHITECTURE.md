@@ -507,8 +507,9 @@ endpoints keep `-> dict` and only *construct* through the schema types.
 `system` (the lane, a system id; `""` = a standalone calc), `node` (stack
 members share one), `col` / `row` (grid position), `after` (the calc it runs
 after — the edge), `gate` (`"auto"` | `"approval"`), `auto_pass`, `approved`,
-`ref_point` (`""` | `"irc_f"` | `"irc_b"` | `"conf:<k>"`, the last strictly
-`^conf:[1-9][0-9]*$`, `core.queue.is_ref_point`), `set_name` (display only),
+`ref_point` (`""` | `"irc_f"` | `"irc_b"` | `"conf:all"` | `"conf:<k>"`, the
+last strictly `^conf:[1-9][0-9]*$`, `core.queue.is_ref_point`; `conf:all` is
+the conformer placeholder, see *Queue semantics*), `set_name` (display only),
 and the energy condition on the edge into it: `filter_de` (a window in
 kcal/mol, a finite number ≥ 0, or `null` = off) and `filter_top` (a whole
 number; 0 = off, N ≥ 1 = only the N lowest of the stack pass). All
@@ -553,8 +554,8 @@ own `%irc` block reads one — `InitHess read` with a relative
 geometry reference (`core.queue.template_hess_problem`); and a `ref_point`
 `irc_f` / `irc_b` on a
 parent whose kind writes no IRC end points (anything but `irc` / `general`,
-`ref_point_problem`), or a `conf:<k>` on a parent that is not a conformer
-search (`CONFORMER_KINDS` = `crest_conf`) — checked by `add` / `replace` and, for `apply_ops`, on
+`ref_point_problem`), or a `conf:<k>` / `conf:all` on a parent that is not a
+conformer search (`CONFORMER_KINDS` = `crest_conf`) — checked by `add` / `replace` and, for `apply_ops`, on
 the batch's final state for every row it added or rebuilt (or whose parent it
 rebuilt).
 
@@ -1656,6 +1657,67 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   **FILTERED** (`Filtered: CREST found only N conformers`), never FAILED or
   BLOCKED; the engine decides it at pick time from the parsed ensemble (below),
   and `_resolve_geometry` raises `OrcaFiltered` as the backstop.
+- **Conformer placeholders (`ref_point` `conf:all`) — the ONE place a run
+  rewrites the queue.** Before a CREST search has run nobody knows N, so the
+  queue editor's conformer picker with an empty count adds ONE row that
+  stands for "every conformer it finds" (`is_conf_placeholder`: a geometry
+  reference with `conf:all`, accepted at the trust boundary only on a
+  `crest_conf` parent, like `conf:<k>`); a workflow pasted that way is one
+  copy whose first steps are placeholders. A placeholder is **never
+  dispatched**: until its search is settled it is an unmet dependency like any
+  other (PENDING, unseen, keeping the run alive while the search may still
+  finish in this run; a FAILED/BLOCKED search blocks it, a FILTERED one filters
+  it, by the normal rules; a search held at a gate holds it). Once the search
+  is DONE, `_pick_pass` asks `_placeholder_verdict` instead of dispatching it:
+  a result not in memory is loaded outside the lock first (`_to_load`, as for
+  the energy condition), an unreadable or empty ensemble is a BLOCKED verdict,
+  and otherwise the search is put on `_to_expand` and the dispatcher, **outside
+  the scan and the lock** (P37), calls `_expand_conformers`; the finish point
+  `_crest_monitor_and_finish` (a fresh run, a reattach, the finished-while-closed
+  judge) calls it too, at once. That looks up which candidate copy names
+  already hold output on disk (`names_with_output`, without the lock) and
+  then makes ONE store operation, `QueueStore.expand_conformer_placeholders(
+  crest, N, disk_taken)` (wired as `QueueCallbacks.expand_placeholders`; an
+  engine with no store runs the same `core.queue.expand_conformer_placeholders`
+  on the list it walks), under the store lock, saved: the placeholders P and
+  every row hanging off one (by `after` or a geometry reference,
+  transitively, found to a fixpoint over the whole list —
+  `conformer_placeholder_chain`) are replaced, each at its own position, by N
+  copies — `P_c<k>` with `conf:<k>`, `D_c<k>` with its `after` / reference
+  re-pointed to the k-th copy of a parent in the chain (one outside it is
+  kept) — every other field kept (node, lane, place, gate, `auto_pass` /
+  `approved`, filter fields, set, config deep-copied, charge/multiplicity), so
+  each step is one stack of N and the normal energy condition and barrier
+  apply unchanged from the next scan on. A row's copies share one base, the
+  first of `D`, `D2`, `D3` … whose N names are free case-insensitively in the
+  queue and on disk (the editor's rule for a stack). N = 0 stamps P and its
+  chain FILTERED (`CREST found no conformers`). A chain holding a started row
+  (impossible by the rules, refused all the same), or copy names that fail the
+  folder rule, BLOCKS every P with the reason and changes nothing else;
+  `_expand_tried` makes a placeholder an attempt left in place a BLOCKED
+  verdict, never a second attempt, so a refusal cannot spin the dispatcher,
+  and `_precheck` / `_resolve_geometry` refuse to run a placeholder as the
+  backstop. One log line: `[crest] expanded P into N copies (+M downstream)`.
+  A placeholder that is in a stack's group holds the group's barrier
+  (`_score_of` → wait) until it is replaced. Why it cannot fail the way the
+  removed fan-out (0.5.x, gone in 0.6.0) did: (1) **child-before-parent** —
+  every copy name is decided for the whole chain before any row is built, and
+  the chain is a fixpoint over the list, so a child listed before its parent
+  is re-pointed at the parent's copy, never at a removed original; (2) **a
+  concurrent edit / phone add** — the store operation reads the live list
+  under the lock that every mutation takes, so it sees a chain row edited or
+  removed a moment ago as it is now, and a refusal changes nothing rather
+  than half the queue; nothing is ever spliced into a second, engine-private
+  list (the engine walks the store's own list, P29); (3) **identity and
+  labels** — copies are ordinary rows with no provenance field to lose, the
+  originals never started (no `run_dir`, nothing on disk; removal is
+  queue-list-only), and the engine tracks rows by identity, so the new
+  objects are simply picked; (4) **idempotent** — a second call finds no
+  placeholder and does nothing, and several searches' placeholders expand
+  independently, each by its own search's name. The front-end holds no queue
+  state: it draws the new rows on its next poll. An undo entry recorded before
+  the expansion cannot bring the placeholder back (its rows are gone; the
+  inspector says so).
 - **The energy condition on an edge (`filter_de` / `filter_top`) and FILTERED.**
   A calc *has a filter* when `filter_de` is not None or `filter_top` > 0. Its
   **group** is its stack: the calcs with the same `system` and the same
@@ -2797,7 +2859,10 @@ conformer** (the classic single-geometry handoff via `_resolve_geometry` —
 semantics). The queue editor pre-allocates a stack of K such single points
 (`conf:1` … `conf:K`) and may put an energy condition on the edge into it;
 members past the end of the ensemble, or outside the condition, end
-FILTERED. The engine never adds or rewrites rows for this.
+FILTERED. Before the search has run it may instead add one placeholder
+(`conf:all`, "every conformer it finds"), which the engine replaces — with
+what hangs off it — by one copy per conformer once the search is DONE: the
+one place a run rewrites rows (Queue semantics).
 The per-conformer track fan-out (`crest_handoff="all"`, `expand_conformer_tracks`
 / `substitute_calcs`) was removed in 0.6.0-beta. The report's conformer
 list is **read-only** for building: results are for interpretation; building

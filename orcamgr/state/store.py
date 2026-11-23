@@ -26,7 +26,8 @@ from typing import Optional
 
 from ..core.queue import (
     CLEANUP_PENDING_MESSAGE, GATES, KNOWN_KINDS, REF_POINTS, Calculation,
-    CalcState, GeometrySource, QueueEngine, QueueCallbacks, gate_waiting,
+    CalcState, GeometrySource, QueueEngine, QueueCallbacks,
+    expand_conformer_placeholders as _expand_placeholders_in, gate_waiting,
     is_ref_point, ref_point_problem, result_from_output, template_hess_problem,
     validate_result,
 )
@@ -564,7 +565,8 @@ def _graph_fields(d: dict, restoring: bool) -> dict:
         return default
 
     def ref_point() -> str:
-        # REF_POINTS, or the open family conf:<k> (core.queue.is_ref_point)
+        # REF_POINTS, conf:all, or the open family conf:<k>
+        # (core.queue.is_ref_point)
         v = d.get("ref_point", "")
         if v is None:
             return ""
@@ -572,7 +574,7 @@ def _graph_fields(d: dict, restoring: bool) -> dict:
             return v
         bad("'ref_point' must be one of: "
             + ", ".join(repr(a) for a in REF_POINTS)
-            + ", or 'conf:<k>' with k a whole number from 1.")
+            + ", 'conf:all', or 'conf:<k>' with k a whole number from 1.")
         return ""
 
     def filter_de() -> "Optional[float]":
@@ -2495,6 +2497,29 @@ class QueueStore:
                 self._settling.discard(alias)
         return done
 
+    def expand_conformer_placeholders(self, crest_name: str, n: int,
+                                      disk_taken=()) -> "Optional[dict]":
+        """Replace the conformer placeholders (ref_point conf:all) of the DONE
+        CREST search ``crest_name`` -- and every calc hanging off them -- by
+        one copy per conformer (``n`` of them), as ONE change under the store
+        lock, then save the session (core.queue.expand_conformer_placeholders
+        has the rules). The running engine calls this, outside its scan, when
+        the search finishes or a scan finds a placeholder whose search is
+        DONE; it is the one place a run rewrites the queue. Not guarded by
+        the running flag on purpose: the engine walks this very list (P29),
+        and the rows it replaces have never started -- the batch sees the
+        live list, so a chain row edited or removed a moment ago is what it
+        is now. Idempotent: with no placeholder left it returns None and
+        changes nothing. ``disk_taken``: names whose folder already holds
+        output, which no copy takes."""
+        with self._lock:
+            report = _expand_placeholders_in(self._calcs, crest_name, n,
+                                             busy=self._engine_active,
+                                             disk_taken=disk_taken)
+            if report is not None:
+                self._bump_and_save()
+            return report
+
     def rerun_names(self) -> "set[str]":
         """The rows rerun_calc put back that have not started (is_rerun)."""
         with self._lock:
@@ -2610,6 +2635,9 @@ def make_engine_factory(store: "QueueStore", orca_path: str, workspace_root: str
             log=lambda msg, level, calc="": store.append_log(msg, level, calc),
             calc_update=lambda i, c: store.touch(),
             remote_cleanup=store.add_remote_cleanup,
+            # the conformer placeholders of a finished CREST search, replaced
+            # in the store's own list (which the engine walks) and saved
+            expand_placeholders=store.expand_conformer_placeholders,
         )
         # the store's own lock doubles as the engine's queue lock: run_all
         # walks the store's live list (start_run), so the walk's pick step and

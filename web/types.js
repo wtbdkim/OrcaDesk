@@ -63,7 +63,10 @@
  *                                      backward end, "conf:<k>" (k >= 1) the
  *                                      CREST ensemble's k-th conformer (1 = the
  *                                      lowest, as {name}_c1.xyz; ref_name a
- *                                      crest_conf calc)
+ *                                      crest_conf calc), "conf:all" every
+ *                                      conformer of a CREST that has not run (a
+ *                                      placeholder the engine replaces by one
+ *                                      copy per conformer once it is done)
  * @property {string} set_name          display only: the inp set it came from
  * @property {number|null} filter_de    the energy condition on the edge INTO it
  *                                      (graph field, like `gate`): pass only
@@ -328,7 +331,7 @@
  * @property {"auto"|"approval"} gate
  * @property {boolean} auto_pass
  * @property {boolean} approved
- * @property {string} ref_point     "" | "irc_f" | "irc_b" | "conf:<k>" (see CalcSummary)
+ * @property {string} ref_point     "" | "irc_f" | "irc_b" | "conf:<k>" | "conf:all" (see CalcSummary)
  * @property {string} set_name
  * @property {number|null} filter_de  edge condition: ΔE window in kcal/mol, null = off (see CalcSummary)
  * @property {number} filter_top      edge condition: only the N lowest of the stack pass, 0 = off
@@ -365,7 +368,7 @@
  * @property {"auto"|"approval"} [gate]
  * @property {boolean} [auto_pass]
  * @property {boolean} [approved]
- * @property {string} [ref_point]   "" | "irc_f" | "irc_b" | "conf:<k>"
+ * @property {string} [ref_point]   "" | "irc_f" | "irc_b" | "conf:<k>" | "conf:all"
  * @property {string} [set_name]
  * @property {number|null} [filter_de]
  * @property {number} [filter_top]

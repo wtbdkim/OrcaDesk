@@ -94,10 +94,25 @@
   const CONF_TAIL = "c";
   /** a ref_point naming a conformer of a CREST ensemble: "conf:3" @param {string} p */
   const confOf = (p) => { const m = /^conf:(\d+)$/.exec(String(p || "")); return m ? int(m[1]) : 0; };
+  /** the ref_point of a conformer PLACEHOLDER: one step that stands for every
+   *  conformer a CREST search that has not run will find; the engine replaces
+   *  it (and what hangs off it) by one copy per conformer once the search is
+   *  done (store expand_conformer_placeholders) */
+  const CONF_ALL = "conf:all";
+  /** @param {any} c a calculation @returns {boolean} whether it is a placeholder */
+  const isConfAll = (c) => !!c && c.ref_point === CONF_ALL && c.geometry_source === "reference";
   /** a ref_point in words: "forward end", "conformer 3" ("" for the final
    *  geometry) @param {string} p */
   const pointWords = (p) => p === "irc_f" ? "forward end" : p === "irc_b" ? "backward end"
-    : confOf(p) ? "conformer " + confOf(p) : String(p || "");
+    : p === CONF_ALL ? "every conformer" : confOf(p) ? "conformer " + confOf(p) : String(p || "");
+  /** whether a name in `taken` (lower case) is `base` with a conformer tail
+   *  (base_c3): a placeholder named `base` would have its copies collide
+   *  with it @param {Set<string>} taken @param {string} base */
+  const confTailTaken = (taken, base) => {
+    const head = lower(base) + SEP + CONF_TAIL;
+    for (const x of taken) if (x.indexOf(head) === 0 && /^\d+$/.test(x.slice(head.length))) return true;
+    return false;
+  };
   const GEOM = "{{GEOMETRY}}";
   const JOB = "{{JOB}}";
   /** the copied workflow, mirrored in the UI state so it outlives a reload
@@ -1253,6 +1268,9 @@
       const cut = n.members.filter((/** @type {any} */ c) => calcState(c) === "filtered").length;
       const count = cut ? (n.members.length - cut) + "/" + n.members.length : String(n.members.length);
       const countWords = n.members.length + " calculations" + (cut ? ", " + (n.members.length - cut) + " passed the condition" : "");
+      // a conformer placeholder (one block standing for every conformer its
+      // search will find) counts "all" where a stack counts its members
+      const all = !n.stack && isConfAll(c0) && calcState(c0) !== "filtered";
       const sub = `<span class="qe-sub"${mod ? ' data-mod="1"' : ""}>${esc((KIND_LABEL[n.kind] || n.kind) + " / " + setName)}${mod ? " *" : ""}</span>`;
       parts.push(`<div class="qe-node" data-k="${esc(n.key)}" data-setkind="${n.setKind}"${
           n.editable ? ' data-editable="1"' : ""}${_pop === n.key ? ' data-pop="1"' : ""}
@@ -1268,6 +1286,8 @@
               ${n.stack ? "" : `<span class="qe-ord" aria-label="Run order ${n.first}">${n.first}</span>`}</span>
             ${n.stack
               ? `<span class="qe-line qe-line2">${sub}<span class="qe-ord" data-stack="1"${cut ? ' data-cut="1"' : ""} aria-label="${esc(countWords)}">${count}</span></span>`
+              : all ? `<span class="qe-line qe-line2">${sub}<span class="qe-ord" data-stack="1" aria-label="${
+                  esc("One calculation per conformer of " + c0.ref_name + ", once it has run")}">all</span></span>`
               : sub}
           </button>
           ${open ? `<div class="qe-pop" role="list">${n.members.map((/** @type {any} */ c, /** @type {number} */ i) =>
@@ -1599,6 +1619,7 @@
       ${c.message ? `<p class="qe-note" data-tone="${c.state === "failed" ? "err" : c.state === "blocked" ? "warn" : ""}">${esc(c.message)}</p>` : ""}
       ${blockedNote ? `<p class="qe-note" data-tone="warn">${esc(blockedNote)}</p>` : ""}
       ${afterNote ? `<p class="qe-note">${esc(afterNote)}</p>` : ""}
+      ${isConfAll(c) && calcState(c) !== "filtered" ? `<p class="qe-note">${esc(confAllNote(c))}</p>` : ""}
       <p class="qe-note" data-tone="err" data-f="refusal" role="alert"${refusalFor ? "" : " hidden"}>${esc(refusalFor)}</p>
       ${c.waiting ? `<div class="qe-wait"><span>${esc((pa ? pa.name : c.after) + " finished. The queue skips "
           + c.name + " and runs the next calculation until you approve.")}</span>
@@ -1891,7 +1912,7 @@
     const members = membersNow();
     const can = members.filter(takes);
     const k = condOf(can.length ? can : members);
-    const confs = members.length > 0 && members.every((/** @type {any} */ c) => confOf(c.ref_point) > 0);
+    const confs = members.length > 0 && members.every((/** @type {any} */ c) => confOf(c.ref_point) > 0 || isConfAll(c));
     const how = confs ? "ΔE is measured from the CREST search's lowest conformer"
       : "ΔE is measured from the lowest of the stack, once every member's parent has finished";
     const ran = members.length - can.length;
@@ -2101,7 +2122,7 @@
       // "ref:<name>[:<point>]" -- a point is irc_f / irc_b or conf:<k>, which
       // holds a colon itself; a name never does (cleanName)
       const rest = key.slice(4);
-      const pt = /:(irc_f|irc_b|conf:\d+)$/.exec(rest);
+      const pt = /:(irc_f|irc_b|conf:\d+|conf:all)$/.exec(rest);
       patch = { geometry_source: "reference", xyz: "", ref_name: pt ? rest.slice(0, -pt[0].length) : rest,
                 ref_point: pt ? pt[1] : "" };
     } else if (key.indexOf("conf:") === 0) {
@@ -3078,8 +3099,10 @@
       const ch = await askConformers(P.members[0], { kind: kind });
       if (!ch) return;
       fde = ch.de;
-      tails = Array.from({ length: ch.k }, (_, i) =>
-        ({ tail: SEP + CONF_TAIL + (i + 1), after: p, ref: p, pt: "conf:" + (i + 1), xyz: "" }));
+      // every conformer it finds: one placeholder, expanded by the engine
+      tails = ch.all ? [{ tail: "", after: p, ref: p, pt: CONF_ALL, xyz: "" }]
+        : Array.from({ length: ch.k }, (_, i) =>
+          ({ tail: SEP + CONF_TAIL + (i + 1), after: p, ref: p, pt: "conf:" + (i + 1), xyz: "" }));
     } else if (P && !P.stack && P.kind === "irc" && kind !== "irc") {
       const p = P.members[0].name;
       const ends = await askIrcStructure(P.members[0], true);
@@ -3100,7 +3123,9 @@
       const taken = new Set(NB.queue.map((/** @type {any} */ c) => lower(c.name)));
       extra.forEach(x => taken.add(x));
       let base = root;
-      for (let i = 2; tails.some(t => taken.has(lower(base + t.tail))); i++) base = root + i;
+      // a placeholder's copies are named base_c1 ...: those must be free too
+      for (let i = 2; tails.some(t => taken.has(lower(base + t.tail))
+        || (t.pt === CONF_ALL && confTailTaken(taken, base + t.tail))); i++) base = root + i;
       return { names: tails.map(t => base + t.tail) };
     });
     if (!(await guardOverwrite(named.names))) return;
@@ -4037,6 +4062,17 @@
     const w = NOUN[kind] || (KIND_LABEL[kind] || kind) + " step";
     return k === 1 ? w : /[a-z]$/.test(w) ? w + "s" : w + " steps";
   };
+  /** one step of a kind, with its article: "a single point", "an IRC" @param {string} kind */
+  const oneOf = (kind) => { const w = nounFor(kind, 1); return (/^([aeiou]|MLIP|NMR|NEB)/i.test(w) ? "an " : "a ") + w; };
+  /** What a conformer placeholder (ref_point conf:all) becomes, in the
+   *  inspector's words. @param {any} c */
+  const confAllNote = (c) => {
+    const cr = NB.queue.find((/** @type {any} */ x) => x.name === c.ref_name);
+    const what = `one ${nounFor(c.kind, 1)} per conformer (${c.name}${SEP}${CONF_TAIL}1, ${c.name}${SEP}${CONF_TAIL}2 …, the lowest first), and so does everything after it`;
+    return cr && cr.state === "done"
+      ? `Stands for every conformer ${c.ref_name} found: it becomes ${what} when the queue next runs. It never runs itself.`
+      : `Stands for every conformer ${c.ref_name} finds: when the search has finished it becomes ${what}. It never runs itself, and undo does not bring it back.`;
+  };
 
   /** How many conformers of a CREST search a step after it runs on (a
    *  stack, one member per conformer: _c1 ... _cK, conformer 1 the lowest,
@@ -4047,11 +4083,16 @@
    *  (conformers 1–5)"). Once the search has run its ensemble is listed
    *  (parse_calc_output's `conformers`): the count is clamped to it and the
    *  list shows which are added and which the condition would leave out.
+   *  Before the search has run an EMPTY count is "every conformer it finds"
+   *  (`all`): one placeholder step (ref_point conf:all) that the engine
+   *  replaces, with what hangs off it, by one copy per conformer once the
+   *  search is done ("Add a single point for every conformer it finds").
    *  `one`: a block's geometry -- which single conformer, "Use conformer 3".
-   *  Resolves to {k, de} (k the count, or the conformer when `one`), or null.
+   *  Resolves to {k, de, all} (k the count, or the conformer when `one`; 0
+   *  with `all`), or null.
    *  @param {any} crest the CREST calculation
    *  @param {{kind?: string, wf?: boolean, one?: boolean, at?: number}} opts
-   *  @returns {Promise<{k: number, de: number|null} | null>} */
+   *  @returns {Promise<{k: number, de: number|null, all: boolean} | null>} */
   async function askConformers(crest, opts) {
     /** @type {{index: number, rel_kcal: number}[]} */ let confs = [];
     if (crest.state === "done") {
@@ -4069,24 +4110,28 @@
     const max = N || Infinity;
     const one = !!opts.one;
     // the count starts EMPTY: nothing is assumed for the user. Empty means
-    // every conformer the search found; before it has run there is nothing
-    // to take "all" of, so a number has to be typed
+    // every conformer the search found -- or, before it has run, every one it
+    // will find: a placeholder the engine expands when the search is done
+    const later = !one && !N && crest.state !== "done";
     let k = one ? Math.max(1, Math.min(max, int(opts.at) || 1)) : N;
     let typed = one;
+    const every = () => later && !typed;
     /** @type {number|null} */ let de = null;
     let bad = "";
     const range = (/** @type {number} */ n) => !typed && n === N ? (n === 1 ? "the only conformer" : "all " + n + " conformers")
       : n === 1 ? "conformer 1" : "conformers 1–" + n;
-    const need = () => !one && k < 1;
+    const need = () => !one && k < 1 && !every();
     const label = () => need() ? "Type how many conformers"
       : one ? "Use conformer " + k
+      : every() ? (opts.wf ? "Paste on every conformer it finds" : `Add ${oneOf(opts.kind || "sp")} for every conformer it finds`)
       : opts.wf ? `Paste on ${k} conformer${k === 1 ? "" : "s"} (${range(k)})`
       : `Add ${k} ${nounFor(opts.kind || "sp", k)} (${range(k)})`;
     const title = one ? "Take which conformer of " + crest.name + "?"
       : (opts.wf ? "Paste the workflow on which conformers of " : "Start from which conformers of ") + crest.name + "?";
     const known = N
       ? `${esc(crest.name)} found ${N} conformer${N === 1 ? "" : "s"}, lowest first (ΔE from the lowest, kcal/mol).`
-      : `${esc(crest.name)} ${crest.state === "done" ? "listed no conformers here" : "has not run yet"}: how many it finds is known once it has (its energy window, ewin, bounds the ensemble). A member past the ensemble it finds has no structure to start from.`;
+      : later ? `${esc(crest.name)} has not run yet: how many it finds is known once it has (its energy window, ewin, bounds the ensemble). Left empty, one step stands for every conformer it finds and becomes one per conformer when the search has finished, with everything after it. A typed number is a stack of that many; a member past the ensemble it finds has no structure to start from.`
+      : `${esc(crest.name)} listed no conformers here: how many it finds is known once it has (its energy window, ewin, bounds the ensemble). A member past the ensemble it finds has no structure to start from.`;
     const rows = () => confs.slice(0, Math.max(k, 12)).map(c => {
       const added = one ? c.index === k : c.index <= k;
       const cut = !one && added && de !== null && c.rel_kcal > de;
@@ -4099,8 +4144,8 @@
         `<p class="qe-note">${known}</p>
         <div class="qe-ircrow">
           <label class="qe-rlab">${one ? "conformer" : "conformers"} <input class="qe-input qe-ircnum" type="number" data-f="k"
-            min="1"${N ? ` max="${N}"` : ""} step="1" value="${one ? k : ""}"${one ? "" : ` placeholder="${N ? "all " + N : "how many"}"`} aria-label="${esc((one ? "Conformer number" : "How many conformers") + (N ? ", 1 to " + N + (one ? "" : "; empty for all") : ", 1 or more"))}"></label>
-          <span class="qe-note">${one ? "1 is the lowest" : "the lowest first, one step each, stacked"}${one ? "" : N ? "; empty: all of them" : "; those past the ensemble it finds end filtered"}</span>
+            min="1"${N ? ` max="${N}"` : ""} step="1" value="${one ? k : ""}"${one ? "" : ` placeholder="${N ? "all " + N : later ? "all it finds" : "how many"}"`} aria-label="${esc((one ? "Conformer number" : "How many conformers") + (N ? ", 1 to " + N + (one ? "" : "; empty for all") : later ? ", 1 or more; empty for every conformer it finds" : ", 1 or more"))}"></label>
+          <span class="qe-note">${one ? "1 is the lowest" : "the lowest first, one step each, stacked"}${one ? "" : N ? "; empty: all of them" : later ? "; empty: every one it finds" : "; those past the ensemble it finds end filtered"}</span>
         </div>
         ${one ? "" : `<div class="qe-ircrow">
           <label class="qe-rlab">pass on ΔE ≤ <input class="qe-input qe-condnum" data-f="de" inputmode="decimal" spellcheck="false"
@@ -4110,7 +4155,7 @@
         <p class="qe-note" data-tone="err" data-x="bad" role="alert" hidden></p>
         ${N ? `<div class="qe-conflist" data-x="list" aria-live="polite">${rows()}</div>` : ""}`,
         [{ label: "Cancel", cls: "btn-ghost", act: () => resolve(null) },
-         { label: label(), cls: "btn-primary", focus: true, act: () => resolve(bad || need() ? null : { k: k, de: one ? null : de }) }]);
+         { label: label(), cls: "btn-primary", focus: true, act: () => resolve(bad || need() ? null : { k: every() ? 0 : k, de: one ? null : de, all: every() }) }]);
       const box = NB.$("modal-body");
       const kin = /** @type {HTMLInputElement} */ (box.querySelector('[data-f="k"]'));
       const din = /** @type {HTMLInputElement|null} */ (box.querySelector('[data-f="de"]'));
@@ -4218,7 +4263,9 @@
       if (!nodeIds.has(nid)) nodeIds.set(nid, newId("n"));
       const root = t.laneName + SEP + members[0].suffix;
       let base = root;
-      for (let i = 2; members.some(m => t.taken.has(lower(base + m.tail + tl))); i++) base = root + i;
+      // on placeholders every step is copied per conformer (name_c1 ...)
+      for (let i = 2; members.some(m => t.taken.has(lower(base + m.tail + tl))
+        || (t.refPoint === CONF_ALL && confTailTaken(t.taken, base + m.tail + tl))); i++) base = root + i;
       members.forEach(m => { nameOf.set(m.id, base + m.tail + tl); t.taken.add(lower(base + m.tail + tl)); });
     });
     /** @type {any[]} */ const ops = [];
@@ -4287,7 +4334,10 @@
       const ch = await askConformers(P.members[0], { wf: true });
       if (!ch) return;
       filterDe = ch.de;
-      passes = Array.from({ length: ch.k }, (_, i) => ({ tail: SEP + CONF_TAIL + (i + 1), pt: "conf:" + (i + 1), xyz: "" }));
+      // every conformer it finds: ONE copy whose first steps are placeholders,
+      // the rest hanging off them -- the engine makes it one per conformer
+      passes = ch.all ? [{ tail: "", pt: CONF_ALL, xyz: "" }]
+        : Array.from({ length: ch.k }, (_, i) => ({ tail: SEP + CONF_TAIL + (i + 1), pt: "conf:" + (i + 1), xyz: "" }));
     }
     let pre = { ops: /** @type {any[]} */ ([]), inv: /** @type {any[]} */ ([]) };
     let sys = P.lane.sys;

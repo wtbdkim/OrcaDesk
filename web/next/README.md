@@ -99,7 +99,11 @@ after an IRC asks `askIrcStructure(irc, both)` first (as `addFromSet`,
 (`ref_point` `irc_f` / `irc_b`), any other point of the path as coordinates.
 One that can land after a CREST search asks `askConformers(crest, opts)`
 the same way: K members `_c1` … `_cK`, each `ref_point` `conf:<k>`, and the
-optional ΔE window as `filter_de` on their incoming edge. A `ref_point` may
+optional ΔE window as `filter_de` on their incoming edge -- or, before the
+search has run and with the count left empty (`all`), ONE placeholder
+(`ref_point` `conf:all`, `CONF_ALL`) that the engine replaces with one copy
+per conformer, and every row after it, when the search is done; its base
+name must leave `base_c<k>` free too (`confTailTaken`). A `ref_point` may
 hold a colon (`conf:3`), so a geometry key `ref:<name>:<point>` is parsed
 from its end, never split on `:`. `filter_de` / `filter_top` are graph fields
 like `gate` (`PLACE_KEYS`, in `qed.js` and `build.js`); on a filtered row a

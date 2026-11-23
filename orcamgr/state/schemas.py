@@ -70,6 +70,9 @@ class CalcSummary(TypedDict):
     approved: bool            # the user approved the gate
     ref_point: str            # "" final geometry | "irc_f" | "irc_b" of ref_name
                               # | "conf:<k>" conformer k (1 = lowest) of a CREST ref
+                              # | "conf:all" every conformer of a CREST that has
+                              # not run (a placeholder, never run: replaced by
+                              # one copy per conformer when the search is done)
     set_name: str             # display only: the inp set it came from
     # the energy condition on the edge into it (judged before the gate):
     filter_de: "float | None"  # window in kcal/mol above the stack's lowest

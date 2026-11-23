@@ -175,6 +175,11 @@ Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
 - **Live queue (P29)**: the engine walks the store's own list under the store's
   lock, so adds/edits/reorders land in the running run; in-flight, DONE/FAILED
   rows and reference integrity stay protected.
+- **A conformer placeholder (`ref_point` `conf:all`) is never run**: when its
+  CREST search is DONE with N conformers, it and everything hanging off it
+  are replaced by N copies (`expand_conformer_placeholders`, one store
+  operation, called by the engine outside its scan) — the ONE place a run
+  rewrites the queue (ARCHITECTURE.md *Queue semantics*).
 - **References** (`REFERENCE` geometry) resolve to the parent's final geometry
   at run time via `_resolve_geometry`; failure blocks dependents (BLOCKED, read
   from the live queue each time), never the whole queue. `after` (the queue
