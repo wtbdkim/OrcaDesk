@@ -50,11 +50,14 @@ _AUTO_RAM_SHARE = 0.75
 # cloud VM that prefers single points, which never move the geometry, so
 # losing one costs only its own run.
 #
-# The ORCA kinds of core/queue.KNOWN_KINDS (MLIP and CREST never leave this
-# machine), in the builder's order; repeated here because core/queue imports
-# this module (a test pins the two together).
+# The ORCA kinds of core/queue.KNOWN_KINDS, in the builder's order; repeated
+# here because core/queue imports this module (a test pins the two together).
 ORCA_KINDS = ("opt", "opt_freq", "ts_opt", "ts_opt_freq", "freq", "ts_freq",
               "neb_ts", "irc", "tddft", "nmr", "sp", "general")
+# Every kind a device can run, so every kind a preference may name: the ORCA
+# kinds, plus a CREST search on a Linux device that has CREST (MLIP never
+# leaves this machine -- it runs in the user's own Python env here).
+REMOTE_KINDS = ORCA_KINDS + ("crest_conf",)
 # What the retired "kinds": "single_point" setting meant; an entry that still
 # carries it is migrated to this preference (normalize_device).
 SINGLE_POINT_KINDS = ("tddft", "nmr", "sp")
@@ -76,8 +79,8 @@ def device_prefers(prefer, calc_kind: str) -> bool:
 
 
 def normalize_prefer(raw, legacy_kinds=None) -> List[str]:
-    """A ``prefer`` value coerced to known ORCA kinds, each once, in
-    ORCA_KINDS order. ``legacy_kinds`` is the retired ``kinds`` setting: an
+    """A ``prefer`` value coerced to known remote kinds, each once, in
+    REMOTE_KINDS order. ``legacy_kinds`` is the retired ``kinds`` setting: an
     entry with no ``prefer`` yet and ``kinds: "single_point"`` keeps what it
     meant as a preference for single points."""
     if raw is None and legacy_kinds == "single_point":
@@ -85,7 +88,7 @@ def normalize_prefer(raw, legacy_kinds=None) -> List[str]:
     if not isinstance(raw, (list, tuple)):
         return []
     want = {k for k in raw if isinstance(k, str)}
-    return [k for k in ORCA_KINDS if k in want]
+    return [k for k in REMOTE_KINDS if k in want]
 
 
 # --------------------------------------------------------------------------
@@ -190,6 +193,11 @@ fi
 echo "orca=$o"
 echo "mpirun=$(command -v mpirun 2>/dev/null)"
 echo "setsid=$(command -v setsid 2>/dev/null)"
+c=$(command -v crest 2>/dev/null)
+[ -z "$c" ] && [ -x "$HOME/.local/bin/crest" ] && c="$HOME/.local/bin/crest"
+[ -z "$c" ] && [ -x "$HOME/.local/opt/crest/crest/crest" ] && c="$HOME/.local/opt/crest/crest/crest"
+echo "crest=$c"
+[ -n "$c" ] && echo "crest_version=$("$c" --version 2>&1 | grep -m1 -i 'version' | tr -d '\r')"
 w=__WORKDIR__
 case "$w" in "~") w="$HOME" ;; "~/"*) w="$HOME/${w#\~/}" ;; esac
 mkdir -p "$w" 2>/dev/null
@@ -240,6 +248,13 @@ class DeviceInfo:
     has_setsid: bool = False
     workdir: str = ""             # resolved on the device ("~" expanded)
     free_disk_mb: int = 0
+    # CREST on the device (Linux only: CREST has no Windows build): its path
+    # ("" = none, so no CREST search goes there), `crest --version` line, and
+    # whether its --cinp parser takes "force constant=" / "reference=" -- the
+    # 3.0.2 release segfaults on them (crest/env.py), asked of THIS binary
+    crest_path: str = ""
+    crest_version: str = ""
+    crest_extended: bool = False
     checked_at: float = 0.0
 
     @property
@@ -308,6 +323,9 @@ def interpret_probe(alias: str, res: RunResult) -> DeviceInfo:
     info.has_setsid = bool(kv.get("setsid")) or kv.get("launcher") == "wmi"
     info.workdir = kv.get("workdir", "")
     info.free_disk_mb = _int(kv.get("free_kb", "0")) // 1024
+    if info.os == "Linux":
+        info.crest_path = kv.get("crest", "")
+        info.crest_version = kv.get("crest_version", "") if info.crest_path else ""
     if info.os not in ("Linux", "Windows"):
         info.state = "error"
         info.message = ("Only Linux and Windows devices can run calculations"
@@ -362,7 +380,34 @@ def probe(transport: Transport, alias: str, workdir: str = DEFAULT_WORKDIR,
         win = interpret_probe(alias, wres)
         if wres.ok and win.os == "Windows":
             return win
+    if first.usable and first.crest_path:
+        first.crest_extended = crest_cinp_extended(transport, alias, first.crest_path,
+                                                   first.crest_version)
     return first
+
+
+# (alias, crest path, version line) -> whether that binary takes the extended
+# --cinp lines. Asked once per binary, like crest/env.py does for this machine.
+_crest_cache: Dict[tuple, bool] = {}
+
+
+def crest_cinp_extended(transport: Transport, alias: str, crest_path: str,
+                        version: str = "", timeout: float = 60.0) -> bool:
+    """Run crest/env.py's capability probe for the device's CREST over the
+    transport (a water with "force constant=" + "reference=", cut off at
+    15 s; the 3.0.2 release dies on it at once). A verdict is remembered per
+    binary; an unknown (the call never ran) is not, and reads as "no" -- the
+    file then keeps the shape every build runs."""
+    from ..crest.env import cinp_probe_script, cinp_probe_verdict
+    key = (alias, crest_path, version)
+    if key in _crest_cache:
+        return _crest_cache[key]
+    res = transport.run(alias, cinp_probe_script(crest_path), timeout=timeout)
+    verdict = cinp_probe_verdict(res.out) if not res.unreachable else None
+    if verdict is None:
+        return False
+    _crest_cache[key] = verdict
+    return verdict
 
 
 # --------------------------------------------------------------------------
@@ -437,9 +482,11 @@ class RemoteDevice:
     has_mpi: bool = False
     online: bool = False
     mem_avail_mb: int = 0
-    prefer: tuple = ()            # ORCA kinds it takes first (); () = no preference
+    prefer: tuple = ()            # kinds it takes first (); () = no preference
     spot: bool = False            # may vanish: its jobs are re-queued when it does
     requeue_after_min: int = DEFAULT_REQUEUE_AFTER_MIN
+    crest_path: str = ""          # "" = no CREST there: a CREST search stays off it
+    crest_extended: bool = False  # its CREST takes force constant / reference
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False,
                                  compare=False)
 
@@ -465,6 +512,8 @@ def resolve_device(entry: dict, info: Optional[DeviceInfo]) -> RemoteDevice:
         spot=entry.get("spot") is True,
         requeue_after_min=_clamp(entry.get("requeue_after_min", DEFAULT_REQUEUE_AFTER_MIN),
                                  _MIN_REQUEUE_AFTER_MIN, _MAX_REQUEUE_AFTER_MIN),
+        crest_path=(info.crest_path if ready else ""),
+        crest_extended=bool(info.crest_extended) if ready else False,
     )
 
 

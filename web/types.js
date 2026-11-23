@@ -122,6 +122,9 @@
  * @property {boolean} has_setsid
  * @property {string} workdir
  * @property {number} free_disk_mb
+ * @property {string} crest_path        CREST on a Linux device ("" = none: no search goes there)
+ * @property {string} crest_version     its `crest --version` line
+ * @property {boolean} crest_extended   its --cinp parser takes force constant / reference
  * @property {boolean} in_config        still a Host in ~/.ssh/config
  * @property {number} cleanup_pending   remote jobs a cancel left to tidy up there
  * @property {boolean} enabled

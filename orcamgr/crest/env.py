@@ -110,6 +110,18 @@ def cinp_probe_verdict(out: str):
     return True
 
 
+def cinp_probe_script(crest_bin: str) -> str:
+    """The capability probe for ``crest_bin`` as one POSIX sh script -- run
+    through a WSL / local shell here, or over SSH for a remote device
+    (remote/devices.py); its output is read by cinp_probe_verdict."""
+    import shlex
+    from .runner import coord_ref_text
+    ref = coord_ref_text("3\n\nO 0.000000 0.000000 0.000000\n"
+                         "H 0.000000 0.757000 0.587000\nH 0.000000 -0.757000 0.587000\n")
+    return (_CINP_PROBE.replace("__COORD__", ref)
+            .replace("__BIN__", shlex.quote(crest_bin)))
+
+
 def cinp_extended(distro: str, crest_bin: str, version: str = "",
                   timeout: float = 40.0) -> bool:
     """Whether ``crest_bin`` on ``distro`` takes the extended --cinp lines
@@ -118,17 +130,12 @@ def cinp_extended(distro: str, crest_bin: str, version: str = "",
     line is asked again only after a restart."""
     if not crest_bin:
         return False
-    import shlex
     if not version:
         _, version = resolve_crest_bin(distro, timeout=timeout)
     key = (distro, crest_bin, version)
     if key in _cinp_cache:
         return _cinp_cache[key]
-    from .runner import coord_ref_text
-    ref = coord_ref_text("3\n\nO 0.000000 0.000000 0.000000\n"
-                         "H 0.000000 0.757000 0.587000\nH 0.000000 -0.757000 0.587000\n")
-    script = (_CINP_PROBE.replace("__COORD__", ref)
-              .replace("__BIN__", shlex.quote(crest_bin)))
+    script = cinp_probe_script(crest_bin)
     try:
         _rc, out, _err = run_bash(distro, script, timeout=timeout, login=True)
     except Exception:

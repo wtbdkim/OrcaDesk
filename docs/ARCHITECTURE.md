@@ -2074,10 +2074,37 @@ short call per job every `SYNC_EVERY` (10 s), nothing held open between.
 
 **Placement** (`core/queue.py`): one admission pool per device (P57).
 `_place` tries this machine first, then each enabled device in the user's
-order; a remote pool needs the device online, MPI for a parallel job, and
-room in its own budget (`_fits_remote`). `remote_capable` keeps MLIP, CREST,
-GPU jobs, raw inputs with a drive-letter path and run folders sftp could
-glob or garble (`runner.remote_safe_name`) on this machine. A RUNNING row
+order; a remote pool needs the device online, MPI for a parallel ORCA job
+(a CREST search needs CREST there instead — its `-T` threads are one
+OpenMP process), and room in its own budget (`_fits_remote`, which reads
+`_JobSlot.kind`). `remote_capable` keeps MLIP, GPU jobs, raw inputs with a
+drive-letter path and run folders sftp could glob or garble
+(`runner.remote_safe_name`) on this machine.
+
+**CREST on a remote Linux device** (since 2026-11-23). The Linux probe also
+looks for `crest` (`command -v`, then the installer's `~/.local/bin/crest`
+and `~/.local/opt/crest/crest/crest`) and, when found, runs
+`crest/env.py`'s capability probe (`cinp_probe_script` /
+`cinp_probe_verdict`) over the transport — cached per (alias, binary,
+version line) in `devices.crest_cinp_extended` — so `DeviceInfo` /
+`RemoteDevice` carry `crest_path`, `crest_version`, `crest_extended`. A
+Windows device never reports CREST (no Windows build). `_run_crest_calc`
+writes the run files locally as for a run here (`write_crest_run_files`,
+with the **device's** `crest_extended`, not this machine's), records
+`device` / `remote_dir`, and hands them to `runner.RemoteCrestRunner` — a
+`RemoteOrcaRunner` whose launch sends only `crest_upload_names` (the input
+`.xyz`, `constraints.inp`, `coord.ref`; never a previous ensemble left in
+the folder) and starts `crest {name}.xyz <build_crest_argv>` under `setsid`
+in the remote folder itself (a device's disk is native, so no scratch).
+Everything after the launch is RemoteOrcaRunner's: 10 s sync, Disconnected,
+spot re-queue (its "ended by the program" check reads CREST's own markers),
+whole-folder fetch + verify + guarded delete, cancel, reattach. The fetched
+folder then goes through the local CREST path unchanged —
+`parse_crest_result`, `validate_result`, the conformer export and the
+conformer-placeholder expansion. `prefer` may name `crest_conf`
+(`devices.REMOTE_KINDS`). Verified on a real device (AWS, Ubuntu 24.04,
+CREST cfdc301): `tests/smoke/test_remote_crest_smoke.py` — a constrained
+ethanol search with `force constant=0.5` ran there, came back and parsed. A RUNNING row
 with a device is a job to reattach there — always admitted to its device. A
 `RemoteUnavailable` (upload/start failed) is not the calc's failure: the
 device goes offline, the row goes back to PENDING and is offered again

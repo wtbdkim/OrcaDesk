@@ -23,7 +23,16 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   after every file has been checked. A device that stops answering shows its
   calculations in an orange **Disconnected** box; a cancel while it is away
   is applied at once and its remote job is tidied up when the device is back.
-  Linux devices only; MLIP, CREST and GPU calculations stay on this machine.
+  MLIP and GPU calculations stay on this machine.
+- **CREST conformer searches on a Linux compute device.** A device that has
+  CREST installed (the same layout ORCAdesk's own installer uses, or `crest`
+  on its PATH) now takes CREST searches too — shown as *CREST* on its line in
+  *Compute devices*, and choosable as a preferred kind. ORCAdesk asks that
+  device's own CREST whether it takes the constraint force constant, so a
+  search there gets it exactly when that build can run it. The results come
+  back and read as if the search had run here (conformers, the per-conformer
+  files, the steps after it). Tried on a cloud Linux device: a constrained
+  search with force constant 0.5 ran there and came back.
 - **Spot / preemptible cloud VMs as compute devices.** Each device in
   *Compute devices* has **preferred calculation kinds** (tick e.g. Single
   point, TD-DFT and NMR — nothing that would be costly to lose): it takes

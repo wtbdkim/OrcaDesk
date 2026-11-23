@@ -38,7 +38,19 @@ DONE이 되고, 원격 쪽 폴더는 검증 후 지운다. 사용자에게 원�
 
 **1단계에서 제외** (계속 이 PC에서만 실행):
 
-- `mlip_*`, `crest_*` — 각자 전용 환경이 필요하다.
+- `mlip_*` — 사용자의 Python 환경이 필요하다.
+- ~~`crest_*`~~ → **구현됨 (2026-11-23, 사용자 결정: AWS 기기에 CREST 설치 후)**:
+  Linux 기기의 점검이 `crest`(`command -v`, `~/.local/bin/crest`,
+  `~/.local/opt/crest/crest/crest`)를 찾고, 찾으면 그 바이너리에 force constant /
+  reference 줄을 받는지 직접 묻는다(crest/env.py의 검사 스크립트를 SSH로, 바이너리별
+  캐시). 배치는 CREST가 있는 기기에만, 비용은 `-T` 스레드(MPI 불필요).
+  `RemoteCrestRunner`가 `.xyz`·`constraints.inp`·`coord.ref`만 올리고(이전 앙상블은
+  보내지 않음) 원격 폴더에서 `crest`를 setsid로 띄운다. 그 뒤(10초 동기화, 연결 끊김,
+  스팟, 폴더 전체 가져오기·검증·삭제, 취소, 재접속)는 ORCA와 같고, 가져온 폴더는 로컬
+  CREST 경로(parse_crest_result, conformer 내보내기, 뒤 단계 펼치기)를 그대로 탄다.
+  선호 계산에 `crest_conf`를 고를 수 있다. Windows 기기에는 CREST가 없다(Windows판
+  없음). 실제 AWS 기기에서 제약(force constant 0.5) 걸린 에탄올 검색으로 확인
+  (`tests/smoke/test_remote_crest_smoke.py`).
 - GPU를 쓰는 계산(`uses_gpu`).
 - 로컬 절대 경로를 적어 넣은 raw `.inp` (예: `%moinp "D:/…/x.gbw"`). 원격에는 그
   경로가 없다. 판별: raw 텍스트에 드라이브 경로(`[A-Za-z]:[\\/]`)가 있으면 로컬 전용.

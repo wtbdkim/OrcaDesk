@@ -37,10 +37,11 @@ def test_device_settings_default_to_today_and_are_clamped():
     d = normalize_device({"alias": "gcp", "prefer": ["sp", "nmr", "sp"], "spot": True,
                           "requeue_after_min": 0})
     assert (d["prefer"], d["spot"], d["requeue_after_min"]) == (["nmr", "sp"], True, 1)
-    # unknown and non-ORCA kinds are dropped; only a real True is spot
-    d = normalize_device({"alias": "gcp", "prefer": ["opt_only", "crest_conf", 3, "opt"],
+    # unknown kinds are dropped (crest_conf is a remote kind now that a Linux
+    # device with CREST runs searches; MLIP is not); only a real True is spot
+    d = normalize_device({"alias": "gcp", "prefer": ["opt_only", "crest_conf", 3, "mlip_opt", "opt"],
                           "spot": "true", "requeue_after_min": 10**9})
-    assert (d["prefer"], d["spot"], d["requeue_after_min"]) == (["opt"], False, 1440)
+    assert (d["prefer"], d["spot"], d["requeue_after_min"]) == (["opt", "crest_conf"], False, 1440)
     assert normalize_device({"alias": "gcp", "prefer": "sp"})["prefer"] == []
 
 

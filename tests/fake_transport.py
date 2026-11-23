@@ -39,6 +39,9 @@ class FakeTransport:
         self.fail_put = False
         self.fail_get_times = 0
         self.probe_out = ""
+        # what crest/env.py's capability probe prints for the device's CREST
+        self.crest_probe_out = "PROBE_RC=124\nPROBE_CRASH=0\n"
+        self.crest_probes = 0
         self.liveness_script: Optional[List[Optional[bool]]] = None
         self.on_launch: Optional[Callable[["FakeTransport", str], None]] = None
         self._lock = threading.Lock()
@@ -112,6 +115,10 @@ class FakeTransport:
             return RunResult(0, "removed\n")
         if "find . -maxdepth 1" in script:
             return RunResult(0, f"{int(self.idle)}\n")
+        if "PROBE_RC" in script:
+            # crest/env.py's capability probe for the device's CREST
+            self.crest_probes += 1
+            return RunResult(0, self.crest_probe_out)
         if "uname -s" in script:
             return RunResult(0, self.probe_out)
         return RunResult(0)

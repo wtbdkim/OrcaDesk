@@ -389,16 +389,22 @@
     const gb = d.mem_total_mb ? Math.round(d.mem_total_mb / 1024) + " GB" : "";
     return [d.os, d.cores ? d.cores + " cores" : "", gb,
             d.orca_version ? "ORCA " + d.orca_version : "ORCA found",
-            d.has_mpi ? "" : "no MPI: 1-core calculations only"].filter(Boolean).join(" · ");
+            d.crest_path ? "CREST" + (d.crest_extended ? "" : " (no constraint force constant)") : "",
+            d.has_mpi ? "" : "no MPI: 1-core ORCA calculations only"].filter(Boolean).join(" · ");
   }
 
   /** One checkbox per ORCA kind, in the builder's words and order
    *  (NB.build.KINDS -- the labels the Guided builder shows), ticked for the
-   *  kinds the device prefers. @param {string[]} prefer @returns {string} */
-  function preferBoxes(prefer) {
+   *  kinds the device prefers -- plus the CREST search when the device has
+   *  CREST (or already prefers it). @param {string[]} prefer @param {any} d
+   *  @returns {string} */
+  function preferBoxes(prefer, d) {
     const kinds = /** @type {Record<string, any>} */ ((NB.build && NB.build.KINDS) || {});
-    return Object.keys(kinds).map(k => `<label><input type="checkbox" data-f="prefer" data-k="${NB.esc(k)}"${
-      prefer.indexOf(k) >= 0 ? " checked" : ""}> ${NB.esc(kinds[k].label || k)}</label>`).join("");
+    /** @type {[string, string][]} */
+    const rows = Object.keys(kinds).map(k => /** @type {[string, string]} */ ([k, kinds[k].label || k]));
+    if (d.crest_path || prefer.indexOf("crest_conf") >= 0) rows.push(["crest_conf", "CREST conformer search"]);
+    return rows.map(([k, label]) => `<label><input type="checkbox" data-f="prefer" data-k="${NB.esc(k)}"${
+      prefer.indexOf(k) >= 0 ? " checked" : ""}> ${NB.esc(label)}</label>`).join("");
   }
 
   /** @param {HTMLElement} host @param {any} st DevicesPayload */
@@ -438,8 +444,8 @@
             ${num("cores", "cores", d.cores_cap, "Cores the queue may use there; 0 = all it has")}
             ${num("ram_mb", "memory (MB)", d.ram_cap_mb, "Memory the queue may use there; 0 = 75% of it")}
           </div>
-          <div class="ctl" title="Calculations this device takes first. A preference, not a limit: with nothing of these kinds ready, it takes any other ORCA calculation. None ticked = no preference. Single points (SP, TD-DFT, NMR) never move the structure, so a spot VM loses only their own run.">
-            <span class="devpref">prefers</span>${preferBoxes(d.prefer || [])}
+          <div class="ctl" title="Calculations this device takes first. A preference, not a limit: with nothing of these kinds ready, it takes any other calculation it can run (ORCA, and CREST searches where CREST is installed). None ticked = no preference. Single points (SP, TD-DFT, NMR) never move the structure, so a spot VM loses only their own run.">
+            <span class="devpref">prefers</span>${preferBoxes(d.prefer || [], d)}
           </div>
           <div class="ctl">
             <label title="A spot / preemptible cloud VM can be taken away under a job. A job there that stops answering for this many minutes in a row, or dies with no word from ORCA, is put back in the queue to run again, here or elsewhere."><input type="checkbox" data-f="spot"${d.spot ? " checked" : ""}> Spot / preemptible VM</label>

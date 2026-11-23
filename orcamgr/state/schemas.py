@@ -246,6 +246,9 @@ class DevicePayload(TypedDict):
     has_setsid: bool
     workdir: str              # the run folder on the device, resolved
     free_disk_mb: int
+    crest_path: str           # CREST on a Linux device ("" = none: no search goes there)
+    crest_version: str        # its `crest --version` line
+    crest_extended: bool      # its --cinp parser takes force constant / reference
     in_config: bool           # still a Host in ~/.ssh/config
     cleanup_pending: int      # remote jobs a cancel left to tidy up there
     # the settings entry (Settings.remote_devices)

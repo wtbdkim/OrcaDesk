@@ -102,11 +102,15 @@ def test_a_parallel_job_needs_mpi_on_the_device(tmp_path, monkeypatch):
     assert where == {"a": "", "b": ""}
 
 
-def test_mlip_crest_gpu_and_local_paths_stay_here():
+def test_mlip_gpu_and_local_paths_stay_here():
+    # A CREST search is no longer local-only (the user's decision, after
+    # CREST was installed on the AWS device): it is admitted by kind here and
+    # gated per device by _fits_remote (CREST must be there) -- see
+    # test_remote_crest.py. MLIP still never leaves this machine.
     sp = make_calc("ok")
     assert remote_capable(sp, "sys/ok")
     assert not remote_capable(make_calc("m", kind="mlip_opt"), "m")
-    assert not remote_capable(make_calc("c", kind="crest_conf"), "c")
+    assert remote_capable(make_calc("c", kind="crest_conf"), "c")
     raw = make_calc("r")
     raw.is_raw = True
     raw.raw_text = '! SP\n%moinp "D:/work/x.gbw"\n'

@@ -2161,7 +2161,11 @@ from ORCA, goes back to the queue. A row given back reads
 again) with a `warn` log line — never FAILED, which would lock it (P24). No
 new tokens; one new rule (`.devrow .ctl .devpref`) in the remote-devices
 block of `app.css`, the rest laid out by the existing `.devrow .ctl` rules;
-not a reference landmark.
+not a reference landmark. A Linux device with CREST adds *CREST* to its
+status line (*CREST (no constraint force constant)* when its build cannot
+take that line) and one more **prefers** box, *CREST conformer search*,
+after the ORCA kinds; a device without CREST does not show the box (unless a
+stored preference already names it). No new rule.
 
 **17.5 It is the only front-end.** The classic window and the switch between
 the two are removed (unreleased), and with them the Settings sheet's Interface

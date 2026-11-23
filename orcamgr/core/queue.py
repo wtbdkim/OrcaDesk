@@ -89,9 +89,9 @@ from .rundir import (folder_name_problem, names_with_output, planned_run_dir,
 from .xyzutil import as_xyz_file
 import logging
 from ..remote.devices import device_prefers, resolve_device
-from ..remote.runner import (RemoteCancelUnreachable, RemoteOrcaRunner,
-                             RemoteRequeue, RemoteUnavailable, launch_stamp,
-                             remote_dir_for, remote_safe_name)
+from ..remote.runner import (RemoteCancelUnreachable, RemoteCrestRunner,
+                             RemoteOrcaRunner, RemoteRequeue, RemoteUnavailable,
+                             launch_stamp, remote_dir_for, remote_safe_name)
 
 
 # How long the dispatcher sleeps between re-scans while it waits for a job to
@@ -266,6 +266,9 @@ class _JobSlot:
     # where it runs: "" = this machine, else a remote device's alias. Each
     # device is its own admission pool (_fits sums only its own slots).
     device: str = ""
+    # the calculation's kind: a remote CREST search needs CREST on the device
+    # and counts threads (-T), not MPI ranks (_fits_remote)
+    kind: str = ""
 
 
 def _xyz_from_geometry(result: ParseResult) -> str:
@@ -505,12 +508,13 @@ _DRIVE_PATH_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]")
 
 def remote_capable(calc, run_dir: str) -> bool:
     """Whether ``calc`` may run on a remote device at all (design §2): an
-    ORCA kind (MLIP and CREST need their own environments, which only this
-    machine has), no GPU, no local absolute path in a raw input, and a run
-    folder the transport carries safely (``run_dir`` is the folder it runs
-    in, relative to the workspace). Anything else runs here."""
+    ORCA kind, or a CREST search (on a device that has CREST -- _fits_remote
+    asks per device); never MLIP (it needs the user's own Python env, which
+    only this machine has); no GPU, no local absolute path in a raw input,
+    and a run folder the transport carries safely (``run_dir`` is the folder
+    it runs in, relative to the workspace). Anything else runs here."""
     kind = getattr(calc, "kind", "") or ""
-    if kind.startswith(("mlip", "crest")) or uses_gpu(calc):
+    if kind.startswith("mlip") or uses_gpu(calc):
         return False
     if getattr(calc, "is_raw", False) and _DRIVE_PATH_RE.search(calc.raw_text or ""):
         return False
@@ -1100,17 +1104,26 @@ class QueueEngine:
         self._forward_pending_signals(runner)
         return runner
 
-    def _remote_runner(self, calc: Calculation, index: int, device: str):
-        """A RemoteOrcaRunner for ``calc`` on ``device``, wired to the row:
-        the disconnected flag (design D7) and a fetch that keeps failing
-        (§6.4) reach the queue as calc updates. A device no longer configured
-        (a reattach after the user removed it) still gets a runner: it can
-        watch and fetch, but with no workdir it never deletes (the guard)."""
+    def _remote_runner(self, calc: Calculation, index: int, device: str,
+                       crest_flags=None):
+        """A RemoteOrcaRunner for ``calc`` on ``device`` -- a RemoteCrestRunner
+        for a CREST search (``crest_flags``: build_crest_argv's, needed only
+        to launch) -- wired to the row: the disconnected flag (design D7) and
+        a fetch that keeps failing (§6.4) reach the queue as calc updates. A
+        device no longer configured (a reattach after the user removed it)
+        still gets a runner: it can watch and fetch, but with no workdir it
+        never deletes (the guard)."""
         dev = self._devices.get(device)
-        runner = RemoteOrcaRunner(self._transport, device,
-                                  dev.orca_path if dev else "",
-                                  dev.workdir if dev else "",
-                                  calc.remote_dir)
+        if (calc.kind or "").startswith("crest"):
+            runner = RemoteCrestRunner(self._transport, device,
+                                       getattr(dev, "crest_path", "") if dev else "",
+                                       dev.workdir if dev else "",
+                                       calc.remote_dir, flags=crest_flags or ())
+        else:
+            runner = RemoteOrcaRunner(self._transport, device,
+                                      dev.orca_path if dev else "",
+                                      dev.workdir if dev else "",
+                                      calc.remote_dir)
 
         def flag(lost: bool) -> None:
             calc.disconnected = lost
@@ -1966,6 +1979,23 @@ class QueueEngine:
         if calc.state == CalcState.RUNNING and calc.output_path:
             out_path = Path(calc.output_path)
 
+        # A search left running on a remote device: a question for the device
+        # (remote/runner.py), exactly as for an ORCA job there -- alive: sync
+        # on; dead: fetch the folder, then the local result path reads it.
+        if calc.state == CalcState.RUNNING and calc.device:
+            runner = self._use_runner(self._remote_runner(calc, index, calc.device))
+            runner.adopt(calc.pid, calc.create_time)
+            calc.output_path = str(out_path)
+            self.cb.log(f"[{calc.name}] reattaching to CREST still running...",
+                        "info", calc.name)
+            self.cb.calc_update(index, calc)
+            try:
+                self._crest_monitor_and_finish(calc, index, out_path, calc.name,
+                                               start_pos=runner.end_position(out_path))
+            finally:
+                self._job.runner = None
+            return
+
         # Reattach path: left RUNNING by a previous session. We only need the
         # distro (persisted on config.crest_env_id) + pid/create_time to check
         # liveness and resume tailing; the binary path isn't needed for monitoring.
@@ -2008,17 +2038,23 @@ class QueueEngine:
         if not xyz.strip():
             raise OrcaRunError("No coordinates for CREST (geometry is empty).")
 
-        preferred = (getattr(calc.config, "crest_env_id", "") or self.crest_distro or "").strip()
-        try:
-            distro, crest_bin = resolve_run_target(preferred)
-        except RuntimeError as e:
-            raise OrcaRunError(str(e)) from e
-        # Persist the resolved distro so a reattach after restart knows where the
-        # job runs (session.json round-trips config).
-        try:
-            calc.config.crest_env_id = distro
-        except (AttributeError, TypeError):
-            pass
+        # placed on a remote device (_place): its own CREST runs it there
+        device = self._job.device
+        dev = self._devices.get(device) if device else None
+        if device:
+            distro, crest_bin = "", getattr(dev, "crest_path", "") if dev else ""
+        else:
+            preferred = (getattr(calc.config, "crest_env_id", "") or self.crest_distro or "").strip()
+            try:
+                distro, crest_bin = resolve_run_target(preferred)
+            except RuntimeError as e:
+                raise OrcaRunError(str(e)) from e
+            # Persist the resolved distro so a reattach after restart knows where the
+            # job runs (session.json round-trips config).
+            try:
+                calc.config.crest_env_id = distro
+            except (AttributeError, TypeError):
+                pass
 
         # The constraints (--cinp) name atoms of the structure that runs: one it
         # does not have is refused here, before CREST is started -- the same
@@ -2038,8 +2074,12 @@ class QueueEngine:
         # build runs and CREST's own force constant applies -- said once.
         extended = False
         if constraints:
-            from ..crest.env import cinp_extended
-            extended = cinp_extended(distro, crest_bin)
+            if device:
+                # the DEVICE's CREST, as its probe found it -- not this machine's
+                extended = bool(getattr(dev, "crest_extended", False)) if dev else False
+            else:
+                from ..crest.env import cinp_extended
+                extended = cinp_extended(distro, crest_bin)
             if not extended:
                 self.cb.log(f"[{calc.name}] this CREST build cannot take a constraint "
                             "force constant (the 3.0.2 release crashes on it); CREST's "
@@ -2053,6 +2093,29 @@ class QueueEngine:
             force_constant=float(getattr(calc.config, "crest_force_constant", 0.0) or 0.0))
 
         method = getattr(calc.config, "crest_method", "") or "gfn2"
+        if device:
+            # its remote folder is decided and recorded (persisted with the
+            # calc_update) before anything is started there (design §6.2)
+            calc.device = device
+            calc.remote_dir = remote_dir_for(dev.workdir if dev else "",
+                                             calc.run_dir, launch_stamp())
+            self.cb.calc_update(index, calc)
+            self.cb.log(f"[{calc.name}] (crest_conf) running CREST [{method}] ...",
+                        "info", calc.name)
+            runner = self._use_runner(self._remote_runner(calc, index, device,
+                                                          crest_flags=argv))
+            try:
+                pid, create_time = runner.launch(calc_dir / f"{calc.name}.xyz", out_path)
+                calc.pid = pid
+                calc.create_time = create_time
+                calc.output_path = str(out_path)
+                self.cb.calc_update(index, calc)
+                self._crest_monitor_and_finish(calc, index, out_path, calc.name)
+            finally:
+                self._job.runner = None
+            return
+        calc.device = ""
+        calc.remote_dir = ""
         # Name where it runs, because the answer differs per machine and the log
         # is where a user diagnoses "which CREST did this actually use".
         from ..crest.shell import is_local as _crest_is_local
@@ -2085,10 +2148,17 @@ class QueueEngine:
         from ..crest.parser import parse_crest_result
 
         if not already_done:
-            self._job.runner.monitor(
-                out_path, name,
-                on_line=lambda ln: self.cb.log(ln, "orca", calc.name),
-                start_pos=start_pos)
+            runner = self._job.runner
+            if isinstance(runner, RemoteOrcaRunner):
+                # remote: returns once the whole folder is back (and verified)
+                runner.monitor(out_path,
+                               on_line=lambda ln: self.cb.log(ln, "orca", calc.name),
+                               start_pos=start_pos)
+            else:
+                runner.monitor(
+                    out_path, name,
+                    on_line=lambda ln: self.cb.log(ln, "orca", calc.name),
+                    start_pos=start_pos)
 
         result = parse_crest_result(str(out_path))
         n = len(result.conformers)
@@ -2807,7 +2877,8 @@ class QueueEngine:
 
     def _slot_for(self, calc: Calculation) -> "_JobSlot":
         return _JobSlot(name=calc.name, cores=declared_cores(calc),
-                        ram_mb=estimated_ram_mb(calc), gpu=uses_gpu(calc))
+                        ram_mb=estimated_ram_mb(calc), gpu=uses_gpu(calc),
+                        kind=calc.kind or "")
 
     def _fits(self, slot: "_JobSlot") -> bool:
         """Does `slot` fit alongside what is already running ON ITS DEVICE
@@ -2852,7 +2923,12 @@ class QueueEngine:
         dev = self._devices.get(slot.device)
         if dev is None or not dev.online:
             return False
-        if slot.cores > 1 and not dev.has_mpi:
+        if slot.kind.startswith("crest"):
+            # a CREST search needs CREST there; its -T threads are OpenMP
+            # threads in one process, so MPI does not matter
+            if not getattr(dev, "crest_path", ""):
+                return False
+        elif slot.cores > 1 and not dev.has_mpi:
             return False
         mine = [s for s in self._slots.values() if s.device == slot.device]
         b = dev.budget

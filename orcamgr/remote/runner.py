@@ -113,11 +113,19 @@ class RemoteRequeue(OrcaRunError):
 _NORMAL_END = "ORCA TERMINATED NORMALLY"
 
 
-def _ended_by_orca(output_path: Path) -> bool:
-    """Whether the .out shows ORCA ending the run itself -- normally, or with a
-    fatal marker. Neither means something outside ORCA stopped it (on a spot
-    device: the VM went away). Read in binary chunks, ASCII markers."""
-    needles = [_NORMAL_END.encode().lower()] + [m.encode() for m in _FATAL_MARKERS]
+# What CREST prints on a run it ended itself: its success line
+# (crest/parser.CREST_SUCCESS_MARKER) and its ERROR STOP's last words.
+_CREST_END_MARKERS = ("crest terminated normally", "error termination")
+
+
+def _ended_by_orca(output_path: Path, markers=None) -> bool:
+    """Whether the .out shows the program ending the run itself -- normally,
+    or with a fatal marker (``markers``, lower-case; ORCA's by default).
+    Neither means something outside it stopped it (on a spot device: the VM
+    went away). Read in binary chunks, ASCII markers."""
+    if markers is None:
+        markers = [_NORMAL_END.lower(), *_FATAL_MARKERS]
+    needles = [m.encode() for m in markers]
     try:
         with open(output_path, "rb") as f:
             prev = b""
@@ -183,6 +191,27 @@ def _launch_script(remote_dir: str, orca: str, name: str) -> str:
 cd {_q(remote_dir)} || exit 3
 rm -f .orcadesk.pid .orcadesk.start
 setsid sh -c {_q(inner)} {_q(orca)} {_q(name + '.inp')} {_q(name + '.out')} </dev/null >/dev/null 2>&1 &
+i=0
+while [ $i -lt 100 ]; do [ -s .orcadesk.start ] && break; sleep 0.1; i=$((i+1)); done
+[ -s .orcadesk.start ] || exit 4
+printf 'pid=%s\\nstart=%s\\n' "$(cat .orcadesk.pid)" "$(cat .orcadesk.start)"
+"""
+
+
+def _crest_launch_script(remote_dir: str, crest: str, name: str, flags) -> str:
+    """_launch_script's shape for a CREST search: the same setsid / pid /
+    /proc start record, then ``crest {name}.xyz <flags>`` with its output in
+    {name}.out. CREST runs in the remote folder itself -- a device's disk is
+    a native filesystem, so there is no scratch to stage into (the WSL 9P
+    reason does not apply); --cinp names constraints.inp relative to it."""
+    inner = ('echo $$ > .orcadesk.pid; '
+             'awk "{print \\$22}" /proc/$$/stat > .orcadesk.start; '
+             'out="$1"; shift; exec "$0" "$@" > "$out" 2>&1')
+    args = " ".join(_q(a) for a in [name + ".out", name + ".xyz", *flags])
+    return f"""
+cd {_q(remote_dir)} || exit 3
+rm -f .orcadesk.pid .orcadesk.start
+setsid sh -c {_q(inner)} {_q(crest)} {args} </dev/null >/dev/null 2>&1 &
 i=0
 while [ $i -lt 100 ]; do [ -s .orcadesk.start ] && break; sleep 0.1; i=$((i+1)); done
 [ -s .orcadesk.start ] || exit 4
@@ -508,22 +537,14 @@ class RemoteOrcaRunner:
         output_path = Path(output_path)
         name = input_path.stem
         self._name = name
-        if not self.orca_path:
-            raise RemoteUnavailable(f"no ORCA path for {self.alias}")
+        self._check_program()
         if (platform_for(self.workdir) is not self.pf
                 or not self.pf.guard(self.remote_dir, self.workdir)):
             raise RemoteUnavailable(f"remote folder {self.remote_dir} is not under {self.workdir}")
-        folder = input_path.parent
-        files = []
-        for p in sorted(folder.iterdir()):
-            if not p.is_file():
-                continue
-            if p.name == output_path.name or p.name.endswith(".bak") \
-                    or p.name.startswith(META_PREFIX):
-                continue
+        files = self._files_to_send(input_path.parent, output_path)
+        for p in files:
             if not remote_safe_name(p.name):
                 raise RemoteUnavailable(f"file name not safe to send: {p.name}")
-            files.append(p)
         pf = self.pf
         res = pf.run(self.transport, self.alias, pf.mkdir(self.remote_dir), timeout=60)
         if not res.ok:
@@ -533,8 +554,7 @@ class RemoteOrcaRunner:
                 (p, pf.sftp_path(posixpath.join(self.remote_dir, p.name))) for p in files])
             if not put.ok:
                 raise RemoteUnavailable(f"upload failed to {self.alias}: {put.err.strip() or put.rc}")
-        res = pf.run(self.transport, self.alias,
-                     pf.launch(self.remote_dir, self.orca_path, name), timeout=60)
+        res = pf.run(self.transport, self.alias, self._launch_script_for(name), timeout=60)
         kv = dict((k.strip(), v.strip()) for k, v in
                   (line.split("=", 1) for line in res.out.splitlines() if "=" in line))
         if not res.ok or not kv.get("pid") or not kv.get("start"):
@@ -548,6 +568,31 @@ class RemoteOrcaRunner:
             self._start = float(kv["start"])
         log.info("launched %s on %s:%s pid %s", name, self.alias, self.remote_dir, self._pid)
         return self._pid, self._start
+
+    # ---- what a launch sends and starts (RemoteCrestRunner overrides) ----
+    #: what the program prints when IT ends a run (normally or with an
+    #: error), lower-case: a spot job found dead without one was preempted
+    END_MARKERS = None            # None = ORCA's (_ended_by_orca's default)
+
+    def _check_program(self) -> None:
+        if not self.orca_path:
+            raise RemoteUnavailable(f"no ORCA path for {self.alias}")
+
+    def _files_to_send(self, folder: Path, output_path: Path) -> list:
+        """The run folder's top-level files -- what ORCA would see if it ran
+        here -- minus the previous run's .out and the .bak files set aside."""
+        files = []
+        for p in sorted(folder.iterdir()):
+            if not p.is_file():
+                continue
+            if p.name == output_path.name or p.name.endswith(".bak") \
+                    or p.name.startswith(META_PREFIX):
+                continue
+            files.append(p)
+        return files
+
+    def _launch_script_for(self, name: str) -> str:
+        return self.pf.launch(self.remote_dir, self.orca_path, name)
 
     def adopt(self, pid: int, create_time: Optional[float]) -> None:
         with self._lock:
@@ -666,7 +711,8 @@ class RemoteOrcaRunner:
                             f.write(data)
                         tail.drain(see)
                     if alive is False:
-                        if self.spot and had_outage and not _ended_by_orca(output_path):
+                        if self.spot and had_outage and not _ended_by_orca(
+                                output_path, self.END_MARKERS):
                             self._requeue_preempted()      # raises
                         break
             if fatal and now >= next_hung:
@@ -776,3 +822,47 @@ class RemoteOrcaRunner:
             raise RemoteCancelUnreachable("Cancelled by user.", entry)
         self._remove()
         raise OrcaCancelled("Cancelled by user.")
+
+
+#: the files a CREST launch sends -- the input structure, and the constraints
+#: file with the reference structure it names (crest/runner.py writes all
+#: three locally). Never the run folder wholesale: a previous search's
+#: ensemble (crest_conformers.xyz ...) left beside them must not reach the
+#: device, or a search that dies early would come back looking finished.
+def crest_upload_names(name: str) -> tuple:
+    from ..crest.runner import CREST_CONSTRAINTS_FILE, CREST_REFERENCE_FILE
+    return (f"{name}.xyz", CREST_CONSTRAINTS_FILE, CREST_REFERENCE_FILE)
+
+
+class RemoteCrestRunner(RemoteOrcaRunner):
+    """A CREST conformer search on a remote LINUX device, with everything
+    RemoteOrcaRunner does after the launch unchanged: the 10 s sync into the
+    local .out, the Disconnected flag, spot re-queue, whole-folder fetch ->
+    verify -> guarded delete, cancel and the clean-up list, reattach. Only
+    what is sent and what is started differ: ``launch(xyz_path, out_path)``
+    sends the files crest_upload_names lists and starts ``crest`` with
+    ``flags`` (crest.runner.build_crest_argv) in the remote folder itself.
+    The engine reads the fetched folder with the local CREST result path
+    (parse_crest_result, the conformer export), as for a run here."""
+
+    END_MARKERS = list(_CREST_END_MARKERS)
+
+    def __init__(self, transport: Transport, alias: str, crest_path: str,
+                 workdir: str, remote_dir: str, flags=(), **kw):
+        super().__init__(transport, alias, "", workdir, remote_dir, **kw)
+        self.crest_path = crest_path
+        self.flags = list(flags)
+
+    def _check_program(self) -> None:
+        if not self.crest_path:
+            raise RemoteUnavailable(f"no CREST on {self.alias}")
+        if self.pf is not POSIX:
+            # CREST ships a Linux binary only; placement never sends it here
+            raise RemoteUnavailable(f"{self.alias} is not a Linux device; CREST cannot run there")
+
+    def _files_to_send(self, folder: Path, output_path: Path) -> list:
+        return [folder / n for n in crest_upload_names(self._name)
+                if (folder / n).is_file()]
+
+    def _launch_script_for(self, name: str) -> str:
+        return _crest_launch_script(self.remote_dir, self.crest_path, name, self.flags)
