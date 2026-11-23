@@ -89,6 +89,17 @@ _WSL_CALL_TIMEOUT = 20.0
 #     writes exactly that beside a fixed-atom list, so the file does too;
 #   * ``auto`` works for distance, angle and dihedral alike; ``reference=``
 #     is not needed (``auto`` reads the input structure).
+#   Re-measured 2026-11-23 (3.0.2, commit af7eb99, ethanol): CREST's OWN
+#   ``--constrain`` sample (``atoms`` + ``force constant=0.5`` +
+#   ``reference=coord.ref`` + ``$metadyn``), passed back with ``--cinp``,
+#   segfaults; so does ``force constant`` alone, ``reference=`` alone (with
+#   coord.ref present), and ``force constant`` beside a distance; with
+#   ``force constant`` first the parser asks for ~2 PB. Only the shape
+#   written here runs. ``--fc <x>`` is accepted ("selected force constant in
+#   Eh") but documented for ``-cbonds``; over 48 MTD frames of a C1..H9 pair
+#   held with ``atoms:``, the largest deviation was 0.21 / 0.28 / 0.20 /
+#   0.16 Å for no --fc / 0.05 / 0.5 / 5 -- not separable from MTD noise, so
+#   it is not used. A stronger hold needs a CREST whose parser takes the line.
 CREST_CONSTRAINTS_FILE = "constraints.inp"
 _CINP_LINE = {"B": "distance", "A": "angle", "D": "dihedral"}
 
