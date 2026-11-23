@@ -2103,6 +2103,9 @@ circle, so the drawing does not jump in scale while it turns; what is saved is
 cropped to the ink. Under the paper, `.d2bar`: *Wedge above* — a slider
 (5–60°, default 25°, §11.20: cheap to move, it only re-draws) with a fixed-width
 mono readout; *All H*; *Charge* (the calculation's own; a change re-perceives);
+*Reset symbols* (ghost, shown only while an atom has been clicked — a click on
+an atom in the 3D half shows or hides that hydrogen, or draws or drops that
+heavy atom's symbol; the note's last sentence says so);
 then *Copy image* (the one non-ghost button) · *Save SVG* · *Save PNG* ·
 *Save MOL*. One `.d2note` line says where the bond orders came from (*Bond
 orders by RDKit 2026.09.2, for the calculation's charge.*) and turns `--warn`

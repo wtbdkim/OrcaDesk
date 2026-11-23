@@ -1083,6 +1083,10 @@ var MOL = {};
     /** told after every paint: the 2D drawing follows the view with it
      *  (draw2d.js), and reads the view itself with view() @type {any} */
     let viewer = null;
+    /** told of every click on an atom, the second click on it too (onPick
+     *  hears that one as a deselect): the 2D drawing's per-atom symbol
+     *  toggle (draw2d.js) @type {((i: number) => void)|null} */
+    let atomTap = null;
     const handle = { canvas: canvas, paint: paint };
     function paint() {
       _live.add(handle);
@@ -1362,6 +1366,7 @@ var MOL = {};
       dropPicks();
       const h = hitAt(up.x, up.y);
       if (!h) { mark = []; paint(); if (opts.onPick) opts.onPick(null); return; }
+      if (h.kind === "atom" && atomTap) atomTap(h.i);
       // clicking what is already selected lets it go
       const next = h.kind === "atom" ? [h.i] : [h.i, h.j];
       const same = next.length === mark.length && next.every((v, k) => v === mark[k]);
@@ -1562,6 +1567,10 @@ var MOL = {};
        *  stops it. One listener -- the 2D drawing beside this stage.
        *  @param {(() => void)|null} fn */
       onView(fn) { viewer = fn || null; },
+      /** Be told of every click on an atom, by its index; null stops it. One
+       *  listener -- the 2D drawing beside this stage.
+       *  @param {((i: number) => void)|null} fn */
+      onAtomClick(fn) { atomTap = fn || null; },
       destroy() { stopVib(); if (ro) ro.disconnect(); _live.delete(handle); },
     };
   };

@@ -203,6 +203,42 @@ test("labels: carbon implicit, heteroatoms and charges shown, a lone carbon coun
   assert.strictEqual(ch4.atoms[0].label, "CH4");
 });
 
+test("flip: a clicked atom reverses its own rule, and only its own", () => {
+  // the methanol-like structure above: C0 (H1, H2) — O3 (H4); C5* — H6
+  const atoms = [
+    { el: "C", x: 0, y: 0, z: 0 }, { el: "H", x: -0.6, y: 0.9, z: 0 },
+    { el: "H", x: -0.6, y: -0.9, z: 0 }, { el: "O", x: 1.4, y: 0, z: 0 },
+    { el: "H", x: 1.8, y: 0.9, z: 0 }, { el: "C", x: -1.5, y: 0, z: 0 },
+    { el: "H", x: -1.9, y: 0, z: 1 }];
+  const per = { bonds: [[0, 1, 1], [0, 2, 1], [0, 3, 1], [3, 4, 1], [0, 5, 1], [5, 6, 1]],
+                stereocentres: [5] };
+  const view = { R: I, c: [0, 0, 0] };
+  const src = (lay) => lay.atoms.map(a => a.src).sort((a, b) => a - b);
+  const lab = (lay, i) => lay.atoms.filter(a => a.src === i)[0].label;
+  // a hidden H shown, a shown H (on O) hidden: O then counts it -> "OH"
+  const h = D.layout(atoms, per, view, { flip: new Set([1, 4]) });
+  assert.deepStrictEqual(plain(src(h)), [0, 1, 3, 5, 6]);
+  assert.strictEqual(lab(h, 3), "OH");
+  assert.strictEqual(lab(h, 1), "H");
+  // with All H a flipped H is the one left out; an array works as well as a Set
+  const all = D.layout(atoms, per, view, { allH: true, flip: [2] });
+  assert.deepStrictEqual(plain(src(all)), [0, 1, 3, 4, 5, 6]);
+  // a carbon gets its symbol (with the H it hides), a heteroatom loses its
+  const c = D.layout(atoms, per, view, { flip: [0, 3] });
+  assert.strictEqual(lab(c, 0), "CH2");
+  assert.strictEqual(lab(c, 3), "");
+  assert.strictEqual(lab(c, 5), "");          // not clicked: unchanged
+  // a charged atom and a lone atom keep their symbols
+  const n = D.layout([{ el: "N", x: 0, y: 0, z: 0 }, { el: "C", x: 1.5, y: 0, z: 0 },
+                      { el: "Cl", x: 5, y: 0, z: 0 }],
+                     { bonds: [[0, 1, 1]], charges: [1, 0, 0] }, view, { flip: [0, 2] });
+  assert.strictEqual(lab(n, 0), "N");
+  assert.strictEqual(lab(n, 2), "Cl");
+  // no flip is the drawing as before
+  assert.deepStrictEqual(plain(D.layout(atoms, per, view, { flip: [] })),
+                         plain(D.layout(atoms, per, view)));
+});
+
 // ---------------------------------------------------------------- outputs
 
 test("molInput carries the drawn coordinates and flags, anchor-first", () => {

@@ -5,6 +5,15 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Show or hide one atom's symbol in the 2D drawing by clicking it.** With
+  the 2D structure split open, a click on an atom in the 3D view shows or
+  hides that hydrogen, or draws or drops that atom's symbol (a carbon gets
+  *CH2*, an oxygen becomes a plain vertex), so crowded or overlapping
+  hydrogens can be taken out one by one. Clicking it again undoes it, and
+  *Reset symbols* undoes them all. Charged, radical and lone atoms keep their
+  symbols.
+
 ### Changed
 - **A remote device's line on the rail shows its memory too.** Each
   compute device now reads like *This PC*: cores reserved, memory reserved and

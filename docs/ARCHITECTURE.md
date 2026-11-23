@@ -2682,7 +2682,15 @@ The pure core is `NB.draw2d.core`, tested in node by
 - **Hydrogens and labels.** H is hidden except on stereocentres and on
   heteroatoms (anything not C), or all shown with *All H*; carbon is an
   unlabelled vertex unless it stands alone, is charged or is a radical, and a
-  labelled atom counts the hydrogens hidden on it (`CH4`).
+  labelled atom counts the hydrogens hidden on it (`CH4`). **A click on an
+  atom in the 3D half reverses that atom's rule** (`layout`'s `flip`): a
+  hydrogen shown or hidden, a heavy atom's symbol drawn or left off — never a
+  lone, charged or radical atom's, whose symbol carries what a vertex cannot.
+  The stage reports every atom click, the second one too, through
+  `stage.onAtomClick(fn)` (one listener, like `onView`; `onPick` hears a
+  second click as a deselect). The set lives in the pane, survives frames
+  with the same element sequence and is dropped for any other structure;
+  *Reset symbols* clears it. Hidden hydrogens stay out of *Save MOL*.
 - **SVG drawn here, not by RDKit's MolDraw2DSVG.** A drag redraws sixty times
   a second; a subprocess round trip per frame would make "real time" a
   slideshow, and drawing it here keeps the style (ink, fonts, wedge widths)

@@ -34,7 +34,10 @@
        file's wedge means;
      · hydrogens are hidden except on stereocentres and on heteroatoms (or
        all of them, when asked); carbon is an unlabelled vertex unless it
-       stands alone or carries a charge.
+       stands alone or carries a charge;
+     · a click on an atom in the 3D view reverses that atom's rule (flip):
+       a hydrogen is shown or hidden, a heavy atom's symbol drawn or left
+       off -- per atom, for this structure, until it is clicked again.
 
    The SVG is drawn here rather than by RDKit's MolDraw2DSVG: a drag redraws it
    sixty times a second, and a round trip to a Python subprocess per frame
@@ -86,14 +89,17 @@
 
   /** Which atoms the drawing shows: every heavy atom; a hydrogen only on a
    *  stereocentre or a heteroatom (anything not carbon), unless `allH`. A
-   *  hydrogen bonded to nothing is shown -- hiding it would hide the atom.
-   *  @param {string[]} els @param {number[][]} nb
-   *  @param {Set<number>} centres @param {boolean} allH @returns {boolean[]} */
-  function visibleAtoms(els, nb, centres, allH) {
+   *  hydrogen in `flip` (clicked in the 3D view) goes the other way. A
+   *  hydrogen bonded to nothing is always shown -- hiding it would hide the
+   *  atom. @param {string[]} els @param {number[][]} nb
+   *  @param {Set<number>} centres @param {boolean} allH
+   *  @param {Set<number>} [flip] @returns {boolean[]} */
+  function visibleAtoms(els, nb, centres, allH, flip) {
     return els.map((el, i) => {
-      if (el !== "H" || allH) return true;
+      if (el !== "H") return true;
       if (!nb[i].length) return true;
-      return nb[i].some(j => centres.has(j) || els[j] !== "C");
+      const shown = allH || nb[i].some(j => centres.has(j) || els[j] !== "C");
+      return flip && flip.has(i) ? !shown : shown;
     });
   }
 
@@ -133,7 +139,10 @@
    *           stereocentres?: number[]}} per RDKit's perception
    *  @param {{R: number[], c: number[]}} view mol.js's matrix and centre
    *  @param {{threshold?: number, allH?: boolean, lobes?: any[]|null,
-   *           lobeMin?: number}} [opts] lobes: MoLobeAtomPayload per stage
+   *           lobeMin?: number, flip?: Set<number>|number[]}} [opts] flip:
+   *    stage atoms whose default is reversed -- a hydrogen shown or hidden,
+   *    a heavy atom's symbol drawn or left off (a lone, charged or radical
+   *    atom keeps its symbol: it carries what a bare vertex cannot); lobes: MoLobeAtomPayload per stage
    *    atom (the orbital overlay, lobeShapes), drawn on hidden H too -- a σ
    *    orbital's share on a hydrogen is part of the orbital
    *  @returns {{atoms: any[], bonds: any[], radius: number, endOn: number,
@@ -153,7 +162,8 @@
                                                && b[1] < n && b[0] !== b[1]);
     const nb = neighbours(n, bonds);
     const centres = new Set(per.stereocentres || []);
-    const vis = visibleAtoms(els, nb, centres, !!o.allH);
+    const flip = o.flip instanceof Set ? o.flip : new Set(o.flip || []);
+    const vis = visibleAtoms(els, nb, centres, !!o.allH, flip);
     const v = viewCoords(atoms, view.R, view.c);
     const map = new Array(n).fill(-1);
     const out = [];
@@ -188,14 +198,16 @@
       ob.push({ a: map[a], b: map[c], order: order, stereo: s, theta: theta });
     });
     // labels: heteroatoms always; carbon only alone, charged or a radical;
-    // a labelled atom counts the hydrogens the drawing hides, as ChemDraw does
+    // a flipped heavy atom the other way (never a lone, charged or radical
+    // one: the symbol carries what a vertex cannot); a labelled atom
+    // counts the hydrogens the drawing hides, as ChemDraw does
     out.forEach(at => {
       const i = at.src;
       const hidden = nb[i].filter(j => !vis[j] && els[j] === "H").length;
       const lone = deg[i] === 0;
-      if (at.el !== "C" || lone || at.charge || at.radical) {
-        at.label = at.el + (hidden ? "H" + (hidden > 1 ? hidden : "") : "");
-      }
+      let show = at.el !== "C" || lone || !!at.charge || !!at.radical;
+      if (at.el !== "H" && !lone && !at.charge && !at.radical && flip.has(i)) show = !show;
+      if (show) at.label = at.el + (hidden ? "H" + (hidden > 1 ? hidden : "") : "");
     });
     const lobes = o.lobes && o.lobes.length
       ? lobeShapes(atoms, o.lobes, view, { min: o.lobeMin }) : null;
@@ -585,6 +597,12 @@
     let locked = true;                   // the bar's lock (add-on not ready)
     /** @type {any[]|null} */ let fitAtoms = null;   // atoms lobeData was checked against
     let fits = false;
+    /** Atoms clicked in the 3D view: each reverses its own default (layout's
+     *  flip). Kept while the stage shows the same atoms in the same order --
+     *  stepping an optimization's frames keeps them -- and dropped for any
+     *  other structure, whose indices name other atoms. @type {Set<number>} */
+    const flips = new Set();
+    let flipEls = "";
     const css = getComputedStyle(document.documentElement);
     const colours = { pos: css.getPropertyValue("--orb-pos").trim() || "#4f86f7",
                       neg: css.getPropertyValue("--orb-neg").trim() || "#f2555a" };
@@ -599,6 +617,8 @@
         <label class="d2chk"><input type="checkbox" data-d="allh"${_prefs.allH ? " checked" : ""}> All H</label>
         <label class="d2ctl" title="The total charge RDKit assigns bond orders for">Charge
           <input type="number" class="mono d2num" step="1" data-d="chg" aria-label="Total charge"></label>
+        <button class="btn btn-sm btn-ghost" type="button" data-d="unflip" hidden
+          title="Undo every atom clicked in the 3D view">Reset symbols</button>
         <span class="sp"></span>
         <button class="btn btn-sm" type="button" data-d="copy">Copy image</button>
         <button class="btn btn-sm btn-ghost" type="button" data-d="svg">Save SVG</button>
@@ -802,7 +822,9 @@
         ? "A bond at a stereocentre points almost straight at you — turn the structure a "
           + "little so the wedges read unambiguously." : "";
       const ln = lobeNote();
-      q("note").textContent = [how, per.note || "", endOn, ln.text].filter(Boolean).join(" ");
+      const tip = "Click an atom in the 3D view to show or hide its symbol.";
+      q("note").textContent = [how, per.note || "", endOn, ln.text, tip]
+        .filter(Boolean).join(" ");
       q("note").classList.toggle("warn", per.method !== "bonds" || !!per.note || !!endOn
                                          || ln.warn);
     }
@@ -820,7 +842,7 @@
       if (!v || v.atoms !== perAtoms) { follow(); return; }
       const wasEndOn = !!(lastLay && lastLay.endOn);
       lastLay = layout(perAtoms, per, { R: v.R, c: [v.cx, v.cy, v.cz] },
-                       { threshold: _prefs.threshold, allH: _prefs.allH,
+                       { threshold: _prefs.threshold, allH: _prefs.allH, flip: flips,
                          lobes: activeLobes(perAtoms), lobeMin: _prefs.lobeMin / 100 });
       if (!!lastLay.endOn !== wasEndOn) paintNote();
       const svg = toSvg(lastLay, { frame: "sphere", pos: colours.pos, neg: colours.neg });
@@ -835,9 +857,28 @@
       if (!alive || !_status || _status.state !== "ready") return;
       const v = stage.view();
       if (!v || !v.atoms || !v.atoms.length) return;
-      if (v.atoms !== perAtoms) { syncMo(); perceive(v.atoms); return; }
+      if (v.atoms !== perAtoms) {
+        const els = v.atoms.map((/** @type {any} */ a) => a.el).join(",");
+        if (els !== flipEls) { flipEls = els; flips.clear(); syncFlips(); }
+        syncMo(); perceive(v.atoms); return;
+      }
       schedule();
     }
+
+    function syncFlips() { q("unflip").hidden = !flips.size; }
+
+    /** An atom clicked in the 3D view: reverse its rule in the drawing.
+     *  @param {number} i the stage's atom index */
+    function toggleAtom(i) {
+      if (!per || !perAtoms || !(i >= 0 && i < perAtoms.length)) return;
+      if (flips.has(i)) flips.delete(i); else flips.add(i);
+      syncFlips();
+      lastSvg = ""; schedule();
+    }
+    q("unflip").addEventListener("click", () => {
+      flips.clear(); syncFlips();
+      lastSvg = ""; schedule();
+    });
 
     q("mo").addEventListener("change", () => {
       const val = String(q("mo").value || "");
@@ -931,6 +972,7 @@
     q("mol").addEventListener("click", () => save("mol"));
 
     stage.onView(follow);
+    stage.onAtomClick(toggleAtom);
     if (_status && _status.state === "ready") { lockBar(false); follow(); }
     else showNeed();
     checkStatus();
@@ -941,6 +983,7 @@
         if (raf) cancelAnimationFrame(raf);
         clearTimeout(pollTimer);
         stage.onView(null);
+        stage.onAtomClick(null);
         host.innerHTML = "";
       },
       refresh() { lastSvg = ""; follow(); },
