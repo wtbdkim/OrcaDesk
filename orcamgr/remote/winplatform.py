@@ -26,6 +26,10 @@ How a job runs (design §6 on Windows):
   Its pid and CreationDate (ms since the epoch, UTC) identify it, as pid +
   /proc start time do on Linux. The input goes by bare file name, as
   OrcaRunner passes it.
+* **qos_ensure** (after every launch, and once for a reattached job) -- keeps
+  the device's HighQoS watcher running: without it Windows classes the
+  SSH-started ORCA as background work and parks it on the E-cores (see
+  QOS_SCRIPT below).
 * **liveness** -- that pid exists with that creation time.
 * **kill** -- ``taskkill /PID <pid> /T /F``: the cmd.exe and everything under
   it (orca.exe, mpiexec, the orca_* ranks).
@@ -41,6 +45,8 @@ Qt-free.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import posixpath
 import re
 from typing import Optional
@@ -99,6 +105,101 @@ def guard_windows_dir(remote_dir: str, workdir: str) -> bool:
     if len(w) <= 3:          # "C:" / "C:/" -- a drive root is never a workdir
         return False
     return r.lower().startswith(w.lower() + "/") and len(r) > len(w) + 1
+
+
+# --------------------------------------------------------------------------
+# the HighQoS watcher
+# --------------------------------------------------------------------------
+# Measured on a hybrid-CPU laptop (2026-11-23): Windows classes a process
+# started from an SSH session as BACKGROUND work (EcoQoS / power throttling)
+# and parks it on the E-cores at ~280-400 MHz while the P-cores idle. Opting a
+# process out -- SetProcessInformation(ProcessPowerThrottling, {Version 1,
+# ControlMask EXECUTION_SPEED, StateMask 0}), "HighQoS" -- moved 6 of 8 jobs
+# onto P-cores at 2.0-2.3 GHz within 30 s. The opt-out is NOT inherited (a
+# child of an opted-out parent ran with control 0x0), and ORCA starts a new
+# process for every step (orca_leanscf, orca_scfgrad, the MPI ranks), so it
+# has to be re-applied continuously: one watcher per device, in the device's
+# workdir, started detached through WMI like ORCA itself, opting every
+# matching process out every few seconds, gone after a quiet spell. ASCII
+# only: PowerShell 5 reads a BOM-less script as the ANSI code page.
+QOS_SCRIPT_NAME = ".orcadesk-qos.ps1"
+QOS_PID_NAME = ".orcadesk-qos.pid"
+QOS_PATTERN = "orca*"          # ORCA's own processes: orca.exe, orca_*_mpi.exe ...
+QOS_IDLE_SECONDS = 900         # exits 15 min after the last matching process
+QOS_EVERY = 5                  # seconds between passes
+_QOS_PATTERN_RE = re.compile(r"^[A-Za-z0-9_.*-]+$")
+
+QOS_SCRIPT = r"""# ORCAdesk HighQoS watcher. ORCAdesk writes this file; do not edit.
+# Windows treats processes started from an SSH session as background work
+# (EcoQoS) and parks them on E-cores at a few hundred MHz. The opt-out below
+# is not inherited by child processes, and ORCA starts a new process for every
+# step, so every few seconds every matching process is opted out again. One
+# watcher per folder (a named mutex); it exits after IdleSeconds with no
+# matching process left.
+param([string]$Version = '', [int]$IdleSeconds = 900, [int]$Every = 5, [string]$Pattern = 'orca*')
+$ErrorActionPreference = 'SilentlyContinue'
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$sha = [Security.Cryptography.SHA1]::Create()
+$key = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($here.ToLowerInvariant())))).Replace('-', '').Substring(0, 16)
+$mutex = New-Object Threading.Mutex($false, ('Local\OrcadeskQos-' + $key))
+$owned = $false
+try { $owned = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $owned = $true }
+if (-not $owned) { exit 0 }
+$pidFile = Join-Path $here '.orcadesk-qos.pid'
+$logFile = Join-Path $here '.orcadesk-qos.log'
+Set-Content -LiteralPath $pidFile -Value ('{0} {1}' -f $PID, $Version)
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class OrcadeskQos {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PowerThrottlingState { public uint Version; public uint ControlMask; public uint StateMask; }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetProcessInformation(IntPtr h, int infoClass, ref PowerThrottlingState info, uint size);
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr h);
+    public static bool High(int pid) {
+        IntPtr h = OpenProcess(0x0200, false, pid);
+        if (h == IntPtr.Zero) return false;
+        PowerThrottlingState s = new PowerThrottlingState();
+        s.Version = 1; s.ControlMask = 1; s.StateMask = 0;
+        bool ok = SetProcessInformation(h, 4, ref s, (uint)Marshal.SizeOf(s));
+        CloseHandle(h);
+        return ok;
+    }
+}
+"@
+try {
+    if (-not ('OrcadeskQos' -as [type])) {
+        Set-Content -LiteralPath $logFile -Value ('{0} could not compile the opt-out helper' -f (Get-Date -Format s))
+        exit 1
+    }
+    $idleSince = $null
+    while ($true) {
+        $procs = @(Get-Process -Name $Pattern -ErrorAction SilentlyContinue)
+        if ($procs.Count -gt 0) {
+            $idleSince = $null
+            $ok = 0
+            foreach ($p in $procs) { if ([OrcadeskQos]::High($p.Id)) { $ok++ } }
+            Set-Content -LiteralPath $logFile -Value ('{0} processes: {1}, HighQoS set: {2}' -f (Get-Date -Format s), $procs.Count, $ok)
+        } elseif ($null -eq $idleSince) {
+            $idleSince = Get-Date
+        } elseif (((Get-Date) - $idleSince).TotalSeconds -ge $IdleSeconds) {
+            break
+        }
+        Start-Sleep -Seconds $Every
+    }
+} finally {
+    $mine = Get-Content -LiteralPath $pidFile -TotalCount 1 -ErrorAction SilentlyContinue
+    if ($mine -and ($mine -split ' ')[0] -eq [string]$PID) {
+        Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+    }
+    $mutex.ReleaseMutex()
+}
+"""
+QOS_VERSION = hashlib.sha256(QOS_SCRIPT.encode("utf-8")).hexdigest()[:12]
 
 
 class WindowsPlatform:
@@ -193,6 +294,47 @@ class WindowsPlatform:
                 f"Where-Object {{ -not $_.Name.StartsWith({psq(META_PREFIX)}) }} | "
                 "ForEach-Object { [string]$_.Length + [char]9 + "
                 "$_.FullName.Substring($root.Length+1).Replace('\\','/') }\n")
+
+    @staticmethod
+    def qos_ensure(workdir: str, idle_seconds: Optional[int] = None,
+                   every: Optional[int] = None, pattern: Optional[str] = None) -> str:
+        """Make sure the device's HighQoS watcher runs (see QOS_SCRIPT):
+        nothing to do when the pid file names a live watcher of this version;
+        else (re)write ``<workdir>/.orcadesk-qos.ps1`` if its text changed,
+        stop an older version, and start it detached through WMI. Prints
+        ``qos=running`` / ``qos=started pid=N`` / ``qos=failed ...``. The
+        script travels base64 inside the stdin-borne PowerShell (no command
+        line, so cmd.exe's 8191-char limit never applies)."""
+        idle = int(QOS_IDLE_SECONDS if idle_seconds is None else idle_seconds)
+        each = int(QOS_EVERY if every is None else every)
+        pat = QOS_PATTERN if pattern is None else pattern
+        if not _QOS_PATTERN_RE.match(pat or ""):
+            raise ValueError(f"not a process-name pattern: {pat!r}")
+        body = base64.b64encode(QOS_SCRIPT.encode("utf-8")).decode("ascii")
+        args = (f" -Version {QOS_VERSION} -IdleSeconds {max(1, idle)}"
+                f" -Every {max(1, each)} -Pattern {pat}")
+        return (f"$w={psq(_backslash(workdir))}\n"
+                "[void][IO.Directory]::CreateDirectory($w)\n"
+                f"$f=Join-Path $w {psq(QOS_SCRIPT_NAME)}; $pf=Join-Path $w {psq(QOS_PID_NAME)}; "
+                f"$v={psq(QOS_VERSION)}; $run=$false\n"
+                "if(Test-Path -LiteralPath $pf){\n"
+                " $a=@(([string](Get-Content -LiteralPath $pf -TotalCount 1)).Trim() -split ' ')\n"
+                " if($a[0] -match '^[0-9]+$'){\n"
+                "  $p=Get-CimInstance Win32_Process -Filter \"ProcessId=$($a[0])\" -ErrorAction SilentlyContinue\n"
+                f"  if($p -and $p.CommandLine -like {psq('*' + QOS_SCRIPT_NAME + '*')}){{\n"
+                "   if($a.Count -ge 2 -and $a[1] -eq $v){$run=$true}\n"
+                "   else{Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue; "
+                "Start-Sleep -Milliseconds 500}}}}\n"
+                "if($run){'qos=running'; exit 0}\n"
+                f"$t=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String({psq(body)}))\n"
+                "$c=''; if(Test-Path -LiteralPath $f){$c=[IO.File]::ReadAllText($f)}\n"
+                "if($c -ne $t){[IO.File]::WriteAllText($f,$t,(New-Object Text.UTF8Encoding($false)))}\n"
+                "$cmd='powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+                "-WindowStyle Hidden -File \"'+$f+'\"" + args + "'\n"
+                "$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+                "-Arguments @{CommandLine=$cmd; CurrentDirectory=$w}\n"
+                "if($r.ReturnValue -ne 0){\"qos=failed rc=$($r.ReturnValue)\"; exit 4}\n"
+                "\"qos=started pid=$($r.ProcessId)\"\n")
 
     @staticmethod
     def remove(remote_dir: str, workdir: str) -> str:

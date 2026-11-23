@@ -292,3 +292,183 @@ def test_a_real_orca_sp_through_the_windows_runner(tmp_path, nprocs):
     assert (local / f"{name}.gbw").is_file() and not Path(r.remote_dir).exists()
     if nprocs > 1:
         assert f"{nprocs} parallel MPI-processes" in (local / f"{name}.out").read_text(errors="replace")
+
+
+# ---- the HighQoS watcher (winplatform.QOS_SCRIPT) ----------------------------
+#
+# Measured on a hybrid-CPU laptop: Windows classes an SSH-started ORCA as
+# background work (EcoQoS) and parks it on the E-cores; opting a process out
+# is not inherited by its children, and ORCA starts a new process per step, so
+# a watcher re-applies the opt-out to every matching process continuously.
+
+
+class _WinFake:
+    """A Windows device that answers launch scripts and records them."""
+
+    def __init__(self, qos: RunResult):
+        self.qos, self.scripts = qos, []
+
+    def run(self, alias, script, timeout=30.0, stop=None):
+        return RunResult(1, "", "'sh' is not recognized")
+
+    def run_powershell(self, alias, script, timeout=30.0, stop=None):
+        self.scripts.append(script)
+        if wp.QOS_SCRIPT_NAME in script:
+            return self.qos
+        if "Win32_Process -MethodName Create" in script:
+            return RunResult(0, "pid=4242\nstart=1795000000000\n")
+        return RunResult(0)
+
+    def put(self, alias, pairs, timeout=600.0, stop=None):
+        return RunResult(0)
+
+
+def _win_runner(fake, tmp_path, workdir="C:/Users/u/orcadesk-runs"):
+    local = tmp_path / "job"
+    local.mkdir()
+    (local / "job.inp").write_text("! SP\n")
+    r = RemoteOrcaRunner(fake, "laptop", "C:/ORCA_6.1.1/orca.exe", workdir,
+                         "C:/Users/u/orcadesk-runs/sys/job.20261123-120000")
+    return r, local
+
+
+def _qos_calls(fake):
+    return [s for s in fake.scripts if wp.QOS_SCRIPT_NAME in s]
+
+
+def test_a_windows_launch_sees_to_the_watcher_once(tmp_path):
+    fake = _WinFake(RunResult(0, "qos=started pid=77\n"))
+    r, local = _win_runner(fake, tmp_path)
+    assert r.launch(local / "job.inp", local / "job.out") == (4242, 1795000000000.0)
+    qos = _qos_calls(fake)
+    assert len(qos) == 1 and "'C:\\Users\\u\\orcadesk-runs'" in qos[0]
+    assert f"-Version {wp.QOS_VERSION}" in qos[0]
+    r._ensure_qos()                          # already seen to: no second call
+    assert len(_qos_calls(fake)) == 1
+
+
+def test_a_watcher_that_cannot_start_never_costs_the_job(tmp_path, caplog):
+    fake = _WinFake(RunResult(4, "qos=failed rc=8\n"))
+    r, local = _win_runner(fake, tmp_path)
+    with caplog.at_level("WARNING", logger="orcamgr.remote"):
+        assert r.launch(local / "job.inp", local / "job.out")[0] == 4242
+    assert any("HighQoS watcher not started" in m for m in caplog.messages)
+
+
+def test_a_reattached_job_sees_to_the_watcher_once_its_workdir_is_known(tmp_path):
+    # reattached before the device's first probe: no workdir yet, nothing to do;
+    # the engine fills the workdir in later, and then the watcher is seen to
+    fake = _WinFake(RunResult(0, "qos=running\n"))
+    r, _ = _win_runner(fake, tmp_path, workdir="")
+    r.adopt(4242, 1795000000000.0)
+    r._ensure_qos()
+    assert not _qos_calls(fake)
+    r.workdir = "C:/Users/u/orcadesk-runs"
+    r._ensure_qos()
+    assert len(_qos_calls(fake)) == 1
+
+
+def test_a_linux_device_never_hears_of_the_watcher():
+    from fake_transport import FakeTransport
+    r = RemoteOrcaRunner(FakeTransport(), "gcp", "/opt/orca/orca", "/home/u/runs",
+                         "/home/u/runs/sys/job.20261123-120000")
+    assert r._qos_done                      # nothing to see to on Linux
+    with pytest.raises(ValueError):
+        WINDOWS.qos_ensure("C:/w", pattern="orca*; Remove-Item x")
+    assert wp.QOS_SCRIPT.isascii()          # PowerShell 5 reads it as ANSI
+
+
+def _throttling(pid):
+    """(ControlMask, StateMask) of ``pid``'s power-throttling state, or None."""
+    import ctypes
+    from ctypes import wintypes
+
+    class State(ctypes.Structure):
+        _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG),
+                    ("StateMask", wintypes.ULONG)]
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    k32.GetProcessInformation.restype = wintypes.BOOL
+    k32.GetProcessInformation.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                          wintypes.DWORD)
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    h = k32.OpenProcess(0x1000, False, pid)          # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        s = State(1, 0, 0)
+        if not k32.GetProcessInformation(h, 4, ctypes.byref(s), ctypes.sizeof(s)):
+            return None
+        return s.ControlMask, s.StateMask
+    finally:
+        k32.CloseHandle(h)
+
+
+def _watchers(work: Path) -> list:
+    import psutil
+    needle = str(work / wp.QOS_SCRIPT_NAME).lower()
+    out = []
+    for p in psutil.process_iter(["cmdline"]):
+        try:
+            if needle in " ".join(p.info["cmdline"] or []).lower():
+                out.append(p.pid)
+        except (psutil.Error, TypeError):
+            pass
+    return out
+
+
+def _wait_gone(work: Path, seconds: float = 30.0) -> None:
+    deadline = time.monotonic() + seconds
+    while _watchers(work) and time.monotonic() < deadline:
+        time.sleep(0.5)
+
+
+@local_only
+def test_the_watcher_opts_a_later_child_out_runs_once_and_quits_when_idle(tmp_path):
+    import shutil
+    import subprocess
+    work = tmp_path / "remote-work"
+    work.mkdir()
+    # a stand-in "ORCA step": a copy of ping.exe named like ORCA's processes
+    root = Path(os.environ.get("SystemRoot", "C:/Windows"))
+    exe = tmp_path / "orcaqostest1.exe"
+    shutil.copyfile(root / "System32" / "PING.EXE", exe)
+    t = LocalPowerShellTransport()
+    ensure = WINDOWS.qos_ensure(work.as_posix(), idle_seconds=4, every=1, pattern="orcaqostest*")
+    res = t.run_powershell("laptop", ensure)
+    assert res.ok and "qos=started" in res.out, (res.out, res.err)
+    child = subprocess.Popen([str(exe), "-n", "60", "127.0.0.1"], stdout=subprocess.DEVNULL,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        deadline = time.monotonic() + 20
+        state = _throttling(child.pid)
+        while state != (1, 0) and time.monotonic() < deadline:
+            time.sleep(0.3)
+            state = _throttling(child.pid)
+        # started AFTER the watcher -- the case inheritance does not cover
+        assert state == (1, 0), state
+        # one watcher per folder, however often a launch asks
+        again = t.run_powershell("laptop", ensure)
+        assert again.ok and "qos=running" in again.out, (again.out, again.err)
+        assert len(_watchers(work)) == 1
+    finally:
+        child.kill()
+        child.wait(10)
+    _wait_gone(work)
+    assert not _watchers(work)                          # gone after the quiet spell
+    assert not (work / wp.QOS_PID_NAME).exists()        # and took its pid file along
+
+
+@local_only
+def test_a_stale_pid_file_gets_a_fresh_watcher(tmp_path):
+    work = tmp_path / "remote-work"
+    work.mkdir()
+    (work / wp.QOS_PID_NAME).write_text("4 0ldversion")    # pid 4 is System, not a watcher
+    t = LocalPowerShellTransport()
+    res = t.run_powershell("laptop", WINDOWS.qos_ensure(work.as_posix(), idle_seconds=2,
+                                                        every=1, pattern="orcaqostest*"))
+    assert res.ok and "qos=started" in res.out, (res.out, res.err)
+    assert (work / wp.QOS_SCRIPT_NAME).read_text(encoding="utf-8") == wp.QOS_SCRIPT
+    _wait_gone(work)
+    assert not _watchers(work)

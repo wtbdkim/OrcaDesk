@@ -46,3 +46,19 @@ if _settings.is_file():
 
 assert sys.platform == "darwin" or paths.user_data_root() != _real_root, \
     "tests must not run against the real user data folder"
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _qos_watcher_never_touches_real_orca(monkeypatch):
+    """A Windows-device launch also starts the HighQoS watcher
+    (remote/winplatform.py), and the local-PowerShell tests run those
+    launches on THIS machine -- where the user's own ORCA jobs may be running.
+    Every test's watcher matches no real process and quits within seconds;
+    the test that checks the watcher passes its own pattern."""
+    from orcamgr.remote import winplatform
+    monkeypatch.setattr(winplatform, "QOS_PATTERN", "orcadesk-pytest-nomatch-*")
+    monkeypatch.setattr(winplatform, "QOS_IDLE_SECONDS", 3)
+    monkeypatch.setattr(winplatform, "QOS_EVERY", 1)

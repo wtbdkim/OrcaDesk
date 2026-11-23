@@ -509,6 +509,10 @@ class RemoteOrcaRunner:
         self.spot = False
         self.requeue_after = 300.0
         self._adopted = False
+        # the device's HighQoS watcher (Windows only, winplatform.QOS_SCRIPT)
+        # has been seen to, for this job -- at launch, or on a reattached job's
+        # first answered sync once the workdir is known
+        self._qos_done = self.pf is not WINDOWS
         # set by the engine: called with True/False when the flag flips, and
         # with a message when a fetch keeps failing
         self.on_disconnect: Optional[Callable[[bool], None]] = None
@@ -572,7 +576,30 @@ class RemoteOrcaRunner:
             self._pid = int(kv["pid"])
             self._start = float(kv["start"])
         log.info("launched %s on %s:%s pid %s", name, self.alias, self.remote_dir, self._pid)
+        self._ensure_qos()
         return self._pid, self._start
+
+    def _ensure_qos(self) -> None:
+        """On a Windows device, make sure the HighQoS watcher runs (see
+        winplatform.QOS_SCRIPT: without it Windows parks an SSH-started ORCA
+        on the E-cores). Errors are data: the job runs regardless, only
+        slower, and remote.log says why. Nothing on Linux."""
+        if self._qos_done or not self.workdir:
+            return
+        self._qos_done = True
+        try:
+            res = self.pf.run(self.transport, self.alias, WINDOWS.qos_ensure(self.workdir),
+                              timeout=60, stop=self._detach_event)
+        except Exception as e:          # never let the watcher cost the job
+            log.warning("%s: HighQoS watcher not started: %s", self.alias, e)
+            return
+        said = next((ln.strip() for ln in res.out.splitlines() if ln.startswith("qos=")), "")
+        if res.ok and said.startswith(("qos=running", "qos=started")):
+            log.info("%s HighQoS watcher: %s", self.alias, said)
+        else:
+            log.warning("%s: HighQoS watcher not started (rc=%s %s %s); ORCA runs, "
+                        "but Windows may keep it on the slow cores", self.alias, res.rc,
+                        said, res.err.strip()[:200])
 
     # ---- what a launch sends and starts (RemoteCrestRunner overrides) ----
     #: what the program prints when IT ends a run (normally or with an
@@ -727,6 +754,12 @@ class RemoteOrcaRunner:
                                 output_path, self.END_MARKERS):
                             self._requeue_preempted()      # raises
                         break
+                    # a reattached job (or one whose workdir the engine filled
+                    # in only after the device's first probe) sees to the
+                    # device's HighQoS watcher once, so a restart of ORCAdesk
+                    # does not leave ORCA on the slow cores (Windows only)
+                    if not self._qos_done and self.workdir:
+                        self._ensure_qos()
             if fatal and now >= next_hung:
                 next_hung = now + self.HUNG_CHECK
                 idle = self._remote_idle()

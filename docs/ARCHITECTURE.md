@@ -2079,6 +2079,38 @@ real ORCA 6.1.1 water SP on 1 and on 2 MS-MPI processes. Over a real Windows
 sshd it is UNVERIFIED until a device is set up
 (`docs/WINDOWS_REMOTE_SETUP_KR.md`).
 
+**Windows parks an SSH-started ORCA on the slow cores — the HighQoS
+watcher.** Measured on the user's hybrid-CPU laptop (2026-11-23): processes
+started from an SSH session are classed as BACKGROUND work (EcoQoS / power
+throttling), and 8 jobs ran on the E-cores at ~280–400 MHz while the P-cores
+idled. Opting a process out — `SetProcessInformation(ProcessPowerThrottling,
+{Version 1, ControlMask EXECUTION_SPEED, StateMask 0})`, "HighQoS" — moved 6
+of them onto P-cores at 2.0–2.3 GHz within 30 s. The opt-out is **not
+inherited** (a child of an opted-out parent ran with control 0x0), and ORCA
+starts a new process for every step (orca_leanscf, orca_scfgrad, the MPI
+ranks), so it has to be re-applied continuously. `RemoteOrcaRunner.launch`
+therefore ends with `_ensure_qos`: `WindowsPlatform.qos_ensure` writes
+`<workdir>/.orcadesk-qos.ps1` (`QOS_SCRIPT`, shipped as base64 inside the
+stdin-borne script, rewritten only when its text changed) and, unless
+`.orcadesk-qos.pid` names a live watcher of the same `QOS_VERSION`, starts it
+detached through WMI like ORCA itself; an older version is stopped first. The
+watcher holds a named mutex per folder (one per device), opts every `orca*`
+process out every `QOS_EVERY` (5) s and quits `QOS_IDLE_SECONDS` (900) after
+the last one, taking its pid file along. A reattached job sees to it once on
+its first answered sync after its workdir is known (the engine fills that in
+after the device's first probe), so a restart keeps the speed-up. Errors are
+data: a watcher that cannot start costs the job nothing but speed, and
+`remote.log` says why. Linux devices never hear of it. Verified here through
+the local PowerShell transport: a process started *after* the watcher reads
+ControlMask 1 / StateMask 0 within seconds, a second ensure answers
+`qos=running` with one watcher, a stale pid file gets a fresh one, and an
+idle watcher exits and removes its pid file (`tests/test_remote_windows.py`;
+`tests/conftest.py` gives every other test a no-match pattern and a 3 s idle
+exit, so no test ever touches this machine's real ORCA). Some laptops also
+clock-cap the E-cores through the vendor's power mode (measured: max
+performance 23–28 %, ~380 MHz for any thread); ORCAdesk cannot change that —
+the setup guide names P-core affinity as the manual way around it.
+
 **Which devices exist is detected, not configured (P58).** `devices.parse_ssh_config`
 reads the `Host` aliases of `~/.ssh/config` (following `Include`, skipping
 patterns, refusing an alias ssh could read as an option). The user sets SSH up

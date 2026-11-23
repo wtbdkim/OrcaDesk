@@ -5,6 +5,17 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Calculations on a Windows laptop no longer crawl on its slow cores.**
+  Windows treats a program started over SSH as background work and kept ORCA
+  on the low-power cores at a few hundred MHz while the fast ones idled.
+  ORCAdesk now keeps a small watcher running on a Windows compute device that
+  lifts that power limit from every ORCA process every few seconds (the
+  setting does not pass to the new process ORCA starts for each step); on the
+  laptop it was measured on, jobs moved to the fast cores within 30 seconds
+  at about seven times the clock. If the watcher cannot start, calculations
+  still run, only slower.
+
 ### Added
 - **Run, Stop and Cancel for each computer.** The queue rail's resource box
   has a line for *This PC* and one for each compute device, each with its own
