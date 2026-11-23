@@ -18,7 +18,7 @@ import threading
 import time
 
 import orcamgr.remote.ssh as ssh_mod
-from orcamgr.remote.ssh import RC_ABORTED, RC_TIMEOUT, SshTransport
+from orcamgr.remote.ssh import RC_ABORTED, RC_BUSY, SshTransport
 
 
 class _FakePopen:
@@ -93,15 +93,36 @@ def test_a_burst_never_opens_more_than_the_cap_per_device(monkeypatch):
     assert P.peak["dev-a"] == cap and P.peak["dev-b"] == cap
 
 
-def test_no_free_slot_within_the_timeout_reads_as_a_timeout(monkeypatch):
+def test_no_free_slot_within_the_timeout_reads_as_busy_not_as_an_outage(monkeypatch):
+    # The device was never asked, so the answer says nothing about it. This
+    # used to be RC_TIMEOUT (unreachable): fifteen fetches holding the slots
+    # got a healthy AWS device flagged Disconnected and its launches sent back
+    # to the queue (2026-11-23). Now RC_BUSY: neither unreachable nor a "no".
     _fresh(monkeypatch, hold=3.0)
     t = SshTransport(ssh="ssh", sftp="sftp")
     busy = _burst(t, "dev-a", ssh_mod.MAX_CONNECTIONS_PER_DEVICE)
     time.sleep(0.3)
     res = t.run("dev-a", "true", timeout=1.0)
-    assert res.rc == RC_TIMEOUT and res.unreachable     # an unknown, never a "no"
+    assert res.rc == RC_BUSY and res.busy and not res.unreachable
     for th in busy:
         th.join(10)
+
+
+def test_transfers_have_their_own_slots_and_never_starve_commands(monkeypatch):
+    # A long sftp per finished job filled the one shared cap; now transfers
+    # queue on MAX_TRANSFERS_PER_DEVICE slots and commands keep theirs.
+    _fresh(monkeypatch, hold=3.0)
+    t = SshTransport(ssh="ssh", sftp="sftp")
+    xfers = [threading.Thread(target=t._sftp_batch, args=("dev-a", ["get a b"], 30))
+             for _ in range(ssh_mod.MAX_TRANSFERS_PER_DEVICE + 3)]
+    for th in xfers:
+        th.start()
+    time.sleep(0.3)
+    t0 = time.monotonic()
+    res = t.run("dev-a", "true", timeout=10)
+    assert res.ok and time.monotonic() - t0 < 5     # a command got a slot at once
+    for th in xfers:
+        th.join(30)
 
 
 def test_a_stop_abandons_a_running_call_at_once_and_kills_its_child(monkeypatch):

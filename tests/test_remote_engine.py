@@ -143,6 +143,36 @@ def test_a_device_that_cannot_take_a_job_goes_offline_and_the_row_runs_elsewhere
     assert cb.state == CalcState.DONE and not eng._devices["gcp"].online
 
 
+def test_a_busy_hand_over_keeps_the_device_online_and_offers_the_row_again(tmp_path, monkeypatch):
+    # RemoteBusy: this machine had no free connection slot, the device was
+    # never asked. It used to be marked offline like a refused upload
+    # (2026-11-23: a healthy AWS device lost its launches while fetches held
+    # the slots); now the row is just offered again and the device stays up.
+    from orcamgr.remote.runner import RemoteBusy
+    monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
+    harness = EngineHarness(tmp_path, budget=ResourceBudget(max_jobs=1, cores=64,
+                                                            ram_mb=10**6))
+    eng = _with_device(harness, _info())
+    gate = threading.Event()
+    tried = []
+
+    def a(c):
+        gate.wait(10)          # hold the local slot so b goes to the device
+
+    def b(c):
+        tried.append(eng._job.device)
+        if len(tried) == 1:
+            raise RemoteBusy("mkdir failed on gcp: busy")
+        gate.set()
+    harness.behaviors["a"] = a
+    harness.behaviors["b"] = b
+    ca, cb = make_calc("a"), make_calc("b")
+    eng.run_all([ca, cb])
+    assert cb.state == CalcState.DONE and ca.state == CalcState.DONE
+    assert tried[:2] == ["gcp", "gcp"]       # offered again -- to the same device
+    assert eng._devices["gcp"].online
+
+
 def test_resource_usage_reports_each_device(tmp_path, monkeypatch):
     monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
     harness = EngineHarness(tmp_path, budget=ResourceBudget(max_jobs=1, cores=64,

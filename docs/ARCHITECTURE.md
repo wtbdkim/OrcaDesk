@@ -2134,9 +2134,15 @@ bridge to poll (`get_devices` / `detect_devices` / `set_remote_device` /
 `unreachable` marks a transport failure, which is an *unknown*, not a "no".
 Win32-OpenSSH has no ControlMaster, so each call is a full handshake: one
 short call per job every `SYNC_EVERY` (10 s), nothing held open between.
-**At most `MAX_CONNECTIONS_PER_DEVICE` (4) ssh/sftp processes run at once per
-device** (`_gated_run`, a semaphore per alias; a call that gets no slot within
-its own timeout is `RC_TIMEOUT`, an unknown). Measured on the AWS device: a
+**At most `MAX_CONNECTIONS_PER_DEVICE` (6) commands and
+`MAX_TRANSFERS_PER_DEVICE` (2) sftp transfers run at once per device**, on
+separate slots (one shared cap of 4 let fifteen fetches from Sydney starve the
+10 s syncs and launches). A call that gets no slot in time is `RC_BUSY`
+(`RunResult.busy`): the device was never asked, so it is not `unreachable` --
+a busy sync is retried in 2 s and counts toward neither Disconnected nor the
+spot requeue, a busy launch is `RemoteBusy` (the row is offered again, the
+device stays online), a busy kill/liveness is an unknown (`_gated_run`, one
+semaphore per alias and kind). Why a cap at all, measured on the AWS device: a
 dispatch burst of 16 launches opened 16 connections at once, sshd's default
 `MaxStartups 10:30:100` dropped the overflow ("Connection closed by … port
 22") and five launches went back to PENDING with the device marked offline.

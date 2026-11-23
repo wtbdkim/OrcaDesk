@@ -11,6 +11,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   how many jobs run, each against that device's own budget.
 
 ### Fixed
+- **A busy device is no longer shown as disconnected.** When many
+  calculations on one compute device finished together, bringing their results
+  back held every connection, and the regular checks and new starts waited too
+  long: the device was flagged Disconnected and its new calculations were sent
+  back to the queue although nothing was wrong with it. Result transfers now
+  have connections of their own, and waiting for a free one is never counted
+  against the device.
 - **A compute device's caps apply to the run in progress.** Changing a
   device's cores, memory, job limit, preferences or spot setting in *Compute
   devices* (or switching it off) waited for the next Run; it now takes effect

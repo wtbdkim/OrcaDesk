@@ -3598,7 +3598,10 @@ class QueueEngine:
             # transport): not the calculation's failure. The device is offline
             # until the watch finds it ready, and the row goes back to PENDING
             # and is offered again -- here or on another device (design §5).
-            self._device_offline(calc.device or self._job.device)
+            # RemoteBusy: this machine had no free connection slot, the device
+            # was never asked -- it stays online, the row is just offered again
+            if not getattr(e, "busy", False):
+                self._device_offline(calc.device or self._job.device)
             calc.state = CalcState.PENDING
             calc.message = ""
             calc.pid = None

@@ -80,6 +80,13 @@ class RemoteUnavailable(OrcaRunError):
     offline and offers the row again (design §5)."""
 
 
+class RemoteBusy(RemoteUnavailable):
+    """The job could not be handed over because THIS machine had no free
+    connection slot in time (RunResult.busy): the device was never asked, so
+    it is not marked offline -- the row just goes back to be offered again."""
+    busy = True
+
+
 class RemoteCancelUnreachable(OrcaCancelled):
     """Cancelled while the device could not be reached (or the fetch after
     the kill could not finish). The calc is CANCELLED at once; ``entry`` goes
@@ -424,7 +431,7 @@ def kill_remote(transport: Transport, alias: str, pid: int, start,
     not running any more, False = still alive, None = device unreachable.
     ``pf`` is the device's platform (platform_for its remote folder)."""
     res = pf.run(transport, alias, pf.kill(pid, start), timeout=60)
-    if res.unreachable:
+    if res.unreachable or res.busy:
         return None
     return res.out.strip().endswith(("killed", "gone"))
 
@@ -435,7 +442,7 @@ def remote_liveness(transport: Transport, alias: str, pid, start,
     if not pid:
         return False
     res = pf.run(transport, alias, pf.liveness(int(pid), start), timeout=30)
-    if res.unreachable:
+    if res.unreachable or res.busy:
         return None
     out = res.out.strip()
     if out == "alive":
@@ -557,18 +564,20 @@ class RemoteOrcaRunner:
         pf = self.pf
         res = pf.run(self.transport, self.alias, pf.mkdir(self.remote_dir), timeout=60)
         if not res.ok:
-            raise RemoteUnavailable(f"mkdir failed on {self.alias}: {res.err.strip() or res.rc}")
+            raise (RemoteBusy if res.busy else RemoteUnavailable)(
+                f"mkdir failed on {self.alias}: {res.err.strip() or res.rc}")
         if files:
             put = self.transport.put(self.alias, [
                 (p, pf.sftp_path(posixpath.join(self.remote_dir, p.name))) for p in files])
             if not put.ok:
-                raise RemoteUnavailable(f"upload failed to {self.alias}: {put.err.strip() or put.rc}")
+                raise (RemoteBusy if put.busy else RemoteUnavailable)(
+                    f"upload failed to {self.alias}: {put.err.strip() or put.rc}")
         res = pf.run(self.transport, self.alias, self._launch_script_for(name), timeout=60)
         kv = dict((k.strip(), v.strip()) for k, v in
                   (line.split("=", 1) for line in res.out.splitlines() if "=" in line))
         if not res.ok or not kv.get("pid") or not kv.get("start"):
-            raise RemoteUnavailable(f"start failed on {self.alias}: rc={res.rc} "
-                                    f"{res.err.strip()}")
+            raise (RemoteBusy if res.busy else RemoteUnavailable)(
+                f"start failed on {self.alias}: rc={res.rc} {res.err.strip()}")
         # a fresh run: the local .out starts empty, as OrcaRunner's "w" open
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"")
@@ -664,7 +673,10 @@ class RemoteOrcaRunner:
             self.transport, self.alias,
             self.pf.sync(pid, start, remote_out, offset, self.SYNC_CAP), timeout=60,
             stop=self._detach_event)
-        if res.unreachable:
+        # no free connection slot HERE: the device was never asked -- the
+        # monitor retries soon and counts nothing (see RunResult.busy)
+        self.last_sync_busy = bool(getattr(res, "busy", False))
+        if res.unreachable or self.last_sync_busy:
             return None, b""
         head, _, rest = res.out.partition("\n")
         head = head.strip()
@@ -730,7 +742,11 @@ class RemoteOrcaRunner:
                     # a sync abandoned by the close is no outage: neither the
                     # Disconnected flag nor the spot requeue may count it
                     raise OrcaDetached("Monitoring stopped; ORCA left running on the device.")
-                if alive is None:
+                if alive is None and getattr(self, "last_sync_busy", False):
+                    # this machine's connection slots were all taken: the
+                    # device said nothing, so nothing is counted; ask again soon
+                    next_sync = now + min(self.SYNC_EVERY, 2.0)
+                elif alive is None:
                     unknown += 1
                     had_outage = True
                     if lost_since is None:

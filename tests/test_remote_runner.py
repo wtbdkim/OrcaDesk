@@ -173,6 +173,42 @@ def test_a_sync_is_capped_and_the_next_one_carries_on(tmp_path):
     assert r.sync(10) == (None, b"")
 
 
+def test_busy_syncs_never_count_as_a_disconnect(tmp_path):
+    # Syncs that found no free connection slot on THIS machine (RC_BUSY) say
+    # nothing about the device; counting them flagged a healthy AWS device
+    # Disconnected while fetches held the slots (2026-11-23).
+    from orcamgr.remote.ssh import RC_BUSY, RunResult
+    d = _folder(tmp_path)
+    fake = FakeTransport()
+    r = _runner(fake)
+    r.launch(d / "job.inp", d / "job.out")
+    flips = []
+    r.on_disconnect = flips.append
+    real_run = fake.run
+    busy_left = [5]
+
+    def run(alias, script, timeout=30.0, **kw):
+        if "| base64" in script and busy_left[0] > 0:
+            busy_left[0] -= 1
+            return RunResult(RC_BUSY, "", "busy: no free connection slot")
+        return real_run(alias, script, timeout)
+    fake.run = run
+    _finish_on_device(fake)
+    r.monitor(d / "job.out")
+    assert flips == [] and busy_left[0] == 0
+
+
+def test_a_busy_launch_is_remote_busy_not_a_device_failure(tmp_path):
+    from orcamgr.remote.runner import RemoteBusy
+    from orcamgr.remote.ssh import RC_BUSY, RunResult
+    d = _folder(tmp_path)
+    fake = FakeTransport()
+    fake.run = lambda alias, script, timeout=30.0, **kw: RunResult(RC_BUSY, "", "busy")
+    with pytest.raises(RemoteBusy) as ei:
+        _runner(fake).launch(d / "job.inp", d / "job.out")
+    assert getattr(ei.value, "busy", False) is True
+
+
 def test_one_unknown_liveness_answer_is_not_a_disconnect_two_are(tmp_path):
     d = _folder(tmp_path)
     fake = FakeTransport()

@@ -56,6 +56,8 @@ RC_TIMEOUT = 124
 RC_ERROR = 125
 RC_MISSING = 127
 RC_ABORTED = 130      # the caller's stop event fired (app closing): unknown
+RC_BUSY = 122         # no free connection slot on THIS machine in time: the
+                      # device was never asked -- not an outage, not unreachable
 
 
 # A Windows device (Windows OpenSSH Server, whose default shell is cmd.exe)
@@ -138,6 +140,15 @@ class RunResult:
         """Given up because the caller's stop event fired -- not an outage."""
         return self.rc == RC_ABORTED
 
+    @property
+    def busy(self) -> bool:
+        """This machine's own connection cap had no free slot in time: the
+        device was never contacted, so it says nothing about the device.
+        Deliberately NOT unreachable -- counting it as one flagged a healthy
+        AWS device Disconnected and sent its launches back to the queue
+        while 15 fetches held the slots (2026-11-23)."""
+        return self.rc == RC_BUSY
+
 
 class Transport(Protocol):
     """What the remote runner and the device probe need. ``SshTransport`` is
@@ -178,17 +189,31 @@ def _local_for_sftp(p: Path) -> str:
 # 2026-11-23; five launches failed and went back to PENDING). Win32-OpenSSH
 # has no connection multiplexing to fall back on, so the client queues
 # instead: a call waits for a free slot within its own timeout.
-MAX_CONNECTIONS_PER_DEVICE = 4
-_gates: "dict[str, threading.BoundedSemaphore]" = {}
+#
+# Commands (sync, liveness, mkdir, launch, delete -- short) and file transfers
+# (sftp put/get -- long: a whole run folder from Sydney takes tens of seconds)
+# have SEPARATE slots. With one shared cap of 4, fifteen jobs finishing
+# together filled every slot with fetches; the 10 s syncs and new launches
+# waited past their timeout, were counted as the device not answering, and a
+# healthy AWS device was flagged Disconnected and lost its launches
+# (2026-11-23). 6 + 2 stays under sshd's default 10.
+MAX_CONNECTIONS_PER_DEVICE = 6     # commands
+MAX_TRANSFERS_PER_DEVICE = 2       # sftp put/get
+_gates: "dict[tuple, threading.BoundedSemaphore]" = {}
 _gates_lock = threading.Lock()
 
 
-def _gate(alias: str) -> "threading.BoundedSemaphore":
+def _gate(alias: str, kind: str = "cmd") -> "threading.BoundedSemaphore":
     with _gates_lock:
-        g = _gates.get(alias)
+        g = _gates.get((alias, kind))
         if g is None:
-            g = _gates[alias] = threading.BoundedSemaphore(MAX_CONNECTIONS_PER_DEVICE)
+            n = MAX_TRANSFERS_PER_DEVICE if kind == "xfer" else MAX_CONNECTIONS_PER_DEVICE
+            g = _gates[(alias, kind)] = threading.BoundedSemaphore(n)
         return g
+
+
+class Busy(Exception):
+    """No connection slot freed up in time on this machine (RC_BUSY)."""
 
 
 class Aborted(Exception):
@@ -203,22 +228,25 @@ class Aborted(Exception):
 _STOP_POLL = 0.2
 
 
-def _gated_run(alias: str, argv: list, data: bytes, timeout: float, stop=None):
-    """Run ``argv`` under the device's connection cap, feeding it ``data``.
+def _gated_run(alias: str, argv: list, data: bytes, timeout: float, stop=None,
+               kind: str = "cmd"):
+    """Run ``argv`` under the device's connection cap (``kind`` "cmd" or
+    "xfer"), feeding it ``data``.
 
-    Raises subprocess.TimeoutExpired when no slot frees up, or the child does
-    not finish, within ``timeout`` -- the callers turn that into RC_TIMEOUT
+    Raises Busy when no slot frees up within ``timeout`` (the device was never
+    asked: RC_BUSY), subprocess.TimeoutExpired when the child does not finish
+    within ``timeout`` once started -- the callers turn that into RC_TIMEOUT
     (an unknown, never a "no") -- and Aborted as soon as ``stop`` (a
     threading.Event, optional) is set, while waiting for a slot or while the
     child runs. Either way the child is killed and reaped: no ssh/sftp is
     ever left behind."""
-    gate = _gate(alias)
+    gate = _gate(alias, kind)
     deadline = time.monotonic() + max(1.0, timeout)
     while not gate.acquire(timeout=_STOP_POLL):
         if stop is not None and stop.is_set():
             raise Aborted()
         if time.monotonic() >= deadline:
-            raise subprocess.TimeoutExpired(argv, timeout)
+            raise Busy()
     try:
         p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, creationflags=_no_window())
@@ -275,6 +303,8 @@ class SshTransport:
             p = _gated_run(alias, argv, script.encode("utf-8"), timeout, stop)
         except Aborted:
             return RunResult(RC_ABORTED, "", "aborted")
+        except Busy:
+            return RunResult(RC_BUSY, "", "busy: no free connection slot")
         except FileNotFoundError:
             return RunResult(RC_MISSING, "", "ssh-not-found")
         except subprocess.TimeoutExpired:
@@ -298,6 +328,8 @@ class SshTransport:
             p = _gated_run(alias, argv, powershell_stdin(script), timeout, stop)
         except Aborted:
             return RunResult(RC_ABORTED, "", "aborted")
+        except Busy:
+            return RunResult(RC_BUSY, "", "busy: no free connection slot")
         except FileNotFoundError:
             return RunResult(RC_MISSING, "", "ssh-not-found")
         except subprocess.TimeoutExpired:
@@ -320,9 +352,11 @@ class SshTransport:
         argv = [self.sftp, *_COMMON_OPTS, "-q", "-b", "-", alias]
         batch = ("\n".join(lines) + "\n").encode("utf-8")
         try:
-            p = _gated_run(alias, argv, batch, timeout, stop)
+            p = _gated_run(alias, argv, batch, timeout, stop, kind="xfer")
         except Aborted:
             return RunResult(RC_ABORTED, "", "aborted")
+        except Busy:
+            return RunResult(RC_BUSY, "", "busy: no free connection slot")
         except FileNotFoundError:
             return RunResult(RC_MISSING, "", "sftp-not-found")
         except subprocess.TimeoutExpired:
