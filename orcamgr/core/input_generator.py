@@ -376,7 +376,7 @@ class StepConfig:
     # "crest". These drive the separate pipeline in orcamgr/crest/, NOT ORCA:
     # build_input() ignores them (ORCA never sees a CREST calc). Charge and
     # multiplicity come from the Calculation (shared with ORCA), not from here.
-    crest_method: str = "gfn2"           # gfn2 | gfnff | gfn0 | gfn2//gfnff ...
+    crest_method: str = "gfn2"           # gfn2 | gfn1 | gfnff | gfn0 (gfn2//gfnff: not in CREST 3)
     crest_solvent: str = ""              # ALPB implicit-solvent name ("" = gas phase)
     crest_ewin: float = 6.0              # ensemble energy window (kcal/mol)
     crest_threads: int = 4               # CREST -T thread count
@@ -395,6 +395,11 @@ class StepConfig:
     crest_subrmsd: bool = False          # --subrmsd: exclude constrained atoms from the RMSD check
     crest_cluster: bool = False          # --cluster: PCA + k-means (NOT for NCI complexes — doc warns)
     crest_keepdir: bool = False          # --keepdir: keep the per-step generation subdirectories
+    # $constrain force constant (Eh/Bohr^2) of the --cinp file. Written -- with
+    # reference=coord.ref -- only for a CREST whose parser takes those lines
+    # (crest/env.py cinp_extended): the 3.0.2 release crashes on them. 0.5 is
+    # what CREST's own --constrain writes; 0 = leave CREST's default.
+    crest_force_constant: float = 0.5
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -483,6 +488,7 @@ class StepConfig:
         cfg.crest_tnmd_k = _clamp_float(cfg.crest_tnmd_k, 0.0, 0.0, 100_000.0)
         cfg.crest_mddump_fs = _clamp_int(cfg.crest_mddump_fs, 0, 0, 10_000_000)
         cfg.crest_vbdump_ps = _clamp_float(cfg.crest_vbdump_ps, 0.0, 0.0, 100_000.0)
+        cfg.crest_force_constant = _clamp_float(cfg.crest_force_constant, 0.5, 0.0, 100.0)
         return cfg
 
 

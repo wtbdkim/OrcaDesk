@@ -2212,9 +2212,13 @@
   /* CREST's own vocabulary. The method maps
      1:1 onto CREST's flag (build_crest_argv); the solvent is a suggestion
      list, not a closed one — any ALPB/GBSA name CREST knows is taken (D63). */
-  /** @type {[string, string][]} */
+  /* gfn2//gfnff stays in the list, locked: CREST 3 stops on it whatever the
+     build ("not yet available with new calculator", measured on the 3.0.2
+     release and the continuous build), and a CREST set naming it is refused
+     (state/inpsets.py). Shown so a stored block reads as what it is. */
+  /** @type {any[][]} [value, label, disabled?] */
   const CREST_METHODS = [["gfn2", "GFN2-xTB"], ["gfn1", "GFN1-xTB"], ["gfnff", "GFN-FF (fast)"],
-                         ["gfn0", "GFN0-xTB"], ["gfn2//gfnff", "GFN2-xTB // GFN-FF"]];
+                         ["gfn0", "GFN0-xTB"], ["gfn2//gfnff", "GFN2-xTB // GFN-FF — not in CREST 3", true]];
   /** @type {[string, string][]} */
   const CREST_PRESETS = [["", "standard (thorough)"], ["quick", "quick"],
                          ["squick", "super quick"], ["mquick", "micro quick"]];
@@ -2331,11 +2335,14 @@
         o[2] ? " disabled" : ""}>${NB.esc(o[1])}</option>`).join("")}</select></div>`;
   }
   /** A number where empty means "CREST's own default", said in the placeholder.
-   *  @param {string} label @param {string|number} value @param {string} ph @param {string} [cls] */
-  function optNum(label, value, ph, cls) {
-    return `<div class="field ${cls || ""}"><label>${NB.esc(label)}</label>
+   *  `lock` (a reason) disables it, the reason on hover -- for a knob the
+   *  CREST that will run cannot take.
+   *  @param {string} label @param {string|number} value @param {string} ph @param {string} [cls]
+   *  @param {string} [lock] */
+  function optNum(label, value, ph, cls, lock) {
+    return `<div class="field ${cls || ""}"${lock ? ` title="${NB.esc(lock)}"` : ""}><label>${NB.esc(label)}</label>
       <input type="number" class="mono" min="0" step="any" value="${NB.esc(String(value))}"
-             placeholder="${NB.esc(ph)}"></div>`;
+             placeholder="${NB.esc(ph)}"${lock ? " disabled" : ""}></div>`;
   }
 
   /** What each group of data/mace_licenses.json means, in the words the
@@ -2452,11 +2459,22 @@
       : "";
     const solvent = cfg.crest_solvent || "";
     const sid = "dl" + (++_uid);
+    // The constraint force constant needs a CREST whose --cinp parser takes
+    // it (the 3.0.2 release segfaults; crest/env.py asks each binary). Judged
+    // for the target that will run: the block's own, else Settings' pick,
+    // else the first with CREST -- the engine's order.
+    const runOn = env || (local ? "local" : ((NB.settings && NB.settings.crest_distro) || readyTargets[0] || ""));
+    const runInfo = ((c && c.distros) || []).find(x => x.distro === runOn && x.ready);
+    const fcLock = runInfo && runInfo.cinp_extended ? "" : (runInfo
+      ? "This CREST build cannot take a constraint force constant (the 3.0.2 release crashes on it): CREST's own default is used. A newer CREST build unlocks it."
+      : "Shown once CREST is found: a build that takes it unlocks the field.");
+    const fc = cfg.crest_force_constant == null ? DEF.crest_force_constant : cfg.crest_force_constant;
     // Advanced opens by itself when something in it is set, so a stored knob
     // is never hidden behind a closed section
     const adv = !!(cfg.crest_mdlen_mult || cfg.crest_tstep_fs || cfg.crest_tnmd_k
       || cfg.crest_mddump_fs || cfg.crest_vbdump_ps || cfg.crest_norotmd || cfg.crest_cbonds
-      || cfg.crest_subrmsd || cfg.crest_cluster || cfg.crest_keepdir);
+      || cfg.crest_subrmsd || cfg.crest_cluster || cfg.crest_keepdir
+      || (cfg.crest_force_constant != null && cfg.crest_force_constant !== DEF.crest_force_constant));
     const tog = (f, label, flag) => `<label class="checkbox"><input type="checkbox" data-f="${f}"${
       cfg["crest_" + f] ? " checked" : ""}> ${label} <span class="mono">${flag}</span></label>`;
     return `<div class="bkform" data-bk="crest">
@@ -2499,6 +2517,13 @@
         </div>
         <p class="hint" style="margin:0 0 12px"><span class="mono">--cluster</span> (PCA + k-means)
           is documented as unsuitable for non-covalent complexes: use it on single molecules.</p>
+        <div class="field-row">
+          ${optNum("Constraint force constant (Eh/Bohr²)", fc, "0.5", "mid", fcLock)}
+        </div>
+        <p class="hint" style="margin:0 0 12px">How hard the structure's constraints hold
+          (<span class="mono">force constant=</span>, beside <span class="mono">reference=coord.ref</span>;
+          0.5 is what CREST's own <span class="mono">--constrain</span> writes, 0 leaves CREST's default).${
+          fcLock && runInfo ? " Locked: this CREST build crashes on it." : ""}</p>
       </details>
       <p class="hint" style="margin:0">CREST takes the charge as <span class="mono">--chrg</span>
         and the multiplicity as unpaired electrons, <span class="mono">--uhf</span> = multiplicity − 1.</p>
@@ -2549,6 +2574,9 @@
       crest_norotmd: chk("norotmd"),
       crest_keepdir: chk("keepdir"),
       crest_cluster: chk("cluster"),
+      // kept as set even while locked: it is written only for a CREST that
+      // takes it (crest/env.py), so an older build simply leaves it out
+      crest_force_constant: num("Constraint force constant (Eh/Bohr²)", DEF.crest_force_constant),
       // the stage's constraints, in the ORCA form's own list: they become the
       // search's --cinp file (crest/runner.py)
       geom_constraints: (st.cons || []).map((/** @type {any} */ c) =>

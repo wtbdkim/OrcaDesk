@@ -455,6 +455,8 @@ class CrestDistroPayload(TypedDict):
     crest_bin: str            # resolved binary path inside the distro, or ""
     version: str              # `crest --version` line, or ""
     error: str                # human-readable detail when not ready
+    cinp_extended: bool       # its --cinp parser takes "force constant=" /
+                              # "reference=" (the 3.0.2 release crashes on them)
 
 
 class CrestStatusPayload(TypedDict):

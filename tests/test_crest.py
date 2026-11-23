@@ -827,3 +827,78 @@ def test_the_engine_writes_the_constraints_file_and_refuses_a_missing_atom(tmp_p
     assert bad.state == CalcState.FAILED
     assert "names atom 6" in bad.message
     assert not (tmp_path / "bad" / "run_crest.sh").exists()
+
+
+# ---------------------------------------------------------------------------
+# The extended --cinp lines (force constant, reference=coord.ref): only for a
+# CREST whose parser takes them. Measured 2026-11-23: the 3.0.2 release
+# (af7eb99) segfaults on either; the continuous build cfdc301 runs them and
+# holds tighter as the force constant grows.
+# ---------------------------------------------------------------------------
+
+from orcamgr.crest.env import cinp_probe_verdict
+from orcamgr.crest.runner import CREST_REFERENCE_FILE, coord_ref_text
+
+
+def _fixed3():
+    return [{"kind": "C", "atoms": [i], "value": None} for i in (0, 1, 2)]
+
+
+def test_extended_text_carries_force_constant_and_reference_before_metadyn():
+    lines = crest_constraints_text(_fixed3(), 9, extended=True, force_constant=0.5).splitlines()
+    assert lines == ["$constrain", "  atoms: 1,2,3", "  force constant=0.5",
+                     "  reference=coord.ref", "$metadyn", "  atoms: 4,5,6,7,8,9", "$end"]
+    # 0 leaves CREST's own force constant; the reference still pins the frame
+    zero = crest_constraints_text(_fixed3(), 9, extended=True, force_constant=0)
+    assert "force constant" not in zero and "  reference=coord.ref" in zero.splitlines()
+    # an older build gets exactly the shape it runs
+    assert crest_constraints_text(_fixed3(), 9, force_constant=0.5) == \
+        crest_constraints_text(_fixed3(), 9)
+
+
+def test_coord_ref_is_a_turbomole_block_in_bohr():
+    text = coord_ref_text("2\n\nO 0 0 0\nH 0 0.52917721067 0\n")
+    rows = text.splitlines()
+    assert rows[0] == "$coord" and rows[-1] == "$end"
+    x, y, z, el = rows[2].split()
+    assert el == "h" and abs(float(y) - 1.0) < 1e-9 and float(x) == 0.0
+    assert rows[1].split()[3] == "o"
+
+
+def test_run_files_write_coord_ref_only_for_an_extended_crest(tmp_path):
+    for transport in ("wsl", "local"):
+        d = tmp_path / transport
+        script = write_crest_run_files(d, "conf", ETHANOL_XYZ, "/c/crest",
+                                       ["--gfn2", "--cinp", "constraints.inp"],
+                                       transport=transport, constraints=_fixed3(),
+                                       extended=True, force_constant=0.5)
+        assert (d / CREST_REFERENCE_FILE).read_text().startswith("$coord")
+        assert "force constant=0.5" in (d / "constraints.inp").read_text()
+        body = script.read_text(encoding="utf-8")
+        if transport == "wsl":
+            assert body.index('cp "$MNT/coord.ref" "$SCRATCH/"') < body.index('cd "$SCRATCH"')
+        else:
+            assert 'cp "$MNT/coord.ref"' not in body
+    # the same folder re-run for an older build: no reference left behind
+    d = tmp_path / "local"
+    write_crest_run_files(d, "conf", ETHANOL_XYZ, "/c/crest", [], transport="local",
+                          constraints=_fixed3(), extended=False, force_constant=0.5)
+    assert not (d / CREST_REFERENCE_FILE).exists()
+    assert "force constant" not in (d / "constraints.inp").read_text()
+
+
+@pytest.mark.parametrize("out,want", [
+    ("PROBE_RC=124\nPROBE_CRASH=0\n", True),        # still running at the cut-off
+    ("PROBE_RC=0\nPROBE_CRASH=0\n", True),
+    ("PROBE_RC=139\nPROBE_CRASH=1\n", False),       # the 3.0.2 release's segfault
+    ("PROBE_RC=1\nPROBE_CRASH=1\n", False),         # "Error allocating ... bytes"
+    ("", None),                                     # the transport never ran it
+])
+def test_the_cinp_probe_reads_a_crash_as_no(out, want):
+    assert cinp_probe_verdict(out) is want
+
+
+def test_force_constant_defaults_to_crest_constrain_and_is_clamped():
+    assert StepConfig.from_dict({"kind": "crest_conf"}).crest_force_constant == 0.5
+    assert StepConfig.from_dict({"kind": "crest_conf", "crest_force_constant": 2}).crest_force_constant == 2.0
+    assert StepConfig.from_dict({"kind": "crest_conf", "crest_force_constant": 1e9}).crest_force_constant == 100.0

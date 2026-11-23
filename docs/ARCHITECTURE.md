@@ -2673,8 +2673,9 @@ was validated end to end against a real CREST 3.0.2 install in WSL Ubuntu
 (including the conformer→ORCA handoff).
 
 `build_crest_argv` (`crest/runner.py`) maps `StepConfig.crest_*` to CLI flags:
-method (the label maps 1:1 onto CREST's flag — `gfn2` → `--gfn2`, incl.
-`gfn2//gfnff`; an already-dashed value passes through verbatim), solvent
+method (the label maps 1:1 onto CREST's flag — `gfn2` → `--gfn2`; an
+already-dashed value passes through verbatim; `gfn2//gfnff` is locked, see
+below), solvent
 (`--alpb`/`--gbsa` by `crest_solvent_model`),
 `--ewin`, `-T`, plus the optional advanced knobs — `crest_preset`
 (`--quick`/`--squick`/`--mquick`), `crest_nci` (`--nci`), the MD/MTD numerics
@@ -2722,7 +2723,32 @@ the file restricts the metadynamics bias to the other atoms (`$metadyn atoms:`
 — what CREST's own `--constrain` generates), which is also the subset
 `--subrmsd` compares. `auto` works for distance, angle and dihedral;
 `reference=` is not needed. A constrained run (dihedral held at 180°) ended
-normally with every conformer at that dihedral. Atom indices are checked like
+normally with every conformer at that dihedral.
+
+**A newer CREST build takes the force constant — asked of the binary.**
+Re-measured 2026-11-23 against the 3.0.2 release (`af7eb99`) and the
+continuous build (`cfdc301`, 2026-06-16, which still prints "Version 3.0.2"):
+every flag ORCAdesk emits behaves the same in both, but the release dies on
+four `--cinp` shapes the newer build runs — `force constant=`, `reference=`,
+a single atom and a range (CREST's *own* `--constrain` sample, passed back
+with `--cinp`, segfaults on the release). On `cfdc301` the hold tightens with
+the force constant (C1…H9 held with `atoms:`, max deviation over the MTD
+0.17 / 0.08 / 0.02 Å at 0.05 / 0.5 / 5). The version line cannot tell the
+two apart, so `crest/env.py` `cinp_extended` runs the binary once on a water
+with both lines (cut off at 15 s; the release crashes in under a second),
+caches the verdict per (target, binary, version line) and publishes it as
+`CrestDistroPayload.cinp_extended`. `_run_crest_calc` asks it for a
+constrained calc: yes → the file also carries `force constant=` (the calc's
+`crest_force_constant`, default 0.5 as CREST's `--constrain` writes; 0 leaves
+CREST's own) and `reference=coord.ref`, and `coord_ref_text` writes that
+`coord.ref` (Turbomole `$coord`, bohr, the input's frame — a constraint reads
+only internal coordinates) beside the input, staged into WSL scratch with it;
+no → the old shape and one warn line. The builder's force-constant field is
+locked (with the reason on hover) when the target that will run cannot take
+it. Single atoms and ranges stay unwritten on every build (one fixed atom
+holds nothing). `--gfn2//gfnff` stops on both builds ("not yet available
+with new calculator"): the builder shows it locked and a CREST set naming it
+is refused (`inpsets.CREST_UNAVAILABLE_METHODS`). Atom indices are checked like
 ORCA's: against coordinates in hand when the calc is added (`calc_from_dict`),
 against a referenced geometry in `_run_crest_calc` before CREST starts. A
 CREST *set* has no constraint line, so a set put on a calc clears them. The

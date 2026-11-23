@@ -1983,6 +1983,14 @@ target and their *Apply*, saved as the same `geom_constraints` — but no
 CREST's own: fixed atoms keep their distances to each other, not their
 places, so at least two are needed (Add refuses one, as does the backend),
 and *Constrained atoms out of the RMSD* (`--subrmsd`) usually goes with them.
+The CREST form's Advanced section carries *Constraint force constant
+(Eh/Bohr²)* (0.5, as CREST's own `--constrain` writes): a `.field` that is
+**disabled, its reason on hover and in the hint below it**, when the CREST
+that will run cannot take the line (the 3.0.2 release crashes on it;
+`CrestDistroPayload.cinp_extended`). A capability the backend lacks is shown
+locked, never hidden, so the form reads the same on every install; the same
+rule draws *GFN2-xTB // GFN-FF — not in CREST 3* as a disabled option of the
+Method select.
 An MLIP calculation has no constraints. D41 as amended decides the picker, from the polled
 backend status: a backend never set up has **no button**, only *+ More
 backends…*, which opens Settings; one set up but not ready (an environment that

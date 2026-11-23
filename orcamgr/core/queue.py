@@ -1829,10 +1829,25 @@ class QueueEngine:
             if err:
                 raise OrcaRunError(err)
 
+        # A CREST whose --cinp parser takes "force constant=" / "reference="
+        # gets them (the 3.0.2 release segfaults on either, so it is asked of
+        # the binary, crest/env.py); otherwise the file stays the shape every
+        # build runs and CREST's own force constant applies -- said once.
+        extended = False
+        if constraints:
+            from ..crest.env import cinp_extended
+            extended = cinp_extended(distro, crest_bin)
+            if not extended:
+                self.cb.log(f"[{calc.name}] this CREST build cannot take a constraint "
+                            "force constant (the 3.0.2 release crashes on it); CREST's "
+                            "own default applies.", "warn", calc.name)
+
         calc_dir.mkdir(parents=True, exist_ok=True)
         argv = build_crest_argv(calc.config, calc.charge, calc.multiplicity)
-        script_path = write_crest_run_files(calc_dir, calc.name, xyz, crest_bin, argv,
-                                            constraints=constraints)
+        script_path = write_crest_run_files(
+            calc_dir, calc.name, xyz, crest_bin, argv, constraints=constraints,
+            extended=extended,
+            force_constant=float(getattr(calc.config, "crest_force_constant", 0.0) or 0.0))
 
         method = getattr(calc.config, "crest_method", "") or "gfn2"
         # Name where it runs, because the answer differs per machine and the log

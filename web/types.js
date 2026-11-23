@@ -293,6 +293,8 @@
  * @property {boolean} [crest_subrmsd]  --subrmsd (exclude constrained from RMSD)
  * @property {boolean} [crest_cluster]  --cluster (PCA+k-means; not for complexes)
  * @property {boolean} [crest_keepdir]  --keepdir (keep per-step directories)
+ * @property {number} [crest_force_constant]  $constrain force constant, Eh/Bohr² (0.5; 0 = CREST's
+ *   own) -- written only for a CREST whose parser takes it (CrestDistroPayload.cinp_extended)
  */
 
 /**
@@ -605,6 +607,8 @@
  * @property {string} crest_bin   resolved binary path inside the distro, or ""
  * @property {string} version     `crest --version` line, or ""
  * @property {string} error       detail when not ready
+ * @property {boolean} [cinp_extended]  its --cinp parser takes "force constant=" /
+ *   "reference=" (the 3.0.2 release crashes on them; the builder locks the field)
  */
 
 /**

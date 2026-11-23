@@ -271,11 +271,18 @@ def test_a_level_text_has_no_level_forms():
 
 # ---- CREST sets -------------------------------------------------------------
 
+def test_a_crest_set_naming_gfn2_gfnff_is_refused():
+    # CREST 3 stops on --gfn2//gfnff whatever the build (measured: the 3.0.2
+    # release and the continuous build cfdc301): refused, never run to fail
+    with pytest.raises(ValueError, match="not yet available"):
+        crest_config_from_text("method GFN2//GFNFF\n")
+
+
 def test_crest_text_maps_onto_the_config_fields():
     assert crest_config_from_text(
-        "# screening\nmethod GFN2//GFNFF\nsolvent water\newin 3.5\nthreads 99999\n"
+        "# screening\nmethod GFN1\nsolvent water\newin 3.5\nthreads 99999\n"
         "preset quick\nnci yes\nsolvent_model GBSA\nenv Ubuntu-24.04\n") == {
-        "crest_method": "gfn2//gfnff", "crest_solvent": "water", "crest_ewin": 3.5,
+        "crest_method": "gfn1", "crest_solvent": "water", "crest_ewin": 3.5,
         "crest_threads": 1024, "crest_preset": "quick", "crest_nci": True,
         "crest_solvent_model": "gbsa", "crest_env_id": "Ubuntu-24.04"}
     # a key left out is not set (the store gives it the default); "none" is

@@ -98,6 +98,11 @@ _CREST_BOOL = {"yes": True, "true": True, "on": True, "1": True,
 #: a method / solvent becomes one CREST command-line argument
 #: (crest.runner.build_crest_argv): one token of these characters
 _CREST_TOKEN = re.compile(r"^[A-Za-z0-9_.,()/+-]+$")
+#: methods CREST 3 refuses outright, whatever the build: "--gfn2//gfnff" stops
+#: with "option not yet available with new calculator" (measured on the 3.0.2
+#: release and the continuous build cfdc301, 2026-11-23)
+CREST_UNAVAILABLE_METHODS = {"gfn2//gfnff": "CREST 3 stops on --gfn2//gfnff "
+                             "(\"not yet available with new calculator\")"}
 #: the seeded CREST set
 CREST_SEED = {"id": "seed-crest", "name": "GFN2-xTB", "kind": "CREST",
               "text": "method gfn2\newin 6\nthreads 4"}
@@ -191,7 +196,10 @@ def crest_config_from_text(text: str) -> dict:
         if key == "method":
             if not _CREST_TOKEN.match(value):
                 raise ValueError(f"CREST set line {n}: method is one word "
-                                 "(gfn2, gfnff, gfn0, gfn2//gfnff ...).")
+                                 "(gfn2, gfn1, gfnff, gfn0 ...).")
+            if low in CREST_UNAVAILABLE_METHODS:
+                raise ValueError(f"CREST set line {n}: {CREST_UNAVAILABLE_METHODS[low]}; "
+                                 "use gfn2 or gfnff.")
             out[field] = low
         elif key == "solvent":
             if value and not _CREST_TOKEN.match(value):

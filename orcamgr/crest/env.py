@@ -58,10 +58,93 @@ def resolve_crest_bin(distro: str, timeout: float = 30.0) -> tuple[str, str]:
     return path, version
 
 
+# Does this binary's --cinp parser take ``force constant=`` and ``reference=``?
+# The CREST 3.0.2 release segfaults on either (measured, crest/runner.py); the
+# continuous build cfdc301, which still says "Version 3.0.2", does not. The
+# version line cannot tell them apart, so the binary is asked: a water with a
+# constraints file holding both lines (and the coord.ref it names), cut off
+# after 15 s. The release dies while parsing, in well under a second.
+_CINP_PROBE = r"""
+d=$(mktemp -d 2>/dev/null) || exit 3
+cd "$d" || exit 3
+cat > p.xyz <<'XYZ'
+3
+
+O 0.000000 0.000000 0.000000
+H 0.000000 0.757000 0.587000
+H 0.000000 -0.757000 0.587000
+XYZ
+cat > coord.ref <<'REF'
+__COORD__REF
+cat > c.inp <<'CINP'
+$constrain
+  atoms: 1,2
+  force constant=0.5
+  reference=coord.ref
+$metadyn
+  atoms: 3
+$end
+CINP
+timeout 15 __BIN__ p.xyz --gfn2 -T 1 --cinp c.inp > log 2>&1
+echo "PROBE_RC=$?"
+echo "PROBE_CRASH=$(grep -ciE 'segmentation|sigsegv|error allocating' log)"
+cd / && rm -rf "$d"
+"""
+_cinp_cache: dict = {}
+
+
+def cinp_probe_verdict(out: str):
+    """True / False from the probe's output, or None when it never ran (the
+    transport failed) -- an unknown is not cached and reads as "no"."""
+    rc = crash = None
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if line.startswith("PROBE_RC="):
+            rc = line[len("PROBE_RC="):]
+        elif line.startswith("PROBE_CRASH="):
+            crash = line[len("PROBE_CRASH="):]
+    if rc is None:
+        return None
+    if rc in ("134", "139") or (crash not in (None, "", "0")):
+        return False
+    return True
+
+
+def cinp_extended(distro: str, crest_bin: str, version: str = "",
+                  timeout: float = 40.0) -> bool:
+    """Whether ``crest_bin`` on ``distro`` takes the extended --cinp lines
+    (force constant, reference). Asked once per (target, binary, version
+    line) and remembered; a binary replaced in place under the same version
+    line is asked again only after a restart."""
+    if not crest_bin:
+        return False
+    import shlex
+    if not version:
+        _, version = resolve_crest_bin(distro, timeout=timeout)
+    key = (distro, crest_bin, version)
+    if key in _cinp_cache:
+        return _cinp_cache[key]
+    from .runner import coord_ref_text
+    ref = coord_ref_text("3\n\nO 0.000000 0.000000 0.000000\n"
+                         "H 0.000000 0.757000 0.587000\nH 0.000000 -0.757000 0.587000\n")
+    script = (_CINP_PROBE.replace("__COORD__", ref)
+              .replace("__BIN__", shlex.quote(crest_bin)))
+    try:
+        _rc, out, _err = run_bash(distro, script, timeout=timeout, login=True)
+    except Exception:
+        return False
+    verdict = cinp_probe_verdict(out)
+    if verdict is None:
+        return False
+    _cinp_cache[key] = verdict
+    return verdict
+
+
 def probe_distro(distro: str, timeout: float = 30.0) -> dict:
     """Probe one target for CREST (a WSL distro, or this machine). Returns
-    {distro, ready, crest_bin, version, error}."""
-    result = {"distro": distro, "ready": False, "crest_bin": "", "version": "", "error": ""}
+    {distro, ready, crest_bin, version, error, cinp_extended}."""
+    result = {"distro": distro, "ready": False, "crest_bin": "", "version": "", "error": "",
+              "cinp_extended": False}
     try:
         path, version = resolve_crest_bin(distro, timeout=timeout)
     except Exception as e:  # never let a probe crash the indicator
@@ -71,6 +154,7 @@ def probe_distro(distro: str, timeout: float = 30.0) -> dict:
         result["ready"] = True
         result["crest_bin"] = path
         result["version"] = version
+        result["cinp_extended"] = cinp_extended(distro, path, version)
     else:
         result["error"] = ("CREST not found on this machine." if is_local()
                            else "CREST not found in this distro.")

@@ -52,6 +52,20 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   and says why.
 
 ### Changed
+- **CREST constraints can hold harder, on a CREST build that allows it.**
+  The CREST form's Advanced section has *Constraint force constant* (0.5 by
+  default, what CREST's own `--constrain` writes). For a CREST build whose
+  constraint parser takes it, the constraints file now carries the force
+  constant and `reference=coord.ref` (written beside the input), exactly as
+  CREST's own `--constrain` sets them up. The CREST 3.0.2 release crashes on
+  both lines, so ORCAdesk checks the installed binary once: on that release
+  the field is locked with the reason, and the file keeps the shape it has
+  always had. Measured: the continuous build of 2026-06-16 takes it and holds
+  the constrained atoms about twice as tight at 0.5 as at CREST's default.
+- **GFN2-xTB // GFN-FF is locked for CREST.** CREST 3 stops on
+  `--gfn2//gfnff` ("not yet available with new calculator") on every build
+  tried, so the method is shown disabled and a CREST set naming it is refused
+  instead of running into the error.
 - **The conformer picker's count starts empty.** It assumed 5; empty now
   means every conformer the search found (*Add 38 single points (all 38
   conformers)*). Before the search has run, a number has to be typed.
