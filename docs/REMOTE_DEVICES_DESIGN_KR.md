@@ -42,7 +42,14 @@ DONE이 되고, 원격 쪽 폴더는 검증 후 지운다. 사용자에게 원�
 - GPU를 쓰는 계산(`uses_gpu`).
 - 로컬 절대 경로를 적어 넣은 raw `.inp` (예: `%moinp "D:/…/x.gbw"`). 원격에는 그
   경로가 없다. 판별: raw 텍스트에 드라이브 경로(`[A-Za-z]:[\\/]`)가 있으면 로컬 전용.
-- Windows 원격 기기, SLURM 같은 HPC 스케줄러 — transport 추상화만 열어 둔다.
+- SLURM 같은 HPC 스케줄러 — transport 추상화만 열어 둔다.
+- ~~Windows 원격 기기~~ → **구현됨 (2026-11-23, 사용자 노트북용)**: 점검이 `sh -s`
+  실패(cmd.exe)나 MSYS bash 응답을 보면 PowerShell로 다시 점검하고, 실행은 WMI
+  `Win32_Process Create`(SSH 세션이 끝나도 살아남음), 종료는 `taskkill /T /F`,
+  나머지(10초 동기화, 폴더 전체 가져오기·검증·삭제, 선호 계산, 스팟, 정리 목록)는
+  Linux와 같다. 어느 플랫폼인지는 원격 폴더 경로 모양(`C:/…`)으로 판단한다.
+  이 PC의 로컬 PowerShell로 검증(실제 ORCA 1코어·MS-MPI 2프로세스 포함), 실제
+  Windows sshd 너머는 미검증. 노트북 설정법은 `docs/WINDOWS_REMOTE_SETUP_KR.md`.
 - 클라우드 VM 켜기/끄기 — 사용자가 직접 한다.
 
 ## 3. 사용자 쪽 준비 (D1)

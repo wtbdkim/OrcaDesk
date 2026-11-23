@@ -27,6 +27,7 @@ from typing import Callable, Dict, Iterable, List, Optional
 
 from ..core.resources import ResourceBudget
 from .ssh import RunResult, Transport, valid_alias
+from .winplatform import is_windows_path, looks_like_windows_shell, windows_probe_script
 
 DEFAULT_WORKDIR = "~/orcadesk-runs"
 
@@ -303,12 +304,13 @@ def interpret_probe(alias: str, res: RunResult) -> DeviceInfo:
     info.mem_avail_mb = _int(kv.get("mem_avail_kb", "0")) // 1024
     orca = kv.get("orca", "")
     info.has_mpi = bool(kv.get("mpirun"))
-    info.has_setsid = bool(kv.get("setsid"))
+    # a Windows device starts ORCA through WMI (winplatform), not setsid
+    info.has_setsid = bool(kv.get("setsid")) or kv.get("launcher") == "wmi"
     info.workdir = kv.get("workdir", "")
     info.free_disk_mb = _int(kv.get("free_kb", "0")) // 1024
-    if info.os != "Linux":
+    if info.os not in ("Linux", "Windows"):
         info.state = "error"
-        info.message = ("Only Linux devices can run calculations"
+        info.message = ("Only Linux and Windows devices can run calculations"
                         + (f" (this one reports {info.os})." if info.os else "."))
         return info
     if orca.startswith("missing:"):
@@ -325,6 +327,12 @@ def interpret_probe(alias: str, res: RunResult) -> DeviceInfo:
         info.state = "error"
         info.message = "The device has no setsid, which ORCAdesk needs to start a calculation."
         return info
+    if info.os == "Windows" and not is_windows_path(info.workdir):
+        # every Windows remote path is kept as X:/... (winplatform); a workdir
+        # on a UNC share has no such form and is not used
+        info.state = "error"
+        info.message = "The run folder on the Windows device must be on a drive (C:\\...)."
+        return info
     if not info.workdir:
         info.state = "error"
         info.message = "Could not use the run folder on the device."
@@ -335,12 +343,26 @@ def interpret_probe(alias: str, res: RunResult) -> DeviceInfo:
 
 def probe(transport: Transport, alias: str, workdir: str = DEFAULT_WORKDIR,
           orca_path: str = "", timeout: float = 30.0) -> DeviceInfo:
-    """Probe one device. Never raises."""
+    """Probe one device. Never raises.
+
+    The POSIX probe goes first. A device that answered but could not run it
+    (Windows OpenSSH's default shell is cmd.exe, which has no ``sh``), or
+    answered from an MSYS / Cygwin bash on Windows, is probed again in
+    PowerShell (winplatform); the Windows answer is kept when it is one."""
     if not valid_alias(alias):
         return DeviceInfo(alias=alias, state="error", checked_at=time.time(),
                           message="Not a usable SSH host name.")
-    return interpret_probe(alias, transport.run(alias, probe_script(workdir, orca_path),
-                                                timeout=timeout))
+    res = transport.run(alias, probe_script(workdir, orca_path), timeout=timeout)
+    first = interpret_probe(alias, res)
+    windowsish = (not res.ok and not res.unreachable) or (
+        res.ok and looks_like_windows_shell(first.os))
+    if windowsish and hasattr(transport, "run_powershell"):
+        wres = transport.run_powershell(alias, windows_probe_script(workdir, orca_path),
+                                        timeout=timeout)
+        win = interpret_probe(alias, wres)
+        if wres.ok and win.os == "Windows":
+            return win
+    return first
 
 
 # --------------------------------------------------------------------------

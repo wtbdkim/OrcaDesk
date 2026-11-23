@@ -55,6 +55,39 @@ RC_ERROR = 125
 RC_MISSING = 127
 
 
+# A Windows device (Windows OpenSSH Server, whose default shell is cmd.exe)
+# runs its scripts in PowerShell. The command line carries only this short,
+# fixed bootstrap, base64 UTF-16LE in -EncodedCommand -- nothing for cmd.exe to
+# re-quote, and far under its 8191-character limit whatever the script's
+# size. The script itself arrives on stdin as base64 of its UTF-8 text, and
+# its output leaves as UTF-8 bytes written straight to the stdout stream:
+# PowerShell's own console output follows the OEM code page, which turned a
+# Korean user-profile path into mojibake (measured, Windows 11, PowerShell
+# 5.1). `exit N` inside the script ends the process with N (measured).
+PS_BOOTSTRAP = (
+    "$ProgressPreference='SilentlyContinue';"
+    "$o=[Console]::OpenStandardOutput();"
+    "$s=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()));"
+    "& ([scriptblock]::Create($s)) | ForEach-Object { "
+    "$b=[Text.Encoding]::UTF8.GetBytes([string]$_ + [char]10); $o.Write($b,0,$b.Length) }; "
+    "$o.Flush()")
+
+
+def powershell_command() -> list:
+    """The remote command (as words) that runs a script sent on stdin
+    through PS_BOOTSTRAP; see powershell_stdin for what goes in."""
+    import base64
+    return ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-EncodedCommand",
+            base64.b64encode(PS_BOOTSTRAP.encode("utf-16-le")).decode("ascii")]
+
+
+def powershell_stdin(script: str) -> bytes:
+    """A PowerShell script as PS_BOOTSTRAP reads it from stdin."""
+    import base64
+    return base64.b64encode(script.encode("utf-8"))
+
+
 def valid_alias(alias: str) -> bool:
     """Whether ``alias`` may be handed to ssh as a host argument."""
     return bool(alias) and isinstance(alias, str) and bool(_ALIAS_RE.match(alias))
@@ -152,6 +185,28 @@ class SshTransport:
         argv = [self.ssh, *_COMMON_OPTS, alias, "sh", "-s"]
         try:
             p = subprocess.run(argv, input=script.encode("utf-8"),
+                               capture_output=True, timeout=timeout,
+                               creationflags=_no_window())
+        except FileNotFoundError:
+            return RunResult(RC_MISSING, "", "ssh-not-found")
+        except subprocess.TimeoutExpired:
+            return RunResult(RC_TIMEOUT, "", "timeout")
+        except (subprocess.SubprocessError, OSError) as e:
+            return RunResult(RC_ERROR, "", f"ssh-error: {e}")
+        return RunResult(p.returncode,
+                         (p.stdout or b"").decode("utf-8", "replace"),
+                         (p.stderr or b"").decode("utf-8", "replace"))
+
+    def run_powershell(self, alias: str, script: str, timeout: float = 30.0) -> RunResult:
+        """Run a PowerShell ``script`` on a Windows ``alias`` (see
+        PS_BOOTSTRAP). Same contract as run: never raises."""
+        if not valid_alias(alias):
+            return RunResult(RC_ERROR, "", f"not a usable host alias: {alias!r}")
+        if not self.ssh:
+            return RunResult(RC_MISSING, "", "ssh-not-found")
+        argv = [self.ssh, *_COMMON_OPTS, alias, *powershell_command()]
+        try:
+            p = subprocess.run(argv, input=powershell_stdin(script),
                                capture_output=True, timeout=timeout,
                                creationflags=_no_window())
         except FileNotFoundError:

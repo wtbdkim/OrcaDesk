@@ -6,8 +6,16 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **Remote compute devices over SSH (in development; the SSH side has been
-  tried against a real host, a real ORCA on the device not yet).** Settings › *Compute devices* lists the hosts in your SSH
+- **Windows PCs as compute devices.** A Windows laptop or PC with OpenSSH
+  Server on can take calculations too: ORCAdesk recognises it as Windows by
+  itself, starts ORCA there so that it keeps running when the connection
+  drops, and treats it like a Linux device in everything else (results come
+  back whole, preferences, cancel). How to set the laptop up:
+  `docs/WINDOWS_REMOTE_SETUP_KR.md`. Tried on a Windows machine locally
+  (including a real ORCA run on 1 and 2 processes); not yet over a real
+  Windows SSH connection.
+- **Remote compute devices over SSH (in development; a real ORCA has run on
+  a cloud Linux device, on 1 and 4 processes).** Settings › *Compute devices* lists the hosts in your SSH
   config (you set them up there yourself); switch one on and the queue sends
   ORCA calculations that do not fit on this machine to it, each device with
   its own core / memory / job limits. The whole run folder comes back before

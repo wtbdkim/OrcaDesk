@@ -136,7 +136,7 @@
         <div class="scard">
           <div class="scard-title">Compute devices</div>
           <p class="scard-desc">Other computers the queue can send ORCA calculations to — a cloud
-            VM or a Linux PC you reach over SSH. They are the hosts in your SSH config
+            VM, a Linux PC or a Windows PC (OpenSSH Server on) you reach over SSH. They are the hosts in your SSH config
             (<span class="mono" data-a="d-config"></span>): set one up there first, so that
             <span class="mono">ssh</span> logs in to it without asking for a password, and install
             ORCA on it. A calculation that does not fit on this machine goes to the first device

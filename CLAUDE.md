@@ -121,7 +121,7 @@ testable). Where to look, by area (each is a section of `docs/ARCHITECTURE.md`):
 | MLIP | `mlip/` | User's own env runs the worker; one env per MLIP; import-probe readiness. |
 | CREST | `crest/` (`shell.py` = transport) | WSL distro on Windows, `"local"` elsewhere; detected, never configured. |
 | 2D drawing (add-on) | `draw2d/`, `web/next/draw2d.js` | RDKit only in the user's own env (worker via `python -c`, once per structure); projection/stereo/SVG in JS per redraw; never bundled. |
-| Remote devices | `remote/` (`ssh.py`, `devices.py`, `runner.py`) | `~/.ssh/config` hosts, detected; one pool per device; whole folder back + verified before DONE. |
+| Remote devices | `remote/` (`ssh.py`, `devices.py`, `runner.py`, `winplatform.py`) | `~/.ssh/config` hosts, detected (Linux or Windows, by the probe); one pool per device; whole folder back + verified before DONE. |
 | Cubes / viewer | `core/plot.py`, `cube.py`, `molview.py`, `web/next/mvwin.js` | orca_plot driven by verified menu sequences; grid-qualified cube names. |
 | NBO | `nbo/` | ORCAdesk's own reimplementation — never presented as NBO-program-compatible (P5, A25). |
 | Text encoding | `textio.py` | ORCA `.out` on Windows is mixed UTF-8 / ANSI; decode process output via `decode_process_output`. |

@@ -2011,12 +2011,47 @@ probe, sftp upload, `setsid` launch, the 10 s base64 sync (the local `.out`
 grows a step per sync), whole-folder fetch + name/size verification, guarded
 delete, cancel, and a 30 s sshd outage (the `disconnected` flag rose after two
 unanswered syncs, fell on the next answered one, and the run completed).
-**Not yet verified:** a real ORCA on the device (and whether a non-interactive
-`sh -s` finds OpenMPI for a parallel job), the queue engine placing rows on a
-device through the app, and the ORCA version read from the install folder's
-name. A WSL host stops with the distro's idle shutdown unless something keeps
-it running. The full design, with the user's decisions, is
-`docs/REMOTE_DEVICES_DESIGN_KR.md`; this section is what the code does.
+Since then a **real ORCA on a real cloud device** ran through `RemoteOrcaRunner`
+(AWS EC2 m7a.4xlarge, Ubuntu 24.04, ORCA 6.1.1 `shared_openmpi418`, Ubuntu's
+OpenMPI 4.1.6 from apt): a water SP on 1 and on 4 MPI processes, same energy,
+the whole folder back and the remote copy deleted — so a non-interactive
+`sh -s` finds `mpirun` in `/usr/bin`, and the probe read 6.1.1 from the
+install folder's name. **Not yet verified:** the queue engine placing rows on
+a device through the app. A WSL host stops with the distro's idle shutdown
+unless something keeps it running. The full design, with the user's
+decisions, is `docs/REMOTE_DEVICES_DESIGN_KR.md`; this section is what the
+code does.
+
+**Windows devices** (`winplatform.py`). A Windows PC with OpenSSH Server on
+(its default shell is cmd.exe, so `sh -s` fails) is found by the probe's
+fallback: a device that answered but could not run the POSIX probe, or
+answered from MSYS / Cygwin bash, is probed again in PowerShell
+(`windows_probe_script`: cores from Win32_Processor, memory, ORCA — `orca.exe`
+on PATH or `C:\ORCA*`, `C:\Program Files\ORCA*`, `%USERPROFILE%\ORCA*`, only
+beside `orca_2mkl.exe` — MS-MPI's `mpiexec`, the workdir under USERPROFILE).
+Every script goes through one fixed bootstrap (`ssh.PS_BOOTSTRAP`) in
+`powershell -EncodedCommand`; the script itself arrives on stdin as base64 of
+its UTF-8 text and its output leaves as raw UTF-8 bytes — PowerShell's
+console output follows the OEM code page, which turned a Korean profile path
+into mojibake (measured). Which platform a remote folder is on is read from
+its shape (`runner.platform_for`: the probe resolves a Windows workdir to
+`C:/...`, a POSIX one to `/...`), so a reattach and the clean-up list need no
+extra field and the platform is always the device's (P58); remote paths stay
+in that one form and `sftp_path` makes them `/C:/...` for sftp. Windows has no
+setsid: `launch` creates `cmd.exe /c ""<orca.exe>" <name>.inp > <name>.out 2>&1"`
+with `Invoke-CimMethod Win32_Process Create`, so ORCA's parent is the WMI
+provider host, outside the SSH session's job object (which kills its
+processes when the session ends); pid + CreationDate (ms since the epoch)
+identify it, `taskkill /T /F` takes the tree down, the sync opens the `.out`
+FileShare.ReadWrite, and the delete guard (`guard_windows_dir`, then
+GetFullPath on the device) compares without case and never accepts a drive
+root. Verified on a Windows 11 dev machine through a local PowerShell
+(`tests/local_ps_transport.py` runs the same bootstrap minus ssh): the
+detached launch, liveness, sync from an offset, listing, fetch + verify +
+delete, a cancel that left no child behind, and — with `ORCADESK_SMOKE=1` — a
+real ORCA 6.1.1 water SP on 1 and on 2 MS-MPI processes. Over a real Windows
+sshd it is UNVERIFIED until a device is set up
+(`docs/WINDOWS_REMOTE_SETUP_KR.md`).
 
 **Which devices exist is detected, not configured (P58).** `devices.parse_ssh_config`
 reads the `Host` aliases of `~/.ssh/config` (following `Include`, skipping

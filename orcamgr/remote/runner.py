@@ -58,6 +58,7 @@ from ..core.runner import (OrcaCancelled, OrcaDetached, OrcaHung, OrcaRunError,
                            _FATAL_MARKERS, _HUNG_AFTER, _fatal_line)
 from ..core.tailer import FileTailer
 from .ssh import RunResult, Transport
+from .winplatform import WINDOWS, is_windows_path
 
 log = logging.getLogger("orcamgr.remote")
 
@@ -247,6 +248,47 @@ def _remove_script(remote_dir: str, workdir: str) -> str:
             "case \"$r\" in \"$w\"/?*) rm -rf -- \"$r\" && echo removed ;; *) exit 3 ;; esac\n")
 
 
+# ---- the remote platform -----------------------------------------------------
+
+class PosixPlatform:
+    """The POSIX scripts above behind the interface winplatform.WindowsPlatform
+    shares, so everything below drives either kind of device."""
+
+    name = "posix"
+
+    @staticmethod
+    def run(transport, alias: str, script: str, timeout: float = 30.0) -> RunResult:
+        return transport.run(alias, script, timeout=timeout)
+
+    @staticmethod
+    def sftp_path(path: str) -> str:
+        return path
+
+    guard = staticmethod(guard_remote_dir)
+
+    @staticmethod
+    def mkdir(remote_dir: str) -> str:
+        return f"mkdir -p -- {_q(remote_dir)}"
+
+    launch = staticmethod(_launch_script)
+    sync = staticmethod(_sync_script)
+    liveness = staticmethod(_liveness_script)
+    kill = staticmethod(_kill_script)
+    idle = staticmethod(_idle_script)
+    listing = staticmethod(_list_script)
+    remove = staticmethod(_remove_script)
+
+
+POSIX = PosixPlatform()
+
+
+def platform_for(path: str):
+    """The platform a remote folder (or workdir) lives on, read from its
+    shape: the probe resolved the workdir to ``C:/...`` on a Windows device
+    and ``/...`` on a POSIX one, and every remote folder is a child of it."""
+    return WINDOWS if is_windows_path(path or "") else POSIX
+
+
 # ---- fetch / verify / delete ------------------------------------------------
 
 @dataclass
@@ -261,7 +303,8 @@ def list_remote_files(transport: Transport, alias: str,
                       remote_dir: str) -> Tuple[Optional[Dict[str, int]], RunResult]:
     """{relative path: size} of every file in ``remote_dir`` (the runner's own
     bookkeeping files left out), or None with the failed result."""
-    res = transport.run(alias, _list_script(remote_dir), timeout=120)
+    pf = platform_for(remote_dir)
+    res = pf.run(transport, alias, pf.listing(remote_dir), timeout=120)
     if not res.ok:
         return None, res
     files: Dict[str, int] = {}
@@ -293,6 +336,7 @@ def fetch_and_verify(transport: Transport, alias: str, remote_dir: str,
                            missing=(res.rc == 3))
     local_dir = Path(local_dir)
     staging = local_dir / (STAGING_PREFIX + posixpath.basename(remote_dir.rstrip("/")))
+    pf = platform_for(remote_dir)
     pairs = []
     for rel in files:
         if not remote_safe_name(rel):
@@ -300,7 +344,7 @@ def fetch_and_verify(transport: Transport, alias: str, remote_dir: str,
             return FetchResult(False, False, f"cannot fetch file with this name: {rel}")
         dest = staging / Path(*rel.split("/"))
         dest.parent.mkdir(parents=True, exist_ok=True)
-        pairs.append((posixpath.join(remote_dir, rel), dest))
+        pairs.append((pf.sftp_path(posixpath.join(remote_dir, rel)), dest))
     if pairs:
         got = transport.get(alias, pairs)
         if not got.ok:
@@ -328,10 +372,11 @@ def safe_remove(transport: Transport, alias: str, remote_dir: str,
                 workdir: str) -> bool:
     """Delete ``remote_dir`` on the device, only behind both guards. True when
     it is gone (deleted now, or already absent)."""
-    if not guard_remote_dir(remote_dir, workdir):
+    pf = platform_for(remote_dir)
+    if platform_for(workdir) is not pf or not pf.guard(remote_dir, workdir):
         log.warning("refused to delete %s:%s (outside %s)", alias, remote_dir, workdir)
         return False
-    res = transport.run(alias, _remove_script(remote_dir, workdir), timeout=300)
+    res = pf.run(transport, alias, pf.remove(remote_dir, workdir), timeout=300)
     if res.ok and res.out.strip() in ("removed", "gone"):
         return True
     log.warning("delete of %s:%s failed: rc=%s %s", alias, remote_dir, res.rc,
@@ -339,20 +384,23 @@ def safe_remove(transport: Transport, alias: str, remote_dir: str,
     return False
 
 
-def kill_remote(transport: Transport, alias: str, pid: int, start) -> Optional[bool]:
+def kill_remote(transport: Transport, alias: str, pid: int, start,
+                pf=POSIX) -> Optional[bool]:
     """Stop the remote process group if it is still the one recorded. True =
-    not running any more, False = still alive, None = device unreachable."""
-    res = transport.run(alias, _kill_script(pid, start), timeout=60)
+    not running any more, False = still alive, None = device unreachable.
+    ``pf`` is the device's platform (platform_for its remote folder)."""
+    res = pf.run(transport, alias, pf.kill(pid, start), timeout=60)
     if res.unreachable:
         return None
     return res.out.strip().endswith(("killed", "gone"))
 
 
-def remote_liveness(transport: Transport, alias: str, pid, start) -> Optional[bool]:
+def remote_liveness(transport: Transport, alias: str, pid, start,
+                    pf=POSIX) -> Optional[bool]:
     """True / False, or None when the device could not be asked."""
     if not pid:
         return False
-    res = transport.run(alias, _liveness_script(int(pid), start), timeout=30)
+    res = pf.run(transport, alias, pf.liveness(int(pid), start), timeout=30)
     if res.unreachable:
         return None
     out = res.out.strip()
@@ -374,7 +422,8 @@ def process_cleanup(transport: Transport, entry: dict, workdir: str,
     remote_dir = entry.get("remote_dir", "")
     pid = entry.get("pid")
     if pid:
-        if kill_remote(transport, alias, int(pid), entry.get("create_time")) is not True:
+        if kill_remote(transport, alias, int(pid), entry.get("create_time"),
+                       platform_for(remote_dir)) is not True:
             return False
     if local_dir is not None:
         fr = fetch_and_verify(transport, alias, remote_dir, local_dir)
@@ -408,6 +457,9 @@ class RemoteOrcaRunner:
         self.orca_path = orca_path
         self.workdir = workdir
         self.remote_dir = remote_dir
+        # which script set drives the device: read from the folder's shape
+        # (C:/... on a Windows device), never from this machine's platform
+        self.pf = platform_for(remote_dir or workdir)
         self._clock = clock
         self._sleep = sleep
         self._lock = threading.Lock()
@@ -458,7 +510,8 @@ class RemoteOrcaRunner:
         self._name = name
         if not self.orca_path:
             raise RemoteUnavailable(f"no ORCA path for {self.alias}")
-        if not guard_remote_dir(self.remote_dir, self.workdir):
+        if (platform_for(self.workdir) is not self.pf
+                or not self.pf.guard(self.remote_dir, self.workdir)):
             raise RemoteUnavailable(f"remote folder {self.remote_dir} is not under {self.workdir}")
         folder = input_path.parent
         files = []
@@ -471,18 +524,19 @@ class RemoteOrcaRunner:
             if not remote_safe_name(p.name):
                 raise RemoteUnavailable(f"file name not safe to send: {p.name}")
             files.append(p)
-        res = self.transport.run(self.alias, f"mkdir -p -- {_q(self.remote_dir)}", timeout=60)
+        pf = self.pf
+        res = pf.run(self.transport, self.alias, pf.mkdir(self.remote_dir), timeout=60)
         if not res.ok:
             raise RemoteUnavailable(f"mkdir failed on {self.alias}: {res.err.strip() or res.rc}")
         if files:
             put = self.transport.put(self.alias, [
-                (p, posixpath.join(self.remote_dir, p.name)) for p in files])
+                (p, pf.sftp_path(posixpath.join(self.remote_dir, p.name))) for p in files])
             if not put.ok:
                 raise RemoteUnavailable(f"upload failed to {self.alias}: {put.err.strip() or put.rc}")
-        res = self.transport.run(self.alias,
-                                 _launch_script(self.remote_dir, self.orca_path, name),
-                                 timeout=60)
-        kv = dict(line.split("=", 1) for line in res.out.splitlines() if "=" in line)
+        res = pf.run(self.transport, self.alias,
+                     pf.launch(self.remote_dir, self.orca_path, name), timeout=60)
+        kv = dict((k.strip(), v.strip()) for k, v in
+                  (line.split("=", 1) for line in res.out.splitlines() if "=" in line))
         if not res.ok or not kv.get("pid") or not kv.get("start"):
             raise RemoteUnavailable(f"start failed on {self.alias}: rc={res.rc} "
                                     f"{res.err.strip()}")
@@ -509,7 +563,7 @@ class RemoteOrcaRunner:
     def liveness(self) -> Optional[bool]:
         with self._lock:
             pid, start = self._pid, self._start
-        return remote_liveness(self.transport, self.alias, pid, start)
+        return remote_liveness(self.transport, self.alias, pid, start, self.pf)
 
     def cleanup_entry(self) -> dict:
         with self._lock:
@@ -527,9 +581,9 @@ class RemoteOrcaRunner:
         if not pid:
             return False, b""
         remote_out = posixpath.join(self.remote_dir, f"{self._name}.out")
-        res = self.transport.run(
-            self.alias, _sync_script(pid, start, remote_out, offset, self.SYNC_CAP),
-            timeout=60)
+        res = self.pf.run(
+            self.transport, self.alias,
+            self.pf.sync(pid, start, remote_out, offset, self.SYNC_CAP), timeout=60)
         if res.unreachable:
             return None, b""
         head, _, rest = res.out.partition("\n")
@@ -621,7 +675,7 @@ class RemoteOrcaRunner:
                 if idle is not None and idle >= self.HUNG_AFTER:
                     with self._lock:
                         pid, start = self._pid, self._start
-                    kill_remote(self.transport, self.alias, pid or 0, start)
+                    kill_remote(self.transport, self.alias, pid or 0, start, self.pf)
                     self._fetch_until_done(output_path)
                     tail.drain(see)
                     tail.flush_tail(see)
@@ -653,7 +707,7 @@ class RemoteOrcaRunner:
                             entry, unreachable=False)
 
     def _remote_idle(self) -> Optional[float]:
-        res = self.transport.run(self.alias, _idle_script(self.remote_dir), timeout=30)
+        res = self.pf.run(self.transport, self.alias, self.pf.idle(self.remote_dir), timeout=30)
         if not res.ok:
             return None
         try:
@@ -711,7 +765,8 @@ class RemoteOrcaRunner:
         at once all the same and the rest goes on the clean-up list."""
         with self._lock:
             pid, start = self._pid, self._start
-        stopped = kill_remote(self.transport, self.alias, pid or 0, start) if pid else True
+        stopped = (kill_remote(self.transport, self.alias, pid or 0, start, self.pf)
+                   if pid else True)
         if stopped is not True:
             raise RemoteCancelUnreachable("Cancelled by user.", self.cleanup_entry())
         fr = fetch_and_verify(self.transport, self.alias, self.remote_dir, output_path.parent)
