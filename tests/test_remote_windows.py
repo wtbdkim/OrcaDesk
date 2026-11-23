@@ -472,3 +472,17 @@ def test_a_stale_pid_file_gets_a_fresh_watcher(tmp_path):
     assert (work / wp.QOS_SCRIPT_NAME).read_text(encoding="utf-8") == wp.QOS_SCRIPT
     _wait_gone(work)
     assert not _watchers(work)
+
+
+def test_every_wmi_launch_starts_hidden():
+    # A WMI-created process inherits no console and got a NEW console window
+    # on whatever desktop the user was on -- the laptop at every launch, this
+    # machine whenever these tests ran (2026-11-23). Both WMI launches pass a
+    # Win32_ProcessStartup with ShowWindow = 0. CREATE_NO_WINDOW is not a
+    # Win32_ProcessStartup flag (Create refused it), so it must not come back.
+    scripts = [wp.WindowsPlatform.launch("C:/w/x.1", "C:/ORCA/orca.exe", "x"),
+               wp.WindowsPlatform.qos_ensure("C:/w")]
+    for s in scripts:
+        assert "Win32_ProcessStartup" in s and "ShowWindow=[uint16]0" in s
+        assert "ProcessStartupInformation=$si" in s
+        assert "134217728" not in s

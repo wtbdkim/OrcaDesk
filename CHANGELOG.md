@@ -6,6 +6,11 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **No more console windows popping up from a Windows compute device's
+  calculations.** Every calculation ORCAdesk started on a Windows machine
+  (and the helper that keeps it on the fast cores) opened a console window on
+  whatever desktop the person at that machine was using. They now start
+  hidden.
 - **Calculations on a Windows laptop no longer crawl on its slow cores.**
   Windows treats a program started over SSH as background work and kept ORCA
   on the low-power cores at a few hundred MHz while the fast ones idled.

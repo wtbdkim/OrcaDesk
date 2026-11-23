@@ -74,6 +74,20 @@ def _backslash(path: str) -> str:
 
 # A process's identity: its CreationDate as integer milliseconds since the
 # epoch (UTC) -- exact in a float, which is how the session stores it.
+# Startup info for every process launched through WMI: its console starts
+# hidden (ShowWindow = SW_HIDE). A WMI-created process does not inherit a
+# console, so it got a NEW console window -- with Windows Terminal as the
+# default terminal even "-WindowStyle Hidden" pops one up -- on whatever
+# desktop the user was on: the laptop at every launch, and this machine
+# whenever the local-PowerShell tests ran (2026-11-23). ORCA's own steps
+# (orca_*, mpiexec) inherit that hidden console from cmd.exe. CreateFlags
+# CREATE_NO_WINDOW (0x08000000) is not a Win32_ProcessStartup flag: Create
+# refuses it (measured: ReturnValue != 0), so it is not passed.
+_HIDDEN_STARTUP = (
+    "$si=New-CimInstance -Namespace root/cimv2 -ClassName Win32_ProcessStartup "
+    "-ClientOnly -Property @{ShowWindow=[uint16]0}\n"
+)
+
 _START_FN = (
     "function S($i){$p=Get-CimInstance Win32_Process -Filter \"ProcessId=$i\" "
     "-ErrorAction SilentlyContinue; if(-not $p -or -not $p.CreationDate){return ''}; "
@@ -237,10 +251,12 @@ class WindowsPlatform:
                + name + '.out 2>&1"')
         return (
             _START_FN
+            + _HIDDEN_STARTUP
             + f"$d={psq(_backslash(remote_dir))}\n"
             "if(-not (Test-Path -LiteralPath $d -PathType Container)){exit 3}\n"
             f"$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
-            f"-Arguments @{{CommandLine={psq(cmd)}; CurrentDirectory=$d}}\n"
+            f"-Arguments @{{CommandLine={psq(cmd)}; CurrentDirectory=$d; "
+            f"ProcessStartupInformation=$si}}\n"
             "if($r.ReturnValue -ne 0){exit 4}\n"
             "$s=S $r.ProcessId; if(-not $s){$s='0'}\n"
             "\"pid=$($r.ProcessId)\"\n"
@@ -331,8 +347,10 @@ class WindowsPlatform:
                 "if($c -ne $t){[IO.File]::WriteAllText($f,$t,(New-Object Text.UTF8Encoding($false)))}\n"
                 "$cmd='powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass "
                 "-WindowStyle Hidden -File \"'+$f+'\"" + args + "'\n"
+                + _HIDDEN_STARTUP +
                 "$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
-                "-Arguments @{CommandLine=$cmd; CurrentDirectory=$w}\n"
+                "-Arguments @{CommandLine=$cmd; CurrentDirectory=$w; "
+                "ProcessStartupInformation=$si}\n"
                 "if($r.ReturnValue -ne 0){\"qos=failed rc=$($r.ReturnValue)\"; exit 4}\n"
                 "\"qos=started pid=$($r.ProcessId)\"\n")
 

@@ -2065,7 +2065,12 @@ its shape (`runner.platform_for`: the probe resolves a Windows workdir to
 extra field and the platform is always the device's (P58); remote paths stay
 in that one form and `sftp_path` makes them `/C:/...` for sftp. Windows has no
 setsid: `launch` creates `cmd.exe /c ""<orca.exe>" <name>.inp > <name>.out 2>&1"`
-with `Invoke-CimMethod Win32_Process Create`, so ORCA's parent is the WMI
+with `Invoke-CimMethod Win32_Process Create` — always with a
+`Win32_ProcessStartup` of `ShowWindow = 0` (`_HIDDEN_STARTUP`): a WMI-created
+process inherits no console and otherwise opens a new console window on the
+user's current desktop (Windows Terminal as default terminal ignores
+`-WindowStyle Hidden`); `CREATE_NO_WINDOW` is not a `Win32_ProcessStartup`
+flag and Create refuses it — so ORCA's parent is the WMI
 provider host, outside the SSH session's job object (which kills its
 processes when the session ends); pid + CreationDate (ms since the epoch)
 identify it, `taskkill /T /F` takes the tree down, the sync opens the `.out`
