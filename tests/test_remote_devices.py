@@ -125,7 +125,8 @@ def test_a_device_entry_is_coerced_to_its_exact_shape():
     d = normalize_device({"alias": "gcp", "enabled": "true", "max_jobs": -3,
                           "cores": "8", "ram_mb": 10**12, "orca_path": 5, "workdir": ""})
     assert d == {"alias": "gcp", "enabled": False, "max_jobs": 0, "cores": 8,
-                 "ram_mb": 4_000_000, "orca_path": "", "workdir": devices.DEFAULT_WORKDIR}
+                 "ram_mb": 4_000_000, "orca_path": "", "workdir": devices.DEFAULT_WORKDIR,
+                 "kinds": "all", "spot": False, "requeue_after_min": 5}
     assert normalize_device({"alias": "-x"}) is None
     assert normalize_devices([{"alias": "a"}, {"alias": "a"}, "junk", None]) == [
         normalize_device({"alias": "a"})]

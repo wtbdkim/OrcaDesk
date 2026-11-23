@@ -26,6 +26,11 @@ This machine stays the source of truth (design D4/D5):
   **whole remote folder** comes back (staged, then verified by name and size,
   then moved into the run folder) and only then is the remote copy deleted,
   behind a path guard. The engine judges the result from the local files.
+* on a **spot** device (``spot`` / ``requeue_after``, set by the engine) a job
+  is given back instead (``RemoteRequeue``): after ``requeue_after`` seconds
+  of CONTINUOUS silence (any answered sync resets the count), or when it is
+  found dead after an outage with neither ORCA's normal end nor a fatal
+  marker in its output -- a preempted VM, not an ORCA failure.
 
 Nothing here writes to the shared log: transport detail goes to the
 ``orcamgr.remote`` logger (the bridge sends it to ``remote.log``), design D6.
@@ -83,6 +88,48 @@ class RemoteCancelUnreachable(OrcaCancelled):
     def __init__(self, msg: str, entry: dict):
         super().__init__(msg)
         self.entry = entry
+
+
+class RemoteRequeue(OrcaRunError):
+    """A job on a SPOT device given back to the queue: the device stopped
+    answering for longer than its requeue_after_min without a single answered
+    sync in between, or the job was found dead after an outage with neither
+    ORCA's normal-termination line nor a fatal marker in its output (the VM
+    was preempted; ORCA did not fail). Not the calculation's failure: the
+    engine puts the row back to PENDING to run again (FAILED is locked, P24).
+    ``entry`` (or None) is a clean-up entry with ``fetch`` False -- the old
+    remote folder is deleted, never brought back -- and ``unreachable`` says
+    whether the device is to be taken offline."""
+
+    def __init__(self, msg: str, entry: Optional[dict], unreachable: bool):
+        super().__init__(msg)
+        self.entry = entry
+        self.unreachable = unreachable
+
+
+# What ORCA prints last on a run it finished itself (core/parser.py reads the
+# same line for terminated_normally).
+_NORMAL_END = "ORCA TERMINATED NORMALLY"
+
+
+def _ended_by_orca(output_path: Path) -> bool:
+    """Whether the .out shows ORCA ending the run itself -- normally, or with a
+    fatal marker. Neither means something outside ORCA stopped it (on a spot
+    device: the VM went away). Read in binary chunks, ASCII markers."""
+    needles = [_NORMAL_END.encode().lower()] + [m.encode() for m in _FATAL_MARKERS]
+    try:
+        with open(output_path, "rb") as f:
+            prev = b""
+            while True:
+                chunk = f.read(1 << 20)
+                if not chunk:
+                    return False
+                buf = (prev + chunk).lower()
+                if any(n in buf for n in needles):
+                    return True
+                prev = buf[-256:]
+    except OSError:
+        return False
 
 
 def remote_safe_name(rel: str) -> bool:
@@ -370,6 +417,12 @@ class RemoteOrcaRunner:
         self._cancel_event = threading.Event()
         self._detach_event = threading.Event()
         self._disconnected = False
+        # A spot device (set by the engine from Settings): a job unreachable
+        # for requeue_after seconds of CONTINUOUS silence, or found dead after
+        # an outage with no word from ORCA, is given back (RemoteRequeue).
+        self.spot = False
+        self.requeue_after = 300.0
+        self._adopted = False
         # set by the engine: called with True/False when the flag flips, and
         # with a message when a fetch keeps failing
         self.on_disconnect: Optional[Callable[[bool], None]] = None
@@ -446,6 +499,8 @@ class RemoteOrcaRunner:
         with self._lock:
             self._pid = int(pid) if pid else None
             self._start = create_time
+        # a reattach: nobody watched while ORCAdesk was closed
+        self._adopted = True
 
     @staticmethod
     def end_position(output_path: Path) -> int:
@@ -513,6 +568,14 @@ class RemoteOrcaRunner:
                 on_line(line)
 
         unknown = 0
+        # when the current run of unanswered syncs began (None while the device
+        # answers): the spot requeue counts CONTINUOUS silence only, so a
+        # connection that flaps never adds its outages up
+        lost_since: Optional[float] = None
+        # an outage happened while this job ran -- or a reattach, where the app
+        # was not watching at all: the precondition for reading a silent death
+        # as a preemption
+        had_outage = self._adopted
         next_sync = self._clock()          # sync at once (a reattach needs it)
         next_hung = 0.0
         while True:
@@ -531,16 +594,26 @@ class RemoteOrcaRunner:
                 alive, data = self.sync(offset)
                 if alive is None:
                     unknown += 1
+                    had_outage = True
+                    if lost_since is None:
+                        lost_since = now
                     if unknown >= self.DISCONNECT_AFTER:
                         self._set_disconnected(True)
+                    if self.spot and now - lost_since >= self.requeue_after:
+                        raise RemoteRequeue(
+                            "Re-queued: the spot device stopped answering.",
+                            dict(self.cleanup_entry(), fetch=False), unreachable=True)
                 else:
                     unknown = 0
+                    lost_since = None
                     self._set_disconnected(False)
                     if data:
                         with open(output_path, "ab") as f:
                             f.write(data)
                         tail.drain(see)
                     if alive is False:
+                        if self.spot and had_outage and not _ended_by_orca(output_path):
+                            self._requeue_preempted()      # raises
                         break
             if fatal and now >= next_hung:
                 next_hung = now + self.HUNG_CHECK
@@ -565,6 +638,19 @@ class RemoteOrcaRunner:
         tail.flush_tail(see)
         self._set_disconnected(False)
         self._remove()
+
+    def _requeue_preempted(self) -> None:
+        """The job died during an outage with no word from ORCA (no normal end,
+        no fatal marker): the spot VM was taken away under it. Its folder holds
+        nothing worth judging -- it is deleted now if the device lets us, else
+        left to the clean-up list -- and the row runs again."""
+        log.warning("%s:%s died without ORCA ending it; re-queued",
+                    self.alias, self.remote_dir)
+        entry = None
+        if not safe_remove(self.transport, self.alias, self.remote_dir, self.workdir):
+            entry = dict(self.cleanup_entry(), pid=None, fetch=False)
+        raise RemoteRequeue("Re-queued: the spot device stopped answering.",
+                            entry, unreachable=False)
 
     def _remote_idle(self) -> Optional[float]:
         res = self.transport.run(self.alias, _idle_script(self.remote_dir), timeout=30)

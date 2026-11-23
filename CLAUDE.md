@@ -185,7 +185,10 @@ Full statement and rationale: ARCHITECTURE.md *Queue semantics*.
 - **A remote job is DONE only after its whole folder is back and verified**
   (`calc.device` / `remote_dir`, persisted, never read from a client); the
   remote copy is deleted only after that, behind a path guard. A device that
-  stops answering is `disconnected` (RUNNING, slot held), never FAILED.
+  stops answering is `disconnected` (RUNNING, slot held), never FAILED — except
+  on a device marked **spot**, where continuous silence past its limit (or a
+  job dead with no word from ORCA) puts the row back to PENDING (`RemoteRequeue`;
+  its old folder deleted unfetched), never FAILED either.
 - Keep-existing ("skip") adopts an old output only if it validates, matches the
   calc's atoms, and contains the kind's defining section; a stale `{name}.gbw`
   is renamed aside (never deleted) when the structure changed.

@@ -2143,6 +2143,21 @@ set up the pane is as before (the paper says what is needed) and the select is
 disabled with the rest. One new rule (`.d2sel`) in a named block at the bottom
 of `app.css`; not a reference landmark.
 
+**17.4y A compute device says what it takes, and a spot VM gives work back.**
+Each row of Settings › *Compute devices* (a `.envrow.devrow`) has a second
+`.ctl` line under *Use / at once / cores / memory (MB)*: **runs** — a `.mono`
+select, *Any ORCA calculation* or *Single points only (safe to lose)* — and
+the checkbox **Spot / preemptible VM**, which, when ticked, adds **re-queue
+after (min)** (a number, 5). Each control applies at once (no Save), as the
+row's others do, and says on hover what it does: single points (SP, TD-DFT,
+NMR) never move the structure, so losing one costs only its own run; a job on
+a spot VM that stays silent that many minutes *in a row*, or dies with no word
+from ORCA, goes back to the queue. A row given back reads
+*Re-queued: the spot device stopped answering.* (its message until it starts
+again) with a `warn` log line — never FAILED, which would lock it (P24). No
+new tokens or classes: the existing `.devrow .ctl` rules lay it out; not a
+reference landmark.
+
 **17.5 It is the only front-end.** The classic window and the switch between
 the two are removed (unreleased), and with them the Settings sheet's Interface
 card (the switch) and Appearance card (the Liquid-Glass style and its intensity

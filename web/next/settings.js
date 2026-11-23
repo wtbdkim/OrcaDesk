@@ -428,6 +428,16 @@
             ${num("max_jobs", "at once", d.max_jobs, "Calculations at once on this device; 0 = as many as its cores allow")}
             ${num("cores", "cores", d.cores_cap, "Cores the queue may use there; 0 = all it has")}
             ${num("ram_mb", "memory (MB)", d.ram_cap_mb, "Memory the queue may use there; 0 = 75% of it")}
+          </div>
+          <div class="ctl">
+            <label title="Which calculations the queue sends there. Single points (SP, TD-DFT, NMR) never move the structure, so losing one costs only its own run.">runs
+              <select class="mono" data-f="kinds">
+                <option value="all"${d.kinds !== "single_point" ? " selected" : ""}>Any ORCA calculation</option>
+                <option value="single_point"${d.kinds === "single_point" ? " selected" : ""}>Single points only (safe to lose)</option>
+              </select></label>
+            <label title="A spot / preemptible cloud VM can be taken away under a job. A job there that stops answering for this many minutes in a row, or dies with no word from ORCA, is put back in the queue to run again, here or elsewhere."><input type="checkbox" data-f="spot"${d.spot ? " checked" : ""}> Spot / preemptible VM</label>
+            ${d.spot ? num("requeue_after_min", "re-queue after (min)", d.requeue_after_min,
+                "Minutes of continuous silence before a job there is put back in the queue; any answer starts the count again") : ""}
           </div>` : ""}</div>
         <span class="sp"></span>
         <span class="badge ${cls}">${word}</span>
@@ -444,7 +454,8 @@
         inp.addEventListener("change", async () => {
           /** @type {Record<string, any>} */ const patch = { alias: alias };
           const f = inp.dataset.f;
-          if (f === "enabled") patch.enabled = !!inp.checked;
+          if (f === "enabled" || f === "spot") patch[f] = !!inp.checked;
+          else if (f === "kinds") patch.kinds = inp.value;
           else { const n = parseInt(inp.value, 10); patch[f] = isFinite(n) && n > 0 ? n : 0; }
           const r = await NB.call("set_remote_device", JSON.stringify(patch));
           if (r && r.error) { NB.fail(r.error); return; }

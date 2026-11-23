@@ -16,6 +16,19 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   calculations in an orange **Disconnected** box; a cancel while it is away
   is applied at once and its remote job is tidied up when the device is back.
   Linux devices only; MLIP, CREST and GPU calculations stay on this machine.
+- **Spot / preemptible cloud VMs as compute devices.** Each device in
+  *Compute devices* can be kept to **single points only** (SP, TD-DFT, NMR —
+  nothing that would be costly to lose), and marked **Spot / preemptible
+  VM**: a job there that stays silent for 5 minutes in a row (adjustable), or
+  that dies with no word from ORCA because the VM was taken away, goes back
+  to the queue as *Re-queued* and runs again — on this machine or another
+  device — instead of hanging or being locked as failed. A connection that
+  drops and comes back within the limit never re-queues: the count starts
+  again at every answer. The old remote folder is deleted, not brought back,
+  once the VM is reachable. A real ORCA error still fails the calculation as
+  before. With a static IP the SSH entry survives a stop/start; if the
+  instance is replaced, Settings says its host key changed and how to accept
+  the new one.
 - **2D structure drawing, in exactly the 3D view's orientation (an add-on).**
   Results › Visual has a **2D structure** tile: the stage splits, the 3D view
   on one side and a ChemDraw-style drawing of the same structure on the other,

@@ -935,7 +935,11 @@ def _clean_cleanup_entry(e) -> "Optional[dict]":
     at = e.get("launched_at")
     return {"device": dev, "pid": pid, "create_time": ct, "remote_dir": rdir,
             "calc_name": name if isinstance(name, str) else "",
-            "launched_at": at if isinstance(at, str) else ""}
+            "launched_at": at if isinstance(at, str) else "",
+            # False: a spot job given back to the queue (it runs again), so
+            # its remote folder is deleted without being brought back; only a
+            # real False turns the fetch off
+            "fetch": e.get("fetch") is not False}
 
 
 def _ran_in_the_old_layout(c: Calculation) -> bool:
@@ -2470,7 +2474,8 @@ class QueueStore:
             for e in todo:
                 with self._lock:
                     calc = self.get(e["calc_name"])
-                    same = (calc is not None and calc.state == CalcState.CANCELLED
+                    same = (e.get("fetch", True) and calc is not None
+                            and calc.state == CalcState.CANCELLED
                             and calc.remote_dir == e["remote_dir"])
                     local = (rundir.run_folder(workspace_root, calc,
                                                self.system_name(calc.system))

@@ -79,10 +79,10 @@ from .procutil import process_matches
 from .rundir import planned_run_dir, result_folder, run_dir_of, run_folder
 from .xyzutil import as_xyz_file
 import logging
-from ..remote.devices import resolve_device
+from ..remote.devices import device_takes, resolve_device
 from ..remote.runner import (RemoteCancelUnreachable, RemoteOrcaRunner,
-                             RemoteUnavailable, launch_stamp, remote_dir_for,
-                             remote_safe_name)
+                             RemoteRequeue, RemoteUnavailable, launch_stamp,
+                             remote_dir_for, remote_safe_name)
 
 
 # How long the dispatcher sleeps between re-scans while it waits for a job to
@@ -460,6 +460,10 @@ _remote_log = logging.getLogger("orcamgr.remote")
 # puts the plain "Cancelled by user." back when it is done.
 CLEANUP_PENDING_MESSAGE = ("Cancelled — the compute device could not be reached; "
                            "its remote job is tidied up when the device is back.")
+
+# What a row a SPOT device gave back says until it starts again (a fresh
+# launch clears the message): it is PENDING, to run anew -- here or elsewhere.
+REQUEUED_MESSAGE = "Re-queued: the spot device stopped answering."
 
 # A drive-letter path in a hand-written input (%moinp "D:/x.gbw"): a file on
 # THIS machine that a remote device does not have.
@@ -928,6 +932,9 @@ class QueueEngine:
 
         runner.on_disconnect = flag
         runner.on_notice = notice
+        if dev is not None and dev.spot:
+            runner.spot = True
+            runner.requeue_after = float(dev.requeue_after_min) * 60.0
         return runner
 
     def _live_runners(self) -> list:
@@ -2549,7 +2556,11 @@ class QueueEngine:
             return ""
         if self._devices and remote_capable(
                 calc, run_dir_of(calc, self._system_name(calc))):
-            for alias in self._devices:
+            for alias, dev in self._devices.items():
+                # a device kept to single points (a spot VM) takes nothing
+                # that would be costly to lose (remote/devices.py)
+                if not device_takes(dev.kinds, calc.kind):
+                    continue
                 slot.device = alias
                 if self._fits(slot):
                     return alias
@@ -3009,6 +3020,33 @@ class QueueEngine:
                 self._unsee.add(id(calc))
                 self._slot_cv.notify_all()
             _remote_log.warning("%s not started remotely: %s", calc.name, e)
+            self.cb.calc_update(i, calc)
+            return True
+        except RemoteRequeue as e:
+            # A spot device lost the job (gone longer than its limit, or the VM
+            # was preempted under it): not the calculation's failure, and FAILED
+            # would lock it (P24). PENDING again, offered anew -- here or on
+            # another device; the old remote folder is deleted without being
+            # brought back (the clean-up entry says fetch False). It keeps its
+            # recorded run folder: the re-run starts there, like any re-run.
+            if e.unreachable:
+                self._device_offline(calc.device or self._job.device)
+            if e.entry:
+                self.cb.remote_cleanup(e.entry)
+            calc.state = CalcState.PENDING
+            calc.message = REQUEUED_MESSAGE
+            calc.pid = None
+            calc.create_time = None
+            calc.device = ""
+            calc.remote_dir = ""
+            calc.disconnected = False
+            calc.faulted = False
+            with self._slot_cv:
+                self._unsee.add(id(calc))
+                self._slot_cv.notify_all()
+            _remote_log.warning("%s re-queued from a spot device: %s", calc.name, e)
+            self.cb.log(f"[{calc.name}] re-queued: the spot device stopped answering.",
+                        "warn", calc.name)
             self.cb.calc_update(i, calc)
             return True
         except OrcaDetached:

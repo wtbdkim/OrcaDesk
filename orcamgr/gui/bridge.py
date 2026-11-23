@@ -1274,7 +1274,9 @@ class Bridge(QObject):
                 enabled=entry["enabled"], max_jobs=entry["max_jobs"],
                 cores_cap=entry["cores"], ram_cap_mb=entry["ram_mb"],
                 orca_path_setting=entry["orca_path"],
-                workdir_setting=entry["workdir"]))
+                workdir_setting=entry["workdir"],
+                kinds=entry.get("kinds", "all"), spot=bool(entry.get("spot")),
+                requeue_after_min=int(entry.get("requeue_after_min", 5))))
         return json.dumps(DevicesPayload(
             ssh=self._remote_transport.available(),
             config_path=str(default_ssh_config()), devices=rows,
@@ -1303,9 +1305,10 @@ class Bridge(QObject):
     @pyqtSlot(str, result=str)
     def set_remote_device(self, payload_json: str) -> str:
         """Change one device's settings entry ({alias, enabled?, max_jobs?,
-        cores?, ram_mb?, orca_path?, workdir?}); keys left out keep their
-        value. Applies at once (no Save), like the CREST card -- and to the
-        next run: a run in progress keeps the pools it started with."""
+        cores?, ram_mb?, orca_path?, workdir?, kinds?, spot?,
+        requeue_after_min?}); keys left out keep their value. Applies at once
+        (no Save), like the CREST card -- and to the next run: a run in
+        progress keeps the pools it started with."""
         try:
             data = json.loads(payload_json or "{}")
             if not isinstance(data, dict):
@@ -1316,7 +1319,8 @@ class Bridge(QObject):
             base = dict(current) if current else {"alias": alias}
             base.update({k: v for k, v in data.items()
                          if k in ("enabled", "max_jobs", "cores", "ram_mb",
-                                  "orca_path", "workdir")})
+                                  "orca_path", "workdir", "kinds", "spot",
+                                  "requeue_after_min")})
             entry = normalize_device(base)
             if entry is None:
                 raise ValueError("Not a usable SSH host name.")

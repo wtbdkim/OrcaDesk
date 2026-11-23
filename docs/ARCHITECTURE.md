@@ -2016,6 +2016,35 @@ since, delete last. `reconcile_calcs` never judges a remote RUNNING calc on
 the UI thread; the engine's reattach does, fetching first. Transport detail
 goes to `remote.log` in the user data folder, never to the shared log (D6).
 
+**Spot devices: what a device takes, and a lost job given back.** Two more
+choices per device in `Settings.remote_devices` (normalized in
+`devices.normalize_device`): `kinds` — `"all"` (default) or
+`"single_point"`, which `_place` honours through `devices.device_takes`
+(`SINGLE_POINT_KINDS` = `sp`, `tddft`, `nmr`: the ORCA kinds that read a fixed
+structure and write a result in one pass; every other kind walks a geometry,
+builds a Hessian displacement by displacement, or is free text, and a lost
+one is hours of progress) — and `spot` with `requeue_after_min` (5, clamped
+1–1440). On a spot device the runner raises `RemoteRequeue` instead of waiting
+for ever: (a) after `requeue_after_min` of **continuous** silence — the timer
+starts at the first unanswered sync and any answered one resets it, so a
+flapping link never adds its outages up and a device back within the limit
+just carries on (orange box on / off as today); (b) when the job is found
+dead after an outage (or on a reattach, when nobody watched) and its `.out`
+has neither ORCA's normal-termination line nor a fatal marker — the VM was
+preempted, ORCA did not fail; a real ORCA failure still fetches and FAILs.
+The engine turns it into PENDING with `REQUEUED_MESSAGE` (a fresh launch
+clears it), `_unsee`s the row so the dispatcher offers it again (here or on
+another device), takes the device offline only for (a), and hands the store
+a clean-up entry with `fetch: False`: when the device is back the old
+process is killed if pid *and* start time still match and its per-launch
+folder is deleted without being brought back (in (b) the folder is deleted
+at once if the device answers). FAILED stays locked (P24), so a preemption
+must never land there. A non-spot device never requeues. With a static IP
+the `~/.ssh/config` entry keeps working across a stop / start; a *replaced*
+instance at that address has a new host key, which BatchMode refuses —
+`_plain_failure` says so and points at `ssh <alias>` to fix it. Device
+settings changed mid-run apply to the next run, like its caps.
+
 ## Optional phone-sync server
 
 `orcamgr/server/` is a thin FastAPI layer (`app.py`) over `QueueStore`, started/stopped

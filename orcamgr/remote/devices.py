@@ -40,6 +40,34 @@ _MAX_RAM_MB = 4_000_000
 # (core/resources._AUTO_RAM_SHARE).
 _AUTO_RAM_SHARE = 0.75
 
+# Which calculations a device takes (Settings.remote_devices "kinds").
+# "single_point" is for a device that may vanish under a job -- a spot /
+# preemptible cloud VM: only kinds that never move the geometry and keep
+# nothing worth resuming, so losing one costs its own run time and nothing
+# else. sp, tddft and nmr are exactly the ORCA kinds of KNOWN_KINDS that read
+# a fixed structure and write a result in one pass; every other ORCA kind
+# walks a geometry (opt / ts_opt / irc / neb_ts), builds a Hessian
+# displacement by displacement (freq), or is free text that may do either
+# (general) -- a lost one is hours of progress, and a half-finished geometry
+# is a trap for whatever references it.
+DEVICE_KINDS = ("all", "single_point")
+SINGLE_POINT_KINDS = frozenset({"sp", "tddft", "nmr"})
+
+# A spot device unreachable this long gives its jobs back to the queue
+# ("requeue_after_min", minutes; clamped). Long enough that a dropped Wi-Fi
+# or a VM reboot does not throw away a run that would have come back.
+DEFAULT_REQUEUE_AFTER_MIN = 5
+_MIN_REQUEUE_AFTER_MIN = 1
+_MAX_REQUEUE_AFTER_MIN = 1440
+
+
+def device_takes(kinds: str, calc_kind: str) -> bool:
+    """Whether a device whose ``kinds`` setting is ``kinds`` takes a calc of
+    ``calc_kind`` (remote_capable is checked separately)."""
+    if kinds == "single_point":
+        return calc_kind in SINGLE_POINT_KINDS
+    return True
+
 
 # --------------------------------------------------------------------------
 # ~/.ssh/config
@@ -212,8 +240,12 @@ def _plain_failure(alias: str, res: RunResult) -> str:
     if res.rc == 127 or "ssh-not-found" in low:
         return "The OpenSSH client (ssh) was not found on this computer."
     if "remote host identification has changed" in low:
-        return ("The device's identity changed since it was last confirmed. "
-                f"Check it before trusting it (ssh {alias}).")
+        # a static IP keeps the ~/.ssh/config entry working across a stop /
+        # start, but a REPLACED instance at that address has a new host key,
+        # which BatchMode refuses
+        return ("The device's host key changed (a replaced cloud instance has a "
+                f"new one). Run \"ssh {alias}\" once in a terminal: it says how "
+                "to remove the old key; then confirm the new one.")
     if "host key verification failed" in low or "no matching host key" in low:
         return (f"This computer has not confirmed the device yet: run "
                 f"\"ssh {alias}\" once in a terminal and answer yes.")
@@ -315,6 +347,10 @@ def normalize_device(raw: dict) -> Optional[dict]:
         return None
     orca = raw.get("orca_path", "")
     work = raw.get("workdir", DEFAULT_WORKDIR)
+    kinds = raw.get("kinds", "all")
+    requeue = raw.get("requeue_after_min", DEFAULT_REQUEUE_AFTER_MIN)
+    if requeue is None or isinstance(requeue, bool):
+        requeue = DEFAULT_REQUEUE_AFTER_MIN
     return {
         "alias": alias,
         # only a real true: "false" (a string) must not switch a device on
@@ -324,6 +360,10 @@ def normalize_device(raw: dict) -> Optional[dict]:
         "ram_mb": _clamp(raw.get("ram_mb", 0), 0, _MAX_RAM_MB),
         "orca_path": orca.strip() if isinstance(orca, str) else "",
         "workdir": (work.strip() if isinstance(work, str) else "") or DEFAULT_WORKDIR,
+        # an unknown word is "all" -- today's behaviour, never a silent lock-out
+        "kinds": kinds if kinds in DEVICE_KINDS else "all",
+        "spot": raw.get("spot") is True,
+        "requeue_after_min": _clamp(requeue, _MIN_REQUEUE_AFTER_MIN, _MAX_REQUEUE_AFTER_MIN),
     }
 
 
@@ -358,6 +398,9 @@ class RemoteDevice:
     has_mpi: bool = False
     online: bool = False
     mem_avail_mb: int = 0
+    kinds: str = "all"            # DEVICE_KINDS
+    spot: bool = False            # may vanish: its jobs are re-queued when it does
+    requeue_after_min: int = DEFAULT_REQUEUE_AFTER_MIN
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False,
                                  compare=False)
 
@@ -379,6 +422,10 @@ def resolve_device(entry: dict, info: Optional[DeviceInfo]) -> RemoteDevice:
         has_mpi=bool(info.has_mpi) if ready else False,
         online=ready,
         mem_avail_mb=(info.mem_avail_mb if ready else 0),
+        kinds=entry.get("kinds", "all") if entry.get("kinds") in DEVICE_KINDS else "all",
+        spot=entry.get("spot") is True,
+        requeue_after_min=_clamp(entry.get("requeue_after_min", DEFAULT_REQUEUE_AFTER_MIN),
+                                 _MIN_REQUEUE_AFTER_MIN, _MAX_REQUEUE_AFTER_MIN),
     )
 
 
