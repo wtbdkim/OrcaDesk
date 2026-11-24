@@ -313,12 +313,18 @@
   }
 
   /** The drawing as the MOL writer's input (orcamgr/draw2d/molfile.py):
-   *  coordinates in Å, y up, exactly as drawn. @param {any} lay layout()
-   *  @param {string} title */
-  function molInput(lay, title) {
+   *  coordinates in Å, y up, exactly as drawn. `scale` is the px per Å the
+   *  saved image is drawn at (exportScale): the coordinates are multiplied
+   *  by scale / PX, so the MOL is the image itself -- its median heavy-atom
+   *  bond 1.5 Å whatever the view -- and not the raw projection, which a
+   *  reader such as ChemDraw opens as is (a tilted structure came out small
+   *  there while the image did not). Omitted, the projection's own Å.
+   *  @param {any} lay layout() @param {string} title @param {number} [scale] */
+  function molInput(lay, title, scale) {
+    const k = scale && scale > 0 ? scale / PX : 1;
     return {
       title: title,
-      atoms: lay.atoms.map(a => ({ el: a.el, x: +a.x.toFixed(4), y: +a.y.toFixed(4),
+      atoms: lay.atoms.map(a => ({ el: a.el, x: +(a.x * k).toFixed(4), y: +(a.y * k).toFixed(4),
                                    charge: a.charge, radical: a.radical })),
       bonds: lay.bonds.map(b => ({ a: b.a, b: b.b, order: b.order, stereo: b.stereo })),
     };
@@ -1064,7 +1070,7 @@
       else if (fmt === "png") {
         payload.png = await toPng(svg);
         if (!payload.png) { NB.fail("The drawing could not be turned into a PNG."); return; }
-      } else payload.drawing = molInput(lastLay, ctx.name);
+      } else payload.drawing = molInput(lastLay, ctx.name, exportScale(lastLay));
       const r = await NB.call("draw2d_save", JSON.stringify(payload));
       if (r && r.cancelled) return;
       if (!r || !r.ok) { NB.fail((r && r.error) || "Could not save the drawing."); return; }

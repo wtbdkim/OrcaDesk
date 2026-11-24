@@ -2756,7 +2756,11 @@ The pure core is `NB.draw2d.core`, tested in node by
   drawn under 0.05 Å (end-on) do not count, and the scale is capped at
   4 × `PX`. Only positions and lobes scale; font, line widths and wedge
   widths stay fixed px, so the ink keeps one proportion to the bond. Save MOL
-  keeps the Å coordinates (a MOL reader sets its own bond length).
+  is scaled the same way (`molInput(lay, title, exportScale(lay))`: the
+  coordinates × scale / `PX`, so its median heavy-atom bond is 1.5 Å and image
+  px = MOL Å × `PX`). It first kept the raw projected Å on the theory that a
+  MOL reader sets its own bond length; ChemDraw opens the coordinates as they
+  are, so a tilted structure's MOL came out small while its image did not.
 - **Face on** (`flatView(atoms, R)`, then `stage.turnTo(M)`). The view's z is
   turned onto the atoms' axis of least spread (PCA by Jacobi, `eigSym3`) —
   a planar molecule's normal — by the **smallest** rotation from the current
