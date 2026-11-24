@@ -22,6 +22,7 @@ from orcamgr.config import Settings
 from orcamgr.core.parser import read_charge
 from orcamgr.draw2d import env as d2env
 from orcamgr.draw2d import installer as d2inst
+from orcamgr.draw2d.cdxml import write_cdxml
 from orcamgr.draw2d.molfile import MolfileError, write_molblock
 from orcamgr.draw2d.worker import WORKER_SCRIPT, clean_atoms, run_worker
 
@@ -270,6 +271,65 @@ def test_molblock_refuses_what_the_format_cannot_hold(mutate, words):
     mutate(d)
     with pytest.raises(MolfileError, match=words):
         write_molblock(d)
+
+
+# ---------------------------------------------------------------- CDXML
+
+def _cdxml(d):
+    import xml.etree.ElementTree as ET
+    return ET.fromstring(write_cdxml(d).split("\n", 2)[2])   # past the prolog + DOCTYPE
+
+
+def test_cdxml_carries_the_drawings_style_so_chemdraw_draws_it_as_shown():
+    root = _cdxml(_drawing())
+    # the SVG's sizes at 1 px = 0.75 pt: fixed bond, 13 px labels, 1.5 px lines
+    assert float(root.get("BondLength")) == pytest.approx(43.2 * 0.75)
+    assert float(root.get("LabelSize")) == pytest.approx(13 * 0.75)
+    assert float(root.get("LineWidth")) == pytest.approx(1.5 * 0.75, abs=0.01)
+    assert root.find("fonttable/font").get("name") == "Arial"
+
+
+def test_cdxml_sizes_follow_draw2d_js():
+    """The writer restates draw2d.js's px sizes; they must not drift apart."""
+    import re
+    from orcamgr.draw2d import cdxml
+    js = (Path(__file__).resolve().parents[1] / "web" / "next" / "draw2d.js").read_text(encoding="utf-8")
+    assert float(re.search(r"const BOND_PX = ([\d.]+);", js).group(1)) == cdxml._BOND_PX
+    assert float(re.search(r"const PX = ([\d.]+);", js).group(1)) == cdxml._PX_PER_A
+    assert float(re.search(r"const font = ([\d.]+);", js).group(1)) == cdxml._FONT_PX
+
+
+def test_cdxml_atoms_bonds_and_wedges():
+    d = _drawing()
+    d["atoms"][2]["label"] = "O"
+    d["atoms"][3]["label"] = "NH2"
+    root = _cdxml(d)
+    nodes = root.findall("page/fragment/n")
+    bonds = root.findall("page/fragment/b")
+    assert len(nodes) == 4 and len(bonds) == 3
+    # carbon is the default element; the others by Z, with charge and radical
+    assert [n.get("Element") for n in nodes] == [None, None, "8", "7"]
+    assert nodes[2].get("Charge") == "-1" and nodes[3].get("Radical") == "Doublet"
+    # the drawn label, its counted hydrogens; a bare carbon has no text
+    assert nodes[3].find("t/s").text == "NH2" and nodes[3].get("NumHydrogens") == "2"
+    assert nodes[2].get("NumHydrogens") == "0"
+    assert nodes[0].find("t") is None
+    # 18 pt per Å (24 px x 0.75), y pointing down
+    p = [tuple(map(float, n.get("p").split())) for n in nodes]
+    assert p[1][0] - p[0][0] == pytest.approx(1.5 * 18)
+    assert p[2][1] - p[0][1] == pytest.approx(-1.3 * 18)
+    # narrow end at B, as the MOL's first atom; a wedge on a double is dropped
+    ids = [n.get("id") for n in nodes]
+    assert (bonds[0].get("B"), bonds[0].get("E"), bonds[0].get("Display")) == (ids[0], ids[1], "WedgeBegin")
+    assert bonds[1].get("Display") == "WedgedHashBegin"
+    assert bonds[2].get("Order") == "2" and bonds[2].get("Display") is None
+
+
+def test_cdxml_refuses_what_the_mol_writer_refuses():
+    d = _drawing()
+    d["atoms"][0]["el"] = "Q1"
+    with pytest.raises(MolfileError):
+        write_cdxml(d)
 
 
 # ---------------------------------------------------------------- installer

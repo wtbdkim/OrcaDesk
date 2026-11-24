@@ -2775,7 +2775,21 @@ result's folder, else the workspace), forces the format's suffix, and writes
 the SVG text, the decoded PNG (checked for the PNG signature) or — for MOL —
 `write_molblock(drawing)`, where `drawing` is the coordinates and flags the
 front-end just drew (`NB.draw2d.core.molInput`): **one projection**, never
-re-derived in Python. Nothing is opened afterwards, so `openwith.py`'s
+re-derived in Python. **CDXML** (`draw2d/cdxml.py`, `write_cdxml(drawing)`)
+takes the same `drawing` plus each atom's drawn `label`: a MOL carries no
+style, and ChemDraw redraws one in its document style (labels about two
+thirds of a bond and heavier than the lines, so crowded H labels collided,
+and its own bond length, so scaling the MOL changed nothing there). CDXML
+carries the style, so the writer states the SVG's: `BondLength` = `BOND_PX`,
+`LabelSize` 13 px, `LineWidth` 1.5 px, `BoldWidth` the 6.4 px wedge,
+`HashSpacing` 3.2 px, all at 1 px = 0.75 pt, positions at 18 pt per Å (y
+down). A labelled atom gets a `<t>` with the drawn text (element symbol
+centred on the atom) and `NumHydrogens` from it; a bare carbon none. Wedges
+are `Display="WedgeBegin"` / `"WedgedHashBegin"` with `B` the narrow end, as
+the MOL's first atom — RDKit reads a CDXML and the MOL of the same drawing to
+the same CIP label (checked by hand with the add-on's RDKit). The px sizes
+are restated in Python; `test_cdxml_sizes_follow_draw2d_js` keeps them
+equal to draw2d.js's. Nothing is opened afterwards, so `openwith.py`'s
 default-deny rule is untouched. `copy_draw2d_image` puts the PNG (as an image)
 and the SVG (`image/svg+xml`) on the clipboard through Qt — QtWebEngine does
 not grant a page `navigator.clipboard` image writes.

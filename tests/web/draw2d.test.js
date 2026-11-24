@@ -505,6 +505,8 @@ test("Save MOL is the saved image: same scale, median heavy bond BOND_PX / PX wh
     assert.ok(close(Math.hypot(c[cc.a][0] - c[cc.b][0], c[cc.a][1] - c[cc.b][1]), D.BOND_PX / 24, 2e-4));
     // and every atom sits where the image draws it (image px = MOL Å × PX)
     m.atoms.forEach((a, i) => assert.ok(close(a.x * 24, lay.atoms[i].x * S, 5e-3)));
+    // each atom's label as drawn rides along (Save CDXML writes it)
+    m.atoms.forEach((a, i) => assert.strictEqual(a.label, lay.atoms[i].label));
   });
 });
 

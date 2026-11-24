@@ -237,8 +237,8 @@ A finished calculation opens as a report, read two ways: **Output** and
   becomes a wedge (toward you) or a hash (away). *Face on* turns the structure
   flat to the screen, and Ctrl+C / Ctrl+V on a 3D view copy its viewing angle
   to another structure. *Copy image*, *Save SVG* / *PNG* (always at one bond
-  length, so drawings match side by side), or *Save MOL* for ChemDraw and
-  ChemSketch to edit.
+  length, so drawings match side by side), *Save CDXML* to edit in ChemDraw
+  exactly as drawn, or *Save MOL* for ChemSketch and other editors.
 - Surfaces come from the finished wavefunction (nothing is re-run), and the
   isovalue redraws instantly. *Show in folder* opens the run folder for your
   own programs (Avogadro, VMD, ChimeraX).

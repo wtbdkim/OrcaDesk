@@ -1101,7 +1101,7 @@ class Bridge(QObject):
     @pyqtSlot(str, result=str)
     def draw2d_save(self, payload_json: str) -> str:
         """Save the drawing on screen through a Save dialog:
-        {format: "svg"|"png"|"mol", source, name?, svg?, png?, drawing?}.
+        {format: "svg"|"png"|"mol"|"cdxml", source, name?, svg?, png?, drawing?}.
         svg is the text the front-end drew, png a data:image/png;base64 URI,
         drawing the MOL writer's input (draw2d/molfile.py: the 2D coordinates
         and wedge flags exactly as drawn -- one projection, not two). The
@@ -1110,6 +1110,7 @@ class Bridge(QObject):
         the dialog is {ok: false, cancelled: true}, not an error."""
         import base64
         import binascii
+        from ..draw2d.cdxml import write_cdxml
         from ..draw2d.molfile import MolfileError, write_molblock
         try:
             d = json.loads(payload_json or "{}")
@@ -1118,7 +1119,8 @@ class Bridge(QObject):
             return json.dumps(Draw2dSaveResult(ok=False, error="Unreadable request."))
         specs = {"svg": ("SVG image (*.svg)", ".svg"),
                  "png": ("PNG image (*.png)", ".png"),
-                 "mol": ("MDL MOL file (*.mol)", ".mol")}
+                 "mol": ("MDL MOL file (*.mol)", ".mol"),
+                 "cdxml": ("ChemDraw CDXML (*.cdxml)", ".cdxml")}
         if fmt not in specs:
             return json.dumps(Draw2dSaveResult(ok=False, error=f"Unknown format '{fmt}'."))
         try:
@@ -1138,6 +1140,8 @@ class Bridge(QObject):
                     raise ValueError("The image is unreadable.") from None
                 if not blob.startswith(b"\x89PNG"):
                     raise ValueError("The image is not a PNG.")
+            elif fmt == "cdxml":
+                blob = write_cdxml(d.get("drawing") or {}).encode("utf-8")
             else:
                 blob = write_molblock(d.get("drawing") or {}).encode("ascii")
         except (MolfileError, ValueError, TypeError) as e:

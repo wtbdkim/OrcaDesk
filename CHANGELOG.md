@@ -18,13 +18,18 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   from the same side (the angle is about the structure's own coordinates, so
   it suits structures of the same system). With the 2D structure split open,
   the 2D drawing follows, so a row of drawings can be made from one angle.
+- ***Save CDXML* opens the 2D drawing in ChemDraw as it looks on screen.**
+  A MOL file has no style, so ChemDraw redrew it in its own: large labels on
+  short bonds, crowded hydrogens running into each other, and the size never
+  changed whatever the drawing's. CDXML is ChemDraw's own format; it carries
+  the drawing's bond length, label size, line and wedge widths, so the
+  structure opens with the same proportions and stays editable.
 - **2D drawings come out the same size, and *Face on* lays a structure flat.**
   A copied or saved 2D drawing used to be smaller the more the structure was
   tilted, because a slanted bond is drawn short. Every drawing now has the
   same bond length (43 px; 1.8 Å in a MOL file) whatever the view, with labels and
   lines kept in proportion, so drawings pasted side by side match. Save MOL
-  is scaled the same way (its typical bond is 1.8 Å), so the drawing opens in
-  ChemDraw at the size and shape it has on screen. The new
+  is scaled the same way (its typical bond is 1.8 Å). The new
   *Face on* button turns the 3D view so the structure faces you as flat as it
   can (a planar molecule lies in the screen), keeping the way it points.
 - **`{{NPROCS}}` and `{{MAXCORE}}` size an input to the computer it runs on.**

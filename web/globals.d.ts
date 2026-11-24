@@ -42,7 +42,7 @@ interface OrcaBridge {
   cancel_draw2d_install(): Promise<string>;    // Draw2dStatusPayload JSON
   draw2d_perceive(payloadJson: string): Promise<string>;    // {source, atoms, charge|null} -> Draw2dPerceptionPayload (state "running"); poll get_draw2d_job
   get_draw2d_job(): Promise<string>;           // Draw2dPerceptionPayload JSON (the latest job)
-  draw2d_save(payloadJson: string): Promise<string>;        // {format: svg|png|mol, source, name, svg?|png?|drawing?} -> Draw2dSaveResult
+  draw2d_save(payloadJson: string): Promise<string>;        // {format: svg|png|mol|cdxml, source, name, svg?|png?|drawing?} -> Draw2dSaveResult
   copy_draw2d_image(pngDataUri: string, svg: string): Promise<string>;  // OkResult JSON (Qt clipboard: image + image/svg+xml)
   get_mo_lobes(source: string, spin: string, index: number): Promise<string>;  // MoLobesPayload JSON (state "running" -> call again; index < 0 = the orbital list)
   // CREST (runs in WSL; separate from ORCA)

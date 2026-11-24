@@ -325,7 +325,7 @@
     return {
       title: title,
       atoms: lay.atoms.map(a => ({ el: a.el, x: +(a.x * k).toFixed(4), y: +(a.y * k).toFixed(4),
-                                   charge: a.charge, radical: a.radical })),
+                                   charge: a.charge, radical: a.radical, label: a.label })),
       bonds: lay.bonds.map(b => ({ a: b.a, b: b.b, order: b.order, stereo: b.stereo })),
     };
   }
@@ -735,6 +735,8 @@
         <button class="btn btn-sm btn-ghost" type="button" data-d="svg">Save SVG</button>
         <button class="btn btn-sm btn-ghost" type="button" data-d="png">Save PNG</button>
         <button class="btn btn-sm btn-ghost" type="button" data-d="mol">Save MOL</button>
+        <button class="btn btn-sm btn-ghost" type="button" data-d="cdxml"
+          title="ChemDraw's own format: opens in ChemDraw with this drawing's bond length, label size and lines (a MOL file is redrawn in ChemDraw's style)">Save CDXML</button>
       </div>
       <div class="d2bar" data-d="mobar">
         <label class="d2ctl">Orbital
@@ -1088,6 +1090,7 @@
     q("svg").addEventListener("click", () => save("svg"));
     q("png").addEventListener("click", () => save("png"));
     q("mol").addEventListener("click", () => save("mol"));
+    q("cdxml").addEventListener("click", () => save("cdxml"));
 
     stage.onView(follow);
     stage.onAtomClick(toggleAtom);

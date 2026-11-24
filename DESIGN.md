@@ -2118,7 +2118,9 @@ points in the plane is kept and a second press does nothing);
 an atom in the 3D half shows or hides that hydrogen, or draws or drops that
 heavy atom's symbol; the note's last sentence says so);
 then *Copy image* (the one non-ghost button) · *Save SVG* · *Save PNG* ·
-*Save MOL*. One `.d2note` line says where the bond orders came from (*Bond
+*Save MOL* · *Save CDXML* (ChemDraw's own format, carrying this drawing's bond
+length, label size and line widths — a MOL is redrawn in ChemDraw's style,
+which is not what was on screen). One `.d2note` line says where the bond orders came from (*Bond
 orders by RDKit 2026.09.2, for the calculation's charge.*) and turns `--warn`
 when it has to admit something: *Connectivity only — every bond single.* with
 RDKit's reason, a multiplicity RDKit's Lewis structure disagrees with, or *A
