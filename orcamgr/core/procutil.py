@@ -42,12 +42,20 @@ def create_time_of(pid: int) -> Optional[float]:
 
 def process_matches(pid: Optional[int], create_time: Optional[float]) -> bool:
     """True iff pid is alive AND — when create_time is supplied — is the SAME
-    process we launched (not a recycled PID). A zombie counts as not running."""
+    process we launched (not a recycled PID). A zombie counts as not running.
+
+    Called every tail poll (0.35 s) for each reattached run, so it must stay
+    cheap. Windows has no zombies, and there psutil's status() walks every
+    thread of every process on the machine (measured: 10 ms a call, with four
+    runs reattached the largest single cost in the app) -- so it is asked only
+    where a zombie can exist; is_running() already reads the exit code there."""
     if not pid:
         return False
     try:
         p = psutil.Process(int(pid))
-        if not p.is_running() or p.status() == psutil.STATUS_ZOMBIE:
+        if not p.is_running():
+            return False
+        if sys.platform != "win32" and p.status() == psutil.STATUS_ZOMBIE:
             return False
         if create_time:
             return abs(p.create_time() - float(create_time)) < _CREATE_TIME_TOL

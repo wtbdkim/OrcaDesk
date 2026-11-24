@@ -1035,6 +1035,15 @@ CREST and MLIP results are small and parse at once. The synchronous
 `parse_calc_output` reads and fills the same cache; no page calls it since
 the classic front-end went, and the slot stays.
 
+A poll repaints **only the cells whose drawing inputs moved**
+(`stream.js` `stale`): the row's fields, `NB.trackerRev(name)` (bumped by
+`boot.js` whenever a tracker takes a line, or a seed lands), the output tail
+and structure as read (by identity), the graph toggle, the theme and the
+stream's width (read once per render, not per cell). A running cell is
+repainted every poll, as before. Repainting every cell every 1.2 s rebuilt each
+chart's SVG and forced a layout per cell, and with a few hundred finished
+calculations in the queue that was most of a core in the renderer.
+
 A cell's **Output pane** (the `.logbox` beside the chart, the last 260 lines
 of the `.out`, re-read every poll while the job runs) follows the end **only
 while the reader is at the end** — per box in `stream.js` `_logs`, read off
@@ -1338,6 +1347,11 @@ The `core/` pipeline:
   reattach finds the marker again.
 - `procutil.py` — psutil-backed `process_matches(pid, create_time)` and
   `kill_tree(...)`, used for reattach and reliable tree termination.
+  `process_matches` runs every tail poll (0.35 s) for each reattached run, so
+  it asks `status()` (the zombie check) only off Windows: Windows has no
+  zombies, and there psutil's `status()` walks every thread on the machine
+  (measured 10 ms a call; with four runs reattached it was the app's largest
+  single cost). `is_running()` already reads the exit code.
 - `tailer.py` — `FileTailer`, the incremental tail behind the live log for both
   the ORCA and CREST runners, plus `decode_orca_line`. It reads with
   `errors="surrogateescape"` and repairs each line through

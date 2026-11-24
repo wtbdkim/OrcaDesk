@@ -242,6 +242,18 @@ var NB = {};
               || b.scf.hasData?.() || b.scf.points.length > 0);
   };
 
+  /** How many times a calculation's trackers have taken a line: the stream
+   *  repaints a cell only when this (or something else it draws) moved.
+   *  @type {Map<string, number>} */
+  const _rev = new Map();
+  /** @param {string} name */
+  function bump(name) { _rev.set(name, (_rev.get(name) || 0) + 1); }
+  /** A token that changes whenever what the trackers would draw for this
+   *  calculation may have changed. @param {string} name */
+  NB.trackerRev = function (name) {
+    return (_rev.get(name) || 0) + (_reading.has(name) ? "r" : "");
+  };
+
   /** @param {string} name @param {string} msg */
   function feed(name, msg) {
     if (!name) return false;
@@ -253,6 +265,7 @@ var NB = {};
     if (b.tddft.push(msg)) changed = true;
     if (b.crest.push(msg)) changed = true;
     if (b.irc.push(msg)) changed = true;
+    if (changed) bump(name);
     return changed;
   }
 
@@ -283,6 +296,7 @@ var NB = {};
       b.scf.push(ln); b.geo.push(ln); b.freq.push(ln);
       b.tddft.push(ln); b.crest.push(ln); b.irc.push(ln);
     });
+    bump(name);
     return true;
   }
   NB.seed = seed;
@@ -312,7 +326,7 @@ var NB = {};
   function pruneTrackers(live) {
     [..._jobs.keys()].forEach(n => {
       if (live.has(n)) return;
-      _jobs.delete(n); _seeded.delete(n); _reading.delete(n);
+      _jobs.delete(n); _seeded.delete(n); _reading.delete(n); _rev.delete(n);
     });
   }
 

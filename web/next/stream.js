@@ -535,7 +535,41 @@
   function repaintOne(name) {
     const el = _cells.get(name);
     const i = NB.queue.findIndex(x => x.name === name);
-    if (el && i >= 0) update(el, NB.queue[i], i);
+    if (el && i >= 0) { update(el, NB.queue[i], i); stale(el, NB.queue[i], i, -1); }
+  }
+
+  /** What a cell was last painted from, per cell. @type {WeakMap<HTMLElement, any[]>} */
+  const _painted = new WeakMap();
+
+  /** Does the poll have to repaint this cell? Every poll used to repaint every
+   *  cell -- rebuild its chart, re-measure it, re-read its log's height -- and
+   *  with a few hundred finished calculations in the queue that was the
+   *  window's whole CPU, every 1.2 s, for cells that had not changed since the
+   *  day before. A finished cell is repainted when something it draws moved:
+   *  the row's own fields, its tracker data, its output tail or structure as
+   *  read, the graph toggle, the theme, the stream's width. A running one is repainted
+   *  every poll, as before (its progress line and ETA move with the clock).
+   *  Records what it compared, so the caller's update() is the paint it was
+   *  asked about; `width` -1 (repaintOne) records without forcing the next.
+   *  @param {HTMLElement} el @param {any} c @param {number} i @param {number} width */
+  function stale(el, c, i, width) {
+    const tail = _tails.get(c.name);
+    const key = [i, c.state, !!c.faulted, !!c.disconnected, c.kind, c.message,
+                 c.charge, c.multiplicity, !!c.is_raw, c.meta ? JSON.stringify(c.meta) : "",
+                 NB.trackerRev(c.name), _gkind.get(c.name) || "",
+                 tail ? tail.lines : null, tail ? tail.file : "", tail ? !!tail.truncated : false,
+                 _geom.get(c.name) || null,
+                 // the charts bake the theme's colours into their SVG
+                 document.documentElement.getAttribute("data-theme") || "", width];
+    const was = _painted.get(el);
+    if (width === -1) {            // after a direct repaint: remember all but the width
+      if (was) key[key.length - 1] = was[was.length - 1];
+      _painted.set(el, key);
+      return false;
+    }
+    _painted.set(el, key);
+    if (c.state === "running" || !was) return true;
+    return key.some((v, k) => v !== was[k]);
   }
 
   function render() {
@@ -555,6 +589,9 @@
       if (/** @type {HTMLElement} */ (e).dataset.name !== editing) e.remove();
     });
 
+    // measured once, before any cell is touched: a width read per cell between
+    // writes forced a layout of the whole stream for every one of them
+    const width = host.clientWidth;
     const live = new Set();
     calcs.forEach((c, i) => {
       live.add(c.name);
@@ -572,6 +609,7 @@
       let cell = _cells.get(c.name);
       if (!cell) { cell = build(c); _cells.set(c.name, cell); }
       if (host.children[i] !== cell) host.insertBefore(cell, host.children[i] || null);
+      if (!stale(cell, c, i, width)) return;
       update(cell, c, i);
     });
     // No "New calculation" stub at the end any more: calculations are made in

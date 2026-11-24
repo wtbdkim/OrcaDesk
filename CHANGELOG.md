@@ -45,6 +45,13 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   more processes than it has displacements.
 
 ### Changed
+- **The window stays light with a long queue and runs carried over from a
+  restart.** With a few hundred calculations, the Jobs view redrew every
+  calculation's chart and output every 1.2 s, and each ORCA run picked up
+  again after a restart was checked in a way that scans every thread on the
+  PC three times a second; together they kept more than a core busy while
+  nothing was happening. Only the calculations that changed are redrawn
+  now, and the check is the cheap one.
 - **A block waiting for approval no longer looks like it is running.** Its
   border was the same amber as a running block's; it is now dashed, like the
   approval arrow that holds it, and its second line reads *Needs approval*.
