@@ -244,3 +244,68 @@ def test_rank_cap_answers_nothing_rather_than_guessing():
     assert numfreq_rank_cap(numfreq, 0, 15) is None
     assert numfreq_rank_cap(numfreq, 3, 0) is None
     assert numfreq_rank_cap(numfreq, None, 15) is None
+
+
+# ---- {{NPROCS}} / {{MAXCORE}}: sized to the pool it runs in ------------------
+
+from orcamgr.core.resources import (  # noqa: E402
+    JobShape, fill_pool_placeholders, pool_shape, sized_by_pool)
+
+_SIZED = "! B3LYP def2-SVP\n%pal nprocs {{NPROCS}} end\n%maxcore {{MAXCORE}}\n* xyz 0 1\nH 0 0 0\nH 0 0 0.74\n*\n"
+
+
+def _raw(text: str) -> Calculation:
+    c = _calc("sp", nprocs=6, maxcore_mb=2400)   # the hidden form: never what runs
+    c.is_raw = True
+    c.raw_text = text
+    return c
+
+
+def test_a_pool_shape_splits_the_cores_by_the_jobs_and_the_memory_by_the_cores():
+    s = pool_shape(ResourceBudget(max_jobs=4, cores=16, ram_mb=48000))
+    assert s == JobShape(nprocs=4, maxcore_mb=3000)
+    # all of the memory cap, none held back: the cap is the user's own margin
+    assert s.nprocs * s.maxcore_mb * 4 == 48000
+    # more jobs than cores still gives every job one core
+    assert pool_shape(ResourceBudget(max_jobs=10, cores=4, ram_mb=8000)).nprocs == 1
+    # a device without mpirun cannot run a parallel ORCA
+    assert pool_shape(ResourceBudget(max_jobs=1, cores=8, ram_mb=8000), mpi=False).nprocs == 1
+
+
+def test_a_sized_raw_input_costs_what_its_pool_gives_it():
+    c = _raw(_SIZED)
+    shape = JobShape(nprocs=4, maxcore_mb=3000)
+    assert declared_cores(c, shape) == 4
+    assert estimated_ram_mb(c, shape) == 12000
+    # no pool known (nothing to size it from): serial at ORCA's default
+    assert declared_cores(c) == 1
+    assert estimated_ram_mb(c) == 1024
+
+
+def test_a_number_in_the_text_stays_the_users_whatever_the_pool():
+    c = _raw(_SIZED.replace("{{NPROCS}}", "2"))
+    shape = JobShape(nprocs=8, maxcore_mb=3000)
+    assert declared_cores(c, shape) == 2                # the typed number
+    assert estimated_ram_mb(c, shape) == 2 * 3000       # {{MAXCORE}} still sized
+    c = _raw(_SIZED.replace("{{MAXCORE}}", "500"))
+    assert estimated_ram_mb(c, shape) == 8 * 500
+
+
+def test_a_placeholder_in_a_comment_sizes_nothing():
+    assert sized_by_pool("%pal nprocs 2 end # or {{NPROCS}}\n") == (False, False)
+    assert sized_by_pool(_SIZED) == (True, True)
+
+
+def test_filling_writes_the_shape_and_leaves_a_plain_text_alone():
+    out = fill_pool_placeholders(_SIZED, JobShape(nprocs=4, maxcore_mb=3000), 2)
+    assert "%pal nprocs 4 end" in out and "%maxcore 3000" in out
+    assert "{{" not in out
+    plain = _SIZED.replace("{{NPROCS}}", "2").replace("{{MAXCORE}}", "900")
+    assert fill_pool_placeholders(plain, JobShape(8, 3000), 2) == plain
+
+
+def test_a_sized_numerical_frequency_gets_no_more_ranks_than_displacements():
+    # H2: 6*2-6 = 6 displacements; ORCA hangs when given more ranks than that
+    text = _SIZED.replace("! B3LYP def2-SVP", "! B3LYP def2-SVP NumFreq")
+    out = fill_pool_placeholders(text, JobShape(nprocs=16, maxcore_mb=1000), 2)
+    assert "%pal nprocs 6 end" in out

@@ -809,7 +809,7 @@ conformer-screening stack) and after anything else). The queue
 window's set editor (DESIGN.md §17.6) writes through `save_inp_set` /
 `delete_inp_set` only. `save_set` also refuses a `{{...}}` that is not one of
 `KNOWN_PLACEHOLDERS` (`{{GEOMETRY}}`, `{{JOB}}`, `{{CHARGE}}`, `{{MULT}}`,
-`{{HESS}}`): nothing fills it, so it would reach ORCA verbatim. Only on save —
+`{{HESS}}`, `{{NPROCS}}`, `{{MAXCORE}}`): nothing fills it, so it would reach ORCA verbatim. Only on save —
 a set already in the file is never dropped on read for that rule. Pushing a
 saved set's text onto the pending blocks made
 from it is an ordinary `update_calc` batch the user is offered, never
@@ -1459,6 +1459,27 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   a lower budget only holds back what has not started. Before this, a run
   started at one job at a time stayed one at a time after the limit was
   raised, until it was stopped and started again.
+- **`{{NPROCS}}` / `{{MAXCORE}}` size a raw input to the pool it runs in**
+  (the user's decision, 2026-11-24). A number in a raw `.inp` is the user's
+  and runs as written (P26); these two placeholders are the opt-in for the
+  opposite. Each pool — this PC or one device — has a `JobShape` from its own
+  resolved budget (`resources.pool_shape`): `nprocs = cores / max_jobs`
+  (at least 1; 1 on a device without mpirun) and `maxcore = ram_mb / cores`,
+  so N jobs at once use exactly the cores cap and add up to exactly the
+  memory cap — nothing is held back, because the memory cap is the user's
+  own number and carries their margin (the "0 = auto" cap is already 75%).
+  Admission costs a sized calc per pool (`_slot_for(calc, device)` →
+  `declared_cores` / `estimated_ram_mb` with the shape), the `_JobSlot`
+  keeps the shape it was admitted with, and the fresh launch fills the text
+  from it (`fill_pool_placeholders`, after `_render_template_values`), so the
+  `.inp` written matches what was reserved even if the caps change between
+  pick and launch. The nprocs written is capped for a numerical frequency
+  (`numfreq_rank_cap`) — ORCAdesk picks that number, so it picks one that
+  cannot hang, where a typed one is only warned about. The stored
+  `raw_text` keeps the placeholders; the queue editor's preview shows them
+  unfilled (where it runs is not known before admission). Pinned by
+  `test_resources.py` (shape, cost, fill) and `test_remote_engine.py`
+  (`test_each_pool_sizes_…`, `test_the_inp_written_carries_…`).
 - **Every log line carries the calc that produced it** (`LogLine.calc`, `""` =
   engine-level). With jobs interleaving into one buffer the raw ORCA tail has no
   name of its own, so the tag is what lets the per-job graphs

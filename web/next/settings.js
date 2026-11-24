@@ -122,7 +122,9 @@
         <div class="scard">
           <div class="scard-title">How much of this machine the queue may use</div>
           <p class="scard-desc">ORCA's maxcore is per core, so a 6-core job at 2400 MB
-            reserves 14.4 GB — these caps are what keep two of them off the swap file.</p>
+            reserves 14.4 GB — these caps are what keep two of them off the swap file.
+            An input with {{NPROCS}} / {{MAXCORE}} is sized from them: cores ÷ calculations
+            at once, and memory ÷ cores. Leave room in the memory cap — ORCA may go over its maxcore.</p>
           <div class="field-row">
             ${row("Calculations at once", "max_concurrent_jobs", "number",
                   "0 = as many as the budgets below allow")}
@@ -440,9 +442,9 @@
           <div class="d">${NB.esc(deviceLine(d))}</div>
           ${d.in_config ? `<div class="ctl">
             <label><input type="checkbox" data-f="enabled"${d.enabled ? " checked" : ""}> Use</label>
-            ${num("max_jobs", "at once", d.max_jobs, "Calculations at once on this device; 0 = as many as its cores allow")}
+            ${num("max_jobs", "at once", d.max_jobs, "Calculations at once on this device; 0 = as many as its cores allow. {{NPROCS}} = cores ÷ this")}
             ${num("cores", "cores", d.cores_cap, "Cores the queue may use there; 0 = all it has")}
-            ${num("ram_mb", "memory (MB)", d.ram_cap_mb, "Memory the queue may use there; 0 = 75% of it")}
+            ${num("ram_mb", "memory (MB)", d.ram_cap_mb, "Memory the queue may use there; 0 = 75% of it. {{MAXCORE}} = this ÷ cores; leave room, ORCA may go over its maxcore")}
           </div>
           <div class="ctl" title="Calculations this device takes first. A preference, not a limit: with nothing of these kinds ready, it takes any other calculation it can run (ORCA, and CREST searches where CREST is installed). None ticked = no preference. Single points (SP, TD-DFT, NMR) never move the structure, so a spot VM loses only their own run.">
             <span class="devpref">prefers</span>${preferBoxes(d.prefer || [], d)}

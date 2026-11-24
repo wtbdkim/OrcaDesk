@@ -52,6 +52,7 @@ from ..core.input_generator import (CHARGE_PLACEHOLDER, GEOMETRY_PLACEHOLDER,
                                     MULT_PLACEHOLDER, StepConfig,
                                     _geom_job_lines, _irc_lines, build_input,
                                     is_level_text)
+from ..core.resources import MAXCORE_PLACEHOLDER, NPROCS_PLACEHOLDER
 from ..paths import user_data_root
 
 FILE_NAME = "inp_sets.json"
@@ -78,7 +79,9 @@ NEXT_KIND = {"": "opt", "mlip_opt": "opt", "opt": "freq", "ts_opt": "ts_freq",
 #: (render_raw_input / render_template_text); any other {{...}} would reach
 #: ORCA verbatim, so validate_set refuses it
 KNOWN_PLACEHOLDERS = (GEOMETRY_PLACEHOLDER, JOB_PLACEHOLDER, CHARGE_PLACEHOLDER,
-                      MULT_PLACEHOLDER, HESS_PLACEHOLDER)
+                      MULT_PLACEHOLDER, HESS_PLACEHOLDER,
+                      # filled from the pool the job runs in (resources.pool_shape)
+                      NPROCS_PLACEHOLDER, MAXCORE_PLACEHOLDER)
 _PLACEHOLDER_RE = re.compile(r"\{\{[^{}]*\}\}")
 
 MLIP_KEYS = {"model": "mlip_model", "device": "mlip_device",

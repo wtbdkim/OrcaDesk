@@ -215,6 +215,64 @@ def raw_maxcore_mb(raw_text: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# {{NPROCS}} / {{MAXCORE}}: a raw input that leaves its size to the device
+# ---------------------------------------------------------------------------
+# A number in a raw `.inp` is the user's and runs as written (P26). These two
+# placeholders are how a text asks for the opposite: "size me to wherever I
+# run". They are filled at launch from the pool the job was admitted to --
+# this PC or one device -- out of that pool's own three settings (the user's
+# decision, 2026-11-24):
+#
+#   nprocs  = cores cap / calculations at once   (at least 1)
+#   maxcore = memory cap / cores cap             (MB per core)
+#
+# so N jobs at once use exactly the cores cap and add up to exactly the
+# memory cap. No share is held back: the memory cap is the user's own number
+# and already carries the margin they want (the "0 = auto" cap is 75% of the
+# machine).
+NPROCS_PLACEHOLDER = "{{NPROCS}}"
+MAXCORE_PLACEHOLDER = "{{MAXCORE}}"
+
+
+@dataclass(frozen=True)
+class JobShape:
+    """What {{NPROCS}} / {{MAXCORE}} become in one pool (pool_shape)."""
+    nprocs: int = 1
+    maxcore_mb: int = _ORCA_DEFAULT_MAXCORE_MB
+
+
+def pool_shape(budget: "ResourceBudget", mpi: bool = True) -> JobShape:
+    """The job shape a pool's budget gives. ``mpi`` False (a device without
+    mpirun) keeps nprocs at 1: a parallel ORCA cannot start there."""
+    b = budget.resolved()
+    cores = max(1, int(b.cores))
+    nprocs = max(1, cores // max(1, int(b.max_jobs))) if mpi else 1
+    return JobShape(nprocs=nprocs, maxcore_mb=max(1, int(b.ram_mb) // cores))
+
+
+def sized_by_pool(raw_text: str) -> "tuple[bool, bool]":
+    """(nprocs, maxcore): which of the two placeholders a raw text uses
+    outside its comments."""
+    text = _without_comments(raw_text or "")
+    return NPROCS_PLACEHOLDER in text, MAXCORE_PLACEHOLDER in text
+
+
+def fill_pool_placeholders(text: str, shape: JobShape, n_atoms: int = 0) -> str:
+    """``text`` with {{NPROCS}} / {{MAXCORE}} filled from ``shape``. A text
+    without them is returned unchanged. The nprocs written is capped for a
+    numerical frequency (numfreq_rank_cap): here ORCAdesk picks the number,
+    so it picks one that cannot hang, where a typed one is only warned about."""
+    if NPROCS_PLACEHOLDER not in text and MAXCORE_PLACEHOLDER not in text:
+        return text
+    nprocs = shape.nprocs
+    cap = numfreq_rank_cap(text, n_atoms, nprocs) if n_atoms else None
+    if cap:
+        nprocs = cap
+    return (text.replace(NPROCS_PLACEHOLDER, str(max(1, nprocs)))
+                .replace(MAXCORE_PLACEHOLDER, str(max(1, shape.maxcore_mb))))
+
+
+# ---------------------------------------------------------------------------
 # numerical frequencies: more ranks than displacements is a deadlock
 # ---------------------------------------------------------------------------
 # ORCA parallelises a NumFreq over its displaced geometries, one gradient per
@@ -278,12 +336,13 @@ def numfreq_rank_cap(text: str, n_atoms: int, nprocs: int):
     return displacements
 
 
-def declared_cores(calc) -> int:
+def declared_cores(calc, shape: "JobShape | None" = None) -> int:
     """How many cores this calculation will occupy while it runs.
 
     Read from what will actually execute: a raw `.inp`'s own `%pal`, CREST's
     `-T`, the form's `nprocs`. Never less than 1, so a job always consumes a
-    slot's worth of budget.
+    slot's worth of budget. A raw `.inp` with {{NPROCS}} occupies the
+    ``shape`` of the pool it would run in (1 when none is given).
     """
     cfg = getattr(calc, "config", None)
     kind = getattr(calc, "kind", "") or ""
@@ -297,7 +356,10 @@ def declared_cores(calc) -> int:
             return 1
         return max(1, int(getattr(cfg, "nprocs", 1) or 1))
     if getattr(calc, "is_raw", False):
-        n = raw_nprocs(getattr(calc, "raw_text", "") or "")
+        text = getattr(calc, "raw_text", "") or ""
+        if sized_by_pool(text)[0]:
+            return shape.nprocs if shape is not None else 1
+        n = raw_nprocs(text)
         if n:
             return n
         # A raw input with no %pal runs serial, whatever the (hidden) form says.
@@ -335,10 +397,11 @@ def worker_threads(calc) -> int:
     return max(1, int(getattr(cfg, "nprocs", 1) or 1))
 
 
-def estimated_ram_mb(calc) -> int:
+def estimated_ram_mb(calc, shape: "JobShape | None" = None) -> int:
     """Rough memory footprint of this calculation, in MB. For ORCA this is
     `%maxcore` x cores — ORCA's own per-core ceiling, which is what the run will
-    try to use; the other backends get a flat per-job estimate."""
+    try to use; the other backends get a flat per-job estimate. {{NPROCS}} /
+    {{MAXCORE}} are read from ``shape``, as declared_cores does."""
     kind = getattr(calc, "kind", "") or ""
     if kind.startswith("mlip"):
         return _MLIP_RAM_MB
@@ -346,12 +409,16 @@ def estimated_ram_mb(calc) -> int:
         threads = declared_cores(calc)
         return max(_CREST_RAM_FLOOR_MB, threads * _CREST_RAM_PER_THREAD_MB)
     cfg = getattr(calc, "config", None)
-    cores = declared_cores(calc)
+    cores = declared_cores(calc, shape)
     if getattr(calc, "is_raw", False):
         # Same rule as declared_cores: read what will actually execute. A raw
         # input that declares no %maxcore gets ORCA's default, NOT the hidden
         # form field (which is not what runs).
-        per_core = raw_maxcore_mb(getattr(calc, "raw_text", "") or "") or _ORCA_DEFAULT_MAXCORE_MB
+        text = getattr(calc, "raw_text", "") or ""
+        if sized_by_pool(text)[1]:
+            per_core = shape.maxcore_mb if shape is not None else _ORCA_DEFAULT_MAXCORE_MB
+        else:
+            per_core = raw_maxcore_mb(text) or _ORCA_DEFAULT_MAXCORE_MB
     else:
         per_core = int(getattr(cfg, "maxcore_mb", 0) or 0) or _ORCA_DEFAULT_MAXCORE_MB
     return max(1, per_core * cores)

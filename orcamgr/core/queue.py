@@ -79,6 +79,7 @@ from .input_generator import (
 )
 from .structure import parse_block
 from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
+                        JobShape, fill_pool_placeholders, pool_shape,
                         numfreq_rank_cap, ram_headroom_mb, raw_nprocs, uses_gpu,
                         worker_threads)
 from .runner import OrcaRunner, OrcaRunError, OrcaCancelled, OrcaDetached, OrcaHung
@@ -276,6 +277,9 @@ class _JobSlot:
     # the calculation's kind: a remote CREST search needs CREST on the device
     # and counts threads (-T), not MPI ranks (_fits_remote)
     kind: str = ""
+    # what {{NPROCS}} / {{MAXCORE}} become for this job: its pool's shape when
+    # it was admitted, so the .inp written matches what was reserved
+    shape: "Optional[JobShape]" = None
 
 
 def _xyz_from_geometry(result: ParseResult) -> str:
@@ -1574,6 +1578,10 @@ class QueueEngine:
                 self.cb.log(f"[{calc.name}] {mismatch}", "warn", calc.name)
             text = render_raw_input(calc.raw_text, xyz)
             text = self._render_template_values(calc, text, calc_dir, xyz)
+            # {{NPROCS}} / {{MAXCORE}}: the shape reserved when it was admitted
+            text = fill_pool_placeholders(
+                text, self._job.shape or self._shape_for(self._job.device),
+                len(_xyz_elements(raw_coordinate_block(text))))
         else:
             try:
                 text = build_input(calc.config, xyz, calc.charge, calc.multiplicity)
@@ -2992,10 +3000,22 @@ class QueueEngine:
                     and self._filtered_by(calc) is not None)
                 or self._blocked_by(calc) is not None)
 
-    def _slot_for(self, calc: Calculation) -> "_JobSlot":
-        return _JobSlot(name=calc.name, cores=declared_cores(calc),
-                        ram_mb=estimated_ram_mb(calc), gpu=uses_gpu(calc),
-                        kind=calc.kind or "")
+    def _shape_for(self, device: str = "") -> JobShape:
+        """The job shape of a pool -- this machine ("") or a device -- for a
+        raw input's {{NPROCS}} / {{MAXCORE}} (resources.pool_shape)."""
+        if device:
+            dev = self._devices.get(device)
+            if dev is not None:
+                return pool_shape(dev.budget, mpi=bool(dev.has_mpi))
+        return pool_shape(self.budget)
+
+    def _slot_for(self, calc: Calculation, device: str = "") -> "_JobSlot":
+        """The admission cost of ``calc`` in ``device``'s pool. Only a raw
+        input with {{NPROCS}} / {{MAXCORE}} costs differently per pool."""
+        shape = self._shape_for(device)
+        return _JobSlot(name=calc.name, cores=declared_cores(calc, shape),
+                        ram_mb=estimated_ram_mb(calc, shape), gpu=uses_gpu(calc),
+                        kind=calc.kind or "", device=device, shape=shape)
 
     def _fits(self, slot: "_JobSlot") -> bool:
         """Does `slot` fit alongside what is already running ON ITS DEVICE
@@ -3072,8 +3092,7 @@ class QueueEngine:
             if calc.device:
                 return calc.device
             return "" if self._fits(self._slot_for(calc)) else None
-        slot = self._slot_for(calc)
-        if self._pool_takes("") and self._fits(slot):
+        if self._pool_takes("") and self._fits(self._slot_for(calc)):
             return ""
         if self._devices and remote_capable(
                 calc, run_dir_of(calc, self._system_name(calc))):
@@ -3084,8 +3103,7 @@ class QueueEngine:
                 # a preference is soft: skipped in the first pass only
                 if not relax and not device_prefers(dev.prefer, calc.kind):
                     continue
-                slot.device = alias
-                if self._fits(slot):
+                if self._fits(self._slot_for(calc, alias)):
                     return alias
         return None
 
@@ -3169,9 +3187,8 @@ class QueueEngine:
         room (nothing was started, and the walk ends), and "requeue" when the
         row stopped fitting while we waited — the walk then un-sees it and moves
         on to the rows behind it."""
-        slot = self._slot_for(calc)
         with self._slot_cv:
-            slot.device = self._placed.pop(calc.name, "")
+            slot = self._slot_for(calc, self._placed.pop(calc.name, ""))
             # a remote job to reattach holds its slot whatever its device says
             # (it is already running there): never waited on, never requeued
             forced = calc.state == CalcState.RUNNING and bool(slot.device)

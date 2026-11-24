@@ -13,6 +13,14 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   hydrogens can be taken out one by one. Clicking it again undoes it, and
   *Reset symbols* undoes them all. Charged, radical and lone atoms keep their
   symbols.
+- **`{{NPROCS}}` and `{{MAXCORE}}` size an input to the computer it runs on.**
+  Write `%pal nprocs {{NPROCS}} end` and `%maxcore {{MAXCORE}}` in an input or
+  a level, and each calculation gets its numbers from the settings of the
+  computer it starts on (this PC or a compute device): cores ÷ calculations
+  at once, and memory ÷ cores. For example 16 cores, 48000 MB and 4 at once
+  give every calculation 4 cores and 3000 MB per core. A number typed in the
+  input still runs exactly as written. A numerical frequency is never given
+  more processes than it has displacements.
 
 ### Changed
 - **A remote device's line on the rail shows its memory too.** Each

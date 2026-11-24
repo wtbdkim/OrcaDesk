@@ -429,3 +429,63 @@ def test_a_bad_cleanup_entry_is_refused():
     store.add_remote_cleanup({"device": "-oProxyCommand=x", "remote_dir": "/x"})
     store.add_remote_cleanup({"device": "gcp", "remote_dir": "relative"})
     assert store.remote_cleanup_entries() == []
+
+
+# ---- {{NPROCS}} / {{MAXCORE}} sized per pool --------------------------------
+
+_SIZED = ("! B3LYP def2-SVP\n%pal nprocs {{NPROCS}} end\n%maxcore {{MAXCORE}}\n"
+          "* xyz 0 1\n{{GEOMETRY}}\n*\n")
+
+
+def _sized(name, text=_SIZED):
+    c = make_calc(name)
+    c.is_raw = True
+    c.raw_text = text
+    c.xyz = "H 0 0 0\nH 0 0 0.74"
+    return c
+
+
+def test_each_pool_sizes_a_placeholder_input_from_its_own_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
+    # this PC: 1 at once, 4 cores, 8000 MB -> 4 x 2000
+    harness = EngineHarness(tmp_path, budget=ResourceBudget(max_jobs=1, cores=4,
+                                                            ram_mb=8000))
+    # the device: 2 at once over its probed 8 cores and 75% of 32 GB -> 4 x 3072
+    _with_device(harness, _info(), max_jobs=2)
+    gate = threading.Barrier(3, timeout=20)
+    seen = {}
+
+    def note(c):
+        slot = harness.engine._job
+        seen[c.name] = (slot.device, slot.shape.nprocs, slot.shape.maxcore_mb,
+                        slot.cores, slot.ram_mb)
+        gate.wait()
+    for n in "abc":
+        harness.behaviors[n] = note
+    harness.engine.run_all([_sized(n) for n in "abc"])
+    assert sorted(seen.values()) == [("", 4, 2000, 4, 8000),
+                                     ("gcp", 4, 3072, 4, 12288),
+                                     ("gcp", 4, 3072, 4, 12288)]
+
+
+def test_the_inp_written_carries_the_pools_numbers(tmp_path, monkeypatch):
+    monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
+    fake = FakeTransport()
+    def finish(f, remote_dir):
+        f.write(remote_dir + "/sized1.out", _OUT)
+        f.alive = False
+    fake.on_launch = finish
+    entry = normalize_device({"alias": "gcp", "enabled": True, "max_jobs": 2})
+    # this machine cannot take it: its typed %maxcore is more than 1 MB
+    eng = QueueEngine("orca-not-needed", str(tmp_path), QueueCallbacks(),
+                      budget=ResourceBudget(max_jobs=1, cores=1, ram_mb=1),
+                      device_entries=[entry], transport=fake,
+                      device_info=lambda a: _info())
+    calc = _sized("sized1", _SIZED.replace("{{MAXCORE}}", "2000"))
+    eng.run_all([calc])
+    assert calc.state == CalcState.DONE, calc.message
+    assert calc.device == "gcp"
+    inp = (Path(tmp_path) / "sized1" / "sized1.inp").read_text(encoding="utf-8")
+    assert "%pal nprocs 4 end" in inp            # 8 cores / 2 at once
+    assert "%maxcore 2000" in inp                # the typed number, as written
+    assert calc.raw_text.count("{{NPROCS}}") == 1   # the stored text is untouched

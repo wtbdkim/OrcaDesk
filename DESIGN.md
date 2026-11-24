@@ -2526,7 +2526,8 @@ columns:
   text): the set's name as the title, whether it is an ORCA level or MLIP
   settings (a text that reads as the other says it will move group), the
   text in the template field, one line naming the placeholders (`{{JOB}}`,
-  `{{GEOMETRY}}`, `{{CHARGE}}` `{{MULT}}`, `{{HESS}}` optional; for MLIP the
+  `{{GEOMETRY}}`, `{{CHARGE}}` `{{MULT}}`, `{{HESS}}` optional, `{{NPROCS}}`
+  `{{MAXCORE}}` sized to the computer it runs on; for MLIP the
   setting keys), then *Save*, *Save as new*, *Delete…* (a new one:
   *Discard*), *Duplicate* and *Import .inp…*. *+ New* starts a level from the
   default level's text. Refusals (no name, no `{{GEOMETRY}}`, no `{{JOB}}` on
