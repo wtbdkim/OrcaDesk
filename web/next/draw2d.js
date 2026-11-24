@@ -61,7 +61,7 @@
    *  labels, lines and wedges, which are fixed px, keep one proportion to
    *  it) -- ChemDraw's fixed bond length. A structure seen at a slant draws
    *  its bonds short; at the fixed Å scale it came out smaller each time. */
-  const BOND_PX = 36;
+  const BOND_PX = 43.2;
   /** A bond at a stereocentre leaving the screen by more than this points
    *  almost straight at (or away from) the viewer: its far atom is drawn
    *  nearly ON the centre, and a reader -- or a program reading the wedges
@@ -316,7 +316,7 @@
    *  coordinates in Å, y up, exactly as drawn. `scale` is the px per Å the
    *  saved image is drawn at (exportScale): the coordinates are multiplied
    *  by scale / PX, so the MOL is the image itself -- its median heavy-atom
-   *  bond 1.5 Å whatever the view -- and not the raw projection, which a
+   *  bond BOND_PX / PX = 1.8 Å whatever the view -- and not the raw projection, which a
    *  reader such as ChemDraw opens as is (a tilted structure came out small
    *  there while the image did not). Omitted, the projection's own Å.
    *  @param {any} lay layout() @param {string} title @param {number} [scale] */

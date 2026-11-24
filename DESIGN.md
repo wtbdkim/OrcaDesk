@@ -2105,7 +2105,7 @@ black ink on white like ChemDraw's, so it is data, not chrome (D1, as the ESP
 ramp's literal colours are). The preview's frame is the structure's bounding
 circle, so the drawing does not jump in scale while it turns; what is saved is
 cropped to the ink and drawn at one **fixed bond length** (the median bond
-between heavy atoms is 36 px, whatever the view — a slanted structure's short
+between heavy atoms is 43.2 px, whatever the view — a slanted structure's short
 bonds no longer make a smaller figure), labels, lines and wedges at their
 fixed px, so figures pasted side by side match. Under the paper, `.d2bar`:
 *Wedge above* — a slider

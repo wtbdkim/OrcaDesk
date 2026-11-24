@@ -495,14 +495,14 @@ test("Face on keeps the drawing's handedness: a stereocentre reads the same", ()
   assert.ok(close(det, 1, 1e-9), "a mirror would turn R into S");
 });
 
-test("Save MOL is the saved image: same scale, median heavy bond 1.5 Å whatever the slant", () => {
+test("Save MOL is the saved image: same scale, median heavy bond BOND_PX / PX whatever the slant", () => {
   [I, rotY(Math.PI / 3), mulR(rotX(1.2), rotY(0.4))].forEach(R => {
     const lay = D.layout(ETHYLENE, ETH_PER, { R: R, c: [0, 0, 0] });
     const S = D.exportScale(lay);
     const m = D.molInput(lay, "x", S);
     const c = m.atoms.map(a => [a.x, a.y]);
     const cc = m.bonds.filter(b => m.atoms[b.a].el === "C" && m.atoms[b.b].el === "C")[0];
-    assert.ok(close(Math.hypot(c[cc.a][0] - c[cc.b][0], c[cc.a][1] - c[cc.b][1]), 1.5, 2e-4));
+    assert.ok(close(Math.hypot(c[cc.a][0] - c[cc.b][0], c[cc.a][1] - c[cc.b][1]), D.BOND_PX / 24, 2e-4));
     // and every atom sits where the image draws it (image px = MOL Å × PX)
     m.atoms.forEach((a, i) => assert.ok(close(a.x * 24, lay.atoms[i].x * S, 5e-3)));
   });

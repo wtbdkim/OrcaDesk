@@ -21,9 +21,9 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
 - **2D drawings come out the same size, and *Face on* lays a structure flat.**
   A copied or saved 2D drawing used to be smaller the more the structure was
   tilted, because a slanted bond is drawn short. Every drawing now has the
-  same bond length (36 px, about 1.5 Å) whatever the view, with labels and
+  same bond length (43 px; 1.8 Å in a MOL file) whatever the view, with labels and
   lines kept in proportion, so drawings pasted side by side match. Save MOL
-  is scaled the same way (its typical bond is 1.5 Å), so the drawing opens in
+  is scaled the same way (its typical bond is 1.8 Å), so the drawing opens in
   ChemDraw at the size and shape it has on screen. The new
   *Face on* button turns the 3D view so the structure faces you as flat as it
   can (a planar molecule lies in the screen), keeping the way it points.

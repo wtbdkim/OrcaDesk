@@ -2749,7 +2749,7 @@ The pure core is `NB.draw2d.core`, tested in node by
 - **Fixed bond length on export.** The preview draws 24 px per Å
   (`PX`); a saved or copied drawing is drawn at `exportScale(lay)` instead —
   the scale that makes the median *drawn* bond between heavy atoms (all bonds
-  when there are none) `BOND_PX` = 36 px. A projection shortens every bond
+  when there are none) `BOND_PX` = 43.2 px (1.2 × a 1.5 Å bond at `PX`: 36 px read as too small beside other figures). A projection shortens every bond
   that leaves the screen, so at a fixed Å scale the same molecule came out
   smaller the more it was tilted, and figures pasted side by side did not
   match (the labels, at a fixed 13 px, showed it was not resizing). Bonds
@@ -2757,7 +2757,7 @@ The pure core is `NB.draw2d.core`, tested in node by
   4 × `PX`. Only positions and lobes scale; font, line widths and wedge
   widths stay fixed px, so the ink keeps one proportion to the bond. Save MOL
   is scaled the same way (`molInput(lay, title, exportScale(lay))`: the
-  coordinates × scale / `PX`, so its median heavy-atom bond is 1.5 Å and image
+  coordinates × scale / `PX`, so its median heavy-atom bond is `BOND_PX / PX` = 1.8 Å and image
   px = MOL Å × `PX`). It first kept the raw projected Å on the theory that a
   MOL reader sets its own bond length; ChemDraw opens the coordinates as they
   are, so a tilted structure's MOL came out small while its image did not.
