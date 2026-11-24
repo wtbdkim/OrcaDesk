@@ -1271,7 +1271,11 @@
       // a conformer placeholder (one block standing for every conformer its
       // search will find) counts "all" where a stack counts its members
       const all = !n.stack && isConfAll(c0) && calcState(c0) !== "filtered";
-      const sub = `<span class="qe-sub"${mod ? ' data-mod="1"' : ""}>${esc((KIND_LABEL[n.kind] || n.kind) + " / " + setName)}${mod ? " *" : ""}</span>`;
+      // a block held at its approval gate says so in words: its amber was
+      // read as "running" (the full kind / level stays in the tooltip)
+      const sub = n.state === "waiting" && !n.stack
+        ? `<span class="qe-sub" data-wait="1">Needs approval</span>`
+        : `<span class="qe-sub"${mod ? ' data-mod="1"' : ""}>${esc((KIND_LABEL[n.kind] || n.kind) + " / " + setName)}${mod ? " *" : ""}</span>`;
       parts.push(`<div class="qe-node" data-k="${esc(n.key)}" data-setkind="${n.setKind}"${
           n.editable ? ' data-editable="1"' : ""}${_pop === n.key ? ' data-pop="1"' : ""}
         style="left:${X(n.col)}px; top:${Y(L, n.row)}px; z-index:${open ? 20 : 2}"${n.stack ? ' data-stack="1"' : ""}>

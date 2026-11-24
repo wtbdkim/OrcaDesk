@@ -1928,3 +1928,13 @@ input.qe-sysname:not([readonly]):hover,input.qe-sysname:not([readonly]):focus{
 .railres .poolbtn[data-act="cancel"]:hover:not(:disabled){color:var(--err);}
 .railres .poolbtn:disabled{opacity:.35; cursor:default;}
 .railres .poolbtn:focus-visible{outline:2px solid var(--ring); outline-offset:1px;}
+
+/* ============================ waiting for approval ============================
+   A deliberate departure from the reference (DESIGN.md §17.6, queue canvas):
+   a block held at its approval gate had the same amber border as a running
+   one, minus the glow, and was read as running. Its border is dashed now --
+   the dashed line of the approval arrow that holds it -- and its second line
+   says "Needs approval" in amber. The reference draws no waiting block, so no
+   landmark the spec diff compares changes. */
+:is(.qe-card,.qe-back)[data-edge="waiting"]{border-style:dashed;}
+.qe-sub[data-wait]{color:var(--warn);}

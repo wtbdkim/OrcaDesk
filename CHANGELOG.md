@@ -23,6 +23,9 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   more processes than it has displacements.
 
 ### Changed
+- **A block waiting for approval no longer looks like it is running.** Its
+  border was the same amber as a running block's; it is now dashed, like the
+  approval arrow that holds it, and its second line reads *Needs approval*.
 - **A remote device's line on the rail shows its memory too.** Each
   compute device now reads like *This PC*: cores reserved, memory reserved and
   how many jobs run, each against that device's own budget.

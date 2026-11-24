@@ -2237,7 +2237,10 @@ columns:
   calculation is a one-node lane. A block (140 x 64, 176px a column, 104px a
   row) carries its state dot (§12 colours; *waiting* is an amber ring) — its
   **border takes the dot's colour** (pending the ring's grey, done green,
-  running amber with a soft glow, failed red, blocked / cancelled faint) —
+  running amber with a soft glow, failed red, blocked / cancelled faint;
+  *waiting* amber and **dashed**, like the approval arrow holding it, with
+  *Needs approval* in amber as its second line — an amber border alone was
+  read as running) —
   per calculation: a stack's front card is its first member's, each back
   card the next one's, while the dot is the block's overall state — so a
   running queue reads from across the canvas, and a selected block is an
