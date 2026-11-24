@@ -272,6 +272,25 @@ def test_a_pool_shape_splits_the_cores_by_the_jobs_and_the_memory_by_the_cores()
     assert pool_shape(ResourceBudget(max_jobs=1, cores=8, ram_mb=8000), mpi=False).nprocs == 1
 
 
+def test_calculations_at_once_on_auto_gives_every_free_core():
+    auto = ResourceBudget(max_jobs=0, cores=16, ram_mb=48000)
+    # alone: the whole cap, its memory too (16 x 3000 = the memory cap)
+    assert pool_shape(auto) == JobShape(nprocs=16, maxcore_mb=3000)
+    # beside an 8-core job: the other 8
+    assert pool_shape(auto, cores_in_use=8).nprocs == 8
+    # nothing free: one core, which does not fit -- it waits
+    assert pool_shape(auto, cores_in_use=16).nprocs == 1
+    # resolving fills max_jobs in but keeps saying it was auto
+    r = auto.resolved()
+    assert r.max_jobs == 16 and r.auto_jobs and r.resolved().auto_jobs
+    assert pool_shape(r, cores_in_use=4).nprocs == 12
+    # a typed number still divides, whatever is running
+    typed = ResourceBudget(max_jobs=4, cores=16, ram_mb=48000)
+    assert pool_shape(typed, cores_in_use=12).nprocs == 4
+    assert not typed.resolved().auto_jobs
+    assert pool_shape(auto, mpi=False).nprocs == 1
+
+
 def test_a_sized_raw_input_costs_what_its_pool_gives_it():
     c = _raw(_SIZED)
     shape = JobShape(nprocs=4, maxcore_mb=3000)

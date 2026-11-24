@@ -502,7 +502,8 @@ def resolve_device(entry: dict, info: Optional[DeviceInfo]) -> RemoteDevice:
     jobs = int(entry.get("max_jobs") or 0) or max(1, cores)
     return RemoteDevice(
         alias=entry["alias"],
-        budget=ResourceBudget(max_jobs=jobs, cores=int(cores), ram_mb=int(ram)),
+        budget=ResourceBudget(max_jobs=jobs, cores=int(cores), ram_mb=int(ram),
+                              auto_jobs=not int(entry.get("max_jobs") or 0)),
         orca_path=(entry.get("orca_path") or (info.orca_path if ready else "")),
         workdir=(info.workdir if ready else ""),
         has_mpi=bool(info.has_mpi) if ready else False,

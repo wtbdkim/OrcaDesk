@@ -37,7 +37,10 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   a level, and each calculation gets its numbers from the settings of the
   computer it starts on (this PC or a compute device): cores ÷ calculations
   at once, and memory ÷ cores. For example 16 cores, 48000 MB and 4 at once
-  give every calculation 4 cores and 3000 MB per core. A number typed in the
+  give every calculation 4 cores and 3000 MB per core. With calculations at
+  once left at 0 (auto), a calculation gets every core still free when it
+  starts instead: alone it takes all 16, started beside an 8-core job it
+  takes the other 8, and one that finds none free waits. A number typed in the
   input still runs exactly as written. A numerical frequency is never given
   more processes than it has displacements.
 

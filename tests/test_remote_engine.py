@@ -468,6 +468,47 @@ def test_each_pool_sizes_a_placeholder_input_from_its_own_settings(tmp_path, mon
                                      ("gcp", 4, 3072, 4, 12288)]
 
 
+def test_calculations_at_once_on_auto_hands_a_placeholder_input_every_free_core(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
+    auto = ResourceBudget(max_jobs=0, cores=16, ram_mb=48000)
+    # alone: the whole cap
+    harness = EngineHarness(tmp_path / "alone", budget=auto)
+    seen = {}
+    harness.behaviors["solo"] = lambda c: seen.update(
+        solo=(harness.engine._job.shape.nprocs, harness.engine._job.cores))
+    harness.engine.run_all([_sized("solo")])
+    assert seen["solo"] == (16, 16)
+
+    # beside a 6-core form job: the 10 left
+    harness = EngineHarness(tmp_path / "beside", budget=auto)
+    gate = threading.Barrier(2, timeout=20)
+    form = make_calc("form")
+    form.config.nprocs = 6
+    form.config.maxcore_mb = 1000
+
+    def note(c):
+        seen[c.name] = harness.engine._job.cores
+        gate.wait()
+    harness.behaviors["form"] = note
+    harness.behaviors["sized"] = note
+    harness.engine.run_all([form, _sized("sized")])
+    assert seen["form"] == 6 and seen["sized"] == 10
+
+
+def test_a_reattached_placeholder_input_holds_the_numbers_it_was_started_with(tmp_path):
+    eng = EngineHarness(tmp_path, budget=ResourceBudget(max_jobs=0, cores=16,
+                                                        ram_mb=48000)).engine
+    calc = _sized("back")
+    calc.state = CalcState.RUNNING
+    folder = Path(tmp_path) / "back"
+    folder.mkdir()
+    (folder / "back.inp").write_text("! B3LYP\n%pal nprocs 6 end\n%maxcore 2500\n",
+                                     encoding="utf-8")
+    slot = eng._slot_for(calc)
+    assert (slot.cores, slot.ram_mb) == (6, 15000)   # not the 16 free now
+
+
 def test_the_inp_written_carries_the_pools_numbers(tmp_path, monkeypatch):
     monkeypatch.setattr(queue_mod, "ram_headroom_mb", lambda: 0)
     fake = FakeTransport()

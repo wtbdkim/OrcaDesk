@@ -80,8 +80,8 @@ from .input_generator import (
 from .structure import parse_block
 from .resources import (ResourceBudget, declared_cores, estimated_ram_mb,
                         JobShape, fill_pool_placeholders, pool_shape,
-                        numfreq_rank_cap, ram_headroom_mb, raw_nprocs, uses_gpu,
-                        worker_threads)
+                        numfreq_rank_cap, ram_headroom_mb, raw_maxcore_mb,
+                        raw_nprocs, sized_by_pool, uses_gpu, worker_threads)
 from .runner import OrcaRunner, OrcaRunError, OrcaCancelled, OrcaDetached, OrcaHung
 from .parser import parse_file, ParseResult
 from .procutil import process_matches
@@ -3002,17 +3002,38 @@ class QueueEngine:
 
     def _shape_for(self, device: str = "") -> JobShape:
         """The job shape of a pool -- this machine ("") or a device -- for a
-        raw input's {{NPROCS}} / {{MAXCORE}} (resources.pool_shape)."""
+        raw input's {{NPROCS}} / {{MAXCORE}} (resources.pool_shape). With
+        calculations at once on auto it is the pool's free cores, so it is
+        asked again whenever the slot is (caller holds the lock)."""
+        in_use = sum(s.cores for s in list(self._slots.values()) if s.device == device)
         if device:
             dev = self._devices.get(device)
             if dev is not None:
-                return pool_shape(dev.budget, mpi=bool(dev.has_mpi))
-        return pool_shape(self.budget)
+                return pool_shape(dev.budget, mpi=bool(dev.has_mpi),
+                                  cores_in_use=in_use)
+        return pool_shape(self.budget, cores_in_use=in_use)
+
+    def _written_shape(self, calc: Calculation) -> "Optional[JobShape]":
+        """What a RUNNING placeholder input was actually started with, read
+        back from the .inp it wrote -- a job reattached after a restart holds
+        those numbers, not what the pool's free cores would give now."""
+        if calc.state != CalcState.RUNNING or not calc.is_raw:
+            return None
+        if not any(sized_by_pool(calc.raw_text or "")):
+            return None
+        inp = (run_folder(self.workspace_root, calc, self._system_name(calc))
+               / f"{calc.name}.inp")
+        try:
+            text = inp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        return JobShape(nprocs=raw_nprocs(text) or 1,
+                        maxcore_mb=raw_maxcore_mb(text) or JobShape().maxcore_mb)
 
     def _slot_for(self, calc: Calculation, device: str = "") -> "_JobSlot":
         """The admission cost of ``calc`` in ``device``'s pool. Only a raw
         input with {{NPROCS}} / {{MAXCORE}} costs differently per pool."""
-        shape = self._shape_for(device)
+        shape = self._written_shape(calc) or self._shape_for(device)
         return _JobSlot(name=calc.name, cores=declared_cores(calc, shape),
                         ram_mb=estimated_ram_mb(calc, shape), gpu=uses_gpu(calc),
                         kind=calc.kind or "", device=device, shape=shape)
@@ -3221,6 +3242,9 @@ class QueueEngine:
                     return "requeue"
                 self._slot_cv.wait(_SLOT_POLL)
                 waited += _SLOT_POLL
+                # a {{NPROCS}} input on auto is sized to the cores free now,
+                # not to the ones that were free when it began to wait
+                slot = self._slot_for(calc, slot.device)
             if self._stop_pending():
                 self._active_names.discard(calc.name)
                 self._slot_cv.notify_all()

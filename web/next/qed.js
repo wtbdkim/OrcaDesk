@@ -2948,7 +2948,7 @@
           + "After a CREST block, a step asks how many conformers to run it on."
         : JOB + " the block's job, from its Type (TightOpt, OptTS, Freq, IRC, SP ...; ORCAdesk adds the %geom / %irc block that job needs unless the text has its own) · "
           + GEOM + " the block's coordinates · {{CHARGE}} {{MULT}} its charge and multiplicity · {{HESS}} optional: an IRC reads the Hessian of the step before it by itself · "
-          + "{{NPROCS}} {{MAXCORE}} sized to the computer it runs on: cores ÷ calculations at once, memory ÷ cores (Settings). A number stays as written.";
+          + "{{NPROCS}} {{MAXCORE}} sized to the computer it runs on: cores ÷ calculations at once (at 0, every free core), memory ÷ cores (Settings). A number stays as written.";
       // the model's licence, as the builder's picker says it: some MACE
       // weights are for academic, non-commercial use only
       if (k === "MLIP") {

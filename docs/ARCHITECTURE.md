@@ -1480,6 +1480,15 @@ These rules live in `QueueEngine.run_all` / `validate_result` and `QueueStore`:
   so N jobs at once use exactly the cores cap and add up to exactly the
   memory cap — nothing is held back, because the memory cap is the user's
   own number and carries their margin (the "0 = auto" cap is already 75%).
+  `max_jobs` left at 0 has no N to divide by: there `nprocs` is the pool's
+  cores cap minus what its running jobs hold (`pool_shape(...,
+  cores_in_use)`), so a job alone takes the whole cap and one beside an
+  8-core job the rest (same day's decision). `ResourceBudget.auto_jobs` keeps
+  the "it was 0" through `resolved()` (and `resolve_device` sets it for a
+  device), since resolving fills `max_jobs` in. Because that shape moves with
+  the pool, `_start_job` re-asks `_slot_for` on every poll while it waits for
+  room, and a RUNNING row reattached after a restart is charged what its
+  written `.inp` declares (`_written_shape`), not the free cores of now.
   Admission costs a sized calc per pool (`_slot_for(calc, device)` →
   `declared_cores` / `estimated_ram_mb` with the shape), the `_JobSlot`
   keeps the shape it was admitted with, and the fresh launch fills the text

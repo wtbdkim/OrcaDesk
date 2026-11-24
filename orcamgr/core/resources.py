@@ -132,10 +132,14 @@ class ResourceBudget:
         count. A non-zero value is the extra cap for the non-CPU reasons to not
         run everything at once (disk contention, a single GPU).
     cores / ram_mb: 0 means "auto" — resolved from the machine at run start.
+    auto_jobs: max_jobs was left at 0 ("as many as fit"). resolved() fills
+        max_jobs in, so this is what still says so afterwards -- it decides
+        how {{NPROCS}} is sized (pool_shape).
     """
     max_jobs: int = 1
     cores: int = 0
     ram_mb: int = 0
+    auto_jobs: bool = False
 
     @classmethod
     def from_settings(cls, settings) -> "ResourceBudget":
@@ -150,6 +154,7 @@ class ResourceBudget:
         """A copy with the auto (0) fields filled in from this machine."""
         cores = int(self.cores) if self.cores and self.cores > 0 else auto_cores()
         jobs = int(self.max_jobs or 0)
+        auto = bool(self.auto_jobs) or jobs <= 0
         # 0 = "as many as fit": every job takes at least one core, so the core
         # budget is already the ceiling — this just stops the job count from
         # being a second thing to keep in sync with it.
@@ -159,6 +164,7 @@ class ResourceBudget:
             max_jobs=jobs,
             cores=cores,
             ram_mb=int(self.ram_mb) if self.ram_mb and self.ram_mb > 0 else auto_ram_mb(),
+            auto_jobs=auto,
         )
 
 
@@ -230,6 +236,13 @@ def raw_maxcore_mb(raw_text: str) -> int:
 # memory cap. No share is held back: the memory cap is the user's own number
 # and already carries the margin they want (the "0 = auto" cap is 75% of the
 # machine).
+#
+# Calculations at once left at 0 ("as many as fit") has no N to divide by, and
+# there nprocs is every core of the cap still FREE when the job starts (the
+# user's decision, 2026-11-24): a job alone takes the whole cap, one started
+# beside an 8-core job takes the rest. ORCA cannot grow or shrink a run once
+# it has started, so a job that finds nothing free waits for one to finish.
+# maxcore stays memory cap / cores cap, so the memory follows the cores.
 NPROCS_PLACEHOLDER = "{{NPROCS}}"
 MAXCORE_PLACEHOLDER = "{{MAXCORE}}"
 
@@ -241,12 +254,20 @@ class JobShape:
     maxcore_mb: int = _ORCA_DEFAULT_MAXCORE_MB
 
 
-def pool_shape(budget: "ResourceBudget", mpi: bool = True) -> JobShape:
-    """The job shape a pool's budget gives. ``mpi`` False (a device without
-    mpirun) keeps nprocs at 1: a parallel ORCA cannot start there."""
+def pool_shape(budget: "ResourceBudget", mpi: bool = True,
+               cores_in_use: int = 0) -> JobShape:
+    """The job shape a pool's budget gives. ``cores_in_use`` is what the jobs
+    already running in the pool hold; it matters only when calculations at once
+    is auto (every free core). ``mpi`` False (a device without mpirun) keeps
+    nprocs at 1: a parallel ORCA cannot start there."""
     b = budget.resolved()
     cores = max(1, int(b.cores))
-    nprocs = max(1, cores // max(1, int(b.max_jobs))) if mpi else 1
+    if not mpi:
+        nprocs = 1
+    elif b.auto_jobs:
+        nprocs = max(1, cores - max(0, int(cores_in_use)))
+    else:
+        nprocs = max(1, cores // max(1, int(b.max_jobs)))
     return JobShape(nprocs=nprocs, maxcore_mb=max(1, int(b.ram_mb) // cores))
 
 
