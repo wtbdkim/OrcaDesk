@@ -110,6 +110,14 @@ var NB = {};
    *  @param {string} msg */
   NB.fail = function (msg) { NB.toast(msg, "err"); };
 
+  // a 3D stage's Ctrl+C / Ctrl+V of its orientation (mol.js): say so
+  document.addEventListener("mol-view", (/** @type {any} */ e) => {
+    const what = e.detail && e.detail.what;
+    if (what === "copied") NB.toast("View copied — Ctrl+V on another 3D view shows it from the same side.", "ok");
+    else if (what === "pasted") NB.toast("View pasted.", "ok");
+    else if (what === "none") NB.toast("The clipboard holds no copied view (Ctrl+C on a 3D view copies one).");
+  });
+
   /** Where focus was before a modal took it, handed back when it closes. Only
    *  set by a modal that moved focus, so the others behave as they always did.
    *  @type {any} */

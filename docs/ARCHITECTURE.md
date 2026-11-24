@@ -293,7 +293,19 @@ geometry and never for a trajectory frame). The display is app-wide
 (`MOL.display` / `MOL.setDisplay`, every live stage repaints, kept in
 localStorage) and is set from `MOL.displayMenu` — the *Display* popover — or
 keys on a focused stage (1–4, H, L, +/−, 0). The orientation is a rotation
-matrix turned about the screen's axes; Shift/middle-drag pans; the wheel zooms
+matrix turned about the screen's axes; **Ctrl+C / Ctrl+V on a focused stage
+copy and paste it** as one text line (`MOL.viewText` / `MOL.parseView`:
+`ORCAdesk view` and the nine numbers of R, row-major), through the browser's
+own `copy` / `paste` events, which QtWebEngine fires at the focused canvas
+on the key press with a writable/readable `clipboardData` (measured; no
+clipboard permission or bridge slot). R is about the structure's own
+coordinates, so a pasted view shows another structure written in the same
+frame (the next step of a system, another frame) from the same side — how a
+row of 2D drawings is made from one angle. A pasted text whose first two rows
+are not orthonormal is refused; the third row is rebuilt from them, so a
+mirror never comes back. The stage fires a bubbling `mol-view` event
+(`copied` / `pasted` / `none`) that `boot.js` turns into a toast;
+`stage.turnTo(M)` sets an orientation from code (the 2D drawing's *Face on*); Shift/middle-drag pans; the wheel zooms
 only on a stage mounted with `wheel: "plain"` (the pop-out), elsewhere
 Ctrl+wheel, so the report still scrolls. That rule and its step are one
 function, `MOL.wheelZoom(e, plain)` (a notch arrives as deltaY 60, 9%), and the
@@ -2734,6 +2746,25 @@ The pure core is `NB.draw2d.core`, tested in node by
   one definition. The preview frames the structure's bounding circle (it does
   not jump in scale while turning); the saved SVG/PNG is cropped to the ink on
   white, PNG rasterised at 3× in the page.
+- **Fixed bond length on export.** The preview draws 24 px per Å
+  (`PX`); a saved or copied drawing is drawn at `exportScale(lay)` instead —
+  the scale that makes the median *drawn* bond between heavy atoms (all bonds
+  when there are none) `BOND_PX` = 36 px. A projection shortens every bond
+  that leaves the screen, so at a fixed Å scale the same molecule came out
+  smaller the more it was tilted, and figures pasted side by side did not
+  match (the labels, at a fixed 13 px, showed it was not resizing). Bonds
+  drawn under 0.05 Å (end-on) do not count, and the scale is capped at
+  4 × `PX`. Only positions and lobes scale; font, line widths and wedge
+  widths stay fixed px, so the ink keeps one proportion to the bond. Save MOL
+  keeps the Å coordinates (a MOL reader sets its own bond length).
+- **Face on** (`flatView(atoms, R)`, then `stage.turnTo(M)`). The view's z is
+  turned onto the atoms' axis of least spread (PCA by Jacobi, `eigSym3`) —
+  a planar molecule's normal — by the **smallest** rotation from the current
+  `R` (Rodrigues, applied to each row), so the in-plane direction the user
+  chose is kept, the nearer face stays nearer, and a second press is a no-op.
+  The result is a proper rotation, so no stereocentre is mirrored. Fewer than
+  three atoms, or collinear ones, leave the view alone. `turnTo` keeps zoom
+  and pan.
 
 **Outputs.** `draw2d_save` opens a native Save dialog (starting in the
 result's folder, else the workspace), forces the format's suffix, and writes

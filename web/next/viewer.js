@@ -374,7 +374,8 @@
               zoom, right-drag between two atoms to measure, click an atom or a bond for
               its numbers; the arrow keys turn it too, x, y or z looks straight down that
               axis, 1 to 4 change the display type, H hides hydrogens, L labels the
-              atoms."></canvas>
+              atoms, Ctrl+C copies the view and Ctrl+V shows another structure from
+              the same side."></canvas>
           <div class="stageacts">
             <button class="act" type="button" data-v="vopen">Open in viewer</button>
             <button class="act" type="button" data-v="vdisp">Display</button>

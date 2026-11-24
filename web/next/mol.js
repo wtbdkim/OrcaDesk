@@ -343,6 +343,31 @@ var MOL = {};
     return [a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]];
   }
 
+  /** An orientation on the clipboard: one readable line, the view matrix
+   *  row-major (view = R·(p − centre), x right, y up, z toward the viewer).
+   *  It is about the structure's own coordinates, so pasted on another
+   *  structure written in the same frame (the next step of the same system,
+   *  another frame of a set) it shows that one from the same side.
+   *  @param {number[]} R @returns {string} */
+  MOL.viewText = function (R) {
+    return "ORCAdesk view " + R.map(x => (Math.abs(x) < 5e-7 ? 0 : x).toFixed(6)).join(" ");
+  };
+  /** The orientation in a clipboard text, or null when there is none: the
+   *  tag, then nine numbers whose first two rows are orthonormal (within
+   *  1e-3). The third row is rebuilt from them, so what comes back is always
+   *  a proper rotation -- never a mirror. @param {string} text
+   *  @returns {number[]|null} */
+  MOL.parseView = function (text) {
+    const m = /ORCAdesk view((?:\s+[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?){9})/i.exec(String(text || ""));
+    if (!m) return null;
+    const M = m[1].trim().split(/\s+/).map(Number);
+    if (M.length !== 9 || !M.every(isFinite)) return null;
+    const n0 = Math.hypot(M[0], M[1], M[2]), n1 = Math.hypot(M[3], M[4], M[5]);
+    const d = M[0] * M[3] + M[1] * M[4] + M[2] * M[5];
+    if (Math.abs(n0 - 1) > 1e-3 || Math.abs(n1 - 1) > 1e-3 || Math.abs(d) > 1e-3) return null;
+    return ortho(M);
+  };
+
   // ---------------------------------------------------------------- scene
 
   /** A Mayer bond order, as a picture: single, partial (one solid stick and one
@@ -1390,6 +1415,30 @@ var MOL = {};
       zoomBy(f, p.x, p.y);
     }, { passive: false });
 
+    // Ctrl+C / Ctrl+V on the focused stage copy and paste the orientation
+    // (MOL.viewText), so several structures can be shown -- and drawn in 2D --
+    // from the same side. The browser's own clipboard events, fired at the
+    // focused stage by the key press (no clipboard permission needed); a
+    // "mol-view" event bubbles up so the page can say what happened.
+    /** @param {string} what copied | pasted | none */
+    const told = (what) => canvas.dispatchEvent(
+      new CustomEvent("mol-view", { bubbles: true, detail: { what: what } }));
+    canvas.addEventListener("copy", e => {
+      if (!e.clipboardData) return;
+      e.clipboardData.setData("text/plain", MOL.viewText(R));
+      e.preventDefault();
+      told("copied");
+    });
+    canvas.addEventListener("paste", e => {
+      if (!e.clipboardData) return;
+      const M = MOL.parseView(e.clipboardData.getData("text/plain"));
+      e.preventDefault();
+      if (!M) { told("none"); return; }
+      R = M;
+      paint();
+      told("pasted");
+    });
+
     if (!canvas.hasAttribute("tabindex")) canvas.setAttribute("tabindex", "0");
     canvas.addEventListener("keydown", e => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;   // never take a shortcut
@@ -1489,6 +1538,13 @@ var MOL = {};
        *  @param {string} name x, y or z */
       showAxis: showAxis,
       resetView: resetView,
+      /** Turn to this orientation (row-major, view() 's convention), zoom and
+       *  pan kept -- the 2D drawing's Face on. @param {number[]} M */
+      turnTo(M) {
+        if (!M || M.length !== 9 || !M.every(isFinite)) return;
+        R = ortho(M.slice());
+        paint();
+      },
       /** @param {number} f */
       zoomBy(f) { zoomBy(f); },
       /** whether this structure came with bond orders to draw */

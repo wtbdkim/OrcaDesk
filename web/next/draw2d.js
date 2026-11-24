@@ -55,6 +55,13 @@
   const THRESHOLD = 25;
   /** px per Å in the SVG's own units: a 1.5 Å C–C bond is 36 px. */
   const PX = 24;
+  /** What a bond is drawn as in a saved or copied drawing, px: the median
+   *  drawn bond is brought to this whatever the view, so drawings made from
+   *  different structures or orientations share one bond length (and the
+   *  labels, lines and wedges, which are fixed px, keep one proportion to
+   *  it) -- ChemDraw's fixed bond length. A structure seen at a slant draws
+   *  its bonds short; at the fixed Å scale it came out smaller each time. */
+  const BOND_PX = 36;
   /** A bond at a stereocentre leaving the screen by more than this points
    *  almost straight at (or away from) the viewer: its far atom is drawn
    *  nearly ON the centre, and a reader -- or a program reading the wedges
@@ -212,6 +219,97 @@
     const lobes = o.lobes && o.lobes.length
       ? lobeShapes(atoms, o.lobes, view, { min: o.lobeMin }) : null;
     return { atoms: out, bonds: ob, radius: radius, endOn: endOn, lobes: lobes };
+  }
+
+  /** The px-per-Å scale that draws the median bond BOND_PX long, over the
+   *  bonds between heavy atoms (all bonds when there are none). A bond seen
+   *  nearly end-on (drawn under 0.05 Å) does not count, and the scale never
+   *  passes 4 × PX, so a structure seen straight down a bond is not blown up.
+   *  @param {any} lay layout() @returns {number} */
+  function exportScale(lay) {
+    const at = lay.atoms;
+    const heavy = lay.bonds.filter((/** @type {any} */ b) => at[b.a].el !== "H" && at[b.b].el !== "H");
+    const L = (heavy.length ? heavy : lay.bonds)
+      .map((/** @type {any} */ b) => Math.hypot(at[b.a].x - at[b.b].x, at[b.a].y - at[b.b].y))
+      .filter((/** @type {number} */ l) => l > 0.05)
+      .sort((/** @type {number} */ p, /** @type {number} */ q) => p - q);
+    if (!L.length) return PX;
+    const h = L.length >> 1;
+    const med = L.length % 2 ? L[h] : (L[h - 1] + L[h]) / 2;
+    return Math.min(BOND_PX / med, 4 * PX);
+  }
+
+  /** Eigenvalues and unit eigenvectors of a symmetric 3×3 (row-major), by
+   *  Jacobi rotations, largest value first. @param {number[]} A
+   *  @returns {{values: number[], vectors: number[][]}} */
+  function eigSym3(A) {
+    const a = A.slice();
+    const V = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    for (let sweep = 0; sweep < 50; sweep++) {
+      if (Math.abs(a[1]) + Math.abs(a[2]) + Math.abs(a[5]) < 1e-14) break;
+      [[0, 1], [0, 2], [1, 2]].forEach(([p, r]) => {
+        const apr = a[p * 3 + r];
+        if (Math.abs(apr) < 1e-18) return;
+        const th = (a[r * 3 + r] - a[p * 3 + p]) / (2 * apr);
+        const t = (th >= 0 ? 1 : -1) / (Math.abs(th) + Math.sqrt(th * th + 1));
+        const c = 1 / Math.sqrt(t * t + 1), s = t * c;
+        for (let k = 0; k < 3; k++) {          // A·J, then V·J
+          const x = a[k * 3 + p], y = a[k * 3 + r];
+          a[k * 3 + p] = c * x - s * y; a[k * 3 + r] = s * x + c * y;
+          const u = V[k * 3 + p], w = V[k * 3 + r];
+          V[k * 3 + p] = c * u - s * w; V[k * 3 + r] = s * u + c * w;
+        }
+        for (let k = 0; k < 3; k++) {          // Jᵀ·(A·J)
+          const x = a[p * 3 + k], y = a[r * 3 + k];
+          a[p * 3 + k] = c * x - s * y; a[r * 3 + k] = s * x + c * y;
+        }
+      });
+    }
+    const order = [0, 1, 2].sort((i, j) => a[j * 4] - a[i * 4]);
+    return { values: order.map(i => a[i * 4]),
+             vectors: order.map(i => [V[i], V[3 + i], V[6 + i]]) };
+  }
+
+  /** The orientation that lays the structure as flat to the screen as it
+   *  goes: the view's z turned onto the atoms' axis of least spread (the
+   *  normal of a planar molecule), by the smallest turn from `R` -- so the
+   *  way it already faces in the plane is kept, the side nearer the viewer
+   *  stays nearer, and pressing it again changes nothing. Fewer than three
+   *  atoms, or a line of them, keep `R`'s own tilt where nothing decides it.
+   *  @param {{x: number, y: number, z: number}[]} atoms
+   *  @param {number[]} R mol.js's matrix, row-major (row 2 = view z in
+   *    structure space) @returns {number[]} the new matrix */
+  function flatView(atoms, R) {
+    const n = atoms.length;
+    if (n < 3) return R.slice();
+    let cx = 0, cy = 0, cz = 0;
+    atoms.forEach(a => { cx += a.x; cy += a.y; cz += a.z; });
+    cx /= n; cy /= n; cz /= n;
+    const C = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    atoms.forEach(a => {
+      const d = [a.x - cx, a.y - cy, a.z - cz];
+      for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i * 3 + j] += d[i] * d[j];
+    });
+    const e = eigSym3(C);
+    // a line (or a point): no plane to face
+    if (e.values[1] < 1e-6 * Math.max(e.values[0], 1e-12)) return R.slice();
+    const z = [R[6], R[7], R[8]];
+    let m = e.vectors[2];
+    if (m[0] * z[0] + m[1] * z[1] + m[2] * z[2] < 0) m = [-m[0], -m[1], -m[2]];
+    // the turn G taking z onto m (Rodrigues), applied to every row: R·Gᵀ
+    const k = [z[1] * m[2] - z[2] * m[1], z[2] * m[0] - z[0] * m[2], z[0] * m[1] - z[1] * m[0]];
+    const sn = Math.hypot(k[0], k[1], k[2]);
+    const cs = z[0] * m[0] + z[1] * m[1] + z[2] * m[2];
+    if (sn < 1e-9) return R.slice();
+    k[0] /= sn; k[1] /= sn; k[2] /= sn;
+    /** @param {number[]} v */
+    const turn = (v) => {
+      const kv = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
+      const kx = [k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0]];
+      return [0, 1, 2].map(i => v[i] * cs + kx[i] * sn + k[i] * kv * (1 - cs));
+    };
+    const r0 = turn([R[0], R[1], R[2]]), r1 = turn([R[3], R[4], R[5]]);
+    return [r0[0], r0[1], r0[2], r1[0], r1[1], r1[2], m[0], m[1], m[2]];
   }
 
   /** The drawing as the MOL writer's input (orcamgr/draw2d/molfile.py):
@@ -373,11 +471,14 @@
    *  @param {any} lay layout()
    *  The orbital overlay (lay.lobes), when there is one, goes first -- under
    *  the bonds -- in `pos` / `neg` (the --orb-pos / --orb-neg tokens).
+   *  `scale` is px per Å (PX unless given; a saved drawing passes
+   *  exportScale's); the lobes scale with the atoms, labels and lines do not.
    *  @param {{frame?: string, background?: string, ink?: string,
-   *           pos?: string, neg?: string}} [opts]
+   *           pos?: string, neg?: string, scale?: number}} [opts]
    *  @returns {string} */
   function toSvg(lay, opts) {
     const o = opts || {};
+    const S = o.scale && o.scale > 0 ? o.scale : PX;
     const ink = o.ink || "#111111";
     const shapes = (lay.lobes && lay.lobes.shapes) || [];
     let under = "";
@@ -385,21 +486,21 @@
       /** @type {Record<string, string>} */
       const col = { "1": o.pos || "#4f86f7", "-1": o.neg || "#f2555a" };
       under = `<g stroke-width="1.2" data-layer="orbital">` + shapes.map(sh => {
-        const X = sh.x * PX, Y = -sh.y * PX;
+        const X = sh.x * S, Y = -sh.y * S;
         if (sh.kind === "d") {
-          return `<circle cx="${f1(X)}" cy="${f1(Y)}" r="${f1(sh.rx * PX)}" fill="none"`
+          return `<circle cx="${f1(X)}" cy="${f1(Y)}" r="${f1(sh.rx * S)}" fill="none"`
             + ` stroke="#8a8f98" stroke-dasharray="3 2"/>`;
         }
         const c = col[String(sh.sign)];
         const paint = ` fill="${tint(c, 0.42)}" stroke="${c}" data-sign="${sh.sign > 0 ? "+" : "-"}"`;
-        if (sh.kind === "s") return `<circle cx="${f1(X)}" cy="${f1(Y)}" r="${f1(sh.rx * PX)}"${paint}/>`;
+        if (sh.kind === "s") return `<circle cx="${f1(X)}" cy="${f1(Y)}" r="${f1(sh.rx * S)}"${paint}/>`;
         // screen y points down, so a counter-clockwise view angle is negative
-        return `<ellipse cx="${f1(X)}" cy="${f1(Y)}" rx="${f1(sh.rx * PX)}" ry="${f1(sh.ry * PX)}"`
+        return `<ellipse cx="${f1(X)}" cy="${f1(Y)}" rx="${f1(sh.rx * S)}" ry="${f1(sh.ry * S)}"`
           + ` transform="rotate(${f1(-sh.angle)} ${f1(X)} ${f1(Y)})"${paint}/>`;
       }).join("") + `</g>`;
     }
     const font = 13;
-    const pts = lay.atoms.map(a => [a.x * PX, -a.y * PX]);
+    const pts = lay.atoms.map(a => [a.x * S, -a.y * S]);
     // how far a bond stops short of a label: half its width, roughly
     const clip = lay.atoms.map(a => a.label
       ? Math.max(7, 0.36 * font * (a.label.length + (a.charge ? 0.6 : 0))) : 0);
@@ -483,7 +584,7 @@
     // the frame
     let x0, y0, x1, y1;
     if (o.frame === "sphere") {
-      const r = Math.max(lay.radius, lay.lobes ? lay.lobes.reach : 0, 1) * PX + 16;
+      const r = Math.max(lay.radius, lay.lobes ? lay.lobes.reach : 0, 1) * S + 16;
       x0 = -r; y0 = -r; x1 = r; y1 = r;
     } else {
       x0 = Infinity; y0 = Infinity; x1 = -Infinity; y1 = -Infinity;
@@ -493,7 +594,7 @@
         x1 = Math.max(x1, p[0] + m); y1 = Math.max(y1, p[1] + m);
       });
       shapes.forEach(sh => {
-        const X = sh.x * PX, Y = -sh.y * PX, m = Math.max(sh.rx, sh.ry) * PX + 1;
+        const X = sh.x * S, Y = -sh.y * S, m = Math.max(sh.rx, sh.ry) * S + 1;
         x0 = Math.min(x0, X - m); y0 = Math.min(y0, Y - m);
         x1 = Math.max(x1, X + m); y1 = Math.max(y1, Y + m);
       });
@@ -516,6 +617,8 @@
                  visibleAtoms: visibleAtoms, outOfPlane: outOfPlane,
                  anchorFirst: anchorFirst, stereoFlag: stereoFlag, layout: layout,
                  molInput: molInput, toSvg: toSvg, chargeText: chargeText,
+                 BOND_PX: BOND_PX, exportScale: exportScale, eigSym3: eigSym3,
+                 flatView: flatView,
                  LOBE_LEN: LOBE_LEN, LOBE_WIDTH: LOBE_WIDTH, S_RADIUS: S_RADIUS,
                  LOBE_MIN: LOBE_MIN, D_BLOCK: D_BLOCK, lobeShapes: lobeShapes,
                  sameStructure: sameStructure, tint: tint };
@@ -615,6 +718,8 @@
             value="${_prefs.threshold}" aria-label="Out-of-plane angle above which a bond is a wedge or a hash, degrees">
           <output class="d2val" data-d="thrv">${_prefs.threshold}°</output></label>
         <label class="d2chk"><input type="checkbox" data-d="allh"${_prefs.allH ? " checked" : ""}> All H</label>
+        <button class="btn btn-sm btn-ghost" type="button" data-d="flat"
+          title="Turn the structure to face you as flat as it goes (a planar molecule lies in the screen), keeping the way it points in the plane">Face on</button>
         <label class="d2ctl" title="The total charge RDKit assigns bond orders for">Charge
           <input type="number" class="mono d2num" step="1" data-d="chg" aria-label="Total charge"></label>
         <button class="btn btn-sm btn-ghost" type="button" data-d="unflip" hidden
@@ -875,6 +980,11 @@
       syncFlips();
       lastSvg = ""; schedule();
     }
+    q("flat").addEventListener("click", () => {
+      const v = stage.view();
+      if (!v || !v.atoms || !v.atoms.length || !stage.turnTo) return;
+      stage.turnTo(flatView(v.atoms, v.R));
+    });
     q("unflip").addEventListener("click", () => {
       flips.clear(); syncFlips();
       lastSvg = ""; schedule();
@@ -919,10 +1029,12 @@
       follow();
     });
 
-    /** The drawing as it would be saved: cropped, on white. */
+    /** The drawing as it would be saved: cropped, on white, at the fixed
+     *  bond length (exportScale). */
     function exportSvg() {
       return lastLay ? toSvg(lastLay, { frame: "tight", background: "#ffffff",
-                                        pos: colours.pos, neg: colours.neg }) : "";
+                                        pos: colours.pos, neg: colours.neg,
+                                        scale: exportScale(lastLay) }) : "";
     }
     /** @param {string} svg @returns {Promise<string>} */
     function toPng(svg) {

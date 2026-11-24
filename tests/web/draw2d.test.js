@@ -404,5 +404,125 @@ test("tint mixes toward white and leaves non-hex colours alone", () => {
   assert.strictEqual(D.tint("rgb(1,2,3)", 0.5), "rgb(1,2,3)");
 });
 
+// ------------------------------------------------- fixed bond length, Face on
+
+/** ethylene in the xy plane, C=C along x */
+const ETHYLENE = [
+  { el: "C", x: -0.665, y: 0, z: 0 }, { el: "C", x: 0.665, y: 0, z: 0 },
+  { el: "H", x: -1.23, y: 0.92, z: 0 }, { el: "H", x: -1.23, y: -0.92, z: 0 },
+  { el: "H", x: 1.23, y: 0.92, z: 0 }, { el: "H", x: 1.23, y: -0.92, z: 0 }];
+const ETH_PER = { bonds: [[0, 1, 2], [0, 2, 1], [0, 3, 1], [1, 4, 1], [1, 5, 1]] };
+const mulR = (A, B) => [0, 1, 2].flatMap(r => [0, 1, 2].map(c =>
+  A[r * 3] * B[c] + A[r * 3 + 1] * B[3 + c] + A[r * 3 + 2] * B[6 + c]));
+/** the drawn C=C length in a saved drawing, px */
+function savedCC(R) {
+  const lay = D.layout(ETHYLENE, ETH_PER, { R: R, c: [0, 0, 0] }, { allH: true });
+  const svg = D.toSvg(lay, { frame: "tight", scale: D.exportScale(lay) });
+  const ln = [...svg.matchAll(/<line x1="([-\d.]+)" y1="([-\d.]+)" x2="([-\d.]+)" y2="([-\d.]+)"/g)]
+    .map(m => Math.hypot(m[3] - m[1], m[4] - m[2]));
+  return { lay: lay, longest: Math.max(...ln) };
+}
+
+test("a saved drawing draws the median heavy-atom bond BOND_PX long, whatever the slant", () => {
+  const flat = D.layout(ETHYLENE, ETH_PER, { R: I, c: [0, 0, 0] });
+  assert.ok(close(D.exportScale(flat) * 1.33, D.BOND_PX, 1e-6));
+  // seen at 60° the C=C is drawn half as long: the scale doubles to make up
+  const slant = D.layout(ETHYLENE, ETH_PER, { R: rotY(Math.PI / 3), c: [0, 0, 0] });
+  assert.ok(close(D.exportScale(slant) * 1.33 * 0.5, D.BOND_PX, 1e-6));
+  // so the two saved drawings carry the same bond (the C=C's main line runs
+  // the whole length when its ends carry no label)
+  assert.ok(close(savedCC(I).longest, savedCC(rotY(Math.PI / 3)).longest, 0.2));
+});
+
+test("exportScale: H bonds only when there is nothing else, end-on bonds ignored, capped", () => {
+  const ch4 = [{ el: "C", x: 0, y: 0, z: 0 }, { el: "H", x: 1.09, y: 0, z: 0 }];
+  const lay = D.layout(ch4, { bonds: [[0, 1, 1]] }, { R: I, c: [0, 0, 0] }, { allH: true });
+  assert.ok(close(D.exportScale(lay) * 1.09, D.BOND_PX, 1e-6));
+  // straight down the bond: nothing to measure, the plain scale
+  const endOn = D.layout(tilted(90, 1), { bonds: [[0, 1, 1]] }, { R: I, c: [0, 0, 0] });
+  assert.strictEqual(D.exportScale(endOn), 24);
+  // nearly end-on: capped at 4× rather than blown up
+  const near = D.layout(tilted(85, 1), { bonds: [[0, 1, 1]] }, { R: I, c: [0, 0, 0] });
+  assert.strictEqual(D.exportScale(near), 96);
+  // the live preview keeps the plain scale (no scale given)
+  const eth = D.layout(ETHYLENE, ETH_PER, { R: I, c: [0, 0, 0] });
+  assert.strictEqual(D.toSvg(eth, { frame: "sphere" }), D.toSvg(eth, { frame: "sphere", scale: 24 }));
+  assert.notStrictEqual(D.toSvg(eth, { frame: "tight" }),
+                        D.toSvg(eth, { frame: "tight", scale: D.exportScale(eth) }));
+});
+
+test("eigSym3: A·v = λ·v, largest first", () => {
+  const A = [4, 1, 0.5, 1, 3, 0.2, 0.5, 0.2, 1];
+  const e = D.eigSym3(A);
+  assert.ok(e.values[0] >= e.values[1] && e.values[1] >= e.values[2]);
+  e.vectors.forEach((v, k) => {
+    const Av = [0, 1, 2].map(r => A[r * 3] * v[0] + A[r * 3 + 1] * v[1] + A[r * 3 + 2] * v[2]);
+    Av.forEach((x, i) => assert.ok(close(x, e.values[k] * v[i], 1e-9)));
+    assert.ok(close(Math.hypot(v[0], v[1], v[2]), 1, 1e-9));
+  });
+});
+
+test("Face on lays a planar molecule in the screen by the smallest turn", () => {
+  const R0 = mulR(rotX(0.7), rotY(-1.1));
+  const R = D.flatView(ETHYLENE, R0);
+  // a proper rotation
+  const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6])
+            + R[2] * (R[3] * R[7] - R[4] * R[6]);
+  assert.ok(close(det, 1, 1e-9));
+  // every atom in the screen plane
+  D.viewCoords(ETHYLENE, R, [0, 0, 0]).forEach(p => assert.ok(close(p[2], 0, 1e-9)));
+  // the side that faced the viewer still does (z kept on the same side)
+  assert.ok(R0[8] * R[8] > 0);
+  // pressing it again changes nothing
+  const again = D.flatView(ETHYLENE, R);
+  again.forEach((x, k) => assert.ok(close(x, R[k], 1e-9)));
+  // already flat, turned only in the plane: kept as it is
+  const inPlane = [Math.cos(0.4), -Math.sin(0.4), 0, Math.sin(0.4), Math.cos(0.4), 0, 0, 0, 1];
+  D.flatView(ETHYLENE, inPlane).forEach((x, k) => assert.ok(close(x, inPlane[k], 1e-9)));
+  // two atoms or a line: no plane, the view is left alone
+  D.flatView(ETHYLENE.slice(0, 2), R0).forEach((x, k) => assert.strictEqual(x, R0[k]));
+});
+
+test("Face on keeps the drawing's handedness: a stereocentre reads the same", () => {
+  // CHFClBr: the wedge pattern is a property of the molecule, not the view
+  const at = [{ el: "C", x: 0, y: 0, z: 0 }, { el: "F", x: 1.0, y: 0.3, z: 0.6 },
+              { el: "Cl", x: -0.9, y: 0.8, z: -0.5 }, { el: "Br", x: -0.3, y: -1.2, z: 0.7 },
+              { el: "H", x: 0.2, y: 0.1, z: -1.0 }];
+  const R0 = mulR(rotY(0.5), rotX(-0.3));
+  const R = D.flatView(at, R0);
+  const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6])
+            + R[2] * (R[3] * R[7] - R[4] * R[6]);
+  assert.ok(close(det, 1, 1e-9), "a mirror would turn R into S");
+});
+
+// ------------------------------------- mol.js: the view on the clipboard
+// (Ctrl+C / Ctrl+V on a 3D stage -- the way several structures are drawn in
+// 2D from the same side)
+
+const molCtx = {};
+vm.createContext(molCtx);
+vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "..", "web", "next", "mol.js"), "utf8")
+                + ";this.MOL = MOL;", molCtx);
+const MOL = molCtx.MOL;
+
+test("a copied view reads back as the same matrix", () => {
+  const R = mulR(rotX(0.7), rotY(-1.1));
+  const back = MOL.parseView(MOL.viewText(R));
+  back.forEach((x, k) => assert.ok(close(x, R[k], 2e-6)));
+  // found inside other text, and with exponents
+  assert.ok(MOL.parseView("see: ORCAdesk view 1 0 0 0 1e0 0 0 0 1 (copied)"));
+});
+
+test("a clipboard without a view, or with a sheared or mirrored one, is refused or mended", () => {
+  assert.strictEqual(MOL.parseView("hello"), null);
+  assert.strictEqual(MOL.parseView("ORCAdesk view 1 0 0 0 1 0 0 0"), null);       // 8 numbers
+  assert.strictEqual(MOL.parseView("ORCAdesk view 2 0 0 0 1 0 0 0 1"), null);     // not unit
+  assert.strictEqual(MOL.parseView("ORCAdesk view 1 0 0 0.5 1 0 0 0 1"), null);   // sheared
+  // a mirror (third row flipped) comes back as the proper rotation: never an
+  // R centre turned S
+  const m = MOL.parseView("ORCAdesk view 1 0 0 0 1 0 0 0 -1");
+  assert.deepStrictEqual(plain(m), [1, 0, 0, 0, 1, 0, 0, 0, 1]);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

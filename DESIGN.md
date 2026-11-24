@@ -1590,7 +1590,11 @@ labels stay at least an arm apart — and it is sized for a pointer (a 28px
 target, the desktop minimum), with hover changing the arm so it reads as
 pressable. And it needs a keyboard route, since nothing drawn can be tabbed to:
 the stage already takes focus for its arrow keys, so x, y and z ride there and
-are named in the canvas's own label. A marker in a corner the stage also
+are named in the canvas's own label. The orientation itself rides the same
+focus: **Ctrl+C copies the view and Ctrl+V on another stage shows its
+structure from the same side** (a toast says which happened, or that the
+clipboard held no view) — the shortcut every program already uses for "this,
+over there", rather than a button that would name the state again. A marker in a corner the stage also
 writes in (a cell thumbnail's *final · 9 atoms*, the Visual panel's and the
 pop-out's caption) keeps **all** of itself above the caption — an arm can point
 straight down, so the room it needs is the arm and its label, not the origin's
@@ -2100,9 +2104,16 @@ The drawing follows every drag (one redraw per animation frame) in exactly the
 black ink on white like ChemDraw's, so it is data, not chrome (D1, as the ESP
 ramp's literal colours are). The preview's frame is the structure's bounding
 circle, so the drawing does not jump in scale while it turns; what is saved is
-cropped to the ink. Under the paper, `.d2bar`: *Wedge above* — a slider
+cropped to the ink and drawn at one **fixed bond length** (the median bond
+between heavy atoms is 36 px, whatever the view — a slanted structure's short
+bonds no longer make a smaller figure), labels, lines and wedges at their
+fixed px, so figures pasted side by side match. Under the paper, `.d2bar`:
+*Wedge above* — a slider
 (5–60°, default 25°, §11.20: cheap to move, it only re-draws) with a fixed-width
-mono readout; *All H*; *Charge* (the calculation's own; a change re-perceives);
+mono readout; *All H*; *Face on* (ghost: turns the 3D view so the structure
+faces the screen as flat as it goes, by the smallest turn, so the way it
+points in the plane is kept and a second press does nothing);
+*Charge* (the calculation's own; a change re-perceives);
 *Reset symbols* (ghost, shown only while an atom has been clicked — a click on
 an atom in the 3D half shows or hides that hydrogen, or draws or drops that
 heavy atom's symbol; the note's last sentence says so);

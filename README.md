@@ -234,8 +234,11 @@ A finished calculation opens as a report, read two ways: **Output** and
   stage: the 3D view on one side and, on the other, a ChemDraw-style 2D drawing
   of exactly that view, redrawn as you turn it. Bond orders come from RDKit;
   a bond leaving the screen by more than an adjustable angle (25° by default)
-  becomes a wedge (toward you) or a hash (away). *Copy image*, *Save SVG* /
-  *PNG*, or *Save MOL* for ChemDraw and ChemSketch to edit.
+  becomes a wedge (toward you) or a hash (away). *Face on* turns the structure
+  flat to the screen, and Ctrl+C / Ctrl+V on a 3D view copy its viewing angle
+  to another structure. *Copy image*, *Save SVG* / *PNG* (always at one bond
+  length, so drawings match side by side), or *Save MOL* for ChemDraw and
+  ChemSketch to edit.
 - Surfaces come from the finished wavefunction (nothing is re-run), and the
   isovalue redraws instantly. *Show in folder* opens the run folder for your
   own programs (Avogadro, VMD, ChimeraX).

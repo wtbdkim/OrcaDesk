@@ -13,6 +13,18 @@ This project loosely follows [Semantic Versioning](https://semver.org/).
   hydrogens can be taken out one by one. Clicking it again undoes it, and
   *Reset symbols* undoes them all. Charged, radical and lone atoms keep their
   symbols.
+- **Copy the viewing angle from one 3D view to another.** Click a 3D view and
+  press Ctrl+C; click another and press Ctrl+V, and its structure is shown
+  from the same side (the angle is about the structure's own coordinates, so
+  it suits structures of the same system). With the 2D structure split open,
+  the 2D drawing follows, so a row of drawings can be made from one angle.
+- **2D drawings come out the same size, and *Face on* lays a structure flat.**
+  A copied or saved 2D drawing used to be smaller the more the structure was
+  tilted, because a slanted bond is drawn short. Every drawing now has the
+  same bond length (36 px, about 1.5 Å) whatever the view, with labels and
+  lines kept in proportion, so drawings pasted side by side match. The new
+  *Face on* button turns the 3D view so the structure faces you as flat as it
+  can (a planar molecule lies in the screen), keeping the way it points.
 - **`{{NPROCS}}` and `{{MAXCORE}}` size an input to the computer it runs on.**
   Write `%pal nprocs {{NPROCS}} end` and `%maxcore {{MAXCORE}}` in an input or
   a level, and each calculation gets its numbers from the settings of the
